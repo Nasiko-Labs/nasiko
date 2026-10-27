@@ -1,14 +1,12 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/components/ui/pagination.tsx (shadcn new-york-v4;
-// plain elements, no Radix). Local edits: `cn` from "../lib/cn" and `buttonVariants`/`Button` from "./button".
 import * as React from "react"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
 import {
   ChevronLeftIcon,
   ChevronRightIcon,
   MoreHorizontalIcon,
 } from "lucide-react"
 
-import { buttonVariants, type Button } from "./button"
+import { buttonVariants, type Button } from "@nasiko/ui/primitives/button"
 
 function Pagination({ className, ...props }: React.ComponentProps<"nav">) {
   return (

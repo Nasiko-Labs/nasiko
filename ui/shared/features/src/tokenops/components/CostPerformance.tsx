@@ -1,9 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/components/CostPerformance.tsx. Local edits:
-// primitives from `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites`, `cn`/formatters from
-// `@nasiko/ui/cn` and `@nasiko/ui/lib`; lint-driven mechanical edits (void arrow bodies braced, unnecessary assertions
-// dropped); development (d4d521071): `CostPerfRow` and `selectHint`, for the home's chart band; Prettier formatting.
-"use client";
-
 /**
  * F5 — "Is cost buying performance?" (plan A9, A2b, A11).
  *
@@ -12,30 +6,24 @@
  * agents with data always renders as a table; the Table view is also the keyboard and
  * screen-reader path, and each row can highlight its F3 row like a point click.
  */
-import { BarChart3, Table2 } from "lucide-react";
-import { useState } from "react";
-import {
-  Button,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import type { AttributionRow } from "../attribution";
-import { fmtCostPerOp, fmtHours, fmtInt, fmtLatency } from "@nasiko/ui/lib";
-import { Panel, PanelEmpty, PanelError, PanelSkeleton } from "@nasiko/ui/composites";
-import { CELL, ChartTable, HEAD, NUM, ROW_HEAD, STICKY_HEAD } from "./ChartTable";
-import { CostScatter, type ScatterPoint } from "./CostScatter";
+import { BarChart3, Table2 } from 'lucide-react'
+import { useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@nasiko/ui/primitives/table'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { AttributionRow } from '../attribution'
+import { fmtCostPerOp, fmtHours, fmtInt, fmtLatency } from '@nasiko/ui/lib/format'
+import { Panel, PanelEmpty, PanelError, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { CELL, ChartTable, HEAD, NUM, ROW_HEAD, STICKY_HEAD } from './ChartTable'
+import { CostScatter, type ScatterPoint } from './CostScatter'
 
-type Point = ScatterPoint;
+type Point = ScatterPoint
 
 /** The fields the panel reads, so another page (the home's chart band) passes its own rows. */
 export type CostPerfRow = Pick<
   AttributionRow,
-  "id" | "name" | "kind" | "operations" | "costPerOp" | "p95" | "containerHours"
->;
+  'id' | 'name' | 'kind' | 'operations' | 'costPerOp' | 'p95' | 'containerHours'
+>
 
 export function CostPerformance({
   rows,
@@ -43,19 +31,19 @@ export function CostPerformance({
   error,
   onRetry,
   onSelect,
-  selectHint = "Highlight in the attribution table",
+  selectHint = 'Highlight in the attribution table',
 }: {
-  rows: CostPerfRow[] | undefined;
-  loading: boolean;
-  error: unknown;
-  onRetry: () => void;
-  onSelect: (id: string) => void;
+  rows: CostPerfRow[] | undefined
+  loading: boolean
+  error: unknown
+  onRetry: () => void
+  onSelect: (id: string) => void
   /** What a row's name does in the Table view. */
-  selectHint?: string;
+  selectHint?: string
 }) {
-  const [asTable, setAsTable] = useState(false);
+  const [asTable, setAsTable] = useState(false)
   const points: Point[] = (rows ?? [])
-    .filter((r) => r.kind === "agent" && r.operations > 0 && r.costPerOp > 0 && r.p95 !== null)
+    .filter((r) => r.kind === 'agent' && r.operations > 0 && r.costPerOp > 0 && r.p95 !== null)
     .map((r) => ({
       id: r.id,
       name: r.name,
@@ -63,8 +51,8 @@ export function CostPerformance({
       y: r.p95 as number,
       z: r.operations,
       hours: r.containerHours,
-    }));
-  const showTable = asTable || points.length < 3;
+    }))
+  const showTable = asTable || points.length < 3
 
   return (
     <Panel
@@ -73,19 +61,13 @@ export function CostPerformance({
       labelledBy="cost-perf-title"
       actions={
         points.length >= 3 ? (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setAsTable((v) => !v);
-            }}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setAsTable((v) => !v)}>
             {asTable ? (
               <BarChart3 className="size-4" aria-hidden />
             ) : (
               <Table2 className="size-4" aria-hidden />
             )}
-            {asTable ? "Chart" : "Table"}
+            {asTable ? 'Chart' : 'Table'}
           </Button>
         ) : undefined
       }
@@ -103,16 +85,16 @@ export function CostPerformance({
               <TableHead scope="col" className={HEAD}>
                 Agent
               </TableHead>
-              <TableHead scope="col" className={cn(HEAD, "text-right")}>
+              <TableHead scope="col" className={cn(HEAD, 'text-right')}>
                 Cost/op
               </TableHead>
-              <TableHead scope="col" className={cn(HEAD, "text-right")}>
+              <TableHead scope="col" className={cn(HEAD, 'text-right')}>
                 p95
               </TableHead>
-              <TableHead scope="col" className={cn(HEAD, "text-right")}>
+              <TableHead scope="col" className={cn(HEAD, 'text-right')}>
                 Ops
               </TableHead>
-              <TableHead scope="col" className={cn(HEAD, "text-right")}>
+              <TableHead scope="col" className={cn(HEAD, 'text-right')}>
                 Hours
               </TableHead>
             </TableRow>
@@ -127,9 +109,7 @@ export function CostPerformance({
                       variant="link"
                       size="sm"
                       className="h-auto p-0 text-xs"
-                      onClick={() => {
-                        onSelect(p.id);
-                      }}
+                      onClick={() => onSelect(p.id)}
                       title={selectHint}
                     >
                       {p.name}
@@ -152,5 +132,5 @@ export function CostPerformance({
         </figure>
       )}
     </Panel>
-  );
+  )
 }

@@ -1,7 +1,6 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/RetryLine.tsx. Local edits: Prettier formatting.
 /** A quiet failure line with Retry: what couldn't load, and the one action that reads it again (the hub's sections). */
-import { Button } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
+import { Button } from '@nasiko/ui/primitives/button'
+import { copy } from '../copy'
 
 export function RetryLine({ label, onRetry }: { label: string; onRetry: () => void }) {
   return (
@@ -16,5 +15,5 @@ export function RetryLine({ label, onRetry }: { label: string; onRetry: () => vo
         {copy.states.retry}
       </Button>
     </p>
-  );
+  )
 }

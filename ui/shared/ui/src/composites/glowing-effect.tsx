@@ -1,5 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/components/aceternity/glowing-effect.tsx
-// (9edb3ff3c). Local edits: `cn` from ../lib/cn; optional props admit `undefined`; Prettier formatting.
 /**
  * Aceternity UI "Glowing Effect" (registry item `@aceternity/glowing-effect`, MIT): a band of colour on the border that
  * turns to face a point, brightest at that point and fading out `spread` degrees either side.
@@ -13,9 +11,9 @@
  * - `animate={false}` jumps to the angle (reduced motion); a turn takes `movementDuration` seconds (1 s, was 2 s).
  * - decorative: `aria-hidden`, `pointer-events-none`; no `memo` (the React Compiler memoises).
  */
-import { animate as tween } from "motion/react";
-import { useEffect, useRef, type CSSProperties } from "react";
-import { cn } from "../lib/cn";
+import { animate as tween } from 'motion/react'
+import { useEffect, useRef, type CSSProperties } from 'react'
+import { cn } from '@nasiko/ui/lib/utils'
 
 const GRADIENT = `radial-gradient(circle, var(--chart-1) 10%, transparent 20%),
   radial-gradient(circle at 40% 40%, var(--chart-2) 5%, transparent 15%),
@@ -26,7 +24,7 @@ const GRADIENT = `radial-gradient(circle, var(--chart-1) 10%, transparent 20%),
     var(--chart-2) calc(25% / 5),
     var(--chart-3) calc(50% / 5),
     var(--chart-4) calc(75% / 5),
-    var(--chart-1) calc(100% / 5))`;
+    var(--chart-1) calc(100% / 5))`
 
 export function GlowingEffect({
   angle,
@@ -39,38 +37,34 @@ export function GlowingEffect({
   className,
 }: {
   /** Where the band is brightest: degrees clockwise from the top. */
-  angle: number;
+  angle: number
   /** How far the band reaches either side of `angle`, degrees. */
-  spread?: number | undefined;
-  blur?: number | undefined;
-  borderWidth?: number | undefined;
-  glow?: boolean | undefined;
-  animate?: boolean | undefined;
-  movementDuration?: number | undefined;
-  className?: string | undefined;
+  spread?: number
+  blur?: number
+  borderWidth?: number
+  glow?: boolean
+  animate?: boolean
+  movementDuration?: number
+  className?: string
 }) {
-  const ref = useRef<HTMLSpanElement>(null);
+  const ref = useRef<HTMLSpanElement>(null)
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const current = parseFloat(el.style.getPropertyValue("--start")) || 0;
+    const el = ref.current
+    if (!el) return
+    const current = parseFloat(el.style.getPropertyValue('--start')) || 0
     // The shortest way round, as Aceternity's handleMove.
-    const target = current + ((((angle - current + 180) % 360) + 360) % 360) - 180;
+    const target = current + ((((angle - current + 180) % 360) + 360) % 360) - 180
     if (!animate) {
-      el.style.setProperty("--start", String(target));
-      return;
+      el.style.setProperty('--start', String(target))
+      return
     }
     const run = tween(current, target, {
       duration: movementDuration,
       ease: [0.16, 1, 0.3, 1],
-      onUpdate: (v) => {
-        el.style.setProperty("--start", String(v));
-      },
-    });
-    return () => {
-      run.stop();
-    };
-  }, [angle, animate, movementDuration]);
+      onUpdate: (v) => el.style.setProperty('--start', String(v)),
+    })
+    return () => run.stop()
+  }, [angle, animate, movementDuration])
 
   return (
     <>
@@ -85,30 +79,30 @@ export function GlowingEffect({
         aria-hidden
         style={
           {
-            "--blur": `${blur}px`,
-            "--spread": spread,
-            "--start": String(angle),
-            "--glowingeffect-border-width": `${borderWidth}px`,
-            "--gradient": GRADIENT,
+            '--blur': `${blur}px`,
+            '--spread': spread,
+            '--start': String(angle),
+            '--glowingeffect-border-width': `${borderWidth}px`,
+            '--gradient': GRADIENT,
           } as CSSProperties
         }
         className={cn(
-          "pointer-events-none absolute inset-0 rounded-[inherit]",
-          blur > 0 && "blur-(--blur)",
+          'pointer-events-none absolute inset-0 rounded-[inherit]',
+          blur > 0 && 'blur-(--blur)',
           className,
         )}
       >
         <span
           className={cn(
-            "absolute inset-0 rounded-[inherit]",
+            'absolute inset-0 rounded-[inherit]',
             "after:absolute after:inset-[calc(-1*var(--glowingeffect-border-width))] after:rounded-[inherit] after:content-['']",
-            "after:[border:var(--glowingeffect-border-width)_solid_transparent]",
-            "after:[background:var(--gradient)]",
-            "after:[mask-composite:intersect] after:[mask-clip:padding-box,border-box]",
-            "after:[mask-image:linear-gradient(#0000,#0000),conic-gradient(from_calc((var(--start)-var(--spread))*1deg),#00000000_0deg,#fff_calc(var(--spread)*0.1deg),#fff_calc(var(--spread)*1.9deg),#00000000_calc(var(--spread)*2deg))]",
+            'after:[border:var(--glowingeffect-border-width)_solid_transparent]',
+            'after:[background:var(--gradient)]',
+            'after:[mask-composite:intersect] after:[mask-clip:padding-box,border-box]',
+            'after:[mask-image:linear-gradient(#0000,#0000),conic-gradient(from_calc((var(--start)-var(--spread))*1deg),#00000000_0deg,#fff_calc(var(--spread)*0.1deg),#fff_calc(var(--spread)*1.9deg),#00000000_calc(var(--spread)*2deg))]',
           )}
         />
       </span>
     </>
-  );
+  )
 }

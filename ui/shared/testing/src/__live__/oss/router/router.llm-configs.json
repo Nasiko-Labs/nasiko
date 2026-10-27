@@ -1,0 +1,125 @@
+{
+  "fixture_version": 1,
+  "id": "router.llm-configs",
+  "recorded_at": "2026-09-29T05:55:36.998Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.998Z",
+    "end": "2026-09-29T05:55:37.000Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/llm-configs",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": [
+      {
+        "api_key_secret_name": null,
+        "created_at": "2026-09-29T05:55:34.765249+00:00",
+        "fallback_models": [
+          "openai/gpt-4o-mini"
+        ],
+        "id": "5eed0007-0000-4000-8000-000000000001",
+        "is_default": true,
+        "max_tokens": null,
+        "model": "claude-sonnet-4",
+        "name": "seed-default",
+        "pinned": false,
+        "pinned_model": null,
+        "provider": "anthropic",
+        "temperature": null,
+        "tier1_model": null,
+        "tier2_model": null,
+        "tier3_model": null,
+        "updated_at": "2026-09-29T05:55:34.765249+00:00"
+      },
+      {
+        "api_key_secret_name": null,
+        "created_at": "2026-09-29T05:55:34.765249+00:00",
+        "fallback_models": [],
+        "id": "5eed0007-0000-4000-8000-000000000003",
+        "is_default": false,
+        "max_tokens": null,
+        "model": "gpt-4o-mini",
+        "name": "seed-fast",
+        "pinned": true,
+        "pinned_model": "gpt-4o-mini",
+        "provider": "openai",
+        "temperature": null,
+        "tier1_model": null,
+        "tier2_model": null,
+        "tier3_model": null,
+        "updated_at": "2026-09-29T05:55:34.765249+00:00"
+      },
+      {
+        "api_key_secret_name": null,
+        "created_at": "2026-09-29T05:55:34.765249+00:00",
+        "fallback_models": [],
+        "id": "5eed0007-0000-4000-8000-000000000099",
+        "is_default": false,
+        "max_tokens": null,
+        "model": "gpt-4o-mini",
+        "name": "seed-marker-2026-09-29T05:55:34.182Z",
+        "pinned": false,
+        "pinned_model": null,
+        "provider": "openai",
+        "temperature": null,
+        "tier1_model": null,
+        "tier2_model": null,
+        "tier3_model": null,
+        "updated_at": "2026-09-29T05:55:34.765249+00:00"
+      },
+      {
+        "api_key_secret_name": "SEED_MISSING_KEY",
+        "created_at": "2026-09-29T05:55:34.765249+00:00",
+        "fallback_models": [],
+        "id": "5eed0007-0000-4000-8000-000000000004",
+        "is_default": false,
+        "max_tokens": null,
+        "model": "gpt-4o",
+        "name": "seed-missing-key",
+        "pinned": false,
+        "pinned_model": null,
+        "provider": "openai",
+        "temperature": null,
+        "tier1_model": null,
+        "tier2_model": null,
+        "tier3_model": null,
+        "updated_at": "2026-09-29T05:55:34.765249+00:00"
+      },
+      {
+        "api_key_secret_name": null,
+        "created_at": "2026-09-29T05:55:34.765249+00:00",
+        "fallback_models": [
+          "gpt-4o-mini"
+        ],
+        "id": "5eed0007-0000-4000-8000-000000000002",
+        "is_default": false,
+        "max_tokens": null,
+        "model": "gpt-4o-mini",
+        "name": "seed-openai-tiers",
+        "pinned": false,
+        "pinned_model": null,
+        "provider": "openai",
+        "temperature": null,
+        "tier1_model": "gpt-4o",
+        "tier2_model": "gpt-4o-mini",
+        "tier3_model": "gpt-4o-mini",
+        "updated_at": "2026-09-29T05:55:34.765249+00:00"
+      }
+    ],
+    "message": "LLM configs retrieved successfully",
+    "status_code": 200
+  }
+}

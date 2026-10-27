@@ -1,9 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tour/TourOverlay.tsx (dd9fe0f64, 9edb3ff3c).
-// Local edits: Radix `Popover` → Base UI's: the anchor is the Positioner's `anchor` (a ref to the gliding box, Radix's
-// `PopoverAnchor asChild`), Radix's `updatePositionStrategy="always"` is Base UI's own anchor tracking, the first
-// focus is the Popup's `initialFocus` (Radix's `onOpenAutoFocus`), a click outside is cancelled in `onOpenChange`
-// (Radix's `onInteractOutside` preventDefault), and a visually hidden `PopoverClose` makes the modal popover trap
-// focus; motion values and `animate` come from @nasiko/ui/motion; optional props admit `undefined`; Prettier formatting.
 /**
  * The open tour (lazy, `index.ts`): a spotlight that glides from target to target over the dimmed, blurred page, and the step's
  * card beside it. The card is a modal Radix Popover, so focus stays in it, the page under it is inert and hidden from
@@ -22,60 +16,60 @@ import {
   useTransform,
   type MotionValue,
   type Transition,
-} from "@nasiko/ui/motion";
-import { use, useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { createPortal } from "react-dom";
-import { GlowingEffect } from "@nasiko/ui/composites";
-import { TextGenerateEffect } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Popover, PopoverClose, PopoverContent } from "@nasiko/ui/primitives";
-import { transitions } from "@nasiko/ui/motion";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "./copy";
-import type { LayerTour } from "@nasiko/app-core/edition/edition";
-import type { TourStep } from "@nasiko/app-core/tour";
-import type { TourId } from "./logic";
-import { stepsFor, TOURS } from "./tours";
+} from 'motion/react'
+import { use, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { createPortal } from 'react-dom'
+import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
+import { TextGenerateEffect } from '@nasiko/ui/composites/text-generate-effect'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Popover, PopoverAnchor, PopoverContent } from '@nasiko/ui/primitives/popover'
+import { transitions } from '@nasiko/ui/lib/motion'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from './copy'
+import type { LayerTour } from '@nasiko/app-core/edition/edition'
+import type { TourStep } from '@nasiko/app-core/tour'
+import type { TourId } from './logic'
+import { TOURS } from './tours'
 
 /** Room between the target and the spotlight's edge. */
-const PAD = 6;
+const PAD = 6
 
 interface Box {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
+  x: number
+  y: number
+  width: number
+  height: number
 }
 
 /** The first element for a target that takes up room on screen (not `display: none`, not a hidden tab). */
 function findTarget(target: string): HTMLElement | null {
   for (const el of document.querySelectorAll<HTMLElement>(`[data-tour~="${target}"]`)) {
-    const r = el.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0) return el;
+    const r = el.getBoundingClientRect()
+    if (r.width > 0 && r.height > 0) return el
   }
-  return null;
+  return null
 }
 
 /** A centred step's spotlight: a point a third of the way down, so the card below it sits near the middle. */
-const centre = (): Box => ({ x: innerWidth / 2, y: innerHeight / 3, width: 0, height: 0 });
+const centre = (): Box => ({ x: innerWidth / 2, y: innerHeight / 3, width: 0, height: 0 })
 
 /** Keeps the spotlight inside the screen: a target taller or wider than it is lit only where it shows. */
-const EDGE = 4;
+const EDGE = 4
 function clampToScreen(b: Box): Box {
-  const x = Math.max(b.x, EDGE);
-  const y = Math.max(b.y, EDGE);
+  const x = Math.max(b.x, EDGE)
+  const y = Math.max(b.y, EDGE)
   return {
     x,
     y,
     width: Math.max(0, Math.min(b.x + b.width, innerWidth - EDGE) - x),
     height: Math.max(0, Math.min(b.y + b.height, innerHeight - EDGE) - y),
-  };
+  }
 }
 
-type Side = NonNullable<TourStep["side"]>;
-const OPPOSITE: Record<Side, Side> = { top: "bottom", bottom: "top", left: "right", right: "left" };
+type Side = NonNullable<TourStep['side']>
+const OPPOSITE: Record<Side, Side> = { top: 'bottom', bottom: 'top', left: 'right', right: 'left' }
 /** What the card needs beside a target: its size (320 × up to ~240) plus the gap and the screen margin. */
-const ROOM = { across: 270, beside: 350 };
+const ROOM = { across: 270, beside: 350 }
 
 /** The step's side if the card fits there, else its opposite, else the other axis; null when no side has room. */
 function sideFor(spot: Box, wanted: Side): Side | null {
@@ -84,35 +78,34 @@ function sideFor(spot: Box, wanted: Side): Side | null {
     bottom: innerHeight - spot.y - spot.height,
     left: spot.x,
     right: innerWidth - spot.x - spot.width,
-  };
-  const across = wanted === "top" || wanted === "bottom";
-  const others: Side[] = across ? ["right", "left"] : ["bottom", "top"];
+  }
+  const across = wanted === 'top' || wanted === 'bottom'
+  const others: Side[] = across ? ['right', 'left'] : ['bottom', 'top']
   return (
     [wanted, OPPOSITE[wanted], ...others].find(
-      (side) => room[side] >= (side === "top" || side === "bottom" ? ROOM.across : ROOM.beside),
+      (side) => room[side] >= (side === 'top' || side === 'bottom' ? ROOM.across : ROOM.beside),
     ) ?? null
-  );
+  )
 }
 
 /** Under reduced motion the spotlight jumps. One object, so the glide effect doesn't restart on every render. */
-const JUMP: Transition = { duration: 0 };
+const JUMP: Transition = { duration: 0 }
 
 /** Radius of the spotlight's hole, as its `rounded-lg`. */
-const RADIUS = 8;
+const RADIUS = 8
 
 /**
  * The dim's clip: the whole screen minus a rounded hole over the spotlight (even-odd, so the inner path cuts).
  * The outer box is the viewport, not a big constant: once it passes Chrome's texture size in device pixels (9999 px on
  * a 2× screen), Chrome blurs the hole too.
  */
-function holePath(v: number[]): string {
-  const [x = 0, y = 0, w = 0, h = 0, vw = 0, vh = 0] = v;
-  const r = Math.max(0, Math.min(RADIUS, w / 2, h / 2));
+function holePath([x, y, w, h, vw, vh]: number[]): string {
+  const r = Math.max(0, Math.min(RADIUS, w / 2, h / 2))
   return (
     `path(evenodd, "M0 0H${vw}V${vh}H0Z M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}` +
     `V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}` +
     `V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z")`
-  );
+  )
 }
 
 /**
@@ -125,59 +118,53 @@ function useGlidingBox(
   transition: Transition,
   grow: number | null,
 ): Record<keyof Box, MotionValue<number>> {
-  const x = useMotionValue(box.x);
-  const y = useMotionValue(box.y);
-  const width = useMotionValue(box.width);
-  const height = useMotionValue(box.height);
-  const grown = useRef<number | null>(null);
+  const x = useMotionValue(box.x)
+  const y = useMotionValue(box.y)
+  const width = useMotionValue(box.width)
+  const height = useMotionValue(box.height)
+  const grown = useRef<number | null>(null)
   useEffect(() => {
     if (grow !== null && grown.current !== grow) {
-      grown.current = grow;
-      x.set(box.x + box.width / 2);
-      y.set(box.y + box.height / 2);
-      width.set(0);
-      height.set(0);
+      grown.current = grow
+      x.set(box.x + box.width / 2)
+      y.set(box.y + box.height / 2)
+      width.set(0)
+      height.set(0)
     }
     const runs = [
       animate(x, box.x, transition),
       animate(y, box.y, transition),
       animate(width, box.width, transition),
       animate(height, box.height, transition),
-    ];
-    return () => {
-      runs.forEach((run) => {
-        run.stop();
-      });
-    };
-  }, [x, y, width, height, box.x, box.y, box.width, box.height, transition, grow]);
-  return { x, y, width, height };
+    ]
+    return () => runs.forEach((run) => run.stop())
+  }, [x, y, width, height, box.x, box.y, box.width, box.height, transition, grow])
+  return { x, y, width, height }
 }
 
 /** The viewport's size as motion values, for the dim's clip. */
 function useViewport(): [MotionValue<number>, MotionValue<number>] {
-  const width = useMotionValue(innerWidth);
-  const height = useMotionValue(innerHeight);
+  const width = useMotionValue(innerWidth)
+  const height = useMotionValue(innerHeight)
   useEffect(() => {
     const onResize = () => {
-      width.set(innerWidth);
-      height.set(innerHeight);
-    };
-    addEventListener("resize", onResize);
-    return () => {
-      removeEventListener("resize", onResize);
-    };
-  }, [width, height]);
-  return [width, height];
+      width.set(innerWidth)
+      height.set(innerHeight)
+    }
+    addEventListener('resize', onResize)
+    return () => removeEventListener('resize', onResize)
+  }, [width, height])
+  return [width, height]
 }
 
 /** The edge's glow faces the card: degrees clockwise from the top, per side (a docked card sits below). */
-const FACING: Record<Side, number> = { top: 0, right: 90, bottom: 180, left: 270 };
+const FACING: Record<Side, number> = { top: 0, right: 90, bottom: 180, left: 270 }
 
 /** How far the glow spreads: to the corners of the side facing the card, so that whole side lights, brightest mid-way. */
 function spreadFor(spot: Box, side: Side): number {
-  const across = side === "top" || side === "bottom";
-  const toCorner = Math.atan2(across ? spot.width : spot.height, across ? spot.height : spot.width);
-  return Math.min(88, Math.max(30, (toCorner * 180) / Math.PI));
+  const across = side === 'top' || side === 'bottom'
+  const toCorner = Math.atan2(across ? spot.width : spot.height, across ? spot.height : spot.width)
+  return Math.min(88, Math.max(30, (toCorner * 180) / Math.PI))
 }
 
 /** A spotlight closed to a point at the middle of `b`: a centred step shrinks the hole in place. */
@@ -186,10 +173,10 @@ const collapse = (b: Box): Box => ({
   y: b.y + b.height / 2,
   width: 0,
   height: 0,
-});
+})
 
 /** Where a card with nowhere beside its target goes: the bottom middle of the screen, over the target. */
-const dock = (): Box => ({ x: innerWidth / 2, y: innerHeight - 16, width: 0, height: 0 });
+const dock = (): Box => ({ x: innerWidth / 2, y: innerHeight - 16, width: 0, height: 0 })
 
 /**
  * The target's box, followed while its step is open: the page may scroll, reflow or animate under it. Brings the
@@ -202,24 +189,24 @@ function useTargetBox(
   target: string | undefined,
   reduced: boolean,
 ): { box: Box | null; last: Box | null; fresh: boolean } {
-  const [seen, setSeen] = useState<{ target: string; box: Box | null } | null>(null);
+  const [seen, setSeen] = useState<{ target: string; box: Box | null } | null>(null)
   useEffect(() => {
-    if (!target) return;
-    const el = findTarget(target);
-    const r = el?.getBoundingClientRect();
+    if (!target) return
+    const el = findTarget(target)
+    const r = el?.getBoundingClientRect()
     if (el && r && (r.top < 0 || r.bottom > innerHeight)) {
       el.scrollIntoView({
         // A target taller than most of the screen shows its top, the rest its middle.
-        block: r.height > innerHeight * 0.6 ? "start" : "center",
-        behavior: reduced ? "auto" : "smooth",
-      });
+        block: r.height > innerHeight * 0.6 ? 'start' : 'center',
+        behavior: reduced ? 'auto' : 'smooth',
+      })
     }
-    let last = "";
+    let last = ''
     let frame = requestAnimationFrame(function tick() {
-      const box = findTarget(target)?.getBoundingClientRect();
-      const key = box ? `${box.x} ${box.y} ${box.width} ${box.height}` : "";
+      const box = findTarget(target)?.getBoundingClientRect()
+      const key = box ? `${box.x} ${box.y} ${box.width} ${box.height}` : ''
       if (key !== last) {
-        last = key;
+        last = key
         setSeen({
           target,
           box: box
@@ -230,141 +217,114 @@ function useTargetBox(
                 height: box.height + 2 * PAD,
               }
             : null,
-        });
+        })
       }
-      frame = requestAnimationFrame(tick);
-    });
-    return () => {
-      cancelAnimationFrame(frame);
-    };
-  }, [target, reduced]);
-  const last = seen?.box ?? null;
-  return { box: target ? last : null, last, fresh: !!target && seen?.target === target };
+      frame = requestAnimationFrame(tick)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [target, reduced])
+  const last = seen?.box ?? null
+  return { box: target ? last : null, last, fresh: !!target && seen?.target === target }
 }
 
 /**
  * A layer's steps, loaded once per tour and kept: `use()` needs the same promise on every render. A failed load is
  * dropped, so the next try loads again, and reads as no steps (the tour ends at once).
  */
-const layerSteps = new Map<string, Promise<readonly TourStep[]>>();
+const layerSteps = new Map<string, Promise<readonly TourStep[]>>()
 function stepsOf(layer: LayerTour): Promise<readonly TourStep[]> {
-  let p = layerSteps.get(layer.id);
+  let p = layerSteps.get(layer.id)
   if (!p) {
     p = layer.steps().catch(() => {
-      layerSteps.delete(layer.id);
-      return [];
-    });
-    layerSteps.set(layer.id, p);
+      layerSteps.delete(layer.id)
+      return []
+    })
+    layerSteps.set(layer.id, p)
   }
-  return p;
+  return p
 }
 
 export function TourOverlay({
   id,
   layer,
-  withApp,
   offerOptOut,
   onEnd,
   onOptOut,
 }: {
   /** A core tour (`TourId`), or the layer's when `layer` is set. */
-  id: string;
+  id: string
   /** A layer's own page (the `tours` slot): its steps load first (the overlay waits in Suspense meanwhile). */
-  layer: LayerTour | null;
-  /** The app tour's steps (the sidebar) come first (`stepsFor`). */
-  withApp: boolean;
+  layer: LayerTour | null
   /** A first-time user's first tour: its first card offers No thanks, which turns automatic tours off. */
-  offerOptOut: boolean;
-  onEnd: () => void;
-  onOptOut: () => void;
+  offerOptOut: boolean
+  onEnd(): void
+  onOptOut(): void
 }) {
   // The steps this page can show now (tours.ts), read once when the tour opens: a later re-render never drops one.
-  const page = layer ? use(stepsOf(layer)) : Object.hasOwn(TOURS, id) ? TOURS[id as TourId] : [];
-  const [steps] = useState(() =>
-    stepsFor(page, withApp).filter((s) => !s.target || findTarget(s.target)),
-  );
+  const page = layer ? use(stepsOf(layer)) : (TOURS[id as TourId] ?? [])
+  const [steps] = useState(() => page.filter((s) => !s.target || findTarget(s.target)))
   // Nothing to show (a layer's steps failed to load): end at once rather than hold the page under an empty tour.
-  const empty = steps.length === 0;
+  const empty = steps.length === 0
   useEffect(() => {
-    if (empty) onEnd();
-  }, [empty, onEnd]);
+    if (empty) onEnd()
+  }, [empty, onEnd])
   // `from` is the step shown before this one, so a move between a centred step and a lit one can be told apart.
-  const [{ index, from }, setPos] = useState({ index: 0, from: 0 });
-  const step = steps[index];
-  const reduced = useReducedMotion() ?? false;
-  const { box: target, last: lastTarget, fresh } = useTargetBox(step?.target, reduced);
+  const [{ index, from }, setPos] = useState({ index: 0, from: 0 })
+  const step = steps[index]
+  const reduced = useReducedMotion() ?? false
+  const { box: target, last: lastTarget, fresh } = useTargetBox(step?.target, reduced)
   // A centred step closes the spotlight where it was, rather than flying the hole to the middle of the screen.
   const spot = target
     ? clampToScreen(target)
     : lastTarget
       ? collapse(clampToScreen(lastTarget))
-      : centre();
-  const side = target ? sideFor(spot, step?.side ?? "bottom") : "bottom";
+      : centre()
+  const side = target ? sideFor(spot, step?.side ?? 'bottom') : 'bottom'
   // The edge keeps facing the last card while it fades out on a centred step.
-  const lit = target ?? lastTarget;
-  const litSpot = lit ? clampToScreen(lit) : spot;
+  const lit = target ?? lastTarget
+  const litSpot = lit ? clampToScreen(lit) : spot
   const litSide =
-    (target ? side : lit && sideFor(litSpot, steps[from]?.side ?? "bottom")) ?? "bottom";
+    (target ? side : lit && sideFor(litSpot, steps[from]?.side ?? 'bottom')) ?? 'bottom'
   // Into or out of a centred step the card doesn't fly across the screen: it jumps, and appears where it lands.
-  const swap = from !== index && !steps[from]?.target !== !step?.target;
+  const swap = from !== index && !steps[from]?.target !== !step?.target
   // The card hangs off the spotlight, or off the dock when there is no room beside it; a centred card off the middle,
   // where a card leaving a centred step also waits until its target is read (a frame), so it never shows at the old one.
-  const anchor = !target || (swap && !fresh) ? centre() : side ? spot : dock();
-  const glide = reduced ? JUMP : transitions.spotlight;
-  const card = useRef<HTMLDivElement>(null);
+  const anchor = !target || (swap && !fresh) ? centre() : side ? spot : dock()
+  const glide = reduced ? JUMP : transitions.spotlight
+  const card = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const el = card.current;
-    if (!swap || reduced || !el) return;
+    const el = card.current
+    if (!swap || reduced || !el) return
     // Hidden at once, shown once the popover has moved to its new anchor (a few frames behind the state).
-    el.style.opacity = "0";
+    el.style.opacity = '0'
     const run = animate(
       el,
       { opacity: [0, 1], scale: [0.96, 1] },
       { duration: 0.28, delay: 0.08, ease: [0.16, 1, 0.3, 1] },
-    );
-    return () => {
-      run.stop();
-    };
-  }, [index, swap, reduced]);
-  const box = useGlidingBox(spot, glide, swap && fresh ? index : null);
-  const [vw, vh] = useViewport();
-  const hole = useTransform([box.x, box.y, box.width, box.height, vw, vh], holePath);
-  const titleId = useId();
-  const bodyId = useId();
-  const primary = useRef<HTMLButtonElement>(null);
-  const anchorBox = useRef<HTMLDivElement>(null);
-  if (!step) return null;
+    )
+    return () => run.stop()
+  }, [index, swap, reduced])
+  const box = useGlidingBox(spot, glide, swap && fresh ? index : null)
+  const [vw, vh] = useViewport()
+  const hole = useTransform([box.x, box.y, box.width, box.height, vw, vh], holePath)
+  const titleId = useId()
+  const bodyId = useId()
+  const primary = useRef<HTMLButtonElement>(null)
+  if (!step) return null
 
-  const last = index === steps.length - 1;
-  const optOut = offerOptOut && index === 0;
-  const next = () => {
-    if (last) onEnd();
-    else setPos({ index: index + 1, from: index });
-  };
-  const back = () => {
-    setPos({ index: Math.max(0, index - 1), from: index });
-  };
+  const last = index === steps.length - 1
+  const optOut = offerOptOut && index === 0
+  const next = () => (last ? onEnd() : setPos({ index: index + 1, from: index }))
+  const back = () => setPos({ index: Math.max(0, index - 1), from: index })
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "ArrowRight") next();
-    else if (e.key === "ArrowLeft") back();
-    else return;
-    e.preventDefault();
-  };
+    if (e.key === 'ArrowRight') next()
+    else if (e.key === 'ArrowLeft') back()
+    else return
+    e.preventDefault()
+  }
 
   return (
-    <Popover
-      open
-      modal
-      onOpenChange={(open, details) => {
-        if (open) return;
-        // A click on the dimmed page doesn't end the tour; Skip and Esc do.
-        if (details.reason === "outside-press") {
-          details.cancel();
-          return;
-        }
-        onEnd();
-      }}
-    >
+    <Popover open modal onOpenChange={(open) => (open ? undefined : onEnd())}>
       {createPortal(
         <>
           {/* Dims and blurs the page everywhere but the spotlight, so only the step's target stays sharp. */}
@@ -403,27 +363,33 @@ export function TourOverlay({
               </>
             ) : null}
           </m.div>
-          <m.div
-            ref={anchorBox}
-            aria-hidden
-            className="pointer-events-none fixed top-0 left-0"
-            initial={false}
-            animate={{ x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }}
-            transition={swap ? JUMP : glide}
-          />
+          <PopoverAnchor asChild>
+            <m.div
+              aria-hidden
+              className="pointer-events-none fixed top-0 left-0"
+              initial={false}
+              animate={{ x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }}
+              transition={swap ? JUMP : glide}
+            />
+          </PopoverAnchor>
         </>,
         document.body,
       )}
       <PopoverContent
         ref={card}
-        side={side ?? "top"}
+        side={side ?? 'top'}
         sideOffset={target && side ? 12 : 0}
         collisionPadding={16}
-        // The card hangs off the gliding box (Base UI tracks its moves).
-        anchor={anchorBox}
+        // Re-placed every frame: the anchor glides.
+        updatePositionStrategy="always"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        initialFocus={primary}
+        // A click on the dimmed page doesn't end the tour; Skip and Esc do.
+        onInteractOutside={(e) => e.preventDefault()}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          primary.current?.focus()
+        }}
         onKeyDown={onKeyDown}
         className="flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0"
       >
@@ -467,11 +433,9 @@ export function TourOverlay({
             </Button>
           </div>
         </div>
-        {/* A modal Base UI popover traps focus only while it holds a Close; Skip and Esc are the visible ways out. */}
-        <PopoverClose className="sr-only">{copy.close}</PopoverClose>
       </PopoverContent>
     </Popover>
-  );
+  )
 }
 
 /** Where the tour is, as a row of dots; the current one stretches. The "Step n of m" line says it in words. */
@@ -481,12 +445,12 @@ function Dots({ count, index }: { count: number; index: number }) {
       {Array.from({ length: count }, (_, n) => (
         <m.span
           key={n}
-          className={cn("h-1.5 rounded-full", n === index ? "bg-primary" : "bg-border")}
+          className={cn('h-1.5 rounded-full', n === index ? 'bg-primary' : 'bg-border')}
           initial={false}
           animate={{ width: n === index ? 16 : 6 }}
           transition={transitions.fade}
         />
       ))}
     </span>
-  );
+  )
 }

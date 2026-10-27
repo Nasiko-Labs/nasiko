@@ -1,0 +1,73 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.agent-connectors",
+  "recorded_at": "2026-09-30T14:28:36.612Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.612Z",
+    "end": "2026-09-30T14:28:36.616Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/agents/{agent0}/connectors",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "connectors": [
+        {
+          "connected": true,
+          "connector_id": "5eed000e-0000-4000-8000-000000000001",
+          "description": "Repositories, issues and pull requests.",
+          "display_name": "GitHub",
+          "enabled": true,
+          "logo_url": null,
+          "name": "github",
+          "provider_type": "composio"
+        },
+        {
+          "connected": true,
+          "connector_id": "5eed000e-0000-4000-8000-000000000006",
+          "description": "Search and read the internal documentation site.",
+          "display_name": "Docs search",
+          "enabled": true,
+          "logo_url": null,
+          "name": "docs-search",
+          "provider_type": "mcp_server"
+        },
+        {
+          "connected": true,
+          "connector_id": "5eed000e-0000-4000-8000-000000000009",
+          "description": "Extract text, tables and images from PDFs.",
+          "display_name": "PDF tools",
+          "enabled": false,
+          "logo_url": null,
+          "name": "pdf-tools",
+          "provider_type": "mcp_server"
+        },
+        {
+          "connected": true,
+          "connector_id": "5eed000e-0000-4000-8000-000000000010",
+          "description": "Read-only queries against the analytics warehouse.",
+          "display_name": "SQL runner",
+          "enabled": false,
+          "logo_url": null,
+          "name": "sql-runner",
+          "provider_type": "mcp_server"
+        }
+      ]
+    },
+    "message": "Agent connectors retrieved successfully",
+    "status_code": 200
+  }
+}

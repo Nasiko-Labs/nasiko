@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/Composer.tsx. Local edits: the open-dialog
-// check reads Base UI's `[data-open]` (Radix's `[data-state=open]`); optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * The message box (plan §6.5, §7.7; v1c §5.5): a card holding an auto-growing textarea, with the target
  * chip, the key hint and Send inside it. Locked means Send is disabled; the textarea stays editable and
@@ -8,7 +5,7 @@
  * Send's slot (direct chats only). While a request is pending, Go to request and Start a new chat show
  * inside the card. `/` focuses the box when nothing else takes typing.
  */
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, Square } from 'lucide-react'
 import {
   useEffect,
   useImperativeHandle,
@@ -16,31 +13,26 @@ import {
   type KeyboardEvent,
   type ReactNode,
   type Ref,
-} from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Textarea } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "../copy";
-import { tuning } from "../tuning";
-import { CHAT_COLUMN } from "./turnStyles";
+} from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '../copy'
+import { tuning } from '../tuning'
+import { CHAT_COLUMN } from './turnStyles'
 
 export type ComposerMode =
-  | { kind: "ready" }
+  | { kind: 'ready' }
   /**
    * `blocked`: Send stays focusable and `aria-disabled`, and activating it (or Enter) calls this instead
    * of sending: the no-target new chat opens the TargetPicker (DS3), a stopped agent announces why (E16).
    */
-  | {
-      kind: "locked";
-      reason?: string | undefined;
-      newChat?: boolean | undefined;
-      blocked?: (() => void) | undefined;
-    }
-  | { kind: "streaming" }
-  | { kind: "paused" };
+  | { kind: 'locked'; reason?: string; newChat?: boolean; blocked?(): void }
+  | { kind: 'streaming' }
+  | { kind: 'paused' }
 
 export interface ComposerHandle {
-  focus: () => void;
+  focus(): void
 }
 
 const typingTarget = (el: Element | null) =>
@@ -48,7 +40,7 @@ const typingTarget = (el: Element | null) =>
   (el instanceof HTMLInputElement ||
     el instanceof HTMLTextAreaElement ||
     el instanceof HTMLSelectElement ||
-    (el as HTMLElement).isContentEditable);
+    (el as HTMLElement).isContentEditable)
 
 export function Composer({
   agentName,
@@ -66,80 +58,77 @@ export function Composer({
   mode,
   ref,
 }: {
-  ref?: Ref<ComposerHandle> | undefined;
-  agentName?: string | undefined;
+  ref?: Ref<ComposerHandle>
+  agentName?: string
   /** Overrides "Message <agent>" (routed: "Ask the Orchestrator", v1c §5.1). */
-  label?: string | undefined;
-  placeholder?: string | undefined;
+  label?: string
+  placeholder?: string
   /** A note under the card while it applies (the routed hint, §5.2). */
-  note?: string | undefined;
+  note?: string
   /** Inside a page body (the new chat's centred layout) rather than docked at the bottom. */
-  inline?: boolean | undefined;
+  inline?: boolean
   /** The new chat's target chip, at the card's bottom left (§5.4). */
-  targetSlot?: ReactNode | undefined;
-  value: string;
-  onChange: (v: string) => void;
-  onSend: () => void;
-  onStop: () => void;
-  onGoToRequest: () => void;
-  onNewChat: () => void;
-  mode: ComposerMode;
+  targetSlot?: ReactNode
+  value: string
+  onChange(v: string): void
+  onSend(): void
+  onStop(): void
+  onGoToRequest(): void
+  onNewChat(): void
+  mode: ComposerMode
 }) {
-  const box = useRef<HTMLTextAreaElement>(null);
-  useImperativeHandle(ref, () => ({ focus: () => box.current?.focus() }), []);
+  const box = useRef<HTMLTextAreaElement>(null)
+  useImperativeHandle(ref, () => ({ focus: () => box.current?.focus() }), [])
 
   useEffect(() => {
     const onKey = (e: globalThis.KeyboardEvent) => {
       if (
-        e.key !== "/" ||
+        e.key !== '/' ||
         e.metaKey ||
         e.ctrlKey ||
         e.altKey ||
         typingTarget(document.activeElement)
       )
-        return;
+        return
       // An open dialog, sheet or menu (shadcn's, found by role) owns the keyboard.
-      if (document.querySelector("[role=dialog][data-open], [role=alertdialog], [role=menu]"))
-        return;
-      e.preventDefault();
-      box.current?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
+      if (document.querySelector('[role=dialog][data-state=open], [role=alertdialog], [role=menu]'))
+        return
+      e.preventDefault()
+      box.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
-  const tooLong = value.length > tuning.MESSAGE_MAX_CHARS;
-  const canSend = mode.kind === "ready" && !!value.trim() && !tooLong;
-  const blocked = mode.kind === "locked" ? mode.blocked : undefined;
+  const tooLong = value.length > tuning.MESSAGE_MAX_CHARS
+  const canSend = mode.kind === 'ready' && !!value.trim() && !tooLong
+  const blocked = mode.kind === 'locked' ? mode.blocked : undefined
   const submit = () => {
-    if (canSend) onSend();
-    else if (blocked) blocked();
-  };
+    if (canSend) onSend()
+    else if (blocked) blocked()
+  }
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // eslint-disable-next-line @typescript-eslint/no-deprecated -- 229 is the only IME signal some browsers give on Enter
-    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return;
-    e.preventDefault();
-    submit();
-  };
+    if (e.key !== 'Enter' || e.shiftKey || e.nativeEvent.isComposing || e.keyCode === 229) return
+    e.preventDefault()
+    submit()
+  }
   const reason = tooLong ? (
     <span className="text-destructive">{copy.tooLongInline}</span>
-  ) : mode.kind === "locked" && mode.reason ? (
+  ) : mode.kind === 'locked' && mode.reason ? (
     mode.reason
-  ) : null;
+  ) : null
 
   return (
     <form
       className={
-        inline ? "" : "shrink-0 bg-background pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+        inline ? '' : 'shrink-0 bg-background pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]'
       }
       onSubmit={(e) => {
-        e.preventDefault();
-        submit();
+        e.preventDefault()
+        submit()
       }}
     >
-      <div className={inline ? "w-full" : CHAT_COLUMN}>
+      <div className={inline ? 'w-full' : CHAT_COLUMN}>
         <label htmlFor="chat-composer" className="sr-only">
           {label ?? copy.composerLabel(agentName)}
         </label>
@@ -152,20 +141,18 @@ export function Composer({
             ref={box}
             value={value}
             placeholder={placeholder ?? label ?? copy.composerLabel(agentName)}
-            onChange={(e) => {
-              onChange(e.target.value);
-            }}
+            onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
             rows={1}
             aria-describedby={
-              reason ? "chat-composer-hint chat-composer-keys" : "chat-composer-keys"
+              reason ? 'chat-composer-hint chat-composer-keys' : 'chat-composer-keys'
             }
             aria-invalid={tooLong || undefined}
             className="field-sizing-content max-h-44 min-h-11 resize-none rounded-xl border-0 bg-transparent px-3 pt-3 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 dark:bg-transparent"
           />
-          {(mode.kind === "locked" && mode.newChat) || mode.kind === "paused" ? (
+          {(mode.kind === 'locked' && mode.newChat) || mode.kind === 'paused' ? (
             <div className="flex flex-wrap items-center gap-2 px-3 pt-1">
-              {mode.kind === "paused" ? (
+              {mode.kind === 'paused' ? (
                 <Button
                   type="button"
                   size="sm"
@@ -194,7 +181,7 @@ export function Composer({
             >
               {copy.composerHint}
             </span>
-            {mode.kind === "streaming" ? (
+            {mode.kind === 'streaming' ? (
               <Button
                 type="button"
                 size="sm"
@@ -212,8 +199,8 @@ export function Composer({
                 aria-disabled={!canSend && blocked ? true : undefined}
                 aria-label={copy.send}
                 className={cn(
-                  "ml-auto size-8 shrink-0 rounded-lg p-0 md:ml-0 pointer-coarse:size-11",
-                  !canSend && blocked && "opacity-50",
+                  'ml-auto size-8 shrink-0 rounded-lg p-0 md:ml-0 pointer-coarse:size-11',
+                  !canSend && blocked && 'opacity-50',
                 )}
               >
                 <ArrowUp aria-hidden />
@@ -233,5 +220,5 @@ export function Composer({
         ) : null}
       </div>
     </form>
-  );
+  )
 }

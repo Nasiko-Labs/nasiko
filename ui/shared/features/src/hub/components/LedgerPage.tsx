@@ -1,7 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/LedgerPage.tsx. Local edits:
-// links are the navigation port's `Link` (`href`, `hrefFor` for a search); `Button asChild` + `Link` is `ButtonLink`;
-// the lab's `EmptyState` is `LabEmptyState`; `DataTable` is `VirtualDataTable` (`@nasiko/ui/table`); Prettier
-// formatting.
 /**
  * A harness session's ledger (plans/feat-agent-centric.md PR1b; design "Ledger"; eng "Ledger"): the session route's
  * `?view=ledger`. One row per turn: tools, tokens, cost and the running total, then the controls that acted. Mounted by
@@ -13,76 +9,91 @@
  *   live mode. Live, Context and Memory read "not reported".
  * - The ledger never edits a control: "Controls set now" links to where each is set.
  */
-import type { Slots } from "@nasiko/app-core/edition/edition";
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
-import Link from "@nasiko/app-core/navigation";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { Download, ListTree } from "lucide-react";
-import { useEffect, useRef } from "react";
+import type { Slots } from '@nasiko/app-core/edition/edition'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { Link } from '@tanstack/react-router'
+import { Download, ListTree } from 'lucide-react'
+import { useEffect, useRef, type ReactNode } from 'react'
+import { DataTable, type DataTableColumn } from '@nasiko/ui/composites/data-table'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { Panel } from '@nasiko/ui/composites/panel'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { pickShared } from '@nasiko/app-core/shell/context'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { isHarness } from '@nasiko/features/agents/status'
+import { sessionRows, useChatSessions } from '@nasiko/features/chat/api'
+import { useSessionLookup } from '@nasiko/features/chat/sessionLookup'
+import { isMetadataOnly, type RecordedStep } from '@nasiko/features/chat/recorded'
+import { copy as obsCopy } from '@nasiko/features/observability/copy'
+import { detailSubagents, type SubagentRun } from '@nasiko/features/observability/sessions'
+import { ErrorState } from '@nasiko/features/observability/StateCard'
+import { useSessionDetail } from '@nasiko/features/sessions/api'
+import type { SessionsSearch, TraceSearch } from '@nasiko/features/sessions/search'
+import { downloadCsv } from '@nasiko/features/tokenops/csv'
+import { Crumbs } from '@nasiko/features/trace/Crumbs'
+import { isPreview } from '@nasiko/app-core/env'
 import {
-  VirtualDataTable as DataTable,
-  type VirtualDataTableColumn as DataTableColumn,
-} from "@nasiko/ui/table";
-import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { Panel } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { pickShared } from "@nasiko/app-core/shell/context";
-import { useAgentsDirectory } from "../../agents/api";
-import { isHarness } from "../../agents/status";
-import { sessionRows, useChatSessions } from "../../chat/api";
-import { useSessionLookup } from "../../chat/sessionLookup";
-import { isMetadataOnly, type RecordedStep } from "../../chat/recorded";
-import { ErrorState } from "../../observability/StateCard";
-import { useSessionDetail } from "../../sessions/api";
-import type { TraceSearch } from "../../sessions/search";
-import { downloadCsv } from "../../tokenops/csv";
-import { Crumbs } from "../../trace/Crumbs";
-import { isPreview } from "@nasiko/app-core/env";
-import { fmtMoney, fmtMoneyFloor, fmtTokens, fmtUtcDayTime, fmtUtcTime } from "@nasiko/ui/lib";
-import { useLedgerHistory } from "../api";
-import { copy } from "../copy";
-import { ledgerCsv, type Ledger, type LedgerTurn, type Total } from "../ledger";
-import { RetryLine } from "./RetryLine";
-import { ButtonLink } from "../../agents/components/ButtonLink";
+  fmtMoney,
+  fmtMoneyFloor,
+  fmtTokens,
+  fmtUtcDayTime,
+  fmtUtcTime,
+} from '@nasiko/ui/lib/format'
+import { useLedgerHistory } from '../api'
+import { copy } from '../copy'
+import { ledgerCsv, type Ledger, type LedgerTurn, type Total } from '../ledger'
+import { RetryLine } from './RetryLine'
 
-const c = copy.ledger;
+const c = copy.ledger
 const LINK =
-  "inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11";
+  'inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11'
 const pct = (v: number) =>
-  v > 0 && v < 0.1 ? "<0.1%" : `${v < 1 && v > 0 ? v.toFixed(1) : Math.round(v)}%`;
+  v > 0 && v < 0.1 ? '<0.1%' : `${v < 1 && v > 0 ? v.toFixed(1) : Math.round(v)}%`
 
-export function LedgerPage({ sessionId, search }: { sessionId: string; search: TraceSearch }) {
+/** A spawning tool call's id → the subagent session it started (R15). */
+type Spawned = ReadonlyMap<string, SubagentRun>
+
+export function LedgerPage({
+  sessionId,
+  search,
+  lineage,
+}: {
+  sessionId: string
+  search: TraceSearch
+  /** The parent link and the Subagents panel (R15), from the route; drawn under the header. */
+  lineage?: ReactNode
+}) {
   // Budgets are Enterprise only: an OSS build has no session budget here, and no per-turn budget column.
-  const { LedgerSection: LedgerBudget, useLedgerBudgets } = useSlots().budgets;
-  const { query, ledger, complete, notOwner, refreshFailed } = useLedgerHistory(sessionId);
-  const session = useSessionDetail(sessionId);
-  const chats = useChatSessions();
-  const dir = useAgentsDirectory();
-  const loaded = sessionRows(chats.data).find((r) => r.session_id === sessionId);
+  const { LedgerSection: LedgerBudget, useLedgerBudgets } = useSlots().budgets
+  const { query, ledger, complete, notOwner, refreshFailed } = useLedgerHistory(sessionId)
+  const session = useSessionDetail(sessionId)
+  const chats = useChatSessions()
+  const dir = useAgentsDirectory()
+  const loaded = sessionRows(chats.data).find((r) => r.session_id === sessionId)
   // Past the rail's loaded pages, chat's own lookup pages on from where the rail stopped (review: Codex).
-  const lastPage = chats.data?.pages.at(-1);
+  const lastPage = chats.data?.pages.at(-1)
   const lookup = useSessionLookup(
     sessionId,
     // Only once ownership is known: a non-owner's ledger never pages through the rail.
     !!ledger && !loaded && !!lastPage?.has_more,
     lastPage?.next_cursor ?? undefined,
-  );
-  const row = loaded ?? (lookup.data?.status === "found" ? lookup.data.row : undefined);
-  const agentName = session.data?.agent_name || row?.agent_name || "";
+  )
+  const row = loaded ?? (lookup.data?.status === 'found' ? lookup.data.row : undefined)
+  const agentName = session.data?.agent_name || row?.agent_name || ''
   // By id when the chat names it; by name only when one visible agent has it (never last-wins).
-  const named = dir.byNameAll.get(agentName);
+  const named = dir.byNameAll.get(agentName)
   const agent =
     (row?.agent_id ? dir.byId.get(row.agent_id) : undefined) ??
-    (named?.length === 1 ? named[0] : undefined);
+    (named?.length === 1 ? named[0] : undefined)
   const harness =
     !!row?.is_coding_agent ||
     (agent ? isHarness(agent) : false) ||
-    !!ledger?.turns.some((t) => t.tools.length);
-  const costHeader = harness ? c.estCost : c.cost;
-  const budgets = useLedgerBudgets(sessionId, !!ledger && !notOwner);
+    !!ledger?.turns.some((t) => t.tools.length)
+  const costHeader = harness ? c.estCost : c.cost
+  const budgets = useLedgerBudgets(sessionId, !!ledger && !notOwner)
 
   const back = {
     ...pickShared(search),
@@ -91,17 +102,23 @@ export function LedgerPage({ sessionId, search }: { sessionId: string; search: T
     lane: search.lane,
     status: search.status,
     live: search.live,
-  };
-  const title = row?.title || session.data?.title || sessionId;
-  const firstAt = ledger?.turns[0]?.at ?? session.data?.traces[0]?.root_span.start_time;
+  }
+  // Best effort: a subagent whose spawning call is one of this ledger's recorded calls marks that call.
+  const spawned: Spawned = new Map(
+    (session.data ? detailSubagents(session.data).subagents : []).flatMap((r) =>
+      r.spawnToolCallId ? [[r.spawnToolCallId, r] as const] : [],
+    ),
+  )
+  const title = row?.title || session.data?.title || sessionId
+  const firstAt = ledger?.turns[0]?.at ?? session.data?.traces[0]?.root_span.start_time
 
   const exportCsv = () => {
     if (ledger)
       downloadCsv(
         c.csvName(sessionId),
         ledgerCsv(ledger, { ...c.csv, cost: costHeader, notReported: copy.notReported }),
-      );
-  };
+      )
+  }
 
   return (
     // The turns table is wider than the page at most widths: containment keeps it scrolling inside its own box instead
@@ -112,23 +129,21 @@ export function LedgerPage({ sessionId, search }: { sessionId: string; search: T
         title={
           <span className="inline-block">
             {c.title}
-            {agentName ? ` · ${agent?.display_name || agentName}` : ""}
-            {firstAt ? ` · ${fmtUtcDayTime(firstAt)}` : ""}
+            {agentName ? ` · ${agent?.display_name || agentName}` : ''}
+            {firstAt ? ` · ${fmtUtcDayTime(firstAt)}` : ''}
           </span>
         }
         actions={
           <>
-            <ButtonLink
-              variant="outline"
-              size="sm"
-              className="pointer-coarse:min-h-11"
-              href={hrefFor(`/sessions/${encodeURIComponent(sessionId)}`, {
-                ...search,
-                view: undefined,
-              })}
-            >
-              <ListTree className="size-3.5" aria-hidden /> {c.trace}
-            </ButtonLink>
+            <Button asChild variant="outline" size="sm" className="pointer-coarse:min-h-11">
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId }}
+                search={{ ...search, view: undefined }}
+              >
+                <ListTree className="size-3.5" aria-hidden /> {c.trace}
+              </Link>
+            </Button>
             {ledger?.turns.length ? (
               <Button
                 variant="outline"
@@ -142,6 +157,8 @@ export function LedgerPage({ sessionId, search }: { sessionId: string; search: T
           </>
         }
       />
+
+      {lineage}
 
       {notOwner ? (
         <NotOwner session={session} />
@@ -165,6 +182,8 @@ export function LedgerPage({ sessionId, search }: { sessionId: string; search: T
           refreshFailed={refreshFailed}
           onRefresh={() => void query.refetch()}
           agentId={agent?.id ?? row?.agent_id ?? null}
+          spawned={spawned}
+          back={back}
         />
       ) : null}
       {/* The session's own budget (plans/feat-budget-burn.md F9, B5): its burn on its turns and its limit. */}
@@ -172,7 +191,7 @@ export function LedgerPage({ sessionId, search }: { sessionId: string; search: T
         <LedgerBudget sessionId={sessionId} title={title} ownSession={!!row} />
       ) : null}
     </div>
-  );
+  )
 }
 
 function LedgerBody({
@@ -186,32 +205,36 @@ function LedgerBody({
   refreshFailed,
   onRefresh,
   agentId,
+  spawned,
+  back,
 }: {
-  ledger: Ledger;
-  costHeader: string;
-  complete: boolean;
-  budgets: ReturnType<Slots["budgets"]["useLedgerBudgets"]>;
-  olderPending: boolean;
-  olderError: boolean;
-  onOlder: () => void;
-  refreshFailed: boolean;
-  onRefresh: () => void;
-  agentId: string | null;
+  ledger: Ledger
+  costHeader: string
+  complete: boolean
+  budgets: ReturnType<Slots['budgets']['useLedgerBudgets']>
+  olderPending: boolean
+  olderError: boolean
+  onOlder: () => void
+  refreshFailed: boolean
+  onRefresh: () => void
+  agentId: string | null
+  spawned: Spawned
+  back: Partial<SessionsSearch>
 }) {
-  const preview = isPreview("chat");
+  const preview = isPreview('chat')
   // When the last older page lands, Load older turns unmounts: focus moves to the turns instead of the page body.
-  const region = useRef<HTMLDivElement>(null);
-  const loadingOlder = useRef(false);
+  const region = useRef<HTMLDivElement>(null)
+  const loadingOlder = useRef(false)
   useEffect(() => {
-    if (complete && loadingOlder.current) region.current?.focus();
-    if (complete) loadingOlder.current = false;
-  }, [complete]);
+    if (complete && loadingOlder.current) region.current?.focus()
+    if (complete) loadingOlder.current = false
+  }, [complete])
   // Times carry the date when the turns span more than one UTC day.
-  const days = new Set(ledger.turns.map((x) => x.at.slice(0, 10)));
+  const days = new Set(ledger.turns.map((x) => x.at.slice(0, 10)))
   // Budgets are Enterprise only: an OSS build reads nothing here and the column, the headline and the panel are
   // all absent. A budget's running share needs its use before the session, which the layer applies.
-  const { shares, headline: budgetHeadline, panel: budgetPanel } = budgets;
-  const t = ledger.totals;
+  const { shares, headline: budgetHeadline, panel: budgetPanel } = budgets
+  const t = ledger.totals
   return (
     <>
       {/* Sticky running total: what the loaded turns add up to, and whether that's the whole session. */}
@@ -248,7 +271,7 @@ function LedgerBody({
       {/* The turns are wider than most screens: this box scrolls them, and takes focus so the keyboard can too. */}
       <div
         ref={region}
-        // A scrollable region must be focusable (axe scrollable-region-focusable).
+        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- a scrollable region must be focusable (axe scrollable-region-focusable)
         tabIndex={0}
         role="region"
         aria-label={c.label}
@@ -256,7 +279,7 @@ function LedgerBody({
       >
         <DataTable
           label={c.label}
-          columns={columns(costHeader, preview, shares, days.size > 1)}
+          columns={columns(costHeader, preview, shares, days.size > 1, { spawned, back })}
           data={ledger.turns}
           getRowId={(r) => r.key}
           className="w-max min-w-full"
@@ -270,8 +293,8 @@ function LedgerBody({
             size="sm"
             className="pointer-coarse:min-h-11"
             onClick={() => {
-              loadingOlder.current = true;
-              onOlder();
+              loadingOlder.current = true
+              onOlder()
             }}
             disabled={olderPending}
           >
@@ -286,13 +309,15 @@ function LedgerBody({
         </div>
       ) : null}
 
-      {ledger.unplaced.length ? <Unplaced steps={ledger.unplaced} /> : null}
+      {ledger.unplaced.length ? (
+        <Unplaced steps={ledger.unplaced} links={{ spawned, back }} />
+      ) : null}
 
       {budgetPanel}
 
       <ControlsNow agentId={agentId} />
     </>
-  );
+  )
 }
 
 function columns(
@@ -300,10 +325,11 @@ function columns(
   preview: boolean,
   shares: Map<string, number> | null,
   dated: boolean,
+  links: SpawnLinks,
 ): DataTableColumn<LedgerTurn>[] {
   const cols: DataTableColumn<LedgerTurn>[] = [
     {
-      id: "turn",
+      id: 'turn',
       header: c.turn,
       meta: { rowHeader: true },
       cell: ({ row }) => (
@@ -316,7 +342,7 @@ function columns(
       ),
     },
     {
-      id: "time",
+      id: 'time',
       header: c.time,
       cell: ({ row }) => (
         <span className="tabular-nums">
@@ -325,9 +351,9 @@ function columns(
       ),
     },
     {
-      id: "prompt",
+      id: 'prompt',
       header: c.prompt,
-      meta: { cellClassName: "min-w-48 max-w-72" },
+      meta: { cellClassName: 'min-w-48 max-w-72' },
       cell: ({ row }) =>
         row.original.prompt ? (
           <span className="line-clamp-2 whitespace-normal" title={row.original.prompt}>
@@ -338,20 +364,20 @@ function columns(
         ),
     },
     {
-      id: "tools",
+      id: 'tools',
       header: c.tools,
       // Badges wrap inside a capped column, so the numbers stay in view on most screens.
-      meta: { cellClassName: "min-w-56 max-w-96 whitespace-normal" },
-      cell: ({ row }) => <Tools steps={row.original.tools} />,
+      meta: { cellClassName: 'min-w-56 max-w-96 whitespace-normal' },
+      cell: ({ row }) => <Tools steps={row.original.tools} links={links} />,
     },
     {
-      id: "tokens",
+      id: 'tokens',
       header: c.tokens,
       meta: { numeric: true },
       cell: ({ row }) => {
-        const r = row.original;
-        if (r.tokensIn === null && r.tokensOut === null) return copy.notReported;
-        const cached = (r.cacheRead ?? 0) + (r.cacheWrite ?? 0);
+        const r = row.original
+        if (r.tokensIn === null && r.tokensOut === null) return copy.notReported
+        const cached = (r.cacheRead ?? 0) + (r.cacheWrite ?? 0)
         return (
           <span>
             {fmtTokens(r.tokensIn)} / {fmtTokens(r.tokensOut)}
@@ -361,27 +387,27 @@ function columns(
               </span>
             ) : null}
           </span>
-        );
+        )
       },
     },
     {
-      id: "cost",
+      id: 'cost',
       header: costHeader,
       meta: { numeric: true },
       cell: ({ row }) =>
         row.original.cost === null ? copy.notReported : fmtMoney(row.original.cost),
     },
     {
-      id: "running",
+      id: 'running',
       header: c.running,
       meta: { numeric: true },
       cell: ({ row }) =>
         row.original.runningCost === null
-          ? "—"
+          ? '—'
           : fmtMoneyFloor(row.original.runningCost, row.original.runningFloor),
     },
     {
-      id: "context",
+      id: 'context',
       header: c.context,
       cell: ({ row }) =>
         row.original.context
@@ -392,78 +418,102 @@ function columns(
           : notReported(),
     },
     {
-      id: "memory",
+      id: 'memory',
       header: c.memory,
       cell: ({ row }) =>
         row.original.memory
           ? c.memoryLine(fmtTokens(row.original.memory.tokens), row.original.memory.items)
           : notReported(),
     },
-  ];
+  ]
   if (preview)
     cols.push({
-      id: "controls",
+      id: 'controls',
       header: c.controls,
       cell: ({ row }) => <Controls turn={row.original} />,
-    });
+    })
   if (shares)
     cols.push({
-      id: "budget",
+      id: 'budget',
       header: c.budgetUse,
       meta: { numeric: true },
       cell: ({ row }) => {
-        const v = shares.get(row.original.key);
-        return v === undefined ? "—" : pct(v);
+        const v = shares.get(row.original.key)
+        return v === undefined ? '—' : pct(v)
       },
-    });
-  return cols;
+    })
+  return cols
 }
 
 /** A total over some turns reads as a floor with its coverage; over none, "not reported" (review: adversarial). */
 function totalText(t: Total, turns: number, fmt: (v: number) => string): string {
-  if (t.value === null) return copy.notReported;
-  return t.reported < turns ? c.totals.partly(fmt(t.value), t.reported, turns) : fmt(t.value);
+  if (t.value === null) return copy.notReported
+  return t.reported < turns ? c.totals.partly(fmt(t.value), t.reported, turns) : fmt(t.value)
 }
 
-const notReported = () => <span className="text-muted-foreground">{copy.notReported}</span>;
+const notReported = () => <span className="text-muted-foreground">{copy.notReported}</span>
 
-function Tools({ steps }: { steps: RecordedStep[] }) {
-  if (!steps.length) return <span className="text-muted-foreground">{c.noTools}</span>;
+interface SpawnLinks {
+  spawned: Spawned
+  back: Partial<SessionsSearch>
+}
+
+/** A ledger step's key is `<message id>:<call id>` (ledger.ts `buildLedger`); message ids are UUIDs, without colons. */
+const callIdOf = (key: string) => key.slice(key.indexOf(':') + 1)
+
+function Tools({ steps, links }: { steps: RecordedStep[]; links: SpawnLinks }) {
+  if (!steps.length) return <span className="text-muted-foreground">{c.noTools}</span>
   return (
     <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
-      {steps.map((s) => (
-        <li key={s.key}>
-          <Badge variant={s.status === "error" ? "destructive" : "outline"}>
-            {s.name}
-            {s.statusWord ? ` · ${s.statusWord}` : ""}
-          </Badge>
-        </li>
-      ))}
+      {steps.map((s) => {
+        const child = links.spawned.get(callIdOf(s.key))
+        return (
+          <li key={s.key} className="inline-flex flex-wrap items-center gap-1">
+            <Badge variant={s.status === 'error' ? 'destructive' : 'outline'}>
+              {s.name}
+              {s.statusWord ? ` · ${s.statusWord}` : ''}
+            </Badge>
+            {child ? (
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId: child.sessionId }}
+                search={links.back}
+                aria-label={obsCopy.subagents.spawnedStepLabel(
+                  child.type ?? obsCopy.subagents.untyped,
+                )}
+                className="text-xs text-primary-text underline-offset-4 hover:underline"
+              >
+                {obsCopy.subagents.spawnedStep}
+              </Link>
+            ) : null}
+          </li>
+        )
+      })}
     </ul>
-  );
+  )
 }
 
 function Controls({ turn }: { turn: LedgerTurn }) {
   // Only recorded decisions show (eng "Ledger"): no record, no control, never the current setting.
-  if (!turn.controls.length) return <span className="text-muted-foreground">—</span>;
+  if (!turn.controls.length) return <span className="text-muted-foreground">—</span>
   return (
     <ul className="m-0 flex list-none flex-col gap-0.5 p-0 text-xs">
       {turn.controls.map((x) => (
         <li key={x.key}>
           {c.controlLine(x.rule.name, c.outcome[x.outcome] ?? x.outcome, x.tool)}
-          {x.tokensSaved ? ` (${c.trimmedSaved(fmtTokens(x.tokensSaved))})` : ""}
+          {x.tokensSaved ? ` (${c.trimmedSaved(fmtTokens(x.tokensSaved))})` : ''}
         </li>
       ))}
     </ul>
-  );
+  )
 }
 
-function Unplaced({ steps }: { steps: RecordedStep[] }) {
+function Unplaced({ steps, links }: { steps: RecordedStep[]; links: SpawnLinks }) {
   return (
     <Panel title={c.turnNotRecorded} subtitle={c.unplacedNote(steps.length)}>
-      <Tools steps={steps} />
+      <Tools steps={steps} links={links} />
     </Panel>
-  );
+  )
 }
 
 function ControlsNow({ agentId }: { agentId: string | null }) {
@@ -474,27 +524,29 @@ function ControlsNow({ agentId }: { agentId: string | null }) {
           <>
             <li>
               <Link
-                href={hrefFor(`/agents/${encodeURIComponent(agentId)}`, { tab: "mcp" })}
+                to="/agents/$agentId"
+                params={{ agentId }}
+                search={{ tab: 'mcp' }}
                 className={LINK}
               >
                 {c.controlsNow.tools}
               </Link>
             </li>
             <li>
-              <Link href={`/agents/${encodeURIComponent(agentId)}`} className={LINK}>
+              <Link to="/agents/$agentId" params={{ agentId }} search={{}} className={LINK}>
                 {c.controlsNow.optimization}
               </Link>
             </li>
           </>
         ) : null}
         <li>
-          <Link href="/router#router-budgets" className={LINK}>
+          <Link to="/router" hash="router-budgets" className={LINK}>
             {c.controlsNow.budgets}
           </Link>
         </li>
       </ul>
     </Panel>
-  );
+  )
 }
 
 function NotOwner({ session }: { session: ReturnType<typeof useSessionDetail> }) {
@@ -505,7 +557,6 @@ function NotOwner({ session }: { session: ReturnType<typeof useSessionDetail> })
         {session.data ? (
           <p className="m-0 text-muted-foreground tabular-nums">
             {c.notOwnerTraces(
-              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
               session.data.num_traces ?? session.data.traces.length,
               fmtMoney(session.data.cost_summary.total.cost),
             )}
@@ -515,5 +566,5 @@ function NotOwner({ session }: { session: ReturnType<typeof useSessionDetail> })
         ) : null}
       </div>
     </Panel>
-  );
+  )
 }

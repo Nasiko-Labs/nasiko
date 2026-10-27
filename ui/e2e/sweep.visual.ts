@@ -17,7 +17,7 @@ function routesOf(dir: string): string[] {
 }
 
 /**
- * The seed and the app read "now" as the anchor, but the app's clock then runs on (common/src/mocks/anchor.ts), so a
+ * The seed and the app read "now" as the anchor, but the app's clock then runs on (shared/mocks/src/anchor.ts), so a
  * figure accrued over time (this month's spend, a build's progress) would differ by the seconds a run takes. Frozen.
  */
 const freezeClock = (page: Page) =>

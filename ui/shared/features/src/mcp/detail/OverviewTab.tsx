@@ -1,50 +1,47 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/detail/OverviewTab.tsx. Local edits: none beyond imports and Prettier.
-"use client";
-
 /**
  * Overview (plans/feat-mcp.md §5, legacy detail page Overview): facts, the caller's own connection to this server
  * (credential or OAuth), its tools, and the owner's danger zone.
  */
-import { ExternalLink, KeyRound, ShieldCheck, Trash2 } from "lucide-react";
-import { useId, useState } from "react";
-import { toast } from "@nasiko/ui/toast";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Field, FieldError, FieldLabel } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { SearchInput } from "@nasiko/ui/composites";
-import { Section } from "../../agents/components/bits";
-import { useCredentialStatus, useCredentialWrites, useOauthStatus, useOauthWrites } from "../api";
-import { AUTH_LABEL, copy, reason } from "../copy";
-import { DeleteDialog } from "../components/DeleteDialog";
-import { labelOf } from "../logic";
-import { TOOL_FILTER_FROM } from "../tuning";
-import type { ConnectorDetail } from "../types";
+import { ExternalLink, KeyRound, ShieldCheck, Trash2 } from 'lucide-react'
+import { useId, useState } from 'react'
+import { toast } from 'sonner'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Field, FieldError, FieldLabel } from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { Section } from '@nasiko/features/agents/components/bits'
+import { useCredentialStatus, useCredentialWrites, useOauthStatus, useOauthWrites } from '../api'
+import { AUTH_LABEL, copy, reason } from '../copy'
+import { DeleteDialog } from '../components/DeleteDialog'
+import { labelOf } from '../logic'
+import { TOOL_FILTER_FROM } from '../tuning'
+import type { ConnectorDetail } from '../types'
 
-const fmtDate = (v: string | null | undefined) => (v ? new Date(v).toLocaleString() : "—");
+const fmtDate = (v: string | null | undefined) => (v ? new Date(v).toLocaleString() : '—')
 
 export function OverviewTab({
   connector: c,
   manage,
   openPopup,
 }: {
-  connector: ConnectorDetail;
-  manage: boolean;
-  openPopup: (url: string | undefined) => void;
+  connector: ConnectorDetail
+  manage: boolean
+  openPopup: (url: string | undefined) => void
 }) {
-  const [delOpen, setDelOpen] = useState(false);
-  const uploaded = c.source_kind === "uploaded_build";
+  const [delOpen, setDelOpen] = useState(false)
+  const uploaded = c.source_kind === 'uploaded_build'
   const facts: [string, string][] = [
-    [copy.factLabels.url, c.url || "—"],
-    [copy.factLabels.transport, c.transport || "—"],
-    [copy.factLabels.auth, AUTH_LABEL[c.auth_type ?? ""] ?? c.auth_type ?? "—"],
-    [copy.factLabels.version, c.version || c.upload_info?.version || "—"],
+    [copy.factLabels.url, c.url || '—'],
+    [copy.factLabels.transport, c.transport || '—'],
+    [copy.factLabels.auth, AUTH_LABEL[c.auth_type ?? ''] ?? c.auth_type ?? '—'],
+    [copy.factLabels.version, c.version || c.upload_info?.version || '—'],
     [copy.factLabels.source, uploaded ? copy.uploaded : copy.registeredSource],
-    [copy.factLabels.owner, c.owner_username || "—"],
+    [copy.factLabels.owner, c.owner_username || '—'],
     [copy.factLabels.tools, String(c.tool_count)],
     [copy.factLabels.created, fmtDate(c.created_at)],
-  ];
+  ]
   return (
     <div className="space-y-4">
       {c.description ? <p className="text-sm text-muted-foreground">{c.description}</p> : null}
@@ -77,9 +74,7 @@ export function OverviewTab({
               variant="outline"
               size="sm"
               className="text-destructive"
-              onClick={() => {
-                setDelOpen(true);
-              }}
+              onClick={() => setDelOpen(true)}
             >
               <Trash2 aria-hidden /> {copy.delete}
             </Button>
@@ -93,7 +88,7 @@ export function OverviewTab({
         </Section>
       ) : null}
     </div>
-  );
+  )
 }
 
 /** The caller's own credential or OAuth token for this server (per user, write-only on the server). */
@@ -101,23 +96,23 @@ function Connection({
   connector: c,
   openPopup,
 }: {
-  connector: ConnectorDetail;
-  openPopup: (url: string | undefined) => void;
+  connector: ConnectorDetail
+  openPopup: (url: string | undefined) => void
 }) {
-  if (c.auth_type === "oauth2") return <OauthPanel id={c.connector_id} openPopup={openPopup} />;
-  if (c.auth_type && c.auth_type !== "none")
-    return <CredentialPanel id={c.connector_id} basic={c.auth_type === "basic"} />;
-  return <p className="text-sm text-muted-foreground">{copy.noAuthNeeded}</p>;
+  if (c.auth_type === 'oauth2') return <OauthPanel id={c.connector_id} openPopup={openPopup} />
+  if (c.auth_type && c.auth_type !== 'none')
+    return <CredentialPanel id={c.connector_id} basic={c.auth_type === 'basic'} />
+  return <p className="text-sm text-muted-foreground">{copy.noAuthNeeded}</p>
 }
 
 function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
-  const inputId = useId();
-  const status = useCredentialStatus(id, true);
-  const w = useCredentialWrites(id);
-  const [value, setValue] = useState("");
-  const [note, setNote] = useState<string | null>(null);
-  if (status.isPending) return <Skeleton className="h-16" />;
-  const set = !!status.data?.connected;
+  const inputId = useId()
+  const status = useCredentialStatus(id, true)
+  const w = useCredentialWrites(id)
+  const [value, setValue] = useState('')
+  const [note, setNote] = useState<string | null>(null)
+  if (status.isPending) return <Skeleton className="h-16" />
+  const set = !!status.data?.connected
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
@@ -125,7 +120,7 @@ function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
         {status.isError ? (
           <span className="text-sm text-destructive">{copy.statusFailed}</span>
         ) : (
-          <Badge variant={set ? "success" : "muted"}>
+          <Badge variant={set ? 'success' : 'muted'}>
             {set ? copy.credentialSet : copy.noCredential}
           </Badge>
         )}
@@ -134,14 +129,12 @@ function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
             size="sm"
             variant="outline"
             disabled={w.remove.isPending}
-            onClick={() => {
+            onClick={() =>
               w.remove.mutate(undefined, {
-                onSuccess: () => {
-                  setNote(null);
-                },
+                onSuccess: () => setNote(null),
                 onError: (e) => toast.error(copy.removeFailed(reason(e))),
-              });
-            }}
+              })
+            }
           >
             {copy.remove}
           </Button>
@@ -150,16 +143,16 @@ function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
       <form
         className="flex max-w-lg flex-wrap items-end gap-2"
         onSubmit={(e) => {
-          e.preventDefault();
-          if (!value.trim()) return;
-          setNote(null);
+          e.preventDefault()
+          if (!value.trim()) return
+          setNote(null)
           w.save.mutate(value.trim(), {
             onSuccess: (r) => {
-              setValue("");
-              if (r.connected) toast.success(copy.credentialSaved);
-              else setNote(copy.verifyFailed(r.error));
+              setValue('')
+              if (r.connected) toast.success(copy.credentialSaved)
+              else setNote(copy.verifyFailed(r.error))
             },
-          });
+          })
         }}
       >
         <Field data-invalid={w.save.isError || !!note} className="min-w-0 flex-1 gap-1.5">
@@ -170,9 +163,7 @@ function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
             autoComplete="off"
             placeholder={basic ? copy.basicPlaceholder : copy.keyLabel}
             value={value}
-            onChange={(e) => {
-              setValue(e.target.value);
-            }}
+            onChange={(e) => setValue(e.target.value)}
           />
         </Field>
         <Button type="submit" disabled={w.save.isPending || !value.trim()}>
@@ -182,20 +173,20 @@ function CredentialPanel({ id, basic }: { id: string; basic: boolean }) {
       {note ? <FieldError>{note}</FieldError> : null}
       {w.save.isError ? <FieldError>{copy.saveFailed(reason(w.save.error))}</FieldError> : null}
     </div>
-  );
+  )
 }
 
 function OauthPanel({
   id,
   openPopup,
 }: {
-  id: string;
-  openPopup: (url: string | undefined) => void;
+  id: string
+  openPopup: (url: string | undefined) => void
 }) {
-  const status = useOauthStatus(id, true);
-  const w = useOauthWrites(id);
-  if (status.isPending) return <Skeleton className="h-10" />;
-  const s = status.data;
+  const status = useOauthStatus(id, true)
+  const w = useOauthWrites(id)
+  if (status.isPending) return <Skeleton className="h-10" />
+  const s = status.data
   return (
     <div className="flex flex-wrap items-center gap-2">
       <ShieldCheck className="size-4 text-muted-foreground" aria-hidden />
@@ -203,9 +194,9 @@ function OauthPanel({
       {status.isError ? (
         <span className="text-sm text-destructive">{copy.statusFailed}</span>
       ) : (
-        <Badge variant={s?.authorized ? "success" : "muted"}>
+        <Badge variant={s?.authorized ? 'success' : 'muted'}>
           {s?.authorized
-            ? `${copy.authorized}${s.expires_at ? ` · ${copy.expires(fmtDate(s.expires_at))}` : ""}`
+            ? `${copy.authorized}${s.expires_at ? ` · ${copy.expires(fmtDate(s.expires_at))}` : ''}`
             : copy.notAuthorized}
         </Badge>
       )}
@@ -214,11 +205,11 @@ function OauthPanel({
           size="sm"
           variant="outline"
           disabled={w.revoke.isPending}
-          onClick={() => {
+          onClick={() =>
             w.revoke.mutate(undefined, {
               onError: (e) => toast.error(copy.revokeFailed(reason(e))),
-            });
-          }}
+            })
+          }
         >
           {copy.revoke}
         </Button>
@@ -226,28 +217,26 @@ function OauthPanel({
         <Button
           size="sm"
           disabled={w.authorize.isPending}
-          onClick={() => {
+          onClick={() =>
             w.authorize.mutate(undefined, {
-              onSuccess: (r) => {
-                openPopup(r.authorization_url);
-              },
+              onSuccess: (r) => openPopup(r.authorization_url),
               onError: (e) => toast.error(copy.authorizeFailed(reason(e))),
-            });
-          }}
+            })
+          }
         >
           <ExternalLink aria-hidden /> {copy.authorize}
         </Button>
       )}
     </div>
-  );
+  )
 }
 
 function Tools({ connector: c }: { connector: ConnectorDetail }) {
-  const [q, setQ] = useState("");
-  const term = q.trim().toLowerCase();
+  const [q, setQ] = useState('')
+  const term = q.trim().toLowerCase()
   const shown = term
-    ? c.tools.filter((t) => `${t.name} ${t.description ?? ""}`.toLowerCase().includes(term))
-    : c.tools;
+    ? c.tools.filter((t) => `${t.name} ${t.description ?? ''}`.toLowerCase().includes(term))
+    : c.tools
   return (
     <Section title={copy.toolsTitle(c.tools.length)}>
       {!c.tools.length ? (
@@ -259,9 +248,7 @@ function Tools({ connector: c }: { connector: ConnectorDetail }) {
               aria-label={copy.filterTools}
               placeholder={copy.filterTools}
               value={q}
-              onChange={(e) => {
-                setQ(e.target.value);
-              }}
+              onChange={(e) => setQ(e.target.value)}
               className="w-full sm:w-72"
             />
           ) : null}
@@ -282,5 +269,5 @@ function Tools({ connector: c }: { connector: ConnectorDetail }) {
         </>
       )}
     </Section>
-  );
+  )
 }

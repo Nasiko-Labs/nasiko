@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/optimisation.ts. Local edits: an unnecessary type assertion dropped (lint); Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * Token optimisation section: a pure summary of the savings payload.
  *
@@ -9,9 +6,9 @@
  * what the denominator was, which is the one arithmetic mistake that would discredit the whole
  * feature. What this file does is ordering, bar scaling, and the empty/zero wording.
  */
-import type { ProgramSavings, SavingsData } from "./types";
+import type { ProgramSavings, SavingsBasis, SavingsData } from './types'
 
-const pct = (part: number, whole: number) => (whole > 0 ? (part / whole) * 100 : 0);
+const pct = (part: number, whole: number) => (whole > 0 ? (part / whole) * 100 : 0)
 
 /** Rows the agent table renders, ordered by what they saved. */
 function agentRows(s: SavingsData) {
@@ -26,24 +23,13 @@ function agentRows(s: SavingsData) {
       savedPct: a.token_reduction_pct ?? 0,
       costSaved: a.saved_cost_usd,
     }))
-    .sort((a, b) => b.savedPct - a.savedPct);
-  const maxPct = rows[0]?.savedPct ?? 0;
-  return rows.map((r) => ({ ...r, barPct: pct(r.savedPct, maxPct) }));
+    .sort((a, b) => b.savedPct - a.savedPct)
+  const maxPct = rows[0]?.savedPct ?? 0
+  return rows.map((r) => ({ ...r, barPct: pct(r.savedPct, maxPct) }))
 }
 
 /**
- * A program as the team names it too (user decision 2026-10-05, plans/feat-optimization-page.md B12): the user-facing
- * label with the internal name in brackets, capitalised as a name: "Smaller prompts (Caveman)".
- */
-export function programName(label: string, program: string): string {
-  const codename = program.charAt(0).toUpperCase() + program.slice(1);
-  return label && program && label.toLowerCase() !== program.toLowerCase()
-    ? `${label} (${codename})`
-    : label || codename;
-}
-
-/**
- * Category rows — "Caveman saved this much, Ponytail saved this much".
+ * Category rows — "smaller prompts saved this much, less code written saved this much".
  *
  * Programs with no eligible traffic are kept rather than filtered out: a zero that explains itself
  * is actionable ("nobody turned it on"), while an absent row reads as a feature that does nothing.
@@ -52,7 +38,7 @@ export function programName(label: string, program: string): string {
 function categoryRows(s: SavingsData) {
   const rows = s.by_program.map((p: ProgramSavings) => ({
     program: p.program,
-    label: programName(p.label, p.program),
+    label: p.label,
     savedTokens: p.saved_tokens,
     savedCost: p.saved_cost_usd,
     tokenPct: p.token_reduction_pct,
@@ -72,9 +58,9 @@ function categoryRows(s: SavingsData) {
         ? l.factor.eligible_input_tokens + l.factor.eligible_output_tokens
         : null,
     })),
-  }));
-  const max = Math.max(0, ...rows.map((r) => Math.abs(r.savedTokens)));
-  return rows.map((r) => ({ ...r, barPct: pct(Math.abs(r.savedTokens), max) }));
+  }))
+  const max = Math.max(0, ...rows.map((r) => Math.abs(r.savedTokens)))
+  return rows.map((r) => ({ ...r, barPct: pct(Math.abs(r.savedTokens), max) }))
 }
 
 /** Sessions, biggest saver first — "which conversations did this actually help". */
@@ -89,12 +75,12 @@ function sessionRows(s: SavingsData) {
       savedTokens: x.saved_tokens,
       savedCost: x.saved_cost_usd,
       tokenPct: x.token_reduction_pct,
-    }));
+    }))
 }
 
 export function summarizeOptimisation(s: SavingsData) {
-  const rows = agentRows(s);
-  const c = s.coverage;
+  const rows = agentRows(s)
+  const c = s.coverage
   return {
     rows,
     sessions: sessionRows(s),
@@ -108,7 +94,7 @@ export function summarizeOptimisation(s: SavingsData) {
     savedPct: s.total.token_reduction_pct,
     costSaved: s.total.saved_cost_usd,
     costSavedPct: s.total.cost_reduction_pct,
-    basis: s.total.basis,
+    basis: s.total.basis as SavingsBasis,
     calibratedPct: c.calibrated_pct,
     optimisedCount: c.agents_optimized,
     totalAgents: c.agents_total,
@@ -122,11 +108,10 @@ export function summarizeOptimisation(s: SavingsData) {
     topUnoptimised: c.top_unoptimized ?? null,
     /** Per-layer adoption: which switch is under-used, not just how many agents have something on. */
     adoption: [
-      // The switches by the programs they turn on (B12).
       // Named as the switches they count (agents copy `tokenOptimization`, `minimalCode`; user, 2026-10-05).
-      { label: "Token optimization (Caveman)", on: c.agents_with_compress_enabled },
-      { label: "Minimal-code mode (Ponytail)", on: c.agents_with_minimal_code_enabled },
-      { label: "Prompt comments", on: c.agents_with_prompt_comments },
+      { label: 'Token optimization', on: c.agents_with_compress_enabled },
+      { label: 'Minimal-code mode', on: c.agents_with_minimal_code_enabled },
+      { label: 'Prompt comments', on: c.agents_with_prompt_comments },
     ],
     /** The biggest contributor, for the one-line headline. */
     topCategory:
@@ -135,12 +120,12 @@ export function summarizeOptimisation(s: SavingsData) {
         .sort((a, b) => b.savedTokens - a.savedTokens)[0] ?? null,
     callsInWindow: c.calls_in_window,
     callsOptimised: c.calls_with_any_layer_enabled,
-  };
+  }
 }
 
-export type OptimisationView = ReturnType<typeof summarizeOptimisation>;
+export type OptimisationView = ReturnType<typeof summarizeOptimisation>
 
 /** True when nothing in the fleet has any layer switched on — an empty state, not a zero. */
 export function isUnconfigured(v: OptimisationView) {
-  return v.optimisedCount === 0 && v.tokensSaved === 0;
+  return v.optimisedCount === 0 && v.tokensSaved === 0
 }

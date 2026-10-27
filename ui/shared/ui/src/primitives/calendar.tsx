@@ -1,9 +1,5 @@
-"use client"
-
-// Ported from the legacy ui/ on development (3aac84f66) common/src/components/ui/calendar.tsx (shadcn new-york-v4 on
-// react-day-picker; no Radix). Local edits: `cn` from "../lib/cn" and `Button`/`buttonVariants` from "./button".
 import * as React from "react"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
 import {
   ChevronDownIcon,
   ChevronLeftIcon,
@@ -15,7 +11,7 @@ import {
   type DayButton,
 } from "react-day-picker"
 
-import { Button, buttonVariants } from "./button"
+import { Button, buttonVariants } from "@nasiko/ui/primitives/button"
 
 function Calendar({
   className,
@@ -220,4 +216,3 @@ function CalendarDayButton({
 }
 
 export { Calendar, CalendarDayButton }
-export type { DateRange } from "react-day-picker"

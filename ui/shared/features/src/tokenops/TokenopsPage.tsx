@@ -1,16 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/TokenopsPage.tsx (the one-page
-// redesign, 8bf09bf29, on the top bar of e8379db5a and c721a11a8 and the tour targets of dd9fe0f64). Local edits, as
-// in this page's earlier port: `search`/`setSearch` come in as props, plus `history` (`back()` and `index()`, the
-// legacy `router.history.back()` and `location.state.__TSR_index`, from url-state.ts); `Link` is the navigation
-// port's `Link` with search objects serialised by `hrefFor`; `meQuery` is `meQueryOptions(scope)` and the
-// return-tick refresh matches the scoped product keys (`isProductKey`, feature "tokenops", part "calendar"/"day");
-// `ApiError` is `ProductApiError`; the Select's `onValueChange` is `(value, eventDetails)` and it takes `items` so its
-// closed Value shows labels; the server-down card names this app's commands; `Reveal` is `RevealGroup`
-// (@nasiko/ui/composites); optional props admit `undefined`, `compareOn` is handed `{ compare }` only when set, the
-// display-name lookup reads `matches[0]?.id` (noUncheckedIndexedAccess); lint-driven mechanical edits (void arrow
-// bodies braced, `otherMonth` reads `q.data.days`, `&apos;` in JSX text); Prettier formatting.
-"use client";
-
 /**
  * TokenOps, question-led (plans/feat-tokenops-page.md), as one open page: nothing hides behind an expander.
  *
@@ -26,31 +13,27 @@
  * keeps the title, freshness and filters. All state lives in the URL. Drill-downs push history (Back unwinds them);
  * sort and search replace it (A5). `?open=` (links from other pages) scrolls to its section on arrival.
  */
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import { AlertTriangle, DollarSign, Info, X } from "lucide-react";
-import { AnimatePresence, m, transitions } from "@nasiko/ui/motion";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Alert, AlertDescription } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useRouter } from '@tanstack/react-router'
+import { AlertTriangle, DollarSign, Info, X } from 'lucide-react'
+import { AnimatePresence, m } from 'motion/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
-import {
-  isProductKey,
-  meQueryOptions,
-  ProductApiError as ApiError,
-  useProductScope,
-} from "@nasiko/data-access/product";
-import { env } from "@nasiko/app-core/env";
-import { fmtLocalTime, fmtPct, fmtShortDay } from "@nasiko/ui/lib";
-import { useMediaQuery } from "@nasiko/ui/lib";
-import { useFrozenNow, useReturnTick } from "@nasiko/app-core/useReturnTick";
-import { hrefFor } from "@nasiko/app-core/url-state";
+} from '@nasiko/ui/primitives/select'
+import { meQuery } from '@nasiko/data-access/auth'
+import { ApiError } from '@nasiko/data-access/client'
+import { env } from '@nasiko/app-core/env'
+import { fmtLocalTime, fmtPct, fmtShortDay } from '@nasiko/ui/lib/format'
+import { useMediaQuery } from '@nasiko/ui/lib/useMediaQuery'
+import { transitions } from '@nasiko/ui/lib/motion'
+import { useFrozenNow, useReturnTick } from '@nasiko/app-core/useReturnTick'
 import {
   useDashboard,
   useCalendar,
@@ -60,133 +43,120 @@ import {
   useTimeseries,
   useTopTraces,
   type Filters,
-  TOKENOPS_FEATURE,
-} from "./api";
-import { compareOn, withoutWindow } from "@nasiko/app-core/shell/context";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { tokenopsNarrative } from "../narrative/tokenops";
-import { buildAttribution } from "./attribution";
-import { summarizeMonth } from "./forecast";
-import { openSet, type Disclosure as DisclosureId, type TokenopsSearch } from "./search";
-import { toTimeline, zeroFillTimeline } from "./series";
-import { DAY_MS, dayWindow, monthKey, resolveWindow, utcMonthStart } from "./window";
-import { AttributionTable } from "./components/AttributionTable";
-import { CostPerformance } from "./components/CostPerformance";
-import { DayPanel } from "./components/DayPanel";
-import { DriversOverview } from "./components/DriversOverview";
-import { ChatHistory } from "./components/ChatHistory";
-import { RevealGroup, RevealItem } from "@nasiko/ui/composites";
-import { Segmented } from "./components/Segmented";
-import { SectionNav } from "./components/SectionNav";
-import { scrollToSection, sectionDomId } from "./sections";
-import { useSavingsTrend } from "../optimization/api";
-import { MonthHero } from "./components/MonthHero";
-import { copy as optimizationCopy } from "../optimization/copy";
-import { OptimisationPanel } from "./components/OptimisationPanel";
-import { SavingsHighlight } from "./components/SavingsHighlight";
-import { summarizeOptimisation } from "./optimisation";
-import { PageHeader } from "@nasiko/ui/composites";
-import { PanelError } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { SpendTimeline } from "./components/SpendTimeline";
-import { SummaryHero } from "./components/SummaryHero";
-import { CustomRange, InvalidRangeNote, TimePresets } from "@nasiko/ui/composites";
-import { TracesDrawer } from "./components/TracesDrawer";
+} from './api'
+import { compareOn, withoutWindow } from '@nasiko/app-core/shell/context'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { tokenopsNarrative } from '@nasiko/features/narrative/tokenops'
+import { buildAttribution } from './attribution'
+import { summarizeMonth } from './forecast'
+import { openSet, type Disclosure as DisclosureId, type TokenopsSearch } from './search'
+import { toTimeline, zeroFillTimeline } from './series'
+import { DAY_MS, dayWindow, monthKey, resolveWindow, utcMonthStart } from './window'
+import { AttributionTable } from './components/AttributionTable'
+import { CostPerformance } from './components/CostPerformance'
+import { DayPanel } from './components/DayPanel'
+import { DriversOverview } from './components/DriversOverview'
+import { ChatHistory } from './components/ChatHistory'
+import { Reveal, RevealItem } from '@nasiko/ui/composites/reveal'
+import { Segmented } from './components/Segmented'
+import { SectionNav } from './components/SectionNav'
+import { scrollToSection, sectionDomId } from './sections'
+import { useSavingsTrend } from '@nasiko/features/optimization/api'
+import { MonthHero } from './components/MonthHero'
+import { copy as optimizationCopy } from '@nasiko/features/optimization/copy'
+import { OptimisationPanel } from './components/OptimisationPanel'
+import { SavingsHighlight } from './components/SavingsHighlight'
+import { summarizeOptimisation } from './optimisation'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { ImportingOr, ImportNotice } from '@nasiko/features/harnesses/components/ImportNotice'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
+import { SpendTimeline } from './components/SpendTimeline'
+import { SummaryHero } from './components/SummaryHero'
+import { CustomRange, InvalidRangeNote, TimePresets } from '@nasiko/ui/composites/time-control'
+import { TracesDrawer } from './components/TracesDrawer'
 
-export type SetSearch = (
-  patch: Partial<TokenopsSearch>,
-  opts?: { replace?: boolean | undefined },
-) => void;
+export type SetSearch = (patch: Partial<TokenopsSearch>, opts?: { replace?: boolean }) => void
 
-/** What the page needs from the router besides `setSearch`: Back, and the current entry's position (url-state.ts). */
-export interface PageHistory {
-  back: () => void;
-  index: () => number;
-}
-
-const ALL = "__all";
+const ALL = '__all'
 
 /** `null` reduction means there was no baseline to compare against, not a zero saving. */
-const showOptPct = (v: number | null) => (v == null ? "—" : fmtPct(v));
+const showOptPct = (v: number | null) => (v == null ? '—' : fmtPct(v))
 
 export function TokenopsPage({
   search,
   setSearch,
-  history: pageHistory,
 }: {
-  search: TokenopsSearch;
-  setSearch: SetSearch;
-  history: PageHistory;
+  search: TokenopsSearch
+  setSearch: SetSearch
 }) {
   // "Now" is fixed, not ticked: query keys stay stable and nothing polls (plan: no polling).
   // It moves when the user changes the window, or comes back to the page after a while
   // (useReturnTick), so the window, the hero month and every query move together.
   // Queries don't refetch on focus (queryClient.ts): a refetch against a frozen window
   // would mix fresh server-side `range` data with stale client bounds.
-  const returnTick = useReturnTick();
-  const queryClient = useQueryClient();
-  const scope = useProductScope();
+  const returnTick = useReturnTick()
+  const queryClient = useQueryClient()
+  const router = useRouter()
   // Window-keyed queries get new keys when "now" moves and fetch on their own; month- and
   // date-keyed ones (calendar, day) keep theirs, so refresh just those on a return.
   useEffect(() => {
     if (returnTick > 0)
       void queryClient.invalidateQueries({
         predicate: (q) =>
-          isProductKey(q.queryKey) &&
-          q.queryKey[4] === TOKENOPS_FEATURE &&
-          (q.queryKey[5] === "calendar" || q.queryKey[5] === "day"),
-      });
-  }, [returnTick, queryClient]);
-  const now = useFrozenNow(search.preset, search.from, search.to, returnTick);
-  const me = useQuery(meQueryOptions(scope));
-  const ready = me.isSuccess;
+          q.queryKey[0] === 'tokenops' && (q.queryKey[1] === 'calendar' || q.queryKey[1] === 'day'),
+      })
+  }, [returnTick, queryClient])
+  const now = useFrozenNow(search.preset, search.from, search.to, returnTick)
+  const me = useQuery(meQuery)
+  const ready = me.isSuccess
   const win = useMemo(
     () => resolveWindow({ preset: search.preset, from: search.from, to: search.to }, now),
     [search.preset, search.from, search.to, now],
-  );
+  )
   // Traces opened with a day selected are that UTC day's traces, matching the breadcrumb.
   const tracesWin = useMemo(
     () => (search.day ? dayWindow(search.day, now) : win),
     [search.day, now, win],
-  );
+  )
   const filters: Filters = useMemo(
     () => ({ agent: search.agent, provider: search.provider, model: search.model }),
     [search.agent, search.provider, search.model],
-  );
+  )
 
-  const dash = useDashboard(win, filters, search.view, "current", ready);
-  const prevDash = useDashboard(win, filters, search.view, "previous", ready);
-  const timeseries = useTimeseries(win, filters, ready);
-  const savings = useSavings(win, filters, "agent", ready);
+  const dash = useDashboard(win, filters, search.view, 'current', ready)
+  const prevDash = useDashboard(win, filters, search.view, 'previous', ready)
+  const timeseries = useTimeseries(win, filters, ready)
+  const savings = useSavings(win, filters, 'agent', ready)
   const optimisation = useMemo(
     () => (savings.data ? summarizeOptimisation(savings.data) : undefined),
     [savings.data],
-  );
-  const thisMonth = utcMonthStart(now);
-  const lastMonth = utcMonthStart(now, -1);
-  const calThis = useCalendar(monthKey(thisMonth), filters, ready);
-  const calLast = useCalendar(monthKey(lastMonth), filters, ready);
-  const day = useDay(search.day, filters, ready);
-  const providers = useProviders(ready);
+  )
+  const thisMonth = utcMonthStart(now)
+  const lastMonth = utcMonthStart(now, -1)
+  const calThis = useCalendar(monthKey(thisMonth), filters, ready)
+  const calLast = useCalendar(monthKey(lastMonth), filters, ready)
+  const day = useDay(search.day, filters, ready)
+  const providers = useProviders(ready)
   // CX-V3 (proposed): history selection's savings, the /optimization lead's read under the same key.
-  const history = useSavingsTrend(win, ready);
-  const traces = useTopTraces(tracesWin, filters, ready && !!search.traces);
+  const history = useSavingsTrend(win, ready)
+  const traces = useTopTraces(tracesWin, filters, ready && !!search.traces)
 
   // Agent filter options: the unfiltered dashboard (same cache entry when no filter is set).
-  const narrowed = !!(search.agent || search.provider || search.model || search.view !== "agent");
-  const agentList = useDashboard(win, {}, "agent", "current", ready && narrowed);
+  const narrowed = !!(search.agent || search.provider || search.model || search.view !== 'agent')
+  const agentList = useDashboard(win, {}, 'agent', 'current', ready && narrowed)
   const agentOptions = ((narrowed ? agentList.data : dash.data)?.agents ?? []).map((a) => ({
     id: a.agent_id,
     name: a.agent_name,
-  }));
+  }))
 
   // Derived data is memoised on stable keys so typing in the table search doesn't rebuild every chart.
   // Δ is only trusted when both windows are fresh answers for the current key: a
   // keepPreviousData placeholder belongs to the old filter/window (A14).
-  const compare = compareOn(search.compare === undefined ? {} : { compare: search.compare });
+  const compare = compareOn(search)
   const prevUnavailable =
-    !compare || prevDash.isError || prevDash.isPlaceholderData || dash.isPlaceholderData;
+    !compare || prevDash.isError || prevDash.isPlaceholderData || dash.isPlaceholderData
   const attrRows = useMemo(
     () =>
       dash.data
@@ -196,31 +166,31 @@ export function TokenopsPage({
           )
         : undefined,
     [dash.data, prevDash.data, prevUnavailable],
-  );
+  )
   const timeline = useMemo(() => {
-    if (!timeseries.data) return [];
+    if (!timeseries.data) return []
     // Placeholder points belong to the previous window: show them as-is, never stretched over the new bounds.
     return timeseries.isPlaceholderData
       ? toTimeline(timeseries.data.points, timeseries.data.bucket)
-      : zeroFillTimeline(timeseries.data.points, timeseries.data.bucket, win.start, win.end);
-  }, [timeseries.data, timeseries.isPlaceholderData, win]);
+      : zeroFillTimeline(timeseries.data.points, timeseries.data.bucket, win.start, win.end)
+  }, [timeseries.data, timeseries.isPlaceholderData, win])
   // A placeholder calendar from another month (e.g. just after a UTC month rollover) is
   // treated as loading rather than summarised against this month. A same-month placeholder
   // (a filter change) stays visible while the new answer loads.
   const otherMonth = (q: typeof calThis, month: string) =>
-    q.isPlaceholderData && q.data.days.some((d) => !d.date.startsWith(month));
+    q.isPlaceholderData && (q.data?.days.some((d) => !d.date.startsWith(month)) ?? false)
   const calPending =
     calThis.isPending ||
     calLast.isPending ||
     otherMonth(calThis, monthKey(thisMonth)) ||
-    otherMonth(calLast, monthKey(lastMonth));
+    otherMonth(calLast, monthKey(lastMonth))
   const summary = useMemo(
     () =>
       !calPending && calThis.data && calLast.data
         ? summarizeMonth(calThis.data.days, calLast.data.days, now)
         : null,
     [calPending, calThis.data, calLast.data, now],
-  );
+  )
   // One page loader until the first paint's reads settle (data or error: a failed read renders its panel's error), in
   // place of the panels' skeletons. Latched: a later window or filter change keeps the panels' own loading states.
   const coldPending =
@@ -228,37 +198,37 @@ export function TokenopsPage({
     dash.isPending ||
     timeseries.isPending ||
     calThis.isPending ||
-    calLast.isPending;
-  const [painted, setPainted] = useState(false);
-  if (!painted && !coldPending) setPainted(true);
-  const showLoader = !painted && coldPending;
+    calLast.isPending
+  const [painted, setPainted] = useState(false)
+  if (!painted && !coldPending) setPainted(true)
+  const showLoader = !painted && coldPending
 
   // Executive summary (plan: TokenOps summary first). Day buckets feed the spike clause.
   // Placeholder data (keepPreviousData) belongs to the previous filters: summarising it under
   // the new window or agent label would state the wrong total, so the hero waits instead.
-  const summaryStale = dash.isPlaceholderData || timeseries.isPlaceholderData;
-  const dashData = summaryStale ? undefined : dash.data;
-  const bucket = timeseries.data?.bucket;
+  const summaryStale = dash.isPlaceholderData || timeseries.isPlaceholderData
+  const dashData = summaryStale ? undefined : dash.data
+  const bucket = timeseries.data?.bucket
   // Read outside the memo: the compiler takes any `.current` inside one for a ref.
-  const { current: spendNow, previous: spendBefore } = dashData?.kpis.total_spend ?? {};
+  const { current: spendNow, previous: spendBefore } = dashData?.kpis.total_spend ?? {}
   const narrative = useMemo(() => {
-    if (!dashData) return null;
+    if (!dashData) return null
     const days =
-      bucket === "day" ? timeline.map((p) => ({ date: p.iso.slice(0, 10), spend: p.spend })) : [];
+      bucket === 'day' ? timeline.map((p) => ({ date: p.iso.slice(0, 10), spend: p.spend })) : []
     return tokenopsNarrative({
       windowLabel: win.label,
       total: spendNow ?? 0,
       previous: prevUnavailable ? undefined : spendBefore,
       unpriced: dashData.summary.unpriced_calls > 0,
       rows:
-        search.view === "agent"
+        search.view === 'agent'
           ? (attrRows ?? []).map((r) => ({ name: r.name, sharePct: r.sharePct }))
           : [],
       agentLabel: search.agent
         ? (dashData.agents.find((a) => a.agent_id === search.agent)?.agent_name ?? search.agent)
         : undefined,
       days,
-    });
+    })
   }, [
     dashData,
     spendNow,
@@ -270,68 +240,68 @@ export function TokenopsPage({
     search.view,
     search.agent,
     attrRows,
-  ]);
+  ])
 
   // Arriving with `?open=` (the Overview's "See the breakdown", a trace's "Open in TokenOps") should land on that
   // section, not the top of the page. No dependency array on purpose: the sections sit behind the page loader, so on a
   // cold load the element does not exist yet and no single piece of state marks the moment it appears. Retry each
   // render until it is there, then latch, so a later scroll of the user's own is never yanked back.
-  const arrivedAt = useRef(false);
+  const arrivedAt = useRef(false)
   useEffect(() => {
-    if (arrivedAt.current) return;
-    const target = arrivalSection(openSet(search.open));
+    if (arrivedAt.current) return
+    const target = arrivalSection(openSet(search.open))
     if (!target) {
-      arrivedAt.current = true;
-      return;
+      arrivedAt.current = true
+      return
     }
-    if (scrollToSection(target)) arrivedAt.current = true;
-  });
+    if (scrollToSection(target)) arrivedAt.current = true
+  })
 
   // Opening the day panel or the drawer pushes history. Closing goes Back only when the
   // current entry is still the one that open created (history index = pre-open + 1), so a
   // close leaves no duplicate entry but never undoes a filter, preset or other navigation
   // made while the panel was open. Anything else (deep links, later pushes) closes by replacing.
-  const historyIndex = () => pageHistory.index();
-  const openedAt = useRef<{ day?: number | undefined; traces?: number | undefined }>({});
-  const [announceDay, setAnnounceDay] = useState(false);
+  const historyIndex = () => router.state.location.state.__TSR_index
+  const openedAt = useRef<{ day?: number; traces?: number }>({})
+  const [announceDay, setAnnounceDay] = useState(false)
   const openDay = (d: string) => {
     if (search.day) {
-      setSearch({ day: d }, { replace: true });
+      setSearch({ day: d }, { replace: true })
     } else {
-      openedAt.current.day = historyIndex();
-      setAnnounceDay(true);
-      setSearch({ day: d });
+      openedAt.current.day = historyIndex()
+      setAnnounceDay(true)
+      setSearch({ day: d })
     }
-  };
+  }
   const openTraces = (patch: Partial<TokenopsSearch>) => {
-    openedAt.current.traces = historyIndex();
-    setSearch({ ...patch, traces: true });
-  };
-  const close = (which: "day" | "traces") => {
-    if (!search[which]) return; // already closing (double click, repeated Escape)
-    const pre = openedAt.current[which];
-    openedAt.current[which] = undefined;
-    if (pre !== undefined && historyIndex() === pre + 1) pageHistory.back();
-    else setSearch({ [which]: undefined }, { replace: true });
-  };
+    openedAt.current.traces = historyIndex()
+    setSearch({ ...patch, traces: true })
+  }
+  const close = (which: 'day' | 'traces') => {
+    if (!search[which]) return // already closing (double click, repeated Escape)
+    const pre = openedAt.current[which]
+    openedAt.current[which] = undefined
+    if (pre !== undefined && historyIndex() === pre + 1) router.history.back()
+    else setSearch({ [which]: undefined }, { replace: true })
+  }
 
-  const [highlightId, setHighlightId] = useState<string | undefined>();
-  const [mobilePanel, setMobilePanel] = useState<"attribution" | "performance">("attribution");
+  const [highlightId, setHighlightId] = useState<string | undefined>()
+  const [mobilePanel, setMobilePanel] = useState<'attribution' | 'performance'>('attribution')
   // Below md (Tailwind v4: 48rem), F3 and F5 share one slot; the other panel is unmounted, not hidden (a hidden chart measures 0×0).
-  const isMd = useMediaQuery("(min-width: 48rem)");
-  const showAttribution = isMd || search.view !== "agent" || mobilePanel === "attribution";
-  const showPerformance = search.view === "agent" && (isMd || mobilePanel === "performance");
+  const isMd = useMediaQuery('(min-width: 48rem)')
+  const showAttribution = isMd || search.view !== 'agent' || mobilePanel === 'attribution'
+  const showPerformance = search.view === 'agent' && (isMd || mobilePanel === 'performance')
 
   // Server down or /api/me failing for any reason other than 401 must not leave skeletons spinning (A25).
-  const fatal = me.error ?? dash.error;
-  if (fatal instanceof ApiError && fatal.isServerUnreachable) return <ServerDown />;
+  const fatal = me.error ?? dash.error
+  if (fatal instanceof ApiError && fatal.isServerUnreachable) return <ServerDown />
   // A 401 is handled by the QueryClient (redirect to /login); anything else gets a retry panel.
   if (me.isError && !(me.error instanceof ApiError && me.error.status === 401)) {
     return (
       <div className="mx-auto max-w-xl">
         <PanelError error={me.error} onRetry={() => void me.refetch()} what="your session" />
       </div>
-    );
+    )
   }
 
   // Unknown agent (400) or an agent you can't access (404 "agent not found"): say why, offer to clear.
@@ -340,65 +310,62 @@ export function TokenopsPage({
     (dash.error.status === 400 || dash.error.status === 404) &&
     search.agent
       ? (dash.error.serverMessage ?? `Agent ${search.agent} not found`)
-      : null;
-  const unpriced = dash.data?.summary.unpriced_calls ?? 0;
-  const noFilters = !search.agent && !search.provider && !search.model;
+      : null
+  const unpriced = dash.data?.summary.unpriced_calls ?? 0
+  const noFilters = !search.agent && !search.provider && !search.model
   // First run = no spend at all in the last two calendar months, whatever the agent count.
-  const firstRun = noFilters && calThis.data?.days.length === 0 && calLast.data?.days.length === 0;
-  const today = now.toISOString().slice(0, 10);
+  const firstRun = noFilters && calThis.data?.days.length === 0 && calLast.data?.days.length === 0
+  const today = now.toISOString().slice(0, 10)
   const agentLabel = search.agent
     ? (agentOptions.find((a) => a.id === search.agent)?.name ?? search.agent)
-    : undefined;
+    : undefined
   const models = (providers.data ?? [])
     .filter((p) => !search.provider || p.provider === search.provider)
-    .flatMap((p) => p.models.map((m) => m.model));
-  const uniqueModels = [...new Set(models)].sort();
+    .flatMap((p) => p.models.map((m) => m.model))
+  const uniqueModels = [...new Set(models)].sort()
   const onLast30 =
-    win.preset === "30d"
+    win.preset === '30d'
       ? undefined
-      : () => {
-          setSearch({ preset: "30d", from: undefined, to: undefined });
-        };
+      : () => setSearch({ preset: '30d', from: undefined, to: undefined })
   // Day-drilldown slices carry display names (the server resolves them); the filter needs
   // a raw name or UUID, so map through the dashboard's agent list. Only an unambiguous
   // match can filter: display names aren't unique, the list may still be loading, and it
   // only holds agents the caller can access (the day breakdown is fleet-wide).
   const agentIdForDisplayName = (name: string) => {
-    const matches = agentOptions.filter((a) => a.name === name);
-    return matches.length === 1 ? matches[0]?.id : undefined;
-  };
+    const matches = agentOptions.filter((a) => a.name === name)
+    return matches.length === 1 ? matches[0].id : undefined
+  }
   // MTD's KPI Δ compares with the same-length window before the month, not "same days last month" (the month's comparison).
-  const mtdDays = Math.max(1, Math.round((win.end.getTime() - win.start.getTime()) / DAY_MS));
+  const mtdDays = Math.max(1, Math.round((win.end.getTime() - win.start.getTime()) / DAY_MS))
   const kpiCompareLabel =
-    win.preset === "mtd" ? `the previous ${mtdDays === 1 ? "day" : `${mtdDays} days`}` : undefined;
+    win.preset === 'mtd' ? `the previous ${mtdDays === 1 ? 'day' : `${mtdDays} days`}` : undefined
   const historyData =
-    history.data?.kind === "ready"
+    history.data?.kind === 'ready'
       ? history.data.data
       : history.isError || history.data
         ? null
-        : undefined;
+        : undefined
   const optimiseHint = optimisation
     ? `${optimisation.optimisedCount} of ${optimisation.totalAgents} agents · ${showOptPct(optimisation.savedPct)} tokens saved`
-    : "savings per layer and per agent";
+    : 'savings per layer and per agent'
   const sections = [
-    { id: "spend", label: "Spend", hint: win.label },
-    { id: "drivers", label: "Drivers" },
-    { id: "optimise", label: "Optimisation", hint: optimisation ? optimiseHint : undefined },
-  ];
+    { id: 'spend', label: 'Spend', hint: win.label },
+    { id: 'drivers', label: 'Drivers' },
+    { id: 'optimize', label: 'Optimization', hint: optimisation ? optimiseHint : undefined },
+  ]
 
   const time = {
     preset: search.preset,
-    invalid: search.preset === "custom" && win.preset !== "custom",
+    invalid: search.preset === 'custom' && win.preset !== 'custom',
     from: search.from,
     to: search.to,
     today,
-    onChange: (n: Pick<TokenopsSearch, "preset" | "from" | "to">) => {
+    onChange: (n: Pick<TokenopsSearch, 'preset' | 'from' | 'to'>) =>
       setSearch(
         { preset: n.preset, from: n.from, to: n.to },
-        { replace: search.preset === "custom" && n.preset === "custom" },
-      );
-    },
-  };
+        { replace: search.preset === 'custom' && n.preset === 'custom' },
+      ),
+  }
 
   const filterControls = (
     <>
@@ -406,31 +373,25 @@ export function TokenopsPage({
         label="Agent"
         value={search.agent}
         options={agentOptions.map((a) => ({ value: a.id, label: a.name }))}
-        onChange={(v) => {
-          setSearch({ agent: v, traces: undefined });
-        }}
+        onChange={(v) => setSearch({ agent: v, traces: undefined })}
         extraLabel={agentLabel}
       />
       <FilterSelect
         label="Provider"
         value={search.provider}
         options={(providers.data ?? []).map((p) => ({ value: p.provider, label: p.provider }))}
-        onChange={(v) => {
-          setSearch({ provider: v, model: undefined });
-        }}
+        onChange={(v) => setSearch({ provider: v, model: undefined })}
       />
       <FilterSelect
         label="Model"
         value={search.model}
         options={uniqueModels.map((m) => ({ value: m, label: m }))}
-        onChange={(v) => {
-          setSearch({ model: v });
-        }}
+        onChange={(v) => setSearch({ model: v })}
       />
     </>
-  );
+  )
 
-  if (firstRun) return <FirstRun />;
+  if (firstRun) return <FirstRun />
 
   return (
     // The page's first load is the one page loader below the header (plan §8 Phase 9: one busy region).
@@ -479,17 +440,17 @@ export function TokenopsPage({
         </div>
       )}
 
+      {/* Coding agents' spend is still arriving while the desktop imports them. */}
+      <ImportNotice />
       {showLoader ? <PageLoader label="Loading TokenOps" /> : null}
       {showLoader ? null : unknownAgent ? (
         <Notice tone="warning">
-          {unknownAgent}.{" "}
+          {unknownAgent}.{' '}
           <Button
             variant="link"
             size="sm"
             className="h-auto p-0 text-sm"
-            onClick={() => {
-              setSearch({ agent: undefined, traces: undefined });
-            }}
+            onClick={() => setSearch({ agent: undefined, traces: undefined })}
           >
             Clear agent filter
           </Button>
@@ -498,9 +459,8 @@ export function TokenopsPage({
       {!showLoader && me.data && !me.data.is_superuser ? (
         <Notice tone="info">
           KPIs and the attribution table only include agents you can access. The calendar, timeline
-          and day breakdown are fleet-wide because those server endpoints don&apos;t check agent
-          access yet (a known server gap), so their totals can differ and may name agents you
-          can&apos;t open.
+          and day breakdown are fleet-wide because those server endpoints don't check agent access
+          yet (a known server gap), so their totals can differ and may name agents you can't open.
         </Notice>
       ) : null}
 
@@ -514,11 +474,8 @@ export function TokenopsPage({
             spikeLink={(children) =>
               narrative?.spike ? (
                 <Link
-                  href={hrefFor("/sessions", {
-                    ...withoutWindow(search),
-                    day: narrative.spike.date,
-                    sort: "cost",
-                  })}
+                  to="/sessions"
+                  search={{ ...withoutWindow(search), day: narrative.spike.date, sort: 'cost' }}
                   className="font-medium text-primary-text underline-offset-4 hover:underline"
                 >
                   {children}
@@ -536,16 +493,16 @@ export function TokenopsPage({
             error={dash.error}
             onRetry={() => void dash.refetch()}
           >
-            <SavingsHighlight data={optimisation} onSeeDetail={() => scrollToSection("optimise")} />
+            <SavingsHighlight data={optimisation} onSeeDetail={() => scrollToSection('optimize')} />
           </SummaryHero>
 
           <SectionNav sections={sections} />
 
-          <RevealGroup data-tour="tokenops-sections" className="flex flex-col gap-10">
+          <Reveal data-tour="tokenops-sections" className="flex flex-col gap-10">
             <PageSection id="spend" title="Spend" hint={win.label}>
               <SpendTimeline
                 points={timeline}
-                bucket={timeseries.data?.bucket ?? "day"}
+                bucket={timeseries.data?.bucket ?? 'day'}
                 loading={timeseries.isPending}
                 error={timeseries.error}
                 onRetry={() => void timeseries.refetch()}
@@ -569,29 +526,20 @@ export function TokenopsPage({
                       loading={day.isPending}
                       error={day.error}
                       onRetry={() => void day.refetch()}
-                      onClose={() => {
-                        close("day");
-                      }}
+                      onClose={() => close('day')}
                       announce={announceDay}
-                      onAnnounced={() => {
-                        setAnnounceDay(false);
-                      }}
+                      onAnnounced={() => setAnnounceDay(false)}
                       canFilterAgent={(name) => agentIdForDisplayName(name) !== undefined}
                       onFilterAgent={(name) => {
-                        const id = agentIdForDisplayName(name);
-                        if (id) setSearch({ agent: id, view: "agent" });
+                        const id = agentIdForDisplayName(name)
+                        if (id) setSearch({ agent: id, view: 'agent' })
                       }}
-                      onViewTraces={() => {
-                        openTraces({});
-                      }}
+                      onViewTraces={() => openTraces({})}
                       morph={narrative?.spike?.date !== search.day}
                       sessionsLink={
                         <Link
-                          href={hrefFor("/sessions", {
-                            ...withoutWindow(search),
-                            day: search.day,
-                            sort: "cost",
-                          })}
+                          to="/sessions"
+                          search={{ ...withoutWindow(search), day: search.day, sort: 'cost' }}
                           className="text-sm font-medium text-primary-text underline-offset-4 hover:underline"
                         >
                           See sessions <span aria-hidden>→</span>
@@ -607,7 +555,7 @@ export function TokenopsPage({
                 <MonthHero
                   summary={summary}
                   unpricedCalls={
-                    win.preset === "mtd" && noFilters && dash.data && !dash.isPlaceholderData
+                    win.preset === 'mtd' && noFilters && dash.data && !dash.isPlaceholderData
                       ? unpriced
                       : null
                   }
@@ -619,8 +567,8 @@ export function TokenopsPage({
                   loading={calPending}
                   error={calThis.error ?? calLast.error}
                   onRetry={() => {
-                    void calThis.refetch();
-                    void calLast.refetch();
+                    void calThis.refetch()
+                    void calLast.refetch()
                   }}
                 />
               </m.div>
@@ -629,7 +577,7 @@ export function TokenopsPage({
             <PageSection
               id="drivers"
               title="Drivers"
-              hint={search.view === "agent" ? "agents, tokens, cost vs performance" : "workflows"}
+              hint={search.view === 'agent' ? 'agents, tokens, cost vs performance' : 'workflows'}
             >
               <DriversOverview
                 rows={attrRows}
@@ -637,7 +585,7 @@ export function TokenopsPage({
                 view={search.view}
                 loading={dash.isPending}
               />
-              {search.view === "agent" && !isMd ? (
+              {search.view === 'agent' && !isMd ? (
                 <Segmented
                   label="Panel"
                   value={mobilePanel}
@@ -653,7 +601,7 @@ export function TokenopsPage({
                       rows={attrRows}
                       view={search.view}
                       sort={
-                        search.view === "workflow" && search.sort === "hours" ? "cost" : search.sort
+                        search.view === 'workflow' && search.sort === 'hours' ? 'cost' : search.sort
                       }
                       q={search.q}
                       loading={dash.isPending}
@@ -662,19 +610,13 @@ export function TokenopsPage({
                       prevUnavailable={prevUnavailable}
                       highlightId={highlightId}
                       agentFilter={search.agent}
-                      onView={(v) => {
-                        setSearch({ view: v, sort: "cost" });
-                      }}
-                      onSort={(s) => {
-                        setSearch({ sort: s }, { replace: true });
-                      }}
-                      onSearch={(q) => {
-                        setSearch({ q: q || undefined }, { replace: true });
-                      }}
+                      onView={(v) => setSearch({ view: v, sort: 'cost' })}
+                      onSort={(s) => setSearch({ sort: s }, { replace: true })}
+                      onSearch={(q) => setSearch({ q: q || undefined }, { replace: true })}
                       // Row traces cover the row's whole window, so leave any day drill-down.
-                      onViewTraces={(id) => {
-                        openTraces({ agent: id, view: "agent", day: undefined });
-                      }}
+                      onViewTraces={(id) =>
+                        openTraces({ agent: id, view: 'agent', day: undefined })
+                      }
                       onLast30={onLast30}
                       unpriced={unpriced > 0}
                     />
@@ -688,8 +630,8 @@ export function TokenopsPage({
                       error={dash.error}
                       onRetry={() => void dash.refetch()}
                       onSelect={(id) => {
-                        setHighlightId(id);
-                        setMobilePanel("attribution");
+                        setHighlightId(id)
+                        setMobilePanel('attribution')
                       }}
                     />
                   </div>
@@ -697,7 +639,7 @@ export function TokenopsPage({
               </div>
             </PageSection>
 
-            <PageSection id="optimise" title="Optimisation" hint={optimiseHint}>
+            <PageSection id="optimize" title="Optimization" hint={optimiseHint}>
               {savings.isError ? (
                 <StateCard
                   tone="warning"
@@ -709,7 +651,7 @@ export function TokenopsPage({
                     </Button>
                   }
                 >
-                  {savings.error instanceof Error ? savings.error.message : "Request failed."}
+                  {savings.error instanceof Error ? savings.error.message : 'Request failed.'}
                 </StateCard>
               ) : optimisation ? (
                 <>
@@ -727,11 +669,8 @@ export function TokenopsPage({
                   {/* P3 (plans/feat-optimization-page.md): the trend, the agents and the fixes live on Optimization,
                       opened on this window (R7A: the two pages share the window keys). */}
                   <Link
-                    href={hrefFor("/optimization", {
-                      preset: search.preset,
-                      from: search.from,
-                      to: search.to,
-                    })}
+                    to="/optimization"
+                    search={{ preset: search.preset, from: search.from, to: search.to }}
                     className="inline-block w-fit text-xs underline underline-offset-4 hover:text-primary-text pointer-coarse:py-3"
                   >
                     {optimizationCopy.savings.more}
@@ -741,16 +680,16 @@ export function TokenopsPage({
                 <div className="h-48 animate-pulse rounded-md bg-muted" aria-busy />
               )}
             </PageSection>
-          </RevealGroup>
+          </Reveal>
 
           <TracesDrawer
             open={!!search.traces}
             onOpenChange={(open) => {
-              if (!open) close("traces");
+              if (!open) close('traces')
             }}
-            scopeLabel={[agentLabel ?? "All agents", search.model, tracesWin.label]
+            scopeLabel={[agentLabel ?? 'All agents', search.model, tracesWin.label]
               .filter(Boolean)
-              .join(" · ")}
+              .join(' · ')}
             data={traces.data}
             loading={traces.isPending}
             error={traces.error}
@@ -760,20 +699,20 @@ export function TokenopsPage({
         </>
       )}
     </div>
-  );
+  )
 }
 
 const MOBILE_PANELS = [
-  { value: "attribution", label: "Who drives cost" },
-  { value: "performance", label: "Cost vs performance" },
-] as const;
+  { value: 'attribution', label: 'Who drives cost' },
+  { value: 'performance', label: 'Cost vs performance' },
+] as const
 
 /** Which section an `?open=` link means; the retired ids map onto the section that now holds them. */
 function arrivalSection(open: Set<DisclosureId>): string | undefined {
-  if (open.has("optimise")) return "optimise";
-  if (open.has("drivers") || open.has("perf")) return "drivers";
-  if (open.has("month") || open.has("spend")) return "spend";
-  return undefined;
+  if (open.has('optimize')) return 'optimize'
+  if (open.has('drivers') || open.has('perf')) return 'drivers'
+  if (open.has('month') || open.has('spend')) return 'spend'
+  return undefined
 }
 
 /** One part of the page: a quiet header the section nav jumps to, then its panels. */
@@ -783,10 +722,10 @@ function PageSection({
   hint,
   children,
 }: {
-  id: string;
-  title: string;
-  hint?: string | undefined;
-  children: ReactNode;
+  id: string
+  title: string
+  hint?: string
+  children: React.ReactNode
 }) {
   return (
     <RevealItem>
@@ -805,7 +744,7 @@ function PageSection({
         {children}
       </section>
     </RevealItem>
-  );
+  )
 }
 
 function FilterSelect({
@@ -815,28 +754,16 @@ function FilterSelect({
   onChange,
   extraLabel,
 }: {
-  label: string;
-  value?: string | undefined;
-  options: { value: string; label: string }[];
-  onChange: (v: string | undefined) => void;
-  extraLabel?: string | undefined;
+  label: string
+  value?: string
+  options: { value: string; label: string }[]
+  onChange: (v: string | undefined) => void
+  extraLabel?: string
 }) {
-  const known = !value || options.some((o) => o.value === value);
+  const known = !value || options.some((o) => o.value === value)
   return (
     <div className="flex items-center">
-      <Select
-        value={value ?? ALL}
-        onValueChange={(v: string | null) => {
-          onChange(v === ALL || v === null ? undefined : v);
-        }}
-        // Base UI's Value shows a label (not the raw value) only for items it knows: Radix's Value read it from the
-        // rendered item.
-        items={{
-          [ALL]: "All",
-          ...(!known && value ? { [value]: extraLabel ?? value } : {}),
-          ...Object.fromEntries(options.map((o) => [o.value, o.label])),
-        }}
-      >
+      <Select value={value ?? ALL} onValueChange={(v) => onChange(v === ALL ? undefined : v)}>
         <SelectTrigger
           size="sm"
           className="h-8 max-w-48 text-xs"
@@ -859,16 +786,14 @@ function FilterSelect({
           variant="ghost"
           size="icon"
           className="size-10 md:size-7"
-          onClick={() => {
-            onChange(undefined);
-          }}
+          onClick={() => onChange(undefined)}
           aria-label={`Remove ${label.toLowerCase()} filter`}
         >
           <X className="size-3.5" aria-hidden />
         </Button>
       ) : null}
     </div>
-  );
+  )
 }
 
 /**
@@ -880,15 +805,15 @@ function drillTrail(
   search: TokenopsSearch,
   agentLabel: string | undefined,
   setSearch: SetSearch,
-): { root?: ReactNode; trail?: ReactNode[] } {
-  const { day, traces } = search;
-  if (!day && !agentLabel && !traces) return {};
+): { root?: React.ReactNode; trail?: React.ReactNode[] } {
+  const { day, traces } = search
+  if (!day && !agentLabel && !traces) return {}
   const levels: { label: string; clear: Partial<TokenopsSearch> }[] = [
-    { label: "TokenOps", clear: { day: undefined, agent: undefined, traces: undefined } },
-  ];
-  if (day) levels.push({ label: fmtShortDay(day), clear: { agent: undefined, traces: undefined } });
-  if (agentLabel) levels.push({ label: agentLabel, clear: { traces: undefined } });
-  if (traces) levels.push({ label: "Traces", clear: {} });
+    { label: 'TokenOps', clear: { day: undefined, agent: undefined, traces: undefined } },
+  ]
+  if (day) levels.push({ label: fmtShortDay(day), clear: { agent: undefined, traces: undefined } })
+  if (agentLabel) levels.push({ label: agentLabel, clear: { traces: undefined } })
+  if (traces) levels.push({ label: 'Traces', clear: {} })
   const [root, ...trail] = levels.map((l, i) =>
     i === levels.length - 1 ? (
       l.label
@@ -896,26 +821,24 @@ function drillTrail(
       <Button
         variant="link"
         className="h-auto p-0 text-sm font-normal text-muted-foreground hover:text-foreground"
-        onClick={() => {
-          setSearch(l.clear);
-        }}
+        onClick={() => setSearch(l.clear)}
       >
         {l.label}
       </Button>
     ),
-  );
-  return { root, trail };
+  )
+  return { root, trail }
 }
 
-function Notice({ tone, children }: { tone: "info" | "warning"; children: ReactNode }) {
-  const Icon = tone === "info" ? Info : AlertTriangle;
+function Notice({ tone, children }: { tone: 'info' | 'warning'; children: React.ReactNode }) {
+  const Icon = tone === 'info' ? Info : AlertTriangle
   return (
     <Alert
-      role={tone === "warning" ? "alert" : "status"}
+      role={tone === 'warning' ? 'alert' : 'status'}
       className={
-        tone === "info"
-          ? "border-info/30 bg-info/5 p-3 [&>svg]:text-info"
-          : "border-warning/40 bg-warning/5 p-3 [&>svg]:text-warning"
+        tone === 'info'
+          ? 'border-info/30 bg-info/5 p-3 [&>svg]:text-info'
+          : 'border-warning/40 bg-warning/5 p-3 [&>svg]:text-warning'
       }
     >
       <Icon aria-hidden />
@@ -923,45 +846,50 @@ function Notice({ tone, children }: { tone: "info" | "warning"; children: ReactN
         <div>{children}</div>
       </AlertDescription>
     </Alert>
-  );
+  )
 }
 
 function FirstRun() {
   return (
     <div className="flex flex-col gap-4">
       <PageHeader title="TokenOps" />
-      {/* The steps sit inside the card as its action, widened past Empty's 24rem content cap. */}
-      <EmptyState
-        icon={DollarSign}
-        title="No AI spend recorded yet"
-        className="*:data-[slot=empty-content]:max-w-xl"
-        action={
-          <div className="flex w-full flex-col gap-3 rounded-md border bg-muted/40 p-4 text-left text-sm text-muted-foreground">
-            <ol className="flex list-decimal flex-col gap-1.5 pl-5">
-              <li>
-                Set <code className="font-mono text-foreground">TEMPO_URL</code> and{" "}
-                <code className="font-mono text-foreground">LOKI_URL</code> on nasiko-server and run
-                the OTel collector.
-              </li>
-              <li>Deploy an agent and send it a few requests.</li>
-              <li>
-                Spend appears within a couple of minutes (the trace materializer runs every 120 s).
-              </li>
-            </ol>
-            <p className="border-t pt-3 text-xs text-pretty">
-              Setup details: <code className="font-mono">oss/docs/BOOTSTRAP_AND_NETWORKING.md</code>{" "}
-              in the nasiko repository (collector, Tempo and Loki wiring). Developing locally? Run{" "}
-              <code className="font-mono">npm run seed:live</code> against your OSS stack, or use
-              mock mode.
-            </p>
-          </div>
-        }
-      >
-        TokenOps reads spend from agent traces. Nothing has arrived in the last two months, which
-        usually means the telemetry pipeline isn&apos;t connected yet.
-      </EmptyState>
+      {/* While coding agents sync, their spend is on its way: the loading state, never "nothing recorded yet". */}
+      <ImportingOr>
+        {/* The steps sit inside the card as its action, widened past Empty's 24rem content cap. */}
+        <EmptyState
+          icon={DollarSign}
+          title="No AI spend recorded yet"
+          className="*:data-[slot=empty-content]:max-w-xl"
+          action={
+            <div className="flex w-full flex-col gap-3 rounded-md border bg-muted/40 p-4 text-left text-sm text-muted-foreground">
+              <ol className="flex list-decimal flex-col gap-1.5 pl-5">
+                <li>
+                  Set <code className="font-mono text-foreground">TEMPO_URL</code> and{' '}
+                  <code className="font-mono text-foreground">LOKI_URL</code> on nasiko-server and
+                  run the OTel collector.
+                </li>
+                <li>Deploy an agent and send it a few requests.</li>
+                <li>
+                  Spend appears within a couple of minutes (the trace materializer runs every 120
+                  s).
+                </li>
+              </ol>
+              <p className="border-t pt-3 text-xs text-pretty">
+                Setup details:{' '}
+                <code className="font-mono">oss/docs/BOOTSTRAP_AND_NETWORKING.md</code> in the
+                nasiko repository (collector, Tempo and Loki wiring). Developing locally? Run{' '}
+                <code className="font-mono">npm run seed:live</code> against your OSS stack, or use
+                mock mode.
+              </p>
+            </div>
+          }
+        >
+          TokenOps reads spend from agent traces. Nothing has arrived in the last two months, which
+          usually means the telemetry pipeline isn't connected yet.
+        </EmptyState>
+      </ImportingOr>
     </div>
-  );
+  )
 }
 
 function ServerDown() {
@@ -972,24 +900,18 @@ function ServerDown() {
       title="Can't reach nasiko-server"
       fix={
         <span className="text-xs">
-          Or switch to mock data: <code>pnpm --filter @nasiko/web dev:mock</code>.
+          Or switch to mock data: <code>VITE_NASIKO_API_MODE=mock npm run dev</code>.
         </span>
       }
       action={
-        <Button
-          className="w-fit"
-          variant="outline"
-          onClick={() => {
-            window.location.reload();
-          }}
-        >
+        <Button className="w-fit" variant="outline" onClick={() => window.location.reload()}>
           Try again
         </Button>
       }
     >
-      The dev proxy couldn&apos;t connect to the API. Start the OSS stack in{" "}
-      <code>nasiko-cloud-rs</code> with <code>just run-stack</code>, or point{" "}
-      <code>NASIKO_API_UPSTREAM</code> at a running server and restart <code>pnpm dev</code>.
+      The dev proxy couldn't connect to the API. Start the OSS stack in <code>nasiko-cloud-rs</code>{' '}
+      with <code>just run-stack</code>, or point <code>NASIKO_API_URL</code> at a running server and
+      restart <code>npm run dev</code>.
     </StateCard>
-  );
+  )
 }

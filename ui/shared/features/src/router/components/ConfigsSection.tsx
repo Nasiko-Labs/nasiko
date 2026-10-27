@@ -1,28 +1,25 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/ConfigsSection.tsx. Local edits: `DropdownMenuTrigger asChild` -> `render={<Button …/>}` (Base UI useRender) and the items' Radix `onSelect` is Base UI's `onClick`; the lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Your configs (plan §4.1): each config's routing sentence, key, "Used by N" and a row menu (Edit, default,
  * Duplicate, Delete, CLI equivalent). Configs made elsewhere show as stored, with their warnings.
  */
-import { AlertTriangle, MoreHorizontal, Waypoints } from "lucide-react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
+import { AlertTriangle, MoreHorizontal, Waypoints } from 'lucide-react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { CopyMenuItem } from "@nasiko/ui/composites";
-import { copy } from "../copy";
-import { cliLine, countText, keySource, routingSentence, usedBy, type RowRead } from "../routing";
-import type { LlmConfig } from "../types";
-import { KeySourceChip, SentenceText } from "./bits";
-import { SectionError } from "./SectionError";
+} from '@nasiko/ui/primitives/dropdown-menu'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { CopyMenuItem } from '@nasiko/ui/composites/copy-button'
+import { copy } from '../copy'
+import { cliLine, countText, keySource, routingSentence, usedBy, type RowRead } from '../routing'
+import type { LlmConfig } from '../types'
+import { KeySourceChip, SentenceText } from './bits'
+import { SectionError } from './SectionError'
 
 export function ConfigsSection({
   configs,
@@ -35,22 +32,22 @@ export function ConfigsSection({
   onDefault,
 }: {
   configs: {
-    data?: LlmConfig[] | undefined;
-    isPending: boolean;
-    isError: boolean;
-    error: unknown;
-    refetch: () => unknown;
-  };
-  reads: readonly RowRead[];
-  warnings: (c: LlmConfig) => string[];
-  onNew: () => void;
-  onEdit: (c: LlmConfig) => void;
-  onDuplicate: (c: LlmConfig) => void;
-  onDelete: (c: LlmConfig) => void;
-  onDefault: (c: LlmConfig, on: boolean) => void;
+    data?: LlmConfig[]
+    isPending: boolean
+    isError: boolean
+    error: unknown
+    refetch: () => unknown
+  }
+  reads: readonly RowRead[]
+  warnings: (c: LlmConfig) => string[]
+  onNew: () => void
+  onEdit: (c: LlmConfig) => void
+  onDuplicate: (c: LlmConfig) => void
+  onDelete: (c: LlmConfig) => void
+  onDefault: (c: LlmConfig, on: boolean) => void
 }) {
-  const list = configs.data ?? [];
-  const hasDefault = list.some((c) => c.is_default);
+  const list = configs.data ?? []
+  const hasDefault = list.some((c) => c.is_default)
   return (
     <section id="router-configs" aria-labelledby="router-configs-h" className="scroll-mt-4">
       <h2 id="router-configs-h" tabIndex={-1} className="sr-only">
@@ -136,7 +133,7 @@ export function ConfigsSection({
         )}
       </div>
     </section>
-  );
+  )
 }
 
 function RowMenu({
@@ -146,97 +143,69 @@ function RowMenu({
   onDelete,
   onDefault,
 }: {
-  config: LlmConfig;
-  onEdit: (c: LlmConfig) => void;
-  onDuplicate: (c: LlmConfig) => void;
-  onDelete: (c: LlmConfig) => void;
-  onDefault: (c: LlmConfig, on: boolean) => void;
+  config: LlmConfig
+  onEdit: (c: LlmConfig) => void
+  onDuplicate: (c: LlmConfig) => void
+  onDelete: (c: LlmConfig) => void
+  onDefault: (c: LlmConfig, on: boolean) => void
 }) {
-  const cli = cliLine(config);
+  const cli = cliLine(config)
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        render={
-          <Button
-            size="sm"
-            variant="ghost"
-            className="size-8 px-0 pointer-coarse:size-11"
-            aria-label={copy.configActions(config.name)}
-          />
-        }
-      >
-        <MoreHorizontal className="size-4" aria-hidden />
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="size-8 px-0 pointer-coarse:size-11"
+          aria-label={copy.configActions(config.name)}
+        >
+          <MoreHorizontal className="size-4" aria-hidden />
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuItem
-          onClick={() => {
-            onEdit(config);
-          }}
-        >
-          {copy.edit}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            onDefault(config, !config.is_default);
-          }}
-        >
+        <DropdownMenuItem onSelect={() => onEdit(config)}>{copy.edit}</DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onDefault(config, !config.is_default)}>
           {config.is_default ? copy.removeDefault : copy.setDefault}
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            onDuplicate(config);
-          }}
-        >
-          {copy.duplicate}
-        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => onDuplicate(config)}>{copy.duplicate}</DropdownMenuItem>
         <DropdownMenuSeparator />
-        {"line" in cli ? (
+        {'line' in cli ? (
           <CopyMenuItem text={cli.line} label={copy.copyCli} />
         ) : (
           <p className="px-2 py-1.5 text-xs text-muted-foreground">
-            {cli.unsupported === "tiered" ? copy.cliTiered : copy.cliNoModel}
+            {cli.unsupported === 'tiered' ? copy.cliTiered : copy.cliNoModel}
           </p>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          className="text-destructive"
-          onClick={() => {
-            onDelete(config);
-          }}
-        >
+        <DropdownMenuItem className="text-destructive" onSelect={() => onDelete(config)}>
           {copy.delete}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
+  )
 }
 
 function SetADefault({
   configs,
   onDefault,
 }: {
-  configs: LlmConfig[];
-  onDefault: (c: LlmConfig, on: boolean) => void;
+  configs: LlmConfig[]
+  onDefault: (c: LlmConfig, on: boolean) => void
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        render={<Button size="sm" variant="outline" className="pointer-coarse:min-h-11" />}
-      >
-        {copy.setADefault}
+      <DropdownMenuTrigger asChild>
+        <Button size="sm" variant="outline" className="pointer-coarse:min-h-11">
+          {copy.setADefault}
+        </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {configs.map((c) => (
-          <DropdownMenuItem
-            key={c.id}
-            onClick={() => {
-              onDefault(c, true);
-            }}
-          >
+          <DropdownMenuItem key={c.id} onSelect={() => onDefault(c, true)}>
             {c.name}
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
-  );
+  )
 }

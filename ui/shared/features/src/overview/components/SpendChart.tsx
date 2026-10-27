@@ -1,30 +1,26 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/SpendChart.tsx. Local edits: `"use
-// client"`; Prettier formatting.
-"use client";
-
 /**
  * The Spend card's chart: fleet spend per UTC day over the page's range, stacked by the top drivers plus Other (the
  * rest of the fleet), with the daily average as a dashed line; or the same series as lines. Colour follows the driver
  * into the table under it (DESIGN.md "Charts"), whose eye buttons hide a series here. The chart is pointer-only, so a
  * Table view lists the same days by keyboard; while a driver's series is missing it draws the fleet total alone.
  */
-import { BarChart3, Table2 } from "lucide-react";
-import { useState } from "react";
-import { Bar } from "@nasiko/ui/charts-kit";
-import { ChartDateFormat } from "@nasiko/ui/charts-kit";
-import { Line } from "@nasiko/ui/charts-kit";
-import { LineChart } from "@nasiko/ui/charts-kit";
-import { XAxis } from "@nasiko/ui/charts-kit";
-import { BarChart } from "@nasiko/ui/charts-kit";
-import { BarXAxis } from "@nasiko/ui/charts-kit";
-import { Grid } from "@nasiko/ui/charts-kit";
-import { ReferenceLine } from "@nasiko/ui/charts-kit";
-import { ChartTooltip } from "@nasiko/ui/charts-kit";
-import { YAxis } from "@nasiko/ui/charts-kit";
-import { Swatch } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { ScrollArea } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
+import { BarChart3, Table2 } from 'lucide-react'
+import { useState } from 'react'
+import { Bar } from '@nasiko/ui/charts/bar'
+import { ChartDateFormat } from '@nasiko/ui/charts/chart-formatters'
+import { Line } from '@nasiko/ui/charts/line'
+import { LineChart } from '@nasiko/ui/charts/line-chart'
+import { XAxis } from '@nasiko/ui/charts/x-axis'
+import { BarChart } from '@nasiko/ui/charts/bar-chart'
+import { BarXAxis } from '@nasiko/ui/charts/bar-x-axis'
+import { Grid } from '@nasiko/ui/charts/grid'
+import { ReferenceLine } from '@nasiko/ui/charts/reference-line'
+import { ChartTooltip } from '@nasiko/ui/charts/tooltip/chart-tooltip'
+import { YAxis } from '@nasiko/ui/charts/y-axis'
+import { Swatch } from '@nasiko/ui/composites/chart-marks'
+import { Button } from '@nasiko/ui/primitives/button'
+import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import {
   Table,
   TableBody,
@@ -32,27 +28,27 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import type { TimelinePoint } from "../../tokenops/series";
-import { OTHER_SERIES, seriesAt, type Series } from "@nasiko/ui/lib";
-import { fmtMoney, fmtMoneyAxis, fmtShortDay } from "@nasiko/ui/lib";
-import type { Stack, StackRow } from "../stack";
-import { copy } from "../copy";
-import { TOUCH } from "./Card";
+} from '@nasiko/ui/primitives/table'
+import type { TimelinePoint } from '@nasiko/features/tokenops/series'
+import { OTHER_SERIES, seriesAt, type Series } from '@nasiko/ui/lib/chart'
+import { fmtMoney, fmtMoneyAxis, fmtShortDay } from '@nasiko/ui/lib/format'
+import type { Stack, StackRow } from '../stack'
+import { copy } from '../copy'
+import { TOUCH } from './Card'
 
 interface Layer {
-  key: string;
-  name: string;
-  series: Series;
+  key: string
+  name: string
+  series: Series
 }
 
-const MARGIN = { top: 8, right: 8, bottom: 28, left: 48 };
+const MARGIN = { top: 8, right: 8, bottom: 28, left: 48 }
 /** No "$0": the baseline says it, and on a narrow card it collides with the first day's label. */
-const axisLabel = (v: number) => (v === 0 ? "" : fmtMoneyAxis(v));
+const axisLabel = (v: number) => (v === 0 ? '' : fmtMoneyAxis(v))
 /** Axis ticks and the tooltip title in UTC (the kit's default is local time). */
-const utcDay = (d: Date) => fmtShortDay(d.toISOString());
+const utcDay = (d: Date) => fmtShortDay(d.toISOString())
 
-export type ChartMode = "bars" | "lines";
+export type ChartMode = 'bars' | 'lines'
 
 export function SpendChart({
   days,
@@ -62,43 +58,43 @@ export function SpendChart({
   mode,
   hidden,
 }: {
-  days: readonly TimelinePoint[];
-  stack: Stack | null;
-  pending: boolean;
-  rangeDays: number;
-  mode: ChartMode;
+  days: readonly TimelinePoint[]
+  stack: Stack | null
+  pending: boolean
+  rangeDays: number
+  mode: ChartMode
   /** Layer keys (`s0`…, `other`) left out of the chart; the Table view keeps every layer. */
-  hidden: ReadonlySet<string>;
+  hidden: ReadonlySet<string>
 }) {
-  const [asTable, setAsTable] = useState(false);
-  if (pending) return <Skeleton className="h-55 w-full motion-reduce:animate-none" />;
+  const [asTable, setAsTable] = useState(false)
+  if (pending) return <Skeleton className="h-55 w-full motion-reduce:animate-none" />
   const layers: Layer[] = stack
     ? [
         ...stack.series.map((s, i) => ({ key: s.key, name: s.name, series: seriesAt(i) })),
-        { key: "other", name: copy.spend.other, series: OTHER_SERIES },
+        { key: 'other', name: copy.spend.other, series: OTHER_SERIES },
       ]
-    : [{ key: "total", name: copy.spend.colTotal, series: seriesAt(0) }];
-  const shown = layers.filter((l) => !hidden.has(l.key));
+    : [{ key: 'total', name: copy.spend.colTotal, series: seriesAt(0) }]
+  const shown = layers.filter((l) => !hidden.has(l.key))
   const rows: StackRow[] = (
     stack?.rows ?? days.map((p) => ({ iso: p.iso, label: p.label, total: p.spend, other: 0 }))
-  ).map((r) => ({ ...r, date: r.iso.slice(0, 10) }));
-  const total = rows.reduce((s, r) => s + r.total, 0);
-  const peak = rows.reduce<StackRow | null>((m, r) => (!m || r.total > m.total ? r : m), null);
+  ).map((r) => ({ ...r, date: r.iso.slice(0, 10) }))
+  const total = rows.reduce((s, r) => s + r.total, 0)
+  const peak = rows.reduce<StackRow | null>((m, r) => (!m || r.total > m.total ? r : m), null)
   const summary = copy.spend.chartSummary(
     rangeDays,
     fmtMoney(total),
     peak && peak.total > 0 ? peak.label : null,
     fmtMoney(peak?.total ?? 0),
-  );
+  )
   return (
     <figure className="m-0 flex flex-col gap-2" aria-label={summary}>
       {asTable ? (
         <DaysTable rows={rows} layers={layers} />
-      ) : mode === "lines" ? (
+      ) : mode === 'lines' ? (
         <div role="presentation" className="h-55">
           <ChartDateFormat value={utcDay}>
             <LineChart
-              data={rows}
+              data={rows as unknown as Record<string, unknown>[]}
               xDataKey="date"
               aspectRatio="auto"
               className="h-full"
@@ -129,7 +125,7 @@ export function SpendChart({
         // Pointer-only (the kit's marks are aria-hidden): the Table view carries the same days by keyboard.
         <div role="presentation" className="h-55">
           <BarChart
-            data={rows}
+            data={rows as unknown as Record<string, unknown>[]}
             xDataKey="label"
             stacked
             stackGap={2}
@@ -177,16 +173,14 @@ export function SpendChart({
           size="sm"
           className={`h-7 text-xs ${TOUCH}`}
           aria-pressed={asTable}
-          onClick={() => {
-            setAsTable((v) => !v);
-          }}
+          onClick={() => setAsTable((v) => !v)}
         >
           {asTable ? <BarChart3 aria-hidden /> : <Table2 aria-hidden />}
           {asTable ? copy.spend.showChart : copy.spend.showTable}
         </Button>
       </figcaption>
     </figure>
-  );
+  )
 }
 
 function DayTooltip({ row, layers }: { row: StackRow; layers: readonly Layer[] }) {
@@ -207,11 +201,11 @@ function DayTooltip({ row, layers }: { row: StackRow; layers: readonly Layer[] }
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 function DaysTable({ rows, layers }: { rows: readonly StackRow[]; layers: readonly Layer[] }) {
-  const cols = layers.length > 1 ? layers : [];
+  const cols = layers.length > 1 ? layers : []
   return (
     <ScrollArea className="[&>[data-slot=scroll-area-viewport]]:max-h-55">
       <Table className="text-xs">
@@ -258,5 +252,5 @@ function DaysTable({ rows, layers }: { rows: readonly StackRow[]; layers: readon
         </TableBody>
       </Table>
     </ScrollArea>
-  );
+  )
 }

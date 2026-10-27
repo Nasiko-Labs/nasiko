@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/sessionLookup.ts. Local edits: the lookup key is scoped
-// (`chatKeys.lookup(scope, id)` with `useProductScope()`); the page read passes `signal ?? null`
-// (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Find a chat's list row beyond the rail's pages (v1b §5.1, EN-6, NE-5). The server has no
  * single-session GET (rec P1), so this pages `GET /api/chat/sessions` on from where the rail
@@ -8,26 +5,26 @@
  * for the registry's lifetime.
  * Hitting the cap never means "removed": it's `capped`, and the page says it couldn't tell.
  */
-import { useQuery } from "@tanstack/react-query";
-import { apiFetch, useProductScope, withQuery } from "@nasiko/data-access/product";
-import { chatKeys } from "./keys";
-import { unwrapSessionsPage } from "./normalize";
-import { tuning } from "./tuning";
-import type { ChatSessionRow } from "./types";
+import { useQuery } from '@tanstack/react-query'
+import { apiFetch, withQuery } from '@nasiko/data-access/client'
+import { chatKeys } from './keys'
+import { unwrapSessionsPage } from './normalize'
+import { tuning } from './tuning'
+import type { ChatSessionRow } from './types'
 
 export type SessionLookup =
-  { status: "found"; row: ChatSessionRow } | { status: "absent" } | { status: "capped" };
+  { status: 'found'; row: ChatSessionRow } | { status: 'absent' } | { status: 'capped' }
 
-const found = new Map<string, ChatSessionRow>();
+const found = new Map<string, ChatSessionRow>()
 
 /** Drop one cached row (the chat was deleted). */
 export function forgetSessionLookup(sessionId: string) {
-  found.delete(sessionId);
+  found.delete(sessionId)
 }
 
 /** Drop cached rows (user switch, logout, tests). */
 export function clearSessionLookup() {
-  found.clear();
+  found.clear()
 }
 
 export async function lookupSession(
@@ -35,32 +32,32 @@ export async function lookupSession(
   signal?: AbortSignal,
   startCursor?: string,
 ): Promise<SessionLookup> {
-  const hit = found.get(sessionId);
-  if (hit) return { status: "found", row: hit };
-  let cursor = startCursor;
+  const hit = found.get(sessionId)
+  if (hit) return { status: 'found', row: hit }
+  let cursor = startCursor
   for (let i = 0; i < tuning.LOOKUP_PAGES; i++) {
     const page = unwrapSessionsPage(
-      await apiFetch(withQuery("/api/chat/sessions", { limit: tuning.LOOKUP_PAGE_SIZE, cursor }), {
-        signal: signal ?? null,
+      await apiFetch(withQuery('/api/chat/sessions', { limit: tuning.LOOKUP_PAGE_SIZE, cursor }), {
+        signal,
       }),
-    );
-    const row = page.data.find((r) => r.session_id === sessionId);
+    )
+    const row = page.data.find((r) => r.session_id === sessionId)
     if (row) {
-      found.set(sessionId, row);
-      return { status: "found", row };
+      found.set(sessionId, row)
+      return { status: 'found', row }
     }
-    if (!page.has_more || !page.next_cursor) return { status: "absent" };
-    cursor = page.next_cursor;
+    if (!page.has_more || !page.next_cursor) return { status: 'absent' }
+    cursor = page.next_cursor
   }
-  return { status: "capped" };
+  return { status: 'capped' }
 }
 
 /** Runs only when `enabled` (the rail's own pages didn't have the chat). */
 export function useSessionLookup(sessionId: string, enabled: boolean, startCursor?: string) {
   return useQuery({
-    queryKey: chatKeys.lookup(useProductScope(), sessionId),
+    queryKey: chatKeys.lookup(sessionId),
     enabled,
     staleTime: Infinity,
     queryFn: ({ signal }) => lookupSession(sessionId, signal, startCursor),
-  });
+  })
 }

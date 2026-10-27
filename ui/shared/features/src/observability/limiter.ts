@@ -1,49 +1,46 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/observability/limiter.ts. Local edits: none beyond imports and
-// Prettier. Development (f7252ccb2): a queued read dropped when its row scrolls away.
 /**
  * At most `max` async jobs in flight. A finished job hands its slot straight to the next
  * waiter (no window where a newcomer can overshoot), and a waiter whose query was
  * cancelled leaves the queue without ever running.
  */
 export function createLimiter(max: number) {
-  let active = 0;
-  const waiting: { start: () => void; signal: AbortSignal }[] = [];
+  let active = 0
+  const waiting: { start: () => void; signal: AbortSignal }[] = []
 
   const release = () => {
     // Skip waiters whose query was cancelled while queued.
     for (let next = waiting.shift(); next; next = waiting.shift()) {
-      if (next.signal.aborted) continue;
-      next.start();
-      return;
+      if (next.signal.aborted) continue
+      next.start()
+      return
     }
-    active--;
-  };
+    active--
+  }
 
   return async function run<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
     // Already cancelled: its abort event has fired, so a queued wait would never settle.
-    if (signal.aborted) throw signal.reason ?? new DOMException("Aborted", "AbortError");
+    if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
     if (active >= max) {
       await new Promise<void>((resolve, reject) => {
-        const entry = { start: resolve, signal };
-        waiting.push(entry);
+        const entry = { start: resolve, signal }
+        waiting.push(entry)
         signal.addEventListener(
-          "abort",
+          'abort',
           () => {
-            const i = waiting.indexOf(entry);
-            if (i >= 0) waiting.splice(i, 1);
-            // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- the caller's own abort reason
-            reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+            const i = waiting.indexOf(entry)
+            if (i >= 0) waiting.splice(i, 1)
+            reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
           },
           { once: true },
-        );
-      });
+        )
+      })
     } else {
-      active++;
+      active++
     }
     try {
-      return await fn();
+      return await fn()
     } finally {
-      release();
+      release()
     }
-  };
+  }
 }

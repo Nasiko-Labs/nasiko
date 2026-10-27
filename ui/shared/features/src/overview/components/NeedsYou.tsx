@@ -1,38 +1,25 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/NeedsYou.tsx. Local edits: the lab's
-// `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`; each row's `Action` (`Button asChild` around a
-// TanStack `Link`) is a `ButtonLink` taking the link's props (hrefs: `chatHref(id)`, `/agents/<id>`, and `pageHref` for
-// the router's budgets hash and the Sessions filter); the request row's `state={{ waitingRequest }}` (the navigation
-// port's links carry no state) is chat/waitingNav.ts `openFromWaiting(sessionId, requestId)` on click, as Chat's own
-// Waiting rows do; optional props admit `undefined`; development (b3dd6d4f8, 3279a16e9, 1c28b0bb9): an agent's budget
-// row opens its hub's Budget section (`pageHref("/agents/<id>", {}, "hub-budget")`) and any other budget row the
-// budgets slot's `NeedsLink`; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
-"use client";
-
 /**
  * Needs you (plans/feat-overview.md §6): the inbox, most urgent first. Severity is said once, by a plain icon beside
  * the text (design review 9A); five rows show and the rest scroll inside the card (2A); the header always says when
  * it last checked (8A); a failed source adds a line and never turns into "Nothing needs you" (5A).
  */
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
-import { OpenFlowLink } from "../../flows/components/OpenFlowLink";
-import { CircleAlert, Hand, TriangleAlert } from "lucide-react";
-import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { ScrollArea } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { relTime } from "../../agents/format";
-import { chatHref } from "../../chat/nav";
-import { rememberRailView } from "../../chat/rememberTarget";
-import { openFromWaiting } from "../../chat/waitingNav";
-import { cn } from "@nasiko/ui/cn";
-import type { NeedsYou as NeedsYouData } from "../api";
-import { copy } from "../copy";
-import { budgetView, type NeedRow, type Severity } from "../needs";
-import { CHECKED_TICK_MS, LAST_WEEK, NEEDS_VISIBLE_ROWS } from "../tuning";
-import { Card, CardError, CardSkeleton, pageHref, SourceFailed, TOUCH } from "./Card";
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { OpenFlowLink } from '@nasiko/features/flows/components/OpenFlowLink'
+import { Link } from '@tanstack/react-router'
+import { CircleAlert, Hand, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { relTime } from '@nasiko/features/agents/format'
+import { rememberRailView } from '@nasiko/features/chat/rememberTarget'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { NeedsYou as NeedsYouData } from '../api'
+import { copy } from '../copy'
+import { budgetView, type NeedRow, type Severity } from '../needs'
+import { CHECKED_TICK_MS, LAST_WEEK, NEEDS_VISIBLE_ROWS } from '../tuning'
+import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
 
 /** `detail` colours the row's reason: action and watch say why in their own tone; a waiting request stays quiet. */
 const ICON: Record<
@@ -41,28 +28,30 @@ const ICON: Record<
 > = {
   action: {
     Icon: CircleAlert,
-    tone: "text-destructive",
-    detail: "text-destructive",
+    tone: 'text-destructive',
+    detail: 'text-destructive',
     label: copy.rating.action,
   },
   watch: {
     Icon: TriangleAlert,
-    tone: "text-warning",
-    detail: "text-warning",
+    tone: 'text-warning',
+    detail: 'text-warning',
     label: copy.rating.watch,
   },
   waiting: {
     Icon: Hand,
-    tone: "text-info",
-    detail: "text-muted-foreground",
+    tone: 'text-info',
+    detail: 'text-muted-foreground',
     label: copy.needs.waiting,
   },
-};
+}
 /** A row's one action: a small outline button that is a link. */
-function Action(props: Omit<ComponentProps<typeof ButtonLink>, "variant" | "size" | "className">) {
+function Action({ children }: { children: ReactNode }) {
   return (
-    <ButtonLink variant="outline" size="sm" className={cn("shrink-0 text-xs", TOUCH)} {...props} />
-  );
+    <Button asChild variant="outline" size="sm" className={cn('shrink-0 text-xs', TOUCH)}>
+      {children}
+    </Button>
+  )
 }
 
 export function NeedsYou({
@@ -72,34 +61,30 @@ export function NeedsYou({
   pausedFlows,
   className,
 }: {
-  data: NeedsYouData;
-  now: number;
-  userId: string;
+  data: NeedsYouData
+  now: number
+  userId: string
   /** Chat session → its paused flow (plans/feat-flows.md O2, amended 2026-10-06): a request row links it. */
-  pausedFlows?: ReadonlyMap<string, string> | undefined;
-  className?: string | undefined;
+  pausedFlows?: ReadonlyMap<string, string>
+  className?: string
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const { needs } = data;
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const { needs } = data
   // Every source the server has failed: one card error (on OSS, budgets are absent, so three of three count).
   const allFailed =
     !needs.rows.length &&
     !needs.loading &&
     needs.failed.length > 0 &&
-    needs.failed.length === needs.available;
+    needs.failed.length === needs.available
   // "Checked …" ages on an open tab: the page's `now` is frozen per visit (/ship adversarial).
-  const [clock, setClock] = useState(() => Date.now());
+  const [clock, setClock] = useState(() => Date.now())
   useEffect(() => {
-    const t = setInterval(() => {
-      setClock(Date.now());
-    }, CHECKED_TICK_MS);
-    return () => {
-      clearInterval(t);
-    };
-  }, []);
-  const ageNow = Math.max(now, clock);
-  const count = { action: 0, watch: 0, waiting: 0 };
-  for (const r of needs.rows) count[r.severity]++;
+    const t = setInterval(() => setClock(Date.now()), CHECKED_TICK_MS)
+    return () => clearInterval(t)
+  }, [])
+  const ageNow = Math.max(now, clock)
+  const count = { action: 0, watch: 0, waiting: 0 }
+  for (const r of needs.rows) count[r.severity]++
   return (
     <Card
       id="overview-needs"
@@ -107,14 +92,14 @@ export function NeedsYou({
       titleClassName="text-lg tracking-tight"
       // Anything that needs action lifts the card: a destructive edge along the top (live bolder pass).
       className={cn(
-        "gap-3.5",
+        'gap-3.5',
         className,
-        count.action > 0 && "border-destructive/35 shadow-[inset_0_3px_0_var(--color-destructive)]",
+        count.action > 0 && 'border-destructive/35 shadow-[inset_0_3px_0_var(--color-destructive)]',
       )}
       meta={
         needs.rows.length ? (
           <span className="inline-flex gap-3 font-medium">
-            {(["action", "watch", "waiting"] as const).map((s) =>
+            {(['action', 'watch', 'waiting'] as const).map((s) =>
               count[s] ? (
                 <span key={s} className={ICON[s].tone}>
                   {copy.needs.count[s](count[s])}
@@ -136,11 +121,7 @@ export function NeedsYou({
       {allFailed ? (
         <CardError
           what={copy.needs.what}
-          onRetry={() => {
-            Object.values(data.retry).forEach((r) => {
-              r();
-            });
-          }}
+          onRetry={() => Object.values(data.retry).forEach((r) => r())}
           titleRef={titleRef}
         />
       ) : needs.loading && !needs.rows.length ? (
@@ -166,11 +147,11 @@ export function NeedsYou({
                     key={r.key}
                     className="border-t border-border first:border-t-0 @[900px]/card:rounded-lg @[900px]/card:border @[900px]/card:bg-muted/20 @[900px]/card:px-3 @[900px]/card:first:border-t"
                   >
-                    <Row
+                    <NeedRowView
                       row={r}
                       now={now}
                       userId={userId}
-                      flowId={r.kind === "request" ? pausedFlows?.get(r.chat.sessionId) : undefined}
+                      flowId={r.kind === 'request' ? pausedFlows?.get(r.chat.sessionId) : undefined}
                     />
                   </li>
                 ))}
@@ -192,125 +173,146 @@ export function NeedsYou({
         </div>
       )}
     </Card>
-  );
+  )
 }
 
-function Row({
+/** One Needs you row: its icon, what it is, and its one action (the insight panel lists requests with it too). */
+export function NeedRowView({
   row,
   now,
   userId,
   flowId,
 }: {
-  row: NeedRow;
-  now: number;
-  userId: string;
+  row: NeedRow
+  now: number
+  userId: string
   /** The request's paused flow, when one matches its chat. */
-  flowId?: string | undefined;
+  flowId?: string
 }) {
-  const { Icon, tone, detail: detailTone, label } = ICON[row.severity];
+  const { Icon, tone, detail: detailTone, label } = ICON[row.severity]
   // Budgets are Enterprise only: an OSS build has no `/budgets` route to link a budget row to.
-  const BudgetsLink = useSlots().budgets.NeedsLink;
-  let title: string;
-  let detail: string;
-  let action: ReactNode;
+  const BudgetsLink = useSlots().budgets.NeedsLink
+  let title: string
+  let detail: string
+  let action: ReactNode
   switch (row.kind) {
-    case "request":
-      title = copy.needs.request(row.chat.kind, row.chat.count);
-      detail = `${row.chat.chatTitle} · ${relTime(row.chat.at, Math.max(now, Date.parse(row.chat.at) || now))}`;
+    case 'request':
+      title = copy.needs.request(row.chat.kind, row.chat.count)
+      detail = `${row.chat.chatTitle} · ${relTime(row.chat.at, Math.max(now, Date.parse(row.chat.at) || now))}`
       action = (
-        <Action
-          href={chatHref(row.chat.sessionId)}
-          onClick={() => {
-            openFromWaiting(row.chat.sessionId, row.chat.firstId);
-          }}
-          aria-label={copy.needs.reviewLabel(row.chat.chatTitle)}
-        >
-          {copy.needs.review}
+        <Action>
+          <Link
+            to="/chat/$sessionId"
+            params={{ sessionId: row.chat.sessionId }}
+            state={{ waitingRequest: row.chat.firstId } as never}
+            aria-label={copy.needs.reviewLabel(row.chat.chatTitle)}
+          >
+            {copy.needs.review}
+          </Link>
         </Action>
-      );
-      break;
-    case "outside":
-      title = copy.needs.outside(row.count);
-      detail = copy.needs.outsideDetail;
+      )
+      break
+    case 'outside':
+      title = copy.needs.outside(row.count)
+      detail = copy.needs.outsideDetail
       // Chat's Waiting view is the one that explains requests outside Chat: pick it before opening Chat (/ship review).
       action = (
-        <Action
-          href="/chat"
-          onClick={() => {
-            rememberRailView(userId, "waiting");
-          }}
-          aria-label={copy.needs.openWaiting}
-        >
-          {copy.needs.openChat}
+        <Action>
+          <Link
+            to="/chat"
+            onClick={() => rememberRailView(userId, 'waiting')}
+            aria-label={copy.needs.openWaiting}
+          >
+            {copy.needs.openChat}
+          </Link>
         </Action>
-      );
-      break;
-    case "agent":
-      title = row.name;
-      detail = row.reason;
+      )
+      break
+    case 'agent':
+      title = row.name
+      detail = row.reason
       action = row.budget ? (
-        <Action
-          href={pageHref(`/agents/${encodeURIComponent(row.id)}`, {}, "hub-budget")}
-          aria-label={copy.needs.agentBudgetLabel(row.name)}
-        >
-          {copy.needs.agentBudget}
+        <Action>
+          <Link
+            to="/agents/$agentId"
+            params={{ agentId: row.id }}
+            search={{}}
+            hash="hub-budget"
+            aria-label={copy.needs.agentBudgetLabel(row.name)}
+          >
+            {copy.needs.agentBudget}
+          </Link>
         </Action>
       ) : (
-        <Action
-          href={`/agents/${encodeURIComponent(row.id)}`}
-          aria-label={copy.needs.openAgentLabel(row.name)}
-        >
-          {copy.needs.openAgent}
+        <Action>
+          <Link
+            to="/agents/$agentId"
+            params={{ agentId: row.id }}
+            search={{}}
+            aria-label={copy.needs.openAgentLabel(row.name)}
+          >
+            {copy.needs.openAgent}
+          </Link>
         </Action>
-      );
-      break;
-    case "budget": {
-      const v = budgetView(row);
-      title = v.title;
-      detail = v.detail;
+      )
+      break
+    case 'budget': {
+      const v = budgetView(row)
+      title = v.title
+      detail = v.detail
       action = row.agentId ? (
-        <Action
-          href={pageHref(`/agents/${encodeURIComponent(row.agentId)}`, {}, "hub-budget")}
-          aria-label={copy.needs.agentBudgetLabel(row.label)}
-        >
-          {copy.needs.agentBudget}
+        <Action>
+          <Link
+            to="/agents/$agentId"
+            params={{ agentId: row.agentId }}
+            search={{}}
+            hash="hub-budget"
+            aria-label={copy.needs.agentBudgetLabel(row.label)}
+          >
+            {copy.needs.agentBudget}
+          </Link>
         </Action>
       ) : BudgetsLink ? (
         // Budgets are Enterprise only, and so is `/budgets`: the core cannot type a link to a route it has no
         // routes for, and a budget row only ever reaches an OSS build if a layer put it there.
-        <BudgetsLink label={copy.needs.budgets} ariaLabel={copy.needs.budgetsLabel(row.label)} />
-      ) : null;
-      break;
-    }
-    case "sessions":
-      title = copy.needs.sessions(row.failed);
-      detail = row.agents.join(", ");
-      action = (
-        <Action
-          href={pageHref("/sessions", { ...LAST_WEEK, lane: "failing" })}
-          aria-label={copy.needs.seeFailing}
-        >
-          {copy.needs.seeSessions}
+        <Action>
+          <BudgetsLink label={copy.needs.budgets} ariaLabel={copy.needs.budgetsLabel(row.label)} />
         </Action>
-      );
-      break;
+      ) : null
+      break
+    }
+    case 'sessions':
+      title = copy.needs.sessions(row.failed)
+      detail = row.agents.join(', ')
+      action = (
+        <Action>
+          <Link
+            to="/sessions"
+            search={{ ...LAST_WEEK, lane: 'failing' } as never}
+            aria-label={copy.needs.seeFailing}
+          >
+            {copy.needs.seeSessions}
+          </Link>
+        </Action>
+      )
+      break
   }
   return (
     <div className="flex items-center gap-3 py-2.5" data-kind={row.kind}>
       {/* The icon sits on a tile of its own tone. */}
       <Icon
-        className={cn("box-content size-4 shrink-0 rounded-md bg-current/12 p-1.5", tone)}
+        className={cn('box-content size-4 shrink-0 rounded-md bg-current/12 p-1.5', tone)}
         aria-label={label}
         role="img"
       />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold">{title}</p>
-        {detail ? <p className={cn("truncate text-xs", detailTone)}>{detail}</p> : null}
+        {detail ? <p className={cn('truncate text-xs', detailTone)}>{detail}</p> : null}
       </div>
       {flowId ? (
         <OpenFlowLink flowId={flowId} variant="ghost" className="shrink-0 text-xs" />
       ) : null}
       {action}
     </div>
-  );
+  )
 }

@@ -1,27 +1,25 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/lib/slice.ts (5d46c313f). Local edits: in
-// app-core (the lab's `lib/`: pure rules both Optimization and the agent hub use); Prettier formatting.
 /**
  * A chart bucket picked into the URL (`?slice=<ISO start>/<ISO end>`, end exclusive): Optimization's bars and the agent
  * hub's buckets use the same format, so the rules live here (plans/feat-optimization-page.md C5; plans/feat-agent-centric.md
  * DX URL keys). Also the one "tokens saved" rule both pages draw. Pure.
  */
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
 
-export type BucketSize = "hour" | "day" | "week";
+export type BucketSize = 'hour' | 'day' | 'week'
 
-const SIZE_MS: Record<BucketSize, number> = { hour: HOUR, day: DAY, week: 7 * DAY };
+const SIZE_MS: Record<BucketSize, number> = { hour: HOUR, day: DAY, week: 7 * DAY }
 
 /** A bar's interval as the `?slice=` value: ISO 8601 `start/end` (end exclusive). */
 export function sliceOf(startIso: string, size: BucketSize): string {
-  const start = Date.parse(startIso);
-  return `${new Date(start).toISOString()}/${new Date(start + SIZE_MS[size]).toISOString()}`;
+  const start = Date.parse(startIso)
+  return `${new Date(start).toISOString()}/${new Date(start + SIZE_MS[size]).toISOString()}`
 }
 
 export interface Slice {
-  from: string;
-  to: string;
-  size: BucketSize;
+  from: string
+  to: string
+  size: BucketSize
 }
 
 /**
@@ -32,18 +30,18 @@ export function parseSlice(
   value: string | undefined,
   win: { start: Date; end: Date },
 ): Slice | null {
-  if (!value) return null;
-  const [a, b, extra] = value.split("/");
-  if (!a || !b || extra !== undefined) return null;
-  const from = Date.parse(a);
-  const to = Date.parse(b);
-  if (Number.isNaN(from) || Number.isNaN(to)) return null;
-  const size = (Object.keys(SIZE_MS) as BucketSize[]).find((k) => SIZE_MS[k] === to - from);
-  if (!size) return null;
-  if (to <= win.start.getTime() || from >= win.end.getTime()) return null;
-  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), size };
+  if (!value) return null
+  const [a, b, extra] = value.split('/')
+  if (!a || !b || extra !== undefined) return null
+  const from = Date.parse(a)
+  const to = Date.parse(b)
+  if (Number.isNaN(from) || Number.isNaN(to)) return null
+  const size = (Object.keys(SIZE_MS) as BucketSize[]).find((k) => SIZE_MS[k] === to - from)
+  if (!size) return null
+  if (to <= win.start.getTime() || from >= win.end.getTime()) return null
+  return { from: new Date(from).toISOString(), to: new Date(to).toISOString(), size }
 }
 
 /** Tokens saved: without minus sent, never negative (a report can't send more than its pool). */
 export const savedOf = (r: { pool_tokens: number; sent_tokens: number }) =>
-  Math.max(0, r.pool_tokens - r.sent_tokens);
+  Math.max(0, r.pool_tokens - r.sent_tokens)

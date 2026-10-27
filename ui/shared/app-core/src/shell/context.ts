@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/context.ts. Local edits: the three window keys `withoutWindow` drops are
-// marked read (`no-unused-vars`); Prettier formatting.
 /**
  * Shared page context carried across TokenOps, Sessions and Session trace in the URL.
  *
@@ -27,25 +25,25 @@
  *
  * Every id that goes into a path or query is `encodeURIComponent`-ed by the router.
  */
-import * as z from "zod/mini";
-import { fallback, flag, isoDate, opt, PRESETS, text } from "../search";
+import { z } from 'zod/mini'
+import { fallback, flag, isoDate, opt, PRESETS, text } from '@nasiko/ui/lib/search'
 
 const SHARED_KEYS = [
-  "preset",
-  "from",
-  "to",
-  "agent",
-  "provider",
-  "model",
-  "compare",
-  "anchor",
-  "mock",
-  "demo",
-] as const;
+  'preset',
+  'from',
+  'to',
+  'agent',
+  'provider',
+  'model',
+  'compare',
+  'anchor',
+  'mock',
+  'demo',
+] as const
 
 /** The shared keys' schema, merged into each page's own search schema. */
 export const sharedSearchSchema = z.object({
-  preset: fallback(z.enum(PRESETS), "30d"),
+  preset: fallback(z.enum(PRESETS), '30d'),
   from: opt(isoDate),
   to: opt(isoDate),
   agent: opt(text),
@@ -55,41 +53,40 @@ export const sharedSearchSchema = z.object({
   anchor: opt(isoDate),
   mock: opt(
     z.enum([
-      "tempo-down",
-      "empty",
-      "trace-503",
-      "trace-500",
-      "scan-fail",
-      "server-down",
-      "logout-unavailable",
+      'tempo-down',
+      'empty',
+      'trace-503',
+      'trace-500',
+      'scan-fail',
+      'server-down',
+      'logout-unavailable',
     ]),
   ),
   demo: opt(flag),
-});
+})
 
-export type SharedSearch = z.infer<typeof sharedSearchSchema>;
+export type SharedSearch = z.infer<typeof sharedSearchSchema>
 
 /** Keep only the shared keys (for nav links and cross-page jumps). */
 export function pickShared(search: Record<string, unknown>): Partial<SharedSearch> {
-  const out: Record<string, unknown> = {};
-  for (const k of SHARED_KEYS) if (search[k] !== undefined) out[k] = search[k];
-  return out;
+  const out: Record<string, unknown> = {}
+  for (const k of SHARED_KEYS) if (search[k] !== undefined) out[k] = search[k]
+  return out as Partial<SharedSearch>
 }
 
 /** Links into Sessions and TokenOps: the shared keys minus the window, so each starts on its own (7d, 30d). */
 export function withoutWindow(search: Record<string, unknown>): Partial<SharedSearch> {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the three window keys are what is dropped
-  const { preset, from, to, ...rest } = pickShared(search);
-  return rest;
+  const { preset, from, to, ...rest } = pickShared(search)
+  return rest
 }
 
 /** Compare period defaults to on; only an explicit `compare=0` turns it off. */
-export const compareOn = (s: { compare?: boolean }) => s.compare !== false;
+export const compareOn = (s: { compare?: boolean }) => s.compare !== false
 
 /** Presenter mode: which of the three demo steps the current URL is on (null = none). */
 export function presenterStep(pathname: string, search: Record<string, unknown>): number | null {
-  if (pathname === "/tokenops") return 0;
-  if (pathname === "/sessions" || pathname === "/sessions/") return search.day ? 1 : null;
-  if (pathname.startsWith("/sessions/")) return 2;
-  return null;
+  if (pathname === '/tokenops') return 0
+  if (pathname === '/sessions' || pathname === '/sessions/') return search.day ? 1 : null
+  if (pathname.startsWith('/sessions/')) return 2
+  return null
 }

@@ -1,0 +1,193 @@
+{
+  "fixture_version": 1,
+  "id": "sessions.detail",
+  "recorded_at": "2026-09-29T08:53:59.197Z",
+  "window": {
+    "start": "2026-09-29T08:53:59.197Z",
+    "end": "2026-09-29T08:53:59.269Z"
+  },
+  "anchor": "2026-09-29T08:53:49.244Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/session/{session0}",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "session": {
+        "id": "5eed-sess-sales-assistant-2026-09-29",
+        "session_id": "5eed-sess-sales-assistant-2026-09-29",
+        "title": "Prep notes for the Acme renewal call",
+        "agent_name": "seed-sales-assistant",
+        "num_traces": 3,
+        "token_usage": {
+          "total": 31862
+        },
+        "cost_summary": {
+          "total": {
+            "cost": 0.08396,
+            "tokens": 31862
+          },
+          "prompt": {
+            "cost": 0.052068,
+            "tokens": 24618
+          },
+          "completion": {
+            "cost": 0.031821,
+            "tokens": 6303
+          },
+          "cache_read": {
+            "cost": 0.000071,
+            "tokens": 941
+          },
+          "cache_creation": {
+            "cost": 0,
+            "tokens": 0
+          }
+        },
+        "latency_p50": 4400,
+        "latency_p99": 4442,
+        "latency_avg": 4354,
+        "cache_read_tokens": 941,
+        "cache_creation_tokens": 0,
+        "metrics_complete": true,
+        "traces": [
+          {
+            "id": "VHJhY2U6NWVlZGI0MGVkM2U3NjA3MmJlNDdlYmQ0YmI4YjBiZjg=",
+            "trace_id": "5eedb40ed3e76072be47ebd4bb8b0bf8",
+            "root_span": {
+              "id": "U3BhbjpkZTkyZmJmZDUzNDk1YTYx",
+              "span_id": "de92fbfd53495a61",
+              "attributes": "{\"gen_ai.agent.name\":\"seed-sales-assistant\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prep notes for the Acme renewal call\\\"}]}]\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prepared the brief.\\\"}]}]\",\"session.id\":\"5eed-sess-sales-assistant-2026-09-29\"}",
+              "cumulative_token_count_total": 8765,
+              "input_tokens": 4216,
+              "output_tokens": 3608,
+              "cache_read_tokens": 941,
+              "cache_creation_tokens": 0,
+              "latency_ms": 4220,
+              "start_time": "2026-09-29T08:35:06.147Z",
+              "span_annotations": [],
+              "span_annotation_summaries": [],
+              "project": {
+                "id": ""
+              },
+              "input": {
+                "value": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Prep notes for the Acme renewal call\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "output": {
+                "value": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Prepared the brief.\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "trace": {
+                "id": "VHJhY2U6NWVlZGI0MGVkM2U3NjA3MmJlNDdlYmQ0YmI4YjBiZjg=",
+                "cost_summary": {
+                  "total": {
+                    "cost": 0.002869
+                  }
+                }
+              }
+            },
+            "cursor": "Y29ubmVjdGlvbjow"
+          },
+          {
+            "id": "VHJhY2U6NWVlZDgxNTAzNzBmMjE3ZTVhNjRiNTJhOTNjY2I1ZDQ=",
+            "trace_id": "5eed8150370f217e5a64b52a93ccb5d4",
+            "root_span": {
+              "id": "U3Bhbjo4MjQ4NjJjNzY3Nzc1OTE1",
+              "span_id": "824862c767775915",
+              "attributes": "{\"gen_ai.agent.name\":\"seed-sales-assistant\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prep notes for the Acme renewal call\\\"}]}]\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prepared the brief.\\\"}]}]\",\"session.id\":\"5eed-sess-sales-assistant-2026-09-29\"}",
+              "cumulative_token_count_total": 18921,
+              "input_tokens": 16974,
+              "output_tokens": 1947,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "latency_ms": 4400,
+              "start_time": "2026-09-29T08:29:18.366Z",
+              "span_annotations": [],
+              "span_annotation_summaries": [],
+              "project": {
+                "id": ""
+              },
+              "input": {
+                "value": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Prep notes for the Acme renewal call\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "output": {
+                "value": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Prepared the brief.\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "trace": {
+                "id": "VHJhY2U6NWVlZDgxNTAzNzBmMjE3ZTVhNjRiNTJhOTNjY2I1ZDQ=",
+                "cost_summary": {
+                  "total": {
+                    "cost": 0.080127
+                  }
+                }
+              }
+            },
+            "cursor": "Y29ubmVjdGlvbjox"
+          },
+          {
+            "id": "VHJhY2U6NWVlZDIxOTUyMWU0NmE3ODNhZjRhNjQ3NTM4ZmY2ZGM=",
+            "trace_id": "5eed219521e46a783af4a647538ff6dc",
+            "root_span": {
+              "id": "U3Bhbjo2NjIzNjczNTg0NGIxNGYz",
+              "span_id": "66236735844b14f3",
+              "attributes": "{\"gen_ai.agent.name\":\"seed-sales-assistant\",\"gen_ai.input.messages\":\"[{\\\"role\\\":\\\"user\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prep notes for the Acme renewal call\\\"}]}]\",\"gen_ai.operation.name\":\"invoke_agent\",\"gen_ai.output.messages\":\"[{\\\"role\\\":\\\"assistant\\\",\\\"parts\\\":[{\\\"type\\\":\\\"text\\\",\\\"content\\\":\\\"Prepared the brief.\\\"}]}]\",\"session.id\":\"5eed-sess-sales-assistant-2026-09-29\"}",
+              "cumulative_token_count_total": 4176,
+              "input_tokens": 3428,
+              "output_tokens": 748,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "latency_ms": 4442,
+              "start_time": "2026-09-29T07:50:39.912Z",
+              "span_annotations": [],
+              "span_annotation_summaries": [],
+              "project": {
+                "id": ""
+              },
+              "input": {
+                "value": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Prep notes for the Acme renewal call\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "output": {
+                "value": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"Prepared the brief.\"}]}]",
+                "mime_type": "text",
+                "parsed_value": null
+              },
+              "trace": {
+                "id": "VHJhY2U6NWVlZDIxOTUyMWU0NmE3ODNhZjRhNjQ3NTM4ZmY2ZGM=",
+                "cost_summary": {
+                  "total": {
+                    "cost": 0.000964
+                  }
+                }
+              }
+            },
+            "cursor": "Y29ubmVjdGlvbjoy"
+          }
+        ],
+        "pagination": {
+          "end_cursor": "Y29ubmVjdGlvbjoy",
+          "has_next_page": false
+        }
+      }
+    }
+  }
+}

@@ -1,5 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/form.ts. Local edits: none beyond imports and Prettier.
-import type { z } from "zod";
+import type { z } from 'zod'
 
 /**
  * Each field's first message from the sheet's zod schema, parsed synchronously. The sheets' zodResolver gates the
@@ -7,8 +6,8 @@ import type { z } from "zod";
  * in after a change or a submit, and asynchronously).
  */
 export function fieldErrors(schema: z.ZodType, values: unknown): Partial<Record<string, string>> {
-  const r = schema.safeParse(values);
-  const out: Partial<Record<string, string>> = {};
-  if (!r.success) for (const i of r.error.issues) out[String(i.path[0])] ??= i.message;
-  return out;
+  const r = schema.safeParse(values)
+  const out: Partial<Record<string, string>> = {}
+  if (!r.success) for (const i of r.error.issues) out[String(i.path[0])] ??= i.message
+  return out
 }

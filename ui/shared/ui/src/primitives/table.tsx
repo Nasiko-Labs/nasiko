@@ -1,58 +1,11 @@
-// fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `table` (`[&>[role=checkbox]]:translate-y-[2px]` on head and cell); Base UI internals kept.
-// Local edits (re-apply after any re-vendor):
-// - the `overflow-x-auto` container becomes a named, keyboard-reachable scroll region while (and only while) the
-//   table is wider than it (axe `scrollable-region-focusable`; WCAG 2.1.1): `tabIndex={0}`, `role="region"`,
-//   `aria-label={scrollLabel ?? aria-label}`, and the lab's focus ring. A table that fits stays the lab's plain div,
-//   with no extra tab stop. The lab's own table has the same gap; this is the fix, not a divergence in design.
-"use client"
-
 import * as React from "react"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
 
-/** Whether `ref`'s box is narrower than its content, kept current on resize of either. */
-function useOverflowsX(ref: React.RefObject<HTMLElement | null>): boolean {
-  const [overflows, setOverflows] = React.useState(false)
-  React.useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const check = () => {
-      setOverflows(el.scrollWidth > el.clientWidth)
-    }
-    check()
-    if (typeof ResizeObserver !== "function") return
-    const ro = new ResizeObserver(check)
-    ro.observe(el)
-    if (el.firstElementChild) ro.observe(el.firstElementChild)
-    return () => {
-      ro.disconnect()
-    }
-  }, [ref])
-  return overflows
-}
-
-function Table({
-  className,
-  scrollLabel,
-  ...props
-}: React.ComponentProps<"table"> & {
-  /** Names the horizontal scroll region when the table overflows; defaults to the table's `aria-label`. */
-  scrollLabel?: string | undefined
-}) {
-  const ref = React.useRef<HTMLDivElement>(null)
-  const overflows = useOverflowsX(ref)
-  const label = scrollLabel ?? props["aria-label"]
+function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
-      ref={ref}
       data-slot="table-container"
-      className={cn(
-        "relative w-full overflow-x-auto",
-        overflows &&
-          "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none"
-      )}
-      {...(overflows
-        ? { tabIndex: 0, ...(label ? { role: "region", "aria-label": label } : {}) }
-        : {})}
+      className="relative w-full overflow-x-auto"
     >
       <table
         data-slot="table"

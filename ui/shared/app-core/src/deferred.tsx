@@ -1,6 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/deferred.tsx. Local edits: `"use client"`; Prettier formatting.
-"use client";
-import { lazy, Suspense, type ComponentType } from "react";
+import { lazy, Suspense, type ComponentType } from 'react'
 
 /**
  * A slot component that loads when it first renders, not with the shell: the shell budget (200 KB gz) has no room
@@ -9,12 +7,12 @@ import { lazy, Suspense, type ComponentType } from "react";
 export function deferred<P extends object>(
   load: () => Promise<ComponentType<P>>,
 ): ComponentType<P> {
-  const Lazy = lazy(async () => ({ default: await load() }));
+  const Lazy = lazy(async () => ({ default: await load() }))
   return function Deferred(props: P) {
     return (
       <Suspense fallback={null}>
         <Lazy {...props} />
       </Suspense>
-    );
-  };
+    )
+  }
 }

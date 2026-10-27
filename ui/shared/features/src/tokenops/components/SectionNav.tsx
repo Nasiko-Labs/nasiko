@@ -1,6 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/components/SectionNav.tsx
-// (8bf09bf29). Local edits: `m` and `transitions` from @nasiko/ui/motion; optional props admit `undefined`; Prettier
-// formatting.
 /**
  * The page's sections as one sticky row under the top bar: where you are on a long page, and one click to any part
  * of it. The section in view carries a pill that glides between items through a shared `layoutId`; the current item
@@ -9,42 +6,43 @@
  * "In view" is the last section whose top has passed a line a third of the way down the screen, read on scroll
  * (passive, once per frame): three rects per frame, cheaper and simpler than an observer per threshold.
  */
-import { useEffect, useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { m, transitions } from "@nasiko/ui/motion";
-import { cn } from "@nasiko/ui/cn";
-import { scrollToSection, sectionDomId } from "../sections";
+import { m } from 'motion/react'
+import { useEffect, useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { transitions } from '@nasiko/ui/lib/motion'
+import { cn } from '@nasiko/ui/lib/utils'
+import { scrollToSection, sectionDomId } from '../sections'
 
 export interface NavSection {
-  id: string;
-  label: string;
-  hint?: string | undefined;
+  id: string
+  label: string
+  hint?: string
 }
 
 export function SectionNav({ sections }: { sections: NavSection[] }) {
-  const [active, setActive] = useState(sections[0]?.id);
+  const [active, setActive] = useState(sections[0]?.id)
   useEffect(() => {
-    let frame = 0;
+    let frame = 0
     const read = () => {
-      frame = 0;
-      const line = window.innerHeight / 3;
-      let current = sections[0]?.id;
+      frame = 0
+      const line = window.innerHeight / 3
+      let current = sections[0]?.id
       for (const s of sections) {
-        const top = document.getElementById(sectionDomId(s.id))?.getBoundingClientRect().top;
-        if (top !== undefined && top <= line) current = s.id;
+        const top = document.getElementById(sectionDomId(s.id))?.getBoundingClientRect().top
+        if (top !== undefined && top <= line) current = s.id
       }
-      setActive(current);
-    };
+      setActive(current)
+    }
     const onScroll = () => {
-      if (!frame) frame = requestAnimationFrame(read);
-    };
-    read();
-    window.addEventListener("scroll", onScroll, { passive: true });
+      if (!frame) frame = requestAnimationFrame(read)
+    }
+    read()
+    window.addEventListener('scroll', onScroll, { passive: true })
     return () => {
-      window.removeEventListener("scroll", onScroll);
-      if (frame) cancelAnimationFrame(frame);
-    };
-  }, [sections]);
+      window.removeEventListener('scroll', onScroll)
+      if (frame) cancelAnimationFrame(frame)
+    }
+  }, [sections])
   return (
     <nav
       aria-label="Sections"
@@ -55,14 +53,14 @@ export function SectionNav({ sections }: { sections: NavSection[] }) {
           key={s.id}
           variant="ghost"
           size="sm"
-          aria-current={active === s.id ? "true" : undefined}
+          aria-current={active === s.id ? 'true' : undefined}
           onClick={() => {
-            setActive(s.id);
-            scrollToSection(s.id);
+            setActive(s.id)
+            scrollToSection(s.id)
           }}
           className={cn(
-            "relative shrink-0 gap-1.5 text-muted-foreground hover:bg-transparent hover:text-foreground",
-            active === s.id && "text-foreground",
+            'relative shrink-0 gap-1.5 text-muted-foreground hover:bg-transparent hover:text-foreground',
+            active === s.id && 'text-foreground',
           )}
         >
           {active === s.id ? (
@@ -82,5 +80,5 @@ export function SectionNav({ sections }: { sections: NavSection[] }) {
         </Button>
       ))}
     </nav>
-  );
+  )
 }

@@ -1,26 +1,23 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/detail/LogsTab.tsx. Local edits: none beyond imports and Prettier.
-"use client";
-
 /**
  * Logs (plans/feat-mcp.md §5, uploaded builds, owner or superuser): the build's status and error, and the container's
  * last 500 lines. `data` is an array of lines (M-3). Both refresh every 5 s while the build runs.
  */
-import { RotateCw } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { PageLoader } from "@nasiko/ui/composites";
-import { CopyButton } from "@nasiko/ui/composites";
-import { Section } from "../../agents/components/bits";
-import { useBuildLogs, useBuildStatus } from "../api";
-import { copy, reason, STATUS_LABEL } from "../copy";
-import { serverStatus } from "../logic";
-import type { ConnectorDetail } from "../types";
+import { RotateCw } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { Section } from '@nasiko/features/agents/components/bits'
+import { useBuildLogs, useBuildStatus } from '../api'
+import { copy, reason, STATUS_LABEL } from '../copy'
+import { serverStatus } from '../logic'
+import type { ConnectorDetail } from '../types'
 
 export function LogsTab({ connector: c }: { connector: ConnectorDetail }) {
-  const building = serverStatus(c) === "building";
-  const build = useBuildStatus(c.connector_id, true, building);
-  const logs = useBuildLogs(c.connector_id, true, building);
-  const text = (logs.data ?? []).join("\n");
-  const b = build.data;
+  const building = serverStatus(c) === 'building'
+  const build = useBuildStatus(c.connector_id, true, building)
+  const logs = useBuildLogs(c.connector_id, true, building)
+  const text = (logs.data ?? []).join('\n')
+  const b = build.data
   return (
     <Section
       title={copy.logsTitle}
@@ -32,8 +29,8 @@ export function LogsTab({ connector: c }: { connector: ConnectorDetail }) {
             variant="outline"
             disabled={logs.isFetching}
             onClick={() => {
-              void build.refetch();
-              void logs.refetch();
+              void build.refetch()
+              void logs.refetch()
             }}
           >
             <RotateCw className="size-3.5" aria-hidden /> {copy.refresh}
@@ -68,5 +65,5 @@ export function LogsTab({ connector: c }: { connector: ConnectorDetail }) {
         </pre>
       )}
     </Section>
-  );
+  )
 }

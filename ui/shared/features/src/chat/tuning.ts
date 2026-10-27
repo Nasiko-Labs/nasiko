@@ -1,13 +1,10 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/tuning.ts. Local edits: Vite's `import.meta.env.DEV` is
-// `process.env.NODE_ENV !== "production"` (as app-core/env.ts); the override's storage key is `nasiko:` instead of
-// `ui-lab:`; Prettier formatting.
 /**
  * Every Chat timing and size limit (plan §8.4). Dev and mock builds may override values through
- * `localStorage['nasiko:chat-tuning']` (a JSON object) or `?tune=<key>:<ms>` so /qa can shorten
+ * `localStorage['ui-lab:chat-tuning']` (a JSON object) or `?tune=<key>:<ms>` so /qa can shorten
  * the slow paths.
  */
 
-import { DRAIN_CEILING_MS } from "./serverContract";
+import { DRAIN_CEILING_MS } from './serverContract'
 
 const DEFAULTS = {
   /** Follow new output while the transcript is within this many px of the bottom. */
@@ -93,40 +90,38 @@ const DEFAULTS = {
   /** Chat lookup past the rail (EN-6): pages and page size. */
   LOOKUP_PAGES: 20,
   LOOKUP_PAGE_SIZE: 100,
-};
+}
 
-export type ChatTuning = typeof DEFAULTS;
+export type ChatTuning = typeof DEFAULTS
 
 const valid = (k: string, v: unknown): v is number =>
-  k in DEFAULTS && typeof v === "number" && Number.isFinite(v) && v >= 0;
+  k in DEFAULTS && typeof v === 'number' && Number.isFinite(v) && v >= 0
 
 /** `?tune=<key>:<ms>` (repeatable), e.g. `?tune=LOST_REPLY_AFTER_MS:5000` (v1b NX-8). */
 export function tuneParams(search: string): Partial<ChatTuning> {
-  const out: Partial<ChatTuning> = {};
-  for (const pair of new URLSearchParams(search).getAll("tune")) {
-    const [k = "", v = ""] = pair.split(":");
-    const n = Number(v);
-    if (v.trim() && valid(k, n)) (out as Record<string, number>)[k] = n;
+  const out: Partial<ChatTuning> = {}
+  for (const pair of new URLSearchParams(search).getAll('tune')) {
+    const [k = '', v = ''] = pair.split(':')
+    const n = Number(v)
+    if (v.trim() && valid(k, n)) (out as Record<string, number>)[k] = n
   }
-  return out;
+  return out
 }
 
 /** Dev and mock builds only: `import.meta.env.DEV` is false in production, so the build drops this. */
 function overrides(): Partial<ChatTuning> {
-  if (process.env.NODE_ENV === "production") return {};
-  const out: Partial<ChatTuning> = {};
+  if (!import.meta.env.DEV) return {}
+  const out: Partial<ChatTuning> = {}
   try {
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- absent in Node, whatever lib.dom says
-    const raw = globalThis.localStorage?.getItem("nasiko:chat-tuning");
-    const parsed: unknown = raw ? JSON.parse(raw) : null;
-    if (parsed && typeof parsed === "object")
+    const raw = globalThis.localStorage?.getItem('ui-lab:chat-tuning')
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (parsed && typeof parsed === 'object')
       for (const [k, v] of Object.entries(parsed))
-        if (valid(k, v)) (out as Record<string, number>)[k] = v;
+        if (valid(k, v)) (out as Record<string, number>)[k] = v
   } catch {
     // Blocked storage or bad JSON: no stored overrides.
   }
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- absent in Node, whatever lib.dom says
-  return { ...out, ...tuneParams(globalThis.location?.search ?? "") };
+  return { ...out, ...tuneParams(globalThis.location?.search ?? '') }
 }
 
-export const tuning: ChatTuning = { ...DEFAULTS, ...overrides() };
+export const tuning: ChatTuning = { ...DEFAULTS, ...overrides() }

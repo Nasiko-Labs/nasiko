@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/OptimiseStep.tsx. Local edits: none beyond imports
-// and Prettier.
 /**
  * Guide step 5: the optimisation switches, and where to find them.
  *
@@ -11,12 +9,12 @@
  * agent from the previous step is usually still building, so offering a toggle here would either
  * be disabled or write to something that does not exist yet. It explains and points instead.
  */
-import { Scissors } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { StepHeading } from "./parts";
-import { copy as guideCopy } from "./copy";
+import { Scissors } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { StepHeading } from './parts'
+import { copy as guideCopy } from './copy'
 
-const copy = guideCopy.optimise;
+const copy = guideCopy.optimise
 
 export function OptimiseStep({ onOpenAgents }: { onOpenAgents: () => void }) {
   return (
@@ -51,5 +49,5 @@ export function OptimiseStep({ onOpenAgents }: { onOpenAgents: () => void }) {
         {copy.cta}
       </Button>
     </div>
-  );
+  )
 }

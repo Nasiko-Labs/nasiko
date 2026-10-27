@@ -1,12 +1,10 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/components/DurationPanel.tsx. Local edits: Base UI's
-// ToggleGroup is value-array based (`value={[…]}`, `onValueChange` reads `v[0]`); Prettier formatting.
 /**
  * The Duration panel (plans/feat-flows.md F11, D2, F26): p50 / p90 / p99 as display-only tracks built from shadcn
  * Slider parts, disabled and hidden from assistive tech (they're not controls), with the values as text beside them.
  * Its Table button swaps them for the same numbers in a table. p99 hides under P99_MIN finished flows (F16).
  */
-import { useState } from "react";
-import { Slider } from "@nasiko/ui/primitives";
+import { useState } from 'react'
+import { Slider } from '@nasiko/ui/primitives/slider'
 import {
   Table,
   TableBody,
@@ -14,34 +12,33 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import { P99_MIN, type Percentiles } from "../list";
-import { fmtDuration } from "../precision";
+} from '@nasiko/ui/primitives/table'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { copy } from '../copy'
+import { P99_MIN, type Percentiles } from '../list'
+import { fmtDuration } from '../precision'
 
 export function DurationPanel({ stats }: { stats: Percentiles | null }) {
-  const [asTable, setAsTable] = useState(false);
-  if (!stats) return <p className="text-sm text-muted-foreground">{copy.list.noDurations}</p>;
+  const [asTable, setAsTable] = useState(false)
+  if (!stats) return <p className="text-sm text-muted-foreground">{copy.list.noDurations}</p>
   const rows: [string, number | null][] = [
-    ["p50", stats.p50],
-    ["p90", stats.p90],
-    ["p99", stats.p99],
-  ];
-  const max = Math.max(1, stats.p99 ?? stats.p90);
+    ['p50', stats.p50],
+    ['p90', stats.p90],
+    ['p99', stats.p99],
+  ]
+  const max = Math.max(1, stats.p99 ?? stats.p90)
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">{copy.list.count(stats.count)}</span>
         {/* The same Chart / Table switch as the flow page's timeline panel: a state, not a label that flips. */}
         <ToggleGroup
+          type="single"
           variant="outline"
           size="sm"
           aria-label={copy.list.durationView}
-          value={[asTable ? "table" : "chart"]}
-          onValueChange={(v: unknown[]) => {
-            if (typeof v[0] === "string" && v[0]) setAsTable(v[0] === "table");
-          }}
+          value={asTable ? 'table' : 'chart'}
+          onValueChange={(v) => v && setAsTable(v === 'table')}
         >
           <ToggleGroupItem value="chart" className="pointer-coarse:min-h-11">
             {copy.list.chart}
@@ -95,5 +92,5 @@ export function DurationPanel({ stats }: { stats: Percentiles | null }) {
         <p className="text-xs text-muted-foreground">{copy.list.p99Hidden(P99_MIN)}</p>
       ) : null}
     </div>
-  );
+  )
 }

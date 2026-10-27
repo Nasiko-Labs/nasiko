@@ -1,13 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/sessions/api.ts. Local edits: every query key is scoped,
-// `productKey(scope, "sessions", …)` and the trace's `productKey(scope, "trace", id)` (the lab's `['trace', id]`), so
-// `sessionKeys.*`, `traceQuery`, `prefetchSessions` and `prefetchSessionDetail` take the scope (the prefetches after
-// the client) and hooks read it from `useProductScope()`; the log stream's session re-check is
-// `meQueryOptions(scope)` (the lab's `meQuery`); `ApiError` is `ProductApiError`; `!` on the row and verdict reads by
-// index of the arrays they were mapped from (`noUncheckedIndexedAccess` here); the prefetches and the session re-check use `query`/`infiniteQuery` (the lab's
-// `prefetchQuery`/`prefetchInfiniteQuery`/`fetchQuery`, deprecated here; prefetches swallow errors as before);
-// Prettier formatting. Ported from nasiko-cloud-rs development (480650a69): `useSessionPage` (a small filtered page
-// for the Overview), its key scoped as above.
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- rows and verdicts are read at the indexes they were mapped from */
 /**
  * Sessions queries. The server's session/list takes only start_time/limit/offset
  * (newest first), so:
@@ -25,21 +15,19 @@ import {
   useQueryClient,
   type QueryClient,
   type UseQueryResult,
-} from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import type { Scope } from "@nasiko/data-access";
+} from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { meQuery } from '@nasiko/data-access/auth'
+import { apiFetch, ApiError, fetchApi, withQuery } from '@nasiko/data-access/client'
+import { readSse } from '@nasiko/data-access/sse'
 import {
-  apiFetch,
-  meQueryOptions,
-  ProductApiError as ApiError,
-  productKey,
-  readSse,
-  useProductScope,
-  withQuery,
-} from "@nasiko/data-access/product";
-import { bySize, foldDayScan, type ScanPage, type Status } from "../observability/sessions";
-import { isTraceFailing } from "../observability/spans";
-import { createLimiter } from "../observability/limiter";
+  bySize,
+  foldDayScan,
+  type ScanPage,
+  type Status,
+} from '@nasiko/features/observability/sessions'
+import { isTraceFailing } from '@nasiko/features/observability/spans'
+import { createLimiter } from '@nasiko/features/observability/limiter'
 import {
   FLEET_PAGE_SIZE,
   FLEET_SEEK_PAGES,
@@ -48,12 +36,13 @@ import {
   SCAN_PAGE_SIZE,
   STATUS_CHECK_CONCURRENCY,
   STATUS_TRACES_PER_SESSION,
+  SUBAGENT_PAGE_SIZE,
   TEMPO_MAX_SEARCH_MS,
   TEMPO_SAFETY_MS,
   WINDOW_FREEZE_MS,
-} from "../observability/tuning";
-import { resolveWindow } from "../tokenops/window";
-import type { SessionsSearch } from "./search";
+} from '@nasiko/features/observability/tuning'
+import { resolveWindow } from '@nasiko/features/tokenops/window'
+import type { SessionsSearch } from './search'
 import type {
   LogLine,
   SessionDetail,
@@ -61,26 +50,26 @@ import type {
   SessionListResponse,
   SessionSummary,
   TraceDetailResponse,
-} from "../observability/types";
+} from '@nasiko/features/observability/types'
 
-const OBS = "/api/observability";
-
-const noop = () => undefined;
+const OBS = '/api/observability'
 
 export const sessionKeys = {
-  fleet: (scope: Scope, windowKey: string) => productKey(scope, "sessions", "fleet", windowKey),
-  day: (scope: Scope, day: string) => productKey(scope, "sessions", "day", day),
-  detail: (scope: Scope, id: string) => productKey(scope, "sessions", "detail", id),
-  trace: (scope: Scope, id: string) => productKey(scope, "trace", id),
+  fleet: (windowKey: string) => ['sessions', 'fleet', windowKey] as const,
+  day: (day: string) => ['sessions', 'day', day] as const,
+  detail: (id: string) => ['sessions', 'detail', id] as const,
+  /** One session's subagent sessions (`session/list?parent=`), read when its row is expanded. */
+  children: (parentId: string) => ['sessions', 'children', parentId] as const,
+  trace: (id: string) => ['trace', id] as const,
   /** A small, filtered page under its own key — the Overview's two reads. */
-  page: (scope: Scope, windowKey: string, limit: number, status?: string) =>
-    productKey(scope, "sessions", "page", windowKey, limit, status ?? "any"),
-};
+  page: (windowKey: string, limit: number, status?: string) =>
+    ['sessions', 'page', windowKey, limit, status ?? 'any'] as const,
+}
 
 export interface SessionPageOptions {
-  limit: number;
+  limit: number
   /** Filtered in SQL, so `matchingCount` is every match in the window. */
-  status?: "failed" | "ok" | "running";
+  status?: 'failed' | 'ok' | 'running'
 }
 
 /**
@@ -102,30 +91,29 @@ export function useSessionPage(
     end_time: end.toISOString(),
     limit: opts.limit,
     ...(opts.status ? { status: opts.status } : {}),
-  });
+  })
   const q = useQuery({
-    queryKey: sessionKeys.page(useProductScope(), windowKey, opts.limit, opts.status),
+    queryKey: sessionKeys.page(windowKey, opts.limit, opts.status),
     queryFn: async ({ signal }) => {
-      const raw = await apiFetch<SessionListResponse>(path, { signal });
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- server data, read defensively whatever the generated type says
+      const raw = await apiFetch<SessionListResponse>(path, { signal })
       if (!raw?.data?.sessions)
-        throw new ApiError(200, raw, path, "session/list → unexpected response");
-      return raw.data;
+        throw new ApiError(200, raw, path, 'session/list → unexpected response')
+      return raw.data
     },
     staleTime: Infinity,
     enabled,
     meta: { path },
-  });
+  })
   return {
     ...q,
     rows: q.data?.sessions ?? [],
     /** Every row matching the filter in the window, not just this page. */
     matchingCount: q.data?.matching_count ?? 0,
-  };
+  }
 }
 
 function listPath(start: Date, limit: number, offset: number) {
-  return withQuery(`${OBS}/session/list`, { start_time: start.toISOString(), limit, offset });
+  return withQuery(`${OBS}/session/list`, { start_time: start.toISOString(), limit, offset })
 }
 
 async function fetchPage(
@@ -134,16 +122,15 @@ async function fetchPage(
   offset: number,
   signal: AbortSignal,
 ): Promise<ScanPage & { raw: SessionListResponse }> {
-  const raw = await apiFetch<SessionListResponse>(listPath(start, limit, offset), { signal });
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- server data, read defensively whatever the generated type says
+  const raw = await apiFetch<SessionListResponse>(listPath(start, limit, offset), { signal })
   if (!raw?.data?.sessions)
     throw new ApiError(
       200,
       raw,
       listPath(start, limit, offset),
-      "session/list → unexpected response",
-    );
-  return { sessions: raw.data.sessions, hasNextPage: raw.data.pagination.has_next_page, raw };
+      'session/list → unexpected response',
+    )
+  return { sessions: raw.data.sessions, hasNextPage: raw.data.pagination.has_next_page, raw }
 }
 
 /**
@@ -152,23 +139,23 @@ async function fetchPage(
  * are sent as they are, and the page explains the missing trace data.
  */
 export function tempoSafeStart(start: Date, now: Date): Date {
-  const floor = now.getTime() - TEMPO_MAX_SEARCH_MS + TEMPO_SAFETY_MS;
-  const t = start.getTime();
-  return t < floor && t >= floor - 2 * TEMPO_SAFETY_MS ? new Date(floor) : start;
+  const floor = now.getTime() - TEMPO_MAX_SEARCH_MS + TEMPO_SAFETY_MS
+  const t = start.getTime()
+  return t < floor && t >= floor - 2 * TEMPO_SAFETY_MS ? new Date(floor) : start
 }
 
-let frozen: { key: string; at: Date } | null = null;
+let frozen: { key: string; at: Date } | null = null
 /** One "now" per window key, reused for WINDOW_FREEZE_MS so remounts (and the route's prefetch) keep the same query key. */
 export function frozenNow(key: string): Date {
-  const t = Date.now();
+  const t = Date.now()
   if (!frozen || frozen.key !== key || t - frozen.at.getTime() > WINDOW_FREEZE_MS)
-    frozen = { key, at: new Date(t) };
-  return frozen.at;
+    frozen = { key, at: new Date(t) }
+  return frozen.at
 }
 
-function fleetQuery(scope: Scope, windowKey: string, start: Date) {
+function fleetQuery(windowKey: string, start: Date) {
   return infiniteQueryOptions({
-    queryKey: sessionKeys.fleet(scope, windowKey),
+    queryKey: sessionKeys.fleet(windowKey),
     queryFn: ({ pageParam, signal }) => fetchPage(start, FLEET_PAGE_SIZE, pageParam, signal),
     initialPageParam: 0,
     getNextPageParam: (last, pages) =>
@@ -176,58 +163,57 @@ function fleetQuery(scope: Scope, windowKey: string, start: Date) {
     // The key's window is frozen (WINDOW_FREEZE_MS); new rows arrive through the live feed.
     staleTime: Infinity,
     meta: { path: listPath(start, FLEET_PAGE_SIZE, 0) },
-  });
+  })
 }
 
 /** The route's preload prefetch: the fleet list's first page (day mode scans instead). */
 export function prefetchSessions(
   client: QueryClient,
-  scope: Scope,
-  search: Pick<SessionsSearch, "preset" | "from" | "to" | "day">,
+  search: Pick<SessionsSearch, 'preset' | 'from' | 'to' | 'day'>,
 ) {
-  if (search.day) return;
-  const now = frozenNow(`${search.preset}|${search.from}|${search.to}`);
-  const win = resolveWindow(search, now);
-  void client.infiniteQuery(fleetQuery(scope, win.key, tempoSafeStart(win.start, now))).catch(noop);
+  if (search.day) return
+  const now = frozenNow(`${search.preset}|${search.from}|${search.to}`)
+  const win = resolveWindow(search, now)
+  void client.prefetchInfiniteQuery(fleetQuery(win.key, tempoSafeStart(win.start, now)))
 }
 
 /** Fleet mode: 100 rows per page from the window start; the range end is filtered client-side. */
 export function useFleetSessions(windowKey: string, start: Date, end: Date, enabled: boolean) {
-  const q = useInfiniteQuery({ ...fleetQuery(useProductScope(), windowKey, start), enabled });
-  const endMs = end.getTime();
+  const q = useInfiniteQuery({ ...fleetQuery(windowKey, start), enabled })
+  const endMs = end.getTime()
   const rows = useMemo(() => {
-    const seen = new Set<string>();
+    const seen = new Set<string>()
     return (q.data?.pages ?? [])
       .flatMap((p) => p.sessions)
       .filter((s) => {
-        if (seen.has(s.session_id)) return false;
-        seen.add(s.session_id);
-        return !s.start_time || Date.parse(s.start_time) <= endMs;
-      });
-  }, [q.data, endMs]);
+        if (seen.has(s.session_id)) return false
+        seen.add(s.session_id)
+        return !s.start_time || Date.parse(s.start_time) <= endMs
+      })
+  }, [q.data, endMs])
   // A window that ended in the past: the newest rows are after its end, so page forward
   // (newest first) until a row inside the window shows up, at most FLEET_SEEK_PAGES.
-  const pages = q.data?.pages ?? [];
+  const pages = q.data?.pages ?? []
   const reachedWindow = pages.some((p) =>
     p.sessions.some((s) => !s.start_time || Date.parse(s.start_time) <= endMs),
-  );
+  )
   const seeking =
-    enabled && !reachedWindow && q.hasNextPage && pages.length < FLEET_SEEK_PAGES && !q.isError;
-  const { isFetchingNextPage, fetchNextPage } = q;
+    enabled && !reachedWindow && !!q.hasNextPage && pages.length < FLEET_SEEK_PAGES && !q.isError
+  const { isFetchingNextPage, fetchNextPage } = q
   // pages.length is a dependency: the in-between "fetching" render can be batched away, so
   // the other values may be identical before and after a page lands.
   useEffect(() => {
-    if (seeking && !isFetchingNextPage) void fetchNextPage();
-  }, [seeking, isFetchingNextPage, fetchNextPage, pages.length]);
-  const first = q.data?.pages[0]?.raw.data;
+    if (seeking && !isFetchingNextPage) void fetchNextPage()
+  }, [seeking, isFetchingNextPage, fetchNextPage, pages.length])
+  const first = q.data?.pages[0]?.raw.data
   return {
     ...q,
     rows,
     seeking,
-    seekCapped: !reachedWindow && q.hasNextPage && pages.length >= FLEET_SEEK_PAGES,
+    seekCapped: !reachedWindow && !!q.hasNextPage && pages.length >= FLEET_SEEK_PAGES,
     totalAgents: first?.total_agents,
     successfulAgents: first?.successful_agents,
-  };
+  }
 }
 
 /**
@@ -235,9 +221,9 @@ export function useFleetSessions(windowKey: string, start: Date, end: Date, enab
  * `staleTime: Infinity`, so Back from a trace never rescans; the key is the absolute day.
  */
 export function useDayScan(day: string | undefined, maxPages: number) {
-  const start = day ? new Date(`${day}T00:00:00.000Z`) : new Date(0);
+  const start = day ? new Date(`${day}T00:00:00.000Z`) : new Date(0)
   const q = useInfiniteQuery({
-    queryKey: sessionKeys.day(useProductScope(), day ?? ""),
+    queryKey: sessionKeys.day(day ?? ''),
     queryFn: ({ pageParam, signal }) => fetchPage(start, SCAN_PAGE_SIZE, pageParam, signal),
     initialPageParam: 0,
     getNextPageParam: (last, pages) =>
@@ -245,59 +231,59 @@ export function useDayScan(day: string | undefined, maxPages: number) {
     enabled: !!day,
     staleTime: Infinity,
     meta: { path: listPath(start, SCAN_PAGE_SIZE, 0) },
-  });
-  const pages = useMemo(() => q.data?.pages ?? [], [q.data]);
+  })
+  const pages = useMemo(() => q.data?.pages ?? [], [q.data])
   const scan = useMemo(
     () => (day ? foldDayScan(day, pages, maxPages) : null),
     [day, pages, maxPages],
-  );
-  const { hasNextPage, isFetchingNextPage, fetchNextPage, isError } = q;
+  )
+  const { hasNextPage, isFetchingNextPage, fetchNextPage, isError } = q
   // Keep paging until the scan is complete or capped; a failed page stops it (partial result).
   useEffect(() => {
-    if (!scan || scan.complete || isError || isFetchingNextPage || !hasNextPage) return;
-    if (pages.length < maxPages) void fetchNextPage();
-  }, [scan, pages.length, maxPages, hasNextPage, isFetchingNextPage, fetchNextPage, isError]);
-  const first = pages[0]?.raw.data;
+    if (!scan || scan.complete || isError || isFetchingNextPage || !hasNextPage) return
+    if (pages.length < maxPages) void fetchNextPage()
+  }, [scan, pages.length, maxPages, hasNextPage, isFetchingNextPage, fetchNextPage, isError])
+  const first = pages[0]?.raw.data
   return {
     ...q,
     scan,
     pages,
     totalAgents: first?.total_agents,
     successfulAgents: first?.successful_agents,
-  };
+  }
 }
 
 // ─── status checks ──────────────────────────────────────────────────────────
 
 /** At most STATUS_CHECK_CONCURRENCY status fetches in flight (the server does a Tempo scan per call). */
-const limited = createLimiter(STATUS_CHECK_CONCURRENCY);
+const limited = createLimiter(STATUS_CHECK_CONCURRENCY)
 
-function sessionDetailQuery(scope: Scope, id: string) {
-  const path = `${OBS}/session/${encodeURIComponent(id)}`;
+function sessionDetailQuery(id: string) {
+  const path = `${OBS}/session/${encodeURIComponent(id)}`
   return {
-    queryKey: sessionKeys.detail(scope, id),
+    queryKey: sessionKeys.detail(id),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       apiFetch<SessionDetailResponse>(path, { signal }).then((b) => b.data.session),
     meta: { path },
-  };
+  }
 }
 
 /** The trace route's preload prefetch: the session detail, the page's first request. */
-export const prefetchSessionDetail = (client: QueryClient, scope: Scope, id: string) =>
-  void client.query({ ...sessionDetailQuery(scope, id), staleTime: Infinity }).catch(noop);
+export const prefetchSessionDetail = (client: QueryClient, id: string) =>
+  void client.prefetchQuery({ ...sessionDetailQuery(id), staleTime: Infinity })
 
-export function traceQuery(scope: Scope, id: string) {
-  const path = `${OBS}/trace/${encodeURIComponent(id)}`;
+export function traceQuery(id: string) {
+  const path = `${OBS}/trace/${encodeURIComponent(id)}`
   return {
-    queryKey: sessionKeys.trace(scope, id),
+    queryKey: sessionKeys.trace(id),
     queryFn: ({ signal }: { signal: AbortSignal }) =>
       apiFetch<TraceDetailResponse>(path, { signal }).then((b) => b.data.trace),
     meta: { path },
-  };
+  }
 }
 
 const inProgress = (s: SessionSummary, now: number) =>
-  !s.end_time || now - Date.parse(s.end_time) < IN_PROGRESS_MS;
+  !s.end_time || now - Date.parse(s.end_time) < IN_PROGRESS_MS
 
 // The status fan-outs' combiners. `combine` output is structurally shared (plain arrays and
 // objects only, never a Map), so equal answers keep their identity; module-level, so they
@@ -306,19 +292,19 @@ const inProgress = (s: SessionSummary, now: number) =>
 const checkedTraceIds = (rs: UseQueryResult<SessionDetail>[]) =>
   rs.map((r) =>
     r.isError
-      ? ("error" as const)
+      ? ('error' as const)
       : r.data
         ? bySize(r.data.traces)
             .slice(0, STATUS_TRACES_PER_SESSION)
             .map((t) => t.trace_id)
         : null,
-  );
+  )
 interface Verdict {
-  failing: boolean | undefined;
-  error: boolean;
+  failing: boolean | undefined
+  error: boolean
 }
 const verdicts = (rs: UseQueryResult<boolean>[]): Verdict[] =>
-  rs.map((r) => ({ failing: r.data, error: r.isError }));
+  rs.map((r) => ({ failing: r.data, error: r.isError }))
 
 /**
  * Status for the first rows: SessionDetail (first page of traces) → TraceDetail for its
@@ -331,14 +317,13 @@ export function useSessionStatuses(
   now: number,
   recheck: boolean,
 ): Map<string, Status> {
-  const scope = useProductScope();
   // Re-check only while Live runs, and only while the session is still in progress by the
   // real clock (`now` is the page's frozen window time).
   const pollWhile = (s: SessionSummary) => () =>
-    recheck && inProgress(s, Date.now()) ? LIVE_POLL_MS : false;
+    recheck && inProgress(s, Date.now()) ? LIVE_POLL_MS : false
   const details = useQueries({
     queries: rows.map((s) => {
-      const base = sessionDetailQuery(scope, s.session_id);
+      const base = sessionDetailQuery(s.session_id)
       // In-progress sessions are re-checked on the live interval; finished ones are cached.
       // Per-row fan-outs never retry: a failing trace store gets one lookup per row, not three.
       return {
@@ -347,18 +332,18 @@ export function useSessionStatuses(
         retry: false,
         staleTime: inProgress(s, now) ? 0 : Infinity,
         refetchInterval: pollWhile(s),
-      };
+      }
     }),
     combine: checkedTraceIds,
-  });
+  })
   const toCheck = details.flatMap((ids, i) =>
     Array.isArray(ids)
-      ? ids.map((id) => ({ id, row: rows[i]!, live: inProgress(rows[i]!, now) }))
+      ? ids.map((id) => ({ id, row: rows[i], live: inProgress(rows[i], now) }))
       : [],
-  );
+  )
   const traces = useQueries({
     queries: toCheck.map(({ id, row, live }) => {
-      const base = traceQuery(scope, id);
+      const base = traceQuery(id)
       // `select` keeps only the verdict, so a refetch with the same answer doesn't re-render rows.
       return {
         ...base,
@@ -367,44 +352,60 @@ export function useSessionStatuses(
         retry: false,
         staleTime: live ? 0 : Infinity,
         refetchInterval: pollWhile(row),
-      };
+      }
     }),
     combine: verdicts,
-  });
+  })
   // Both combined results keep their identity while the answers don't change, so this Map does too.
   return useMemo(() => {
-    const byTrace = new Map<string, Verdict>();
+    const byTrace = new Map<string, Verdict>()
     details
       .flatMap((ids) => (Array.isArray(ids) ? ids : []))
-      .forEach((id, i) => byTrace.set(id, traces[i]!));
-    const out = new Map<string, Status>();
+      .forEach((id, i) => byTrace.set(id, traces[i]))
+    const out = new Map<string, Status>()
     rows.forEach((s, i) => {
-      const ids = details[i];
-      if (ids === "error") return void out.set(s.session_id, "unknown");
-      if (!ids) return void out.set(s.session_id, "checking");
+      const ids = details[i]
+      if (ids === 'error') return void out.set(s.session_id, 'unknown')
+      if (!ids) return void out.set(s.session_id, 'checking')
       // No traces to look at: nothing says it failed or succeeded.
-      if (!ids.length) return void out.set(s.session_id, "unknown");
-      const ts = ids.map((id) => byTrace.get(id));
-      if (ts.some((t) => t?.failing === true)) return void out.set(s.session_id, "failed");
-      if (ts.some((t) => t?.error)) return void out.set(s.session_id, "unknown");
-      out.set(s.session_id, ts.some((t) => t?.failing === undefined) ? "checking" : "ok");
-    });
-    return out;
-  }, [rows, details, traces]);
+      if (!ids.length) return void out.set(s.session_id, 'unknown')
+      const ts = ids.map((id) => byTrace.get(id))
+      if (ts.some((t) => t?.failing === true)) return void out.set(s.session_id, 'failed')
+      if (ts.some((t) => t?.error)) return void out.set(s.session_id, 'unknown')
+      out.set(s.session_id, ts.some((t) => t?.failing === undefined) ? 'checking' : 'ok')
+    })
+    return out
+  }, [rows, details, traces])
 }
 
 /** Row expand: the token split comes from SessionDetail (the list only has the total). */
 export function useSessionDetail(id: string | undefined) {
+  return useQuery({ ...sessionDetailQuery(id ?? ''), enabled: !!id, staleTime: Infinity })
+}
+
+/**
+ * A session's subagent sessions: `session/list?parent=<id>` (R15), newest first, one page of up to
+ * SUBAGENT_PAGE_SIZE. Only while `enabled` (the row is expanded), so a closed list never reads children.
+ */
+export function useSubagentSessions(parentId: string, enabled: boolean) {
+  const path = withQuery(`${OBS}/session/list`, { parent: parentId, limit: SUBAGENT_PAGE_SIZE })
   return useQuery({
-    ...sessionDetailQuery(useProductScope(), id ?? ""),
-    enabled: !!id,
+    queryKey: sessionKeys.children(parentId),
+    queryFn: async ({ signal }) => {
+      const raw = await apiFetch<SessionListResponse>(path, { signal })
+      if (!raw?.data?.sessions)
+        throw new ApiError(200, raw, path, 'session/list → unexpected response')
+      return raw.data.sessions
+    },
+    enabled,
     staleTime: Infinity,
-  });
+    meta: { path },
+  })
 }
 
 // ─── log tail ───────────────────────────────────────────────────────────────
 
-export type LogStreamState = "connecting" | "open" | "closed" | "unavailable" | "error";
+export type LogStreamState = 'connecting' | 'open' | 'closed' | 'unavailable' | 'error'
 
 /**
  * Per-agent log tail: GET /api/observability/agents/{agent}/logs/stream (SSE), read with fetch
@@ -423,67 +424,52 @@ export function useLogStream(
   open: boolean,
   onLines: (lines: LogLine[]) => void,
 ): { state: LogStreamState; reconnect: () => void } {
-  const client = useQueryClient();
-  const scope = useProductScope();
-  const [state, setState] = useState<LogStreamState>("connecting");
-  const [generation, setGeneration] = useState(0);
+  const client = useQueryClient()
+  const [state, setState] = useState<LogStreamState>('connecting')
+  const [generation, setGeneration] = useState(0)
   useEffect(() => {
-    if (!open) return;
-    const ctrl = new AbortController();
+    if (!open) return
+    const ctrl = new AbortController()
     void (async () => {
-      setState("connecting");
+      setState('connecting')
       try {
-        const res = await fetch(`${OBS}/agents/${encodeURIComponent(agent)}/logs/stream`, {
+        const res = await fetchApi(`${OBS}/agents/${encodeURIComponent(agent)}/logs/stream`, {
           signal: ctrl.signal,
-          credentials: "same-origin",
-          headers: { Accept: "text/event-stream" },
-        });
+          headers: { Accept: 'text/event-stream' },
+        })
         if (res.status === 401) {
-          void client.query({ ...meQueryOptions(scope), staleTime: 0 }).catch(noop);
-          setState("error");
-          return;
+          void client.fetchQuery({ ...meQuery, staleTime: 0 }).catch(() => undefined)
+          setState('error')
+          return
         }
-        if (res.status === 404) {
-          setState("unavailable");
-          return;
-        }
-        if (!res.ok || !res.body) {
-          setState("error");
-          return;
-        }
-        setState("open");
+        if (res.status === 404) return setState('unavailable')
+        if (!res.ok || !res.body) return setState('error')
+        setState('open')
         await readSse(
           res,
           (events) => {
-            const batch: LogLine[] = [];
+            const batch: LogLine[] = []
             for (const e of events) {
-              if (e.event === "close") continue;
+              if (e.event === 'close') continue
               try {
-                const line = JSON.parse(e.data) as Partial<LogLine> | null;
+                const line = JSON.parse(e.data) as Partial<LogLine> | null
                 // Server data: keep only well-formed lines (a bad one must not end the stream).
-                if (line && typeof line.message === "string" && typeof line.timestamp === "string")
-                  batch.push(line as LogLine);
+                if (line && typeof line.message === 'string' && typeof line.timestamp === 'string')
+                  batch.push(line as LogLine)
               } catch {
                 /* skip malformed lines */
               }
             }
-            onLines(batch);
+            onLines(batch)
           },
           { signal: ctrl.signal },
-        );
-        setState("closed");
+        )
+        setState('closed')
       } catch (err) {
-        if ((err as { name?: string }).name !== "AbortError") setState("error");
+        if ((err as { name?: string }).name !== 'AbortError') setState('error')
       }
-    })();
-    return () => {
-      ctrl.abort();
-    };
-  }, [open, agent, generation, onLines, client, scope]);
-  return {
-    state,
-    reconnect: () => {
-      setGeneration((g) => g + 1);
-    },
-  };
+    })()
+    return () => ctrl.abort()
+  }, [open, agent, generation, onLines, client])
+  return { state, reconnect: () => setGeneration((g) => g + 1) }
 }

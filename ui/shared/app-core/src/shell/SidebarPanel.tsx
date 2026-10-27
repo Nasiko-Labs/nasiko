@@ -1,9 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/SidebarPanel.tsx. Local edits: `"use client"` (it portals and reads context).
-"use client";
-
-import { use, useLayoutEffect, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-import { SidebarPanelContext } from "./panelSlot";
+import { use, useLayoutEffect, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
+import { SidebarPanelContext } from './panelSlot'
 
 /**
  * A page's own navigation (`panel`), shown in the sidebar in place of the app nav: one sidebar, never two side by side.
@@ -15,20 +12,18 @@ export function SidebarPanel({
   panel,
   children,
 }: {
-  panel: ReactNode;
-  children: (inSidebar: boolean) => ReactNode;
+  panel: ReactNode
+  children: (inSidebar: boolean) => ReactNode
 }) {
-  const { target, setPanels } = use(SidebarPanelContext);
+  const { target, setPanels } = use(SidebarPanelContext)
   useLayoutEffect(() => {
-    setPanels((n) => n + 1);
-    return () => {
-      setPanels((n) => n - 1);
-    };
-  }, [setPanels]);
+    setPanels((n) => n + 1)
+    return () => setPanels((n) => n - 1)
+  }, [setPanels])
   return (
     <>
       {target ? createPortal(panel, target) : null}
       {children(target !== null)}
     </>
-  );
+  )
 }

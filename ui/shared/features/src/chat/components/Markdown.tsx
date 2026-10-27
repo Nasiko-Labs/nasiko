@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/Markdown.tsx. Local edits: optional props
-// admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Agent replies as Markdown (plan §6.12, D1): react-markdown + remark-gfm + rehype-sanitize,
  * no raw HTML and no dangerouslySetInnerHTML. Links open in a new tab; anything but http(s)
@@ -7,15 +5,15 @@
  * as the reply renders (a zero-click leak), so they become a labelled link instead. Code blocks get Copy and Download; tables and code scroll inside
  * their own wrapper. While streaming, the text re-renders at most once per animation frame.
  */
-import { Check, Copy, Download } from "lucide-react";
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
-import { safeHttpUrl } from "../../agents/normalize";
-import { downloadText } from "@nasiko/ui/lib";
-import { useCopy } from "@nasiko/ui/lib";
-import ReactMarkdown, { type Components } from "react-markdown";
-import rehypeSanitize from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
-import { Button } from "@nasiko/ui/primitives";
+import { Check, Copy, Download } from 'lucide-react'
+import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
+import { safeHttpUrl } from '@nasiko/features/agents/normalize'
+import { downloadText } from '@nasiko/ui/lib/download'
+import { useCopy } from '@nasiko/ui/lib/useCopy'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import rehypeSanitize from 'rehype-sanitize'
+import remarkGfm from 'remark-gfm'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -23,26 +21,26 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import { downloadName } from "../format";
+} from '@nasiko/ui/primitives/table'
+import { copy } from '../copy'
+import { downloadName } from '../format'
 
-const SAFE_HREF = /^(https?:|mailto:)/i;
+const SAFE_HREF = /^(https?:|mailto:)/i
 
 function CodeBlock({ lang, code }: { lang: string; code: string }) {
-  const [state, onCopy] = useCopy(code);
-  const copied = state === "copied";
+  const [state, onCopy] = useCopy(code)
+  const copied = state === 'copied'
   return (
     <div className="my-2 overflow-hidden rounded-md border border-border bg-muted/40">
       <div className="flex items-center gap-1 border-b border-border px-2 py-1 text-xs text-muted-foreground">
-        <span className="font-mono">{lang || "text"}</span>
+        <span className="font-mono">{lang || 'text'}</span>
         <span className="ml-auto" />
         <Button
           size="xs"
           variant="ghost"
           className="min-h-8 pointer-coarse:min-h-11"
           onClick={() => void onCopy()}
-          aria-label={copied ? copy.copied : state === "failed" ? copy.copyFailed : copy.copyCode}
+          aria-label={copied ? copy.copied : state === 'failed' ? copy.copyFailed : copy.copyCode}
         >
           {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
           {copied ? copy.copied : copy.copyReply}
@@ -51,9 +49,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
           size="xs"
           variant="ghost"
           className="min-h-8 pointer-coarse:min-h-11"
-          onClick={() => {
-            downloadText(downloadName(lang), code);
-          }}
+          onClick={() => downloadText(downloadName(lang), code)}
           aria-label={`${copy.download} ${downloadName(lang)}`}
         >
           <Download aria-hidden />
@@ -64,7 +60,7 @@ function CodeBlock({ lang, code }: { lang: string; code: string }) {
         <code>{code}</code>
       </pre>
     </div>
-  );
+  )
 }
 
 const components: Components = {
@@ -82,8 +78,8 @@ const components: Components = {
       <span>{children}</span>
     ),
   img: ({ src, alt }) => {
-    const href = safeHttpUrl(typeof src === "string" ? src : null);
-    const label = copy.imageLink(alt || "");
+    const href = safeHttpUrl(typeof src === 'string' ? src : null)
+    const label = copy.imageLink(alt || '')
     return href ? (
       <a
         href={href}
@@ -95,17 +91,16 @@ const components: Components = {
       </a>
     ) : (
       <span>{label}</span>
-    );
+    )
   },
   pre: ({ children }) => <>{children}</>,
   code: ({ className, children }) => {
-    const lang = /language-([\w+-]+)/.exec(className ?? "")?.[1];
-    // eslint-disable-next-line @typescript-eslint/no-base-to-string -- a code element's children are its text
-    const text = String(children ?? "");
+    const lang = /language-([\w+-]+)/.exec(className ?? '')?.[1]
+    const text = String(children ?? '')
     // Fenced blocks carry a language class or end in a newline; inline code does neither.
-    if (lang || text.endsWith("\n"))
-      return <CodeBlock lang={lang ?? ""} code={text.replace(/\n$/, "")} />;
-    return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>;
+    if (lang || text.endsWith('\n'))
+      return <CodeBlock lang={lang ?? ''} code={text.replace(/\n$/, '')} />
+    return <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
   },
   // shadcn Table parts; Table's own wrapper scrolls. Cells wrap: agent tables hold prose.
   table: ({ children }) => (
@@ -137,7 +132,7 @@ const components: Components = {
       {children}
     </blockquote>
   ),
-};
+}
 
 const Rendered = memo(function Rendered({ text }: { text: string }) {
   return (
@@ -149,33 +144,31 @@ const Rendered = memo(function Rendered({ text }: { text: string }) {
     >
       {text}
     </ReactMarkdown>
-  );
-});
+  )
+})
 
 /** Throttle a fast-changing string to one update per animation frame (and at most every 50 ms). */
 function useFrameThrottled(text: string, live: boolean): string {
-  const [shown, setShown] = useState(text);
-  const latest = useRef(text);
+  const [shown, setShown] = useState(text)
+  const latest = useRef(text)
   useEffect(() => {
-    latest.current = text;
-  }, [text]);
+    latest.current = text
+  }, [text])
   useEffect(() => {
-    if (!live) return;
-    let raf = 0;
-    let last = 0;
+    if (!live) return
+    let raf = 0
+    let last = 0
     const tick = (t: number) => {
       if (t - last >= 50) {
-        last = t;
-        setShown(latest.current);
+        last = t
+        setShown(latest.current)
       }
-      raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => {
-      cancelAnimationFrame(raf);
-    };
-  }, [live]);
-  return live ? shown : text;
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [live])
+  return live ? shown : text
 }
 
 export function Markdown({
@@ -183,14 +176,14 @@ export function Markdown({
   live = false,
   className,
 }: {
-  text: string;
-  live?: boolean | undefined;
-  className?: string | undefined;
+  text: string
+  live?: boolean
+  className?: string
 }): ReactNode {
-  const shown = useFrameThrottled(text, live);
+  const shown = useFrameThrottled(text, live)
   return (
-    <div className={className ?? "text-sm break-words"}>
+    <div className={className ?? 'text-sm break-words'}>
       <Rendered text={shown} />
     </div>
-  );
+  )
 }

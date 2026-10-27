@@ -1,0 +1,44 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.grants",
+  "recorded_at": "2026-09-30T14:28:36.600Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.600Z",
+    "end": "2026-09-30T14:28:36.604Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/connectors/{mcpDocs}/grants",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "access_reasons": [
+        {
+          "display_name": null,
+          "email": "admin@example.com",
+          "role": "admin",
+          "user_id": "<admin-id>",
+          "username": "admin",
+          "via": "owner",
+          "via_label": null
+        }
+      ],
+      "grants": [],
+      "is_public": false
+    },
+    "message": "Connector grants retrieved successfully",
+    "status_code": 200
+  }
+}

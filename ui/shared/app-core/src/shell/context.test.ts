@@ -1,44 +1,47 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/context.test.ts. Local edits: the TokenOps and Sessions
-// page schemas the lab merges with the shared one belong to their own features (their tests), so this file checks
-// the shared schema itself (`sharedSearchSchema`: junk falls back, flags parse) plus `pickShared`, `withoutWindow`,
-// `compareOn` and `presenterStep`; zod/mini's `z.parse`; Prettier formatting.
 /**
  * The URL contract (context.ts table): junk params fall back, `?compare=0` arrives as a
- * number, and only shared keys cross pages.
+ * number, `open` normalises to a canonical CSV, and only shared keys cross pages.
  */
-import { describe, expect, it } from "vitest";
-import * as z from "zod/mini";
-import { compareOn, pickShared, presenterStep, sharedSearchSchema, withoutWindow } from "./context";
+import { describe, expect, it } from 'vitest'
+import { traceSearchSchema } from '@nasiko/features/sessions/search'
+import { openSet, tokenopsSearchSchema } from '@nasiko/features/tokenops/search'
+import { compareOn, pickShared, presenterStep } from './context'
 
-describe("URL contract", () => {
-  it("junk falls back, flags parse, and only shared keys are carried", () => {
-    const t = z.parse(sharedSearchSchema, {
-      preset: "nope",
+describe('URL contract', () => {
+  it('junk falls back, open is canonical, and only shared keys are carried', () => {
+    const t = traceSearchSchema.parse({
+      preset: 'nope',
       compare: 0,
-      agent: "   ",
-      mock: "chaos",
+      day: '2026-02-30',
+      lane: 'bogus',
+      status: 'meh',
+      trace: '   ',
+      span: 'U3Bhbj=',
+      mock: 'chaos',
       demo: 1,
-      anchor: "2026-02-30",
-    });
-    expect(t).toMatchObject({ preset: "30d", compare: false, demo: true });
-    for (const k of ["agent", "mock", "anchor"] as const) expect(t[k]).toBeUndefined();
-    expect(z.parse(sharedSearchSchema, { compare: "1" }).compare).toBe(true);
-    expect(z.parse(sharedSearchSchema, { preset: "7d", anchor: "2026-10-07" })).toMatchObject({
-      preset: "7d",
-      anchor: "2026-10-07",
-    });
+    })
+    // Sessions and the trace fall back to 7d (TokenOps keeps 30d).
+    expect(t).toMatchObject({ preset: '7d', compare: false, demo: true })
+    expect(tokenopsSearchSchema.parse({ preset: 'nope' }).preset).toBe('30d')
+    for (const k of ['day', 'lane', 'status', 'trace', 'span', 'mock'] as const)
+      expect(t[k]).toBeUndefined()
+    expect(traceSearchSchema.parse({ span: 'ABCdef0123' }).span).toBe('ABCdef0123')
 
-    expect(compareOn({})).toBe(true);
-    expect(compareOn({ compare: false })).toBe(false);
+    expect(tokenopsSearchSchema.parse({ open: 'all' }).open).toBe(
+      'spend,optimize,drivers,perf,month,metrics',
+    )
+    expect(tokenopsSearchSchema.parse({ open: 'metrics, junk,spend' }).open).toBe('spend,metrics')
+    expect(tokenopsSearchSchema.parse({ open: 'junk' }).open).toBeUndefined()
+    expect(tokenopsSearchSchema.parse({ compare: '1' }).compare).toBe(true)
+    expect(openSet(undefined).size).toBe(0)
+    expect(openSet('metrics,spend,bogus')).toEqual(new Set(['metrics', 'spend']))
+
+    expect(compareOn({})).toBe(true)
+    expect(compareOn({ compare: false })).toBe(false)
     expect(
-      pickShared({ preset: "7d", agent: undefined, day: "2026-03-11", open: "spend", demo: true }),
-    ).toEqual({ preset: "7d", demo: true });
-    expect(
-      withoutWindow({ preset: "7d", from: "2026-03-01", to: "2026-03-11", agent: "a" }),
-    ).toEqual({ agent: "a" });
-    expect(presenterStep("/sessions/", { day: "2026-03-11" })).toBe(1);
-    expect(presenterStep("/tokenops", {})).toBe(0);
-    expect(presenterStep("/sessions/abc", {})).toBe(2);
-    expect(presenterStep("/settings", {})).toBeNull();
-  });
-});
+      pickShared({ preset: '7d', agent: undefined, day: '2026-03-11', open: 'spend', demo: true }),
+    ).toEqual({ preset: '7d', demo: true })
+    expect(presenterStep('/sessions/', { day: '2026-03-11' })).toBe(1)
+    expect(presenterStep('/settings', {})).toBeNull()
+  })
+})

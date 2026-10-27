@@ -1,42 +1,38 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/IndividualView.tsx. Local edits: the
-// session link is the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>` (encoded as the
-// lab's router encoded params; the lab's empty `search` is no query); optional props typed `| undefined`; development
-// (84c6f11eb): the viewer's own sessions open the ledger (`?view=ledger`); Prettier formatting.
 /**
  * Individual level (plan §6, G9): full form from the usage endpoint, degraded form from
  * the live fallback. Session links open Sessions only for the viewer themself or a
  * superuser (the session list is own-only for everyone else; Q4); mock mode never links.
  */
-import Link from "@nasiko/app-core/navigation";
-import { useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { fmtInt, fmtMoney, fmtShortDay, fmtTokens } from "@nasiko/ui/lib";
-import { CopyButton } from "@nasiko/ui/composites";
-import { Panel, PanelEmpty } from "@nasiko/ui/composites";
-import { copy } from "../copy";
-import { harnessStyle } from "../rollup";
-import type { UsageResponse } from "../types";
-import { HarnessLabel } from "./bits";
+import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { fmtInt, fmtMoney, fmtShortDay, fmtTokens } from '@nasiko/ui/lib/format'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { Panel, PanelEmpty } from '@nasiko/ui/composites/panel'
+import { copy } from '../copy'
+import { harnessStyle } from '../rollup'
+import type { UsageResponse } from '../types'
+import { HarnessLabel } from './bits'
 
 export interface SessionItem {
-  session_id: string;
-  harness: string;
-  started_at: string;
+  session_id: string
+  harness: string
+  started_at: string
   /** Full form: turns + Est. cost. Degraded (chat sessions): messages + tokens. */
-  turns?: number | undefined;
-  cost_usd?: number | undefined;
-  messages?: number | null | undefined;
-  tokens?: number | null | undefined;
+  turns?: number
+  cost_usd?: number
+  messages?: number | null
+  tokens?: number | null
 }
 
 const when = (iso: string) =>
-  new Date(iso).toLocaleString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    timeZone: "UTC",
-  });
+  new Date(iso).toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'UTC',
+  })
 
 export function SessionsList({
   items,
@@ -44,22 +40,22 @@ export function SessionsList({
   ledger = false,
   title,
   note,
-  emptyText = "No harness sessions in this window.",
+  emptyText = 'No harness sessions in this window.',
   initial,
 }: {
-  items: SessionItem[];
-  linkable: boolean;
+  items: SessionItem[]
+  linkable: boolean
   /** The viewer's own sessions: links open the ledger (plans/feat-agent-centric.md PR1b). Anyone else's open the
    * trace, since only a chat's owner can read its messages. */
-  ledger?: boolean;
-  title: string;
-  note?: string | undefined;
-  emptyText?: string | undefined;
+  ledger?: boolean
+  title: string
+  note?: string
+  emptyText?: string
   /** Show only the newest `initial` rows until "Show all" (keeps the trend above the fold). */
-  initial?: number | undefined;
+  initial?: number
 }) {
-  const [all, setAll] = useState(false);
-  const shown = initial && !all ? items.slice(0, initial) : items;
+  const [all, setAll] = useState(false)
+  const shown = initial && !all ? items.slice(0, initial) : items
   return (
     <Panel title={title} labelledBy="sessions-title" subtitle={note}>
       {!items.length ? (
@@ -69,10 +65,10 @@ export function SessionsList({
           {shown.map((s) => {
             const label = (
               <>
-                <HarnessLabel id={s.harness} />{" "}
+                <HarnessLabel id={s.harness} />{' '}
                 <span className="text-muted-foreground">· {when(s.started_at)} UTC</span>
               </>
-            );
+            )
             return (
               <li
                 key={s.session_id}
@@ -80,7 +76,9 @@ export function SessionsList({
               >
                 {linkable ? (
                   <Link
-                    href={`/sessions/${encodeURIComponent(s.session_id)}${ledger ? "?view=ledger" : ""}`}
+                    to="/sessions/$sessionId"
+                    params={{ sessionId: s.session_id }}
+                    search={ledger ? { view: 'ledger' } : {}}
                     className="inline-flex min-h-8 items-center gap-1 hover:underline"
                   >
                     {label}
@@ -91,27 +89,20 @@ export function SessionsList({
                 <span className="text-xs text-muted-foreground tabular-nums">
                   {s.turns !== undefined
                     ? `${fmtInt(s.turns)} turns · ${fmtMoney(s.cost_usd ?? 0)} est.`
-                    : `${s.messages ?? "—"} messages · ${s.tokens == null ? "—" : fmtTokens(s.tokens)} tokens`}
+                    : `${s.messages ?? '—'} messages · ${s.tokens == null ? '—' : fmtTokens(s.tokens)} tokens`}
                 </span>
               </li>
-            );
+            )
           })}
         </ul>
       )}
       {shown.length < items.length ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          className="mt-1 -ml-3"
-          onClick={() => {
-            setAll(true);
-          }}
-        >
+        <Button size="sm" variant="ghost" className="mt-1 -ml-3" onClick={() => setAll(true)}>
           {copy.showAllSessions(items.length)}
         </Button>
       ) : null}
     </Panel>
-  );
+  )
 }
 
 /** "Not connected: …" with the viewer's connect steps, or a request line about someone else. */
@@ -121,21 +112,21 @@ export function ConnectPanel({
   name,
   server,
 }: {
-  unconnected: string[];
-  self: boolean;
-  name: string;
-  server: string;
+  unconnected: string[]
+  self: boolean
+  name: string
+  server: string
 }) {
-  const first = unconnected[0];
-  if (!first) return null;
+  const first = unconnected[0]
+  if (!first) return null
   return (
     <Panel
-      title={`${copy.notConnected}: ${unconnected.map((h) => harnessStyle(h).name).join(", ")}`}
+      title={`${copy.notConnected}: ${unconnected.map((h) => harnessStyle(h).name).join(', ')}`}
       labelledBy="connect-title"
     >
       <ConnectHelp self={self} name={name} harness={first} server={server} />
     </Panel>
-  );
+  )
 }
 
 /** Daily activity strip from the series (full form only; no live source, so hidden there). A day is
@@ -144,26 +135,26 @@ export function ActivityStrip({
   series,
   days,
 }: {
-  series: UsageResponse["series"];
-  days: string[];
+  series: UsageResponse['series']
+  days: string[]
 }) {
-  const cost = new Map<string, number>();
-  const active = new Set<string>();
-  const firstDay = days[0];
-  const lastDay = days.at(-1);
+  const cost = new Map<string, number>()
+  const active = new Set<string>()
+  const firstDay = days[0]
+  const lastDay = days.at(-1)
   for (const p of series) {
-    cost.set(p.date, (cost.get(p.date) ?? 0) + p.cost_usd);
-    if (p.active_devs > 0) active.add(p.date);
+    cost.set(p.date, (cost.get(p.date) ?? 0) + p.cost_usd)
+    if (p.active_devs > 0) active.add(p.date)
   }
-  const max = Math.max(0, ...cost.values());
+  const max = Math.max(0, ...cost.values())
   const shade = (d: string) => {
-    const v = cost.get(d) ?? 0;
+    const v = cost.get(d) ?? 0
     if (v > 0)
-      return `color-mix(in oklch, var(--chart-1-edge) ${Math.round(25 + 75 * (v / (max || 1)))}%, transparent)`;
+      return `color-mix(in oklch, var(--chart-1-edge) ${Math.round(25 + 75 * (v / (max || 1)))}%, transparent)`
     return active.has(d)
-      ? "color-mix(in oklch, var(--chart-1-edge) 20%, transparent)"
-      : "var(--muted)";
-  };
+      ? 'color-mix(in oklch, var(--chart-1-edge) 20%, transparent)'
+      : 'var(--muted)'
+  }
   return (
     <div className="flex flex-col gap-1">
       <div
@@ -174,7 +165,7 @@ export function ActivityStrip({
         {days.map((d) => (
           <span
             key={d}
-            title={`${d}: ${!active.has(d) ? "no activity" : (cost.get(d) ?? 0) > 0 ? `${fmtMoney(cost.get(d) ?? 0)} est.` : "active, unpriced"}`}
+            title={`${d}: ${!active.has(d) ? 'no activity' : (cost.get(d) ?? 0) > 0 ? `${fmtMoney(cost.get(d) ?? 0)} est.` : 'active, unpriced'}`}
             className="size-3 rounded-sm"
             style={{ background: shade(d) }}
           />
@@ -187,12 +178,12 @@ export function ActivityStrip({
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
-export function TopModels({ byHarness }: { byHarness: UsageResponse["by_harness"] }) {
-  const rows = byHarness.filter((h) => h.top_models.length);
-  if (!rows.length) return null;
+export function TopModels({ byHarness }: { byHarness: UsageResponse['by_harness'] }) {
+  const rows = byHarness.filter((h) => h.top_models.length)
+  if (!rows.length) return null
   return (
     <div className="flex flex-col gap-1">
       <h3 className="text-xs font-medium text-muted-foreground">Top models</h3>
@@ -200,12 +191,12 @@ export function TopModels({ byHarness }: { byHarness: UsageResponse["by_harness"
         {rows.map((h) => (
           <li key={h.harness} className="flex items-center justify-between gap-2">
             <HarnessLabel id={h.harness} />
-            <span className="text-muted-foreground">{h.top_models.join(", ")}</span>
+            <span className="text-muted-foreground">{h.top_models.join(', ')}</span>
           </li>
         ))}
       </ul>
     </div>
-  );
+  )
 }
 
 /** "Not connected" help: the command snippet for the viewer, a request line for everyone else (X6, N14). */
@@ -215,24 +206,24 @@ export function ConnectHelp({
   harness,
   server,
 }: {
-  self: boolean;
-  name: string;
-  harness: string;
-  server: string;
+  self: boolean
+  name: string
+  harness: string
+  server: string
 }) {
-  const hname = harnessStyle(harness).name;
+  const hname = harnessStyle(harness).name
   if (!self)
-    return <p className="text-sm text-muted-foreground">{copy.askToConnect(name, hname)}</p>;
-  const steps = copy.connectSteps(server, harness);
+    return <p className="text-sm text-muted-foreground">{copy.askToConnect(name, hname)}</p>
+  const steps = copy.connectSteps(server, harness)
   return (
     <div className="flex flex-col gap-2 text-sm">
       <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs">
-        <code>{steps.join("\n")}</code>
+        <code>{steps.join('\n')}</code>
       </pre>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">{copy.connectHint}</p>
-        <CopyButton text={steps.join("\n")} label="Copy" />
+        <CopyButton text={steps.join('\n')} label="Copy" />
       </div>
     </div>
-  );
+  )
 }

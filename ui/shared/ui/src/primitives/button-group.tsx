@@ -1,15 +1,8 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/ui/button-group.tsx. Local edits:
-// - Radix `Slot`/`asChild` on `ButtonGroupText` -> Base UI `useRender` + `mergeProps` with a `render` prop;
-// - imports: `@/lib/utils` -> "cn", `@/components/ui/separator` -> ./separator (Base UI; it renders `data-orientation`
-//   like Radix, so the lab's `data-[orientation=vertical]:h-auto` still applies).
-// Class strings, roles and data attributes are the lab's.
-import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { mergeProps } from "@base-ui/react/merge-props"
-import { useRender } from "@base-ui/react/use-render"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
+import { Slot } from "radix-ui"
 
-import { Separator } from "./separator"
+import { Separator } from "@nasiko/ui/primitives/separator"
 
 const buttonGroupVariants = cva(
   "flex w-fit items-stretch has-[>[data-slot=button-group]]:gap-2 [&>*]:focus-visible:relative [&>*]:focus-visible:z-10 has-[select[aria-hidden=true]:last-child]:[&>[data-slot=select-trigger]:last-of-type]:rounded-r-md [&>[data-slot=select-trigger]:not([class*='w-'])]:w-fit [&>input]:flex-1",
@@ -46,22 +39,22 @@ function ButtonGroup({
 
 function ButtonGroupText({
   className,
-  render,
+  asChild = false,
   ...props
-}: useRender.ComponentProps<"div">) {
-  return useRender({
-    defaultTagName: "div",
-    render,
-    props: mergeProps<"div">(
-      {
-        className: cn(
-          "flex items-center gap-2 rounded-md border bg-muted px-4 text-sm font-medium shadow-xs [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4",
-          className
-        ),
-      },
-      props
-    ),
-  })
+}: React.ComponentProps<"div"> & {
+  asChild?: boolean
+}) {
+  const Comp = asChild ? Slot.Root : "div"
+
+  return (
+    <Comp
+      className={cn(
+        "flex items-center gap-2 rounded-md border bg-muted px-4 text-sm font-medium shadow-xs [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4",
+        className
+      )}
+      {...props}
+    />
+  )
 }
 
 function ButtonGroupSeparator({

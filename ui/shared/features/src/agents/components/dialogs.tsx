@@ -1,17 +1,10 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/components/dialogs.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; the delete's landing is `useRouter().replace(hrefFor('/agents/mine', { owner
-// }))` from the navigation port (`@nasiko/app-core/navigation`), and the result the lab put in TanStack history state (`state.agentDeleted`) is handed
-// to that page with `carryDeletedNote` (../deletedNote.ts), which stamps it into the entry's history state on
-// arrival; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Confirm dialogs for destructive actions (plan §6.2). Radix restores focus to the trigger on
  * close. Actions stay disabled while their mutation is pending (no double submit).
  */
-import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "@nasiko/app-core/navigation";
-import { useId, useState, type ReactNode } from "react";
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
+import { useId, useState, type ReactNode } from 'react'
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -20,31 +13,29 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { Textarea } from "@nasiko/ui/primitives";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { useDeleteAgent } from "../api";
-import { carryDeletedNote } from "../deletedNote";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { copy, type ErrorContext } from "../copy";
-import type { AgentView } from "../normalize";
-import { ErrorNote } from "./bits";
+} from '@nasiko/ui/primitives/alert-dialog'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { meQuery } from '@nasiko/data-access/auth'
+import { useDeleteAgent } from '../api'
+import { copy, type ErrorContext } from '../copy'
+import type { AgentView } from '../normalize'
+import { ErrorNote } from './bits'
 
 interface ConfirmProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  body: ReactNode;
-  confirmLabel: string;
-  destructive?: boolean | undefined;
-  pending?: boolean | undefined;
-  error?: unknown;
-  errorContext?: ErrorContext | undefined;
-  onConfirm: () => void;
-  children?: ReactNode | undefined;
-  confirmDisabled?: boolean | undefined;
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  body: ReactNode
+  confirmLabel: string
+  destructive?: boolean
+  pending?: boolean
+  error?: unknown
+  errorContext?: ErrorContext
+  onConfirm: () => void
+  children?: ReactNode
+  confirmDisabled?: boolean
 }
 
 export function ConfirmDialog({
@@ -74,7 +65,7 @@ export function ConfirmDialog({
           <AlertDialogCancel disabled={pending}>{copy.cancel}</AlertDialogCancel>
           {/* A plain Button, not AlertDialogAction: the dialog stays open until the call settles. */}
           <Button
-            variant={destructive ? "destructive" : "default"}
+            variant={destructive ? 'destructive' : 'default'}
             disabled={pending || confirmDisabled}
             onClick={onConfirm}
           >
@@ -83,7 +74,7 @@ export function ConfirmDialog({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  );
+  )
 }
 
 /** Delete: type the agent's unique `name` (not the display name) to enable the button. */
@@ -95,21 +86,21 @@ function DeleteDialog({
   error,
   onConfirm,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  name: string;
-  pending: boolean;
-  error: unknown;
-  onConfirm: () => void;
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  name: string
+  pending: boolean
+  error: unknown
+  onConfirm: () => void
 }) {
-  const [typed, setTyped] = useState("");
-  const id = useId();
+  const [typed, setTyped] = useState('')
+  const id = useId()
   return (
     <ConfirmDialog
       open={open}
       onOpenChange={(o) => {
-        if (!o) setTyped("");
-        onOpenChange(o);
+        if (!o) setTyped('')
+        onOpenChange(o)
       }}
       title={copy.deleteTitle(name)}
       body={copy.deleteBody}
@@ -127,15 +118,13 @@ function DeleteDialog({
       <Input
         id={id}
         value={typed}
-        onChange={(e) => {
-          setTyped(e.target.value);
-        }}
+        onChange={(e) => setTyped(e.target.value)}
         autoComplete="off"
         spellCheck={false}
         className="font-mono"
       />
     </ConfirmDialog>
-  );
+  )
 }
 
 export function RollbackDialog({
@@ -146,21 +135,21 @@ export function RollbackDialog({
   error,
   onConfirm,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  version: string;
-  pending: boolean;
-  error: unknown;
-  onConfirm: (reason: string) => void;
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  version: string
+  pending: boolean
+  error: unknown
+  onConfirm: (reason: string) => void
 }) {
-  const [reason, setReason] = useState("");
-  const id = useId();
+  const [reason, setReason] = useState('')
+  const id = useId()
   return (
     <ConfirmDialog
       open={open}
       onOpenChange={(o) => {
-        if (!o) setReason("");
-        onOpenChange(o);
+        if (!o) setReason('')
+        onOpenChange(o)
       }}
       title={copy.rollBackTitle(version)}
       body={copy.rollBackBody}
@@ -168,23 +157,14 @@ export function RollbackDialog({
       pending={pending}
       error={error}
       errorContext="rollback"
-      onConfirm={() => {
-        onConfirm(reason.trim());
-      }}
+      onConfirm={() => onConfirm(reason.trim())}
     >
       <label htmlFor={id} className="text-sm">
         {copy.rollBackReason}
       </label>
-      <Textarea
-        id={id}
-        value={reason}
-        onChange={(e) => {
-          setReason(e.target.value);
-        }}
-        rows={2}
-      />
+      <Textarea id={id} value={reason} onChange={(e) => setReason(e.target.value)} rows={2} />
     </ConfirmDialog>
-  );
+  )
 }
 
 /**
@@ -196,43 +176,41 @@ export function DeleteAgentDialog({
   open,
   onOpenChange,
 }: {
-  agent: AgentView;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  agent: AgentView
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
-  const del = useDeleteAgent(agent.id);
-  const router = useRouter();
-  const me = useQuery(meQueryOptions(useProductScope())).data;
+  const del = useDeleteAgent(agent.id)
+  const navigate = useNavigate()
+  const me = useQuery(meQuery).data
   return (
     <DeleteDialog
       open={open}
       onOpenChange={(o) => {
-        if (o) del.reset();
-        onOpenChange(o);
+        if (o) del.reset()
+        onOpenChange(o)
       }}
       name={agent.name}
       pending={del.isPending}
       error={del.isError ? del.error : undefined}
-      onConfirm={() => {
+      onConfirm={() =>
         del.mutate(undefined, {
-          onSuccess: (res) => {
-            carryDeletedNote("/agents/mine", {
-              name: agent.displayName,
-              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
-              errors: res?.runtime_errors ?? [],
-              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
-              stopped: res?.containers_stopped ?? 0,
-            });
-            router.replace(
+          onSuccess: (res) =>
+            void navigate({
+              to: '/agents/mine',
+              replace: true,
               // A superuser deleting someone else's agent lands on that owner's list.
-              hrefFor(
-                "/agents/mine",
-                agent.ownerId && agent.ownerId !== me?.sub ? { owner: agent.ownerId } : {},
-              ),
-            );
-          },
-        });
-      }}
+              search: agent.ownerId && agent.ownerId !== me?.sub ? { owner: agent.ownerId } : {},
+              state: {
+                agentDeleted: {
+                  name: agent.displayName,
+                  errors: res?.runtime_errors ?? [],
+                  stopped: res?.containers_stopped ?? 0,
+                },
+              },
+            }),
+        })
+      }
     />
-  );
+  )
 }

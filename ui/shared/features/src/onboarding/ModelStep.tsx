@@ -1,65 +1,52 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/ModelStep.tsx. Local edits: `"use client"`; the
-// lab's `ApiError` is `ProductApiError`; Base UI's `RadioGroup` passes its value untyped (read as a string) and marks
-// the checked item `data-checked` (`has-[[data-state=checked]]` -> `has-[[data-checked]]`); Prettier formatting.
-"use client";
-
 /**
  * Step 3: pick a built-in provider and save its key as the caller's default LLM config, through the router's own
  * `useSaveConfig` (key hygiene as there: the mutation keeps nothing and resets on unmount; the key is never read back).
  */
-import { CircleCheck, KeyRound, Lock, TriangleAlert } from "lucide-react";
-import { useEffect, useId, useState } from "react";
-import { PanelError } from "@nasiko/ui/composites";
-import { Alert, AlertDescription } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Field, FieldLabel } from "@nasiko/ui/primitives";
-import { InputGroup, InputGroupAddon, InputGroupInput } from "@nasiko/ui/primitives";
-import { RadioGroup, RadioGroupItem } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { Spinner } from "@nasiko/ui/primitives";
-import { useCatalog, useSaveConfig } from "../router/api";
-import { defaultSecretName } from "../router/routing";
-import { ProductApiError } from "@nasiko/data-access/product";
-import { copy } from "./copy";
-import { guideProviders, providerName } from "./logic";
-import { StepHeading } from "./parts";
+import { CircleCheck, KeyRound, Lock, TriangleAlert } from 'lucide-react'
+import { useEffect, useId, useState } from 'react'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Field, FieldLabel } from '@nasiko/ui/primitives/field'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@nasiko/ui/primitives/input-group'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Spinner } from '@nasiko/ui/primitives/spinner'
+import { useCatalog, useSaveConfig } from '@nasiko/features/router/api'
+import { defaultSecretName } from '@nasiko/features/router/routing'
+import { ApiError } from '@nasiko/data-access/client'
+import { copy } from './copy'
+import { guideProviders, providerName } from './logic'
+import { StepHeading } from './parts'
 
 export function ModelStep({
   connected,
   onConnected,
 }: {
   /** What was connected ("Anthropic · claude-…"), shown on return to this step. */
-  connected: string | null;
-  onConnected: (summary: string) => void;
+  connected: string | null
+  onConnected: (summary: string) => void
 }) {
-  const ids = useId();
-  const catalog = useCatalog();
-  const save = useSaveConfig();
-  const { reset } = save;
-  useEffect(
-    () => () => {
-      reset();
-    },
-    [reset],
-  );
-  const providers = guideProviders(catalog.data);
-  const [picked, setPicked] = useState<string | null>(null);
-  const provider = picked ?? providers[0]?.provider ?? null;
-  const [key, setKey] = useState("");
-  const [empty, setEmpty] = useState(false);
+  const ids = useId()
+  const catalog = useCatalog()
+  const save = useSaveConfig()
+  const { reset } = save
+  useEffect(() => () => reset(), [reset])
+  const providers = guideProviders(catalog.data)
+  const [picked, setPicked] = useState<string | null>(null)
+  const provider = picked ?? providers[0]?.provider ?? null
+  const [key, setKey] = useState('')
+  const [empty, setEmpty] = useState(false)
 
   const connect = () => {
-    if (!provider) return;
-    if (!key.trim()) {
-      setEmpty(true);
-      return;
-    }
+    if (!provider) return
+    if (!key.trim()) return setEmpty(true)
     // The server needs a model (or tier models) on every config: the provider's first catalog model, changeable later
     // in the LLM router.
-    const model = providers.find((p) => p.provider === provider)?.models[0] ?? null;
+    const model = providers.find((p) => p.provider === provider)?.models[0] ?? null
     save.mutate(
       {
-        mode: "create",
+        mode: 'create',
         body: {
           name: `${provider}-setup`,
           provider,
@@ -71,12 +58,12 @@ export function ModelStep({
       },
       {
         onSuccess: () => {
-          setKey("");
-          onConnected(model ? `${providerName(provider)} · ${model}` : providerName(provider));
+          setKey('')
+          onConnected(model ? `${providerName(provider)} · ${model}` : providerName(provider))
         },
       },
-    );
-  };
+    )
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -95,10 +82,10 @@ export function ModelStep({
         <>
           <RadioGroup
             aria-label={copy.model.label}
-            value={provider ?? ""}
+            value={provider ?? ''}
             onValueChange={(v) => {
-              setPicked(v as string);
-              save.reset();
+              setPicked(v)
+              save.reset()
             }}
             className="grid gap-3 sm:grid-cols-3"
           >
@@ -106,7 +93,7 @@ export function ModelStep({
               <label
                 key={p.provider}
                 htmlFor={`${ids}-${p.provider}`}
-                className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
+                className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-state=checked]]:border-foreground/50 has-[[data-state=checked]]:bg-accent"
               >
                 <RadioGroupItem id={`${ids}-${p.provider}`} value={p.provider} />
                 <span className="min-w-0">
@@ -136,8 +123,8 @@ export function ModelStep({
                     spellCheck={false}
                     value={key}
                     onChange={(e) => {
-                      setKey(e.target.value);
-                      setEmpty(false);
+                      setKey(e.target.value)
+                      setEmpty(false)
                     }}
                   />
                 </InputGroup>
@@ -171,8 +158,8 @@ export function ModelStep({
               <TriangleAlert aria-hidden />
               <AlertDescription>
                 {copy.model.saveFailed(
-                  save.error instanceof ProductApiError &&
-                    typeof save.error.body === "string" &&
+                  save.error instanceof ApiError &&
+                    typeof save.error.body === 'string' &&
                     save.error.body
                     ? save.error.body
                     : save.error.message,
@@ -187,5 +174,5 @@ export function ModelStep({
         </>
       )}
     </div>
-  );
+  )
 }

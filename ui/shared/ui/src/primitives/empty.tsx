@@ -1,8 +1,9 @@
-// fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `empty` (); Base UI internals kept.
-// Local edits (ported from nasiko-ui-lab@1b99bdda common/src/components/ui/empty.tsx, re-apply after any re-vendor):
-// - accent text uses `text-primary-text`, not the bare primary text class (css.test.ts).
+/**
+ * shadcn `empty` (new-york-v4), with one local edit to re-apply after any `shadcn add empty`:
+ * - accent text uses `text-primary-text`, not the bare primary text class (css.test.ts).
+ */
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
 
 function Empty({ className, ...props }: React.ComponentProps<"div">) {
   return (
@@ -21,7 +22,10 @@ function EmptyHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty-header"
-      className={cn("flex max-w-sm flex-col items-center gap-2 text-center", className)}
+      className={cn(
+        "flex max-w-sm flex-col items-center gap-2 text-center",
+        className
+      )}
       {...props}
     />
   )

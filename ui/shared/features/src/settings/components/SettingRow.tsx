@@ -1,14 +1,12 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/components/SettingRow.tsx. Local edits: optional
-// props typed `| undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Settings rows: one hairline card per group of settings, a row per setting with its label and hint on the left and
  * the control on the right (stacked in a narrow card, or when the control needs the full width), rows divided by
  * hairlines. A form's Save sits in the card's `footer`. The EE sections use them too, so every Settings page reads
  * the same.
  */
-import type { ReactNode } from "react";
-import { FieldError, FieldLabel } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
+import type { ReactNode } from 'react'
+import { FieldError, FieldLabel } from '@nasiko/ui/primitives/field'
+import { cn } from '@nasiko/ui/lib/utils'
 
 /** The card: the query target for its rows' two-column switch. */
 export function SettingRows({
@@ -17,21 +15,21 @@ export function SettingRows({
   stickyFooter = false,
   className,
 }: {
-  children: ReactNode;
+  children: ReactNode
   /** The card's action bar (a form's Save), on a muted strip under the rows. */
-  footer?: ReactNode | undefined;
+  footer?: ReactNode
   /**
    * Keep the action bar at the bottom of the viewport while the card is on screen (the Optimization page's unsaved
    * changes, plans/feat-optimization-page.md R2G). `overflow-clip`, not hidden, so the card isn't the bar's scroller.
    */
-  stickyFooter?: boolean;
-  className?: string | undefined;
+  stickyFooter?: boolean
+  className?: string
 }) {
   return (
     <div
       className={cn(
-        "@container rounded-lg border border-border bg-card text-card-foreground",
-        stickyFooter ? "overflow-clip" : "overflow-hidden",
+        '@container rounded-lg border border-border bg-card text-card-foreground',
+        stickyFooter ? 'overflow-clip' : 'overflow-hidden',
         className,
       )}
     >
@@ -39,15 +37,15 @@ export function SettingRows({
       {footer ? (
         <div
           className={cn(
-            "flex flex-wrap items-center justify-end gap-3 border-t border-border px-5 py-3",
-            stickyFooter ? "sticky bottom-0 z-10 bg-muted" : "bg-muted/40",
+            'flex flex-wrap items-center justify-end gap-3 border-t border-border px-5 py-3',
+            stickyFooter ? 'sticky bottom-0 z-10 bg-muted' : 'bg-muted/40',
           )}
         >
           {footer}
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 export function SettingRow({
@@ -60,23 +58,23 @@ export function SettingRow({
   children,
 }: {
   /** The control's id; omit for a row with no control (a note). */
-  htmlFor?: string | undefined;
-  label: string;
-  hint?: ReactNode | undefined;
+  htmlFor?: string
+  label: string
+  hint?: ReactNode
   /** Lets the control point `aria-describedby` at the hint. */
-  hintId?: string | undefined;
-  error?: string | undefined;
+  hintId?: string
+  error?: string
   /** The control goes under the label at full width (choice grids). */
-  stacked?: boolean;
-  children?: ReactNode;
+  stacked?: boolean
+  children?: ReactNode
 }) {
   return (
     <div
       className={cn(
         // Hairlines between rows; a row last in its parent (the card, or a section wrapper) has none.
-        "grid gap-3 border-b border-border px-5 py-5 last:border-b-0",
-        !stacked && "@[640px]:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] @[640px]:gap-10",
-        stacked && "gap-4",
+        'grid gap-3 border-b border-border px-5 py-5 last:border-b-0',
+        !stacked && '@[640px]:grid-cols-[minmax(0,1fr)_minmax(0,20rem)] @[640px]:gap-10',
+        stacked && 'gap-4',
       )}
     >
       <div className="min-w-0">
@@ -94,16 +92,16 @@ export function SettingRow({
         ) : null}
       </div>
       {children ? (
-        <div className={cn("min-w-0", !stacked && "self-center")}>
+        <div className={cn('min-w-0', !stacked && 'self-center')}>
           {children}
           {error ? <FieldError className="mt-1.5">{error}</FieldError> : null}
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 /** A sub-heading between cards in a section (SCIM provisioning, Organization rules). */
 export function SettingHeading({ children }: { children: ReactNode }) {
-  return <h2 className="pt-6 pb-3 text-base font-semibold">{children}</h2>;
+  return <h2 className="pt-6 pb-3 text-base font-semibold">{children}</h2>
 }

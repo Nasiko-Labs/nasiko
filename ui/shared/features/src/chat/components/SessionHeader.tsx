@@ -1,49 +1,35 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/SessionHeader.tsx. Local edits: View session
-// is a `ButtonLink` (the lab's `<Button asChild><Link>`); `DropdownMenuTrigger`/`TooltipTrigger asChild` are
-// `render={…}` and the menu's View session item `render={<Link …/>}` (the navigation port's `Link` (`@nasiko/app-core/navigation`)) (Base UI useRender); Radix's
-// `onSelect` on items is Base UI's `onClick` (the menu still closes on it); the menu's `onCloseAutoFocus` is Base UI's
-// `finalFocus` (false while Rename takes focus); the totals label sits in a `DropdownMenuGroup` (Base UI's group label
-// needs one); the jsx-a11y disable became a comment (no such rule here); `ApiError` is `ProductApiError`; Prettier
-// formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 858912f71, 12264f9b6, 1b7bfb943, fdd92df43):
-// `ChatSiblings` pushes `chatHref(id, { mock, debug })` with the step's focus rule as history state (`chatFocus`).
-// The header lives in the app's top bar (e8379db5a), its totals in the ⋯ menu.
 /** An open chat's header (§7.3, §6.10): identity, title (inline rename), totals, View session and the ⋯ menu. */
-import { Activity, MoreHorizontal } from "lucide-react";
-import Link, { useRouter, useSearchParams } from "@nasiko/app-core/navigation";
-import { siblingsAround } from "@nasiko/app-core/siblings";
-import { PrevNext, type StepVia } from "@nasiko/ui/composites";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link, useNavigate } from '@tanstack/react-router'
+import { Activity, MoreHorizontal } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { PrevNext, type StepVia } from '@nasiko/ui/composites/prev-next'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
-  Button,
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-  Input,
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@nasiko/ui/primitives";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import { useRenameChat } from "../api";
-import { copy } from "../copy";
-import { announce } from "../announce";
-import { fmtCostPerOp, fmtTokens } from "@nasiko/ui/lib";
-import { chatTotals } from "../format";
-import { chatHref } from "../nav";
-import { useRailOrder } from "../railOrder";
-import type { ChatIdentity } from "../identity";
-import type { ChatMessage, ChatSessionRow } from "../types";
-import { IdentityChip, IdentityIcon } from "./ChatIdentity";
+} from '@nasiko/ui/primitives/dropdown-menu'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
+import { ApiError } from '@nasiko/data-access/client'
+import { siblingsAround } from '@nasiko/app-core/siblings'
+import { useRenameChat } from '../api'
+import { copy } from '../copy'
+import { announce } from '../announce'
+import { fmtCostPerOp, fmtTokens } from '@nasiko/ui/lib/format'
+import { useRailOrder } from '../railOrder'
+import { chatTotals } from '../format'
+import type { ChatIdentity } from '../identity'
+import type { ChatMessage, ChatSessionRow } from '../types'
+import { IdentityChip, IdentityIcon } from './ChatIdentity'
 
 // quirk: §10.11 — the server caps nothing; this is the UI's own cap.
-const TITLE_MAX = 80;
-const TITLE_COUNTER_FROM = 70;
+const TITLE_MAX = 80
+const TITLE_COUNTER_FROM = 70
 
 export function SessionHeader({
   sessionId,
@@ -59,51 +45,47 @@ export function SessionHeader({
   deleteBlocked,
   onDelete,
 }: {
-  sessionId: string;
-  row: ChatSessionRow | undefined;
+  sessionId: string
+  row: ChatSessionRow | undefined
   /** The chat's details are still loading (the title says so). */
-  loading: boolean;
-  readOnly: boolean;
-  identity: ChatIdentity | null;
-  railButton: ReactNode;
-  replies: ChatMessage[];
+  loading: boolean
+  readOnly: boolean
+  identity: ChatIdentity | null
+  railButton: ReactNode
+  replies: ChatMessage[]
   /** Older pages exist: totals cover the loaded messages only. */
-  partial: boolean;
-  canExport: boolean;
-  onExport: () => void;
+  partial: boolean
+  canExport: boolean
+  onExport(): void
   // quirk: §10.6 — delete fails on any request row (FK without cascade), so it is disabled up front.
-  deleteBlocked: boolean;
-  onDelete: () => void;
+  deleteBlocked: boolean
+  onDelete(): void
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(false)
   /** Set while Rename is chosen from the menu, so the closing menu doesn't pull focus off the input. */
-  const renaming = useRef(false);
+  const renaming = useRef(false)
   return (
     // The app's top bar holds the chat's header: identity and title on the left, its actions, then Previous/Next.
     <TopBar
       pinActions
-      root={<Link href="/chat">{copy.chatsNav}</Link>}
+      root={
+        <Link to="/chat" search={{}}>
+          {copy.chatsNav}
+        </Link>
+      }
       trail={[
         <div key="chat" className="flex min-w-0 items-center gap-2">
           {railButton}
           {identity ? <IdentityIcon kind={identity.kind} name={identity.name} size={20} /> : null}
           {editing && row ? (
-            <RenameTitle
-              sessionId={sessionId}
-              title={row.title}
-              onDone={() => {
-                setEditing(false);
-              }}
-            />
+            <RenameTitle sessionId={sessionId} title={row.title} onDone={() => setEditing(false)} />
           ) : (
             <Button
               type="button"
               variant="ghost"
               className="h-auto min-w-0 shrink justify-start px-0 py-0 text-left text-sm font-medium hover:bg-transparent hover:underline dark:hover:bg-transparent pointer-coarse:min-h-11"
               title={copy.rename}
-              onClick={() => {
-                if (row && !readOnly) setEditing(true);
-              }}
+              onClick={() => row && !readOnly && setEditing(true)}
             >
               <span className="truncate">
                 {row?.title ?? (loading ? copy.loadingChat : copy.chatsNav)}
@@ -118,62 +100,59 @@ export function SessionHeader({
       ]}
       actions={
         <>
-          <ButtonLink
-            href={`/sessions/${encodeURIComponent(sessionId)}`}
+          <Button
+            asChild
             size="sm"
             variant="ghost"
             className="hidden @min-[560px]:inline-flex pointer-coarse:min-h-11"
           >
-            <Activity aria-hidden />
-            {copy.viewSession}
-          </ButtonLink>
+            <Link to="/sessions/$sessionId" params={{ sessionId }} search={{}}>
+              <Activity aria-hidden />
+              {copy.viewSession}
+            </Link>
+          </Button>
           <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  size="icon-sm"
-                  variant="ghost"
-                  className="pointer-coarse:size-11"
-                  aria-label={copy.moreChatActions}
-                />
-              }
-            >
-              <MoreHorizontal aria-hidden />
+            <DropdownMenuTrigger asChild>
+              <Button
+                size="icon-sm"
+                variant="ghost"
+                className="pointer-coarse:size-11"
+                aria-label={copy.moreChatActions}
+              >
+                <MoreHorizontal aria-hidden />
+              </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
               className="w-64"
-              finalFocus={() => {
+              onCloseAutoFocus={(e) => {
                 // RenameTitle focuses itself; don't send focus back to the ⋯ trigger.
-                if (!renaming.current) return true;
-                renaming.current = false;
-                return false;
+                if (renaming.current) {
+                  e.preventDefault()
+                  renaming.current = false
+                }
               }}
             >
               {/* The totals live here, not in the bar: each reply shows its own (one cost readout per place). */}
               {replies.length ? (
                 <>
-                  {/* Base UI's menu label belongs to a group (Radix's stood alone). */}
-                  <DropdownMenuGroup>
-                    <DropdownMenuLabel className="font-normal">
-                      <HeaderTotals replies={replies} partial={partial} stacked />
-                    </DropdownMenuLabel>
-                  </DropdownMenuGroup>
+                  <DropdownMenuLabel className="font-normal">
+                    <HeaderTotals replies={replies} partial={partial} stacked />
+                  </DropdownMenuLabel>
                   <DropdownMenuSeparator />
                 </>
               ) : null}
-              <DropdownMenuItem
-                className="@min-[560px]:hidden pointer-coarse:min-h-11"
-                render={<Link href={`/sessions/${encodeURIComponent(sessionId)}`} />}
-              >
-                {copy.viewSession}
+              <DropdownMenuItem asChild className="@min-[560px]:hidden pointer-coarse:min-h-11">
+                <Link to="/sessions/$sessionId" params={{ sessionId }} search={{}}>
+                  {copy.viewSession}
+                </Link>
               </DropdownMenuItem>
               <DropdownMenuItem
                 className="pointer-coarse:min-h-11"
                 disabled={!row || readOnly}
-                onClick={() => {
-                  renaming.current = true;
-                  setEditing(true);
+                onSelect={() => {
+                  renaming.current = true
+                  setEditing(true)
                 }}
               >
                 {copy.rename}
@@ -181,14 +160,14 @@ export function SessionHeader({
               <DropdownMenuItem
                 className="pointer-coarse:min-h-11"
                 disabled={!canExport}
-                onClick={onExport}
+                onSelect={onExport}
               >
                 {copy.exportMarkdown}
               </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={deleteBlocked}
                 className="text-destructive pointer-coarse:min-h-11"
-                onClick={onDelete}
+                onSelect={onDelete}
               >
                 {deleteBlocked ? (
                   <span className="flex flex-col">
@@ -205,7 +184,7 @@ export function SessionHeader({
       }
       stepper={<ChatSiblings sessionId={sessionId} />}
     />
-  );
+  )
 }
 
 /**
@@ -213,35 +192,32 @@ export function SessionHeader({
  * Below 480 px of pane width the buttons hide (the rail is the way there), but J/K still work: PrevNext stays mounted.
  */
 function ChatSiblings({ sessionId }: { sessionId: string }) {
-  const router = useRouter();
-  const params = useSearchParams();
-  const ids = useRailOrder((s) => s.ids);
-  const around = siblingsAround(ids, sessionId);
-  if (!around) return null;
+  const navigate = useNavigate()
+  const ids = useRailOrder((s) => s.ids)
+  const around = siblingsAround(ids, sessionId)
+  if (!around) return null
   const go = (id: string | undefined, via: StepVia) => {
-    if (!id) return;
-    const href = chatHref(id, {
-      mock: params.get("mock") ?? undefined,
-      debug: params.get("debug") ?? undefined,
-    });
-    // A click lands in the composer; J/K keeps focus out of it, so the next key steps again.
-    router.push(href, { scroll: false, state: { chatFocus: via === "key" ? "none" : "composer" } });
-  };
+    if (id)
+      void navigate({
+        from: '/chat/$sessionId',
+        to: '/chat/$sessionId',
+        params: { sessionId: id },
+        search: (s) => ({ mock: s.mock, debug: s.debug }),
+        // A click lands in the composer; J/K keeps focus out of it, so the next key steps again.
+        state: { chatFocus: via === 'key' ? 'none' : 'composer' },
+      })
+  }
   return (
     <PrevNext
       noun="chat"
       index={around.index}
       count={around.count}
-      onPrev={(via) => {
-        go(around.prev, via);
-      }}
-      onNext={(via) => {
-        go(around.next, via);
-      }}
+      onPrev={(via) => go(around.prev, via)}
+      onNext={(via) => go(around.next, via)}
       restoreFocus={false}
       className="hidden @min-[480px]:flex"
     />
-  );
+  )
 }
 
 /**
@@ -254,26 +230,26 @@ function HeaderTotals({
   className,
   stacked = false,
 }: {
-  replies: ChatMessage[];
-  partial: boolean;
-  className?: string | undefined;
-  stacked?: boolean | undefined;
+  replies: ChatMessage[]
+  partial: boolean
+  className?: string
+  stacked?: boolean
 }) {
-  if (!replies.length) return null;
-  const t = chatTotals(replies);
+  if (!replies.length) return null
+  const t = chatTotals(replies)
   // Replies with only a duration (agents that report no tokens) have nothing to total.
-  if (!t.tokens && t.cost === null) return null;
-  const tilde = t.estimated ? "~" : "";
+  if (!t.tokens && t.cost === null) return null
+  const tilde = t.estimated ? '~' : ''
   const cost =
     t.cost === null ? (
       <Tooltip>
-        <TooltipTrigger
-          render={
-            // Focusable only so keyboard users can open the cost-unknown tooltip; it has no action, so no button role.
-            <span tabIndex={0} />
-          }
-        >
-          —
+        <TooltipTrigger asChild>
+          <span
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the cost-unknown tooltip; it has no action, so no button role
+            tabIndex={0}
+          >
+            —
+          </span>
         </TooltipTrigger>
         <TooltipContent>{copy.costUnknown}</TooltipContent>
       </Tooltip>
@@ -282,10 +258,10 @@ function HeaderTotals({
         {tilde}
         {fmtCostPerOp(t.cost)}
       </span>
-    );
+    )
   return (
     <div
-      className={`${stacked ? "flex flex-col gap-0.5" : "items-center gap-2"} text-xs text-muted-foreground tabular-nums ${className ?? ""}`}
+      className={`${stacked ? 'flex flex-col gap-0.5' : 'items-center gap-2'} text-xs text-muted-foreground tabular-nums ${className ?? ''}`}
       data-testid="chat-totals"
     >
       {partial ? <span>{copy.usageLoaded}</span> : null}
@@ -294,7 +270,7 @@ function HeaderTotals({
       </span>
       {t.withoutUsage ? <span>{copy.turnsWithoutUsage(t.withoutUsage)}</span> : null}
     </div>
-  );
+  )
 }
 
 /** Inline rename (§6.10): Enter or blur saves, Esc cancels, empty reverts, 80-char cap. */
@@ -303,46 +279,41 @@ function RenameTitle({
   title,
   onDone,
 }: {
-  sessionId: string;
-  title: string;
-  onDone: () => void;
+  sessionId: string
+  title: string
+  onDone(): void
 }) {
-  const rename = useRenameChat(sessionId);
-  const [value, setValue] = useState(title);
-  const [error, setError] = useState<string | null>(null);
-  const done = useRef(false);
-  const input = useRef<HTMLInputElement>(null);
+  const rename = useRenameChat(sessionId)
+  const [value, setValue] = useState(title)
+  const [error, setError] = useState<string | null>(null)
+  const done = useRef(false)
+  const input = useRef<HTMLInputElement>(null)
   // A blur saves only once the input has really held focus: opened from the ⋯ menu, the menu's
   // focus trap can take focus back before it closes, and that must not count as "done".
-  const armed = useRef(false);
+  const armed = useRef(false)
   useEffect(() => {
-    const id = requestAnimationFrame(() => input.current?.focus());
-    return () => {
-      cancelAnimationFrame(id);
-    };
-  }, []);
+    const id = requestAnimationFrame(() => input.current?.focus())
+    return () => cancelAnimationFrame(id)
+  }, [])
   const save = async () => {
-    if (done.current) return;
-    done.current = true;
-    const next = value.trim();
-    if (!next || next === title) {
-      onDone();
-      return;
-    }
+    if (done.current) return
+    done.current = true
+    const next = value.trim()
+    if (!next || next === title) return onDone()
     try {
-      await rename.mutateAsync(next);
-      onDone();
+      await rename.mutateAsync(next)
+      onDone()
     } catch (err) {
-      done.current = false;
-      setValue(title);
+      done.current = false
+      setValue(title)
       const text =
         err instanceof ApiError && err.serverMessage
           ? copy.serverSaid(err.serverMessage)
-          : copy.titleEmpty;
-      setError(text);
-      announce(text);
+          : copy.titleEmpty
+      setError(text)
+      announce(text)
     }
-  };
+  }
   return (
     <div className="flex min-w-0 items-center gap-2">
       <Input
@@ -350,23 +321,21 @@ function RenameTitle({
         aria-label={copy.titleLabel}
         value={value}
         maxLength={TITLE_MAX}
-        onChange={(e) => {
-          setValue(e.target.value);
-        }}
+        onChange={(e) => setValue(e.target.value)}
         onFocus={() => {
-          armed.current = true;
+          armed.current = true
         }}
         onBlur={() => {
-          if (armed.current) void save();
+          if (armed.current) void save()
         }}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            void save();
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            void save()
           }
-          if (e.key === "Escape") {
-            done.current = true;
-            onDone();
+          if (e.key === 'Escape') {
+            done.current = true
+            onDone()
           }
         }}
         className="h-8 w-64 max-w-full pointer-coarse:h-11"
@@ -378,5 +347,5 @@ function RenameTitle({
       ) : null}
       {error ? <span className="text-xs text-destructive">{error}</span> : null}
     </div>
-  );
+  )
 }

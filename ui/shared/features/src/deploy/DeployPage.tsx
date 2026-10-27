@@ -1,47 +1,40 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/DeployPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; Base UI's `Tabs` passes its value untyped (`unknown`); Prettier formatting. The
-// top bar (legacy ui/ on development, e8379db5a): the page's breadcrumb level, and the method row sticks under it.
-// Legacy ui/ on development (3aac84f66, c721a11a8): the three methods are cards on the tabs (Radix
-// `data-[state=active]:` is Base UI's `data-active:`), no sticky row.
-"use client";
-
 /**
  * Deploy an agent (plans/feat-deploy.md §4; approved mockup: Deploy variant C). The methods are three cards on shadcn
  * `Tabs`, with the method in the URL (`?method=`, replaced, not pushed): Upload, GitHub, Registry.
  */
-import { useQuery } from "@tanstack/react-query";
-import { Container, FolderGit2, Upload } from "lucide-react";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { PageHeader } from "@nasiko/ui/composites";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { copy } from "./copy";
-import { GithubTab } from "./GithubTab";
-import { RegistryTab } from "./RegistryTab";
-import { DEPLOY_METHODS, type DeployMethod, type DeploySearch } from "./search";
-import { UploadTab } from "./UploadTab";
+import { useQuery } from '@tanstack/react-query'
+import { Container, FolderGit2, Upload } from 'lucide-react'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { meQuery } from '@nasiko/data-access/auth'
+import { copy } from './copy'
+import { GithubTab } from './GithubTab'
+import { RegistryTab } from './RegistryTab'
+import { DEPLOY_METHODS, type DeployMethod, type DeploySearch } from './search'
+import { UploadTab } from './UploadTab'
 
-const ICON = { upload: Upload, github: FolderGit2, registry: Container } as const;
+const ICON = { upload: Upload, github: FolderGit2, registry: Container } as const
 
 export function DeployPage({
   search,
   setSearch,
 }: {
-  search: DeploySearch;
-  setSearch: (patch: Partial<DeploySearch>) => void;
+  search: DeploySearch
+  setSearch: (patch: Partial<DeploySearch>) => void
 }) {
-  const me = useQuery(meQueryOptions(useProductScope()));
-  const method: DeployMethod = search.method ?? "upload";
+  const me = useQuery(meQuery)
+  const method: DeployMethod = search.method ?? 'upload'
   return (
     <div className="@container mx-auto flex w-full max-w-page flex-col gap-4">
       <TopBar trail={[copy.deploy.title]} />
       <PageHeader title={copy.deploy.title} description={copy.deploy.description} />
       <Tabs
         value={method}
-        onValueChange={(v: unknown) => {
-          setSearch({ method: v === "upload" ? undefined : (v as DeployMethod) });
-        }}
+        onValueChange={(v) =>
+          setSearch({ method: v === 'upload' ? undefined : (v as DeployMethod) })
+        }
         className="gap-4"
       >
         {/* The method is the page's first choice, so each is a card that says what it takes. Still Radix tabs: arrow
@@ -52,14 +45,14 @@ export function DeployPage({
           className="grid w-full grid-cols-3 items-stretch gap-3 bg-transparent p-0 group-data-[orientation=horizontal]/tabs:h-auto @max-[640px]:gap-2"
         >
           {DEPLOY_METHODS.map((m) => {
-            const Icon = ICON[m];
+            const Icon = ICON[m]
             return (
               <TabsTrigger
                 key={m}
                 value={m}
                 aria-label={copy.methods[m]}
                 aria-describedby={`deploy-method-${m}`}
-                className="h-auto min-w-0 flex-col items-start justify-start gap-1 rounded-lg border-border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs hover:border-ring/60 data-active:border-primary data-active:bg-card data-active:ring-1 data-active:ring-primary @max-[640px]:justify-center @max-[640px]:p-2 dark:data-active:border-primary dark:data-active:bg-card pointer-coarse:min-h-11"
+                className="h-auto min-w-0 flex-col items-start justify-start gap-1 rounded-lg border-border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs hover:border-ring/60 data-[state=active]:border-primary data-[state=active]:bg-card data-[state=active]:ring-1 data-[state=active]:ring-primary @max-[640px]:justify-center @max-[640px]:p-2 dark:data-[state=active]:border-primary dark:data-[state=active]:bg-card pointer-coarse:min-h-11"
               >
                 <span className="flex items-center gap-2 text-sm font-medium">
                   {/* Phones: words only, so the three cards fit side by side. */}
@@ -73,7 +66,7 @@ export function DeployPage({
                   {copy.methodHints[m]}
                 </span>
               </TabsTrigger>
-            );
+            )
           })}
         </TabsList>
         <TabsContent value="upload">
@@ -94,5 +87,5 @@ export function DeployPage({
         </TabsContent>
       </Tabs>
     </div>
-  );
+  )
 }

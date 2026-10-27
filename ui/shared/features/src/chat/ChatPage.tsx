@@ -1,35 +1,35 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/ChatPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; `DotBackground` comes from `@nasiko/ui/composites` (exported there for this
-// page); optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Chat (plan §7): the rail plus either a new chat (`/chat`, `NewChatView.tsx`) or an existing one
  * (`/chat/$sessionId`, `SessionView.tsx`). Turns live in the registry (§6.2). The rail is the app sidebar's drill-in
  * panel (`SidebarPanel`); with the sidebar collapsed it sits beside the chat from 1024 px, in a sheet below that.
  */
-import { useQuery } from "@tanstack/react-query";
-import { MessagesSquare } from "lucide-react";
-import { use, useCallback, useMemo, useRef, useState } from "react";
-import { SidebarPanel } from "@nasiko/app-core/shell/SidebarPanel";
-import { SidebarPanelContext } from "@nasiko/app-core/shell/panelSlot";
-import { DotBackground, PageLoader } from "@nasiko/ui/composites";
-import { Button, Sheet, SheetContent, SheetTitle, useSidebar } from "@nasiko/ui/primitives";
-import { ErrorState } from "../observability/StateCard";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { useMediaQuery } from "@nasiko/ui/lib";
-import { TourButton } from "@nasiko/app-core/shell/TopBar";
-import { ChatRail } from "./components/ChatRail";
-import { ModalAnnouncer } from "./components/StatusAnnouncer";
-import { copy } from "./copy";
-import { useChatRegistry, useSignals } from "./registry";
-import { useWaiting } from "./waiting";
-import { WaitingPill } from "./components/WaitingPill";
-import { agentParamText, isAuto, type ChatSearch } from "./search";
-import type { ViewProps } from "./components/PageParts";
-import { SessionViewMemo } from "./SessionView";
-import { NewChatViewMemo } from "./NewChatView";
+import { useQuery } from '@tanstack/react-query'
+import { MessagesSquare } from 'lucide-react'
+import { use, useCallback, useMemo, useRef, useState } from 'react'
+import { SidebarPanel } from '@nasiko/app-core/shell/SidebarPanel'
+import { TourButton } from '@nasiko/app-core/shell/TopBar'
+import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
+import { DotBackground } from '@nasiko/ui/composites/dot-background'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Sheet, SheetContent, SheetTitle } from '@nasiko/ui/primitives/sheet'
+import { useSidebar } from '@nasiko/ui/primitives/sidebar'
+import { ErrorState } from '@nasiko/features/observability/StateCard'
+import { meQuery } from '@nasiko/data-access/auth'
+import { useMediaQuery } from '@nasiko/ui/lib/useMediaQuery'
+import { ChatRail } from './components/ChatRail'
+import { ModalAnnouncer } from './components/StatusAnnouncer'
+import { copy } from './copy'
+import { useChatRegistry, useSignals } from './registry'
+import { useWaiting } from './waiting'
+import { WaitingPill } from './components/WaitingPill'
+import { agentParamText, isAuto, type ChatSearch } from './search'
+import type { ViewProps } from './components/PageParts'
+import { SessionViewMemo } from './SessionView'
+import { NewChatViewMemo } from './NewChatView'
 
 export function ChatPage({ sessionId, search }: { sessionId?: string; search: ChatSearch }) {
-  const me = useQuery(meQueryOptions(useProductScope()));
+  const me = useQuery(meQuery)
   // Wait for the real user: a registry keyed by a placeholder would abort every live turn
   // whenever /api/me briefly reloads (a 401 clears the query cache).
   if (me.isError)
@@ -37,17 +37,17 @@ export function ChatPage({ sessionId, search }: { sessionId?: string; search: Ch
       <div className="mx-auto mt-12 w-full max-w-md px-4">
         <ErrorState error={me.error} onRetry={() => void me.refetch()} />
       </div>
-    );
-  if (!me.data) return <PageLoader label={copy.loadingChat} />;
+    )
+  if (!me.data) return <PageLoader label={copy.loadingChat} />
   return (
     <ChatLayout
       userId={me.data.sub}
       username={me.data.username}
-      isSuperuser={me.data.is_superuser}
+      isSuperuser={!!me.data.is_superuser}
       sessionId={sessionId}
       search={search}
     />
-  );
+  )
 }
 
 function ChatLayout({
@@ -57,22 +57,22 @@ function ChatLayout({
   sessionId,
   search,
 }: {
-  userId: string;
-  username?: string | undefined;
-  isSuperuser: boolean;
-  sessionId?: string | undefined;
-  search: ChatSearch;
+  userId: string
+  username?: string
+  isSuperuser: boolean
+  sessionId?: string
+  search: ChatSearch
 }) {
-  const registry = useChatRegistry(userId);
+  const registry = useChatRegistry(userId)
   // In the sidebar while it can hold the rail; otherwise inline from 1024 px, a sheet below that (v1c DS5).
-  const inSidebar = use(SidebarPanelContext).target !== null;
-  const { isMobile, setOpenMobile } = useSidebar();
-  const wide = useMediaQuery("(min-width: 1024px)");
-  const [railOpen, setRailOpen] = useState(false);
-  const newChatRef = useRef<HTMLAnchorElement>(null);
-  const carry = { mock: search.mock, debug: search.debug };
+  const inSidebar = use(SidebarPanelContext).target !== null
+  const { isMobile, setOpenMobile } = useSidebar()
+  const wide = useMediaQuery('(min-width: 1024px)')
+  const [railOpen, setRailOpen] = useState(false)
+  const newChatRef = useRef<HTMLAnchorElement>(null)
+  const carry = { mock: search.mock, debug: search.debug }
   // The Waiting queue polls here, so it runs on every chat route even with the phone sheet closed (v1c §5.9).
-  const waiting = useWaiting(userId, isSuperuser);
+  const waiting = useWaiting(userId, isSuperuser)
   const rail = (
     <ChatRail
       ref={newChatRef}
@@ -82,26 +82,24 @@ function ChatLayout({
       userId={userId}
       waiting={waiting}
       onNavigate={() => {
-        setRailOpen(false);
-        setOpenMobile(false);
+        setRailOpen(false)
+        setOpenMobile(false)
       }}
     />
-  );
+  )
   // Polls and signal changes re-render the rail, not the open chat: the views are memoised on stable props, and
   // the phone trigger subscribes to the signals itself (review, performance).
-  const waitingChats = waiting.match.chats.length;
-  const openRail = useCallback(() => {
-    setRailOpen(true);
-  }, []);
+  const waitingChats = waiting.match.chats.length
+  const openRail = useCallback(() => setRailOpen(true), [])
   const railButton = useMemo(
     () =>
       wide || inSidebar ? null : <RailTrigger waitingChats={waitingChats} onOpen={openRail} />,
     [wide, inSidebar, waitingChats, openRail],
-  );
+  )
   const props: ViewProps = useMemo(
     () => ({ userId, registry, search, railButton, newChatRef, username }),
     [userId, registry, search, railButton, username],
-  );
+  )
   return (
     <SidebarPanel
       panel={
@@ -141,8 +139,8 @@ function ChatLayout({
                   search.agent !== undefined
                     ? `agent:${agentParamText(search.agent)}`
                     : isAuto(search)
-                      ? "auto"
-                      : "choose"
+                      ? 'auto'
+                      : 'choose'
                 }
                 {...props}
               />
@@ -151,12 +149,12 @@ function ChatLayout({
         </div>
       )}
     </SidebarPanel>
-  );
+  )
 }
 
 /** The phone's Chats trigger (v1c §5.8, DP7): the waiting count, and a dot for unseen replies, in its name too. */
-function RailTrigger({ waitingChats, onOpen }: { waitingChats: number; onOpen: () => void }) {
-  const newReplies = useSignals()?.unseenChats ?? 0;
+function RailTrigger({ waitingChats, onOpen }: { waitingChats: number; onOpen(): void }) {
+  const newReplies = useSignals()?.unseenChats ?? 0
   return (
     <Button
       size="icon-sm"
@@ -183,5 +181,5 @@ function RailTrigger({ waitingChats, onOpen }: { waitingChats: number; onOpen: (
         />
       ) : null}
     </Button>
-  );
+  )
 }

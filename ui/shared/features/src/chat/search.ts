@@ -1,9 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/search.ts. Local edits: `import * as z from "zod/mini"` (a named import keeps all zod locales in the bundle); the `@tanstack/react-router`
-// `HistoryState` augmentation (`waitingRequest`) is dropped: there is no TanStack Router here, and the Waiting row's
-// history state returns with the chat page port; Prettier formatting.
-import * as z from "zod/mini";
-import { opt } from "@nasiko/app-core/search";
-import { CHAT_PAGE_VARIANT_KEYS, CHAT_SCENARIO_KEYS } from "./scenarioKeys";
+import { z } from 'zod/mini'
+import { opt } from '@nasiko/ui/lib/search'
+import { CHAT_PAGE_VARIANT_KEYS, CHAT_SCENARIO_KEYS } from './scenarioKeys'
 
 /**
  * URL state for Chat (plan §5; v1b §5.1). The rail filter is local state, not a param.
@@ -15,40 +12,48 @@ import { CHAT_PAGE_VARIANT_KEYS, CHAT_SCENARIO_KEYS } from "./scenarioKeys";
  */
 export const chatSearchSchema = z.object({
   agent: z.optional(z.unknown()),
-  auto: opt(z.union([z.literal(1), z.literal("1")])),
+  auto: opt(z.union([z.literal(1), z.literal('1')])),
   // Kept raw so an unknown value can be named in the dev banner (DX-7); isChatScenario checks it.
   mock: opt(z.string().check(z.maxLength(200))),
-  debug: opt(z.literal("turn")),
-});
-export type ChatSearch = z.infer<typeof chatSearchSchema>;
+  debug: opt(z.literal('turn')),
+})
+export type ChatSearch = z.infer<typeof chatSearchSchema>
 /** The dev aids every chat link carries (DX-A2). */
-export type ChatCarry = Pick<ChatSearch, "mock" | "debug">;
+export type ChatCarry = Pick<ChatSearch, 'mock' | 'debug'>
+
+declare module '@tanstack/react-router' {
+  interface HistoryState {
+    /** The Waiting row's request, carried in history state so the opened chat focuses its card (v1c M4). */
+    waitingRequest?: string
+    /** How a Previous/Next step opened this chat: a click focuses the composer, J/K leaves focus alone (keys go on). */
+    chatFocus?: 'composer' | 'none'
+  }
+}
 
 /** `/chat?auto=1`: the routed empty state (UC1). */
-export const isAuto = (s: Pick<ChatSearch, "auto">) => s.auto === 1 || s.auto === "1";
+export const isAuto = (s: Pick<ChatSearch, 'auto'>) => s.auto === 1 || s.auto === '1'
 
 /** The `agent` value as text for keys and the banner (a number or array shows as typed). */
 export function agentParamText(v: unknown): string {
-  if (v === undefined) return "";
-  if (typeof v === "string") return v;
+  if (v === undefined) return ''
+  if (typeof v === 'string') return v
   // From the router's JSON search parser: plain values, so stringify can't throw.
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- plain values from the URL parser
-  return typeof v === "object" ? JSON.stringify(v) : String(v);
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
 }
 
 /** A `?mock=` value Chat knows (the mock handlers read the same list). */
 const isChatScenario = (v: string | undefined) =>
-  !!v && (CHAT_SCENARIO_KEYS as readonly string[]).includes(v);
+  !!v && (CHAT_SCENARIO_KEYS as readonly string[]).includes(v)
 
 /** `?mock=` is a comma list (v1c DX1): at most one stream scenario plus any page variants. */
 export const mockEntries = (v: string | undefined): string[] =>
-  (v ?? "")
-    .split(",")
+  (v ?? '')
+    .split(',')
     .map((e) => e.trim())
-    .filter(Boolean);
+    .filter(Boolean)
 
 /** The entries Chat doesn't know, for the dev banner. */
 export const unknownMockEntries = (v: string | undefined): string[] =>
   mockEntries(v).filter(
     (e) => !isChatScenario(e) && !(CHAT_PAGE_VARIANT_KEYS as readonly string[]).includes(e),
-  );
+  )

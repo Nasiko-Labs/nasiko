@@ -1,30 +1,27 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/NeedsPanel.tsx. Local edits:
-// links are the navigation port's `Link` (`href`, `hrefFor` for a search); Prettier formatting.
 /**
  * Needs you for this agent (design "Needs you on the hub"): a row list inside one Panel, no nested cards, the crash card
  * not repeated. The verdict reads "No issues found in checked data" with a coverage line; a failed source shows its own
  * line with Retry. Rules in `needs.ts`.
  */
-import Link from "@nasiko/app-core/navigation";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { Panel, PanelSkeleton } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import type { HubNeedsResult } from "../api";
-import type { NeedRow } from "../needs";
-import { RetryLine } from "./RetryLine";
+import { Link } from '@tanstack/react-router'
+import { Panel, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { copy } from '../copy'
+import type { HubNeedsResult } from '../api'
+import type { NeedRow } from '../needs'
+import { RetryLine } from './RetryLine'
 
 const LINK =
-  "inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11";
+  'inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11'
 
 export function NeedsPanel({ result, agentName }: { result: HubNeedsResult; agentName: string }) {
-  const { needs, retry } = result;
-  const parts: string[] = [];
-  if (needs.coverage?.requests) parts.push(copy.needs.partRequests);
-  if (needs.coverage?.status) parts.push(copy.needs.partStatus);
-  if (needs.coverage?.budget) parts.push(copy.needs.partBudget);
-  const s = needs.coverage?.sessions;
-  if (s) parts.push(copy.needs.partSessions(s.checked, s.found, s.scanned));
+  const { needs, retry } = result
+  const parts: string[] = []
+  if (needs.coverage?.requests) parts.push(copy.needs.partRequests)
+  if (needs.coverage?.status) parts.push(copy.needs.partStatus)
+  if (needs.coverage?.budget) parts.push(copy.needs.partBudget)
+  const s = needs.coverage?.sessions
+  if (s) parts.push(copy.needs.partSessions(s.checked, s.found, s.scanned))
   return (
     <Panel title={copy.needs.title}>
       {needs.loading && !needs.rows.length ? (
@@ -44,7 +41,7 @@ export function NeedsPanel({ result, agentName }: { result: HubNeedsResult; agen
             <RetryLine
               key={f}
               label={
-                f === "status" && needs.statusIncomplete
+                f === 'status' && needs.statusIncomplete
                   ? copy.needs.failed.statusIncomplete
                   : copy.needs.failed[f]
               }
@@ -62,24 +59,24 @@ export function NeedsPanel({ result, agentName }: { result: HubNeedsResult; agen
         </div>
       )}
     </Panel>
-  );
+  )
 }
 
 function Row({ row, agentName }: { row: NeedRow; agentName: string }) {
-  if (row.kind === "status")
+  if (row.kind === 'status')
     return (
       <li className="flex flex-wrap items-center gap-2 py-2">
-        <Badge variant={row.level === "action" ? "destructive" : "outline"}>
-          {row.level === "action" ? copy.needs.statusAction : copy.needs.statusWatch}
+        <Badge variant={row.level === 'action' ? 'destructive' : 'outline'}>
+          {row.level === 'action' ? copy.needs.statusAction : copy.needs.statusWatch}
         </Badge>
         <span>{row.reason}</span>
         <span className="text-xs text-muted-foreground">{copy.needs.ratedOn}</span>
       </li>
-    );
-  if (row.kind === "budget")
+    )
+  if (row.kind === 'budget')
     return (
       <li className="flex flex-wrap items-center gap-2 py-2">
-        <Badge variant={row.level === "action" ? "destructive" : "outline"}>
+        <Badge variant={row.level === 'action' ? 'destructive' : 'outline'}>
           {copy.needs.budgetBadge}
         </Badge>
         <span>{row.sentence}</span>
@@ -88,21 +85,23 @@ function Row({ row, agentName }: { row: NeedRow; agentName: string }) {
           {copy.needs.reviewBudget}
         </a>
       </li>
-    );
-  if (row.kind === "requests")
+    )
+  if (row.kind === 'requests')
     return (
       <li className="flex flex-wrap items-center gap-2 py-2">
         <span>{copy.needs.requests(row.count)}</span>
         {row.firstChat ? (
           <Link
-            href={`/chat/${encodeURIComponent(row.firstChat)}${row.firstRequest ? `#request-${row.firstRequest}` : ""}`}
+            to="/chat/$sessionId"
+            params={{ sessionId: row.firstChat }}
+            hash={row.firstRequest ? `request-${row.firstRequest}` : undefined}
             className={LINK}
           >
             {copy.needs.answer}
           </Link>
         ) : null}
       </li>
-    );
+    )
   return (
     <li className="flex flex-wrap items-center gap-2 py-2">
       <span>{copy.needs.sessions(row.failed, row.checked)}</span>
@@ -110,11 +109,12 @@ function Row({ row, agentName }: { row: NeedRow; agentName: string }) {
         <span className="text-xs text-muted-foreground">{copy.needs.shared}</span>
       ) : null}
       <Link
-        href={hrefFor("/sessions", { agent: agentName, status: "failed", preset: "7d" })}
+        to="/sessions"
+        search={{ agent: agentName, status: 'failed', preset: '7d' }}
         className={LINK}
       >
         {copy.needs.openFailed}
       </Link>
     </li>
-  );
+  )
 }

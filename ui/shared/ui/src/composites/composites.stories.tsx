@@ -1,293 +1,207 @@
-import type { Meta, StoryObj } from "@storybook/react-vite";
-import { useState } from "react";
-import { createGroupedFilters, type GroupedFilterState } from "@nasiko/data-access";
-import type { ActivityEvent, ApprovalRequest } from "@nasiko/contracts";
-import { Button } from "../primitives/button";
-import { ActivityTimeline } from "./activity-timeline";
-import { ApprovalCard } from "./approval-card";
-import { ChartTablePair } from "./chart-table-pair";
-import { FilterBar, type FilterValues } from "./filter-bar";
-import { MetricGroup } from "./metric-group";
-import { DeniedState, EmptyState, ErrorState, LoadingState, PartialDataNotice } from "./states";
+// The shared composites (plan §8 Phase 1), one story each. Every story runs as a browser test with axe
+// (`npm run test:stories`), in light and dark.
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { Bot } from 'lucide-react'
+import { useState } from 'react'
+import { expect, userEvent, within } from 'storybook/test'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { ApiError } from '@nasiko/data-access/client'
+import { CopyButton } from './copy-button'
+import { DataTable, type DataTableColumn } from './data-table'
+import { Delta } from './delta'
+import { Disclosure } from './disclosure'
+import { KpiTile } from './kpi-tile'
+import { PageLoader } from './page-loader'
+import { PageHeader } from './page-header'
+import { PrevNext } from './prev-next'
+import { Panel, PanelEmpty, PanelError, PanelSkeleton } from './panel'
+import { SearchInput } from './search-input'
+import { EmptyState, StateCard } from './state-card'
+import { TimeControl } from './time-control'
 
-/**
- * Composites are *proposed Nasiko capabilities* composed from shadcn primitives
- * and the admitted extensions — not upstream components (Phase 3 exit:
- * "proposed composites clearly distinguished from upstream components").
- * All data here is synthetic.
- */
-const meta = { title: "Composites (Nasiko)/Overview" } satisfies Meta;
-export default meta;
+const meta: Meta = { title: 'Shared/Composites' }
+export default meta
+type Story = StoryObj
 
-export const Metrics: StoryObj = {
-  render: function MetricsDemo() {
-    const [tick, setTick] = useState(0);
-    const spend = (1204.5 + tick * 13.25).toFixed(2);
-    return (
-      <div className="flex flex-col gap-3">
-        <MetricGroup
-          metrics={[
-            {
-              id: "spend",
-              label: "Spend (30d)",
-              value: { kind: "value", text: `$${spend}` },
-              comparison: {
-                deltaText: "+4.1%",
-                direction: "up",
-                period: "vs previous 30 days",
-                upIsGood: false,
-              },
-            },
-            {
-              id: "req",
-              label: "Requests",
-              value: { kind: "value", text: "48,120" },
-              comparison: { deltaText: "−2.0%", direction: "down", period: "vs previous 30 days" },
-            },
-            {
-              id: "err",
-              label: "Errors",
-              value: { kind: "zero", text: "0" },
-              comparison: { deltaText: "0", direction: "flat", period: "vs previous 30 days" },
-            },
-            {
-              id: "lat",
-              label: "p95 latency",
-              value: { kind: "unknown" },
-              description: "No samples in range",
-            },
-            {
-              id: "mx",
-              label: "Model X cost",
-              value: { kind: "unpriced" },
-              description: "No price configured",
-            },
-          ]}
-        />
-        <Button
-          size="sm"
-          variant="outline"
-          className="self-start"
-          onClick={() => {
-            setTick((t) => t + 1);
-          }}
-        >
-          Simulate refetch
-        </Button>
-      </div>
-    );
-  },
-};
-
-export const MetricsLoading: StoryObj = {
+export const Header: Story = {
   render: () => (
-    <MetricGroup
-      loading
-      metrics={[
-        { id: "a", label: "Spend", value: { kind: "unknown" } },
-        { id: "b", label: "Requests", value: { kind: "unknown" } },
-      ]}
+    <PageHeader
+      title="TokenOps"
+      description="What you spent, and what drove it."
+      actions={<Button size="sm">Export CSV</Button>}
     />
   ),
-};
+}
 
-export const Filters: StoryObj = {
-  render: function FiltersDemo() {
-    const [state, setState] = useState<GroupedFilterState<FilterValues>>(() =>
-      createGroupedFilters<FilterValues>({ q: "", agent: "", range: "7d" }),
-    );
-    return (
-      <div className="flex flex-col gap-3">
-        <FilterBar
-          state={state}
-          onChange={setState}
-          fields={[
-            { kind: "text", key: "q", label: "Search", placeholder: "Agent or model" },
-            {
-              kind: "select",
-              key: "agent",
-              label: "Agent",
-              placeholder: "All",
-              options: [
-                { value: "alpha", label: "alpha-agent" },
-                { value: "beta", label: "beta-agent" },
-              ],
-            },
-            {
-              kind: "preset-range",
-              key: "range",
-              label: "Range",
-              presets: [
-                { value: "24h", label: "Last 24 hours" },
-                { value: "7d", label: "Last 7 days" },
-                { value: "30d", label: "Last 30 days" },
-              ],
-            },
-          ]}
-        />
-        <pre className="rounded bg-muted p-2 text-xs">
-          {JSON.stringify(
-            { applied: state.applied, appliedVersion: state.appliedVersion, draft: state.draft },
-            null,
-            2,
-          )}
-        </pre>
-      </div>
-    );
-  },
-};
-
-const approval: ApprovalRequest = {
-  id: "0f5ae0a2-0c1e-4b9e-9c2a-1d1b3c4d5e6f",
-  actionId: "act_scale_42",
-  title: "Scale alpha-agent to 4 replicas",
-  summary:
-    "The agent proposes scaling the deployment to absorb the queue backlog observed in the last 15 minutes.",
-  tool: "k8s.scale",
-  params: [
-    { name: "deployment", kind: "text", value: "alpha-agent" },
-    { name: "replicas", kind: "number", value: "4" },
-    { name: "estimated cost", kind: "money", value: "$12.40", unit: "/day" },
-    { name: "api token", kind: "secret", value: "••••••••" },
-    { name: "runbook", kind: "link", value: "https://docs.nasiko.example/runbooks/scale" },
-  ],
-  risk: "medium",
-  state: "pending",
-  requestedAt: "2026-10-06T10:00:00Z",
-  expiresAt: "2026-10-06T10:15:00Z",
-  decidableBy: ["00000000-0000-4000-8000-000000000001"],
-  links: [{ href: "/workspaces/ws-a/agents/alpha", label: "Agent" }],
-};
-
-export const Approval: StoryObj = {
-  render: function ApprovalDemo() {
-    const [state, setState] = useState<ApprovalRequest["state"]>("pending");
-    return (
-      <ApprovalCard
-        request={{ ...approval, state }}
-        currentUserId="00000000-0000-4000-8000-000000000001"
-        onDecide={(d) => {
-          setState(d.decision === "approve" ? "approved" : "rejected");
-        }}
+export const States: Story = {
+  render: () => (
+    <div className="flex max-w-xl flex-col gap-4">
+      <StateCard
+        title="Observability isn't configured on this server."
+        fix="Set TEMPO_URL and restart it."
       />
-    );
-  },
-};
-
-export const ApprovalStates: StoryObj = {
-  render: () => (
-    <div className="grid gap-4 md:grid-cols-2">
-      {(["pending", "approved", "rejected", "expired", "executing", "failed"] as const).map((s) => (
-        <ApprovalCard key={s} request={{ ...approval, state: s }} currentUserId="someone-else" />
-      ))}
-    </div>
-  ),
-};
-
-const events: ActivityEvent[] = [
-  {
-    id: "1",
-    kind: "message",
-    at: "2026-10-06T10:00:00Z",
-    text: "Investigating the queue backlog on alpha-agent.",
-    actor: "agent",
-  },
-  {
-    id: "2",
-    kind: "tool.start",
-    at: "2026-10-06T10:00:02Z",
-    text: "usage.query(range=15m, agent=alpha)",
-    actor: "tool",
-    status: "running",
-    correlationId: "c1",
-  },
-  {
-    id: "3",
-    kind: "tool.result",
-    at: "2026-10-06T10:00:04Z",
-    text: "1,240 queued requests; p95 latency 3.1 s.",
-    actor: "tool",
-    status: "ok",
-    correlationId: "c1",
-  },
-  {
-    id: "4",
-    kind: "approval.requested",
-    at: "2026-10-06T10:00:05Z",
-    text: "Requested approval to scale to 4 replicas.",
-    actor: "agent",
-    links: [{ href: "/approvals/act_scale_42", label: "Approval" }],
-  },
-];
-
-export const Timeline: StoryObj = {
-  render: function TimelineDemo() {
-    const [list, setList] = useState(events);
-    return (
-      <div className="flex flex-col gap-3">
-        <ActivityTimeline events={list} formatTime={(iso) => iso.slice(11, 19)} />
-        <Button
-          size="sm"
-          variant="outline"
-          className="self-start"
-          onClick={() => {
-            setList((l) => [
-              ...l,
-              {
-                id: `n${l.length}`,
-                kind: "status",
-                at: new Date().toISOString(),
-                text: `Backend event ${l.length + 1} arrived.`,
-                actor: "system",
-                status: "ok",
-              },
-            ]);
-          }}
-        >
-          Append a backend event
-        </Button>
-      </div>
-    );
-  },
-};
-
-export const States: StoryObj = {
-  render: () => (
-    <div className="grid gap-4 md:grid-cols-2">
-      <LoadingState label="Loading spend" height={96} />
+      <StateCard
+        tone="warning"
+        title="You don't have access to this."
+        fix="Ask an admin or the owner for access."
+      />
+      <StateCard
+        tone="error"
+        title="Can't reach nasiko-server"
+        action={
+          <Button size="sm" variant="outline">
+            Retry
+          </Button>
+        }
+      />
+      <EmptyState title="No sessions in this window">
+        Pick a longer window, or check that agents export traces.
+      </EmptyState>
       <EmptyState
+        icon={Bot}
         title="No agents yet"
-        description="Create an agent to see usage here."
-        action={<Button size="sm">Create agent</Button>}
-      />
-      <ErrorState
-        title="Couldn't load usage"
-        description="The usage service returned an error."
-        onRetry={() => undefined}
-        requestId="req_01HZX"
-      />
-      <DeniedState description="Ask a workspace admin for the finops:read role." />
-      <PartialDataNotice>Showing 28 of 30 days — two days have no samples.</PartialDataNotice>
+        action={<Button size="sm">Deploy an agent</Button>}
+      >
+        Deploy one from a zip, GitHub or a registry and it shows up here.
+      </EmptyState>
     </div>
   ),
-};
+}
 
-export const ChartTable: StoryObj = {
+export const Loader: Story = {
+  render: () => <PageLoader label="Loading agents" />,
+}
+
+export const Panels: Story = {
   render: () => (
-    <ChartTablePair
-      title="Spend by day"
-      querySummary="usage.spend_timeseries · last 14 days · 14 rows"
-      chart={
-        <div className="flex h-40 items-center justify-center rounded bg-muted text-sm text-muted-foreground">
-          chart slot (lazy — see Charts stories)
-        </div>
-      }
-      table={
-        <div className="rounded bg-muted p-3 text-sm text-muted-foreground">
-          table slot (same rows)
-        </div>
-      }
-      notice={<PartialDataNotice>Yesterday is still being aggregated.</PartialDataNotice>}
-    />
+    <div className="grid max-w-3xl gap-4 md:grid-cols-2">
+      <Panel title="Spend over time" subtitle="Last 30 days" labelledBy="p-spend">
+        <PanelSkeleton height={120} />
+      </Panel>
+      <Panel title="Who is driving cost" labelledBy="p-drivers">
+        <PanelEmpty title="No spend in this window" />
+      </Panel>
+      <Panel title="This month" labelledBy="p-month">
+        <PanelError
+          error={
+            new ApiError(500, 'trace store timeout', '/api/observability/finops/dashboard', 'm')
+          }
+          onRetry={() => {}}
+          what="spend"
+        />
+      </Panel>
+      <Panel title="Harness usage" labelledBy="p-access">
+        <PanelError
+          error={new ApiError(403, 'requires admin role', '/api/users/me', 'm')}
+          onRetry={() => {}}
+          what="usage"
+        />
+      </Panel>
+    </div>
   ),
-};
+}
+
+export const Kpis: Story = {
+  render: () => (
+    <div className="grid max-w-3xl grid-cols-3 gap-3">
+      <KpiTile
+        label="Total spend"
+        value="$159.28"
+        aside={<Delta changePct={-31.1} polarity="down-good" />}
+      />
+      <KpiTile label="Tokens" value="4.2M" aside={<Delta changePct={12} polarity="neutral" />} />
+      <KpiTile
+        label="vs previous"
+        value="—"
+        aside={<Delta changePct={null} polarity="down-good" unavailable />}
+      />
+      <div className="col-span-3 flex gap-2">
+        <Badge variant="success">Running</Badge>
+        <Badge variant="warning">Needs attention</Badge>
+        <Badge variant="info">Deploying</Badge>
+        <Badge variant="muted">Stopped</Badge>
+      </div>
+    </div>
+  ),
+}
+
+function DisclosureDemo() {
+  const [open, setOpen] = useState(false)
+  return (
+    <Disclosure
+      id="demo"
+      title="All metrics"
+      hint="12 figures"
+      open={open}
+      onToggle={() => setOpen((o) => !o)}
+    >
+      <p className="py-2 text-sm">Every KPI for the window.</p>
+    </Disclosure>
+  )
+}
+
+export const DisclosureToggle: Story = {
+  render: () => <DisclosureDemo />,
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement)
+    const trigger = c.getByRole('button', { name: /All metrics/ })
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.click(trigger)
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    await expect(c.getByText('Every KPI for the window.')).toBeVisible()
+  },
+}
+
+type Row = { id: string; agent: string; cost: number; sessions: number }
+const ROWS: Row[] = [
+  { id: 'a', agent: 'Code Reviewer', cost: 52.1, sessions: 140 },
+  { id: 'b', agent: 'QA Tester', cost: 31.4, sessions: 96 },
+  { id: 'c', agent: 'Research Agent', cost: 12.9, sessions: 41 },
+]
+const COLUMNS: DataTableColumn<Row>[] = [
+  { accessorKey: 'agent', header: 'Agent', meta: { rowHeader: true } },
+  { accessorKey: 'cost', header: 'Cost', cell: (c) => `$${c.getValue<number>().toFixed(2)}` },
+  { accessorKey: 'sessions', header: 'Sessions' },
+]
+
+export const Table: Story = {
+  render: () => (
+    <DataTable columns={COLUMNS} data={ROWS} getRowId={(r) => r.id} label="Cost by agent" />
+  ),
+}
+
+function ControlsDemo() {
+  const [preset, setPreset] = useState<'24h' | '7d' | '30d' | 'mtd' | 'last-month' | 'custom'>(
+    '30d',
+  )
+  return (
+    <div className="flex flex-col gap-3">
+      <TimeControl preset={preset} today="2026-09-26" onChange={(n) => setPreset(n.preset)} />
+      <SearchInput aria-label="Filter agents" placeholder="Filter agents" />
+      <span className="text-sm">
+        Session id{' '}
+        <CopyButton text="5eed0001-0000-4000-8000-000000000001" label="Copy session id" showText />
+      </span>
+    </div>
+  )
+}
+
+export const Controls: Story = { render: () => <ControlsDemo /> }
+
+export const PrevNextSteps: Story = {
+  render: () => (
+    <div className="flex flex-col gap-2">
+      <PrevNext noun="agent" index={1} count={3} onPrev={() => {}} onNext={() => {}} />
+      <PrevNext noun="agent" index={0} count={3} onPrev={() => {}} onNext={() => {}} />
+      <PrevNext
+        noun="agent"
+        index={1}
+        count={3}
+        blocked="Save first"
+        onPrev={() => {}}
+        onNext={() => {}}
+      />
+    </div>
+  ),
+}

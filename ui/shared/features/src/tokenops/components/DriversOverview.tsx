@@ -1,5 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/components/DriversOverview.tsx
-// (8bf09bf29). Local edits: `m` and `transitions` from @nasiko/ui/motion; Prettier formatting.
 /**
  * The Drivers section's first row: how concentrated spend is, and what the tokens were made of. Two answers a table
  * can't give at a glance.
@@ -10,15 +8,16 @@
  * - Token mix: prompt against completion for the window, then the cache figures (`cacheShare`: providers count cached
  *   input differently, see attribution.ts) and tokens per operation.
  */
-import { useState } from "react";
-import { Panel, PanelEmpty, PanelSkeleton } from "@nasiko/ui/composites";
-import { Swatch } from "@nasiko/ui/composites";
-import { seriesAt } from "@nasiko/ui/lib";
-import { fmtInt, fmtMoney, fmtPct, fmtTokens } from "@nasiko/ui/lib";
-import { m, transitions } from "@nasiko/ui/motion";
-import { cn } from "@nasiko/ui/cn";
-import { cacheShare, concentrationSlices, TOP, type AttributionRow } from "../attribution";
-import type { FinopsDashboardData } from "../types";
+import { m } from 'motion/react'
+import { useState } from 'react'
+import { Panel, PanelEmpty, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { Swatch } from '@nasiko/ui/composites/chart-marks'
+import { seriesAt } from '@nasiko/ui/lib/chart'
+import { fmtInt, fmtMoney, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
+import { transitions } from '@nasiko/ui/lib/motion'
+import { cn } from '@nasiko/ui/lib/utils'
+import { cacheShare, concentrationSlices, TOP, type AttributionRow } from '../attribution'
+import type { FinopsDashboardData } from '../types'
 
 export function DriversOverview({
   rows,
@@ -26,10 +25,10 @@ export function DriversOverview({
   view,
   loading,
 }: {
-  rows: AttributionRow[] | undefined;
-  tokens: FinopsDashboardData["token_usage"] | undefined;
-  view: "agent" | "workflow";
-  loading: boolean;
+  rows: AttributionRow[] | undefined
+  tokens: FinopsDashboardData['token_usage'] | undefined
+  view: 'agent' | 'workflow'
+  loading: boolean
 }) {
   return (
     <div className="grid gap-4 xl:grid-cols-12">
@@ -40,7 +39,7 @@ export function DriversOverview({
         <TokenMix tokens={tokens} loading={loading} />
       </div>
     </div>
-  );
+  )
 }
 
 function Concentration({
@@ -48,20 +47,20 @@ function Concentration({
   view,
   loading,
 }: {
-  rows: AttributionRow[] | undefined;
-  view: "agent" | "workflow";
-  loading: boolean;
+  rows: AttributionRow[] | undefined
+  view: 'agent' | 'workflow'
+  loading: boolean
 }) {
-  const [lit, setLit] = useState<string | null>(null);
-  const slices = concentrationSlices(rows ?? []);
-  const top = slices[0];
-  const noun = view === "agent" ? "agent" : "workflow";
+  const [lit, setLit] = useState<string | null>(null)
+  const slices = concentrationSlices(rows ?? [])
+  const top = slices[0]
+  const noun = view === 'agent' ? 'agent' : 'workflow'
   return (
     <Panel
       title="Spend concentration"
       subtitle={
-        top && top.key !== "__other"
-          ? `${top.name} alone is ${fmtPct(top.pct)} of spend${slices.length > 1 ? `; the top ${Math.min(TOP, slices.filter((s) => s.key !== "__other").length)} ${noun}s are ${fmtPct(slices.filter((s) => s.key !== "__other").reduce((s, x) => s + x.pct, 0))}` : ""}`
+        top && top.key !== '__other'
+          ? `${top.name} alone is ${fmtPct(top.pct)} of spend${slices.length > 1 ? `; the top ${Math.min(TOP, slices.filter((s) => s.key !== '__other').length)} ${noun}s are ${fmtPct(slices.filter((s) => s.key !== '__other').reduce((s, x) => s + x.pct, 0))}` : ''}`
           : `Share of spend by ${noun}`
       }
       labelledBy="concentration-title"
@@ -81,15 +80,11 @@ function Concentration({
                 initial={{ width: 0 }}
                 animate={{ width: `${s.pct}%` }}
                 transition={{ ...transitions.disclosure, delay: i * 0.04 }}
-                onPointerEnter={() => {
-                  setLit(s.key);
-                }}
-                onPointerLeave={() => {
-                  setLit(null);
-                }}
+                onPointerEnter={() => setLit(s.key)}
+                onPointerLeave={() => setLit(null)}
                 className={cn(
-                  "h-full min-w-0.5 transition-opacity first:rounded-l-md last:rounded-r-md",
-                  lit && lit !== s.key && "opacity-35",
+                  'h-full min-w-0.5 transition-opacity first:rounded-l-md last:rounded-r-md',
+                  lit && lit !== s.key && 'opacity-35',
                 )}
                 style={{ backgroundColor: s.series.fill }}
               />
@@ -99,15 +94,11 @@ function Concentration({
             {slices.map((s) => (
               <li
                 key={s.key}
-                onPointerEnter={() => {
-                  setLit(s.key);
-                }}
-                onPointerLeave={() => {
-                  setLit(null);
-                }}
+                onPointerEnter={() => setLit(s.key)}
+                onPointerLeave={() => setLit(null)}
                 className={cn(
-                  "flex items-center justify-between gap-3 rounded-md px-1.5 py-1 transition-colors",
-                  lit === s.key && "bg-muted",
+                  'flex items-center justify-between gap-3 rounded-md px-1.5 py-1 transition-colors',
+                  lit === s.key && 'bg-muted',
                 )}
               >
                 <span className="inline-flex min-w-0 items-center gap-1.5">
@@ -124,19 +115,19 @@ function Concentration({
         </>
       )}
     </Panel>
-  );
+  )
 }
 
 function TokenMix({
   tokens,
   loading,
 }: {
-  tokens: FinopsDashboardData["token_usage"] | undefined;
-  loading: boolean;
+  tokens: FinopsDashboardData['token_usage'] | undefined
+  loading: boolean
 }) {
-  const io = tokens ? tokens.prompt_tokens + tokens.completion_tokens : 0;
-  const promptPct = tokens && io > 0 ? (tokens.prompt_tokens / io) * 100 : 0;
-  const cached = tokens ? cacheShare(tokens.prompt_tokens, tokens.cache_read_tokens) : null;
+  const io = tokens ? tokens.prompt_tokens + tokens.completion_tokens : 0
+  const promptPct = tokens && io > 0 ? (tokens.prompt_tokens / io) * 100 : 0
+  const cached = tokens ? cacheShare(tokens.prompt_tokens, tokens.cache_read_tokens) : null
   return (
     <Panel
       title="Token mix"
@@ -166,12 +157,12 @@ function TokenMix({
             </div>
             <div className="flex justify-between text-xs">
               <span className="inline-flex items-center gap-1.5">
-                <Swatch series={seriesAt(0)} /> Prompt{" "}
+                <Swatch series={seriesAt(0)} /> Prompt{' '}
                 <span className="font-mono tabular-nums">{fmtTokens(tokens.prompt_tokens)}</span>
                 <span className="text-muted-foreground">({fmtPct(promptPct)})</span>
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <Swatch series={seriesAt(1)} /> Completion{" "}
+                <Swatch series={seriesAt(1)} /> Completion{' '}
                 <span className="font-mono tabular-nums">
                   {fmtTokens(tokens.completion_tokens)}
                 </span>
@@ -182,7 +173,7 @@ function TokenMix({
             <MixFigure
               label="Cache read"
               value={fmtTokens(tokens.cache_read_tokens)}
-              note={cached === null ? "—" : `${fmtPct(cached)} of input`}
+              note={cached === null ? '—' : `${fmtPct(cached)} of input`}
             />
             <MixFigure
               label="Cache write"
@@ -198,7 +189,7 @@ function TokenMix({
         </>
       )}
     </Panel>
-  );
+  )
 }
 
 function MixFigure({ label, value, note }: { label: string; value: string; note: string }) {
@@ -210,5 +201,5 @@ function MixFigure({ label, value, note }: { label: string; value: string; note:
         <span className="truncate text-2xs text-muted-foreground">{note}</span>
       </dd>
     </div>
-  );
+  )
 }

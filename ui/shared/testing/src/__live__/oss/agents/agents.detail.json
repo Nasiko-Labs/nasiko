@@ -1,0 +1,69 @@
+{
+  "fixture_version": 1,
+  "id": "agents.detail",
+  "recorded_at": "2026-09-29T06:41:17.990Z",
+  "window": {
+    "start": "2026-09-29T06:41:17.990Z",
+    "end": "2026-09-29T06:41:17.996Z"
+  },
+  "anchor": "2026-09-29T06:41:14.754Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/agents/{agent0}",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "id": "5eed0000-0001-4000-8000-000000000001",
+      "name": "seed-support-bot",
+      "display_name": "Support Bot",
+      "owner_id": "<admin-id>",
+      "can_manage": true,
+      "is_coding_agent": false,
+      "coding_agent_integration_id": null,
+      "status": "registered",
+      "version": "1.0.0",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "url": "/api/agents/5eed0000-0001-4000-8000-000000000001",
+      "preferredTransport": "JSONRPC",
+      "protocolVersion": "0.3.0",
+      "provider": null,
+      "iconUrl": null,
+      "documentationUrl": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "securitySchemes": {},
+      "security": [],
+      "defaultInputModes": [
+        "application/json",
+        "text/plain"
+      ],
+      "defaultOutputModes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "supportsAuthenticatedExtendedCard": false,
+      "signatures": [],
+      "additionalInterfaces": null,
+      "created_at": "2026-09-29T06:41:15.392726Z",
+      "updated_at": "2026-09-29T06:41:15.392726Z"
+    },
+    "status_code": 200,
+    "message": "Registry retrieved successfully"
+  }
+}

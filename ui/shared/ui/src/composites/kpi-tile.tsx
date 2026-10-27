@@ -1,9 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/kpi-tile.tsx. Local edits: imports mapped to
-// ../primitives/card and ../lib/cn; optional props typed `| undefined` (exactOptionalPropertyTypes).
 /** One figure on a shadcn `Card`: label (plus an optional aside such as a `Delta`), then the value. */
-import type { ComponentProps, ReactNode } from "react";
-import { cn } from "../lib/cn";
-import { Card } from "../primitives/card";
+import type { ComponentProps, ReactNode } from 'react'
+import { Card } from '@nasiko/ui/primitives/card'
+import { cn } from '@nasiko/ui/lib/utils'
 
 export function KpiTile({
   label,
@@ -13,25 +11,25 @@ export function KpiTile({
   className,
   children,
   ...rest
-}: Omit<ComponentProps<typeof Card>, "children"> & {
-  label: ReactNode;
-  aside?: ReactNode;
-  value: ReactNode;
-  compact?: boolean | undefined;
-  className?: string | undefined;
+}: Omit<ComponentProps<typeof Card>, 'children'> & {
+  label: ReactNode
+  aside?: ReactNode
+  value: ReactNode
+  compact?: boolean
+  className?: string
   /** Anything under the value (a meter, a footnote). */
-  children?: ReactNode;
+  children?: ReactNode
 }) {
   return (
-    <Card className={cn("gap-1 p-3", className)} {...rest}>
+    <Card className={cn('gap-1 p-3', className)} {...rest}>
       <div className="flex items-center justify-between gap-2">
         <span className="text-xs text-muted-foreground">{label}</span>
         {aside}
       </div>
-      <div className={cn("font-semibold tabular-nums", compact ? "text-lg" : "text-2xl")}>
+      <div className={cn('font-semibold tabular-nums', compact ? 'text-lg' : 'text-2xl')}>
         {value}
       </div>
       {children}
     </Card>
-  );
+  )
 }

@@ -1,45 +1,35 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/CatalogPage.tsx. Local edits: a server's title link is
-// the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/mcp/<id>` (the lab's `Link to="/mcp/$connectorId"`); the chip `Toggle`'s pressed classes are
-// `aria-pressed:` (Base UI sets `aria-pressed`, not Radix's `data-state=on`); the lab's `EmptyState` is
-// `LabEmptyState`; on development (3aac84f66, d2e0d4bcf) the chip is the shared `FilterChip`; `React.ReactNode` is an imported `ReactNode`; Prettier formatting.
-// Legacy ui/ on development (3aac84f66, c721a11a8): the title and actions in the top bar, one toolbar (connection
-// tabs left, the source Select and search right).
-"use client";
-
 /**
  * The MCP catalog (plans/feat-mcp.md §2): custom servers ∪ platform toolkits in one grid, laid out like the Agents
  * catalog. One toolbar row: connection tabs with counts (`?tab=`), then a source select (`?view=`) and search (`?q=`),
  * all replacing history. The page's actions sit in the shell's top bar.
  * A custom server's name links to its page; its Connect control sits beside the link, never inside it.
  */
-import Link from "@nasiko/app-core/navigation";
-import { CheckCircle2, Plug, Plus, RotateCw, SearchX, Upload } from "lucide-react";
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
+import { Link } from '@tanstack/react-router'
+import { CheckCircle2, Plug, Plus, RotateCw, SearchX, Upload } from 'lucide-react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Tabs,
-  TabsList,
-  TabsTrigger,
-} from "@nasiko/ui/primitives";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { SearchInput } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { AgentMark } from "../agents/components/bits";
-import { useConnectors, useToolkits } from "./api";
-import { ServerStatusBadge } from "./components/bits";
-import { ConnectControl } from "./components/ConnectControl";
-import { RegisterDialog } from "./components/RegisterDialog";
-import { UploadDialog } from "./components/UploadDialog";
-import { copy, reason } from "./copy";
+} from '@nasiko/ui/primitives/select'
+import { Tabs, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
+import { AgentMark } from '@nasiko/features/agents/components/bits'
+import { useConnectors, useToolkits } from './api'
+import { ServerStatusBadge } from './components/bits'
+import { ConnectControl } from './components/ConnectControl'
+import { RegisterDialog } from './components/RegisterDialog'
+import { UploadDialog } from './components/UploadDialog'
+import { copy, reason } from './copy'
 import {
   canConnect,
   inTab,
@@ -48,53 +38,51 @@ import {
   tabCounts,
   toServices,
   type Service,
-} from "./logic";
-import { useOAuthPopup } from "./oauth";
-import { TABS, VIEWS, type CatalogSearch, type Tab, type View } from "./search";
+} from './logic'
+import { useOAuthPopup } from './oauth'
+import { TABS, VIEWS, type CatalogSearch, type Tab, type View } from './search'
 
 export function CatalogPage({
   search,
   setSearch,
 }: {
-  search: CatalogSearch;
-  setSearch: (patch: Partial<CatalogSearch>) => void;
+  search: CatalogSearch
+  setSearch: (patch: Partial<CatalogSearch>) => void
 }) {
-  const servers = useConnectors();
-  const toolkits = useToolkits();
-  const openPopup = useOAuthPopup();
-  const [dialog, setDialog] = useState<"register" | "upload" | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const servers = useConnectors()
+  const toolkits = useToolkits()
+  const openPopup = useOAuthPopup()
+  const [dialog, setDialog] = useState<'register' | 'upload' | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
 
   // "/" focuses search unless the user is already typing somewhere (as in Agents).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName))) return;
-      e.preventDefault();
-      inputRef.current?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-    };
-  }, []);
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return
+      e.preventDefault()
+      inputRef.current?.focus()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const all = useMemo(
     () => toServices(servers.data, toolkits.data?.toolkits ?? []),
     [servers.data, toolkits.data],
-  );
-  const scoped = useMemo(() => all.filter((s) => inView(s, search.view)), [all, search.view]);
-  const counts = tabCounts(scoped);
-  const tab: Tab = search.tab ?? "all";
-  const q = search.q ?? "";
+  )
+  const scoped = useMemo(() => all.filter((s) => inView(s, search.view)), [all, search.view])
+  const counts = tabCounts(scoped)
+  const tab: Tab = search.tab ?? 'all'
+  const q = search.q ?? ''
   const shown = useMemo(
     () => scoped.filter((s) => inTab(s, tab) && matchesQuery(s, q)),
     [scoped, tab, q],
-  );
+  )
   // The empty card repeats both header actions, so the header drops them (legacy: never each button twice).
   const scopeEmpty =
-    !!servers.data && !scoped.length && search.view !== "shared" && search.view !== "toolkits";
+    !!servers.data && !scoped.length && search.view !== 'shared' && search.view !== 'toolkits'
 
   const actions = (
     <>
@@ -102,44 +90,28 @@ export function CatalogPage({
         variant="outline"
         size="sm"
         className="pointer-coarse:min-h-11"
-        onClick={() => {
-          setDialog("upload");
-        }}
+        onClick={() => setDialog('upload')}
       >
         <Upload aria-hidden /> {copy.upload}
       </Button>
-      <Button
-        size="sm"
-        className="pointer-coarse:min-h-11"
-        onClick={() => {
-          setDialog("register");
-        }}
-      >
+      <Button size="sm" className="pointer-coarse:min-h-11" onClick={() => setDialog('register')}>
         <Plus aria-hidden /> {copy.register}
       </Button>
     </>
-  );
+  )
   const dialogs =
-    dialog === "register" ? (
-      <RegisterDialog
-        onClose={() => {
-          setDialog(null);
-        }}
-      />
-    ) : dialog === "upload" ? (
-      <UploadDialog
-        onClose={() => {
-          setDialog(null);
-        }}
-      />
-    ) : null;
+    dialog === 'register' ? (
+      <RegisterDialog onClose={() => setDialog(null)} />
+    ) : dialog === 'upload' ? (
+      <UploadDialog onClose={() => setDialog(null)} />
+    ) : null
   // Extra space below: the header stands apart from the toolbar it introduces.
   const header = (
     <>
       <TopBar actions={scopeEmpty ? null : actions} />
       <PageHeader title={copy.title} description={copy.sub} className="mb-2" />
     </>
-  );
+  )
 
   if (servers.isPending)
     return (
@@ -148,7 +120,7 @@ export function CatalogPage({
         <PageLoader label={copy.loadingCatalog} />
         {dialogs}
       </div>
-    );
+    )
   if (servers.isError && !servers.data)
     return (
       <div className="space-y-4">
@@ -165,7 +137,7 @@ export function CatalogPage({
         />
         {dialogs}
       </div>
-    );
+    )
 
   return (
     <div className="space-y-4">
@@ -175,9 +147,7 @@ export function CatalogPage({
         {scoped.length ? (
           <Tabs
             value={tab}
-            onValueChange={(t) => {
-              setSearch({ tab: t === "all" ? undefined : (t as Tab) });
-            }}
+            onValueChange={(t) => setSearch({ tab: t === 'all' ? undefined : (t as Tab) })}
           >
             <TabsList aria-label={copy.tabsLabel}>
               {TABS.map((t) => (
@@ -191,12 +161,10 @@ export function CatalogPage({
         ) : null}
         <div className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto">
           <Select
-            value={search.view ?? "all"}
-            onValueChange={(v) => {
-              setSearch({ view: !v || v === "all" ? undefined : (v as View), tab: undefined });
-            }}
-            // Base UI's Value shows an item's label only for items it knows.
-            items={{ all: copy.allViews, ...copy.views }}
+            value={search.view ?? 'all'}
+            onValueChange={(v) =>
+              setSearch({ view: v === 'all' ? undefined : (v as View), tab: undefined })
+            }
           >
             <SelectTrigger aria-label={copy.viewLabel} className="shrink-0">
               <SelectValue />
@@ -214,9 +182,7 @@ export function CatalogPage({
             ref={inputRef}
             aria-label={copy.searchLabel}
             value={q}
-            onChange={(e) => {
-              setSearch({ q: e.target.value || undefined });
-            }}
+            onChange={(e) => setSearch({ q: e.target.value || undefined })}
             placeholder={copy.searchPlaceholder}
             aria-keyshortcuts="/"
             className="max-w-none min-w-0 flex-1 sm:w-72 sm:flex-none"
@@ -249,30 +215,19 @@ export function CatalogPage({
           icon={SearchX}
           title={copy.noResults(q.trim())}
           action={
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setSearch({ q: undefined });
-              }}
-            >
+            <Button size="sm" variant="outline" onClick={() => setSearch({ q: undefined })}>
               {copy.clearSearch}
             </Button>
           }
         >
           {copy.noResultsHint}
         </EmptyState>
-      ) : tab === "connected" ? (
+      ) : tab === 'connected' ? (
         <EmptyState
           icon={Plug}
           title={copy.nothingConnected}
           action={
-            <Button
-              size="sm"
-              onClick={() => {
-                setSearch({ tab: "available" });
-              }}
-            >
+            <Button size="sm" onClick={() => setSearch({ tab: 'available' })}>
               {copy.browseAvailable}
             </Button>
           }
@@ -286,17 +241,17 @@ export function CatalogPage({
       )}
       {dialogs}
     </div>
-  );
+  )
 }
 
 /** Every scope gets the same card; only the copy and the actions differ (legacy `CATALOG_SCOPES`). */
-function ScopeEmpty({ view, actions }: { view: CatalogSearch["view"]; actions: ReactNode }) {
-  const e = copy.empty[view ?? "all"];
+function ScopeEmpty({ view, actions }: { view: CatalogSearch['view']; actions: React.ReactNode }) {
+  const e = copy.empty[view ?? 'all']
   return (
     <EmptyState icon={Plug} title={e.title} action={actions ?? undefined}>
       {e.desc}
     </EmptyState>
-  );
+  )
 }
 
 /** Memoized: every search keystroke re-renders the page. */
@@ -304,22 +259,24 @@ const ServiceCard = memo(function ServiceCard({
   service: s,
   openPopup,
 }: {
-  service: Service;
-  openPopup: (url: string | undefined) => void;
+  service: Service
+  openPopup: (url: string | undefined) => void
 }) {
-  const building = s.status === "building";
-  const failed = s.status === "failed";
+  const building = s.status === 'building'
+  const failed = s.status === 'failed'
   const title =
-    s.kind === "server" ? (
+    s.kind === 'server' ? (
       <Link
-        href={`/mcp/${encodeURIComponent(s.id)}`}
+        to="/mcp/$connectorId"
+        params={{ connectorId: s.id }}
+        search={{}}
         className="truncate font-medium underline-offset-4 after:absolute after:inset-0 after:rounded-xl hover:underline focus-visible:outline-none"
       >
         {s.label}
       </Link>
     ) : (
       <span className="truncate font-medium">{s.label}</span>
-    );
+    )
   return (
     // The title link stretches over the card; the Connect control sits above it (z-10).
     <Card className="relative h-full gap-2 p-4 transition-colors hover:border-primary/40 has-[a:focus-visible]:outline-2 has-[a:focus-visible]:outline-ring">
@@ -329,7 +286,7 @@ const ServiceCard = memo(function ServiceCard({
           {title}
           <span className="truncate font-mono text-xs text-muted-foreground">{s.name}</span>
         </div>
-        {s.status && s.status !== "active" ? <ServerStatusBadge status={s.status} /> : null}
+        {s.status && s.status !== 'active' ? <ServerStatusBadge status={s.status} /> : null}
         {canConnect(s) ? (
           <ConnectControl target={s} openPopup={openPopup} className="relative z-10" />
         ) : null}
@@ -362,9 +319,9 @@ const ServiceCard = memo(function ServiceCard({
           </Badge>
         ) : null}
         <Badge variant="outline" className="font-normal">
-          {s.kind === "toolkit" ? copy.toolkit : s.shared ? copy.sharedBy(s.owner) : copy.yours}
+          {s.kind === 'toolkit' ? copy.toolkit : s.shared ? copy.sharedBy(s.owner) : copy.yours}
         </Badge>
       </div>
     </Card>
-  );
-});
+  )
+})

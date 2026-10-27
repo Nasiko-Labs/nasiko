@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/trace/SpanPanel.tsx. Local edits: `CollapsibleTrigger asChild`
-// + `Button` -> `render={<Button …/>}` and `CollapsibleContent asChild` + `dl` -> `render={<dl …/>}` (Base UI
-// useRender; same elements); Radix state classes -> Base UI's (`data-[state=active]:` -> `data-active:` on the tab,
-// `data-[state=on]:` -> `aria-pressed:` on the Text/JSON toggle); `&apos;` in JSX text (lint); optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Span panel: Summary (status, timing, tokens, cost, ids), Prompt & response (always
  * rendered as TEXT, never HTML), Attributes (grouped by namespace, filterable, click to
@@ -12,15 +8,19 @@
  * Input/Output with a view toggle) and Axiom's (span id with copy, tab counts, raw fields
  * grouped and filterable).
  */
-import { ChevronDown, ChevronRight, ChevronUp, Copy, X } from "lucide-react";
-import { useMemo, useState } from "react";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@nasiko/ui/primitives";
-import { SearchInput } from "@nasiko/ui/composites";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { Toggle } from "@nasiko/ui/primitives";
-import { copy } from "../observability/copy";
+import { ChevronDown, ChevronRight, ChevronUp, Copy, X } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@nasiko/ui/primitives/collapsible'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { Toggle } from '@nasiko/ui/primitives/toggle'
+import { copy } from '@nasiko/features/observability/copy'
 import {
   CLASS_LABEL,
   flattenAttributes,
@@ -28,26 +28,26 @@ import {
   statusText,
   TRACE_TOTAL_SPAN,
   type FlatSpan,
-} from "../observability/spans";
-import { CONTENT_PREVIEW_CHARS } from "../observability/tuning";
-import { ErrorState } from "../observability/StateCard";
-import { ContextBlock } from "../optimization/components/ContextBlock";
-import { copy as optimizationCopy } from "../optimization/copy";
-import { contextReport, orgPolicyApplied } from "../optimization/logic";
-import type { ContentField } from "../observability/types";
-import { fmtLatency, fmtMoney, fmtTokens } from "@nasiko/ui/lib";
-import { useCopy } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { useSpanDetail } from "./api";
+} from '@nasiko/features/observability/spans'
+import { CONTENT_PREVIEW_CHARS } from '@nasiko/features/observability/tuning'
+import { ErrorState } from '@nasiko/features/observability/StateCard'
+import { ContextBlock } from '@nasiko/features/optimization/components/ContextBlock'
+import { copy as optimizationCopy } from '@nasiko/features/optimization/copy'
+import { contextReport, orgPolicyApplied } from '@nasiko/features/optimization/logic'
+import type { ContentField } from '@nasiko/features/observability/types'
+import { fmtLatency, fmtMoney, fmtTokens } from '@nasiko/ui/lib/format'
+import { useCopy } from '@nasiko/ui/lib/useCopy'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useSpanDetail } from './api'
 
-const TABS = ["summary", "content", "attributes"] as const;
-export type SpanTab = (typeof TABS)[number];
-type Tab = SpanTab;
+const TABS = ['summary', 'content', 'attributes'] as const
+export type SpanTab = (typeof TABS)[number]
+type Tab = SpanTab
 const TAB_LABEL: Record<Tab, string> = {
-  summary: "Summary",
-  content: "Prompt & response",
-  attributes: "Attributes",
-};
+  summary: 'Summary',
+  content: 'Prompt & response',
+  attributes: 'Attributes',
+}
 
 /**
  * The panel stays mounted while stepping through spans (so Previous/Next keep focus); the
@@ -66,38 +66,38 @@ export function SpanPanel({
   onClose,
   request,
 }: {
-  traceId: string;
-  span: FlatSpan;
-  tab: Tab;
-  onTabChange: (tab: Tab) => void;
-  parentName?: string | undefined;
+  traceId: string
+  span: FlatSpan
+  tab: Tab
+  onTabChange: (tab: Tab) => void
+  parentName?: string
   /** 1-based position in tree order, for "3 of 18". */
-  position?: { index: number; of: number } | undefined;
-  onPrev?: (() => void) | undefined;
-  onNext?: (() => void) | undefined;
-  onClose?: (() => void) | undefined;
+  position?: { index: number; of: number }
+  onPrev?: () => void
+  onNext?: () => void
+  onClose?: () => void
   /** The `a2a.dispatch` / `a2a.proxy` span this one belongs to (itself included), and how to select it. */
-  request?: { span: FlatSpan; onSelect: () => void } | undefined;
+  request?: { span: FlatSpan; onSelect: () => void }
 }) {
-  const setTab = onTabChange;
-  const detail = useSpanDetail(traceId, span.node.span_id);
-  const d = detail.data;
-  const attrs = useMemo(() => flattenAttributes(d?.attributes), [d?.attributes]);
-  const attrCount = Object.keys(attrs).length;
-  const isRequest = request?.span.node.id === span.node.id;
-  const ownReport = isRequest && d ? contextReport(attrs) : null;
+  const setTab = onTabChange
+  const detail = useSpanDetail(traceId, span.node.span_id)
+  const d = detail.data
+  const attrs = useMemo(() => flattenAttributes(d?.attributes), [d?.attributes])
+  const attrCount = Object.keys(attrs).length
+  const isRequest = request?.span.node.id === span.node.id
+  const ownReport = isRequest && d ? contextReport(attrs) : null
   // Ledger V3: the org-policy server records the flag without the counts; it still shows, as a Summary row.
-  const policyOnly = isRequest && !!d && !ownReport && orgPolicyApplied(attrs);
+  const policyOnly = isRequest && !!d && !ownReport && orgPolicyApplied(attrs)
   // An LLM span points at its request's block, only when that request carries a report (one cached read).
-  const pointTo = request && !isRequest && span.cls === "llm" ? request : undefined;
-  const requestDetail = useSpanDetail(traceId, pointTo?.span.node.span_id);
+  const pointTo = request && !isRequest && span.cls === 'llm' ? request : undefined
+  const requestDetail = useSpanDetail(traceId, pointTo?.span.node.span_id)
   const requestAttrs = useMemo(
     () => flattenAttributes(requestDetail.data?.attributes),
     [requestDetail.data?.attributes],
-  );
-  const pointerShown = !!pointTo && !!requestDetail.data && contextReport(requestAttrs) !== null;
-  const atStart = !position || position.index <= 1;
-  const atEnd = !position || position.index >= position.of;
+  )
+  const pointerShown = !!pointTo && !!requestDetail.data && contextReport(requestAttrs) !== null
+  const atStart = !position || position.index <= 1
+  const atEnd = !position || position.index >= position.of
 
   return (
     <section
@@ -111,7 +111,7 @@ export function SpanPanel({
             Span
             {position ? (
               <span className="font-normal tabular-nums">
-                {" "}
+                {' '}
                 · {position.index} of {position.of}
               </span>
             ) : null}
@@ -124,7 +124,7 @@ export function SpanPanel({
                 size="icon"
                 className="size-10 aria-disabled:opacity-40"
                 onClick={() => {
-                  if (!atStart) onPrev();
+                  if (!atStart) onPrev()
                 }}
                 aria-disabled={atStart}
                 aria-label={copy.prevSpan}
@@ -138,7 +138,7 @@ export function SpanPanel({
                 size="icon"
                 className="size-10 aria-disabled:opacity-40"
                 onClick={() => {
-                  if (!atEnd) onNext();
+                  if (!atEnd) onNext()
                 }}
                 aria-disabled={atEnd}
                 aria-label={copy.nextSpan}
@@ -168,20 +168,14 @@ export function SpanPanel({
         </h2>
         <p className="text-xs text-muted-foreground">
           {CLASS_LABEL[span.cls]}
-          {span.node.model ? ` · ${span.node.model}` : ""}
+          {span.node.model ? ` · ${span.node.model}` : ''}
         </p>
         <SpanIdRow key={span.node.span_id} id={span.node.span_id} />
       </header>
 
       {/* Radix Tabs: arrows, Home and End move and select (automatic activation); only the
           selected panel is mounted. The selected tab lives in the page. */}
-      <Tabs
-        value={tab}
-        onValueChange={(v) => {
-          setTab(v as Tab);
-        }}
-        className="gap-3"
-      >
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-3">
         <TabsList
           variant="line"
           aria-label="Span details"
@@ -191,10 +185,10 @@ export function SpanPanel({
             <TabsTrigger
               key={t}
               value={t}
-              className="min-h-10 flex-none px-1.5 font-normal data-active:font-medium"
+              className="min-h-10 flex-none px-1.5 font-normal data-[state=active]:font-medium"
             >
               {TAB_LABEL[t]}
-              {t === "attributes" && d ? (
+              {t === 'attributes' && d ? (
                 <Badge
                   variant="muted"
                   aria-hidden
@@ -208,17 +202,17 @@ export function SpanPanel({
         </TabsList>
 
         <TabsContent key={span.node.span_id} value={tab} className="min-w-0">
-          {tab === "summary" ? (
+          {tab === 'summary' ? (
             <>
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
                 <dt className="text-muted-foreground">Status</dt>
-                <dd className={isError(span.node) ? "text-destructive" : ""}>
+                <dd className={isError(span.node) ? 'text-destructive' : ''}>
                   {statusText(span.node)}
-                  {d?.status_message ? ` · ${d.status_message}` : ""}
+                  {d?.status_message ? ` · ${d.status_message}` : ''}
                 </dd>
                 <dt className="text-muted-foreground">Start</dt>
                 <dd className="tabular-nums">
-                  +{fmtLatency(span.startMs)}{" "}
+                  +{fmtLatency(span.startMs)}{' '}
                   <span className="text-muted-foreground">from trace start</span>
                 </dd>
                 <dt className="text-muted-foreground">Duration</dt>
@@ -228,7 +222,7 @@ export function SpanPanel({
                   {fmtTokens(span.node.input_tokens)} in · {fmtTokens(span.node.output_tokens)} out
                   {span.node.cache_read_tokens
                     ? ` · ${fmtTokens(span.node.cache_read_tokens)} cached`
-                    : ""}
+                    : ''}
                 </dd>
                 <dt className="text-muted-foreground">Cost</dt>
                 <dd className="tabular-nums">
@@ -244,7 +238,7 @@ export function SpanPanel({
                 </dd>
                 <dt className="text-muted-foreground">Kind</dt>
                 <dd>
-                  {CLASS_LABEL[span.cls]}{" "}
+                  {CLASS_LABEL[span.cls]}{' '}
                   <span className="text-muted-foreground">({span.node.span_kind})</span>
                 </dd>
                 {span.node.model ? (
@@ -269,8 +263,7 @@ export function SpanPanel({
                 ) : null}
                 {span.node.name === TRACE_TOTAL_SPAN ? (
                   <dd className="col-span-2 text-xs text-muted-foreground">
-                    This span carries the whole turn&apos;s usage; it isn&apos;t added to span
-                    totals.
+                    This span carries the whole turn's usage; it isn't added to span totals.
                   </dd>
                 ) : null}
               </dl>
@@ -279,10 +272,9 @@ export function SpanPanel({
                   <ContextBlock report={ownReport} />
                 </div>
               ) : null}
-              {/* eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's narrowing: `pointerShown` implies `pointTo` */}
               {pointerShown && pointTo ? (
                 <p className="mt-4 text-sm text-muted-foreground">
-                  {optimizationCopy.trace.pointer}{" "}
+                  {optimizationCopy.trace.pointer}{' '}
                   <Button
                     type="button"
                     variant="link"
@@ -299,7 +291,7 @@ export function SpanPanel({
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : detail.isError ? (
             <ErrorState error={detail.error} onRetry={() => void detail.refetch()} />
-          ) : d && tab === "content" ? (
+          ) : d && tab === 'content' ? (
             <div className="flex flex-col gap-2">
               <ContentSection label="Input" field={d.input} />
               <ContentSection label="Output" field={d.output} />
@@ -310,11 +302,11 @@ export function SpanPanel({
         </TabsContent>
       </Tabs>
     </section>
-  );
+  )
 }
 
 function SpanIdRow({ id }: { id: string }) {
-  const [copied, run] = useCopy(id);
+  const [copied, run] = useCopy(id)
   return (
     <div className="flex items-center gap-1 text-xs text-muted-foreground">
       <span className="truncate font-mono">{id}</span>
@@ -328,31 +320,30 @@ function SpanIdRow({ id }: { id: string }) {
         <Copy className="size-3.5" aria-hidden />
       </Button>
       <span role="status" className="text-success">
-        {copied === "copied" ? copy.copied : ""}
+        {copied === 'copied' ? copy.copied : ''}
       </span>
     </div>
-  );
+  )
 }
 
 function prettyJson(value: string): string | null {
   try {
-    const parsed: unknown = JSON.parse(value);
-    return typeof parsed === "object" && parsed !== null ? JSON.stringify(parsed, null, 2) : null;
+    const parsed: unknown = JSON.parse(value)
+    return typeof parsed === 'object' && parsed !== null ? JSON.stringify(parsed, null, 2) : null
   } catch {
-    return null;
+    return null
   }
 }
 
 /** Collapsible Input/Output with a Text / JSON view toggle (JSON only when it parses). */
 function ContentSection({ label, field }: { label: string; field: ContentField }) {
-  const [open, setOpen] = useState(true);
-  const [view, setView] = useState<"text" | "json">("text");
-  const [more, setMore] = useState(false);
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- server data, read defensively whatever the generated type says
-  const value = field.value ?? "";
-  const json = useMemo(() => prettyJson(value), [value]);
-  const shown = view === "json" && json ? json : value;
-  const long = shown.length > CONTENT_PREVIEW_CHARS;
+  const [open, setOpen] = useState(true)
+  const [view, setView] = useState<'text' | 'json'>('text')
+  const [more, setMore] = useState(false)
+  const value = field.value ?? ''
+  const json = useMemo(() => prettyJson(value), [value])
+  const shown = view === 'json' && json ? json : value
+  const long = shown.length > CONTENT_PREVIEW_CHARS
   return (
     <Collapsible
       open={open}
@@ -360,17 +351,17 @@ function ContentSection({ label, field }: { label: string; field: ContentField }
       className="border-b border-border pb-2 last:border-b-0"
     >
       <div className="flex items-center justify-between gap-2">
-        <CollapsibleTrigger
-          render={<Button variant="ghost" size="sm" className="-ml-1 h-auto min-h-8 gap-1 px-1" />}
-        >
-          <ChevronRight
-            className={cn(
-              "size-3.5 text-muted-foreground transition-transform",
-              open && "rotate-90",
-            )}
-            aria-hidden
-          />
-          {label}
+        <CollapsibleTrigger asChild>
+          <Button variant="ghost" size="sm" className="-ml-1 h-auto min-h-8 gap-1 px-1">
+            <ChevronRight
+              className={cn(
+                'size-3.5 text-muted-foreground transition-transform',
+                open && 'rotate-90',
+              )}
+              aria-hidden
+            />
+            {label}
+          </Button>
         </CollapsibleTrigger>
         {open && value && json ? (
           <div
@@ -378,17 +369,15 @@ function ContentSection({ label, field }: { label: string; field: ContentField }
             aria-label={`${label} view`}
             className="flex rounded-md border border-border p-0.5 text-xs"
           >
-            {(["text", "json"] as const).map((v) => (
+            {(['text', 'json'] as const).map((v) => (
               <Toggle
                 key={v}
                 size="sm"
                 pressed={view === v}
-                onClick={() => {
-                  setView(v);
-                }}
-                className="h-6 min-w-0 rounded px-2 text-xs font-normal text-muted-foreground aria-pressed:font-medium"
+                onClick={() => setView(v)}
+                className="h-6 min-w-0 rounded px-2 text-xs font-normal text-muted-foreground data-[state=on]:font-medium"
               >
-                {v === "text" ? "Text" : "JSON"}
+                {v === 'text' ? 'Text' : 'JSON'}
               </Toggle>
             ))}
           </div>
@@ -408,146 +397,132 @@ function ContentSection({ label, field }: { label: string; field: ContentField }
                 variant="link"
                 size="sm"
                 className="h-auto p-0"
-                onClick={() => {
-                  setMore((m) => !m);
-                }}
+                onClick={() => setMore((m) => !m)}
               >
-                {more ? "Show less" : "Show all"}
+                {more ? 'Show less' : 'Show all'}
               </Button>
             ) : null}
           </>
         )}
       </CollapsibleContent>
     </Collapsible>
-  );
+  )
 }
 
 /** Keys without a namespace (no dot, or a leading dot) share this group; it sorts last. */
-const NO_NAMESPACE = "(no namespace)";
+const NO_NAMESPACE = '(no namespace)'
 /** `gen_ai.usage.input_tokens` → `gen_ai`. */
 const namespaceOf = (key: string) =>
-  key.indexOf(".") > 0 ? key.slice(0, key.indexOf(".")) : NO_NAMESPACE;
+  key.indexOf('.') > 0 ? key.slice(0, key.indexOf('.')) : NO_NAMESPACE
 /** The key shown under its group heading (the full key if nothing would remain). */
 const shortKey = (key: string, ns: string) =>
-  ns !== NO_NAMESPACE && key.length > ns.length + 1 ? key.slice(ns.length + 1) : key;
+  ns !== NO_NAMESPACE && key.length > ns.length + 1 ? key.slice(ns.length + 1) : key
 
 function Attributes({ attrs }: { attrs: Record<string, unknown> }) {
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState('')
   // Which key the one copy state belongs to.
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [copyState, copyValue] = useCopy();
-  const copied = copyState === "copied" ? copiedKey : null;
-  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
-  const needle = q.toLowerCase();
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [copyState, copyValue] = useCopy()
+  const copied = copyState === 'copied' ? copiedKey : null
+  const [closed, setClosed] = useState<ReadonlySet<string>>(new Set())
+  const needle = q.toLowerCase()
   const groups = useMemo(() => {
-    const out = new Map<string, [string, unknown][]>();
+    const out = new Map<string, [string, unknown][]>()
     for (const [k, v] of Object.entries(attrs)) {
       if (needle && !k.toLowerCase().includes(needle) && !String(v).toLowerCase().includes(needle))
-        continue;
-      const ns = namespaceOf(k);
-      out.set(ns, [...(out.get(ns) ?? []), [k, v]]);
+        continue
+      const ns = namespaceOf(k)
+      out.set(ns, [...(out.get(ns) ?? []), [k, v]])
     }
     return [...out.entries()].sort(([a], [b]) =>
       a === NO_NAMESPACE ? 1 : b === NO_NAMESPACE ? -1 : a.localeCompare(b),
-    );
-  }, [attrs, needle]);
-  const toggle = (ns: string) => {
+    )
+  }, [attrs, needle])
+  const toggle = (ns: string) =>
     setClosed((prev) => {
-      const n = new Set(prev);
-      if (n.has(ns)) n.delete(ns);
-      else n.add(ns);
-      return n;
-    });
-  };
+      const n = new Set(prev)
+      if (n.has(ns)) n.delete(ns)
+      else n.add(ns)
+      return n
+    })
   return (
     <div className="flex flex-col gap-2">
       <SearchInput
         value={q}
-        onChange={(e) => {
-          setQ(e.target.value);
-        }}
+        onChange={(e) => setQ(e.target.value)}
         placeholder="Filter attributes"
         aria-label="Filter attributes"
         className="h-8 max-w-none"
       />
       <span role="status" className="sr-only">
-        {copied ? `${copy.copied} ${copied}` : ""}
+        {copied ? `${copy.copied} ${copied}` : ''}
       </span>
       {groups.length ? (
         groups.map(([ns, entries]) => {
-          const open = !closed.has(ns) || !!needle;
+          const open = !closed.has(ns) || !!needle
           return (
-            <Collapsible
-              key={ns}
-              open={open}
-              onOpenChange={() => {
-                toggle(ns);
-              }}
-              disabled={!!needle}
-            >
+            <Collapsible key={ns} open={open} onOpenChange={() => toggle(ns)} disabled={!!needle}>
               {/* While filtering every group is open, so the toggle is disabled rather than silent. */}
-              <CollapsibleTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="-ml-1 h-auto min-h-8 gap-1 px-1 font-mono text-xs disabled:opacity-100"
+              <CollapsibleTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="-ml-1 h-auto min-h-8 gap-1 px-1 font-mono text-xs disabled:opacity-100"
+                >
+                  <ChevronRight
+                    className={cn(
+                      'size-3.5 text-muted-foreground transition-transform',
+                      open && 'rotate-90',
+                    )}
+                    aria-hidden
                   />
-                }
-              >
-                <ChevronRight
-                  className={cn(
-                    "size-3.5 text-muted-foreground transition-transform",
-                    open && "rotate-90",
-                  )}
-                  aria-hidden
-                />
-                {ns}{" "}
-                <span className="font-sans font-normal text-muted-foreground">
-                  {entries.length}
-                </span>
+                  {ns}{' '}
+                  <span className="font-sans font-normal text-muted-foreground">
+                    {entries.length}
+                  </span>
+                </Button>
               </CollapsibleTrigger>
-              <CollapsibleContent
-                render={<dl className="flex flex-col divide-y divide-border text-sm" />}
-              >
-                {entries.map(([k, v]) => (
-                  <div key={k} className="flex items-start gap-2 py-1.5">
-                    {/* The group heading carries the namespace; the full key is in the tooltip. */}
-                    <dt
-                      className="w-2/5 shrink-0 font-mono text-xs break-words text-muted-foreground"
-                      title={k}
-                    >
-                      {shortKey(k, ns)}
-                    </dt>
-                    <dd className="min-w-0 flex-1 font-mono text-xs break-all">
-                      {typeof v === "string" ? v : JSON.stringify(v)}
-                    </dd>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      onClick={() => {
-                        setCopiedKey(k);
-                        void copyValue(typeof v === "string" ? v : JSON.stringify(v));
-                      }}
-                      aria-label={`Copy ${k}`}
-                      className="-m-2 text-muted-foreground hover:text-foreground"
-                    >
-                      <Copy className="size-3.5" aria-hidden />
-                    </Button>
-                    {copied === k ? (
-                      <span aria-hidden className="text-xs text-success">
-                        {copy.copied}
-                      </span>
-                    ) : null}
-                  </div>
-                ))}
+              <CollapsibleContent asChild>
+                <dl className="flex flex-col divide-y divide-border text-sm">
+                  {entries.map(([k, v]) => (
+                    <div key={k} className="flex items-start gap-2 py-1.5">
+                      {/* The group heading carries the namespace; the full key is in the tooltip. */}
+                      <dt
+                        className="w-2/5 shrink-0 font-mono text-xs break-words text-muted-foreground"
+                        title={k}
+                      >
+                        {shortKey(k, ns)}
+                      </dt>
+                      <dd className="min-w-0 flex-1 font-mono text-xs break-all">
+                        {typeof v === 'string' ? v : JSON.stringify(v)}
+                      </dd>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        onClick={() => {
+                          setCopiedKey(k)
+                          void copyValue(typeof v === 'string' ? v : JSON.stringify(v))
+                        }}
+                        aria-label={`Copy ${k}`}
+                        className="-m-2 text-muted-foreground hover:text-foreground"
+                      >
+                        <Copy className="size-3.5" aria-hidden />
+                      </Button>
+                      {copied === k ? (
+                        <span aria-hidden className="text-xs text-success">
+                          {copy.copied}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </dl>
               </CollapsibleContent>
             </Collapsible>
-          );
+          )
         })
       ) : (
-        <p className="text-sm text-muted-foreground">No attributes{q ? " match" : ""}.</p>
+        <p className="text-sm text-muted-foreground">No attributes{q ? ' match' : ''}.</p>
       )}
     </div>
-  );
+  )
 }

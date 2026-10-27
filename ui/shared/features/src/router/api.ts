@@ -1,11 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/api.ts. Local edits: every key is scoped,
-// `productKey(scope, "router", …the lab's parts)` (`routerKeys.*`, `configsQuery` and `routingQuery` take the scope
-// first, the hooks read it from `useProductScope()`, and `afterConfigWrite`/`afterCustomWrite` take it too); the shared
-// provider catalog is TokenOps' scoped `providersQuery(scope)`; `prefetchRouter(client, scope)` uses `client.query`
-// (the deprecated `prefetchQuery`'s fetch-if-stale, error swallowed); optional fields admit `undefined` and an absent
-// predicate is omitted (exactOptionalPropertyTypes); `ApiError` is `ProductApiError`; development (55840ba24,
-// 1c28b0bb9): the budget reads and writes moved to the EE budgets feature; `routingQuery` is exported for the budget
-// levers; Prettier formatting. `configsQuery` is exported (development bb0683400: GenUI's router views read it).
 /**
  * LLM router queries and mutations (plan §4, §7), keys under `['router']`.
  * - Per-agent routing reads fan out through the router's own limiter (eng #4): no server batch read exists (R-L13).
@@ -23,20 +15,12 @@ import {
   type Query,
   type QueryClient,
   type UseQueryResult,
-} from "@tanstack/react-query";
-import { useCallback, useEffect, useRef } from "react";
-import { createLimiter } from "../observability/limiter";
-import { providersQuery } from "../tokenops/api";
-import type { Scope } from "@nasiko/data-access";
-import {
-  apiData,
-  apiFetch,
-  ProductApiError as ApiError,
-  productKey,
-  useProductScope,
-  withQuery,
-} from "@nasiko/data-access/product";
-import { requestPlan, type RoutingState, type RowRead, type Step } from "./routing";
+} from '@tanstack/react-query'
+import { useCallback, useEffect, useRef } from 'react'
+import { createLimiter } from '@nasiko/features/observability/limiter'
+import { providersQuery } from '@nasiko/features/tokenops/api'
+import { apiData, apiFetch, ApiError, withQuery } from '@nasiko/data-access/client'
+import { requestPlan, type RoutingState, type RowRead, type Step } from './routing'
 import {
   LIST_STALE_MS,
   ROUTING_READ_CONCURRENCY,
@@ -44,7 +28,7 @@ import {
   SPEND_DAYS,
   SPEND_LIMIT,
   SPEND_STALE_MS,
-} from "./tuning";
+} from './tuning'
 import type {
   AgentRouting,
   AgentUsage,
@@ -58,43 +42,35 @@ import type {
   TestCustomProviderResult,
   UpdateConfigBody,
   UpdateCustomProviderBody,
-} from "./types";
-
-/** The feature every router key sits under (`productPrefix(scope, ROUTER_FEATURE)` matches them all). */
-export const ROUTER_FEATURE = "router";
-
-const rk = (scope: Scope, ...parts: readonly unknown[]) =>
-  productKey(scope, ROUTER_FEATURE, ...parts);
+} from './types'
 
 export const routerKeys = {
-  configs: (scope: Scope) => rk(scope, "configs"),
-  agent: (scope: Scope, id: string) => rk(scope, "agent", id),
-  agents: (scope: Scope) => rk(scope, "agent"),
-  secrets: (scope: Scope) => rk(scope, "secrets"),
-  registry: (scope: Scope) => rk(scope, "registry"),
-  custom: (scope: Scope) => rk(scope, "custom"),
-  usage: (scope: Scope) => rk(scope, "usage"),
-};
+  configs: ['router', 'configs'] as const,
+  agent: (id: string) => ['router', 'agent', id] as const,
+  agents: ['router', 'agent'] as const,
+  secrets: ['router', 'secrets'] as const,
+  registry: ['router', 'registry'] as const,
+  custom: ['router', 'custom'] as const,
+  usage: ['router', 'usage'] as const,
+}
 
 // R-L13: one request per agent until a batch read exists; this page's own limiter, not observability's.
-const routerLimiter = createLimiter(ROUTING_READ_CONCURRENCY);
+const routerLimiter = createLimiter(ROUTING_READ_CONCURRENCY)
 
-const list = { staleTime: LIST_STALE_MS, refetchOnWindowFocus: true } as const;
+const list = { staleTime: LIST_STALE_MS, refetchOnWindowFocus: true } as const
 
-export const configsQuery = (scope: Scope) => ({
-  queryKey: routerKeys.configs(scope),
+export const configsQuery = {
+  queryKey: routerKeys.configs,
   queryFn: ({ signal }: { signal: AbortSignal }) =>
-    apiData<LlmConfig[]>("/api/llm-configs", { signal }),
+    apiData<LlmConfig[]>('/api/llm-configs', { signal }),
   ...list,
-});
+}
 
 /** The route's preload prefetch: the configs list. */
-export const prefetchRouter = (client: QueryClient, scope: Scope) =>
-  void client.query(configsQuery(scope)).catch(() => undefined);
+export const prefetchRouter = (client: QueryClient) => void client.prefetchQuery(configsQuery)
 
 export function useConfigs(enabled = true) {
-  const scope = useProductScope();
-  return useQuery({ ...configsQuery(scope), enabled });
+  return useQuery({ ...configsQuery, enabled })
 }
 
 /**
@@ -102,235 +78,209 @@ export function useConfigs(enabled = true) {
  * (edited, or the default moved), re-read the rows it resolves for. The page's own writes already did.
  */
 export function useRowsFollowConfigs(configs: LlmConfig[] | undefined) {
-  const scope = useProductScope();
-  const qc = useQueryClient();
-  const last = useRef<Map<string, string> | null>(null);
+  const qc = useQueryClient()
+  const last = useRef<Map<string, string> | null>(null)
   useEffect(() => {
-    if (!configs) return;
-    const now = new Map(configs.map((c) => [c.id, `${c.updated_at}:${c.is_default}`]));
-    const prev = last.current;
-    last.current = now;
-    if (!prev) return;
+    if (!configs) return
+    const now = new Map(configs.map((c) => [c.id, `${c.updated_at}:${c.is_default}`]))
+    const prev = last.current
+    last.current = now
+    if (!prev) return
     const changed = new Set(
       [...now.keys(), ...prev.keys()].filter((id) => now.get(id) !== prev.get(id)),
-    );
-    if (!changed.size) return;
+    )
+    if (!changed.size) return
     const defaultMoved = [...changed].some(
-      (id) => now.get(id)?.endsWith(":true") || prev.get(id)?.endsWith(":true"),
-    );
+      (id) => now.get(id)?.endsWith(':true') || prev.get(id)?.endsWith(':true'),
+    )
     void qc.invalidateQueries({
-      queryKey: routerKeys.agents(scope),
+      queryKey: routerKeys.agents,
       predicate: (q) => {
-        const r = q.state.data as AgentRouting | undefined;
+        const r = q.state.data as AgentRouting | undefined
         return (
           !r ||
-          changed.has(r.llm_config?.id ?? "") ||
-          changed.has(r.llm_config_id ?? "") ||
-          (defaultMoved && r.source !== "attached")
-        );
+          changed.has(r.llm_config?.id ?? '') ||
+          changed.has(r.llm_config_id ?? '') ||
+          (defaultMoved && r.source !== 'attached')
+        )
       },
-    });
-  }, [configs, qc, scope]);
+    })
+  }, [configs, qc])
 }
 
 export function useSecrets() {
-  const scope = useProductScope();
   return useQuery({
-    queryKey: routerKeys.secrets(scope),
-    queryFn: ({ signal }) => apiData<SecretEntry[]>("/api/secrets", { signal }),
+    queryKey: routerKeys.secrets,
+    queryFn: ({ signal }) => apiData<SecretEntry[]>('/api/secrets', { signal }),
     ...list,
-  });
+  })
 }
 
 export function useRegistry() {
-  const scope = useProductScope();
   return useQuery({
-    queryKey: routerKeys.registry(scope),
-    queryFn: ({ signal }) => apiData<ModelMapping[]>("/api/model-registry", { signal }),
+    queryKey: routerKeys.registry,
+    queryFn: ({ signal }) => apiData<ModelMapping[]>('/api/model-registry', { signal }),
     ...list,
-  });
+  })
 }
 
 export function useCustomProviders() {
-  const scope = useProductScope();
   return useQuery({
-    queryKey: routerKeys.custom(scope),
-    queryFn: ({ signal }) => apiData<CustomProvider[]>("/api/custom-providers", { signal }),
+    queryKey: routerKeys.custom,
+    queryFn: ({ signal }) => apiData<CustomProvider[]>('/api/custom-providers', { signal }),
     ...list,
-  });
+  })
 }
 
 /** The provider catalog, shared with TokenOps (same key and type), refetched on focus here. */
 export function useCatalog(enabled = true) {
-  const scope = useProductScope();
-  return useQuery({ ...providersQuery(scope), enabled, refetchOnWindowFocus: true });
+  return useQuery({ ...providersQuery, enabled, refetchOnWindowFocus: true })
 }
 
 /** Router-metered spend per agent for the last 30 days (E1): one request, never offset paging. */
 export function useUsageByAgent(enabled: boolean) {
-  const scope = useProductScope();
-  const path = withQuery("/api/usage/by-agent", { days: SPEND_DAYS, limit: SPEND_LIMIT });
+  const path = withQuery('/api/usage/by-agent', { days: SPEND_DAYS, limit: SPEND_LIMIT })
   return useQuery({
-    queryKey: routerKeys.usage(scope),
+    queryKey: routerKeys.usage,
     queryFn: async ({ signal }) => {
-      const body = await apiFetch<{ data?: AgentUsage[] }>(path, { signal });
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- defensive read of server data (the lab's)
+      const body = await apiFetch<{ data?: AgentUsage[] }>(path, { signal })
       if (!body || !Array.isArray(body.data))
-        throw new ApiError(200, body, path, `GET ${path} → unexpected response (no data array)`);
-      return body.data;
+        throw new ApiError(200, body, path, `GET ${path} → unexpected response (no data array)`)
+      return body.data
     },
     enabled,
     staleTime: SPEND_STALE_MS,
     refetchOnWindowFocus: false,
-  });
+  })
 }
 
 /** One agent's routing read, as query options (the budget levers read it fresh before a pin, eng D4). */
-export const routingQuery = (scope: Scope, id: string) => ({
-  queryKey: routerKeys.agent(scope, id),
+export const routingQuery = (id: string) => ({
+  queryKey: routerKeys.agent(id),
   queryFn: ({ signal }: { signal: AbortSignal }) =>
     routerLimiter(signal, () => apiData<AgentRouting>(`/api/agents/${id}/llm-config`, { signal })),
   staleTime: ROUTING_STALE_MS,
   refetchOnWindowFocus: false,
-});
+})
 
 /**
  * The routing sheet's read: always re-fetched when the sheet opens, since row reads don't refetch on focus and a
  * plan built on a stale `current` could undo a change made in another tab or the CLI.
  */
 export function useFreshAgentRouting(id: string) {
-  const scope = useProductScope();
-  return useQuery({ ...routingQuery(scope, id), refetchOnMount: "always" });
+  return useQuery({ ...routingQuery(id), refetchOnMount: 'always' })
 }
 
 /** One agent's configured routing (the agent card). `enabled` must already hold the owner/superuser gate (eng #9). */
 export function useAgentRouting(id: string, enabled: boolean) {
-  const scope = useProductScope();
-  return useQuery({ ...routingQuery(scope, id), enabled });
+  return useQuery({ ...routingQuery(id), enabled })
 }
 
 const toRowReads = (results: UseQueryResult<AgentRouting>[]): RowRead[] =>
   results.map((q) =>
     q.data
-      ? { state: "ok", routing: q.data }
+      ? { state: 'ok', routing: q.data }
       : q.isError
-        ? { state: "error" }
-        : { state: "pending" },
-  );
+        ? { state: 'error' }
+        : { state: 'pending' },
+  )
 
 /** Every owned agent's routing, as row reads (pending / error / ok), in the ids' order. */
 export function useRowReads(ids: readonly string[]) {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   // A module-level `combine` re-runs only when a query's result changes (an inline one runs every render).
-  const reads = useQueries({
-    queries: ids.map((id) => routingQuery(scope, id)),
-    combine: toRowReads,
-  });
+  const reads = useQueries({ queries: ids.map((id) => routingQuery(id)), combine: toRowReads })
   const retry = useCallback(
-    (id: string) => void qc.refetchQueries({ queryKey: routerKeys.agent(scope, id), exact: true }),
-    [qc, scope],
-  );
-  return { reads, retry };
+    (id: string) => void qc.refetchQueries({ queryKey: routerKeys.agent(id), exact: true }),
+    [qc],
+  )
+  return { reads, retry }
 }
 
 // ─── config mutations ───────────────────────────────────────────────────────
 
 /** Agent rows whose resolved config is this one (or the default, whose agents change with it). */
 const touchesConfig = (configId: string, includeDefault: boolean) => (q: Query) => {
-  const r = q.state.data as AgentRouting | undefined;
+  const r = q.state.data as AgentRouting | undefined
   return (
     !r ||
     r.llm_config?.id === configId ||
     r.llm_config_id === configId ||
-    (includeDefault && r.source !== "attached")
-  );
-};
+    (includeDefault && r.source !== 'attached')
+  )
+}
 
-function afterConfigWrite(
-  qc: QueryClient,
-  scope: Scope,
-  configId: string | undefined,
-  includeDefault: boolean,
-) {
-  void qc.invalidateQueries({ queryKey: routerKeys.configs(scope) });
+function afterConfigWrite(qc: QueryClient, configId: string | undefined, includeDefault: boolean) {
+  void qc.invalidateQueries({ queryKey: routerKeys.configs })
   void qc.invalidateQueries({
-    queryKey: routerKeys.agents(scope),
-    ...(configId ? { predicate: touchesConfig(configId, includeDefault) } : {}),
-  });
+    queryKey: routerKeys.agents,
+    predicate: configId ? touchesConfig(configId, includeDefault) : undefined,
+  })
 }
 
 export type SaveConfig =
-  | { mode: "create"; body: CreateConfigBody }
-  | { mode: "update"; id: string; body: UpdateConfigBody; wasDefault: boolean };
+  | { mode: 'create'; body: CreateConfigBody }
+  | { mode: 'update'; id: string; body: UpdateConfigBody; wasDefault: boolean }
 
 /** Create or update a config. It may carry a key, so the mutation keeps no variables around (eng #5). */
 export function useSaveConfig() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (v: SaveConfig) =>
-      v.mode === "create"
-        ? apiData<LlmConfig>("/api/llm-configs", {
-            method: "POST",
+      v.mode === 'create'
+        ? apiData<LlmConfig>('/api/llm-configs', {
+            method: 'POST',
             headers: json,
             body: JSON.stringify(v.body),
           })
         : apiData<LlmConfig>(`/api/llm-configs/${v.id}`, {
-            method: "PATCH",
+            method: 'PATCH',
             headers: json,
             body: JSON.stringify(v.body),
           }),
     gcTime: 0,
     onSettled: (data, _err, v) => {
-      const hadKey = !!v.body.secret_value;
+      const hadKey = !!v.body.secret_value
       afterConfigWrite(
         qc,
-        scope,
-        data?.id ?? (v.mode === "update" ? v.id : undefined),
-        v.mode === "create" ? !!v.body.is_default : v.wasDefault,
-      );
+        data?.id ?? (v.mode === 'update' ? v.id : undefined),
+        v.mode === 'create' ? !!v.body.is_default : v.wasDefault,
+      )
       // ensure_secret runs before the config write, so a failed save may still have stored the key (eng #6).
-      if (hadKey) void qc.invalidateQueries({ queryKey: routerKeys.secrets(scope) });
+      if (hadKey) void qc.invalidateQueries({ queryKey: routerKeys.secrets })
     },
-  });
+  })
 }
 
 export function useDeleteConfig() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     // DELETE answers `data: null`, which apiData rejects: read it with apiFetch.
     mutationFn: (c: LlmConfig) =>
-      apiFetch<unknown>(`/api/llm-configs/${c.id}`, { method: "DELETE" }),
-    onSettled: (_d, _e, c) => {
-      afterConfigWrite(qc, scope, c.id, c.is_default);
-    },
-  });
+      apiFetch<unknown>(`/api/llm-configs/${c.id}`, { method: 'DELETE' }),
+    onSettled: (_d, _e, c) => afterConfigWrite(qc, c.id, c.is_default),
+  })
 }
 
 export function useSetDefault() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ config, on }: { config: LlmConfig; on: boolean }) =>
       apiData<LlmConfig>(`/api/llm-configs/${config.id}/default`, {
-        method: on ? "POST" : "DELETE",
+        method: on ? 'POST' : 'DELETE',
       }),
     // Every row on a default (old or new) changes.
-    onSettled: () => {
-      afterConfigWrite(qc, scope, undefined, true);
-    },
-  });
+    onSettled: () => afterConfigWrite(qc, undefined, true),
+  })
 }
 
 // ─── agent routing: one mutationFn per plan (eng #2) ───────────────────────
 
 export interface PlanOutcome {
-  saved: Step[];
-  failed?: { step: Step; error: unknown } | undefined;
+  saved: Step[]
+  failed?: { step: Step; error: unknown }
   /** The PATCH response: `LlmConfigUpdateResponse` has no `inbound_format`. */
-  after?: Omit<AgentRouting, "inbound_format"> | undefined;
+  after?: Omit<AgentRouting, 'inbound_format'>
 }
 
 /**
@@ -339,48 +289,47 @@ export interface PlanOutcome {
  * afterwards either way (a failed step may have written part of the change: the server isn't atomic, R-L9).
  */
 export function useRoutingPlan(agentId: string, onOutcome?: (out: PlanOutcome) => void) {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({
       current,
       desired,
     }: {
-      current: RoutingState;
-      desired: RoutingState;
+      current: RoutingState
+      desired: RoutingState
     }): Promise<PlanOutcome> => {
-      const steps = requestPlan(current, desired);
-      const saved: Step[] = [];
-      let after: PlanOutcome["after"];
+      const steps = requestPlan(current, desired)
+      const saved: Step[] = []
+      let after: PlanOutcome['after']
       for (const step of steps) {
         try {
-          after = await apiData<NonNullable<PlanOutcome["after"]>>(
+          after = await apiData<NonNullable<PlanOutcome['after']>>(
             `/api/agents/${agentId}/llm-config`,
-            { method: "PATCH", headers: json, body: JSON.stringify(step.body) },
-          );
-          saved.push(step);
+            { method: 'PATCH', headers: json, body: JSON.stringify(step.body) },
+          )
+          saved.push(step)
         } catch (error) {
-          if (error instanceof ApiError && error.status === 401) throw error;
-          return { saved, failed: { step, error }, after };
+          if (error instanceof ApiError && error.status === 401) throw error
+          return { saved, failed: { step, error }, after }
         }
       }
-      return { saved, after };
+      return { saved, after }
     },
     // Hook-level, so it still runs when the sheet closes mid-plan (a per-call callback would die with it).
     onSuccess: (out) => onOutcome?.(out),
     onSettled: () => {
-      void qc.invalidateQueries({ queryKey: routerKeys.agent(scope, agentId) });
-      void qc.invalidateQueries({ queryKey: routerKeys.configs(scope) });
+      void qc.invalidateQueries({ queryKey: routerKeys.agent(agentId) })
+      void qc.invalidateQueries({ queryKey: routerKeys.configs })
     },
-  });
+  })
 }
 
 // ─── custom providers (superuser) ───────────────────────────────────────────
 
 /** A custom-provider write changes both the provider list and the catalog it feeds. */
-function afterCustomWrite(qc: QueryClient, scope: Scope) {
-  void qc.invalidateQueries({ queryKey: routerKeys.custom(scope) });
-  void qc.invalidateQueries({ queryKey: providersQuery(scope).queryKey });
+function afterCustomWrite(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: routerKeys.custom })
+  void qc.invalidateQueries({ queryKey: providersQuery.queryKey })
 }
 
 /**
@@ -389,91 +338,82 @@ function afterCustomWrite(qc: QueryClient, scope: Scope) {
  * and reports `defaultModelSet: false`.
  */
 async function createCustomProvider({ default_model, ...body }: CreateCustomProviderBody) {
-  const out = await apiData<{ id: string; label: string }>("/api/custom-providers", {
-    method: "POST",
+  const out = await apiData<{ id: string; label: string }>('/api/custom-providers', {
+    method: 'POST',
     headers: json,
     body: JSON.stringify(body),
-  });
-  if (!default_model) return { ...out, defaultModelSet: true };
+  })
+  if (!default_model) return { ...out, defaultModelSet: true }
   const set = await apiData(`/api/custom-providers/${out.id}`, {
-    method: "PATCH",
+    method: 'PATCH',
     headers: json,
     body: JSON.stringify({ default_model }),
   }).then(
     () => true,
     () => false,
-  );
-  return { ...out, defaultModelSet: set };
+  )
+  return { ...out, defaultModelSet: set }
 }
 
 export function useSaveCustomProvider() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (
       v:
-        | { mode: "create"; body: CreateCustomProviderBody }
-        | { mode: "update"; id: string; body: UpdateCustomProviderBody },
+        | { mode: 'create'; body: CreateCustomProviderBody }
+        | { mode: 'update'; id: string; body: UpdateCustomProviderBody },
     ) =>
-      v.mode === "create"
+      v.mode === 'create'
         ? createCustomProvider(v.body)
         : apiData<{ id: string }>(`/api/custom-providers/${v.id}`, {
-            method: "PATCH",
+            method: 'PATCH',
             headers: json,
             body: JSON.stringify(v.body),
           }),
     gcTime: 0,
-    onSettled: () => {
-      afterCustomWrite(qc, scope);
-    },
-  });
+    onSettled: () => afterCustomWrite(qc),
+  })
 }
 
 export function useTestCustomProvider() {
   return useMutation({
     mutationFn: (body: TestCustomProviderBody) =>
-      apiData<TestCustomProviderResult>("/api/custom-providers/test", {
-        method: "POST",
+      apiData<TestCustomProviderResult>('/api/custom-providers/test', {
+        method: 'POST',
         headers: json,
         body: JSON.stringify(body),
       }),
     gcTime: 0,
-  });
+  })
 }
 
 export function useSyncCustomProvider() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) =>
       apiData<{ discovered_models: number }>(`/api/custom-providers/${id}/sync`, {
-        method: "POST",
+        method: 'POST',
       }),
-    onSettled: () => {
-      afterCustomWrite(qc, scope);
-    },
-  });
+    onSettled: () => afterCustomWrite(qc),
+  })
 }
 
 export function useDeleteCustomProvider() {
-  const scope = useProductScope();
-  const qc = useQueryClient();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: string) =>
-      apiData<{ id: string }>(`/api/custom-providers/${id}`, { method: "DELETE" }),
-    onSettled: () => {
-      afterCustomWrite(qc, scope);
-    },
-  });
+      apiData<{ id: string }>(`/api/custom-providers/${id}`, { method: 'DELETE' }),
+    onSettled: () => afterCustomWrite(qc),
+  })
 }
 
 /** The JSON 409 of a custom-provider delete: the configs that still point at it. */
 export function referencingConfigs(err: unknown): string[] | null {
-  if (!(err instanceof ApiError) || err.status !== 409) return null;
-  const b = err.body as { referencing_configs?: unknown } | null;
+  if (!(err instanceof ApiError) || err.status !== 409) return null
+  const b = err.body as { referencing_configs?: unknown } | null
   return Array.isArray(b?.referencing_configs)
-    ? b.referencing_configs.filter((x): x is string => typeof x === "string")
-    : null;
+    ? b.referencing_configs.filter((x): x is string => typeof x === 'string')
+    : null
 }
 
-const json = { "Content-Type": "application/json" };
+const json = { 'Content-Type': 'application/json' }

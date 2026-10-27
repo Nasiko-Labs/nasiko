@@ -1,8 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/uploads.ts. Local edits: `startUpload(qc, scope,
-// userId, …)` takes the product scope for the follower it hands the build to (`follow(qc, scope, …)`); `ApiError` is
-// `ProductApiError`; optional upload fields admit `undefined` (exactOptionalPropertyTypes); `send` refuses to open the XHR when
-// the entry was cleared or replaced before the mutation ran (source defect: a sign-out in that window left the request
-// running, unaborted; the lab's dynamically imported sign-out hid the window); Prettier formatting.
 /**
  * The upload registry (plans/feat-deploy.md §4.1; eng review R1, R2, R3, R7).
  *
@@ -16,93 +11,91 @@
  * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`, `inbound_format`;
  * 202 `{data: {build_id, agent_id, …}}`; errors are plain text (400/409/413/500).
  */
-import type { QueryClient } from "@tanstack/react-query";
-import type { Scope } from "@nasiko/data-access";
-import { isAbortError, ProductApiError as ApiError, safeJson } from "@nasiko/data-access/product";
-import type { components } from "@nasiko/data-access/product/schema";
-import { clearFollower, follow, importFinished } from "./follower";
-import { parseReference } from "./registry";
+import type { QueryClient } from '@tanstack/react-query'
+import { ApiError, isAbortError, safeJson } from '@nasiko/data-access/client'
+import type { components } from '@nasiko/data-access/schema.gen'
+import { clearFollower, follow, importFinished } from './follower'
+import { parseReference } from './registry'
 
 export interface UploadFields {
-  name: string;
-  version?: string | undefined;
-  ports?: string | undefined;
-  env?: Record<string, string> | undefined;
+  name: string
+  version?: string
+  ports?: string
+  env?: Record<string, string>
   /** Sent only when the user touched storage: the server treats these as tri-state. */
-  writable?: boolean | undefined;
-  writablePath?: string | undefined;
-  inboundFormat?: "openai" | "anthropic" | "gemini" | undefined;
+  writable?: boolean
+  writablePath?: string
+  inboundFormat?: 'openai' | 'anthropic' | 'gemini'
 }
 
 export type UploadState =
-  | { phase: "uploading"; fileName: string; fields: UploadFields; loaded: number; total: number }
-  | { phase: "done"; fileName: string; fields: UploadFields; buildId: string; agentId: string }
-  | { phase: "failed"; fileName: string; fields: UploadFields; error: ApiError }
-  | { phase: "cancelled"; fileName: string; fields: UploadFields };
+  | { phase: 'uploading'; fileName: string; fields: UploadFields; loaded: number; total: number }
+  | { phase: 'done'; fileName: string; fields: UploadFields; buildId: string; agentId: string }
+  | { phase: 'failed'; fileName: string; fields: UploadFields; error: ApiError }
+  | { phase: 'cancelled'; fileName: string; fields: UploadFields }
 
-export type XhrFactory = () => XMLHttpRequest;
+export type XhrFactory = () => XMLHttpRequest
 
-export const UPLOAD_PATH = "/api/agents/upload";
+export const UPLOAD_PATH = '/api/agents/upload'
 
 interface Entry {
-  state: UploadState;
-  xhr: XMLHttpRequest | null;
+  state: UploadState
+  xhr: XMLHttpRequest | null
 }
 
-const entries = new Map<string, Entry>();
-const listeners = new Set<() => void>();
-let xhrFactory: XhrFactory = () => new XMLHttpRequest();
+const entries = new Map<string, Entry>()
+const listeners = new Set<() => void>()
+let xhrFactory: XhrFactory = () => new XMLHttpRequest()
 
 /** Tests: a fake XHR (R7). Returns the previous factory. */
 export function setXhrFactory(factory: XhrFactory): XhrFactory {
-  const prev = xhrFactory;
-  xhrFactory = factory;
-  return prev;
+  const prev = xhrFactory
+  xhrFactory = factory
+  return prev
 }
 
 function emit() {
-  syncUnloadGuard();
-  for (const l of listeners) l();
+  syncUnloadGuard()
+  for (const l of listeners) l()
 }
 
 export function subscribeUploads(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
+  listeners.add(listener)
+  return () => listeners.delete(listener)
 }
 
 export function uploadFor(userId: string): UploadState | null {
-  return entries.get(userId)?.state ?? null;
+  return entries.get(userId)?.state ?? null
 }
 
 // ── beforeunload while any upload runs (R1) ──────────────────────────────────────────────
 const onBeforeUnload = (e: BeforeUnloadEvent) => {
-  e.preventDefault();
+  e.preventDefault()
   // Older browsers need a returnValue to show the prompt.
-  // eslint-disable-next-line @typescript-eslint/no-deprecated -- older browsers need a returnValue to show the prompt (the lab's)
-  e.returnValue = "";
-};
-let guarding = false;
+  e.returnValue = ''
+}
+let guarding = false
 function syncUnloadGuard() {
   const any =
-    [...entries.values()].some((e) => e.state.phase === "uploading") ||
-    [...imports.values()].some((i) => i.phase === "importing");
-  if (any === guarding || typeof window === "undefined") return;
-  guarding = any;
-  if (any) window.addEventListener("beforeunload", onBeforeUnload);
-  else window.removeEventListener("beforeunload", onBeforeUnload);
+    [...entries.values()].some((e) => e.state.phase === 'uploading') ||
+    [...imports.values()].some((i) => i.phase === 'importing')
+  if (any === guarding || typeof window === 'undefined') return
+  guarding = any
+  if (any) window.addEventListener('beforeunload', onBeforeUnload)
+  else window.removeEventListener('beforeunload', onBeforeUnload)
 }
 
 function formFor(file: Blob, fileName: string, f: UploadFields): FormData {
-  const fd = new FormData();
-  fd.set("name", f.name);
-  if (f.version) fd.set("version_tag", f.version);
-  if (f.ports) fd.set("ports", f.ports);
-  if (f.env && Object.keys(f.env).length) fd.set("env", JSON.stringify(f.env));
-  if (f.writable !== undefined) fd.set("writable", String(f.writable));
-  if (f.writable && f.writablePath) fd.set("writable_path", f.writablePath);
-  if (f.inboundFormat) fd.set("inbound_format", f.inboundFormat);
-  fd.set("file", file, fileName);
-  return fd;
+  const fd = new FormData()
+  fd.set('name', f.name)
+  if (f.version) fd.set('version_tag', f.version)
+  if (f.ports) fd.set('ports', f.ports)
+  if (f.env && Object.keys(f.env).length) fd.set('env', JSON.stringify(f.env))
+  if (f.writable !== undefined) fd.set('writable', String(f.writable))
+  if (f.writable && f.writablePath) fd.set('writable_path', f.writablePath)
+  if (f.inboundFormat) fd.set('inbound_format', f.inboundFormat)
+  fd.set('file', file, fileName)
+  return fd
 }
 
 /** One XHR upload with progress; resolves with the 202 body's ids, rejects with an `ApiError` (or an AbortError). */
@@ -114,55 +107,42 @@ function send(
   fields: UploadFields,
 ): Promise<{ buildId: string; agentId: string }> {
   return new Promise((resolve, reject) => {
-    // Cleared (sign-out) or replaced before the mutation ran: never open the request (it would not be aborted).
-    if (entries.get(userId) !== entry) {
-      reject(new DOMException("Aborted", "AbortError"));
-      return;
-    }
-    const xhr = xhrFactory();
-    entry.xhr = xhr;
-    xhr.open("POST", UPLOAD_PATH);
-    xhr.withCredentials = true;
-    xhr.setRequestHeader("Accept", "application/json");
+    const xhr = xhrFactory()
+    entry.xhr = xhr
+    xhr.open('POST', UPLOAD_PATH)
+    xhr.withCredentials = true
+    xhr.setRequestHeader('Accept', 'application/json')
     xhr.upload.onprogress = (e) => {
-      if (entries.get(userId) !== entry || entry.state.phase !== "uploading") return;
+      if (entries.get(userId) !== entry || entry.state.phase !== 'uploading') return
       entry.state = {
         ...entry.state,
         loaded: e.loaded,
         total: e.lengthComputable ? e.total : file.size,
-      };
-      emit();
-    };
+      }
+      emit()
+    }
     xhr.onload = () => {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- a fake XHR in tests may have no responseText (the lab's guard)
-      const body = safeJson(xhr.responseText ?? "");
+      const body = safeJson(xhr.responseText ?? '')
       if (xhr.status >= 200 && xhr.status < 300) {
-        const data = (body as { data?: { build_id?: unknown; agent_id?: unknown } } | null)?.data;
-        if (data && typeof data.build_id === "string") {
-          // eslint-disable-next-line @typescript-eslint/no-base-to-string -- the server sends the agent id as a string; the lab's coercion is kept
-          resolve({ buildId: data.build_id, agentId: String(data.agent_id ?? "") });
-          return;
-        }
-        reject(
+        const data = (body as { data?: { build_id?: unknown; agent_id?: unknown } } | null)?.data
+        if (data && typeof data.build_id === 'string')
+          return resolve({ buildId: data.build_id, agentId: String(data.agent_id ?? '') })
+        return reject(
           new ApiError(
             xhr.status,
             body,
             UPLOAD_PATH,
             `POST ${UPLOAD_PATH} → unexpected response (no build id)`,
           ),
-        );
-        return;
+        )
       }
-      reject(new ApiError(xhr.status, body, UPLOAD_PATH, `POST ${UPLOAD_PATH} → ${xhr.status}`));
-    };
-    xhr.onerror = () => {
-      reject(new ApiError(502, null, UPLOAD_PATH, `POST ${UPLOAD_PATH} → network error`));
-    };
-    xhr.onabort = () => {
-      reject(new DOMException("Aborted", "AbortError"));
-    };
-    xhr.send(formFor(file, fileName, fields));
-  });
+      reject(new ApiError(xhr.status, body, UPLOAD_PATH, `POST ${UPLOAD_PATH} → ${xhr.status}`))
+    }
+    xhr.onerror = () =>
+      reject(new ApiError(502, null, UPLOAD_PATH, `POST ${UPLOAD_PATH} → network error`))
+    xhr.onabort = () => reject(new DOMException('Aborted', 'AbortError'))
+    xhr.send(formFor(file, fileName, fields))
+  })
 }
 
 /**
@@ -171,78 +151,76 @@ function send(
  */
 export function startUpload(
   qc: QueryClient,
-  scope: Scope,
   userId: string,
   file: Blob,
   fileName: string,
   fields: UploadFields,
 ): Promise<UploadState> {
-  const current = entries.get(userId);
-  if (current?.state.phase === "uploading") return Promise.resolve(current.state);
+  const current = entries.get(userId)
+  if (current?.state.phase === 'uploading') return Promise.resolve(current.state)
   const entry: Entry = {
-    state: { phase: "uploading", fileName, fields, loaded: 0, total: file.size },
+    state: { phase: 'uploading', fileName, fields, loaded: 0, total: file.size },
     xhr: null,
-  };
-  entries.set(userId, entry);
-  emit();
+  }
+  entries.set(userId, entry)
+  emit()
   const mutation = qc.getMutationCache().build(qc, {
-    mutationKey: ["deploy", "upload"],
+    mutationKey: ['deploy', 'upload'],
     mutationFn: () => send(entry, userId, file, fileName, fields),
     retry: false,
     // The file never goes into a cache: nothing to keep once it settles.
     gcTime: 0,
-  });
+  })
   return mutation.execute(undefined).then(
     (ids) => {
       // Followed in the background until it finishes (design review 8).
-      if (entries.get(userId) === entry)
-        follow(qc, scope, ids.buildId, fields.name, ids.agentId || null);
-      return settle(userId, entry, { phase: "done", fileName, fields, ...ids });
+      if (entries.get(userId) === entry) follow(qc, ids.buildId, fields.name, ids.agentId || null)
+      return settle(userId, entry, { phase: 'done', fileName, fields, ...ids })
     },
     (err: unknown) => {
-      if (isAbortError(err)) return settle(userId, entry, { phase: "cancelled", fileName, fields });
-      const error = err instanceof ApiError ? err : new ApiError(0, null, UPLOAD_PATH, String(err));
-      return settle(userId, entry, { phase: "failed", fileName, fields, error });
+      if (isAbortError(err)) return settle(userId, entry, { phase: 'cancelled', fileName, fields })
+      const error = err instanceof ApiError ? err : new ApiError(0, null, UPLOAD_PATH, String(err))
+      return settle(userId, entry, { phase: 'failed', fileName, fields, error })
     },
-  );
+  )
 }
 
 function settle(userId: string, entry: Entry, settled: UploadState): UploadState {
   // Env values may be secrets: once the upload is over they aren't kept in memory (the form still has its own copy).
-  const state = { ...settled, fields: { ...settled.fields, env: undefined } };
-  entry.xhr = null;
+  const state = { ...settled, fields: { ...settled.fields, env: undefined } }
+  entry.xhr = null
   // A cleared or replaced entry (sign-out, another upload) is not written back.
   if (entries.get(userId) === entry) {
-    entry.state = state;
-    emit();
+    entry.state = state
+    emit()
   }
-  return state;
+  return state
 }
 
 /** Cancel: aborts the XHR (the server has no cancel once the build is queued, D-2). */
 export function cancelUpload(userId: string) {
-  entries.get(userId)?.xhr?.abort();
+  entries.get(userId)?.xhr?.abort()
 }
 
 /** Forget a finished upload (the form resets). */
 export function dismissUpload(userId: string) {
-  const e = entries.get(userId);
-  if (e && e.state.phase !== "uploading") {
-    entries.delete(userId);
-    emit();
+  const e = entries.get(userId)
+  if (e && e.state.phase !== 'uploading') {
+    entries.delete(userId)
+    emit()
   }
 }
 
 /** Sign-out and another account's sign-in (R3): abort everything and forget it (the server keeps importing). */
 export function clearUploads() {
-  const all = [...entries.values()];
-  entries.clear();
-  for (const e of all) e.xhr?.abort();
-  imports.clear();
-  clonedRepos.clear();
-  epoch += 1;
-  clearFollower();
-  emit();
+  const all = [...entries.values()]
+  entries.clear()
+  for (const e of all) e.xhr?.abort()
+  imports.clear()
+  clonedRepos.clear()
+  epoch += 1
+  clearFollower()
+  emit()
 }
 
 // ── Registry imports (plans/feat-deploy.md §4.3; eng review R4) ─────────────────────────────────
@@ -251,27 +229,27 @@ export function clearUploads() {
 // it ends (D-7). It runs here like an upload: in-app navigation keeps it going, `beforeunload` guards tab close, it's a
 // mutation on the app QueryClient (a 401 takes `expired()`), and sign-out forgets it. There is no cancel.
 
-export const IMPORT_PATH = "/api/import/registry";
+export const IMPORT_PATH = '/api/import/registry'
 
 export type ImportState =
-  | { phase: "importing"; reference: string; startedAt: number }
+  | { phase: 'importing'; reference: string; startedAt: number }
   | {
-      phase: "done";
-      reference: string;
-      agentId: string;
-      buildId: string | null;
-      containerName: string | null;
+      phase: 'done'
+      reference: string
+      agentId: string
+      buildId: string | null
+      containerName: string | null
     }
-  | { phase: "failed"; reference: string; error: ApiError };
+  | { phase: 'failed'; reference: string; error: ApiError }
 
-const imports = new Map<string, ImportState>();
+const imports = new Map<string, ImportState>()
 
 export function importFor(userId: string): ImportState | null {
-  return imports.get(userId) ?? null;
+  return imports.get(userId) ?? null
 }
 
 /** `ImportResult` (`catalog/import.rs`): 201 `{agent_id, build_id?, container_name?, status}`. */
-type ImportResult = components["schemas"]["ImportResult"];
+type ImportResult = components['schemas']['ImportResult']
 
 export function startImport(
   qc: QueryClient,
@@ -279,42 +257,42 @@ export function startImport(
   reference: string,
   send: (reference: string) => Promise<ImportResult>,
 ): Promise<ImportState> {
-  const current = imports.get(userId);
-  if (current?.phase === "importing") return Promise.resolve(current);
-  const started: ImportState = { phase: "importing", reference, startedAt: Date.now() };
-  imports.set(userId, started);
-  emit();
+  const current = imports.get(userId)
+  if (current?.phase === 'importing') return Promise.resolve(current)
+  const started: ImportState = { phase: 'importing', reference, startedAt: Date.now() }
+  imports.set(userId, started)
+  emit()
   const mutation = qc.getMutationCache().build(qc, {
-    mutationKey: ["deploy", "import"],
+    mutationKey: ['deploy', 'import'],
     mutationFn: () => send(reference),
     retry: false,
     gcTime: 0,
-  });
+  })
   const finish = (state: ImportState) => {
     // Cleared (sign-out) or replaced meanwhile: not written back.
     if (imports.get(userId) === started) {
-      imports.set(userId, state);
-      emit();
-      if (state.phase === "done") {
-        const name = parseReference(reference)?.repo.split("/").pop() ?? reference;
+      imports.set(userId, state)
+      emit()
+      if (state.phase === 'done') {
+        const name = parseReference(reference)?.repo.split('/').pop() ?? reference
         const toasted = importFinished(
           state.containerName
-            ? { kind: "running", buildId: state.buildId, agentId: state.agentId, name }
-            : { kind: "notRunning", agentId: state.agentId, name },
-        );
+            ? { kind: 'running', buildId: state.buildId, agentId: state.agentId, name }
+            : { kind: 'notRunning', agentId: state.agentId, name },
+        )
         // Announced by the toast: forgotten, so opening the Registry tab later doesn't jump to this old result.
         if (toasted) {
-          imports.delete(userId);
-          emit();
+          imports.delete(userId)
+          emit()
         }
       }
     }
-    return state;
-  };
+    return state
+  }
   return mutation.execute(undefined).then(
     (r) =>
       finish({
-        phase: "done",
+        phase: 'done',
         reference,
         agentId: r.agent_id,
         buildId: r.build_id ?? null,
@@ -322,18 +300,18 @@ export function startImport(
       }),
     (err: unknown) =>
       finish({
-        phase: "failed",
+        phase: 'failed',
         reference,
         error: err instanceof ApiError ? err : new ApiError(0, null, IMPORT_PATH, String(err)),
       }),
-  );
+  )
 }
 
 export function dismissImport(userId: string) {
-  const i = imports.get(userId);
-  if (i && i.phase !== "importing") {
-    imports.delete(userId);
-    emit();
+  const i = imports.get(userId)
+  if (i && i.phase !== 'importing') {
+    imports.delete(userId)
+    emit()
   }
 }
 
@@ -343,14 +321,14 @@ export function dismissImport(userId: string) {
 // it came from. For clones started in this tab the repository is remembered, so the Build page's retry goes back to
 // the GitHub tab with it picked. After a reload, or for someone else's build, the page falls back to Upload.
 
-const clonedRepos = new Map<string, string>();
+const clonedRepos = new Map<string, string>()
 
 /** Bumped by every clear (sign-out, another account): work started before it must not write back after it. */
-let epoch = 0;
-export const uploadsEpoch = () => epoch;
+let epoch = 0
+export const uploadsEpoch = () => epoch
 
 export function rememberClone(buildId: string, repo: string) {
-  clonedRepos.set(buildId, repo);
+  clonedRepos.set(buildId, repo)
 }
 
-export const clonedRepo = (buildId: string): string | null => clonedRepos.get(buildId) ?? null;
+export const clonedRepo = (buildId: string): string | null => clonedRepos.get(buildId) ?? null

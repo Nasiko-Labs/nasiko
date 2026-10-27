@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Savings.tsx. Local edits: `Button asChild`
-// + TanStack `Link` -> `ButtonLink` (the variant moves onto each link; `resetScroll={false}` is the port `Link`'s
-// `scroll={false}`, comment reworded to match); Prettier formatting.
 /**
  * Token optimisation on the Overview: one big number and one thing to do about it.
  *
@@ -23,14 +20,15 @@
  * Neither renders on a workspace with no spend to talk about — there, the nudge belongs in the
  * setup guide, not as a permanent band on the busiest screen in the product.
  */
-import { ArrowRight, Scissors, TrendingDown } from "lucide-react";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import type { OptimisationView } from "../../tokenops/optimisation";
-import { fmtMoney, fmtPct, fmtTokens } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { copy as overviewCopy } from "../copy";
+import { ArrowRight, Scissors, TrendingDown } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import { Button } from '@nasiko/ui/primitives/button'
+import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
+import { fmtMoney, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy as overviewCopy } from '../copy'
 
-const copy = overviewCopy.savings;
+const copy = overviewCopy.savings
 
 /**
  * The one sentence worth adding to the number.
@@ -39,41 +37,41 @@ const copy = overviewCopy.savings;
  * layer that happened to win, because only one of the two is a next step.
  */
 function insight(v: OptimisationView): string {
-  const top = v.topUnoptimised;
-  if (top && top.spend_usd > 0) return copy.couldSave(top.agent_name, fmtMoney(top.spend_usd));
-  if (v.topCategory) return copy.mostly(v.topCategory.label.toLowerCase());
-  return copy.allOn;
+  const top = v.topUnoptimised
+  if (top && top.spend_usd > 0) return copy.couldSave(top.agent_name, fmtMoney(top.spend_usd))
+  if (v.topCategory) return copy.mostly(v.topCategory.label.toLowerCase())
+  return copy.allOn
 }
 
 export function Savings({
   view,
   isPending,
 }: {
-  view: OptimisationView | undefined;
-  isPending: boolean;
+  view: OptimisationView | undefined
+  isPending: boolean
 }) {
-  if (isPending || !view) return null;
+  if (isPending || !view) return null
 
-  const saving = view.tokensSaved > 0;
+  const saving = view.tokensSaved > 0
   // Nothing saved and nothing being wasted either: a brand-new workspace has no story here yet.
-  if (!saving && view.unoptimisedSpend <= 0) return null;
+  if (!saving && view.unoptimisedSpend <= 0) return null
 
   return (
     <section
       aria-labelledby="overview-savings-title"
       data-testid="overview-savings"
-      data-state={saving ? "saving" : "idle"}
+      data-state={saving ? 'saving' : 'idle'}
       className={cn(
-        "flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-lg border p-4",
-        saving ? "border-success/30 bg-success/8" : "border-warning/30 bg-warning/8",
+        'flex flex-wrap items-center justify-between gap-x-6 gap-y-3 rounded-lg border p-4',
+        saving ? 'border-success/30 bg-success/8' : 'border-warning/30 bg-warning/8',
       )}
     >
       <div className="flex min-w-0 items-center gap-4">
         <span
           aria-hidden
           className={cn(
-            "flex size-10 shrink-0 items-center justify-center rounded-full",
-            saving ? "bg-success/15 text-success" : "bg-warning/15 text-warning",
+            'flex size-10 shrink-0 items-center justify-center rounded-full',
+            saving ? 'bg-success/15 text-success' : 'bg-warning/15 text-warning',
           )}
         >
           {saving ? <TrendingDown className="size-5" /> : <Scissors className="size-5" />}
@@ -114,27 +112,23 @@ export function Savings({
         </div>
       </div>
 
-      {saving ? (
-        // `open=optimise` expands the section and tells TokenOps to scroll to it.
-        //
-        // `scroll={false}` (the lab's `resetScroll={false}`) is what makes that stick: by default
-        // the router scrolls a new page to the top *after* render — undoing the section scroll.
-        // TokenOps' own "See the breakdown" button never hit this because it does not navigate,
-        // which is exactly why the two behaved differently.
-        <ButtonLink
-          variant="outline"
-          size="sm"
-          className="shrink-0"
-          href="/tokenops?open=optimise"
-          scroll={false}
-        >
-          {copy.detail} <ArrowRight aria-hidden className="size-4" />
-        </ButtonLink>
-      ) : (
-        <ButtonLink variant="default" size="sm" className="shrink-0" href="/agents">
-          {copy.idleCta} <ArrowRight aria-hidden className="size-4" />
-        </ButtonLink>
-      )}
+      <Button asChild variant={saving ? 'outline' : 'default'} size="sm" className="shrink-0">
+        {saving ? (
+          // `open=optimise` expands the section and tells TokenOps to scroll to it.
+          //
+          // `resetScroll={false}` is what makes that stick: the router has `scrollRestoration`
+          // on, so by default it scrolls a new page to the top *after* render — undoing the
+          // section scroll. TokenOps' own "See the breakdown" button never hit this because it
+          // does not navigate, which is exactly why the two behaved differently.
+          <Link to="/tokenops" search={{ open: 'optimize' }} resetScroll={false}>
+            {copy.detail} <ArrowRight aria-hidden className="size-4" />
+          </Link>
+        ) : (
+          <Link to="/agents">
+            {copy.idleCta} <ArrowRight aria-hidden className="size-4" />
+          </Link>
+        )}
+      </Button>
     </section>
-  );
+  )
 }

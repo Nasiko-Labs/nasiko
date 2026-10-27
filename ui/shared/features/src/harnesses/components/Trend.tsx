@@ -1,37 +1,32 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/components/Trend.tsx. Local edits: the ToggleGroup
-// is value-array based (`value={[mode]}`, an emptied pick ignored as the lab's `v &&`); the lab's shared `EmptyState`
-// is `LabEmptyState`; optional props typed `| undefined`; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * Trend (plan §6): active developers per harness per day, with an Est. cost toggle. On the visx
  * chart kit (src/components/charts): lines sweep in, at rest under reduced motion.
  * Zero-series harnesses stay in the legend (muted) so colours stay stable; a visually
  * hidden summary gives the last value per harness.
  */
-import { useMemo, useState } from "react";
-import { ChartDateFormat } from "@nasiko/ui/charts-kit";
-import { Grid } from "@nasiko/ui/charts-kit";
-import { Line } from "@nasiko/ui/charts-kit";
-import { LineChart } from "@nasiko/ui/charts-kit";
-import { ChartTooltip } from "@nasiko/ui/charts-kit";
-import { XAxis } from "@nasiko/ui/charts-kit";
-import { YAxis } from "@nasiko/ui/charts-kit";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { fmtInt, fmtMoney, fmtMoneyAxis, fmtShortDay } from "@nasiko/ui/lib";
-import { Panel } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import { harnessStyle } from "../rollup";
-import type { UsageSeriesPoint } from "../types";
-import { HarnessLabel } from "./bits";
+import { useMemo, useState } from 'react'
+import { ChartDateFormat } from '@nasiko/ui/charts/chart-formatters'
+import { Grid } from '@nasiko/ui/charts/grid'
+import { Line } from '@nasiko/ui/charts/line'
+import { LineChart } from '@nasiko/ui/charts/line-chart'
+import { ChartTooltip } from '@nasiko/ui/charts/tooltip/chart-tooltip'
+import { XAxis } from '@nasiko/ui/charts/x-axis'
+import { YAxis } from '@nasiko/ui/charts/y-axis'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { fmtInt, fmtMoney, fmtMoneyAxis, fmtShortDay } from '@nasiko/ui/lib/format'
+import { Panel } from '@nasiko/ui/composites/panel'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { copy } from '../copy'
+import { harnessStyle } from '../rollup'
+import type { UsageSeriesPoint } from '../types'
+import { HarnessLabel } from './bits'
 
-type Mode = "active" | "cost";
+type Mode = 'active' | 'cost'
 /** Axis ticks and the tooltip title in UTC (the kit's default is local time). */
-const utcDay = (d: Date) => fmtShortDay(d.toISOString());
+const utcDay = (d: Date) => fmtShortDay(d.toISOString())
 /** Hide the in-progress UTC day only when the window has more days than this. */
-const PARTIAL_DAY_MIN_DAYS = 2;
+const PARTIAL_DAY_MIN_DAYS = 2
 
 export function Trend({
   series,
@@ -40,69 +35,68 @@ export function Trend({
   today,
   windowLabel,
   onWiden,
-  defaultMode = "active",
+  defaultMode = 'active',
 }: {
-  series: UsageSeriesPoint[];
-  harnesses: string[];
+  series: UsageSeriesPoint[]
+  harnesses: string[]
   /** The window's UTC days (rollup windowDays): quiet days are drawn as 0, not skipped. */
-  days: string[];
+  days: string[]
   /** The page's frozen "today" (UTC date). */
-  today: string;
-  windowLabel: string;
+  today: string
+  windowLabel: string
   /** Offered in the empty state (undefined when already on 30 days). */
-  onWiden?: (() => void) | undefined;
+  onWiden?: () => void
   /** The Individual level opens on cost: "active developers" is a flat 1 for one person. */
-  defaultMode?: Mode | undefined;
+  defaultMode?: Mode
 }) {
-  const [mode, setMode] = useState<Mode>(defaultMode);
+  const [mode, setMode] = useState<Mode>(defaultMode)
   // The current UTC day is still filling in; plotting it reads as a cliff on the right edge. Short
   // windows (24h spans two UTC days, today holding most of it) keep it (QA ISSUE-004).
   const shown = useMemo(
     () => (days.length > PARTIAL_DAY_MIN_DAYS ? days.filter((d) => d < today) : days),
     [days, today],
-  );
-  const partialHidden = shown.length < days.length;
-  const byKey = useMemo(() => new Map(series.map((p) => [`${p.date}|${p.harness}`, p])), [series]);
+  )
+  const partialHidden = shown.length < days.length
+  const byKey = useMemo(() => new Map(series.map((p) => [`${p.date}|${p.harness}`, p])), [series])
   const data = useMemo(
     () =>
       shown.map((date) => {
-        const row: Record<string, number | string> = { date, label: fmtShortDay(date) };
+        const row: Record<string, number | string> = { date, label: fmtShortDay(date) }
         for (const h of harnesses) {
-          const p = byKey.get(`${date}|${h}`);
-          row[h] = p ? (mode === "active" ? p.active_devs : p.cost_usd) : 0;
+          const p = byKey.get(`${date}|${h}`)
+          row[h] = p ? (mode === 'active' ? p.active_devs : p.cost_usd) : 0
         }
-        return row;
+        return row
       }),
     [shown, harnesses, byKey, mode],
-  );
-  const hasData = series.some((p) => p.active_devs > 0);
+  )
+  const hasData = series.some((p) => p.active_devs > 0)
   const last = (h: string) => {
     const p = [...shown]
       .reverse()
       .map((d) => byKey.get(`${d}|${h}`))
-      .find(Boolean);
+      .find(Boolean)
     return p
-      ? mode === "active"
+      ? mode === 'active'
         ? `${p.active_devs} active`
         : fmtMoney(p.cost_usd)
-      : "no activity";
-  };
+      : 'no activity'
+  }
 
   return (
     <Panel
-      title={mode === "active" ? "Active developers per harness" : "Estimated cost per harness"}
-      subtitle={partialHidden ? "Daily (UTC), through yesterday" : "Daily (UTC)"}
+      title={mode === 'active' ? 'Active developers per harness' : 'Estimated cost per harness'}
+      subtitle={partialHidden ? 'Daily (UTC), through yesterday' : 'Daily (UTC)'}
       labelledBy="trend-title"
       // Fills its grid cell: beside a taller list the chart grows, so the two cards end on one line.
       className="h-full"
       actions={
         <ToggleGroup
+          type="single"
           variant="outline"
           size="sm"
-          value={[mode]}
-          onValueChange={(v: unknown[]) => {
-            if (typeof v[0] === "string" && v[0]) setMode(v[0] as Mode);
-          }}
+          value={mode}
+          onValueChange={(v) => v && setMode(v as Mode)}
           aria-label="Trend metric"
         >
           <ToggleGroupItem value="active" className="px-2.5 text-xs">
@@ -128,7 +122,7 @@ export function Trend({
       ) : (
         <>
           <p className="sr-only">
-            {harnesses.map((h) => `${harnessStyle(h).name}: ${last(h)}`).join(". ")}.
+            {harnesses.map((h) => `${harnessStyle(h).name}: ${last(h)}`).join('. ')}.
           </p>
           <div className="min-h-60 w-full flex-1" aria-hidden>
             <ChartDateFormat value={utcDay}>
@@ -142,7 +136,7 @@ export function Trend({
                 <Grid />
                 <YAxis
                   numTicks={4}
-                  formatValue={(v) => (mode === "cost" ? fmtMoneyAxis(v) : fmtInt(v))}
+                  formatValue={(v) => (mode === 'cost' ? fmtMoneyAxis(v) : fmtInt(v))}
                 />
                 {harnesses.map((h) => (
                   <Line
@@ -161,7 +155,7 @@ export function Trend({
                       color: harnessStyle(h).edge,
                       label: harnessStyle(h).name,
                       value:
-                        mode === "cost" ? fmtMoney(Number(point[h])) : fmtInt(Number(point[h])),
+                        mode === 'cost' ? fmtMoney(Number(point[h])) : fmtInt(Number(point[h])),
                     }))
                   }
                 />
@@ -174,8 +168,8 @@ export function Trend({
                 key={h}
                 className={
                   series.some((p) => p.harness === h && p.active_devs > 0)
-                    ? ""
-                    : "text-muted-foreground" // No activity this window: muted, not faded (opacity took it under 4.5:1)
+                    ? ''
+                    : 'text-muted-foreground' // No activity this window: muted, not faded (opacity took it under 4.5:1)
                 }
               >
                 <HarnessLabel id={h} />
@@ -185,5 +179,5 @@ export function Trend({
         </>
       )}
     </Panel>
-  );
+  )
 }

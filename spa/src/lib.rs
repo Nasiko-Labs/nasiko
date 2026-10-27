@@ -1,6 +1,6 @@
 //! Serving a built single-page app out of a `rust-embed` bundle.
 //!
-//! The UI is a Vite build (`ui/oss/dist`, `ui/ee/web/dist`). Beside `index.html`
+//! The UI is a Vite build (`ui/oss/app/dist`, `ui/ee/web/dist`). Beside `index.html`
 //! it writes two sidecar files that this module reads once at startup:
 //!
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
@@ -40,7 +40,7 @@ const NO_STORE: &str = "no-store";
 
 /// Browser hardening on everything the bundle serves: the shell, its assets
 /// and the 404s. The opener policy allows popups because the MCP OAuth sign-in
-/// watches its popup's `closed` (`ui/common/src/features/mcp/oauth.ts`), and
+/// watches its popup's `closed` (`ui/shared/features/src/mcp/oauth.ts`), and
 /// `same-origin` severs that handle as soon as the provider's page loads.
 const HARDENING: [(&str, &str); 5] = [
     ("x-content-type-options", "nosniff"),

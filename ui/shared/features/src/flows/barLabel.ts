@@ -1,16 +1,14 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/barLabel.ts. Local edits: none beyond imports and
-// Prettier formatting.
 /** A swimlane bar's text: its short task label and its whole story (accessible name and tooltip, F25). */
-import type { Call } from "./calls";
-import { copy, stepStatusLabel } from "./copy";
-import { fmtDuration } from "./precision";
+import type { Call } from './calls'
+import { copy, stepStatusLabel } from './copy'
+import { fmtDuration } from './precision'
 
-const TASK_CHARS = 48;
+const TASK_CHARS = 48
 
 export const taskOf = (c: Call) => {
-  const t = (c.input ?? "").replace(/\s+/g, " ").trim();
-  return t.length > TASK_CHARS ? `${t.slice(0, TASK_CHARS - 1)}…` : t;
-};
+  const t = (c.input ?? '').replace(/\s+/g, ' ').trim()
+  return t.length > TASK_CHARS ? `${t.slice(0, TASK_CHARS - 1)}…` : t
+}
 
 /** The bar's whole story, for its accessible name and tooltip. */
 export function barLabel(c: Call, from: string | null, onPath: boolean): string {
@@ -23,6 +21,6 @@ export function barLabel(c: Call, from: string | null, onPath: boolean): string 
     from ? copy.panel.from(from) : null,
     onPath ? copy.panel.critical : null,
     c.maybeSame ? copy.panel.maybeSame : null,
-  ];
-  return parts.filter(Boolean).join(" · ");
+  ]
+  return parts.filter(Boolean).join(' · ')
 }

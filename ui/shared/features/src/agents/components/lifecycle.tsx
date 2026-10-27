@@ -1,37 +1,33 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/components/lifecycle.tsx. Local edits: optional
-// props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Restart / Stop / Start with the truth check (plan §6.2), shared by the Your agents rows and
  * the detail header. Actions come from the status matrix only. Restart and Start begin a watch
  * that reports the real outcome ("Restarted" only after Running holds); Stop confirms first.
  */
-import { Button } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import { cn } from "@nasiko/ui/cn";
-import { ACTION_LABEL, outcomeText, type LifecycleFlow } from "../lifecycleFlow";
-import { actionsFor, type DisplayStatus } from "../status";
-import { ErrorNote } from "./bits";
-import { ConfirmDialog } from "./dialogs";
+import { Button } from '@nasiko/ui/primitives/button'
+import { copy } from '../copy'
+import { cn } from '@nasiko/ui/lib/utils'
+import { ACTION_LABEL, outcomeText, type LifecycleFlow } from '../lifecycleFlow'
+import { actionsFor, type DisplayStatus } from '../status'
+import { ErrorNote } from './bits'
+import { ConfirmDialog } from './dialogs'
 
 /** `collapse`: below 640 px only the primary action shows; the caller offers the rest in its overflow (§7.3). */
 export function LifecycleButtons({
   flow,
   display,
   name,
-  size = "sm",
+  size = 'sm',
   collapse = false,
 }: {
-  flow: LifecycleFlow;
-  display: DisplayStatus;
-  name: string;
-  size?: "sm" | "default" | undefined;
-  collapse?: boolean | undefined;
+  flow: LifecycleFlow
+  display: DisplayStatus
+  name: string
+  size?: 'sm' | 'default'
+  collapse?: boolean
 }) {
-  const actions = actionsFor(display);
-  const note = outcomeText(flow);
-  if (!actions.length && !note) return null;
+  const actions = actionsFor(display)
+  const note = outcomeText(flow)
+  if (!actions.length && !note) return null
   return (
     <div className="flex flex-col items-end gap-1">
       <div className="flex flex-wrap gap-2">
@@ -40,12 +36,10 @@ export function LifecycleButtons({
             key={a}
             size={size}
             // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is.
-            variant={i === 0 && a !== "stop" && display !== "running" ? "default" : "outline"}
-            className={cn(collapse && i > 0 && "hidden sm:inline-flex")}
+            variant={i === 0 && a !== 'stop' && display !== 'running' ? 'default' : 'outline'}
+            className={cn(collapse && i > 0 && 'hidden sm:inline-flex')}
             disabled={flow.m.isPending || flow.w.watching}
-            onClick={() => {
-              flow.run(a);
-            }}
+            onClick={() => flow.run(a)}
           >
             {ACTION_LABEL[a]}
           </Button>
@@ -55,7 +49,7 @@ export function LifecycleButtons({
         <span
           role="status"
           className={
-            note.tone === "warning" ? "text-xs text-warning" : "text-xs text-muted-foreground"
+            note.tone === 'warning' ? 'text-xs text-warning' : 'text-xs text-muted-foreground'
           }
         >
           {note.text}
@@ -66,7 +60,7 @@ export function LifecycleButtons({
       ) : null}
       <StopDialog flow={flow} name={name} />
     </div>
-  );
+  )
 }
 
 export function StopDialog({ flow, name }: { flow: LifecycleFlow; name: string }) {
@@ -83,5 +77,5 @@ export function StopDialog({ flow, name }: { flow: LifecycleFlow; name: string }
       errorContext="lifecycle"
       onConfirm={flow.confirmStop}
     />
-  );
+  )
 }

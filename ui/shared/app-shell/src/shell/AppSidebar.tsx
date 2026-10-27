@@ -1,44 +1,25 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/AppSidebar.tsx. Local edits: `NasikoMark` from
-// `@nasiko/ui/composites` (the shell's NasikoMark.tsx moved there so a feature can draw the mark); `"use client"`;
-// TanStack Router -> the navigation port (`useRouterState` pathname/href -> `usePathname`/`useSearchParams`,
-// `useNavigate` -> `useRouter().push`, `Link to … search={fn}` -> the navigation port's `Link`
-// (`@nasiko/app-core/navigation`) with the href built by `sharedHref` from the current query through
-// `sharedSearchSchema`, `activeOptions` dropped since `aria-current` was already set by hand; the Retry redirect reads
-// the hook-derived href instead of `router.state.location.href`); Radix -> Base UI (`asChild` -> `render={…}`,
-// `onSelect` + `preventDefault` -> `closeOnClick={false}` + `onClick`, `onCloseAutoFocus` -> the popup's `finalFocus`
-// callback returning `false`; Base UI's `GroupLabel` must sit inside its group, so each radio group's label is its
-// first child and the loading hint is wrapped in a `DropdownMenuGroup`: same text, same order on screen);
-// `meQuery`/`useHealth` -> `meQueryOptions(scope)`/`healthQueryOptions(scope, …)` under `useProductScope()` (the scoped
-// product keys); `ApiError` -> `ProductApiError`; `import.meta.env.DEV` -> `process.env.NODE_ENV !== "production"`; the
-// theme store comes from `@nasiko/ui/theme` (the lab's `./theme`, ported there); `signOut`'s `navigate` maps the lab's
-// `{to, search}` onto a URL for `router.push`; the callback props are arrow-typed (`unbound-method`); imports mapped to
-// `@nasiko/ui/*`; development (ed10cb3f2): the first group drawn has no header; Prettier formatting. Every class
-// string, attribute, timing and string is the lab's.
-// Legacy ui/ on development (3aac84f66, 51901c342): `IS_MAC` is shared from `@nasiko/ui/lib` (keys.ts).
-// The product tour (legacy ui/ on development, 3aac84f66: dd9fe0f64): each nav group is a `nav-<group>` target.
-"use client";
-
 /**
  * The app's left sidebar (plans/feat-app-shell.md §3–§4): the header (OpenRuntime home link, collapse), the nav groups
  * from `nav.ts` or a page's drill-in panel (`SidebarPanel`: Chat's history, Settings' sections), and the footer
  * (status in local builds, account; account settings open from the account menu). Built on shadcn's sidebar primitive.
  */
-import { IS_MAC } from "@nasiko/ui/lib";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, useRouter, useRouterState } from '@tanstack/react-router'
 import {
   ArrowLeft,
+  BookOpen,
+  CalendarClock,
   CircleAlert,
   CircleUser,
+  Compass,
   LogOut,
   Palette,
   PanelLeftClose,
   PanelLeftOpen,
   RotateCw,
   Settings,
-} from "lucide-react";
-import Link from "@nasiko/app-core/navigation";
-import { usePathname, useRouter, useSearchParams } from "@nasiko/app-core/navigation";
-import * as z from "zod/mini";
+  SquareTerminal,
+} from 'lucide-react'
 import {
   use,
   useCallback,
@@ -48,11 +29,10 @@ import {
   useRef,
   useState,
   type RefObject,
-} from "react";
+} from 'react'
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
@@ -62,6 +42,8 @@ import {
   DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
+} from '@nasiko/ui/primitives/dropdown-menu'
+import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
@@ -73,8 +55,30 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
-} from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
+} from '@nasiko/ui/primitives/sidebar'
+import { applyNav, type AnyNavItem } from '@nasiko/app-core/edition/edition'
+import { EditionContext } from '@nasiko/app-core/edition/edition-context'
+import { meQuery } from '@nasiko/data-access/auth'
+import { ApiError } from '@nasiko/data-access/client'
+import { SIDEBAR_HEALTH_INTERVAL_MS, useHealth } from '@nasiko/data-access/health'
+import { env } from '@nasiko/app-core/env'
+import { IS_MAC } from '@nasiko/ui/lib/keys'
+import { DOCS_URL, EXPERT_CALL_URL } from '@nasiko/app-core/links'
+import { askForTour } from '@nasiko/app-core/tour'
+import { cn } from '@nasiko/ui/lib/utils'
+import { pickShared, withoutWindow } from '@nasiko/app-core/shell/context'
+import { copy } from '@nasiko/app-core/shell/copy'
+import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
+import {
+  activeItem,
+  backIndex,
+  moduleOf,
+  NAV_GROUPS,
+  NAV_ITEMS,
+  pathOf,
+} from '@nasiko/app-core/shell/nav'
+import { ACTIVE_ROW, GROUP, ICON_ROW, LABEL, ROW } from '@nasiko/app-core/shell/rowStyles'
+import { signOut } from '@nasiko/app-shell/shell/signOut'
 import {
   ACCENTS,
   setAccent,
@@ -83,188 +87,136 @@ import {
   useThemePrefs,
   type Accent,
   type Theme,
-} from "@nasiko/ui/theme";
-import {
-  healthQueryOptions,
-  meQueryOptions,
-  ProductApiError as ApiError,
-  SIDEBAR_HEALTH_INTERVAL_MS,
-  useProductScope,
-} from "@nasiko/data-access/product";
-import { applyNav, type AnyNavItem } from "@nasiko/app-core/edition/edition";
-import { EditionContext } from "@nasiko/app-core/edition/edition-context";
-import { env } from "@nasiko/app-core/env";
-import {
-  pickShared,
-  sharedSearchSchema,
-  withoutWindow,
-  type SharedSearch,
-} from "@nasiko/app-core/shell/context";
-import { copy } from "@nasiko/app-core/shell/copy";
-import { NasikoMark } from "@nasiko/ui/composites";
-import {
-  activeItem,
-  backIndex,
-  moduleOf,
-  NAV_GROUPS,
-  NAV_ITEMS,
-  pathOf,
-} from "@nasiko/app-core/shell/nav";
-import { ACTIVE_ROW, GROUP, LABEL, ROW } from "@nasiko/app-core/shell/rowStyles";
-import { signOut } from "./signOut";
-import { SidebarPanelContext } from "@nasiko/app-core/shell/panelSlot";
-import { WaitlistCard } from "./WaitlistCta";
+} from '@nasiko/app-core/shell/theme'
+import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
+// The waitlist card gave way to the free-assessment card (user request 2026-10-22); WaitlistCta.tsx stays for now.
+// import { WaitlistCard } from './WaitlistCta'
+import { AssessmentCard } from './AssessmentCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
-const CHECKING_DELAY_MS = 1_000;
+const CHECKING_DELAY_MS = 1_000
 
 /**
  * The status row is for whoever runs the lab: local dev servers, and any build that serves mock data (so a demo
  * build still says MOCK DATA). A production build against a real server leaves it out, and polls no /health.
  */
-const SHOW_STATUS = process.env.NODE_ENV !== "production" || env.mode === "mock";
+const SHOW_STATUS = import.meta.env.DEV || env.mode === 'mock'
 
 /** Which view takes focus after a swap between the app nav and a drill-in panel (the clicked row unmounts). */
-type FocusNext = RefObject<"menu" | "panel" | null>;
+type FocusNext = RefObject<'menu' | 'panel' | null>
 
 /** A count on a nav item, with the words a screen reader hears after its label (the Builds item: builds in progress). */
-export type NavBadges = Partial<Record<string, { count: number; label: string }>>;
-
-/**
- * The current page's shared keys, as the lab's route search carried them: only the keys present in the URL, each
- * parsed through the shared schema (so `compare=0` reads as `false`, junk falls back).
- */
-function sharedOf(params: URLSearchParams): Record<string, unknown> {
-  const raw: Record<string, string> = {};
-  params.forEach((v, k) => {
-    raw[k] = v;
-  });
-  const parsed = z.parse(sharedSearchSchema, raw) as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const k of Object.keys(raw)) if (k in parsed && parsed[k] !== undefined) out[k] = parsed[k];
-  return out;
-}
-
-/** The lab's router serialised search values as strings, `true`/`false` for flags. */
-function withSearch(to: string, search: Partial<SharedSearch>): string {
-  const p = new URLSearchParams();
-  for (const [k, v] of Object.entries(search)) if (v !== undefined) p.set(k, String(v));
-  const q = p.toString();
-  return q ? `${to}?${q}` : to;
-}
-
-/** A nav item's href: shared items carry the shared context (Sessions and TokenOps start on their own window). */
-function sharedHref(n: AnyNavItem, params: URLSearchParams): string {
-  if (!n.shared) return n.to;
-  const prev = sharedOf(params);
-  // Sessions (7d) and TokenOps (30d) start on their own window, whatever the last page had.
-  return withSearch(
-    n.to,
-    n.to === "/sessions" || n.to === "/tokenops" ? withoutWindow(prev) : pickShared(prev),
-  );
-}
+export type NavBadges = Partial<Record<string, { count: number; label: string }>>
 
 export function AppSidebar({
   badges,
   hidden,
-}: { badges?: NavBadges | undefined; hidden?: readonly string[] | undefined } = {}) {
-  const pathname = usePathname();
-  const params = useSearchParams();
-  const query = params.toString();
-  const href = query ? `${pathname}?${query}` : pathname;
-  const router = useRouter();
-  const layers = use(EditionContext).edition.layers;
-  const { setOpenMobile, isMobile, state } = useSidebar();
-  const { panels, setTarget } = use(SidebarPanelContext);
+}: { badges?: NavBadges; hidden?: readonly string[] } = {}) {
+  const pathname = useRouterState({ select: (s) => s.location.pathname })
+  const href = useRouterState({ select: (s) => s.location.href })
+  const navigate = useNavigate()
+  const { edition, slots } = use(EditionContext)
+  const layers = edition.layers
+  const Brand = slots.sidebarBrand
+  const { setOpenMobile, isMobile, state } = useSidebar()
+  const rail = state === 'collapsed' && !isMobile
+  const { panels, setTarget } = use(SidebarPanelContext)
   // The phone sheet closes on navigation (§4.2).
-  useEffect(() => {
-    setOpenMobile(false);
-  }, [pathname, setOpenMobile]);
+  useEffect(() => setOpenMobile(false), [pathname, setOpenMobile])
   // "Main menu" shows the app nav over a page's panel until the next navigation (or a click on the current item).
-  const [menu, setMenu] = useState(false);
-  const [menuPath, setMenuPath] = useState(pathname);
+  const [menu, setMenu] = useState(false)
+  const [menuPath, setMenuPath] = useState(pathname)
   if (menuPath !== pathname) {
-    setMenuPath(pathname);
-    setMenu(false);
+    setMenuPath(pathname)
+    setMenu(false)
   }
-  const focusNextRef = useRef<"menu" | "panel" | null>(null);
+  const focusNextRef = useRef<'menu' | 'panel' | null>(null)
   // A click on the current page's item (nav or footer) brings its panel back: the path doesn't change.
   const pick = () => {
-    if (panels > 0) focusNextRef.current = "panel";
-    setMenu(false);
-  };
+    if (panels > 0) focusNextRef.current = 'panel'
+    setMenu(false)
+  }
   // The collapsed rail keeps the app nav's icons; the page then shows its panel's fallback itself.
-  const holds = panels > 0 && (isMobile || state === "expanded");
-  const drilled = holds && !menu;
+  const holds = panels > 0 && (isMobile || state === 'expanded')
+  const drilled = holds && !menu
   // The pages visited in this tab (newest last), so the panel's Back returns to where the user came from.
   // Appended when the page changes, so Back's trimming (before its navigation lands) never re-adds the page it leaves.
-  const [trail, setTrail] = useState<readonly string[]>([href]);
-  const [trailHref, setTrailHref] = useState(href);
+  const [trail, setTrail] = useState<readonly string[]>([href])
+  const [trailHref, setTrailHref] = useState(href)
   if (trailHref !== href) {
-    setTrailHref(href);
-    setTrail([...trail.slice(1 - TRAIL_LENGTH), href]);
+    setTrailHref(href)
+    setTrail([...trail.slice(1 - TRAIL_LENGTH), href])
   }
-  const backAt = backIndex(trail, pathname);
-  const back = trail[backAt];
-  const backLabel = back ? labelFor(pathOf(back), applyNav(NAV_ITEMS, layers)) : null;
+  const backAt = backIndex(trail, pathname)
+  const back = trail[backAt]
+  const backLabel = back ? labelFor(pathOf(back), applyNav(NAV_ITEMS, layers)) : null
 
   return (
     <Sidebar collapsible="icon">
-      <SidebarHeader className={cn(GROUP, "py-3")}>
+      <SidebarHeader className={cn(GROUP, 'py-3')}>
         <SidebarMenu className="flex-row items-center gap-1">
           {/* The rail has room for one control: the mark, which turns into Expand on hover or focus. */}
-          {state === "collapsed" && !isMobile ? (
+          {rail ? (
             <ExpandMark />
           ) : (
             <>
               <SidebarMenuItem className="min-w-0 flex-1">
-                <SidebarMenuButton
-                  tooltip={copy.brandTooltip}
-                  className={cn(ROW, "h-10")}
-                  render={
-                    // A plain link: a router Link would mark it aria-current on /, doubling the nav's Home item
-                    // (§3 rule 4: one current item).
+                {/* A layer's own brand row in its place (MT: the workspace switcher). */}
+                {Brand ? (
+                  <Brand />
+                ) : (
+                  <SidebarMenuButton
+                    asChild
+                    tooltip={copy.brandTooltip}
+                    className={cn(ROW, 'h-10')}
+                  >
+                    {/* A plain link: TanStack's Link would mark it aria-current on /, doubling the nav's Home item
+                      (§3 rule 4: one current item). */}
                     <a
                       href="/"
                       onClick={(e) => {
-                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                        e.preventDefault();
-                        router.push("/");
+                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+                        e.preventDefault()
+                        void navigate({ to: '/' })
                       }}
-                    />
-                  }
-                >
-                  <NasikoMark className="size-4 shrink-0 text-logo" />
-                  <span className={cn(LABEL, "flex min-w-0 flex-col leading-tight")}>
-                    <span className="truncate font-semibold">{copy.brand}</span>
-                  </span>
-                </SidebarMenuButton>
+                    >
+                      <NasikoMark className="size-4 shrink-0 text-logo" />
+                      <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
+                        <span className="truncate font-semibold">{copy.brand}</span>
+                      </span>
+                    </a>
+                  </SidebarMenuButton>
+                )}
               </SidebarMenuItem>
               <CollapseButton />
             </>
           )}
         </SidebarMenu>
+        {/* In the rail a layer's brand row goes under the mark, which keeps expanding the sidebar. */}
+        {rail && Brand ? (
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <Brand />
+            </SidebarMenuItem>
+          </SidebarMenu>
+        ) : null}
       </SidebarHeader>
       {drilled ? (
         <BackRow
           focusNextRef={focusNextRef}
           name={backLabel ? copy.backTo(backLabel) : back ? copy.back : copy.backToMenu}
           onBack={() => {
-            focusNextRef.current = "menu";
+            focusNextRef.current = 'menu'
             // Opened directly (no page before it): show the app nav instead.
-            if (back === undefined) {
-              setMenu(true);
-              return;
-            }
+            if (back === undefined) return setMenu(true)
             // Like history: the target and what came after it leave the trail (the target is appended again).
-            setTrail(trail.slice(0, backAt));
-            router.push(back);
+            setTrail(trail.slice(0, backAt))
+            void navigate({ href: back })
           }}
         />
       ) : (
         <NavGroups
           pathname={pathname}
-          params={params}
           badges={badges}
           hidden={hidden}
           focusNextRef={focusNextRef}
@@ -283,25 +235,28 @@ export function AppSidebar({
       ) : null}
       {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
           background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
-      {holds ? null : <WaitlistCard />}
-      <SidebarFooter className={cn(GROUP, "gap-0 border-t border-sidebar-border py-2")}>
+      {/* {holds ? null : <WaitlistCard />} */}
+      {holds || pathname === '/assessment' ? null : <AssessmentCard />}
+      <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          {SHOW_STATUS ? <StatusRow pathname={pathname} /> : null}
-          <AccountMenu onPick={pick} href={href} />
+          <HelpRows pathname={pathname} onPick={pick} />
+          {SHOW_STATUS ? <StatusRow /> : null}
+          <AccountMenu onPick={pick} />
         </SidebarMenu>
       </SidebarFooter>
     </Sidebar>
-  );
+  )
 }
 
 /** Over a page's panel: the way back to the app nav (the panel itself is the slot below it). */
-const TRAIL_LENGTH = 20;
+const TRAIL_LENGTH = 20
 
 /** The page's name for "Back to …": its nav item, or Account settings / Status (account menu, footer row); null when it has none. */
 function labelFor(path: string, items: readonly AnyNavItem[]): string | null {
-  if (moduleOf(path) === "account") return copy.account.settings;
-  if (path === "/status") return copy.statusPage;
-  return activeItem(path, items)?.label ?? null;
+  if (moduleOf(path) === 'account') return copy.account.settings
+  if (path === '/status') return copy.statusPage
+  if (path === '/cli') return copy.help.cli
+  return activeItem(path, items)?.label ?? null
 }
 
 /** Over a page's panel: the way back (to the page before it, or the app nav); the panel itself is the slot below. */
@@ -310,19 +265,19 @@ function BackRow({
   name,
   onBack,
 }: {
-  focusNextRef: FocusNext;
+  focusNextRef: FocusNext
   /** Where it goes ("Back to TokenOps"): the accessible name and the tooltip; the row itself reads "Back". */
-  name: string;
-  onBack: () => void;
+  name: string
+  onBack(): void
 }) {
-  const back = useRef<HTMLButtonElement>(null);
+  const back = useRef<HTMLButtonElement>(null)
   useEffect(() => {
-    if (focusNextRef.current !== "panel") return;
-    focusNextRef.current = null;
-    back.current?.focus();
-  }, [focusNextRef]);
+    if (focusNextRef.current !== 'panel') return
+    focusNextRef.current = null
+    back.current?.focus()
+  }, [focusNextRef])
   return (
-    <SidebarGroup className={cn(GROUP, "py-1")}>
+    <SidebarGroup className={cn(GROUP, 'py-1')}>
       <SidebarMenu>
         <SidebarMenuItem>
           <SidebarMenuButton
@@ -330,7 +285,7 @@ function BackRow({
             onClick={onBack}
             aria-label={name}
             title={name}
-            className={cn(ROW, "text-muted-foreground")}
+            className={cn(ROW, ICON_ROW, 'text-muted-foreground')}
           >
             <ArrowLeft aria-hidden />
             <span>{copy.back}</span>
@@ -338,61 +293,57 @@ function BackRow({
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarGroup>
-  );
+  )
 }
 
 /** The scrolling middle (§4.2a): header and footer stay pinned; a soft fade marks hidden items. */
 function NavGroups({
   pathname,
-  params,
   badges,
   hidden,
   focusNextRef,
   onPick,
 }: {
-  pathname: string;
-  params: URLSearchParams;
-  badges?: NavBadges | undefined;
-  hidden?: readonly string[] | undefined;
-  focusNextRef: FocusNext;
-  onPick: () => void;
+  pathname: string
+  badges?: NavBadges
+  hidden?: readonly string[]
+  focusNextRef: FocusNext
+  onPick(): void
 }) {
   // A layer's nav patches (EE: Lab → Weave fixtures) apply on top of the core's items.
   const items = applyNav(NAV_ITEMS, use(EditionContext).edition.layers).filter(
     (i) => !hidden?.includes(i.to),
-  );
-  const active = activeItem(pathname, items);
-  const { setOpenMobile } = useSidebar();
-  const scroller = useRef<HTMLDivElement>(null);
+  )
+  const active = activeItem(pathname, items)
+  const { setOpenMobile } = useSidebar()
+  const scroller = useRef<HTMLDivElement>(null)
   // Back from a panel: focus the current item (the Main menu button it replaces is gone).
   useEffect(() => {
-    if (focusNextRef.current !== "menu") return;
-    focusNextRef.current = null;
-    const el = scroller.current;
-    const current = el?.querySelector<HTMLElement>('[aria-current="page"]');
-    const target = current ?? el?.querySelector("a");
-    target?.focus();
-  }, [focusNextRef]);
-  const [edges, setEdges] = useState({ top: false, bottom: false });
+    if (focusNextRef.current !== 'menu') return
+    focusNextRef.current = null
+    const el = scroller.current
+    const current = el?.querySelector<HTMLElement>('[aria-current="page"]')
+    const target = current ?? el?.querySelector('a')
+    target?.focus()
+  }, [focusNextRef])
+  const [edges, setEdges] = useState({ top: false, bottom: false })
   const measure = useCallback(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const top = el.scrollTop > 0;
-    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1;
+    const el = scroller.current
+    if (!el) return
+    const top = el.scrollTop > 0
+    const bottom = el.scrollTop + el.clientHeight < el.scrollHeight - 1
     // Unchanged edges: keep the same object so scrolling doesn't re-render every row.
-    setEdges((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }));
-  }, []);
+    setEdges((prev) => (prev.top === top && prev.bottom === bottom ? prev : { top, bottom }))
+  }, [])
   // Measure on mount and whenever the window or the rail changes size, not only on scroll.
   useLayoutEffect(() => {
-    measure();
-    const el = scroller.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-    };
-  }, [measure]);
+    measure()
+    const el = scroller.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [measure])
   return (
     <nav aria-label={copy.navLabel} className="flex min-h-0 flex-1 flex-col">
       <SidebarContent
@@ -400,20 +351,20 @@ function NavGroups({
         onScroll={measure}
         className={cn(
           // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
-          "[scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] gap-0 py-1 group-data-[collapsible=icon]:overflow-auto",
+          '[scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
           edges.top && edges.bottom
-            ? "[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]"
+            ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
             : edges.top
-              ? "[mask-image:linear-gradient(to_bottom,transparent,black_16px)]"
+              ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px)]'
               : edges.bottom
-                ? "[mask-image:linear-gradient(to_top,transparent,black_16px)]"
+                ? '[mask-image:linear-gradient(to_top,transparent,black_16px)]'
                 : undefined,
         )}
       >
         {/* A group with no items (Lab, in a production build) has no header either, and the first group drawn has none:
             while the onboarding guide hides Home, Fleet opens the nav without a header or a leading hairline. */}
         {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g, i) => (
-          <SidebarGroup key={g.id} data-tour={`nav-${g.id}`} className={cn(GROUP, "py-0")}>
+          <SidebarGroup key={g.id} data-tour={`nav-${g.id}`} className={cn(GROUP, 'py-0')}>
             {/* In the rail a header becomes a short hairline: the icons stay one even column, the groups still apart. */}
             {g.label && i > 0 ? (
               <>
@@ -432,28 +383,38 @@ function NavGroups({
                 .map((n) => (
                   <SidebarMenuItem key={n.to}>
                     <SidebarMenuButton
+                      asChild
                       isActive={active?.to === n.to}
                       tooltip={n.label}
-                      className={cn(ROW, ACTIVE_ROW)}
-                      render={
-                        <Link
-                          // `/` is a prefix of every path: Overview is active only on `/` itself (activeItem).
-                          href={sharedHref(n, params)}
-                          // The Link only knows its own path; Agents is current on Deploy and Builds too (`also`).
-                          aria-current={active?.to === n.to ? "page" : undefined}
-                          // Same-path links (the current page) don't change the pathname: close the sheet here too.
-                          onClick={() => {
-                            onPick();
-                            setOpenMobile(false);
-                          }}
-                        />
-                      }
+                      className={cn(ROW, ICON_ROW, ACTIVE_ROW)}
                     >
-                      <n.icon aria-hidden />
-                      <span className={LABEL}>{n.label}</span>
-                      {badges?.[n.to] ? (
-                        <span className="sr-only">, {badges[n.to]?.label}</span>
-                      ) : null}
+                      <Link
+                        to={n.to}
+                        search={
+                          n.shared
+                            ? (prev: Record<string, unknown>) =>
+                                // Sessions (7d) and TokenOps (30d) start on their own window, whatever the last page had.
+                                n.to === '/sessions' || n.to === '/tokenops'
+                                  ? withoutWindow(prev)
+                                  : pickShared(prev)
+                            : undefined
+                        }
+                        // `/` is a prefix of every path: Home is active only on `/` itself.
+                        activeOptions={{ includeSearch: false, exact: n.to === '/' }}
+                        // The Link only knows its own path; Agents is current on Deploy and Builds too (`also`).
+                        aria-current={active?.to === n.to ? 'page' : undefined}
+                        // Same-path links (the current page) don't change the pathname: close the sheet here too.
+                        onClick={() => {
+                          onPick()
+                          setOpenMobile(false)
+                        }}
+                      >
+                        <n.icon aria-hidden />
+                        <span className={LABEL}>{n.label}</span>
+                        {badges?.[n.to] ? (
+                          <span className="sr-only">, {badges[n.to]?.label}</span>
+                        ) : null}
+                      </Link>
                     </SidebarMenuButton>
                     {/* e.g. on Agents: builds started this session and still running (plans/feat-deploy.md §5, design review 8). */}
                     {badges?.[n.to] ? (
@@ -468,111 +429,145 @@ function NavGroups({
         ))}
       </SidebarContent>
     </nav>
-  );
+  )
+}
+
+/** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
+function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
+  const { setOpenMobile } = useSidebar()
+  const external = (href: string, label: string, Icon: typeof BookOpen) => (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild tooltip={label} className={ROW}>
+        <a
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={`${label} ${copy.help.newTab}`}
+        >
+          <Icon aria-hidden />
+          <span className={LABEL}>{label}</span>
+        </a>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  )
+  return (
+    <>
+      {external(DOCS_URL, copy.help.docs, BookOpen)}
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          asChild
+          isActive={pathname === '/cli'}
+          tooltip={copy.help.cli}
+          className={cn(ROW, ACTIVE_ROW)}
+        >
+          <Link
+            to="/cli"
+            onClick={() => {
+              onPick()
+              setOpenMobile(false)
+            }}
+          >
+            <SquareTerminal aria-hidden />
+            <span className={LABEL}>{copy.help.cli}</span>
+          </Link>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
+    </>
+  )
 }
 
 /** Connection state plus the mock/live badge; links to the Status page (§3 rule 6). */
-function StatusRow({ pathname }: { pathname: string }) {
-  const scope = useProductScope();
+function StatusRow() {
   // On every page and in every tab: a slower check, and none on window focus (review, performance).
-  const health = useQuery(
-    healthQueryOptions(scope, {
-      refetchInterval: SIDEBAR_HEALTH_INTERVAL_MS,
-      refetchOnWindowFocus: false,
-    }),
-  );
-  const [slow, setSlow] = useState(false);
+  const health = useHealth({
+    refetchInterval: SIDEBAR_HEALTH_INTERVAL_MS,
+    refetchOnWindowFocus: false,
+  })
+  const [slow, setSlow] = useState(false)
   useEffect(() => {
-    if (!health.isPending) return;
-    const t = setTimeout(() => {
-      setSlow(true);
-    }, CHECKING_DELAY_MS);
-    return () => {
-      clearTimeout(t);
-    };
-  }, [health.isPending]);
+    if (!health.isPending) return
+    const t = setTimeout(() => setSlow(true), CHECKING_DELAY_MS)
+    return () => clearTimeout(t)
+  }, [health.isPending])
   const state = health.isError
-    ? "unreachable"
+    ? 'unreachable'
     : health.isSuccess
-      ? "connected"
+      ? 'connected'
       : slow
-        ? "checking"
-        : "quiet";
+        ? 'checking'
+        : 'quiet'
   const text =
-    state === "unreachable"
+    state === 'unreachable'
       ? copy.status.unreachable
-      : state === "connected"
+      : state === 'connected'
         ? copy.status.connected
-        : state === "checking"
+        : state === 'checking'
           ? copy.status.checking
-          : "";
-  const mock = env.mode === "mock";
-  const badge = mock ? copy.status.mockBadge : copy.status.liveBadge;
-  const badgeTitle = mock ? copy.status.mockTitle : copy.status.liveTitle(env.partialMocks);
-  const tooltip = [state === "unreachable" ? copy.status.unreachableHint : text, badge]
+          : ''
+  const mock = env.mode === 'mock'
+  const badge = mock ? copy.status.mockBadge : copy.status.liveBadge
+  const badgeTitle = mock ? copy.status.mockTitle : copy.status.liveTitle(env.partialMocks)
+  const tooltip = [state === 'unreachable' ? copy.status.unreachableHint : text, badge]
     .filter(Boolean)
-    .join(" · ");
+    .join(' · ')
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton
-        tooltip={tooltip}
-        className={cn(ROW, "relative")}
-        render={
-          <Link
-            href="/status"
-            aria-current={pathname === "/status" ? "page" : undefined}
-            data-testid="status-row"
-            data-state={state}
-          />
-        }
-      >
-        <span className="relative flex size-4 shrink-0 items-center justify-center" aria-hidden>
-          <span
-            className={cn(
-              "size-2 rounded-full",
-              state === "connected"
-                ? "bg-success"
-                : state === "unreachable"
-                  ? "bg-destructive"
-                  : "bg-muted-foreground/50",
+      <SidebarMenuButton asChild tooltip={tooltip} className={cn(ROW, ICON_ROW, 'relative')}>
+        <Link
+          to="/status"
+          activeOptions={{ exact: true, includeSearch: false }}
+          data-testid="status-row"
+          data-state={state}
+        >
+          <span className="relative flex size-4 shrink-0 items-center justify-center" aria-hidden>
+            <span
+              className={cn(
+                'size-2 rounded-full',
+                state === 'connected'
+                  ? 'bg-success'
+                  : state === 'unreachable'
+                    ? 'bg-destructive'
+                    : 'bg-muted-foreground/50',
+              )}
+            />
+            {state === 'unreachable' ? (
+              <CircleAlert className="absolute -top-1 -right-1.5 size-2.5! text-destructive" />
+            ) : null}
+          </span>
+          <span className={cn(LABEL, 'flex min-w-0 flex-1 items-center gap-2')}>
+            {state === 'unreachable' ? (
+              <span className="truncate">
+                <span className="sr-only">{copy.status.unreachable}</span>
+                <span aria-hidden>{copy.status.unreachableShort}</span>
+              </span>
+            ) : (
+              <span className="truncate">{text}</span>
             )}
-          />
-          {state === "unreachable" ? (
-            <CircleAlert className="absolute -top-1 -right-1.5 size-2.5! text-destructive" />
-          ) : null}
-        </span>
-        <span className={cn(LABEL, "flex min-w-0 flex-1 items-center gap-2")}>
-          {state === "unreachable" ? (
-            <span className="truncate">
-              <span className="sr-only">{copy.status.unreachable}</span>
-              <span aria-hidden>{copy.status.unreachableShort}</span>
+            <span
+              title={badgeTitle}
+              className={cn(
+                'ml-auto shrink-0 rounded-sm border px-1 text-3xs leading-4 font-medium',
+                mock ? 'border-warning/50 text-warning' : 'border-border text-muted-foreground',
+              )}
+            >
+              {badge}
             </span>
-          ) : (
-            <span className="truncate">{text}</span>
-          )}
+          </span>
+          {/* The rail's one-letter mode badge; the label (with the full badge) is hidden there. */}
           <span
-            title={badgeTitle}
+            aria-hidden
             className={cn(
-              "ml-auto shrink-0 rounded-sm border px-1 text-3xs leading-4 font-medium",
-              mock ? "border-warning/50 text-warning" : "border-border text-muted-foreground",
+              'absolute right-0.5 bottom-0.5 hidden text-4xs leading-none font-semibold group-data-[collapsible=icon]:block',
+              mock ? 'text-warning' : 'text-muted-foreground',
             )}
           >
-            {badge}
+            {mock ? copy.status.mockShort : copy.status.liveShort}
           </span>
-        </span>
-        {/* The rail's one-letter mode badge; the label (with the full badge) is hidden there. */}
-        <span
-          aria-hidden
-          className={cn(
-            "absolute right-0.5 bottom-0.5 hidden text-4xs leading-none font-semibold group-data-[collapsible=icon]:block",
-            mock ? "text-warning" : "text-muted-foreground",
-          )}
-        >
-          {mock ? copy.status.mockShort : copy.status.liveShort}
-        </span>
+        </Link>
       </SidebarMenuButton>
     </SidebarMenuItem>
-  );
+  )
 }
 
 /**
@@ -581,87 +576,78 @@ function StatusRow({ pathname }: { pathname: string }) {
  * error, and Sign out is disabled until `me` loads, because signing out without a known user would
  * clear every user's drafts (review, red team).
  */
-function AccountMenu({ onPick, href }: { onPick: () => void; href: string }) {
-  const scope = useProductScope();
-  // The (app) guard already loaded `me`; this only reads it (and refetches on Retry).
-  const me = useQuery({ ...meQueryOptions(scope), refetchOnMount: false, retryOnMount: false });
-  const queryClient = useQueryClient();
-  const router = useRouter();
-  const { isMobile, setOpenMobile } = useSidebar();
+function AccountMenu({ onPick }: { onPick(): void }) {
+  // The _app guard already loaded `me`; this only reads it (and refetches on Retry).
+  const me = useQuery({ ...meQuery, refetchOnMount: false, retryOnMount: false })
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const router = useRouter()
+  const { isMobile, setOpenMobile } = useSidebar()
   // Picking Settings moves focus into its panel (BackRow), not back to the menu's trigger.
-  const navigated = useRef(false);
-  const [busy, setBusy] = useState(false);
-  const name = me.data?.username;
-  const loading = !name && !me.isError;
-  const label = name ?? (loading ? copy.account.loading : copy.account.unavailable);
+  const navigated = useRef(false)
+  const [busy, setBusy] = useState(false)
+  const name = me.data?.username
+  const loading = !name && !me.isError
+  const label = name ?? (loading ? copy.account.loading : copy.account.unavailable)
   const run = async () => {
-    if (busy) return;
-    setBusy(true);
+    if (busy) return
+    setBusy(true)
     try {
-      await signOut({
-        queryClient,
-        userId: me.data?.sub,
-        navigate: (to) => {
-          router.push(to.search.signout ? `${to.to}?signout=${to.search.signout}` : to.to);
-          return Promise.resolve();
-        },
-      });
+      await signOut({ queryClient, userId: me.data?.sub, navigate: (to) => navigate(to) })
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  };
+  }
   return (
     <SidebarMenuItem>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <SidebarMenuButton
-              tooltip={label}
-              aria-label={name ? copy.account.menu(name) : label}
-              className={ROW}
-            />
-          }
-        >
-          {name ? (
-            <CircleUser aria-hidden />
-          ) : loading ? (
-            <CircleUser aria-hidden className="text-muted-foreground" />
-          ) : (
-            <CircleAlert aria-hidden className="text-warning" />
-          )}
-          <span className={cn(LABEL, loading && "text-muted-foreground")}>{label}</span>
+        <DropdownMenuTrigger asChild>
+          <SidebarMenuButton
+            tooltip={label}
+            aria-label={name ? copy.account.menu(name) : label}
+            className={cn(ROW, ICON_ROW)}
+          >
+            {name ? (
+              <CircleUser aria-hidden />
+            ) : loading ? (
+              <CircleUser aria-hidden className="text-muted-foreground" />
+            ) : (
+              <CircleAlert aria-hidden className="text-warning" />
+            )}
+            <span className={cn(LABEL, loading && 'text-muted-foreground')}>{label}</span>
+          </SidebarMenuButton>
         </DropdownMenuTrigger>
         <DropdownMenuContent
-          side={isMobile ? "top" : "right"}
+          side={isMobile ? 'top' : 'right'}
           align="end"
           sideOffset={16}
           className="w-48"
-          finalFocus={() => {
-            if (!navigated.current) return true;
-            navigated.current = false;
+          onCloseAutoFocus={(e) => {
+            if (!navigated.current) return
+            navigated.current = false
             // The panel swaps in only now: mounted under the open menu, its focus would be pulled back into the menu.
-            onPick();
-            return false;
+            e.preventDefault()
+            onPick()
           }}
         >
           {/* Says why Sign out is greyed out, instead of a menu with nothing to do. */}
           {loading ? (
-            <DropdownMenuGroup>
-              <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
-                {copy.account.loadingHint}
-              </DropdownMenuLabel>
-            </DropdownMenuGroup>
+            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">
+              {copy.account.loadingHint}
+            </DropdownMenuLabel>
           ) : null}
           {me.isError && !name ? (
             <DropdownMenuItem
-              onClick={() =>
+              onSelect={() =>
                 void me.refetch().then((r) => {
                   // The guard ignores a first-load 401 on `me`; here it means the session is gone.
                   if (r.error instanceof ApiError && r.error.status === 401) {
                     // The router's location, not window.location: they differ under memory history (tests,
-                    // embeds).
-                    const params = new URLSearchParams({ redirect: href, expired: "true" });
-                    router.push(`/login?${params.toString()}`);
+                    // embeds). Read on click, so the menu doesn't re-render on every URL change.
+                    void navigate({
+                      to: '/login',
+                      search: { redirect: router.state.location.href, expired: true },
+                    })
                   }
                 })
               }
@@ -673,72 +659,77 @@ function AccountMenu({ onPick, href }: { onPick: () => void; href: string }) {
           <ThemeSubmenu />
           <DropdownMenuSeparator />
           {/* Appearance and Change password live in account settings (/account). */}
+          <DropdownMenuItem asChild>
+            <Link
+              to="/account/appearance"
+              onClick={() => {
+                navigated.current = true
+                setOpenMobile(false)
+              }}
+            >
+              <Settings aria-hidden /> {copy.account.settings}
+            </Link>
+          </DropdownMenuItem>
           <DropdownMenuItem
-            render={
-              <Link
-                href="/account/appearance"
-                onClick={() => {
-                  navigated.current = true;
-                  setOpenMobile(false);
-                }}
-              />
-            }
+            onSelect={() => {
+              setOpenMobile(false)
+              // A frame later: the menu has closed and returned focus, so the tour's card keeps it.
+              requestAnimationFrame(() => askForTour('app'))
+            }}
           >
-            <Settings aria-hidden /> {copy.account.settings}
+            <Compass aria-hidden /> {copy.account.sidebarTour}
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={busy || loading}
-            // Keep the menu open so "Signing out…" is visible until the page changes.
-            closeOnClick={false}
-            onClick={() => void run()}
+            onSelect={(e) => {
+              // Keep the menu open so "Signing out…" is visible until the page changes.
+              e.preventDefault()
+              void run()
+            }}
           >
             <LogOut aria-hidden /> {busy ? copy.account.signingOut : copy.account.signOut}
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </SidebarMenuItem>
-  );
+  )
 }
 
 /** Mode and colour theme as radio groups; picking one keeps the menu open, so both can be set in one visit. */
 function ThemeSubmenu() {
-  const prefs = useThemePrefs();
-  const id = useId();
+  const prefs = useThemePrefs()
+  const id = useId()
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
         <Palette aria-hidden /> {copy.theme.menu}
       </DropdownMenuSubTrigger>
       <DropdownMenuSubContent className="w-48">
+        <DropdownMenuLabel id={`${id}-mode`} className="text-xs text-muted-foreground">
+          {copy.theme.modeGroup}
+        </DropdownMenuLabel>
         <DropdownMenuRadioGroup
           aria-labelledby={`${id}-mode`}
           value={prefs.theme}
-          onValueChange={(v) => {
-            setTheme(v as Theme);
-          }}
+          onValueChange={(v) => setTheme(v as Theme)}
         >
-          <DropdownMenuLabel id={`${id}-mode`} className="text-xs text-muted-foreground">
-            {copy.theme.modeGroup}
-          </DropdownMenuLabel>
           {THEMES.map((t) => (
-            <DropdownMenuRadioItem key={t.id} value={t.id} closeOnClick={false}>
+            <DropdownMenuRadioItem key={t.id} value={t.id} onSelect={(e) => e.preventDefault()}>
               {t.label}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
+        <DropdownMenuLabel id={`${id}-accent`} className="text-xs text-muted-foreground">
+          {copy.theme.accentGroup}
+        </DropdownMenuLabel>
         <DropdownMenuRadioGroup
           aria-labelledby={`${id}-accent`}
           value={prefs.accent}
-          onValueChange={(v) => {
-            setAccent(v as Accent);
-          }}
+          onValueChange={(v) => setAccent(v as Accent)}
         >
-          <DropdownMenuLabel id={`${id}-accent`} className="text-xs text-muted-foreground">
-            {copy.theme.accentGroup}
-          </DropdownMenuLabel>
           {ACCENTS.map((a) => (
-            <DropdownMenuRadioItem key={a.id} value={a.id} closeOnClick={false}>
+            <DropdownMenuRadioItem key={a.id} value={a.id} onSelect={(e) => e.preventDefault()}>
               <span
                 aria-hidden
                 className="size-3 shrink-0 rounded-full border border-border"
@@ -750,14 +741,15 @@ function ThemeSubmenu() {
         </DropdownMenuRadioGroup>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
-  );
+  )
 }
 
+/** Top right of the header; in the rail, under the mark. Phones open the sheet from the top bar instead. */
 /** Top right of the open sidebar's header. Phones open the sheet from the top bar instead. */
 function CollapseButton() {
-  const { toggleSidebar, isMobile } = useSidebar();
-  if (isMobile) return null;
-  const label = `${copy.collapse} (${copy.collapseShortcut(IS_MAC)})`;
+  const { toggleSidebar, isMobile } = useSidebar()
+  if (isMobile) return null
+  const label = `${copy.collapse} (${copy.collapseShortcut(IS_MAC)})`
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
@@ -765,26 +757,26 @@ function CollapseButton() {
         // Tooltips only render in the rail: the open sidebar's icon-only button says it on hover.
         title={label}
         aria-label={copy.collapse}
-        aria-keyshortcuts={IS_MAC ? "Meta+B" : "Control+B"}
-        className={cn(ROW, "w-8 justify-center text-muted-foreground")}
+        aria-keyshortcuts={IS_MAC ? 'Meta+B' : 'Control+B'}
+        className={cn(ROW, 'w-8 justify-center text-muted-foreground')}
       >
         <PanelLeftClose aria-hidden />
       </SidebarMenuButton>
     </SidebarMenuItem>
-  );
+  )
 }
 
 /** The rail's header: the mark, swapped for the expand icon on hover or keyboard focus; a click expands. */
 function ExpandMark() {
-  const { toggleSidebar } = useSidebar();
+  const { toggleSidebar } = useSidebar()
   return (
     <SidebarMenuItem>
       <SidebarMenuButton
         onClick={toggleSidebar}
         tooltip={`${copy.expand} (${copy.collapseShortcut(IS_MAC)})`}
         aria-label={copy.expand}
-        aria-keyshortcuts={IS_MAC ? "Meta+B" : "Control+B"}
-        className={cn(ROW, "group/expand")}
+        aria-keyshortcuts={IS_MAC ? 'Meta+B' : 'Control+B'}
+        className={cn(ROW, 'group/expand')}
       >
         <span aria-hidden className="relative size-4 shrink-0">
           <NasikoMark className="size-4 text-logo transition-opacity duration-150 group-hover/expand:opacity-0 group-focus-visible/expand:opacity-0 motion-reduce:transition-none" />
@@ -792,5 +784,5 @@ function ExpandMark() {
         </span>
       </SidebarMenuButton>
     </SidebarMenuItem>
-  );
+  )
 }

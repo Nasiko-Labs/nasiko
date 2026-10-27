@@ -1,38 +1,33 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/TraceSheet.tsx. Local edits: Open full trace
-// is a `ButtonLink` (the lab's `<Button asChild><Link>`) to `hrefFor('/sessions/<id>', { trace })`; the 404 retry
-// schedule reads its steps with `??` (noUncheckedIndexedAccess); `Waterfall` is the trace module's (ported with this
-// file); `ApiError` is `ProductApiError`; Prettier formatting.
 /**
  * View trace (plan §7.5, E1, EN16): a read-only waterfall of one reply's trace in a side sheet.
  * A fresh reply's trace may still be arriving in Tempo, so a 404 retries at 2, 5, 10 and 20 s
  * before "Trace not in yet". 503 means Tempo isn't configured; 403 stops.
  */
-import { useEffect, useMemo, useState } from "react";
-import { hrefFor } from "@nasiko/app-core/url-state";
+import { Link } from '@tanstack/react-router'
+import { useEffect, useMemo, useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
-  Button,
   Sheet,
   SheetContent,
   SheetDescription,
   SheetHeader,
   SheetTitle,
-  Skeleton,
-} from "@nasiko/ui/primitives";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { flattenSpans, traceDurationMs, type FlatSpan } from "../../observability/spans";
-import { ErrorState, StateCard } from "../../observability/StateCard";
-import { useTraceDetail } from "../../trace/api";
-import { Legend, Waterfall } from "../../trace/Waterfall";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import { copy } from "../copy";
+} from '@nasiko/ui/primitives/sheet'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { flattenSpans, traceDurationMs, type FlatSpan } from '@nasiko/features/observability/spans'
+import { ErrorState, StateCard } from '@nasiko/features/observability/StateCard'
+import { useTraceDetail } from '@nasiko/features/trace/api'
+import { Legend, Waterfall } from '@nasiko/features/trace/Waterfall'
+import { ApiError } from '@nasiko/data-access/client'
+import { copy } from '../copy'
 
 /** Seconds after the first 404 at which to look again. */
-const NOT_FOUND_RETRIES_S = [2, 5, 10, 20];
+const NOT_FOUND_RETRIES_S = [2, 5, 10, 20]
 
 export interface TraceTarget {
-  traceId: string;
+  traceId: string
   /** The turn is live or the reply is younger than TRACE_FRESH_MS. */
-  fresh: boolean;
+  fresh: boolean
 }
 
 export function TraceSheet({
@@ -40,17 +35,12 @@ export function TraceSheet({
   sessionId,
   onClose,
 }: {
-  target: TraceTarget | null;
-  sessionId: string;
-  onClose: () => void;
+  target: TraceTarget | null
+  sessionId: string
+  onClose(): void
 }) {
   return (
-    <Sheet
-      open={!!target}
-      onOpenChange={(o) => {
-        if (!o) onClose();
-      }}
-    >
+    <Sheet open={!!target} onOpenChange={(o) => !o && onClose()}>
       <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-2xl">
         <SheetHeader>
           <SheetTitle>{copy.traceTitle}</SheetTitle>
@@ -61,57 +51,51 @@ export function TraceSheet({
         {target ? <TraceBody key={target.traceId} target={target} sessionId={sessionId} /> : null}
       </SheetContent>
     </Sheet>
-  );
+  )
 }
 
 function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: string }) {
-  const trace = useTraceDetail(target.traceId, target.fresh);
-  const [misses, setMisses] = useState(0);
-  const notFound = trace.error instanceof ApiError && trace.error.status === 404;
-  const gaveUp = notFound && misses >= NOT_FOUND_RETRIES_S.length;
-  const refetch = trace.refetch;
+  const trace = useTraceDetail(target.traceId, target.fresh)
+  const [misses, setMisses] = useState(0)
+  const notFound = trace.error instanceof ApiError && trace.error.status === 404
+  const gaveUp = notFound && misses >= NOT_FOUND_RETRIES_S.length
+  const refetch = trace.refetch
 
   // Schedule the next look after each 404, until the retries run out.
   useEffect(() => {
-    if (!notFound || misses >= NOT_FOUND_RETRIES_S.length || !trace.errorUpdatedAt) return;
-    const prev = misses ? (NOT_FOUND_RETRIES_S[misses - 1] ?? 0) : 0;
+    if (!notFound || misses >= NOT_FOUND_RETRIES_S.length || !trace.errorUpdatedAt) return
+    const prev = misses ? NOT_FOUND_RETRIES_S[misses - 1] : 0
     const id = setTimeout(
       () => {
-        setMisses((m) => m + 1);
-        void refetch();
+        setMisses((m) => m + 1)
+        void refetch()
       },
-      ((NOT_FOUND_RETRIES_S[misses] ?? prev) - prev) * 1000,
-    );
-    return () => {
-      clearTimeout(id);
-    };
-  }, [notFound, misses, trace.errorUpdatedAt, refetch]);
+      (NOT_FOUND_RETRIES_S[misses] - prev) * 1000,
+    )
+    return () => clearTimeout(id)
+  }, [notFound, misses, trace.errorUpdatedAt, refetch])
 
-  const spans = useMemo(() => (trace.data ? flattenSpans(trace.data) : []), [trace.data]);
-  const [selected, setSelected] = useState<FlatSpan>();
-  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const spans = useMemo(() => (trace.data ? flattenSpans(trace.data) : []), [trace.data])
+  const [selected, setSelected] = useState<FlatSpan>()
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
   const toggle =
-    (set: (f: (s: ReadonlySet<string>) => ReadonlySet<string>) => void) => (key: string) => {
+    (set: (f: (s: ReadonlySet<string>) => ReadonlySet<string>) => void) => (key: string) =>
       set((s) => {
-        const next = new Set(s);
-        if (!next.delete(key)) next.add(key);
-        return next;
-      });
-    };
+        const next = new Set(s)
+        if (!next.delete(key)) next.add(key)
+        return next
+      })
 
   const fullTrace = (
-    <ButtonLink
-      href={hrefFor(`/sessions/${encodeURIComponent(sessionId)}`, { trace: target.traceId })}
-      size="sm"
-      variant="outline"
-      className="pointer-coarse:min-h-11"
-    >
-      {copy.openFullTrace}
-    </ButtonLink>
-  );
+    <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+      <Link to="/sessions/$sessionId" params={{ sessionId }} search={{ trace: target.traceId }}>
+        {copy.openFullTrace}
+      </Link>
+    </Button>
+  )
 
-  let body;
+  let body
   if (trace.data) {
     body = (
       <div className="space-y-3">
@@ -131,7 +115,7 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
           <p className="text-xs text-muted-foreground">{copy.traceStillArriving}</p>
         ) : null}
       </div>
-    );
+    )
   } else if (trace.isPending || (notFound && !gaveUp)) {
     body = (
       <div className="space-y-2" aria-busy>
@@ -140,7 +124,7 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
         <Skeleton className="h-6 w-5/6" />
         <Skeleton className="h-6 w-2/3" />
       </div>
-    );
+    )
   } else if (gaveUp) {
     body = (
       <StateCard
@@ -152,19 +136,19 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
             variant="outline"
             className="pointer-coarse:min-h-11"
             onClick={() => {
-              setMisses(0);
-              void refetch();
+              setMisses(0)
+              void refetch()
             }}
           >
             {copy.retry}
           </Button>
         }
       />
-    );
+    )
   } else if (trace.error instanceof ApiError && trace.error.status === 403) {
-    body = <StateCard tone="warning" title={copy.traceForbidden} />;
+    body = <StateCard tone="warning" title={copy.traceForbidden} />
   } else {
-    body = <ErrorState error={trace.error} onRetry={() => void refetch()} />;
+    body = <ErrorState error={trace.error} onRetry={() => void refetch()} />
   }
 
   return (
@@ -172,5 +156,5 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
       {body}
       {fullTrace}
     </div>
-  );
+  )
 }

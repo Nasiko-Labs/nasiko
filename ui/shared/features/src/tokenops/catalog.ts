@@ -1,10 +1,9 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/catalog.ts. Local edits: none (Prettier formatting only).
-import type { ProviderCatalogEntry } from "./types";
+import type { ProviderCatalogEntry } from './types'
 
-type Model = ProviderCatalogEntry["models"][number];
+type Model = ProviderCatalogEntry['models'][number]
 
 const from = (m: Model) =>
-  m.effective_from ? Date.parse(m.effective_from) : Number.NEGATIVE_INFINITY;
+  m.effective_from ? Date.parse(m.effective_from) : Number.NEGATIVE_INFINITY
 
 /**
  * One entry per model in each provider group. nasiko-server can return overlapping open pricing rows for one model
@@ -14,15 +13,15 @@ const from = (m: Model) =>
  */
 export function dedupeCatalog(groups: readonly ProviderCatalogEntry[]): ProviderCatalogEntry[] {
   return groups.map((g) => {
-    const best = new Map<string, Model>();
+    const best = new Map<string, Model>()
     for (const m of g.models) {
-      const cur = best.get(m.model);
-      if (!cur || from(m) > from(cur)) best.set(m.model, m);
+      const cur = best.get(m.model)
+      if (!cur || from(m) > from(cur)) best.set(m.model, m)
     }
-    const seen = new Set<string>();
+    const seen = new Set<string>()
     const models = g.models.filter(
       (m) => !seen.has(m.model) && best.get(m.model) === m && seen.add(m.model),
-    );
-    return models.length === g.models.length ? g : { ...g, models };
-  });
+    )
+    return models.length === g.models.length ? g : { ...g, models }
+  })
 }

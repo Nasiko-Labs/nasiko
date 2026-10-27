@@ -1,29 +1,16 @@
 {
   "name": "@nasiko/data-access",
-  "version": "0.1.0",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
-  "description": "One owner for remote-data lifecycle of authored product screens: scoped query keys, cancellation, pagination, grouped filters, the product API client, and the synthetic control plane used by tests.",
-  "exports": {
-    ".": "./src/index.ts",
-    "./product": "./src/product/index.ts",
-    "./synthetic": "./src/synthetic/index.ts",
-    "./product/schema": "./src/product/schema.gen.ts"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src --max-warnings 0"
-  },
+  "description": "The API client, its schemas and query helpers, and server-sent events.",
   "dependencies": {
-    "@nasiko/contracts": "workspace:*",
-    "@tanstack/query-core": "5.104.0",
-    "@tanstack/react-query": "5.104.0",
-    "zod": "4.6.5"
+    "@tanstack/react-query": "^5.103.3",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@nasiko/config": "workspace:*",
-    "eslint": "9.39.5",
-    "msw": "3.0.1",
-    "typescript": "5.9.3"
+    "@testing-library/react": "^16.3.3",
+    "msw": "^2.15.0",
+    "vitest": "^4.1.11"
   }
 }

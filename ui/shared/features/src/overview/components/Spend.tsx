@@ -1,24 +1,17 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Spend.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`;
-// the chart-mode `ToggleGroup type="single"` is Base UI's value array (`value={[mode]}`, an emptied pick ignored as
-// Radix's `v &&` did); the spike's `Button asChild` + TanStack `Link` -> `ButtonLink` to `pageHref`
-// (`/sessions?day=…&sort=cost`, `/tokenops?day=…`); optional props admit `undefined`; Prettier formatting.
-// The redesign (legacy ui/ on development, 3aac84f66: 8bf09bf29): the chart beside its drivers in one wide card.
-"use client";
-
 /**
  * Spend by agent (plans/feat-overview.md §7): fleet spend over the page's range against the window before it, the chart
  * stacked by the drivers (or as lines), the spike, and the top 5 drivers plus Other in a table (ACL-scoped, with a
  * scope note), each keyed to its colour in the chart; a row's eye hides its series in the chart. The month-to-date and
  * forecast line is the Spend tile's (eng review R2: the calendar is fleet-wide, so it is said as fleet spend).
  */
-import { BarChart3, Eye, EyeOff, LineChart } from "lucide-react";
-import { useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { spikeSentence } from "../../narrative/tokenops";
-import { Swatch } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Delta } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
+import { Link } from '@tanstack/react-router'
+import { BarChart3, Eye, EyeOff, LineChart } from 'lucide-react'
+import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { spikeSentence } from '@nasiko/features/narrative/tokenops'
+import { Swatch } from '@nasiko/ui/composites/chart-marks'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Delta } from '@nasiko/ui/composites/delta'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -26,56 +19,55 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { OTHER_SERIES, seriesAt, type Series } from "@nasiko/ui/lib";
-import { POLARITY } from "@nasiko/ui/lib";
-import { TEMPO_MAX_SEARCH_MS } from "../../observability/tuning";
-import { fmtMoney, fmtMoneyFloor, fmtPct } from "@nasiko/ui/lib";
-import type { Spend as SpendData } from "../api";
-import { copy } from "../copy";
-import { Card, CardError, CardSkeleton, pageHref, SourceFailed, TOUCH } from "./Card";
-import { SpendChart, type ChartMode } from "./SpendChart";
+} from '@nasiko/ui/primitives/table'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { OTHER_SERIES, seriesAt, type Series } from '@nasiko/ui/lib/chart'
+import { POLARITY } from '@nasiko/ui/lib/delta'
+import { TEMPO_MAX_SEARCH_MS } from '@nasiko/features/observability/tuning'
+import { fmtMoney, fmtMoneyFloor, fmtPct } from '@nasiko/ui/lib/format'
+import type { Spend as SpendData } from '../api'
+import { copy } from '../copy'
+import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
+import { SpendChart, type ChartMode } from './SpendChart'
 
-const OTHER = "other";
+const OTHER = 'other'
 
 export function Spend({
   spend,
   now,
   className,
 }: {
-  spend: SpendData;
-  now: number;
-  className?: string | undefined;
+  spend: SpendData
+  now: number
+  className?: string
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const [mode, setMode] = useState<ChartMode>("bars");
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const [mode, setMode] = useState<ChartMode>('bars')
   // Hidden series by driver id (or "other"), so a hidden driver stays hidden when the range reorders the stack.
-  const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set());
-  const { totals, stack, rangeDays } = spend;
+  const [hiddenIds, setHiddenIds] = useState<ReadonlySet<string>>(new Set())
+  const { totals, stack, rangeDays } = spend
   // A driver's colour and layer in the chart, when the chart is stacked by drivers.
-  const keyed = new Map(stack?.series.map((s, i) => [s.id, { key: s.key, series: seriesAt(i) }]));
-  if (stack) keyed.set(OTHER, { key: OTHER, series: OTHER_SERIES });
+  const keyed = new Map(stack?.series.map((s, i) => [s.id, { key: s.key, series: seriesAt(i) }]))
+  if (stack) keyed.set(OTHER, { key: OTHER, series: OTHER_SERIES })
   const hidden = new Set(
     [...hiddenIds].flatMap((id) => {
-      const k = keyed.get(id);
-      return k ? [k.key] : [];
+      const k = keyed.get(id)
+      return k ? [k.key] : []
     }),
-  );
+  )
   // The last visible series can't be hidden: an empty chart says nothing.
-  const visible = keyed.size - hidden.size;
-  const toggle = (id: string) => {
+  const visible = keyed.size - hidden.size
+  const toggle = (id: string) =>
     setHiddenIds((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
-  };
+      const next = new Set(prev)
+      if (!next.delete(id)) next.add(id)
+      return next
+    })
   const change =
     totals?.previous && totals.previous.spend > 0
       ? ((totals.spend - totals.previous.spend) / totals.previous.spend) * 100
-      : null;
-  const anySpend = spend.days.some((d) => d.spend > 0);
+      : null
+  const anySpend = spend.days.some((d) => d.spend > 0)
   return (
     <Card
       id="overview-spend"
@@ -108,13 +100,11 @@ export function Spend({
               </p>
               {anySpend ? (
                 <ToggleGroup
+                  type="single"
                   variant="outline"
                   size="sm"
-                  value={[mode]}
-                  onValueChange={(vs) => {
-                    const v = vs[0] as ChartMode | undefined;
-                    if (v) setMode(v);
-                  }}
+                  value={mode}
+                  onValueChange={(v) => v && setMode(v as ChartMode)}
                   aria-label={copy.spend.chartMode}
                 >
                   <ToggleGroupItem value="bars" aria-label={copy.spend.bars} className={TOUCH}>
@@ -138,27 +128,31 @@ export function Spend({
             ) : null}
             {spend.spike ? (
               <p className="text-xs">
-                {spikeSentence(spend.spike)}.{" "}
+                {spikeSentence(spend.spike)}.{' '}
                 {/* Sessions searches the trace store from the day to now, which fails past 7 days: older spikes open
                   TokenOps' day panel instead (/ship review). */}
                 {now - Date.parse(`${spend.spike.date}T00:00:00Z`) < TEMPO_MAX_SEARCH_MS ? (
-                  <ButtonLink
+                  <Button
+                    asChild
                     variant="link"
                     size="sm"
                     className={`h-auto px-0 text-xs ${TOUCH}`}
-                    href={pageHref("/sessions", { day: spend.spike.date, sort: "cost" })}
                   >
-                    {copy.spend.seeSessions} <span aria-hidden>→</span>
-                  </ButtonLink>
+                    <Link to="/sessions" search={{ day: spend.spike.date, sort: 'cost' } as never}>
+                      {copy.spend.seeSessions} <span aria-hidden>→</span>
+                    </Link>
+                  </Button>
                 ) : (
-                  <ButtonLink
+                  <Button
+                    asChild
                     variant="link"
                     size="sm"
                     className={`h-auto px-0 text-xs ${TOUCH}`}
-                    href={pageHref("/tokenops", { day: spend.spike.date })}
                   >
-                    {copy.spend.seeDay} <span aria-hidden>→</span>
-                  </ButtonLink>
+                    <Link to="/tokenops" search={{ day: spend.spike.date } as never}>
+                      {copy.spend.seeDay} <span aria-hidden>→</span>
+                    </Link>
+                  </Button>
                 )}
               </p>
             ) : null}
@@ -208,7 +202,7 @@ export function Spend({
                         <Delta
                           changePct={r.deltaPct}
                           polarity={POLARITY.spend}
-                          unavailable={r.deltaKind === "unavailable"}
+                          unavailable={r.deltaKind === 'unavailable'}
                           current={r.cost}
                         />
                       }
@@ -246,7 +240,7 @@ export function Spend({
         </div>
       )}
     </Card>
-  );
+  )
 }
 
 function DriverRow({
@@ -260,20 +254,20 @@ function DriverRow({
   eye,
   onToggle,
 }: {
-  id: string;
-  name: string;
-  series: Series | undefined;
-  sharePct: number;
-  cost: number;
-  perDay: number;
-  delta: ReactNode;
-  eye: { hidden: boolean; last: boolean } | null;
-  onToggle: (id: string) => void;
+  id: string
+  name: string
+  series: Series | undefined
+  sharePct: number
+  cost: number
+  perDay: number
+  delta: ReactNode
+  eye: { hidden: boolean; last: boolean } | null
+  onToggle: (id: string) => void
 }) {
   return (
     <TableRow
       data-testid="spend-driver"
-      className={eye?.hidden ? "text-muted-foreground" : undefined}
+      className={eye?.hidden ? 'text-muted-foreground' : undefined}
     >
       <TableCell className="px-2 py-2.5">
         <span className="flex min-w-0 items-center gap-2">
@@ -289,7 +283,7 @@ function DriverRow({
               style={
                 {
                   width: `${Math.min(100, Math.max(1, sharePct))}%`,
-                  "--bar": series?.edge ?? "var(--chart-other-edge)",
+                  '--bar': series?.edge ?? 'var(--chart-other-edge)',
                 } as CSSProperties
               }
             />
@@ -316,14 +310,12 @@ function DriverRow({
             aria-pressed={!eye.hidden}
             aria-label={copy.spend.show(name)}
             disabled={!eye.hidden && eye.last}
-            onClick={() => {
-              onToggle(id);
-            }}
+            onClick={() => onToggle(id)}
           >
             {eye.hidden ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
           </Button>
         </TableCell>
       ) : null}
     </TableRow>
-  );
+  )
 }

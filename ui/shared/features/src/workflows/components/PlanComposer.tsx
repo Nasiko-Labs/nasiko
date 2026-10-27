@@ -1,16 +1,12 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/components/PlanComposer.tsx. Local edits: `"use
-// client"`; TanStack `Link to` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) `href`; callbacks that returned a void expression are braced (lint); Prettier formatting.
-"use client";
-
 /**
  * The workflow's description, which doubles as the planner's prompt: Enter (outside an IME composition) or the button
  * asks for a plan. Once the steps on screen came from this text, asking again is off until it is edited.
  * `confirmReplace`: the steps were edited since, so replacing them asks first.
  */
-import Link from "@nasiko/app-core/navigation";
-import { Loader2, WandSparkles } from "lucide-react";
-import { useState } from "react";
-import { Alert, AlertDescription } from "@nasiko/ui/primitives";
+import { Link } from '@tanstack/react-router'
+import { Loader2, WandSparkles } from 'lucide-react'
+import { useState } from 'react'
+import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,31 +16,31 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/alert-dialog'
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupTextarea,
-} from "@nasiko/ui/primitives";
-import { copy, reason } from "../copy";
-import { planFailure } from "../logic";
+} from '@nasiko/ui/primitives/input-group'
+import { copy, reason } from '../copy'
+import { planFailure } from '../logic'
 
 /** Why the planner said no, and what the person can do instead. */
 function PlanNotice({ error }: { error: unknown }) {
-  const why = planFailure(error);
-  if (why === "no-agents")
+  const why = planFailure(error)
+  if (why === 'no-agents')
     return (
       <>
-        {copy.plan.noAgentsBefore}{" "}
-        <Link href="/deploy" className="text-primary-text underline underline-offset-4">
+        {copy.plan.noAgentsBefore}{' '}
+        <Link to="/deploy" className="text-primary-text underline underline-offset-4">
           {copy.plan.noAgentsLink}
-        </Link>{" "}
+        </Link>{' '}
         {copy.plan.noAgentsAfter}
       </>
-    );
-  if (why === "other") return copy.plan.other(reason(error));
-  return copy.plan[why];
+    )
+  if (why === 'other') return copy.plan.other(reason(error))
+  return copy.plan[why]
 }
 
 export function PlanComposer({
@@ -58,25 +54,25 @@ export function PlanComposer({
   placeholder,
   disabled,
 }: {
-  value: string;
-  onChange: (value: string) => void;
-  onGenerate: (description: string) => void;
+  value: string
+  onChange: (value: string) => void
+  onGenerate: (description: string) => void
   /** The description the on-screen steps were generated from (null: none). */
-  generatedFrom: string | null;
-  confirmReplace: boolean;
-  busy: boolean;
-  error: unknown;
-  placeholder: string;
-  disabled?: boolean;
+  generatedFrom: string | null
+  confirmReplace: boolean
+  busy: boolean
+  error: unknown
+  placeholder: string
+  disabled?: boolean
 }) {
-  const [asking, setAsking] = useState<string | null>(null);
-  const desc = value.trim();
-  const canSubmit = !!desc && !busy && !disabled && desc !== generatedFrom;
+  const [asking, setAsking] = useState<string | null>(null)
+  const desc = value.trim()
+  const canSubmit = !!desc && !busy && !disabled && desc !== generatedFrom
   const submit = () => {
-    if (!canSubmit) return;
-    if (confirmReplace) setAsking(desc);
-    else onGenerate(desc);
-  };
+    if (!canSubmit) return
+    if (confirmReplace) setAsking(desc)
+    else onGenerate(desc)
+  }
   return (
     <div data-tour="wf-plan" className="flex flex-col gap-3">
       <InputGroup>
@@ -87,13 +83,11 @@ export function PlanComposer({
           value={value}
           disabled={disabled}
           rows={3}
-          onChange={(e) => {
-            onChange(e.target.value);
-          }}
+          onChange={(e) => onChange(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              submit();
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              submit()
             }
           }}
         />
@@ -116,12 +110,7 @@ export function PlanComposer({
           <Loader2 aria-hidden className="size-4 animate-spin" /> {copy.generating}
         </p>
       ) : null}
-      <AlertDialog
-        open={asking !== null}
-        onOpenChange={(o) => {
-          if (!o) setAsking(null);
-        }}
-      >
+      <AlertDialog open={asking !== null} onOpenChange={(o) => !o && setAsking(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>{copy.replaceTitle}</AlertDialogTitle>
@@ -131,8 +120,8 @@ export function PlanComposer({
             <AlertDialogCancel>{copy.keepSteps}</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                if (asking) onGenerate(asking);
-                setAsking(null);
+                if (asking) onGenerate(asking)
+                setAsking(null)
               }}
             >
               {copy.replaceSteps}
@@ -141,5 +130,5 @@ export function PlanComposer({
         </AlertDialogContent>
       </AlertDialog>
     </div>
-  );
+  )
 }

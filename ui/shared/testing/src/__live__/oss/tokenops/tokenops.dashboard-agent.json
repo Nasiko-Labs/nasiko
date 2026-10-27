@@ -1,0 +1,162 @@
+{
+  "fixture_version": 1,
+  "id": "tokenops.dashboard-agent",
+  "recorded_at": "2026-09-29T05:55:36.952Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.952Z",
+    "end": "2026-09-29T05:55:36.959Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/finops/dashboard",
+    "query": {
+      "range": "30d",
+      "view": "agent",
+      "agent_id": "{agent0}"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "summary": {
+        "total_cost": 3.997446,
+        "total_operations": 222,
+        "operations_last_24h": 11,
+        "average_cost": 0.018007,
+        "active_agents": 1,
+        "total_agents": 1,
+        "total_container_hours": 17203.981518,
+        "unpriced_calls": 0,
+        "estimated_cost": 0,
+        "unknown_confidence_calls": 222
+      },
+      "agents": [
+        {
+          "agent_id": "5eed0000-0001-4000-8000-000000000001",
+          "agent_name": "Support Bot",
+          "total_cost": 3.997446,
+          "operations": 222,
+          "is_capped": false,
+          "avg_cost_per_operation": 0.018007,
+          "prompt_tokens": 946473,
+          "completion_tokens": 228540,
+          "cache_read_tokens": 199340,
+          "cache_creation_tokens": 2225,
+          "total_tokens": 1376578,
+          "avg_latency_ms": 3152,
+          "avg_latency_p95_ms": 7520.449999999998,
+          "avg_latency_p99_ms": 8231.05,
+          "tool_call_count": 392,
+          "version": "1.0.0",
+          "container_hours": 1439.665126
+        }
+      ],
+      "token_usage": {
+        "total_tokens": 1376578,
+        "prompt_tokens": 946473,
+        "completion_tokens": 228540,
+        "cache_read_tokens": 199340,
+        "cache_creation_tokens": 2225,
+        "avg_tokens_per_operation": 6200
+      },
+      "kpis": {
+        "total_spend": {
+          "current": 3.997446,
+          "previous": 3.925011,
+          "change_pct": 1.85
+        },
+        "total_tokens": {
+          "current": 1376578,
+          "previous": 1216743,
+          "change_pct": 13.14
+        },
+        "cost_per_operation": {
+          "current": 0.018007,
+          "previous": 0.01714,
+          "change_pct": 5.06
+        },
+        "avg_latency_ms": {
+          "current": 3152,
+          "previous": 3094,
+          "change_pct": 1.87
+        },
+        "total_agents": {
+          "current": 1,
+          "previous": 0,
+          "change_pct": null
+        },
+        "active_agents": {
+          "current": 1,
+          "previous": 1,
+          "change_pct": 0
+        },
+        "total_operations": {
+          "current": 222,
+          "previous": 229,
+          "change_pct": -3.06
+        },
+        "total_tool_calls": {
+          "current": 392,
+          "previous": 413,
+          "change_pct": -5.08
+        },
+        "latency_p95_ms": {
+          "current": 7520.449999999998,
+          "previous": 7216.199999999999,
+          "change_pct": 4.22
+        },
+        "latency_p99_ms": {
+          "current": 8231.05,
+          "previous": 8195.599999999999,
+          "change_pct": 0.43
+        }
+      },
+      "attributions": {
+        "view": "agent",
+        "rows": [
+          {
+            "agent_id": "5eed0000-0001-4000-8000-000000000001",
+            "agent_name": "Support Bot",
+            "total_cost": 3.997446,
+            "operations": 222,
+            "is_capped": false,
+            "avg_cost_per_operation": 0.018007,
+            "prompt_tokens": 946473,
+            "completion_tokens": 228540,
+            "cache_read_tokens": 199340,
+            "cache_creation_tokens": 2225,
+            "total_tokens": 1376578,
+            "avg_latency_ms": 3152,
+            "avg_latency_p95_ms": 7520.449999999998,
+            "avg_latency_p99_ms": 8231.05,
+            "tool_call_count": 392,
+            "version": "1.0.0",
+            "container_hours": 1439.665126
+          }
+        ]
+      },
+      "spend_by_agent": {
+        "slices": [
+          {
+            "agent_name": "Support Bot",
+            "spend_usd": 3.997446,
+            "pct": 100
+          }
+        ],
+        "total_spend_usd": 3.997446
+      }
+    },
+    "status_code": 200,
+    "message": "FinOps dashboard data retrieved successfully"
+  }
+}

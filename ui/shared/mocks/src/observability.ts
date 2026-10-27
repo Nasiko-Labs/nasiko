@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/mocks/observability.ts. Local edits: `!` on in-range index reads of the
-// seeded traces and spans (`noUncheckedIndexedAccess` here); development (84c6f11eb); Prettier formatting.
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
 /**
  * Mock observability data (sessions, traces, spans, logs), derived from the ONE seed so
  * every number agrees with TokenOps.
@@ -35,9 +32,9 @@ import type {
   SpanNode,
   TraceDetail,
   TraceEntry,
-} from "@nasiko/features/observability/types";
-import type { components } from "@nasiko/data-access/product/schema";
-import { round6, type Seed, type SeedTrace } from "./seed";
+} from '@nasiko/features/observability/types'
+import type { components } from '@nasiko/data-access/schema.gen'
+import { round6, type Seed, type SeedTrace } from './seed'
 import {
   allTokens,
   b64,
@@ -52,7 +49,7 @@ import {
   spanAttributes,
   type GenSpan,
   type MockSession,
-} from "./spanBuilder";
+} from './spanBuilder'
 
 // The session model and span generator live in spanBuilder.ts (shared with scripts/seed-live.ts).
 export {
@@ -61,41 +58,40 @@ export {
   observabilityData,
   SHOWCASE_SESSION,
   type MockSession,
-} from "./spanBuilder";
+} from './spanBuilder'
 
 // ─── wire shapes ────────────────────────────────────────────────────────────
 
-const content = (value: string) => ({ value, mime_type: "text/plain", parsed_value: null });
+const content = (value: string) => ({ value, mime_type: 'text/plain', parsed_value: null })
 
 /** Span content as service.rs get_span_details builds it: any value that parses as JSON is "json" and parsed, else "text". */
 function spanContent(value: string): { value: string; mime_type: string; parsed_value: unknown } {
-  let parsed: unknown = null;
+  let parsed: unknown = null
   try {
-    parsed = value ? JSON.parse(value) : null;
+    parsed = value ? JSON.parse(value) : null
   } catch {
     // Plain text.
   }
-  return { value, mime_type: parsed === null ? "text" : "json", parsed_value: parsed };
+  return { value, mime_type: parsed === null ? 'text' : 'json', parsed_value: parsed }
 }
 
 /** service.rs `unflatten_attrs`: dotted keys become nested objects; a key under a scalar is dropped, as there. */
 function unflatten(attrs: Record<string, unknown>): Record<string, unknown> {
-  const root: Record<string, unknown> = {};
+  const root: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(attrs)) {
-    const parts = key.split(".");
-    let map = root;
+    const parts = key.split('.')
+    let map = root
     for (const p of parts.slice(0, -1)) {
-      const next = (map[p] ??= {});
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- an attribute key may collide with a leaf
-      if (!next || typeof next !== "object") {
-        map = {};
-        break;
+      const next = (map[p] ??= {})
+      if (!next || typeof next !== 'object') {
+        map = {}
+        break
       }
-      map = next as Record<string, unknown>;
+      map = next as Record<string, unknown>
     }
-    map[parts[parts.length - 1]!] = value;
+    map[parts[parts.length - 1]!] = value
   }
-  return root;
+  return root
 }
 
 function toNode(s: GenSpan): SpanNode {
@@ -119,33 +115,31 @@ function toNode(s: GenSpan): SpanNode {
     provider: s.provider,
     span_annotation_summaries: [],
     children: [],
-  };
+  }
 }
 
 export function traceDetail(seed: Seed, traceId: string): TraceDetail | null {
-  const found = observabilityData(seed).traceById.get(traceId);
-  if (!found) return null;
-  const { trace: t, session } = found;
-  const gen = generateSpans(seed, traceId);
-  const nodes = new Map(gen.map((s) => [s.hex, toNode(s)]));
-  const lookup: Record<string, SpanNode> = {};
-  for (const s of gen) lookup[encodeSpanId(s.hex)] = toNode(s);
-  const kids = new Map<string, string[]>();
+  const found = observabilityData(seed).traceById.get(traceId)
+  if (!found) return null
+  const { trace: t, session } = found
+  const gen = generateSpans(seed, traceId)
+  const nodes = new Map(gen.map((s) => [s.hex, toNode(s)]))
+  const lookup: Record<string, SpanNode> = {}
+  for (const s of gen) lookup[encodeSpanId(s.hex)] = toNode(s)
+  const kids = new Map<string, string[]>()
   for (const s of gen)
     if (s.parentHex && nodes.has(s.parentHex))
-      kids.set(s.parentHex, [...(kids.get(s.parentHex) ?? []), s.hex]);
+      kids.set(s.parentHex, [...(kids.get(s.parentHex) ?? []), s.hex])
   const attach = (hex: string): SpanNode => {
-    const node = nodes.get(hex)!;
+    const node = nodes.get(hex)!
     node.children = (kids.get(hex) ?? [])
       .map(attach)
-      .sort((a, b) => (a.start_time ?? "").localeCompare(b.start_time ?? ""));
-    return node;
-  };
-  const roots = gen
-    .filter((s) => !s.parentHex || !nodes.has(s.parentHex))
-    .map((s) => attach(s.hex));
-  const start = Math.min(...gen.map((s) => s.start));
-  const end = Math.max(...gen.map((s) => s.end));
+      .sort((a, b) => (a.start_time ?? '').localeCompare(b.start_time ?? ''))
+    return node
+  }
+  const roots = gen.filter((s) => !s.parentHex || !nodes.has(s.parentHex)).map((s) => attach(s.hex))
+  const start = Math.min(...gen.map((s) => s.start))
+  const end = Math.max(...gen.map((s) => s.end))
   return {
     id: t.trace_id,
     project_session_id: session.session_id,
@@ -170,21 +164,21 @@ export function traceDetail(seed: Seed, traceId: string): TraceDetail | null {
     },
     spans: roots,
     span_lookup: lookup,
-  } satisfies TraceDetail;
+  } satisfies TraceDetail
 }
 
 export function spanDetail(seed: Seed, traceId: string, hex: string): SpanDetail | null {
-  const found = observabilityData(seed).traceById.get(traceId);
-  if (!found) return null;
-  const gen = generateSpans(seed, traceId);
-  const s = gen.find((x) => x.hex === hex);
-  if (!s) return null;
-  const t = found.trace;
-  const attrs = spanAttributes(s, found.session);
+  const found = observabilityData(seed).traceById.get(traceId)
+  if (!found) return null
+  const gen = generateSpans(seed, traceId)
+  const s = gen.find((x) => x.hex === hex)
+  if (!s) return null
+  const t = found.trace
+  const attrs = spanAttributes(s, found.session)
   const first = (...keys: string[]) =>
-    keys.map((k) => attrs[k]).find((v) => typeof v === "string" && v) as string | undefined;
-  const whole = s.name === "coding_agent.turn";
-  const cw = (cost: number, tokens: number) => ({ cost, tokens });
+    keys.map((k) => attrs[k]).find((v) => typeof v === 'string' && v) as string | undefined
+  const whole = s.name === 'coding_agent.turn'
+  const cw = (cost: number, tokens: number) => ({ cost, tokens })
   return {
     id: encodeSpanId(s.hex),
     span_id: s.hex,
@@ -220,9 +214,9 @@ export function spanDetail(seed: Seed, traceId: string, hex: string): SpanDetail
           cache_creation: cw(0, s.cacheCreation),
         },
     // get_span_details' precedence at ea233d20 (Loki content comes next; the mock has none).
-    input: spanContent(first("input.value", "gen_ai.input.messages", "tool.arguments") ?? ""),
+    input: spanContent(first('input.value', 'gen_ai.input.messages', 'tool.arguments') ?? ''),
     output: spanContent(
-      first("output.value", "gen_ai.output.messages", "tool.result", "error.message") ?? "",
+      first('output.value', 'gen_ai.output.messages', 'tool.result', 'error.message') ?? '',
     ),
     attributes: unflatten(attrs) as Record<string, never>,
     events: [],
@@ -231,21 +225,21 @@ export function spanDetail(seed: Seed, traceId: string, hex: string): SpanDetail
     document_retrieval_metrics: [],
     document_evaluations: [],
     project: {
-      id: "",
+      id: '',
       annotation_configs: { configs: [], edges: [] } as unknown as Record<string, never>,
     },
-  } satisfies SpanDetail;
+  } satisfies SpanDetail
 }
 
 /** The session's traces whose start falls in [start, now]. */
 function visibleTraces(s: MockSession, start: number, now: number): SeedTrace[] {
-  return s.traces.filter((t) => t.ts >= start && t.ts <= now);
+  return s.traces.filter((t) => t.ts >= start && t.ts <= now)
 }
 
 function sessionEnd(seed: Seed, s: MockSession): number {
-  const last = s.traces[s.traces.length - 1]!;
-  const spans = generateSpans(seed, last.trace_id);
-  return spans.length ? Math.max(...spans.map((x) => x.end)) : last.ts + last.latency_ms;
+  const last = s.traces[s.traces.length - 1]
+  const spans = generateSpans(seed, last.trace_id)
+  return spans.length ? Math.max(...spans.map((x) => x.end)) : last.ts + last.latency_ms
 }
 
 function sessionSummary(
@@ -255,28 +249,28 @@ function sessionSummary(
   now: number,
   tempoDown = false,
 ): SessionSummary {
-  const traces = visibleTraces(s, start, now);
-  const agentName = s.agent.deleted ? "" : s.agent.name;
+  const traces = visibleTraces(s, start, now)
+  const agentName = s.agent.deleted ? '' : s.agent.name
   // The server derives status from `flows` — the outcome recorded at the proxy,
   // in Postgres — not from spans (sessions_sql.rs `derive_status`). The seed's
   // storm traces are its failed requests, so mirror that: any failed request
   // fails the session. Deliberately unaffected by `tempoDown`: that is the point
   // of the SQL-only list.
-  const { storm } = observabilityData(seed);
-  const failedFlows = traces.filter((t) => storm.has(t.trace_id)).length;
+  const { storm } = observabilityData(seed)
+  const failedFlows = traces.filter((t) => storm.has(t.trace_id)).length
   const base = {
     id: s.session_id,
     session_id: s.session_id,
     agent_id: agentName,
     // No requests in the window means nothing says this session succeeded.
-    status: !traces.length ? null : failedFlows > 0 ? ("failed" as const) : ("ok" as const),
+    status: !traces.length ? null : failedFlows > 0 ? ('failed' as const) : ('ok' as const),
     failed_flows: failedFlows,
     // Unrecovered error spans. `null` means "not materialized yet", which only
     // applies when there is nothing to have materialized.
     error_count: traces.length ? failedFlows : null,
     session_annotations: [],
     session_annotation_summaries: [],
-  };
+  }
   if (tempoDown || !traces.length) {
     // DB-only fallback row (service.rs: provider NotFound/unavailable → minimal summary).
     return {
@@ -291,34 +285,34 @@ function sessionSummary(
       trace_latency_ms_p50: null,
       trace_latency_ms_p99: null,
       cost_summary: { total: { cost: null } },
-    };
+    }
   }
-  const end = sessionEnd(seed, s);
-  const lat = traces.map((t) => t.latency_ms).sort((a, b) => a - b);
+  const end = sessionEnd(seed, s)
+  const lat = traces.map((t) => t.latency_ms).sort((a, b) => a - b)
   const pct = (q: number) =>
-    lat[Math.min(lat.length - 1, Math.max(0, Math.ceil(q * lat.length) - 1))]!;
+    lat[Math.min(lat.length - 1, Math.max(0, Math.ceil(q * lat.length) - 1))]
   return {
     ...base,
     num_traces: traces.length,
-    start_time: iso(traces[0]!.ts),
+    start_time: iso(traces[0].ts),
     end_time: iso(end),
-    duration_ms: end - traces[0]!.ts,
+    duration_ms: end - traces[0].ts,
     first_input: s.firstInput,
     last_output: s.lastOutput,
     token_usage: { total: traces.reduce((acc, t) => acc + allTokens(t), 0) },
     trace_latency_ms_p50: pct(0.5),
     trace_latency_ms_p99: pct(0.99),
     cost_summary: { total: { cost: round6(traces.reduce((acc, t) => acc + t.cost_usd, 0)) } },
-  } satisfies SessionSummary;
+  } satisfies SessionSummary
 }
 
 export function sessionDetail(seed: Seed, s: MockSession): SessionDetail {
-  const traces = s.traces;
-  const sum = (f: (t: SeedTrace) => number) => traces.reduce((acc, t) => acc + f(t), 0);
-  const cw = (cost: number, tokens: number) => ({ cost: round6(cost), tokens });
-  const lat = traces.map((t) => t.latency_ms).sort((a, b) => a - b);
+  const traces = s.traces
+  const sum = (f: (t: SeedTrace) => number) => traces.reduce((acc, t) => acc + f(t), 0)
+  const cw = (cost: number, tokens: number) => ({ cost: round6(cost), tokens })
+  const lat = traces.map((t) => t.latency_ms).sort((a, b) => a - b)
   const entries: TraceEntry[] = traces.map((t, i) => {
-    const root = generateSpans(seed, t.trace_id)[0]!;
+    const root = generateSpans(seed, t.trace_id)[0]
     return {
       id: encodeTraceId(t.trace_id),
       trace_id: t.trace_id,
@@ -336,16 +330,16 @@ export function sessionDetail(seed: Seed, s: MockSession): SessionDetail {
         start_time: iso(root.start),
         span_annotations: [],
         span_annotation_summaries: [],
-        project: { id: "default" },
-        input: content(s.agent.name === CAPTURE_OFF_AGENT ? "" : s.firstInput),
-        output: content(s.agent.name === CAPTURE_OFF_AGENT ? "" : s.lastOutput),
+        project: { id: 'default' },
+        input: content(s.agent.name === CAPTURE_OFF_AGENT ? '' : s.firstInput),
+        output: content(s.agent.name === CAPTURE_OFF_AGENT ? '' : s.lastOutput),
         trace: {
           id: encodeTraceId(t.trace_id),
           cost_summary: { total: { cost: t.cost_usd } } as unknown as Record<string, never>,
         },
       },
-    };
-  });
+    }
+  })
   return {
     id: s.session_id,
     session_id: s.session_id,
@@ -383,7 +377,7 @@ export function sessionDetail(seed: Seed, s: MockSession): SessionDetail {
     metrics_complete: true,
     traces: entries,
     pagination: { end_cursor: null, has_next_page: false },
-  } satisfies SessionDetail;
+  } satisfies SessionDetail
 }
 
 /**
@@ -398,23 +392,23 @@ export function sessionDetail(seed: Seed, s: MockSession): SessionDetail {
 export function sessionList(
   seed: Seed,
   p: {
-    start_time?: string | null;
-    end_time?: string | null;
-    limit?: string | null;
-    offset?: string | null;
-    cursor?: string | null;
-    status?: string | null;
+    start_time?: string | null
+    end_time?: string | null
+    limit?: string | null
+    offset?: string | null
+    cursor?: string | null
+    status?: string | null
   },
   now: number,
   tempoDown = false,
   extra: readonly SessionSummary[] = [],
 ) {
-  const parsed = p.start_time ? Date.parse(p.start_time) : Number.NaN;
-  const start = Number.isNaN(parsed) ? now - 7 * 86_400_000 : parsed;
-  const parsedEnd = p.end_time ? Date.parse(p.end_time) : Number.NaN;
-  const end = Number.isNaN(parsedEnd) ? now : Math.min(parsedEnd, now);
-  const limit = Math.min(100, Math.max(1, Number.parseInt(p.limit ?? "", 10) || 25));
-  const data = observabilityData(seed);
+  const parsed = p.start_time ? Date.parse(p.start_time) : Number.NaN
+  const start = Number.isNaN(parsed) ? now - 7 * 86_400_000 : parsed
+  const parsedEnd = p.end_time ? Date.parse(p.end_time) : Number.NaN
+  const end = Number.isNaN(parsedEnd) ? now : Math.min(parsedEnd, now)
+  const limit = Math.min(100, Math.max(1, Number.parseInt(p.limit ?? '', 10) || 25))
+  const data = observabilityData(seed)
 
   // The filter is applied before paging, as it is in SQL — so `matching_count`
   // counts every match in the window, not the rows that fit on this page.
@@ -423,19 +417,19 @@ export function sessionList(
       .filter((s) => s.created >= start && s.created <= end)
       .map((s) => ({ created: s.created, row: sessionSummary(seed, s, start, now, tempoDown) })),
     ...extra
-      .map((x) => ({ created: Date.parse(x.start_time ?? ""), row: x }))
+      .map((x) => ({ created: Date.parse(x.start_time ?? ''), row: x }))
       .filter((x) => x.created >= start && x.created <= end),
-  ].sort((a, b) => b.created - a.created);
-  const matching = p.status ? summaries.filter((x) => x.row.status === p.status) : summaries;
+  ].sort((a, b) => b.created - a.created)
+  const matching = p.status ? summaries.filter((x) => x.row.status === p.status) : summaries
 
   // `cursor` is the keyset anchor; `offset` is still accepted (the Sessions page
   // pages on it). Both address the same page, as on the server.
-  const fromCursor = p.cursor ? Number.parseInt(decodeCursorIndex(p.cursor), 10) : Number.NaN;
+  const fromCursor = p.cursor ? Number.parseInt(decodeCursorIndex(p.cursor), 10) : Number.NaN
   const offset = Number.isNaN(fromCursor)
-    ? Math.max(0, Number.parseInt(p.offset ?? "", 10) || 0)
-    : fromCursor;
-  const page = matching.slice(offset, offset + limit);
-  const hasNext = matching.length > offset + limit;
+    ? Math.max(0, Number.parseInt(p.offset ?? '', 10) || 0)
+    : fromCursor
+  const page = matching.slice(offset, offset + limit)
+  const hasNext = matching.length > offset + limit
   return {
     data: {
       sessions: page.map((x) => x.row),
@@ -447,55 +441,55 @@ export function sessionList(
         has_next_page: hasNext,
       },
     },
-  };
+  }
 }
 
 // The server's cursor is base64url of `<nanos>:<session_id>`; the mock only has
 // to round-trip an opaque string, so it encodes the page offset the same way.
-const encodeCursorIndex = (i: number) => btoa(`${i}`).replace(/=+$/, "");
+const encodeCursorIndex = (i: number) => btoa(`${i}`).replace(/=+$/, '')
 const decodeCursorIndex = (c: string) => {
   try {
-    return atob(c);
+    return atob(c)
   } catch {
-    return "";
+    return ''
   }
-};
+}
 
 /** Deterministic log lines for an agent, spread over the last hour before `now`. */
 export function agentLogs(seed: Seed, agentRef: string, now: number, count = 30): LogLine[] | null {
   // routes.rs resolves agent_ref as a UUID or the exact agent name only.
-  const agent = seed.agents.find((a) => a.name === agentRef || a.id === agentRef);
-  if (!agent || agent.deleted) return null;
-  const rand = prng(hash(agent.name));
+  const agent = seed.agents.find((a) => a.name === agentRef || a.id === agentRef)
+  if (!agent || agent.deleted) return null
+  const rand = prng(hash(agent.name))
   const msgs = [
-    "POST /a2a message/send 200",
-    "tool call completed",
-    "LLM call finished",
-    "session resumed",
-    "upstream latency high",
-    "retrying tool call",
-  ];
+    'POST /a2a message/send 200',
+    'tool call completed',
+    'LLM call finished',
+    'session resumed',
+    'upstream latency high',
+    'retrying tool call',
+  ]
   return Array.from({ length: count }, (_, i) => {
-    const ts = now - (count - i) * 90_000 - Math.floor(rand() * 60_000);
-    const m = msgs[Math.floor(rand() * msgs.length)]!;
+    const ts = now - (count - i) * 90_000 - Math.floor(rand() * 60_000)
+    const m = msgs[Math.floor(rand() * msgs.length)]
     return {
       timestamp: iso(ts),
-      level: m.includes("retry") || m.includes("high") ? "WARN" : "INFO",
+      level: m.includes('retry') || m.includes('high') ? 'WARN' : 'INFO',
       message: `${agent.name}: ${m}`,
-      source: i % 3 === 0 ? "proxy" : "container",
+      source: i % 3 === 0 ? 'proxy' : 'container',
       trace_id: null,
-    };
-  });
+    }
+  })
 }
 
 /** GET /api/agents (superuser: all live agents). Deleted agents are not listed. */
 export function agentsList(
   seed: Seed,
   p: { limit?: string | null; offset?: string | null } = {},
-): components["schemas"]["Agent"][] {
+): components['schemas']['Agent'][] {
   // catalog/routes.rs: limit defaults to 50, clamped 1–100; offset paging.
-  const limit = Math.min(100, Math.max(1, Number.parseInt(p.limit ?? "", 10) || 50));
-  const offset = Math.max(0, Number.parseInt(p.offset ?? "", 10) || 0);
+  const limit = Math.min(100, Math.max(1, Number.parseInt(p.limit ?? '', 10) || 50))
+  const offset = Math.max(0, Number.parseInt(p.offset ?? '', 10) || 0)
   return seed.agents
     .filter((a) => !a.deleted)
     .slice(offset, offset + limit)
@@ -504,19 +498,19 @@ export function agentsList(
       name: a.name,
       display_name: a.display_name,
       version: a.version,
-      status: "running",
+      status: 'running',
       minimal_code_enabled: false,
-      owner_id: "5eed0000-0000-4000-8000-00000000a001",
+      owner_id: '5eed0000-0000-4000-8000-00000000a001',
       created_at: seed.anchor,
       updated_at: seed.anchor,
       capabilities: {},
       metadata: {},
       security_schemes: {},
-      default_input_modes: ["text"],
-      default_output_modes: ["text"],
-      preferred_transport: "JSONRPC",
-      protocol_version: "0.3.0",
+      default_input_modes: ['text'],
+      default_output_modes: ['text'],
+      preferred_transport: 'JSONRPC',
+      protocol_version: '0.3.0',
       skills: [],
       tags: [],
-    })) satisfies components["schemas"]["Agent"][];
+    })) satisfies components['schemas']['Agent'][]
 }

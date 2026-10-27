@@ -1,0 +1,42 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./oss/app"
+    },
+    {
+      "path": "./tsconfig.node.json"
+    },
+    {
+      "path": "./e2e"
+    }
+  ],
+  "compilerOptions": {
+    "paths": {
+      "@nasiko/app-core/*": [
+        "./shared/app-core/src/*"
+      ],
+      "@nasiko/app-shell/*": [
+        "./shared/app-shell/src/*"
+      ],
+      "@nasiko/data-access/*": [
+        "./shared/data-access/src/*"
+      ],
+      "@nasiko/features/*": [
+        "./shared/features/src/*"
+      ],
+      "@nasiko/mocks/*": [
+        "./shared/mocks/src/*"
+      ],
+      "@nasiko/testing/*": [
+        "./shared/testing/src/*"
+      ],
+      "@nasiko/ui/*": [
+        "./shared/ui/src/*"
+      ],
+      "@edition/*": [
+        "./oss/app/src/*"
+      ]
+    }
+  }
+}

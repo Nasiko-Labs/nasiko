@@ -1,77 +1,68 @@
-"use client";
-
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/WaitlistCta.tsx. Local edits: `"use client"`; `Button asChild` -> a plain `<a>` carrying `buttonVariants()` and the `data-slot/variant/size` attributes the lab's Slot merged (Base UI's Button would add `role="button"` to the anchor) and `SidebarMenuButton asChild` -> `render={<a …/>}` (Base UI useRender; the same anchors); imports mapped to `@nasiko/ui/*` and `@/lib/env`.
 /**
  * The OSS app's ways onto the Nasiko waitlist: the early-access card at the foot of the sidebar (a ticket-icon row in
  * the rail) and the login page's line under Sign in. Shown only in the OSS edition and only when
  * the waitlist URL is valid (`env.waitlistUrl`, tagged `ref=oss-app`); every link opens a new tab and
  * carries nothing about the user.
  */
-import { ExternalLink, Ticket } from "lucide-react";
-import { useEdition } from "@nasiko/app-core/edition/edition-context";
+import { ExternalLink, Ticket } from 'lucide-react'
+import { useEdition } from '@nasiko/app-core/edition/edition-context'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
-  buttonVariants,
   SidebarGroup,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-} from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { env } from "@nasiko/app-core/env";
-import { copy } from "@nasiko/app-core/shell/copy";
-import { GROUP, ROW } from "@nasiko/app-core/shell/rowStyles";
+} from '@nasiko/ui/primitives/sidebar'
+import { env } from '@nasiko/app-core/env'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '@nasiko/app-core/shell/copy'
+import { GROUP, ROW } from '@nasiko/app-core/shell/rowStyles'
 
 /** The waitlist page, or null where the edition or the build shows none. */
 function useWaitlistUrl(): string | null {
-  return useEdition() === "oss" ? env.waitlistUrl : null;
+  return useEdition() === 'oss' ? env.waitlistUrl : null
 }
 
 /** The sidebar's card (expanded sidebar and phone sheet) and its rail row (collapsed). */
 export function WaitlistCard() {
-  const url = useWaitlistUrl();
-  if (!url) return null;
+  const url = useWaitlistUrl()
+  if (!url) return null
   return (
-    <SidebarGroup className={cn(GROUP, "py-2")}>
+    <SidebarGroup className={cn(GROUP, 'py-2')}>
       {/* Hidden, not unmounted, in the rail, so a collapse never restarts the badge's loop. */}
       <div className="relative mt-2.5 flex flex-col gap-1.5 rounded-lg border bg-card p-3 pt-4.5 group-data-[collapsible=icon]:hidden">
         <EarlyAccessBadge />
         <p className="text-sm leading-snug font-semibold">{copy.waitlist.title}</p>
         <p className="text-xs leading-normal text-muted-foreground">{copy.waitlist.line}</p>
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          data-slot="button"
-          data-variant="outline"
-          data-size="sm"
-          className={cn(buttonVariants({ variant: "outline", size: "sm" }), "mt-1.5 w-full")}
-        >
-          {copy.waitlist.cta}
-          <ExternalLink aria-hidden className="size-3.5" />
-          {/* The space outside the span: an accessible name joins inline children without one. */}{" "}
-          <span className="sr-only">{copy.waitlist.newTab}</span>
-        </a>
+        <Button asChild variant="outline" size="sm" className="mt-1.5 w-full">
+          <a href={url} target="_blank" rel="noopener noreferrer">
+            {copy.waitlist.cta}
+            <ExternalLink aria-hidden className="size-3.5" />
+            {/* The space outside the span: an accessible name joins inline children without one. */}{' '}
+            <span className="sr-only">{copy.waitlist.newTab}</span>
+          </a>
+        </Button>
       </div>
       <SidebarMenu className="hidden group-data-[collapsible=icon]:flex">
         <SidebarMenuItem>
           <SidebarMenuButton
+            asChild
             tooltip={copy.waitlist.title}
-            className={cn(ROW, "border-sidebar-border bg-card")}
-            render={
-              <a
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`${copy.waitlist.title} ${copy.waitlist.newTab}`}
-              />
-            }
+            className={cn(ROW, 'border-sidebar-border bg-card')}
           >
-            <Ticket aria-hidden />
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`${copy.waitlist.title} ${copy.waitlist.newTab}`}
+            >
+              <Ticket aria-hidden />
+            </a>
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>
     </SidebarGroup>
-  );
+  )
 }
 
 /**
@@ -106,16 +97,16 @@ function EarlyAccessBadge() {
         {copy.waitlist.badge}
       </span>
     </span>
-  );
+  )
 }
 
 /** The login page's quiet line under Sign in. */
 export function WaitlistLoginLink() {
-  const url = useWaitlistUrl();
-  if (!url) return null;
+  const url = useWaitlistUrl()
+  if (!url) return null
   return (
     <p className="mt-6 border-t pt-5 text-center text-sm text-muted-foreground">
-      {copy.waitlist.loginLead}{" "}
+      {copy.waitlist.loginLead}{' '}
       <a
         href={url}
         target="_blank"
@@ -125,5 +116,5 @@ export function WaitlistLoginLink() {
         {copy.waitlist.cta} <span className="sr-only">{copy.waitlist.newTab}</span>
       </a>
     </p>
-  );
+  )
 }

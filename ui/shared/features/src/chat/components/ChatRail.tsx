@@ -1,17 +1,9 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/ChatRail.tsx. Local edits: rail links are
-// the navigation port's `Link` (`@nasiko/app-core/navigation`) to `chatHref(id, carry)` (./nav.ts), New chat a `ButtonLink` (the lab's `<Button asChild><Link>`); the
-// views control keeps the lab's radio semantics on Base UI's ToggleGroup (`role="radiogroup"`, items `role="radio"`
-// with `aria-checked` and no `aria-pressed`; Base UI renders pressed buttons in a group), its value array
-// (`value={[view]}`, the first value read back) and its own arrow handling skipped (`preventBaseUIHandler`), so arrows
-// still select; `data-[state=on]:` classes are `aria-checked:`; the lab's `EmptyState` is `LabEmptyState`;
-// `onClick={onNavigate}` on links is a closure (exactOptionalPropertyTypes); optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on development, 3aac84f66: 858912f71,
-// fdd92df43): the rail writes its order to ../railOrder.ts, and a mouse click on a row lets go of it.
 /**
  * The chat rail (v1c §5.3): a header row with Search and New chat icon buttons, loaded rows grouped by
  * date, each with its identity icon, title, identity · time and a reserved indicator slot, then Load
  * more. Titles are owner text and render as text only.
  */
+import { Link } from '@tanstack/react-router'
 import {
   AlertCircle,
   Loader2,
@@ -22,45 +14,45 @@ import {
   SquarePen,
   SquareTerminal,
   X,
-} from "lucide-react";
-import Link from "@nasiko/app-core/navigation";
-import { useEffect, useMemo, useRef, useState, type Ref } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Button, Input, Skeleton, ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { useAgentsDirectory } from "../../agents/api";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { relTime } from "../../agents/format";
-import { StateCard } from "../../observability/StateCard";
-import { cn } from "@nasiko/ui/cn";
-import { sessionRows, useChatSessions } from "../api";
-import { announce } from "../announce";
-import { setRailOrder } from "../railOrder";
-import { chatSignals, useSignals } from "../registry";
-import type { ChatCarry } from "../search";
-import { rowOf, type SignalsSnapshot } from "../signals";
-import type { Waiting } from "../waiting";
-import { WaitingList } from "./WaitingList";
-import { WaitingPill } from "./WaitingPill";
-import { copy } from "../copy";
-import { chatHref } from "../nav";
-import { tuning } from "../tuning";
-import { chatIdentity } from "../identity";
-import { groupByDate, rowStates, rowTooltip, type DateGroup } from "../railGroups";
-import { readRailView, rememberRailView, type RailView } from "../rememberTarget";
-import { IdentityIcon } from "./ChatIdentity";
-import { RAIL_EMPTY, RAIL_ROW, RAIL_ROW_ACTIVE } from "./turnStyles";
+} from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { relTime } from '@nasiko/features/agents/format'
+import { StateCard } from '@nasiko/features/observability/StateCard'
+import { cn } from '@nasiko/ui/lib/utils'
+import { sessionRows, useChatSessions } from '../api'
+import { announce } from '../announce'
+import { setRailOrder } from '../railOrder'
+import { chatSignals, useSignals } from '../registry'
+import type { ChatCarry } from '../search'
+import { rowOf, type SignalsSnapshot } from '../signals'
+import type { Waiting } from '../waiting'
+import { WaitingList } from './WaitingList'
+import { WaitingPill } from './WaitingPill'
+import { copy } from '../copy'
+import { tuning } from '../tuning'
+import { chatIdentity } from '../identity'
+import { groupByDate, rowStates, rowTooltip, type DateGroup } from '../railGroups'
+import { readRailView, rememberRailView, type RailView } from '../rememberTarget'
+import { IdentityIcon } from './ChatIdentity'
+import { RAIL_EMPTY, RAIL_ROW, RAIL_ROW_ACTIVE } from './turnStyles'
 
 const GROUP_LABEL: Record<DateGroup, string> = {
   today: copy.groupToday,
   yesterday: copy.groupYesterday,
   week: copy.groupWeek,
   older: copy.groupOlder,
-};
+}
 
 /** The filter takes focus when the search button opens it (a stable ref callback runs once, on mount). */
 const focusOnMount = (el: HTMLInputElement | null) => {
-  el?.focus();
-};
+  el?.focus()
+}
 
 export function ChatRail({
   activeId,
@@ -71,36 +63,32 @@ export function ChatRail({
   waiting,
   ref: newChatRef,
 }: {
-  activeId?: string | undefined;
-  onNavigate?: (() => void) | undefined;
-  search: ChatCarry;
-  username?: string | undefined;
-  userId?: string | undefined;
-  waiting?: Waiting | undefined;
-  ref?: Ref<HTMLAnchorElement> | undefined;
+  activeId?: string
+  onNavigate?(): void
+  search: ChatCarry
+  username?: string
+  userId?: string
+  waiting?: Waiting
+  ref?: Ref<HTMLAnchorElement>
 }) {
-  const list = useChatSessions();
-  const dir = useAgentsDirectory();
-  const signals = useSignals();
+  const list = useChatSessions()
+  const dir = useAgentsDirectory()
+  const signals = useSignals()
   // Speak a list failure once per failed fetch (the page's announcer is the only live region).
   useEffect(() => {
-    if (list.isError) announce(copy.chatsFailed);
-  }, [list.isError, list.errorUpdatedAt]);
+    if (list.isError) announce(copy.chatsFailed)
+  }, [list.isError, list.errorUpdatedAt])
   // Date groups move at midnight: re-read the clock every minute. A row newer than this clock (just saved)
   // reads as now, never "in 5 seconds".
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    const id = setInterval(() => {
-      setNow(Date.now());
-    }, tuning.RAIL_CLOCK_MS);
-    return () => {
-      clearInterval(id);
-    };
-  }, []);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [filter, setFilter] = useState("");
-  const searchButton = useRef<HTMLButtonElement>(null);
-  const viewsRef = useRef<HTMLDivElement>(null);
+    const id = setInterval(() => setNow(Date.now()), tuning.RAIL_CLOCK_MS)
+    return () => clearInterval(id)
+  }, [])
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [filter, setFilter] = useState('')
+  const searchButton = useRef<HTMLButtonElement>(null)
+  const viewsRef = useRef<HTMLDivElement>(null)
   const rows = useMemo(
     () =>
       sessionRows(list.data).map((r) => ({
@@ -108,64 +96,62 @@ export function ChatRail({
         identity: chatIdentity(r, dir.byId, username),
       })),
     [list.data, dir.byId, username],
-  );
+  )
   // Views (v1c D1): recorded chats sort by ingest time, so they get their own view and "Chats" leaves
   // them out. The chosen view is remembered per viewer (DX-T1).
   const [view, setViewState] = useState<RailView>(
-    () => (userId ? readRailView(userId) : null) ?? "chats",
-  );
+    () => (userId ? readRailView(userId) : null) ?? 'chats',
+  )
   const setView = (v: RailView) => {
-    setViewState(v);
-    if (userId) rememberRailView(userId, v);
-  };
-  const recorded = rows.filter((x) => x.identity.kind === "recorded");
-  const live = rows.filter((x) => x.identity.kind !== "recorded");
+    setViewState(v)
+    if (userId) rememberRailView(userId, v)
+  }
+  const recorded = rows.filter((x) => x.identity.kind === 'recorded')
+  const live = rows.filter((x) => x.identity.kind !== 'recorded')
   // Opening a chat of the other kind shows its view, so the active row is always in the list.
   // (Adjusted while rendering, once per opened chat, so the list never flashes the wrong view.)
-  const [synced, setSynced] = useState<string | undefined>(undefined);
-  const activeKind = rows.find((x) => x.row.session_id === activeId)?.identity.kind;
+  const [synced, setSynced] = useState<string | undefined>(undefined)
+  const activeKind = rows.find((x) => x.row.session_id === activeId)?.identity.kind
   if (activeId && activeKind && synced !== activeId) {
-    setSynced(activeId);
+    setSynced(activeId)
     // Only when the opened chat isn't in the current view: a chat opened from Waiting keeps Waiting.
     const inCurrent =
-      view === "recorded"
-        ? activeKind === "recorded"
-        : view === "waiting"
+      view === 'recorded'
+        ? activeKind === 'recorded'
+        : view === 'waiting'
           ? (waiting?.countFor(activeId) ?? 0) > 0
-          : activeKind !== "recorded";
-    if (!inCurrent) setViewState(activeKind === "recorded" ? "recorded" : "chats");
+          : activeKind !== 'recorded'
+    if (!inCurrent) setViewState(activeKind === 'recorded' ? 'recorded' : 'chats')
   }
-  const inView = view === "recorded" ? recorded : live;
+  const inView = view === 'recorded' ? recorded : live
   // quirk: §10.7 — no `q` on the list, so the filter covers loaded rows only.
   const shown = useMemo(() => {
-    const f = filter.trim().toLowerCase();
+    const f = filter.trim().toLowerCase()
     return f
       ? inView.filter(
           ({ row, identity }) =>
             row.title.toLowerCase().includes(f) ||
             identity.name.toLowerCase().includes(f) ||
-            (row.agent_name ?? "").toLowerCase().includes(f),
+            (row.agent_name ?? '').toLowerCase().includes(f),
         )
-      : inView;
-  }, [inView, filter]);
+      : inView
+  }, [inView, filter])
   const groups = groupByDate(
     shown.map((x) => ({ ...x, updated_at: x.row.updated_at, created_at: x.row.created_at })),
     now,
-  );
+  )
   // The header's Previous/Next follows this order. Waiting has its own order, so it steps nowhere (v1).
   const orderKey =
-    view === "waiting" ? "" : groups.flatMap((g) => g.rows.map((x) => x.row.session_id)).join(" ");
-  useEffect(() => {
-    setRailOrder(orderKey ? orderKey.split(" ") : []);
-  }, [orderKey]);
+    view === 'waiting' ? '' : groups.flatMap((g) => g.rows.map((x) => x.row.session_id)).join(' ')
+  useEffect(() => setRailOrder(orderKey ? orderKey.split(' ') : []), [orderKey])
   // Dev aids survive navigation between chats (DX-A2).
-  const carry = { mock: search.mock, debug: search.debug };
+  const carry = { mock: search.mock, debug: search.debug }
 
   const closeSearch = () => {
-    setSearchOpen(false);
-    setFilter("");
-    searchButton.current?.focus();
-  };
+    setSearchOpen(false)
+    setFilter('')
+    searchButton.current?.focus()
+  }
 
   return (
     <nav data-tour="chat-rail" aria-label={copy.chats} className="flex h-full min-h-0 flex-col">
@@ -180,25 +166,22 @@ export function ChatRail({
           title={copy.searchChats}
           aria-expanded={searchOpen}
           aria-controls="chat-rail-filter"
-          onClick={() => {
-            if (searchOpen) closeSearch();
-            else setSearchOpen(true);
-          }}
+          onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
         >
           <Search aria-hidden />
         </Button>
-        <ButtonLink
-          ref={newChatRef}
-          href={chatHref(undefined, carry)}
-          onClick={() => onNavigate?.()}
-          aria-label={copy.newChat}
-          title={copy.newChat}
-          size="icon-sm"
-          variant="ghost"
-          className="pointer-coarse:size-11"
-        >
-          <SquarePen aria-hidden />
-        </ButtonLink>
+        <Button asChild size="icon-sm" variant="ghost" className="pointer-coarse:size-11">
+          <Link
+            ref={newChatRef}
+            to="/chat"
+            search={carry}
+            onClick={onNavigate}
+            aria-label={copy.newChat}
+            title={copy.newChat}
+          >
+            <SquarePen aria-hidden />
+          </Link>
+        </Button>
       </div>
       {searchOpen ? (
         <div className="shrink-0 px-3 pb-2">
@@ -208,14 +191,12 @@ export function ChatRail({
             aria-label={copy.filterChats}
             placeholder={copy.filterChats}
             value={filter}
-            onChange={(e) => {
-              setFilter(e.target.value);
-            }}
+            onChange={(e) => setFilter(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Escape" && !filter) {
-                e.preventDefault();
-                e.stopPropagation();
-                closeSearch();
+              if (e.key === 'Escape' && !filter) {
+                e.preventDefault()
+                e.stopPropagation()
+                closeSearch()
               }
             }}
             className="h-8 pointer-coarse:h-11"
@@ -227,13 +208,13 @@ export function ChatRail({
         view={view}
         onChange={setView}
         recorded={recorded.length}
-        more={list.hasNextPage}
+        more={!!list.hasNextPage}
         waiting={
           waiting ? { n: waiting.match.chats.length, failed: waiting.failedCold } : undefined
         }
       />
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
-        {view === "waiting" && waiting ? (
+        {view === 'waiting' && waiting ? (
           <WaitingList
             waiting={waiting}
             titleOf={(id) => rows.find((x) => x.row.session_id === id)?.row.title}
@@ -266,15 +247,15 @@ export function ChatRail({
               </Button>
             }
           />
-        ) : !rows.length || (view === "chats" && !live.length && !list.hasNextPage) ? (
+        ) : !rows.length || (view === 'chats' && !live.length && !list.hasNextPage) ? (
           <EmptyState icon={MessageSquare} title={copy.noChats} className={RAIL_EMPTY}>
             {copy.noChatsHint}
           </EmptyState>
-        ) : view === "recorded" && !recorded.length ? (
+        ) : view === 'recorded' && !recorded.length ? (
           <EmptyState icon={SquareTerminal} title={copy.noRecorded} className={RAIL_EMPTY}>
             {copy.noRecordedHint}
           </EmptyState>
-        ) : view === "chats" && !live.length ? (
+        ) : view === 'chats' && !live.length ? (
           <EmptyState icon={MessageSquare} title={copy.noLiveLoaded} className={RAIL_EMPTY}>
             {copy.loadMoreToSearch}
           </EmptyState>
@@ -290,50 +271,52 @@ export function ChatRail({
                 </h3>
                 <ul className="space-y-0.5">
                   {inGroup.map(({ row: r, identity }) => {
-                    const active = r.session_id === activeId;
-                    const muted = identity.kind === "removed";
-                    const sig = rowOf(signals, r.session_id);
-                    const waitingN = waiting?.countFor(r.session_id) ?? 0;
-                    const states = rowStates({ waiting: waitingN, ...sig });
+                    const active = r.session_id === activeId
+                    const muted = identity.kind === 'removed'
+                    const sig = rowOf(signals, r.session_id)
+                    const waitingN = waiting?.countFor(r.session_id) ?? 0
+                    const states = rowStates({ waiting: waitingN, ...sig })
                     return (
                       <li key={r.session_id}>
                         <Link
-                          href={chatHref(r.session_id, carry)}
+                          to="/chat/$sessionId"
+                          params={{ sessionId: r.session_id }}
+                          search={carry}
                           onClick={(e) => {
                             // A mouse click lets go of the row, so the opened chat focuses its composer;
                             // Enter (detail 0) keeps keyboard users in the rail.
-                            if (e.detail > 0) e.currentTarget.blur();
-                            onNavigate?.();
+                            if (e.detail > 0) e.currentTarget.blur()
+                            onNavigate?.()
                           }}
                           title={rowTooltip(r)}
-                          aria-current={active ? "page" : undefined}
+                          aria-current={active ? 'page' : undefined}
                           data-testid="rail-row"
                           className={cn(
                             RAIL_ROW,
                             active && RAIL_ROW_ACTIVE,
-                            muted && !active && "text-muted-foreground",
+                            muted && !active && 'text-muted-foreground',
                           )}
                         >
                           <IdentityIcon kind={identity.kind} name={identity.name} size={20} />
                           <span className="min-w-0 flex-1">
-                            <span className={cn("block truncate text-sm", active && "font-medium")}>
-                              {r.title || "—"}
+                            <span className={cn('block truncate text-sm', active && 'font-medium')}>
+                              {r.title || '—'}
                             </span>
                             {/* The name shrinks first; the time always stays whole. */}
                             <span
                               className={cn(
-                                "flex min-w-0 text-xs",
-                                active ? "text-accent-foreground" : "text-muted-foreground",
+                                'flex min-w-0 text-xs',
+                                active ? 'text-accent-foreground' : 'text-muted-foreground',
                               )}
                             >
                               <span className="min-w-0 truncate">{identity.railLabel}</span>
                               <span className="shrink-0 whitespace-pre">
-                                {" "}
-                                ·{" "}
+                                {' '}
+                                ·{' '}
                                 <span className="tabular-nums">
                                   {relTime(
                                     r.updated_at,
-                                    Math.max(now, Date.parse(r.updated_at ?? "") || now),
+                                    Math.max(now, Date.parse(r.updated_at ?? '') || now),
                                   )}
                                 </span>
                               </span>
@@ -362,11 +345,11 @@ export function ChatRail({
                             ) : null}
                           </span>
                           {states.length ? (
-                            <span className="sr-only">, {states.join(", ")}</span>
+                            <span className="sr-only">, {states.join(', ')}</span>
                           ) : null}
                         </Link>
                       </li>
-                    );
+                    )
                   })}
                 </ul>
               </section>
@@ -382,7 +365,7 @@ export function ChatRail({
             ) : null}
           </>
         )}
-        {list.hasNextPage && view !== "waiting" ? (
+        {list.hasNextPage && view !== 'waiting' ? (
           <Button
             size="sm"
             variant="ghost"
@@ -395,7 +378,7 @@ export function ChatRail({
         ) : null}
         {list.isError && rows.length ? (
           <p className="mt-2 px-1 text-xs text-destructive">
-            {copy.chatsFailed}{" "}
+            {copy.chatsFailed}{' '}
             <Button
               variant="link"
               className="h-auto p-0 text-xs font-normal text-destructive underline pointer-coarse:min-h-11 pointer-coarse:px-2"
@@ -413,7 +396,7 @@ export function ChatRail({
         onNavigate={onNavigate}
       />
     </nav>
-  );
+  )
 }
 
 /**
@@ -430,101 +413,91 @@ function RailViews({
   waiting,
   ref,
 }: {
-  view: RailView;
-  onChange: (v: RailView) => void;
-  recorded: number;
-  more: boolean;
-  waiting?: { n: number; failed: boolean } | undefined;
-  ref?: Ref<HTMLDivElement> | undefined;
+  view: RailView
+  onChange(v: RailView): void
+  recorded: number
+  more: boolean
+  waiting?: { n: number; failed: boolean }
+  ref?: Ref<HTMLDivElement>
 }) {
-  const refs = useRef(new Map<RailView, HTMLButtonElement>());
-  const focusedCounted = useRef<RailView | null>(null);
-  const options: {
-    id: RailView;
-    label: string;
-    pill?: number | undefined;
-    count?: string | undefined;
-  }[] = [{ id: "chats", label: copy.viewChats }];
+  const refs = useRef(new Map<RailView, HTMLButtonElement>())
+  const focusedCounted = useRef<RailView | null>(null)
+  const options: { id: RailView; label: string; pill?: number; count?: string }[] = [
+    { id: 'chats', label: copy.viewChats },
+  ]
   // Waiting carries its count as a pill; with none (or before the first poll) it reads plain "Waiting".
   if (waiting)
     options.push({
-      id: "waiting",
+      id: 'waiting',
       label:
-        waiting.n > 0 ? copy.viewWaitingCount(`${waiting.n}${more ? "+" : ""}`) : copy.viewWaiting,
+        waiting.n > 0 ? copy.viewWaitingCount(`${waiting.n}${more ? '+' : ''}`) : copy.viewWaiting,
       pill: waiting.n || undefined,
-    });
+    })
   options.push({
-    id: "recorded",
+    id: 'recorded',
     label:
-      recorded > 0 ? copy.viewRecorded(`${recorded}${more ? "+" : ""}`) : copy.viewRecordedShort,
-    count: recorded > 0 ? `${recorded}${more ? "+" : ""}` : undefined,
-  });
-  const shownIds = options.map((o) => o.id).join("|");
+      recorded > 0 ? copy.viewRecorded(`${recorded}${more ? '+' : ''}`) : copy.viewRecordedShort,
+    count: recorded > 0 ? `${recorded}${more ? '+' : ''}` : undefined,
+  })
+  const shownIds = options.map((o) => o.id).join('|')
   useEffect(() => {
-    const was = focusedCounted.current;
+    const was = focusedCounted.current
     if (was && !options.some((o) => o.id === was)) {
-      focusedCounted.current = null;
-      refs.current.get(view)?.focus();
+      focusedCounted.current = null
+      refs.current.get(view)?.focus()
     }
-  }, [shownIds, view]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (options.length < 2) return null;
+  }, [shownIds, view]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (options.length < 2) return null
   const move = (delta: number) => {
-    const i = options.findIndex((o) => o.id === view);
-    const next = options[(i + delta + options.length) % options.length];
-    if (!next) return;
-    onChange(next.id);
-    refs.current.get(next.id)?.focus();
-  };
-  // The lab's Radix ToggleGroup `single` was a radiogroup of radios; Base UI's is a group of pressed buttons, so the
-  // radio roles and `aria-checked` are set here (and `aria-pressed` dropped). Its own arrow-key focus is skipped so
-  // arrows keep selecting as they move (radio behaviour), with the checked view as the one tab stop.
+    const i = options.findIndex((o) => o.id === view)
+    const next = options[(i + delta + options.length) % options.length]
+    onChange(next.id)
+    refs.current.get(next.id)?.focus()
+  }
+  // ToggleGroup `single` is a radiogroup of radios; its own roving focus is off so arrows keep
+  // selecting as they move (radio behaviour), with the checked view as the one tab stop.
   return (
     <ToggleGroup
       ref={ref}
-      role="radiogroup"
+      type="single"
+      rovingFocus={false}
       spacing={0.5}
-      value={[view]}
-      onValueChange={(vs: unknown[]) => {
-        const v = vs[0];
-        if (typeof v === "string" && v) onChange(v as RailView);
+      value={view}
+      onValueChange={(v) => {
+        if (v) onChange(v as RailView)
       }}
       aria-label={copy.railViews}
       className="mx-3 mb-2 flex w-auto shrink-0 rounded-md border border-border p-0.5"
       onKeyDown={(e) => {
-        const arrow =
-          e.key === "ArrowRight" || e.key === "ArrowDown"
-            ? 1
-            : e.key === "ArrowLeft" || e.key === "ArrowUp"
-              ? -1
-              : 0;
-        if (!arrow) return;
-        e.preventDefault();
-        (e as { preventBaseUIHandler?: () => void }).preventBaseUIHandler?.();
-        move(arrow);
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault()
+          move(1)
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault()
+          move(-1)
+        }
       }}
     >
       {options.map((o) => {
-        const checked = o.id === view;
+        const checked = o.id === view
         return (
           <ToggleGroupItem
             key={o.id}
             value={o.id}
             ref={(el) => {
-              if (el) refs.current.set(o.id, el);
-              else refs.current.delete(o.id);
+              if (el) refs.current.set(o.id, el)
+              else refs.current.delete(o.id)
             }}
             tabIndex={checked ? 0 : -1}
-            role="radio"
-            aria-checked={checked}
-            aria-pressed={undefined}
             aria-label={o.label}
             onFocus={() => {
-              focusedCounted.current = o.id === "chats" ? null : o.id;
+              focusedCounted.current = o.id === 'chats' ? null : o.id
             }}
             onBlur={() => {
-              if (focusedCounted.current === o.id) focusedCounted.current = null;
+              if (focusedCounted.current === o.id) focusedCounted.current = null
             }}
-            className="h-auto min-h-7 min-w-0 flex-auto gap-1 rounded px-1.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background aria-checked:bg-muted aria-checked:font-medium aria-checked:text-foreground pointer-coarse:min-h-11"
+            className="h-auto min-h-7 min-w-0 flex-auto gap-1 rounded px-1.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-[state=on]:bg-muted data-[state=on]:font-medium data-[state=on]:text-foreground pointer-coarse:min-h-11"
           >
             {/* Three views fit 240 px: counts are small numbers, the full "(n)" form is the accessible name. */}
             {o.pill ? (
@@ -541,10 +514,10 @@ function RailViews({
               o.label
             )}
           </ToggleGroupItem>
-        );
+        )
       })}
     </ToggleGroup>
-  );
+  )
 }
 
 /**
@@ -558,29 +531,31 @@ function ReplyReady({
   search,
   onNavigate,
 }: {
-  signals: SignalsSnapshot | null;
-  titleOf: (id: string) => string | undefined;
-  search: ChatCarry;
-  onNavigate?: (() => void) | undefined;
+  signals: SignalsSnapshot | null
+  titleOf(id: string): string | undefined
+  search: ChatCarry
+  onNavigate?(): void
 }) {
-  const ready = signals?.replyReady ?? null;
-  const title = ready ? titleOf(ready.sessionId) || copy.untitledChat : "";
-  const attempt = ready?.attempt;
+  const ready = signals?.replyReady ?? null
+  const title = ready ? titleOf(ready.sessionId) || copy.untitledChat : ''
+  const attempt = ready?.attempt
   useEffect(() => {
-    const api = chatSignals();
-    if (!api || !attempt) return;
-    api.replyReadyShown(attempt);
-    if (api.firstNotice(attempt)) announce(copy.announceReplyReady(title));
-  }, [attempt]); // eslint-disable-line react-hooks/exhaustive-deps -- once per attempt; the title is read as it stands then
-  if (!ready) return null;
+    const api = chatSignals()
+    if (!api || !attempt) return
+    api.replyReadyShown(attempt)
+    if (api.firstNotice(attempt)) announce(copy.announceReplyReady(title))
+  }, [attempt]) // eslint-disable-line react-hooks/exhaustive-deps -- once per attempt; the title is read as it stands then
+  if (!ready) return null
   return (
     <div
       className="flex shrink-0 items-center gap-1 border-t border-border py-1.5 pr-1 pl-4 text-xs"
       data-testid="reply-ready"
     >
       <Link
-        href={chatHref(ready.sessionId, search)}
-        onClick={() => onNavigate?.()}
+        to="/chat/$sessionId"
+        params={{ sessionId: ready.sessionId }}
+        search={search}
+        onClick={onNavigate}
         title={`${copy.replyReadyIn} ${title}`}
         className="min-w-0 flex-1 truncate text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11 pointer-coarse:leading-11"
       >
@@ -596,5 +571,5 @@ function ReplyReady({
         <X aria-hidden />
       </Button>
     </div>
-  );
+  )
 }

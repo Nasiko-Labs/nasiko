@@ -6,7 +6,7 @@
 
 # ── Stage 1: the web UI ─────────────────────────────────────────────────────
 # The server embeds a BUILT React bundle (see server/build.rs), so something
-# has to build it. Doing it here rather than committing ui/oss/dist to the repo
+# has to build it. Doing it here rather than committing ui/oss/app/dist to the repo
 # keeps ~4 MB of generated output out of version control — one line changed in
 # a component renames roughly two thirds of the bundle's files, because a
 # content hash cascades through every chunk that imports it.
@@ -46,7 +46,7 @@ COPY . .
 # rust-embed resolves this at compile time and hard-errors if it is missing, so
 # it has to land before cargo runs. After `COPY . .`, which would otherwise
 # shadow it with whatever (if anything) the context carried.
-COPY --from=ui /ui/oss/dist ./ui/oss/dist
+COPY --from=ui /ui/oss/app/dist ./ui/oss/app/dist
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \

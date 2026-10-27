@@ -1,110 +1,95 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/api.ts. Local edits: `"use client"`; the query key
-// is the scoped product key (`productKey(scope, "onboarding")`, the lab's `['onboarding']`), so `onboardingQuery` and
-// the persona write take the scope; `meQuery` is `meQueryOptions(scope)` read without a mount refetch or retry (the
-// signed-in guard already re-checks `/api/me`; the shell's pilot `useGuideHiddenNav` read it the same way, and this
-// module now replaces that pilot); the optional chains on `globalThis.addEventListener` go (lib.dom declares it);
-// development (be271b564): `usePersona` for the home's default scope; Prettier formatting.
-"use client";
-
 /**
  * The onboarding read and write (nasiko-cloud-rs 41f776ae `onboarding.rs`). Small and import-light: the sidebar and the
  * Overview route read it from the shell chunk, while the dialog itself is lazy (index.ts).
  */
-import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useSyncExternalStore } from "react";
-import type { Scope } from "@nasiko/data-access";
-import { apiFetch, meQueryOptions, productKey, useProductScope } from "@nasiko/data-access/product";
-import { guideDue, skipKey, type StepId } from "./logic";
-import { onboardingSchema, type Onboarding, type Persona } from "./types";
+import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useCallback, useSyncExternalStore } from 'react'
+import { meQuery } from '@nasiko/data-access/auth'
+import { apiFetch } from '@nasiko/data-access/client'
+import { guideDue, skipKey, type StepId } from './logic'
+import { onboardingSchema, type Onboarding, type Persona } from './types'
 
-const PATH = "/api/me/onboarding";
-export const ONBOARDING_FEATURE = "onboarding";
-const onboardingKeys = { all: (scope: Scope) => productKey(scope, ONBOARDING_FEATURE) };
+const PATH = '/api/me/onboarding'
+const onboardingKeys = { all: ['onboarding'] as const }
 
-const onboardingQuery = (scope: Scope) =>
-  queryOptions({
-    queryKey: onboardingKeys.all(scope),
-    queryFn: ({ signal }) => apiFetch<Onboarding>(PATH, { signal, schema: onboardingSchema }),
-    // A probe: an older server answers a bare 404, which must settle at once (the page falls back to today's Overview).
-    retry: false,
-    // Only this user's own PATCH changes it, and that writes the cache.
-    staleTime: Infinity,
-  });
+const onboardingQuery = queryOptions({
+  queryKey: onboardingKeys.all,
+  queryFn: ({ signal }) => apiFetch<Onboarding>(PATH, { signal, schema: onboardingSchema }),
+  // A probe: an older server answers a bare 404, which must settle at once (the page falls back to today's Overview).
+  retry: false,
+  // Only this user's own PATCH changes it, and that writes the cache.
+  staleTime: Infinity,
+})
 
-const useOnboarding = () => useQuery(onboardingQuery(useProductScope()));
+const useOnboarding = () => useQuery(onboardingQuery)
 
 /** The viewer's persona for defaults (the home's scope): settled once the read answers or fails (an older server's
  * bare 404 settles as no persona). */
 export function usePersona(): { persona: Persona | null; settled: boolean } {
-  const q = useOnboarding();
-  return { persona: q.data?.persona ?? null, settled: !q.isPending };
+  const q = useOnboarding()
+  return { persona: q.data?.persona ?? null, settled: !q.isPending }
 }
 
 /** Saves the persona; the server's first PATCH also completes onboarding. */
 export function useSavePersona() {
-  const qc = useQueryClient();
-  const scope = useProductScope();
+  const qc = useQueryClient()
   return useMutation({
     mutationFn: (persona: Persona) =>
       apiFetch<Onboarding>(PATH, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ persona }),
         schema: onboardingSchema,
       }),
-    onSuccess: (data) => qc.setQueryData(onboardingKeys.all(scope), data),
-  });
+    onSuccess: (data) => qc.setQueryData(onboardingKeys.all, data),
+  })
 }
 
 // ─── "Skip guide" for this session ──────────────────────────────────────────────────────────────────────────────────
 // localStorage under the drafts prefix: every tab agrees, and sign-out's draft clearing ends the skip (spec §2).
 
-const listeners = new Set<() => void>();
+const listeners = new Set<() => void>()
 function subscribe(fn: () => void) {
-  listeners.add(fn);
-  globalThis.addEventListener("storage", fn);
+  listeners.add(fn)
+  globalThis.addEventListener?.('storage', fn)
   return () => {
-    listeners.delete(fn);
-    globalThis.removeEventListener("storage", fn);
-  };
+    listeners.delete(fn)
+    globalThis.removeEventListener?.('storage', fn)
+  }
 }
 function readSkipped(sub: string | undefined): boolean {
-  if (!sub) return false;
+  if (!sub) return false
   try {
-    return localStorage.getItem(skipKey(sub)) === "1";
+    return localStorage.getItem(skipKey(sub)) === '1'
   } catch {
-    return false;
+    return false
   }
 }
 function writeSkipped(sub: string) {
   try {
-    localStorage.setItem(skipKey(sub), "1");
+    localStorage.setItem(skipKey(sub), '1')
   } catch {
     // Storage blocked: the skip lasts while this page is open.
-    memorySkips.add(sub);
+    memorySkips.add(sub)
   }
-  for (const fn of listeners) fn();
+  for (const fn of listeners) fn()
 }
 /** Storage blocked: remember the skip for this page load at least. */
-const memorySkips = new Set<string>();
+const memorySkips = new Set<string>()
 
 /** Whether the guide takes over `/` now, and how to skip it for this session. */
 export function useGuide() {
-  const me = useQuery({
-    ...meQueryOptions(useProductScope()),
-    refetchOnMount: false,
-    retryOnMount: false,
-  }).data;
-  const onboarding = useOnboarding();
-  const sub = me?.sub;
+  const me = useQuery(meQuery).data
+  const onboarding = useOnboarding()
+  const sub = me?.sub
   const skipped = useSyncExternalStore(
     subscribe,
     () => readSkipped(sub) || (!!sub && memorySkips.has(sub)),
     () => false,
-  );
+  )
   const skip = useCallback(() => {
-    if (sub) writeSkipped(sub);
-  }, [sub]);
+    if (sub) writeSkipped(sub)
+  }, [sub])
   return {
     due: guideDue(onboarding.data, skipped),
     /** The server answered. */
@@ -113,7 +98,7 @@ export function useGuide() {
     absent: onboarding.isError,
     persona: onboarding.data?.persona ?? null,
     skip,
-  };
+  }
 }
 
 // ─── The open guide ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -121,39 +106,38 @@ export function useGuide() {
 // while a first-run guide is open, so the shell and the route read the same state.
 
 export interface GuideState {
-  open: boolean;
+  open: boolean
   /** Opened for a first-time user: the Overview stays hidden behind it. */
-  firstRun: boolean;
-  step: StepId;
+  firstRun: boolean
+  step: StepId
 }
-let guideState: GuideState = { open: false, firstRun: false, step: "welcome" };
-const guideListeners = new Set<() => void>();
+let guideState: GuideState = { open: false, firstRun: false, step: 'welcome' }
+const guideListeners = new Set<() => void>()
 function setGuide(next: GuideState) {
-  guideState = next;
-  for (const fn of guideListeners) fn();
+  guideState = next
+  for (const fn of guideListeners) fn()
 }
 const subscribeGuide = (fn: () => void) => {
-  guideListeners.add(fn);
-  return () => void guideListeners.delete(fn);
-};
-export const openGuide = (step: StepId, firstRun = false) => {
-  setGuide({ open: true, firstRun, step });
-};
+  guideListeners.add(fn)
+  return () => void guideListeners.delete(fn)
+}
+export const openGuide = (step: StepId, firstRun = false) =>
+  setGuide({ open: true, firstRun, step })
 export const closeGuide = () => {
-  if (guideState.open) setGuide({ ...guideState, open: false, firstRun: false });
-};
+  if (guideState.open) setGuide({ ...guideState, open: false, firstRun: false })
+}
 export const useGuideState = () =>
   useSyncExternalStore(
     subscribeGuide,
     () => guideState,
     () => guideState,
-  );
+  )
 
 /** The sidebar paths to hide: Home, while the guide stands in for it. */
 export function useGuideHiddenNav(): readonly string[] {
-  const { due } = useGuide();
-  const state = useGuideState();
-  return due || (state.open && state.firstRun) ? HIDE_HOME : NONE;
+  const { due } = useGuide()
+  const state = useGuideState()
+  return due || (state.open && state.firstRun) ? HIDE_HOME : NONE
 }
-const HIDE_HOME = ["/"] as const;
-const NONE = [] as const;
+const HIDE_HOME = ['/'] as const
+const NONE = [] as const

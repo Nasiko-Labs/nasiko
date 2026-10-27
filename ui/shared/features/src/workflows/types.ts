@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/types.ts. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); none beyond imports and
-// Prettier (the NAS-697 fields from the unmerged server branch stay optional, as the lab read them).
 /**
  * Wire types for MAF workflows (plans/feat-workflows.md). nasiko-cloud-rs `main` `a6feda17` `oss/server/src/maf.rs`
  * (`MafResponse`, `ExecResponse`, `ExecWithHitlResponse`, `ExecWithWorkflowResponse`, `GenerateMafResponse`), plus the
@@ -10,10 +8,10 @@
  * `/api/maf/*` is not in the OpenAPI spec (W-5), so the shapes are zod schemas: `z.looseObject`, only the fields the UI
  * reads, the NAS-697 ones optional (absent on `main`).
  */
-import * as z from "zod";
-import type { HitlDto } from "../chat/types";
+import { z } from 'zod'
+import type { HitlDto } from '@nasiko/features/chat/types'
 
-const nullableString = z.string().nullable().optional();
+const nullableString = z.string().nullable().optional()
 
 /** `MafStep`: `step_id` is regenerated on every create and PUT. `agent_name` is `agents.name`, not display_name. */
 const stepSchema = z.looseObject({
@@ -22,8 +20,8 @@ const stepSchema = z.looseObject({
   agent_id: z.string(),
   agent_name: z.string(),
   task_description: z.string(),
-});
-export type MafStep = z.infer<typeof stepSchema>;
+})
+export type MafStep = z.infer<typeof stepSchema>
 
 /** `MafResponse`: GET/PUT one, create, draft, promote. `maf_json` is null when the stored JSON does not parse. */
 export const workflowSchema = z.looseObject({
@@ -42,28 +40,28 @@ export const workflowSchema = z.looseObject({
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   execution_count: z.number().optional(),
-});
-export type Workflow = z.infer<typeof workflowSchema>;
+})
+export type Workflow = z.infer<typeof workflowSchema>
 
 /** NAS-697 `Health`: bucketed from the all-time success rate (≥ 90 healthy, ≥ 50 degraded); `unknown` = never run. */
 /** @public The server's health buckets, documented with the wire types. */
-export type Health = "healthy" | "degraded" | "unhealthy" | "unknown";
+export type Health = 'healthy' | 'degraded' | 'unhealthy' | 'unknown'
 
 /** A list row: `MafResponse` on `main`; NAS-697 `WorkflowListResponse` adds the metrics. */
 const workflowRowSchema = workflowSchema.extend({
   /** Percent to 1 dp; null = never run (not 0). */
   success_rate: z.number().nullable().optional(),
-  health: z.enum(["healthy", "degraded", "unhealthy", "unknown"]).optional(),
+  health: z.enum(['healthy', 'degraded', 'unhealthy', 'unknown']).optional(),
   total_tokens: z.number().optional(),
   /** Start of the latest *started* run; queued runs are excluded. */
   last_run_at: nullableString,
   last_run_status: nullableString,
   step_count: z.number().optional(),
   agent_names: z.array(z.string()).optional(),
-});
-export type WorkflowRow = z.infer<typeof workflowRowSchema>;
+})
+export type WorkflowRow = z.infer<typeof workflowRowSchema>
 
-export const workflowListSchema = z.looseObject({ data: z.array(workflowRowSchema) });
+export const workflowListSchema = z.looseObject({ data: z.array(workflowRowSchema) })
 
 /** `StepResult` (orchestrator `maf/types.rs`): one entry per step from the run's start; unstarted ones have no result. */
 const stepResultSchema = z.looseObject({
@@ -79,11 +77,11 @@ const stepResultSchema = z.looseObject({
   latency_ms: z.number().optional(),
   /** The step's trace, which is its flow's id (`maf/types.rs` `StepResult.trace_id`; plans/feat-flows.md O2). */
   trace_id: nullableString,
-});
-export type StepResult = z.infer<typeof stepResultSchema>;
+})
+export type StepResult = z.infer<typeof stepResultSchema>
 
 /** A HITL row is `router/hitl.rs to_response`, the same DTO chat reads. */
-const hitlSchema = z.custom<HitlDto>((v) => typeof v === "object" && v !== null);
+const hitlSchema = z.custom<HitlDto>((v) => typeof v === 'object' && v !== null)
 
 /** `ExecWithHitlResponse` (one run): `ExecResponse` + every HITL row of the run, pending and decided, oldest first. */
 export const executionSchema = z.looseObject({
@@ -103,17 +101,17 @@ export const executionSchema = z.looseObject({
   created_at: z.string(),
   /** Absent on `main`'s runs list (W-4). */
   hitl: z.array(hitlSchema).optional(),
-});
-export type Execution = z.infer<typeof executionSchema>;
+})
+export type Execution = z.infer<typeof executionSchema>
 
 /** `ExecWithWorkflowResponse`: the workflow LEFT JOINed, so its name and status survive a delete (null once gone). */
 const executionRowSchema = executionSchema.extend({
   workflow_name: nullableString,
   workflow_status: nullableString,
-});
-export type ExecutionRow = z.infer<typeof executionRowSchema>;
+})
+export type ExecutionRow = z.infer<typeof executionRowSchema>
 
-export const executionListSchema = z.looseObject({ data: z.array(executionRowSchema) });
+export const executionListSchema = z.looseObject({ data: z.array(executionRowSchema) })
 
 /** `GenerateMafResponse`: the planner's proposal, never stored. */
 export const planSchema = z.looseObject({
@@ -123,20 +121,20 @@ export const planSchema = z.looseObject({
   steps: z.array(
     z.looseObject({ agent_id: z.string(), agent_name: z.string(), task_description: z.string() }),
   ),
-});
-export type GeneratedPlan = z.infer<typeof planSchema>;
+})
+export type GeneratedPlan = z.infer<typeof planSchema>
 
 /** `run_workflow`: 202. */
 export const runStartedSchema = z.looseObject({
   execution_id: z.string(),
   execution_number: z.number(),
   execution_count: z.number(),
-});
-export type RunStarted = z.infer<typeof runStartedSchema>;
+})
+export type RunStarted = z.infer<typeof runStartedSchema>
 
 /** A step as sent: `UpdateStepRequest` on `main` requires `step_index` (W-2); create ignores it. */
 export interface StepInput {
-  step_index: number;
-  task_description: string;
-  agent_id?: string;
+  step_index: number
+  task_description: string
+  agent_id?: string
 }

@@ -27,7 +27,7 @@
  * - LLM router (plans/feat-llm-router.md §6): `llm_configs` (ids 5eed0007-*) created by the superuser, routing on
  *   three seed agents, and `token_usage` rows (ids 5eed000a-*) so the router page's spend column has data. `--reset`
  *   unsets any routing that points at a seed config before deleting the configs.
- * - MCP servers (plans/feat-mcp.md §8): the `live` rows of `common/src/mocks/seed-mcp.ts` (ids 5eed000e-*, builds
+ * - MCP servers (plans/feat-mcp.md §8): the `live` rows of `shared/mocks/src/seed-mcp.ts` (ids 5eed000e-*, builds
  *   5eed000f-*), owned by the superuser: platform toolkits, registered and uploaded servers with their tools, the
  *   superuser's credential-free connections, and agent access on the first seed agents. A server whose name the
  *   superuser (or the platform) already uses is skipped, and its rows with it, never an error that rolls back the seed.
@@ -42,21 +42,21 @@
  */
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
-import { generateSeed } from '../common/src/mocks/seed.ts'
+import { generateSeed } from '../shared/mocks/src/seed.ts'
 import {
   adminHarnessAgents,
   generateHarnessSeed,
   HARNESS_META,
   harnessTurns,
   turnTokens,
-} from '../common/src/mocks/seed-harness.ts'
+} from '../shared/mocks/src/seed-harness.ts'
 import {
   MCP_ACCESS,
   MCP_CONNECTIONS,
   MCP_CONNECTORS,
   mcpBuildId,
   mcpConnectorId,
-} from '../common/src/mocks/seed-mcp.ts'
+} from '../shared/mocks/src/seed-mcp.ts'
 import { importEditionModule } from './editions.ts'
 import { seedTraceSessions, TRACE_WINDOW_DAYS } from './lib/otlp.ts'
 

@@ -1,39 +1,30 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/RoutingSheet.tsx. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); the
-// Sessions link is the navigation port's `Link` (`@nasiko/app-core/navigation`) with `hrefFor('/sessions', { agent })`; Radix's `onCloseAutoFocus` is Base UI's
-// `finalFocus` (./focus.ts); the config `Select` takes `value={null}` for no pick (the lab's `''`), narrows Base
-// UI's nullable `onValueChange` value, and gets `items` (id → name) so the trigger shows the config's name, not its
-// id; `viewer.sub` admits `undefined` (exactOptionalPropertyTypes); Prettier formatting. Previous/Next (legacy ui/ on
-// development, 3aac84f66: b7d5ba691, 069811719, 9dc326708): close after a step lands on the last agent's row through
-// `finalFocus`, and the sheet starts on itself (Radix's `onOpenAutoFocus` → Base UI's `initialFocus` ref).
-"use client";
-
 /**
  * The agent routing sheet (plan §4.5): configured routing, then "Route this agent with" (default or a config) and a
  * separate Override block, one Save. The save runs `requestPlan` as ONE mutation (eng #2): attach or detach first
  * (both clear the pin on the server), then the pin. A failed step is reported with what was saved; the agent's row
  * is re-read either way.
  */
-import { zodResolver } from "@hookform/resolvers/zod";
-import Link from "@nasiko/app-core/navigation";
-import { AlertTriangle } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { Controller, useForm, useWatch } from "react-hook-form";
-import * as z from "zod";
-import { CopyButton, PrevNext } from "@nasiko/ui/composites";
-import { cn } from "@nasiko/ui/cn";
-import { Button } from "@nasiko/ui/primitives";
-import { Checkbox } from "@nasiko/ui/primitives";
-import { Field, FieldLabel, FieldLegend, FieldSet } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { Label } from "@nasiko/ui/primitives";
-import { RadioGroup, RadioGroupItem } from "@nasiko/ui/primitives";
+import { zodResolver } from '@hookform/resolvers/zod'
+import { Link } from '@tanstack/react-router'
+import { AlertTriangle } from 'lucide-react'
+import { useEffect, useId, useMemo, useState } from 'react'
+import { Controller, useForm, useWatch } from 'react-hook-form'
+import { z } from 'zod'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { PrevNext } from '@nasiko/ui/composites/prev-next'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Checkbox } from '@nasiko/ui/primitives/checkbox'
+import { Field, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Label } from '@nasiko/ui/primitives/label'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/select'
 import {
   Sheet,
   SheetContent,
@@ -41,14 +32,15 @@ import {
   SheetFooter,
   SheetHeader,
   SheetTitle,
-} from "@nasiko/ui/primitives";
-import { useAnnounce } from "../announce";
-import { useReturnFocus } from "../focus";
-import { useFreshAgentRouting, useRoutingPlan, type PlanOutcome } from "../api";
-import { copy } from "../copy";
-import { routerError } from "../errors";
-import { fmtLocalTime } from "@nasiko/ui/lib";
-import { sourceLabel } from "../format";
+} from '@nasiko/ui/primitives/sheet'
+import { useAnnounce } from '../announce'
+import { useReturnFocus } from '../focus'
+import { useFreshAgentRouting, useRoutingPlan, type PlanOutcome } from '../api'
+import { copy } from '../copy'
+import { routerError } from '../errors'
+import { fmtLocalTime } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { sourceLabel } from '../format'
 import {
   catalogIndex,
   cliAttach,
@@ -59,31 +51,30 @@ import {
   routingSentence,
   type RoutingState,
   type Step,
-} from "../routing";
-import { CONFIG_CACHE_SECONDS } from "../tuning";
-import type { AgentRouting, LlmConfig, ProviderCatalog } from "../types";
-import { LeaveGuard } from "@nasiko/app-core/leave-guard";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { KeySourceChip, SentenceText } from "./bits";
+} from '../routing'
+import { CONFIG_CACHE_SECONDS } from '../tuning'
+import type { AgentRouting, LlmConfig, ProviderCatalog } from '../types'
+import { LeaveGuard } from '@nasiko/app-core/leave-guard'
+import { KeySourceChip, SentenceText } from './bits'
 
 /** The routing form: 'default' or a config id, the override model, and whether a route change keeps the override. */
-const schema = z.object({ choice: z.string(), override: z.string(), keep: z.boolean() });
-type Form = z.infer<typeof schema>;
+const schema = z.object({ choice: z.string(), override: z.string(), keep: z.boolean() })
+type Form = z.infer<typeof schema>
 
 export interface RoutingTarget {
-  id: string;
-  name: string;
-  displayName: string;
-  ownerId: string;
+  id: string
+  name: string
+  displayName: string
+  ownerId: string
 }
 
 /** Previous/Next through the agents table (RouterPage); absent when the sheet wasn't opened from it. */
 export interface RoutingStep {
-  index: number;
-  count: number;
-  prev?: string | undefined;
-  next?: string | undefined;
-  go: (agentId: string) => void;
+  index: number
+  count: number
+  prev?: string
+  next?: string
+  go: (agentId: string) => void
 }
 
 export function RoutingSheet({
@@ -95,57 +86,61 @@ export function RoutingSheet({
   onClose,
   onSaved,
 }: {
-  target: RoutingTarget | null;
-  step?: RoutingStep | undefined;
-  viewer: { sub?: string | undefined; superuser: boolean };
+  target: RoutingTarget | null
+  step?: RoutingStep
+  viewer: { sub?: string; superuser: boolean }
   /** The viewer's own configs; only meaningful when the viewer owns the agent. */
-  configs: LlmConfig[] | undefined;
-  catalog: ProviderCatalog[] | undefined;
-  onClose: () => void;
-  onSaved: (agentId: string, at: number) => void;
+  configs: LlmConfig[] | undefined
+  catalog: ProviderCatalog[] | undefined
+  onClose: () => void
+  onSaved: (agentId: string, at: number) => void
 }) {
-  const returnFocus = useReturnFocus(!!target);
-  const popup = useRef<HTMLDivElement>(null);
+  const returnFocus = useReturnFocus(!!target)
   // Stepping is off while the form has unsaved changes or a save runs: the sheet's LeaveGuard only covers routes.
-  const [blocked, setBlocked] = useState(false);
+  const [blocked, setBlocked] = useState(false)
   // After stepping, close lands on the last agent's row, not the one the sheet opened from.
-  const [stepped, setStepped] = useState(false);
-  const [last, setLast] = useState<RoutingTarget | null>(null);
-  if (target && target.id !== last?.id) setLast(target);
+  const [stepped, setStepped] = useState(false)
+  const [last, setLast] = useState<RoutingTarget | null>(null)
+  if (target && target.id !== last?.id) setLast(target)
   const go = (id: string | undefined) => {
-    if (!id || !step) return;
-    setStepped(true);
-    step.go(id);
-  };
-  const finalFocus = (): HTMLElement | true => {
+    if (!id || !step) return
+    setStepped(true)
+    step.go(id)
+  }
+  const onCloseAutoFocus = (e: Event) => {
     const row =
       stepped && last
         ? document.querySelector<HTMLElement>(`[data-agent-id="${CSS.escape(last.id)}"]`)
-        : null;
-    setStepped(false);
+        : null
+    setStepped(false)
     // A disabled row (its routing read failed after the step) can't take focus: return to the opener instead.
-    if (row && !row.matches(":disabled")) return row;
-    return returnFocus();
-  };
+    if (row && !row.matches(':disabled')) {
+      e.preventDefault()
+      row.focus()
+    } else returnFocus(e)
+  }
   return (
     <Sheet
       open={!!target}
       onOpenChange={(o) => {
-        if (!o) onClose();
+        if (!o) onClose()
       }}
     >
       <SheetContent
-        ref={popup}
         className={cn(
-          "w-full gap-0 sm:max-w-sheet",
+          'w-full gap-0 sm:max-w-sheet',
           // Room for the stepper beside the close button (narrower below sm, where it drops its "N of M").
           step &&
-            "[&_[data-slot=sheet-header]]:pr-32 sm:[&_[data-slot=sheet-header]]:pr-44 pointer-coarse:[&_[data-slot=sheet-header]]:pr-40 sm:pointer-coarse:[&_[data-slot=sheet-header]]:pr-56",
+            '[&_[data-slot=sheet-header]]:pr-32 sm:[&_[data-slot=sheet-header]]:pr-44 pointer-coarse:[&_[data-slot=sheet-header]]:pr-40 sm:pointer-coarse:[&_[data-slot=sheet-header]]:pr-56',
         )}
-        finalFocus={finalFocus}
-        // The default would focus the first tabbable, the stepper while the routing reads, and open its tooltip (so
-        // Escape closes that first). Start on the sheet itself instead.
-        initialFocus={step ? popup : true}
+        onCloseAutoFocus={onCloseAutoFocus}
+        // Radix would focus the first tabbable, the stepper while the routing reads, and open its tooltip (so Escape
+        // closes that first). Start on the sheet itself instead.
+        onOpenAutoFocus={(e) => {
+          if (!step) return
+          e.preventDefault()
+          ;(e.currentTarget as HTMLElement | null)?.focus()
+        }}
       >
         {target ? (
           <Fresh
@@ -166,12 +161,8 @@ export function RoutingSheet({
             noun="agent"
             index={step.index}
             count={step.count}
-            onPrev={() => {
-              go(step.prev);
-            }}
-            onNext={() => {
-              go(step.next);
-            }}
+            onPrev={() => go(step.prev)}
+            onNext={() => go(step.next)}
             blocked={blocked ? copy.saveBeforeStepping : undefined}
             // Phones hide the visible "N of M" (aria-hidden; the group's name keeps the position).
             className="absolute top-2 right-12 pointer-coarse:top-1.5 pointer-coarse:right-14 max-sm:[&>span[aria-hidden]]:hidden"
@@ -179,15 +170,15 @@ export function RoutingSheet({
         ) : null}
       </SheetContent>
     </Sheet>
-  );
+  )
 }
 
 /** Waits for the read the sheet started to settle, then seeds the form from it (once). */
-function Fresh(props: Omit<Parameters<typeof Body>[0], "routing">) {
-  const q = useFreshAgentRouting(props.target.id);
-  const [settled, setSettled] = useState(false);
-  if (!settled && q.data && !q.isFetching) setSettled(true);
-  if (settled && q.data) return <Body {...props} routing={q.data} />;
+function Fresh(props: Omit<Parameters<typeof Body>[0], 'routing'>) {
+  const q = useFreshAgentRouting(props.target.id)
+  const [settled, setSettled] = useState(false)
+  if (!settled && q.data && !q.isFetching) setSettled(true)
+  if (settled && q.data) return <Body {...props} routing={q.data} />
   return (
     <SheetHeader>
       <SheetTitle>{copy.routingTitle(props.target.displayName)}</SheetTitle>
@@ -205,17 +196,17 @@ function Fresh(props: Omit<Parameters<typeof Body>[0], "routing">) {
         </Button>
       ) : null}
     </SheetHeader>
-  );
+  )
 }
 
 const stepText = (s: Step) =>
-  s.kind === "attach"
+  s.kind === 'attach'
     ? copy.stepAttach
-    : s.kind === "detach"
+    : s.kind === 'detach'
       ? copy.stepDetach
-      : s.kind === "pin"
+      : s.kind === 'pin'
         ? copy.stepPin
-        : copy.stepUnpin;
+        : copy.stepUnpin
 
 function Body({
   target,
@@ -227,35 +218,35 @@ function Body({
   onSaved,
   onBlockedChange,
 }: {
-  target: RoutingTarget;
-  routing: AgentRouting;
-  viewer: { sub?: string | undefined; superuser: boolean };
-  configs: LlmConfig[] | undefined;
-  catalog: ProviderCatalog[] | undefined;
-  onClose: () => void;
-  onSaved: (agentId: string, at: number) => void;
+  target: RoutingTarget
+  routing: AgentRouting
+  viewer: { sub?: string; superuser: boolean }
+  configs: LlmConfig[] | undefined
+  catalog: ProviderCatalog[] | undefined
+  onClose: () => void
+  onSaved: (agentId: string, at: number) => void
   /** Whether the sheet's Previous/Next must wait: unsaved edits, or a save running. */
-  onBlockedChange: (blocked: boolean) => void;
+  onBlockedChange: (blocked: boolean) => void
 }) {
-  const ids = useId();
-  const announce = useAnnounce();
-  const [outcome, setOutcome] = useState<(PlanOutcome & { at: number }) | null>(null);
+  const ids = useId()
+  const announce = useAnnounce()
+  const [outcome, setOutcome] = useState<(PlanOutcome & { at: number }) | null>(null)
   const plan = useRoutingPlan(target.id, (out) => {
-    const at = Date.now();
-    if (out.saved.length) onSaved(target.id, at);
+    const at = Date.now()
+    if (out.saved.length) onSaved(target.id, at)
     announce(
       out.failed ? routerError(out.failed.error).problem : copy.savedPlan(target.displayName),
-    );
-  });
-  const isOwner = viewer.sub === target.ownerId;
+    )
+  })
+  const isOwner = viewer.sub === target.ownerId
   // A superuser on someone else's agent sees only their own configs, never the owner's (R-L7).
-  const canReadConfigs = isOwner;
-  const idx = useMemo(() => catalogIndex(catalog), [catalog]);
-  const ownerConfigs = canReadConfigs ? (configs ?? []) : [];
+  const canReadConfigs = isOwner
+  const idx = useMemo(() => catalogIndex(catalog), [catalog])
+  const ownerConfigs = canReadConfigs ? (configs ?? []) : []
   const defaultConfig =
-    routing.source === "owner-default"
+    routing.source === 'owner-default'
       ? routing.llm_config
-      : (ownerConfigs.find((c) => c.is_default) ?? null);
+      : (ownerConfigs.find((c) => c.is_default) ?? null)
   // Seeded once from the routing at open (never re-seeded under the user).
   const {
     control,
@@ -264,69 +255,57 @@ function Body({
     formState: { isDirty },
   } = useForm<Form>({
     defaultValues: {
-      choice: routing.llm_config_id ?? "default",
-      override: routing.pinned_model ?? "",
+      choice: routing.llm_config_id ?? 'default',
+      override: routing.pinned_model ?? '',
       keep: true,
     },
     resolver: zodResolver(schema),
-  });
-  const { choice, override, keep } = useWatch({ control }) as Form;
-  const setChoice = (v: string) => {
-    setValue("choice", v, { shouldDirty: true });
-  };
+  })
+  const { choice, override, keep } = useWatch({ control }) as Form
+  const setChoice = (v: string) => setValue('choice', v, { shouldDirty: true })
   const current: RoutingState = {
     llm_config_id: routing.llm_config_id,
     pinned_model: routing.pinned_model,
-  };
-  const desiredConfig = choice === "default" ? null : choice;
-  const routeChanged = desiredConfig !== routing.llm_config_id;
-  const hadPin = !!routing.pinned_model;
+  }
+  const desiredConfig = choice === 'default' ? null : choice
+  const routeChanged = desiredConfig !== routing.llm_config_id
+  const hadPin = !!routing.pinned_model
   const targetConfig = desiredConfig
     ? (ownerConfigs.find((c) => c.id === desiredConfig) ?? null)
-    : defaultConfig;
+    : defaultConfig
   const keepCheck = routing.pinned_model
     ? keepOverrideCheck(routing.pinned_model, targetConfig, idx, canReadConfigs)
-    : null;
-  const keepAllowed = !!keepCheck?.allowed;
-  const pinUnchanged = override === (routing.pinned_model ?? "");
+    : null
+  const keepAllowed = !!keepCheck?.allowed
+  const pinUnchanged = override === (routing.pinned_model ?? '')
   const desiredPin =
     routeChanged && hadPin && pinUnchanged
       ? keep && keepAllowed
         ? routing.pinned_model
         : null
-      : override.trim() || null;
-  const desired: RoutingState = { llm_config_id: desiredConfig, pinned_model: desiredPin };
+      : override.trim() || null
+  const desired: RoutingState = { llm_config_id: desiredConfig, pinned_model: desiredPin }
   const noChange =
-    desired.llm_config_id === current.llm_config_id &&
-    desired.pinned_model === current.pinned_model;
-  const { reset } = plan;
-  useEffect(
-    () => () => {
-      reset();
-    },
-    [reset],
-  );
-  const blocked = (!outcome && isDirty) || plan.isPending;
+    desired.llm_config_id === current.llm_config_id && desired.pinned_model === current.pinned_model
+  const { reset } = plan
+  useEffect(() => () => reset(), [reset])
+  const blocked = (!outcome && isDirty) || plan.isPending
   useEffect(() => {
-    onBlockedChange(blocked);
-    return () => {
-      onBlockedChange(false);
-    };
-  }, [blocked, onBlockedChange]);
+    onBlockedChange(blocked)
+    return () => onBlockedChange(false)
+  }, [blocked, onBlockedChange])
 
   const run = (from: RoutingState, to: RoutingState) => {
     plan.mutate(
       { current: from, desired: to },
       {
-        onSuccess: (out) => {
-          setOutcome({ ...out, at: Date.now() });
-        },
+        onSuccess: (out) => setOutcome({ ...out, at: Date.now() }),
       },
-    );
-  };
+    )
+  }
 
-  const sentence = routingSentence(routing.llm_config, routing.pinned_model);
-  const cfg = routing.llm_config;
+  const sentence = routingSentence(routing.llm_config, routing.pinned_model)
+  const cfg = routing.llm_config
 
   return (
     <>
@@ -353,7 +332,7 @@ function Body({
             {cfg?.fallback_models.length ? (
               <ul className="space-y-1">
                 {cfg.fallback_models.map((f) => {
-                  const p = parseFallback(f, cfg);
+                  const p = parseFallback(f, cfg)
                   return (
                     <li key={f}>
                       <span className="font-mono text-xs">{f}</span>
@@ -363,7 +342,7 @@ function Body({
                         </span>
                       ) : null}
                     </li>
-                  );
+                  )
                 })}
               </ul>
             ) : (
@@ -394,8 +373,8 @@ function Body({
                     llm_config_id: outcome.after.llm_config_id,
                     pinned_model: outcome.after.pinned_model,
                   }
-                : current;
-              run(now, { llm_config_id: now.llm_config_id, pinned_model: model });
+                : current
+              run(now, { llm_config_id: now.llm_config_id, pinned_model: model })
             }}
             pending={plan.isPending}
           />
@@ -408,17 +387,17 @@ function Body({
               </FieldLegend>
               <RadioGroup
                 aria-label={copy.routeWith}
-                value={choice === "default" ? "default" : "config"}
+                value={choice === 'default' ? 'default' : 'config'}
                 className="gap-2"
-                onValueChange={(v) => {
+                onValueChange={(v) =>
                   setChoice(
-                    v === "default"
-                      ? "default"
+                    v === 'default'
+                      ? 'default'
                       : (ownerConfigs.find((c) => c.id === routing.llm_config_id)?.id ??
                           ownerConfigs[0]?.id ??
-                          "default"),
-                  );
-                }}
+                          'default'),
+                  )
+                }
               >
                 <div className="flex items-center gap-2">
                   <RadioGroupItem id={`${ids}-default`} value="default" />
@@ -427,7 +406,7 @@ function Body({
                   </Label>
                 </div>
                 <div
-                  className={`flex flex-wrap items-center gap-2 ${canReadConfigs ? "" : "opacity-60"}`}
+                  className={`flex flex-wrap items-center gap-2 ${canReadConfigs ? '' : 'opacity-60'}`}
                 >
                   <RadioGroupItem
                     id={`${ids}-config`}
@@ -439,11 +418,8 @@ function Body({
                   </Label>
                   {canReadConfigs ? (
                     <Select
-                      value={choice === "default" ? null : choice}
-                      onValueChange={(v: string | null) => {
-                        if (v) setChoice(v);
-                      }}
-                      items={Object.fromEntries(ownerConfigs.map((c) => [c.id, c.name]))}
+                      value={choice === 'default' ? '' : choice}
+                      onValueChange={setChoice}
                       disabled={!ownerConfigs.length}
                     >
                       <SelectTrigger
@@ -470,7 +446,7 @@ function Body({
               {routeChanged && hadPin && pinUnchanged ? (
                 <div className="space-y-1 rounded-md border border-border p-2">
                   <p className="flex items-center gap-1.5">
-                    <AlertTriangle className="size-3.5 text-warning" aria-hidden />{" "}
+                    <AlertTriangle className="size-3.5 text-warning" aria-hidden />{' '}
                     {copy.overrideWarning}
                   </p>
                   <Controller
@@ -479,16 +455,14 @@ function Body({
                     render={({ field }) => (
                       <Field
                         orientation="horizontal"
-                        className={`gap-2 ${keepAllowed ? "" : "opacity-60"}`}
+                        className={`gap-2 ${keepAllowed ? '' : 'opacity-60'}`}
                       >
                         <Checkbox
                           id={`${ids}-keep`}
                           ref={field.ref}
                           checked={field.value && keepAllowed}
                           disabled={!keepAllowed}
-                          onCheckedChange={(c) => {
-                            field.onChange(c);
-                          }}
+                          onCheckedChange={(c) => field.onChange(c === true)}
                         />
                         <FieldLabel htmlFor={`${ids}-keep`} className="font-normal">
                           {copy.keepOverride}
@@ -519,7 +493,7 @@ function Body({
                 <Input
                   id={`${ids}-override`}
                   list={`${ids}-models`}
-                  {...register("override")}
+                  {...register('override')}
                   placeholder={copy.overridePlaceholder}
                 />
                 <datalist id={`${ids}-models`}>
@@ -534,9 +508,7 @@ function Body({
                     className="pointer-coarse:min-h-11"
                     type="button"
                     variant="ghost"
-                    onClick={() => {
-                      setValue("override", "", { shouldDirty: true });
-                    }}
+                    onClick={() => setValue('override', '', { shouldDirty: true })}
                   >
                     {copy.removeOverride}
                   </Button>
@@ -576,9 +548,7 @@ function Body({
               <Button
                 className="pointer-coarse:min-h-11"
                 disabled={noChange || plan.isPending}
-                onClick={() => {
-                  run(current, desired);
-                }}
+                onClick={() => run(current, desired)}
               >
                 {plan.isPending ? copy.saving : copy.save}
               </Button>
@@ -587,7 +557,7 @@ function Body({
         )}
       </SheetFooter>
     </>
-  );
+  )
 }
 
 function Outcome({
@@ -596,17 +566,17 @@ function Outcome({
   onPinAgain,
   pending,
 }: {
-  outcome: PlanOutcome & { at: number };
-  target: RoutingTarget;
-  onPinAgain: (model: string) => void;
-  pending: boolean;
+  outcome: PlanOutcome & { at: number }
+  target: RoutingTarget
+  onPinAgain: (model: string) => void
+  pending: boolean
 }) {
-  const by = fmtLocalTime(outcome.at + CONFIG_CACHE_SECONDS * 1000);
-  const failed = outcome.failed;
+  const by = fmtLocalTime(outcome.at + CONFIG_CACHE_SECONDS * 1000)
+  const failed = outcome.failed
   const repin =
     failed &&
-    failed.step.kind === "pin" &&
-    outcome.saved.some((s) => s.kind === "attach" || s.kind === "detach");
+    failed.step.kind === 'pin' &&
+    outcome.saved.some((s) => s.kind === 'attach' || s.kind === 'detach')
   return (
     <div className="space-y-2">
       {!failed ? (
@@ -614,7 +584,7 @@ function Outcome({
       ) : repin ? (
         <div className="space-y-1">
           <p className="text-warning">
-            {outcome.saved.some((st) => st.kind === "attach")
+            {outcome.saved.some((st) => st.kind === 'attach')
               ? copy.partialOverride(String(failed.step.body.pinned_model))
               : copy.partialOverrideDefault(String(failed.step.body.pinned_model))}
           </p>
@@ -623,9 +593,7 @@ function Outcome({
             size="sm"
             variant="outline"
             disabled={pending}
-            onClick={() => {
-              onPinAgain(String(failed.step.body.pinned_model));
-            }}
+            onClick={() => onPinAgain(String(failed.step.body.pinned_model))}
           >
             {copy.pinAgain}
           </Button>
@@ -634,7 +602,7 @@ function Outcome({
         <div className="space-y-1 text-destructive">
           <p>
             {outcome.saved.length
-              ? copy.midwayFailed(outcome.saved.map(stepText).join(", "))
+              ? copy.midwayFailed(outcome.saved.map(stepText).join(', '))
               : copy.nothingSaved}
           </p>
           <p>
@@ -647,7 +615,8 @@ function Outcome({
           <p className="text-muted-foreground">{copy.checkHint(by)}</p>
           <p className="text-muted-foreground">{copy.cantConfirm}</p>
           <Link
-            href={hrefFor("/sessions", { agent: target.name })}
+            to="/sessions"
+            search={{ agent: target.name }}
             className="text-primary-text underline-offset-4 hover:underline"
           >
             {copy.seeSessions}
@@ -655,5 +624,5 @@ function Outcome({
         </>
       ) : null}
     </div>
-  );
+  )
 }

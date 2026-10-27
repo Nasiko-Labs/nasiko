@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/mocks/aggregate.ts. Local edits: non-null assertions on sorted-array reads are kept under
-// a file-level eslint-disable (typescript-eslint strictTypeChecked bans `!`), plus `!` on the `RANGE_HOURS` read
-// the line above checks and a tuple cast on the month split (`noUncheckedIndexedAccess` here).
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; `pick` indexes a non-empty sorted array */
 /**
  * Server-mirroring aggregations over the seed (plan A19).
  *
@@ -20,14 +16,13 @@ import type {
   FinopsSpendCalendar,
   FinopsSpendTimeseries,
   KpiValue,
-  Savings,
-  SavingsData,
   SpendTimeseriesPoint,
   TopTracesData,
   WorkflowFinopsRow,
-} from "@nasiko/features/tokenops/types";
-import { round6 as r6, type Seed, type SeedTrace } from "./seed";
-import { adminHarnessAgents, harnessTurns, type HarnessSeed } from "./seed-harness";
+} from '@nasiko/features/tokenops/types'
+import { round6 as r6, type Seed, type SeedTrace } from './seed'
+import { adminHarnessAgents, harnessTurns, type HarnessSeed } from './seed-harness'
+import type { Savings, SavingsData } from '@nasiko/features/tokenops/types'
 
 /**
  * The finops endpoints' view of the data: the seed plus the seed admin's coding-harness agents and one trace row per
@@ -35,8 +30,8 @@ import { adminHarnessAgents, harnessTurns, type HarnessSeed } from "./seed-harne
  * "Codex (<admin email>)"). Agent version is the agents table default, '1.0.0'.
  */
 export function withHarnessTurns(seed: Seed, hs: HarnessSeed): Seed {
-  const agents = adminHarnessAgents(hs);
-  const byId = new Map(agents.map((a) => [a.id, a]));
+  const agents = adminHarnessAgents(hs)
+  const byId = new Map(agents.map((a) => [a.id, a]))
   const traces: SeedTrace[] = harnessTurns(hs, agents, seed.spikeDate).map((t) => ({
     trace_id: t.trace_id,
     session_id: t.session_id,
@@ -56,7 +51,7 @@ export function withHarnessTurns(seed: Seed, hs: HarnessSeed): Seed {
     started_at: t.started_at,
     ts: t.ts,
     workflow_id: null,
-  }));
+  }))
   return {
     ...seed,
     agents: [
@@ -66,47 +61,47 @@ export function withHarnessTurns(seed: Seed, hs: HarnessSeed): Seed {
         name: a.name,
         display_name: a.display_name,
         deleted: false,
-        version: "1.0.0",
+        version: '1.0.0',
       })),
     ],
     traces: [...seed.traces, ...traces].sort((a, b) => a.ts - b.ts),
-  };
-}
-
-export class MockHttpError extends Error {
-  readonly status: number;
-  /** A JSON body instead of plain text (e.g. custom_providers.rs delete's 409 `{message, referencing_configs}`). */
-  readonly body?: unknown;
-  constructor(status: number, message: string, body?: unknown) {
-    super(message);
-    this.status = status;
-    this.body = body;
   }
 }
 
-const HOUR_MS = 3_600_000;
-const RANGE_HOURS: Record<string, number> = { "24h": 24, "7d": 168, "30d": 720 };
+export class MockHttpError extends Error {
+  readonly status: number
+  /** A JSON body instead of plain text (e.g. custom_providers.rs delete's 409 `{message, referencing_configs}`). */
+  readonly body?: unknown
+  constructor(status: number, message: string, body?: unknown) {
+    super(message)
+    this.status = status
+    this.body = body
+  }
+}
+
+const HOUR_MS = 3_600_000
+const RANGE_HOURS: Record<string, number> = { '24h': 24, '7d': 168, '30d': 720 }
 
 export interface FilterParams {
-  range?: string | null;
-  start_time?: string | null;
-  end_time?: string | null;
-  agent_id?: string | null;
-  model?: string | null;
-  provider?: string | null;
-  view?: string | null;
+  range?: string | null
+  start_time?: string | null
+  end_time?: string | null
+  agent_id?: string | null
+  model?: string | null
+  provider?: string | null
+  view?: string | null
   /** `previous` folds the preceding window into the same response. */
-  compare?: string | null;
+  compare?: string | null
   /** spend-timeseries only: `agent` adds a series per top spender. */
-  group_by?: string | null;
+  group_by?: string | null
   /** How many agents get their own series under `group_by=agent`. */
-  top?: string | null;
+  top?: string | null
 }
 
 interface ServerWindow {
-  start: number;
-  end: number;
-  bucket: "hour" | "day";
+  start: number
+  end: number
+  bucket: 'hour' | 'day'
 }
 
 /**
@@ -114,16 +109,16 @@ interface ServerWindow {
  * for 24h; default 30 days. (Named apart from the client's `resolveWindow` in window.ts.)
  */
 export function resolveServerWindow(p: FilterParams, now: number): ServerWindow {
-  const end = p.end_time ? Date.parse(p.end_time) : now;
+  const end = p.end_time ? Date.parse(p.end_time) : now
   if (p.range) {
-    const hours = RANGE_HOURS[p.range];
-    if (!hours) throw new MockHttpError(400, `invalid range '${p.range}'`);
-    return { start: end - hours * HOUR_MS, end, bucket: p.range === "24h" ? "hour" : "day" };
+    const hours = RANGE_HOURS[p.range]
+    if (!hours) throw new MockHttpError(400, `invalid range '${p.range}'`)
+    return { start: end - hours * HOUR_MS, end, bucket: p.range === '24h' ? 'hour' : 'day' }
   }
-  const start = p.start_time ? Date.parse(p.start_time) : end - 30 * 24 * HOUR_MS;
+  const start = p.start_time ? Date.parse(p.start_time) : end - 30 * 24 * HOUR_MS
   if (Number.isNaN(start) || Number.isNaN(end))
-    throw new MockHttpError(400, "invalid start_time/end_time");
-  return { start, end, bucket: "day" };
+    throw new MockHttpError(400, 'invalid start_time/end_time')
+  return { start, end, bucket: 'day' }
 }
 
 /**
@@ -131,52 +126,52 @@ export function resolveServerWindow(p: FilterParams, now: number): ServerWindow 
  * (`deleted_at IS NULL` server-side) → 400. Returns the raw name.
  */
 export function resolveAgent(seed: Seed, ref: string | null | undefined): string | null {
-  if (!ref) return null;
-  const agent = seed.agents.find((a) => !a.deleted && (a.id === ref || a.name === ref));
-  if (!agent) throw new MockHttpError(400, `unknown agent '${ref}'`);
-  return agent.name;
+  if (!ref) return null
+  const agent = seed.agents.find((a) => !a.deleted && (a.id === ref || a.name === ref))
+  if (!agent) throw new MockHttpError(400, `unknown agent '${ref}'`)
+  return agent.name
 }
 
 export function inWindow(t: SeedTrace, start: number, end: number): boolean {
-  return t.ts >= start && t.ts < end;
+  return t.ts >= start && t.ts < end
 }
 
 /** One pass instead of filtering once per group (the seed is ~20k rows, on the main thread). */
 function groupBy<K>(rows: SeedTrace[], key: (t: SeedTrace) => K): Map<K, SeedTrace[]> {
-  const out = new Map<K, SeedTrace[]>();
+  const out = new Map<K, SeedTrace[]>()
   for (const t of rows) {
-    const k = key(t);
-    const g = out.get(k);
-    if (g) g.push(t);
-    else out.set(k, [t]);
+    const k = key(t)
+    const g = out.get(k)
+    if (g) g.push(t)
+    else out.set(k, [t])
   }
-  return out;
+  return out
 }
 
 export function matches(t: SeedTrace, agentName: string | null, p: FilterParams): boolean {
-  if (agentName && t.agent_name !== agentName) return false;
-  if (p.model && t.model !== p.model) return false;
-  if (p.provider && t.provider !== p.provider) return false;
-  return true;
+  if (agentName && t.agent_name !== agentName) return false
+  if (p.model && t.model !== p.model) return false
+  if (p.provider && t.provider !== p.provider) return false
+  return true
 }
 
 /** Postgres `percentile_cont`: linear interpolation between the two nearest ranks, unrounded. */
 function pick(sorted: number[], p: number): number | null {
-  if (!sorted.length) return null;
-  const x = (p / 100) * (sorted.length - 1);
-  const lo = Math.floor(x);
-  const hi = Math.ceil(x);
-  return sorted[lo]! + (x - lo) * (sorted[hi]! - sorted[lo]!);
+  if (!sorted.length) return null
+  const x = (p / 100) * (sorted.length - 1)
+  const lo = Math.floor(x)
+  const hi = Math.ceil(x)
+  return sorted[lo]! + (x - lo) * (sorted[hi]! - sorted[lo]!)
 }
 
 /** p50/p95/p99 from one sort, like the server's `percentile_cont(…) WITHIN GROUP (ORDER BY latency_ms)` (service.rs, ea233d20). */
 function percentiles(values: number[]): {
-  p50: number | null;
-  p95: number | null;
-  p99: number | null;
+  p50: number | null
+  p95: number | null
+  p99: number | null
 } {
-  const sorted = [...values].sort((a, b) => a - b);
-  return { p50: pick(sorted, 50), p95: pick(sorted, 95), p99: pick(sorted, 99) };
+  const sorted = [...values].sort((a, b) => a - b)
+  return { p50: pick(sorted, 50), p95: pick(sorted, 95), p99: pick(sorted, 99) }
 }
 
 function kpi(current: number, previous: number): KpiValue {
@@ -185,27 +180,27 @@ function kpi(current: number, previous: number): KpiValue {
     previous,
     change_pct:
       previous === 0 ? null : Math.round(((current - previous) / previous) * 100 * 100) / 100,
-  };
+  }
 }
 
 function sumTraces(rows: SeedTrace[]) {
-  let cost = 0;
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let cacheCreate = 0;
-  let tools = 0;
-  let unpriced = 0;
-  const latencies: number[] = [];
+  let cost = 0
+  let input = 0
+  let output = 0
+  let cacheRead = 0
+  let cacheCreate = 0
+  let tools = 0
+  let unpriced = 0
+  const latencies: number[] = []
   for (const t of rows) {
-    cost += t.cost_usd;
-    input += t.input_tokens;
-    output += t.output_tokens;
-    cacheRead += t.cache_read_tokens;
-    cacheCreate += t.cache_creation_tokens;
-    tools += t.tool_call_count;
-    if (t.cost_usd === 0 && t.input_tokens + t.output_tokens > 0) unpriced++;
-    latencies.push(t.latency_ms);
+    cost += t.cost_usd
+    input += t.input_tokens
+    output += t.output_tokens
+    cacheRead += t.cache_read_tokens
+    cacheCreate += t.cache_creation_tokens
+    tools += t.tool_call_count
+    if (t.cost_usd === 0 && t.input_tokens + t.output_tokens > 0) unpriced++
+    latencies.push(t.latency_ms)
   }
   // `tokens` is input+output (the server's previous-window total and workflows); `tokensAll` adds cache tokens, as
   // the server's current-window agent rows and totals do (service.rs grand_total_tokens, ea233d20).
@@ -221,7 +216,7 @@ function sumTraces(rows: SeedTrace[]) {
     unpriced,
     latencies,
     ops: rows.length,
-  };
+  }
 }
 
 function overlapHours(
@@ -230,50 +225,50 @@ function overlapHours(
   start: number,
   end: number,
 ): Map<string, number> {
-  const out = new Map<string, number>();
+  const out = new Map<string, number>()
   for (const s of seed.sessions) {
-    if (agentId && s.agent_id !== agentId) continue;
-    const a = Math.max(Date.parse(s.started_at), start);
+    if (agentId && s.agent_id !== agentId) continue
+    const a = Math.max(Date.parse(s.started_at), start)
     // agents/hours_meter.rs windowed_agent_hours (ea233d20): an open session ends at its last_seen_at (the seed writes
     // it at seed time, the anchor), never at now.
-    const b = Math.min(s.ended_at ? Date.parse(s.ended_at) : Date.parse(seed.anchor), end);
-    if (b > a) out.set(s.agent_id, (out.get(s.agent_id) ?? 0) + (b - a) / HOUR_MS);
+    const b = Math.min(s.ended_at ? Date.parse(s.ended_at) : Date.parse(seed.anchor), end)
+    if (b > a) out.set(s.agent_id, (out.get(s.agent_id) ?? 0) + (b - a) / HOUR_MS)
   }
-  return out;
+  return out
 }
 
 export function dashboard(seed: Seed, p: FilterParams, now: number): FinopsDashboardData {
-  const view = p.view ?? "agent";
-  if (view !== "agent" && view !== "workflow")
-    throw new MockHttpError(400, `invalid view '${view}'`);
-  const agentName = resolveAgent(seed, p.agent_id);
-  const { start, end } = resolveServerWindow(p, now);
-  const len = end - start;
-  const prevStart = start - len;
+  const view = p.view ?? 'agent'
+  if (view !== 'agent' && view !== 'workflow')
+    throw new MockHttpError(400, `invalid view '${view}'`)
+  const agentName = resolveAgent(seed, p.agent_id)
+  const { start, end } = resolveServerWindow(p, now)
+  const len = end - start
+  const prevStart = start - len
 
   // get_agent_names (service.rs, ea233d20): live agents ORDER BY name (the raw name); rows keep that order.
   const live = seed.agents
     .filter((a) => !a.deleted && (!agentName || a.name === agentName))
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
-  const hours = overlapHours(seed, null, start, end);
-  const total_container_hours = r6([...hours.values()].reduce((s, h) => s + h, 0));
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  const hours = overlapHours(seed, null, start, end)
+  const total_container_hours = r6([...hours.values()].reduce((s, h) => s + h, 0))
 
-  const cur = seed.traces.filter((t) => inWindow(t, start, end) && matches(t, agentName, p));
-  const prev = seed.traces.filter((t) => inWindow(t, prevStart, start) && matches(t, agentName, p));
-  const liveNames = new Set(live.map((a) => a.name));
-  const curLive = cur.filter((t) => liveNames.has(t.agent_name));
-  const prevLive = prev.filter((t) => liveNames.has(t.agent_name));
+  const cur = seed.traces.filter((t) => inWindow(t, start, end) && matches(t, agentName, p))
+  const prev = seed.traces.filter((t) => inWindow(t, prevStart, start) && matches(t, agentName, p))
+  const liveNames = new Set(live.map((a) => a.name))
+  const curLive = cur.filter((t) => liveNames.has(t.agent_name))
+  const prevLive = prev.filter((t) => liveNames.has(t.agent_name))
 
-  const curByAgent = groupBy(curLive, (t) => t.agent_name);
+  const curByAgent = groupBy(curLive, (t) => t.agent_name)
   // `compare=previous` keeps the per-agent preceding window instead of folding
   // it only into the KPI strip (service.rs `compare_previous`). The previous
   // window is already grouped here either way.
-  const comparing = p.compare === "previous";
-  const prevByAgent = groupBy(prevLive, (t) => t.agent_name);
+  const comparing = p.compare === 'previous'
+  const prevByAgent = groupBy(prevLive, (t) => t.agent_name)
   const rows: AgentFinopsRow[] = live.map((a) => {
-    const s = sumTraces(curByAgent.get(a.name) ?? []);
-    const pct = percentiles(s.latencies);
-    const pr = comparing ? sumTraces(prevByAgent.get(a.name) ?? []) : null;
+    const s = sumTraces(curByAgent.get(a.name) ?? [])
+    const pct = percentiles(s.latencies)
+    const pr = comparing ? sumTraces(prevByAgent.get(a.name) ?? []) : null
     return {
       ...(pr
         ? {
@@ -303,35 +298,35 @@ export function dashboard(seed: Seed, p: FilterParams, now: number): FinopsDashb
       tool_call_count: s.tools,
       version: a.version,
       container_hours: r6(hours.get(a.id) ?? 0),
-    };
-  });
+    }
+  })
 
-  const c = sumTraces(curLive);
-  const pv = sumTraces(prevLive);
+  const c = sumTraces(curLive)
+  const pv = sumTraces(prevLive)
   // service.rs (ea233d20): the last 24 h are measured from the real now, whatever the window, with no upper bound.
   const last24 = seed.traces.filter(
     (t) => t.ts >= now - 24 * HOUR_MS && matches(t, agentName, p) && liveNames.has(t.agent_name),
-  ).length;
-  const activeCur = rows.filter((r) => r.operations > 0).length;
-  const activePrev = new Set(prevLive.map((t) => t.agent_name)).size;
+  ).length
+  const activeCur = rows.filter((r) => r.operations > 0).length
+  const activePrev = new Set(prevLive.map((t) => t.agent_name)).size
 
   // service.rs spend_by_agent (ea233d20): rows by cost, descending and stable (ties keep name order), top 5 without
   // dropping zero-cost rows; "Others" is the rest, only when above zero.
-  const byCost = [...rows].sort((a, b) => b.total_cost - a.total_cost);
-  const top5 = byCost.slice(0, 5);
-  const pctOf = (v: number) => (c.cost ? Math.round((v / c.cost) * 10000) / 100 : 0);
+  const byCost = [...rows].sort((a, b) => b.total_cost - a.total_cost)
+  const top5 = byCost.slice(0, 5)
+  const pctOf = (v: number) => (c.cost ? Math.round((v / c.cost) * 10000) / 100 : 0)
   const slices = top5.map((r) => ({
     agent_name: r.agent_name,
     spend_usd: r.total_cost,
     pct: pctOf(r.total_cost),
-  }));
-  const othersSpend = r6(byCost.slice(5).reduce((s, r) => s + r.total_cost, 0));
+  }))
+  const othersSpend = r6(byCost.slice(5).reduce((s, r) => s + r.total_cost, 0))
   if (othersSpend > 0)
-    slices.push({ agent_name: "Others", spend_usd: othersSpend, pct: pctOf(othersSpend) });
+    slices.push({ agent_name: 'Others', spend_usd: othersSpend, pct: pctOf(othersSpend) })
 
-  const curByWorkflow = groupBy(cur, (t) => t.workflow_id);
+  const curByWorkflow = groupBy(cur, (t) => t.workflow_id)
   const workflowRows: WorkflowFinopsRow[] = seed.workflows.map((w) => {
-    const s = sumTraces(curByWorkflow.get(w.maf_id) ?? []);
+    const s = sumTraces(curByWorkflow.get(w.maf_id) ?? [])
     return {
       maf_id: w.maf_id,
       workflow_name: w.workflow_name,
@@ -347,19 +342,19 @@ export function dashboard(seed: Seed, p: FilterParams, now: number): FinopsDashb
       avg_latency_ms: s.latencies.length
         ? s.latencies.reduce((a, b) => a + b, 0) / s.latencies.length
         : null,
-    };
-  });
+    }
+  })
 
   // Latency KPIs are the mean of the listed agents' own percentiles, not fleet percentiles (service.rs avg_latency,
   // ea233d20); the previous window uses the agents with previous rows.
   const mean = (xs: (number | null)[]) => {
-    const v = xs.filter((x): x is number => x !== null);
-    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
-  };
+    const v = xs.filter((x): x is number => x !== null)
+    return v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0
+  }
   const prevPct = [...groupBy(prevLive, (t) => t.agent_name).values()].map((g) =>
     percentiles(g.map((t) => t.latency_ms)),
-  );
-  const allCur = sumTraces(cur);
+  )
+  const allCur = sumTraces(cur)
   return {
     summary: {
       total_cost: c.cost,
@@ -408,51 +403,50 @@ export function dashboard(seed: Seed, p: FilterParams, now: number): FinopsDashb
       ),
     },
     attributions:
-      view === "workflow"
-        ? { view: "workflow", rows: workflowRows.sort((a, b) => b.total_cost - a.total_cost) }
-        : { view: "agent", rows },
+      view === 'workflow'
+        ? { view: 'workflow', rows: workflowRows.sort((a, b) => b.total_cost - a.total_cost) }
+        : { view: 'agent', rows },
     spend_by_agent: { slices, total_spend_usd: c.cost },
-  };
+  }
 }
 
-export function bucketStart(ts: number, bucket: "hour" | "day"): number {
-  const d = new Date(ts);
-  return bucket === "hour"
+export function bucketStart(ts: number, bucket: 'hour' | 'day'): number {
+  const d = new Date(ts)
+  return bucket === 'hour'
     ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours())
-    : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+    : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
 }
 
 export function spendTimeseries(seed: Seed, p: FilterParams, now: number): FinopsSpendTimeseries {
-  if (p.group_by && p.group_by !== "agent")
-    throw new MockHttpError(400, `invalid group_by '${p.group_by}' — expected 'agent'`);
-  const agentName = resolveAgent(seed, p.agent_id);
-  const { start, end, bucket } = resolveServerWindow(p, now);
+  if (p.group_by && p.group_by !== 'agent')
+    throw new MockHttpError(400, `invalid group_by '${p.group_by}' — expected 'agent'`)
+  const agentName = resolveAgent(seed, p.agent_id)
+  const { start, end, bucket } = resolveServerWindow(p, now)
 
   const inRange = (from: number, to: number) =>
-    seed.traces.filter((t) => inWindow(t, from, to) && matches(t, agentName, p));
+    seed.traces.filter((t) => inWindow(t, from, to) && matches(t, agentName, p))
 
   const bucketed = (rows: SeedTrace[]) => {
-    const groups = new Map<number, SeedTrace[]>();
+    const groups = new Map<number, SeedTrace[]>()
     for (const t of rows) {
-      const key = bucketStart(t.ts, bucket);
-      const g = groups.get(key);
-      if (g) g.push(t);
-      else groups.set(key, [t]);
+      const key = bucketStart(t.ts, bucket)
+      const g = groups.get(key)
+      if (g) g.push(t)
+      else groups.set(key, [t])
     }
-    return groups;
-  };
+    return groups
+  }
 
-  const windowRows = inRange(start, end);
-  const groups = bucketed(windowRows);
+  const windowRows = inRange(start, end)
+  const groups = bucketed(windowRows)
   const points: SpendTimeseriesPoint[] = [...groups.entries()]
     .sort(([a], [b]) => a - b)
     .map(([key, rows]) => {
-      const s = sumTraces(rows);
-      const pct = percentiles(s.latencies);
-      const byAgent = new Map<string, number>();
-      for (const t of rows)
-        byAgent.set(t.agent_name, (byAgent.get(t.agent_name) ?? 0) + t.cost_usd);
-      const top = [...byAgent.entries()].sort((a, b) => b[1] - a[1])[0];
+      const s = sumTraces(rows)
+      const pct = percentiles(s.latencies)
+      const byAgent = new Map<string, number>()
+      for (const t of rows) byAgent.set(t.agent_name, (byAgent.get(t.agent_name) ?? 0) + t.cost_usd)
+      const top = [...byAgent.entries()].sort((a, b) => b[1] - a[1])[0]
       return {
         bucket_start: new Date(key).toISOString(),
         spend_usd: s.cost,
@@ -463,31 +457,31 @@ export function spendTimeseries(seed: Seed, p: FilterParams, now: number): Finop
         p50_latency_ms: pct.p50,
         p95_latency_ms: pct.p95,
         p99_latency_ms: pct.p99,
-      };
-    });
+      }
+    })
 
   // `compare=previous`: the preceding window of equal length, same bucketing.
   const previous =
-    p.compare === "previous" ? simplePoints(bucketed(inRange(start - (end - start), start))) : null;
+    p.compare === 'previous' ? simplePoints(bucketed(inRange(start - (end - start), start))) : null
 
   // `group_by=agent`: the top `top` agents by whole-window spend get their own
   // series, everything else folds into one `other` — so the series still sum to
   // `points` and no spend is hidden by the cut (service.rs `spend_series_by_agent`).
-  let series: FinopsSpendTimeseries["series"] = null;
-  if (p.group_by === "agent") {
-    const topN = Math.min(20, Math.max(1, Number.parseInt(p.top ?? "", 10) || 5));
-    const totals = new Map<string, number>();
+  let series: FinopsSpendTimeseries['series'] = null
+  if (p.group_by === 'agent') {
+    const topN = Math.min(20, Math.max(1, Number.parseInt(p.top ?? '', 10) || 5))
+    const totals = new Map<string, number>()
     for (const t of windowRows)
-      totals.set(t.agent_name, (totals.get(t.agent_name) ?? 0) + t.cost_usd);
+      totals.set(t.agent_name, (totals.get(t.agent_name) ?? 0) + t.cost_usd)
     const ranked = [...totals.entries()]
       .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
-      .map(([name]) => name);
-    const named = new Set(ranked.slice(0, topN));
-    const byKey = groupBy(windowRows, (t) => (named.has(t.agent_name) ? t.agent_name : ""));
+      .map(([name]) => name)
+    const named = new Set(ranked.slice(0, topN))
+    const byKey = groupBy(windowRows, (t) => (named.has(t.agent_name) ? t.agent_name : ''))
     series = [...byKey.entries()]
       .map(([name, rows]) => {
-        const isOther = name === "";
-        const agent = isOther ? undefined : seed.agents.find((a) => a.name === name && !a.deleted);
+        const isOther = name === ''
+        const agent = isOther ? undefined : seed.agents.find((a) => a.name === name && !a.deleted)
         return {
           agent_name: isOther ? null : name,
           agent_id: agent?.id ?? null,
@@ -498,14 +492,14 @@ export function spendTimeseries(seed: Seed, p: FilterParams, now: number): Finop
             spend_usd: pt.spend_usd,
             operations: pt.operations,
           })),
-        };
+        }
       })
       // Named series by spend, `other` last whatever it totals.
       .sort((a, b) =>
         a.is_other === b.is_other ? b.total_spend_usd - a.total_spend_usd : a.is_other ? 1 : -1,
-      );
+      )
   }
-  return { bucket, points, ...(series ? { series } : {}), ...(previous ? { previous } : {}) };
+  return { bucket, points, ...(series ? { series } : {}), ...(previous ? { previous } : {}) }
 }
 
 /** Bucketed rows as plain points — no top-agent or latency detail needed. */
@@ -513,8 +507,8 @@ function simplePoints(groups: Map<number, SeedTrace[]>): SpendTimeseriesPoint[] 
   return [...groups.entries()]
     .sort(([a], [b]) => a - b)
     .map(([key, rows]) => {
-      const s = sumTraces(rows);
-      const pct = percentiles(s.latencies);
+      const s = sumTraces(rows)
+      const pct = percentiles(s.latencies)
       return {
         bucket_start: new Date(key).toISOString(),
         spend_usd: s.cost,
@@ -525,8 +519,8 @@ function simplePoints(groups: Map<number, SeedTrace[]>): SpendTimeseriesPoint[] 
         p50_latency_ms: pct.p50,
         p95_latency_ms: pct.p95,
         p99_latency_ms: pct.p99,
-      };
-    });
+      }
+    })
 }
 
 export function spendCalendar(
@@ -536,21 +530,21 @@ export function spendCalendar(
   now: number,
 ): FinopsSpendCalendar {
   if (!month || !/^\d{4}-\d{2}$/.test(month))
-    throw new MockHttpError(400, "month is required (YYYY-MM)");
-  const agentName = resolveAgent(seed, p.agent_id);
-  const [y, m] = month.split("-").map(Number) as [number, number];
-  const start = Date.UTC(y, m - 1, 1);
-  const end = Date.UTC(y, m, 1);
-  const byDay = new Map<string, { spend: number; ops: number }>();
+    throw new MockHttpError(400, 'month is required (YYYY-MM)')
+  const agentName = resolveAgent(seed, p.agent_id)
+  const [y, m] = month.split('-').map(Number)
+  const start = Date.UTC(y, m - 1, 1)
+  const end = Date.UTC(y, m, 1)
+  const byDay = new Map<string, { spend: number; ops: number }>()
   for (const t of seed.traces) {
-    if (!inWindow(t, start, end) || !matches(t, agentName, p)) continue;
-    const date = t.started_at.slice(0, 10);
-    const cur = byDay.get(date) ?? { spend: 0, ops: 0 };
-    cur.spend += t.cost_usd;
-    cur.ops += 1;
-    byDay.set(date, cur);
+    if (!inWindow(t, start, end) || !matches(t, agentName, p)) continue
+    const date = t.started_at.slice(0, 10)
+    const cur = byDay.get(date) ?? { spend: 0, ops: 0 }
+    cur.spend += t.cost_usd
+    cur.ops += 1
+    byDay.set(date, cur)
   }
-  const max = Math.max(0, ...[...byDay.values()].map((v) => v.spend));
+  const max = Math.max(0, ...[...byDay.values()].map((v) => v.spend))
   const days = [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, v]) => ({
@@ -558,47 +552,47 @@ export function spendCalendar(
       spend_usd: r6(v.spend),
       operations: v.ops,
       intensity: max ? v.spend / max : 0,
-    }));
-  const highlighted: string[] = [];
+    }))
+  const highlighted: string[] = []
   if (p.range && RANGE_HOURS[p.range]) {
-    const from = now - RANGE_HOURS[p.range]! * HOUR_MS;
-    for (const d of days) if (Date.parse(`${d.date}T23:59:59Z`) >= from) highlighted.push(d.date);
+    const from = now - RANGE_HOURS[p.range] * HOUR_MS
+    for (const d of days) if (Date.parse(`${d.date}T23:59:59Z`) >= from) highlighted.push(d.date)
   }
-  return { days, highlighted_dates: highlighted };
+  return { days, highlighted_dates: highlighted }
 }
 
 export function dayDrilldown(seed: Seed, date: string | null, p: FilterParams): FinopsDayDrilldown {
   if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date))
-    throw new MockHttpError(400, "date is required (YYYY-MM-DD)");
-  const agentName = resolveAgent(seed, p.agent_id);
-  const start = Date.parse(`${date}T00:00:00Z`);
+    throw new MockHttpError(400, 'date is required (YYYY-MM-DD)')
+  const agentName = resolveAgent(seed, p.agent_id)
+  const start = Date.parse(`${date}T00:00:00Z`)
   const rows = seed.traces.filter(
     (t) => inWindow(t, start, start + 24 * HOUR_MS) && matches(t, agentName, p),
-  );
+  )
   // Like get_finops_spend_calendar_day: agents with no spend are dropped, and names are
   // resolved to display names through the live agents (get_agent_names excludes deleted
   // ones), so a deleted agent's slices keep the raw trace name.
   const displayByName = new Map(
     seed.agents.filter((a) => !a.deleted).map((a) => [a.name, a.display_name]),
-  );
-  const display = (name: string) => displayByName.get(name) ?? name;
-  const byAgent = new Map<string, number>();
-  for (const t of rows) byAgent.set(t.agent_name, (byAgent.get(t.agent_name) ?? 0) + t.cost_usd);
+  )
+  const display = (name: string) => displayByName.get(name) ?? name
+  const byAgent = new Map<string, number>()
+  for (const t of rows) byAgent.set(t.agent_name, (byAgent.get(t.agent_name) ?? 0) + t.cost_usd)
   const top = [...byAgent.entries()]
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
-  const topNames = new Set(top.map(([n]) => n));
-  const total = rows.reduce((s, t) => s + t.cost_usd, 0);
-  const byHour = groupBy(rows, (t) => new Date(t.ts).getUTCHours());
+    .slice(0, 4)
+  const topNames = new Set(top.map(([n]) => n))
+  const total = rows.reduce((s, t) => s + t.cost_usd, 0)
+  const byHour = groupBy(rows, (t) => new Date(t.ts).getUTCHours())
   const hours = Array.from({ length: 24 }, (_, hour) => {
-    const inHour = byHour.get(hour) ?? [];
-    const spend = inHour.reduce((s, t) => s + t.cost_usd, 0);
-    const perAgent = new Map<string, number>();
+    const inHour = byHour.get(hour) ?? []
+    const spend = inHour.reduce((s, t) => s + t.cost_usd, 0)
+    const perAgent = new Map<string, number>()
     for (const t of inHour)
       if (topNames.has(t.agent_name))
-        perAgent.set(t.agent_name, (perAgent.get(t.agent_name) ?? 0) + t.cost_usd);
-    const topSpend = [...perAgent.values()].reduce((s, v) => s + v, 0);
+        perAgent.set(t.agent_name, (perAgent.get(t.agent_name) ?? 0) + t.cost_usd)
+    const topSpend = [...perAgent.values()].reduce((s, v) => s + v, 0)
     return {
       hour,
       spend_usd: r6(spend),
@@ -609,8 +603,8 @@ export function dayDrilldown(seed: Seed, date: string | null, p: FilterParams): 
         .filter(([, v]) => v > 0)
         .map(([name, v]) => ({ agent_name: display(name), spend_usd: r6(v) })),
       others_spend_usd: r6(Math.max(0, spend - topSpend)),
-    };
-  });
+    }
+  })
   return {
     date,
     hours,
@@ -621,14 +615,14 @@ export function dayDrilldown(seed: Seed, date: string | null, p: FilterParams): 
       spend_usd: r6(spend_usd),
     })),
     others_spend_usd: r6(total - top.reduce((s, [, v]) => s + v, 0)),
-  };
+  }
 }
 
 const SORTS: Record<string, (t: SeedTrace) => number> = {
   cost: (t) => t.cost_usd,
   tokens: (t) => t.input_tokens + t.output_tokens,
   latency: (t) => t.latency_ms,
-};
+}
 
 /** PROPOSED `/finops/top-traces` contract (plan A29). */
 export function topTraces(
@@ -636,16 +630,16 @@ export function topTraces(
   p: FilterParams & { sort_by?: string | null; limit?: string | null; offset?: string | null },
   now: number,
 ): TopTracesData {
-  const sortKey = p.sort_by ?? "cost";
-  const sortFn = SORTS[sortKey];
-  if (!sortFn) throw new MockHttpError(400, `invalid sort_by '${sortKey}'`);
-  const limit = p.limit ? Number(p.limit) : 25;
-  const offset = p.offset ? Number(p.offset) : 0;
+  const sortKey = p.sort_by ?? 'cost'
+  const sortFn = SORTS[sortKey]
+  if (!sortFn) throw new MockHttpError(400, `invalid sort_by '${sortKey}'`)
+  const limit = p.limit ? Number(p.limit) : 25
+  const offset = p.offset ? Number(p.offset) : 0
   if (!Number.isInteger(limit) || limit < 1 || limit > 100)
-    throw new MockHttpError(400, "limit must be 1-100");
-  if (!Number.isInteger(offset) || offset < 0) throw new MockHttpError(400, "offset must be >= 0");
-  const agentName = resolveAgent(seed, p.agent_id);
-  const { start, end } = resolveServerWindow(p, now);
+    throw new MockHttpError(400, 'limit must be 1-100')
+  if (!Number.isInteger(offset) || offset < 0) throw new MockHttpError(400, 'offset must be >= 0')
+  const agentName = resolveAgent(seed, p.agent_id)
+  const { start, end } = resolveServerWindow(p, now)
   const rows = seed.traces
     .filter((t) => inWindow(t, start, end) && matches(t, agentName, p))
     .sort(
@@ -653,7 +647,7 @@ export function topTraces(
         sortFn(b) - sortFn(a) ||
         b.started_at.localeCompare(a.started_at) ||
         a.trace_id.localeCompare(b.trace_id),
-    );
+    )
   return {
     rows: rows.slice(offset, offset + limit).map((t) => ({
       trace_id: t.trace_id,
@@ -672,7 +666,7 @@ export function topTraces(
       started_at: t.started_at,
     })),
     has_more: rows.length > offset + limit,
-  };
+  }
 }
 
 /**
@@ -695,12 +689,12 @@ export function savings(): SavingsData {
     baseline_cost_usd: 0,
     token_reduction_pct: null,
     cost_reduction_pct: null,
-    basis: "measured",
+    basis: 'measured',
     ...over,
-  });
+  })
 
   return {
-    window: { start: "2026-03-01T00:00:00Z", end: "2026-03-31T00:00:00Z" },
+    window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
     total: block({
       saved_tokens: 1_210_000,
       saved_input_tokens: 1_210_000,
@@ -711,7 +705,7 @@ export function savings(): SavingsData {
       baseline_cost_usd: 831,
       token_reduction_pct: 19.7,
       cost_reduction_pct: 11,
-      basis: "mixed",
+      basis: 'mixed',
     }),
     by_program: [
       {
@@ -722,34 +716,34 @@ export function savings(): SavingsData {
           token_reduction_pct: 19.7,
           cost_reduction_pct: 11,
         }),
-        program: "caveman",
-        label: "Smaller prompts",
+        program: 'caveman',
+        label: 'Smaller prompts',
         layers: [
           {
             ...block({ saved_tokens: 900_000, saved_input_tokens: 900_000, saved_cost_usd: 60 }),
-            layer: "compress_payload",
+            layer: 'compress_payload',
           },
           {
             ...block({ saved_tokens: 310_000, saved_input_tokens: 310_000, saved_cost_usd: 31 }),
-            layer: "compress_history",
+            layer: 'compress_history',
           },
         ],
       },
       {
-        ...block({ basis: "seed_default" }),
-        program: "ponytail",
-        label: "Less code written",
-        note: "No coding agent has this turned on.",
+        ...block({ basis: 'seed_default' }),
+        program: 'ponytail',
+        label: 'Less code written',
+        note: 'No coding agent has this turned on.',
         layers: [
           {
-            ...block({ basis: "seed_default" }),
-            layer: "minimal_code",
+            ...block({ basis: 'seed_default' }),
+            layer: 'minimal_code',
             factor: {
               input_token_delta_pct: -30,
               output_token_delta_pct: -30,
-              basis: "seed_default",
-              measured_at: "2026-03-01T00:00:00Z",
-              notes: "Seed, replaced by the holdout once the sample floor is cleared.",
+              basis: 'seed_default',
+              measured_at: '2026-03-01T00:00:00Z',
+              notes: 'Seed, replaced by the holdout once the sample floor is cleared.',
               eligible_input_tokens: 0,
               eligible_output_tokens: 0,
             },
@@ -766,8 +760,8 @@ export function savings(): SavingsData {
           token_reduction_pct: 24.59,
           cost_reduction_pct: 12.3,
         }),
-        agent_id: "sample-1",
-        agent_name: "Support Bot",
+        agent_id: 'sample-1',
+        agent_name: 'Support Bot',
         calls: 8214,
         input_tokens_before: 4_920_000,
         input_tokens_after: 3_710_000,
@@ -782,10 +776,10 @@ export function savings(): SavingsData {
           token_reduction_pct: 22.4,
           cost_reduction_pct: 9.8,
         }),
-        session_id: "ctx-9f3ad21b0c74",
-        started_at: "2026-03-14T09:12:00Z",
+        session_id: 'ctx-9f3ad21b0c74',
+        started_at: '2026-03-14T09:12:00Z',
         turn_count: 18,
-        agent_names: ["Support Bot"],
+        agent_names: ['Support Bot'],
       },
     ],
     coverage: {
@@ -799,11 +793,11 @@ export function savings(): SavingsData {
       optimized_spend_usd: 740,
       unoptimized_spend_usd: 3204,
       top_unoptimized: {
-        agent_id: "sample-5",
-        agent_name: "Sales Assistant",
+        agent_id: 'sample-5',
+        agent_name: 'Sales Assistant',
         spend_usd: 1492,
       },
       calibrated_pct: 100,
     },
-  };
+  }
 }

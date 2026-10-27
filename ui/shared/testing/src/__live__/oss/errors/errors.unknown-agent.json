@@ -1,0 +1,30 @@
+{
+  "fixture_version": 1,
+  "id": "errors.unknown-agent",
+  "recorded_at": "2026-09-29T05:55:37.021Z",
+  "window": {
+    "start": "2026-09-29T05:55:37.021Z",
+    "end": "2026-09-29T05:55:37.023Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/finops/dashboard",
+    "query": {
+      "range": "30d",
+      "view": "agent",
+      "agent_id": "00000000-0000-4000-8000-000000000000"
+    }
+  },
+  "status": 400,
+  "content_type": "text/plain",
+  "body": "agent '00000000-0000-4000-8000-000000000000' not found"
+}

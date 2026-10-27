@@ -1,62 +1,53 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/ActivityTab.tsx. Local edits: the session links
-// are the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/sessions/<id>`; the level `Select` narrows Base
-// UI's nullable `onValueChange` value and gets `items` (value → label) so the trigger shows "All levels" as the lab's
-// Radix value did; `ApiError` is `ProductApiError`; development (c96a2ba3a): recent sessions moved to the agent hub;
-// Prettier formatting.
-// Legacy ui/ on development (3aac84f66, dd9fe0f64): usage and resources are one strip (`StatGroup`), memory a meter
-// against the limit.
-"use client";
-
 /**
  * Activity (plan §7.3): 24 h stats, resources, and logs (newest first) with a live tail. Recent sessions moved to the
  * Overview's hub, which reads a bounded 7-day sample (plans/feat-agent-centric.md PR1c, eng "Hub sessions").
  */
-import { useId, useState, type ReactNode } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Field, FieldLabel } from "@nasiko/ui/primitives";
+import { useId, useState, type ReactNode } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Field, FieldLabel } from '@nasiko/ui/primitives/field'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
-import { Progress } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { SearchInput } from "@nasiko/ui/composites";
-import { LogDrawer } from "../../sessions/LogDrawer";
-import { fmtInt, fmtLatency, fmtMoney } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import { useAgentLogs, useAgentResources, useAgentStats } from "../api";
-import { ErrorNote, LearnMore, Section } from "../components/bits";
-import { copy } from "../copy";
-import type { AgentView } from "../normalize";
-import { MEMORY_WARN_PCT } from "../tuning";
+} from '@nasiko/ui/primitives/select'
+import { Progress } from '@nasiko/ui/primitives/progress'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { LogDrawer } from '@nasiko/features/sessions/LogDrawer'
+import { fmtInt, fmtLatency, fmtMoney } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { ApiError } from '@nasiko/data-access/client'
+import { useAgentLogs, useAgentResources, useAgentStats } from '../api'
+import { ErrorNote, LearnMore, Section } from '../components/bits'
+import { copy } from '../copy'
+import type { AgentView } from '../normalize'
+import { MEMORY_WARN_PCT } from '../tuning'
 
-const LEVELS = ["", "ERROR", "WARN", "INFO"] as const;
+const LEVELS = ['', 'ERROR', 'WARN', 'INFO'] as const
 /** Radix Select items can't have an empty value: "all levels" travels as this key. */
-const ALL = "all";
+const ALL = 'all'
 
 export function ActivityTab({
   agent,
   tailOpen,
   onTailChange,
 }: {
-  agent: AgentView;
-  tailOpen: boolean;
-  onTailChange: (open: boolean) => void;
+  agent: AgentView
+  tailOpen: boolean
+  onTailChange: (open: boolean) => void
 }) {
-  const stats = useAgentStats(agent.id, true);
-  const resources = useAgentResources(agent.id, true);
-  const [level, setLevel] = useState<(typeof LEVELS)[number]>("");
-  const [term, setTerm] = useState("");
-  const levelId = useId();
-  const logs = useAgentLogs(agent.id, level, true);
-  const obsOff = (e: unknown) => e instanceof ApiError && e.status === 503;
+  const stats = useAgentStats(agent.id, true)
+  const resources = useAgentResources(agent.id, true)
+  const [level, setLevel] = useState<(typeof LEVELS)[number]>('')
+  const [term, setTerm] = useState('')
+  const levelId = useId()
+  const logs = useAgentLogs(agent.id, level, true)
+  const obsOff = (e: unknown) => e instanceof ApiError && e.status === 503
   const lines = (logs.data ?? []).filter(
     (l) => !term || l.message.toLowerCase().includes(term.toLowerCase()),
-  );
+  )
 
   return (
     <div className="space-y-4">
@@ -105,7 +96,7 @@ export function ActivityTab({
                 value={
                   resources.data.usage.cpu_percent != null
                     ? `${resources.data.usage.cpu_percent.toFixed(1)}%`
-                    : "—"
+                    : '—'
                 }
               />
               <MemoryStat
@@ -122,13 +113,7 @@ export function ActivityTab({
         action={
           <div className="flex items-center gap-2">
             <LearnMore href="operate" />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                onTailChange(true);
-              }}
-            >
+            <Button size="sm" variant="outline" onClick={() => onTailChange(true)}>
               {copy.liveTail}
             </Button>
           </div>
@@ -141,10 +126,7 @@ export function ActivityTab({
             </FieldLabel>
             <Select
               value={level || ALL}
-              onValueChange={(v: string | null) => {
-                setLevel(!v || v === ALL ? "" : (v as (typeof LEVELS)[number]));
-              }}
-              items={Object.fromEntries(LEVELS.map((l) => [l || ALL, l || copy.allLevels]))}
+              onValueChange={(v) => setLevel(v === ALL ? '' : (v as (typeof LEVELS)[number]))}
             >
               <SelectTrigger id={levelId} size="sm">
                 <SelectValue />
@@ -161,9 +143,7 @@ export function ActivityTab({
           <SearchInput
             aria-label={copy.searchLogs}
             value={term}
-            onChange={(e) => {
-              setTerm(e.target.value);
-            }}
+            onChange={(e) => setTerm(e.target.value)}
             placeholder={copy.searchLogs}
             className="h-8"
           />
@@ -192,15 +172,15 @@ export function ActivityTab({
                   title={l.timestamp}
                   className="text-muted-foreground tabular-nums"
                 >
-                  {l.timestamp.slice(0, 19).replace("T", " ")}
+                  {l.timestamp.slice(0, 19).replace('T', ' ')}
                 </time>
-                <span className={LEVEL_TONE[l.level ?? ""] ?? "text-muted-foreground"}>
-                  {l.level ?? ""}
+                <span className={LEVEL_TONE[l.level ?? ''] ?? 'text-muted-foreground'}>
+                  {l.level ?? ''}
                 </span>
                 <span
                   className={cn(
-                    "col-span-2 break-words whitespace-pre-wrap sm:col-span-1",
-                    l.level === "ERROR" && "text-destructive",
+                    'col-span-2 break-words whitespace-pre-wrap sm:col-span-1',
+                    l.level === 'ERROR' && 'text-destructive',
                   )}
                 >
                   {l.message}
@@ -216,7 +196,7 @@ export function ActivityTab({
         <LogDrawer agent={agent.id} label={agent.displayName} open onOpenChange={onTailChange} />
       ) : null}
     </div>
-  );
+  )
 }
 
 function StatGroup({
@@ -224,16 +204,16 @@ function StatGroup({
   className,
   children,
 }: {
-  title: string;
-  className?: string;
-  children: ReactNode;
+  title: string
+  className?: string
+  children: ReactNode
 }) {
   return (
-    <div className={cn("flex min-w-0 flex-col gap-3 p-4", className)}>
+    <div className={cn('flex min-w-0 flex-col gap-3 p-4', className)}>
       <h2 className="text-sm font-semibold">{title}</h2>
       {children}
     </div>
-  );
+  )
 }
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
@@ -242,18 +222,12 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
       <dt className="text-xs text-muted-foreground">{label}</dt>
       <dd className="mt-0.5 text-xl font-medium tabular-nums">{value}</dd>
     </div>
-  );
+  )
 }
 
 /** Memory against its limit: the headroom is what an operator reads here. */
-function MemoryStat({
-  used,
-  limit,
-}: {
-  used?: number | null | undefined;
-  limit?: number | null | undefined;
-}) {
-  const pct = used != null && limit ? Math.min(100, (used / limit) * 100) : null;
+function MemoryStat({ used, limit }: { used?: number | null; limit?: number | null }) {
+  const pct = used != null && limit ? Math.min(100, (used / limit) * 100) : null
   return (
     <div className="min-w-0">
       <dt className="text-xs text-muted-foreground">{copy.memory}</dt>
@@ -268,18 +242,18 @@ function MemoryStat({
           value={pct}
           aria-label={copy.memoryOfLimit(Math.round(pct))}
           className={cn(
-            "mt-2 h-1 bg-muted *:bg-muted-foreground",
-            pct >= MEMORY_WARN_PCT && "*:bg-warning",
+            'mt-2 h-1 bg-muted *:bg-muted-foreground',
+            pct >= MEMORY_WARN_PCT && '*:bg-warning',
           )}
         />
       ) : null}
     </div>
-  );
+  )
 }
 
 const LEVEL_TONE: Record<string, string> = {
-  ERROR: "font-medium text-destructive",
-  WARN: "text-warning",
-};
+  ERROR: 'font-medium text-destructive',
+  WARN: 'text-warning',
+}
 
-const mb = (v: number | null | undefined) => (v == null ? "—" : `${Math.round(v / 1_048_576)} MB`);
+const mb = (v: number | null | undefined) => (v == null ? '—' : `${Math.round(v / 1_048_576)} MB`)

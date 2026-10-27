@@ -1,70 +1,59 @@
-// fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `tooltip` (`sideOffset` default 0, popup classes the lab's (Radix origin var → `--transform-origin`, closed state → `data-closed:`), the Arrow keeps base-nova's per-side positioning classes because Base UI's Arrow is positioned by the library, not by Radix's svg); Base UI internals kept.
-// Local edits (ported from nasiko-ui-lab@1b99bdda common/src/components/ui/tooltip.tsx, re-apply after any re-vendor):
-// - `collisionPadding` 8 (on the Positioner), so a tooltip near the viewport edge keeps a gutter instead of touching it.
-//   (The lab's other edit, no `text-balance`, needs nothing here: base-nova's popup has none.)
-"use client"
-
-import { Tooltip as TooltipPrimitive } from "@base-ui/react/tooltip"
-import { cn } from "../lib/cn"
-import { usePortalContainer } from "../motion/portal"
+/**
+ * shadcn `tooltip` (new-york-v4), with local edits to re-apply after any `shadcn add tooltip`:
+ * - no `text-balance`: balanced lines leave the shrink-wrapped box wider than its text, a gap on the right.
+ * - `collisionPadding` 8, so a tooltip near the viewport edge keeps a gutter instead of touching it.
+ */
+import * as React from "react"
+import { cn } from "@nasiko/ui/lib/utils"
+import { Tooltip as TooltipPrimitive } from "radix-ui"
 
 function TooltipProvider({
-  delay = 0,
+  delayDuration = 0,
   ...props
-}: TooltipPrimitive.Provider.Props) {
+}: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
   return (
     <TooltipPrimitive.Provider
       data-slot="tooltip-provider"
-      delay={delay}
+      delayDuration={delayDuration}
       {...props}
     />
   )
 }
 
-function Tooltip({ ...props }: TooltipPrimitive.Root.Props) {
+function Tooltip({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   return <TooltipPrimitive.Root data-slot="tooltip" {...props} />
 }
 
-function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
+function TooltipTrigger({
+  ...props
+}: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
   return <TooltipPrimitive.Trigger data-slot="tooltip-trigger" {...props} />
 }
 
 function TooltipContent({
   className,
-  side = "top",
   sideOffset = 0,
-  align = "center",
-  alignOffset = 0,
   collisionPadding = 8,
   children,
   ...props
-}: TooltipPrimitive.Popup.Props &
-  Pick<
-    TooltipPrimitive.Positioner.Props,
-    "align" | "alignOffset" | "side" | "sideOffset" | "collisionPadding"
-  >) {
+}: React.ComponentProps<typeof TooltipPrimitive.Content>) {
   return (
-    <TooltipPrimitive.Portal container={usePortalContainer()}>
-      <TooltipPrimitive.Positioner
-        align={align}
-        alignOffset={alignOffset}
-        side={side}
+    <TooltipPrimitive.Portal>
+      <TooltipPrimitive.Content
+        data-slot="tooltip-content"
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
-        className="isolate z-50"
+        className={cn(
+          "z-50 w-fit origin-(--radix-tooltip-content-transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
+          className
+        )}
+        {...props}
       >
-        <TooltipPrimitive.Popup
-          data-slot="tooltip-content"
-          className={cn(
-            "z-50 w-fit origin-(--transform-origin) animate-in rounded-md bg-foreground px-3 py-1.5 text-xs text-background fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-            className
-          )}
-          {...props}
-        >
-          {children}
-          <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%-2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground data-[side=bottom]:top-1 data-[side=inline-end]:top-1/2! data-[side=inline-end]:-left-1 data-[side=inline-end]:-translate-y-1/2 data-[side=inline-start]:top-1/2! data-[side=inline-start]:-right-1 data-[side=inline-start]:-translate-y-1/2 data-[side=left]:top-1/2! data-[side=left]:-right-1 data-[side=left]:-translate-y-1/2 data-[side=right]:top-1/2! data-[side=right]:-left-1 data-[side=right]:-translate-y-1/2 data-[side=top]:-bottom-2.5" />
-        </TooltipPrimitive.Popup>
-      </TooltipPrimitive.Positioner>
+        {children}
+        <TooltipPrimitive.Arrow className="z-50 size-2.5 translate-y-[calc(-50%_-_2px)] rotate-45 rounded-[2px] bg-foreground fill-foreground" />
+      </TooltipPrimitive.Content>
     </TooltipPrimitive.Portal>
   )
 }

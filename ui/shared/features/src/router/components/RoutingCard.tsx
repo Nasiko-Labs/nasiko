@@ -1,48 +1,42 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/RoutingCard.tsx. Local edits: `meQuery`
-// is `meQueryOptions(useProductScope())`; the Router link is the navigation port's `Link` (`@nasiko/app-core/navigation`); `sub` admits `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * The agent detail's routing card (plan §4.5, Overview under the status block): the routing sentence, the key
  * source and "Change routing". The read is enabled only for the owner or a superuser (eng #9); a 403 or any other
  * failed read hides the card (never the 401 path, which the query client owns). Non-owners see nothing.
  */
-import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import { useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { useAgentRouting, useCatalog, useConfigs } from "../api";
-import { copy } from "../copy";
-import { keySource, routingSentence } from "../routing";
-import { Announcer, KeySourceChip, SentenceText, SourceBadge } from "./bits";
-import { RoutingSheet } from "./RoutingSheet";
+import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import { useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { meQuery } from '@nasiko/data-access/auth'
+import { useAgentRouting, useCatalog, useConfigs } from '../api'
+import { copy } from '../copy'
+import { keySource, routingSentence } from '../routing'
+import { Announcer, KeySourceChip, SentenceText, SourceBadge } from './bits'
+import { RoutingSheet } from './RoutingSheet'
 
 export function RoutingCard({
   agent,
 }: {
-  agent: { id: string; name: string; displayName: string; ownerId: string };
+  agent: { id: string; name: string; displayName: string; ownerId: string }
 }) {
-  const me = useQuery(meQueryOptions(useProductScope())).data;
-  const superuser = !!me?.is_superuser;
-  const owner = !!me?.sub && me.sub === agent.ownerId;
-  const routing = useAgentRouting(agent.id, owner || superuser);
-  if (!owner && !superuser) return null;
-  if (routing.isError) return null;
+  const me = useQuery(meQuery).data
+  const superuser = !!me?.is_superuser
+  const owner = !!me?.sub && me.sub === agent.ownerId
+  const routing = useAgentRouting(agent.id, owner || superuser)
+  if (!owner && !superuser) return null
+  if (routing.isError) return null
   return (
     <Announcer>
       <Card
         agent={agent}
         owner={owner}
         superuser={superuser}
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's guard, kept as written
         sub={me?.sub}
         routing={routing.data}
       />
     </Announcer>
-  );
+  )
 }
 
 function Card({
@@ -52,16 +46,16 @@ function Card({
   sub,
   routing,
 }: {
-  agent: { id: string; name: string; displayName: string; ownerId: string };
-  owner: boolean;
-  superuser: boolean;
-  sub?: string | undefined;
-  routing: ReturnType<typeof useAgentRouting>["data"];
+  agent: { id: string; name: string; displayName: string; ownerId: string }
+  owner: boolean
+  superuser: boolean
+  sub?: string
+  routing: ReturnType<typeof useAgentRouting>['data']
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
   // Configs are the viewer's own, so they only help when the viewer owns the agent; both only matter once the sheet opens.
-  const configs = useConfigs(owner && open);
-  const catalog = useCatalog(open);
+  const configs = useConfigs(owner && open)
+  const catalog = useCatalog(open)
   return (
     <section
       aria-labelledby={`routing-${agent.id}`}
@@ -72,7 +66,7 @@ function Card({
           {copy.cardTitle}
         </h2>
         <Link
-          href="/router"
+          to="/router"
           className="text-xs text-muted-foreground underline-offset-4 hover:underline pointer-coarse:min-h-11"
         >
           {copy.cardOpenRouter}
@@ -93,9 +87,7 @@ function Card({
             size="sm"
             variant="ghost"
             className="ml-auto h-8 px-2 text-primary-text pointer-coarse:min-h-11"
-            onClick={() => {
-              setOpen(true);
-            }}
+            onClick={() => setOpen(true)}
           >
             {copy.changeRouting}
           </Button>
@@ -106,11 +98,9 @@ function Card({
         viewer={{ sub, superuser }}
         configs={owner ? configs.data : undefined}
         catalog={catalog.data}
-        onClose={() => {
-          setOpen(false);
-        }}
+        onClose={() => setOpen(false)}
         onSaved={() => {}}
       />
     </section>
-  );
+  )
 }

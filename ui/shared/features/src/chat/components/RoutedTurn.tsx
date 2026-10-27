@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/RoutedTurn.tsx. Local edits: links are
-// the navigation port's `Link` (`@nasiko/app-core/navigation`) (`/agents/<encoded id>`, `chatHref(undefined, { agent })`), the Agents action a `ButtonLink` (the lab's
-// `<Button asChild><Link>`); `OpenFlowLink` is the flows module's (ported with this file); optional props admit
-// `undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * A routed turn (v1b §5.5-§5.8). Answer first: reply → "Answered by OpenRuntime[, using …]" →
  * footer → "Activity · N agents", collapsed. While live, one status line (Working / Asking /
@@ -9,17 +5,15 @@
  * name sit only inside an expanded agent row (DP9). Every model- or agent-supplied string here
  * renders as text, never Markdown (NE-11), except the reply itself.
  */
-import { OpenFlowLink } from "../../flows/components/OpenFlowLink";
-import { Check, ChevronDown, ChevronRight, CircleAlert, Loader2, Minus, X } from "lucide-react";
-import Link from "@nasiko/app-core/navigation";
-import { chatHref } from "../nav";
-import { useId, useRef, useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import type { Agent } from "../../agents/types";
-import { fmtLatency } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { notesFor, routedReplyText, type Step, type TurnState } from "../a2aReducer";
+import { OpenFlowLink } from '@nasiko/features/flows/components/OpenFlowLink'
+import { Link } from '@tanstack/react-router'
+import { Check, ChevronDown, ChevronRight, CircleAlert, Loader2, Minus, X } from 'lucide-react'
+import { useId, useRef, useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import type { Agent } from '@nasiko/features/agents/types'
+import { fmtLatency } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { notesFor, routedReplyText, type Step, type TurnState } from '../a2aReducer'
 import {
   agentActivity,
   agentsAsked,
@@ -27,47 +21,47 @@ import {
   statusLine,
   type AgentActivity,
   type AgentSummary,
-} from "../activity";
-import { useFlowAgents } from "../api";
-import { useNow } from "../hooks";
-import { copy, policyCopy } from "../copy";
-import { copyDetails } from "../copyDetails";
-import { ChatError } from "../errors";
-import { usageFromMessage, usageFromMeta } from "../format";
-import type { answeredResume } from "../turnModel";
-import { splitStopped } from "../normalize";
-import { useSeen } from "../onScreen";
-import { policyLimit, POLICY_ENV } from "../serverContract";
-import { resolveAskedAgent } from "../target";
-import { isLivePhase, type LiveTurn, type TurnEnd } from "../turnRegistry";
-import { tuning } from "../tuning";
-import type { ChatMessage } from "../types";
-import { Markdown } from "./Markdown";
-import { CopyReply, ErrorNotice, UsageChip, type NoticeAction } from "./turnParts";
-import { LINK, LINK_BUTTON, STEP_CHIP, TOUCH } from "./turnStyles";
+} from '../activity'
+import { useFlowAgents } from '../api'
+import { useNow } from '../hooks'
+import { copy, policyCopy } from '../copy'
+import { copyDetails } from '../copyDetails'
+import { ChatError } from '../errors'
+import { usageFromMessage, usageFromMeta } from '../format'
+import type { answeredResume } from '../turnModel'
+import { splitStopped } from '../normalize'
+import { useSeen } from '../onScreen'
+import { policyLimit, POLICY_ENV } from '../serverContract'
+import { resolveAskedAgent } from '../target'
+import { isLivePhase, type LiveTurn, type TurnEnd } from '../turnRegistry'
+import { tuning } from '../tuning'
+import type { ChatMessage } from '../types'
+import { Markdown } from './Markdown'
+import { CopyReply, ErrorNotice, UsageChip, type NoticeAction } from './turnParts'
+import { LINK, LINK_BUTTON, STEP_CHIP, TOUCH } from './turnStyles'
 
 /** What a routed turn needs from its page beyond the v1a handlers. */
 export interface RoutedContext {
   /** The agents directory, for the "current agent of this name" links. */
-  agents: readonly Agent[] | undefined;
+  agents: readonly Agent[] | undefined
   /** The recorded end of a user message's newest attempt (EN-5). */
-  endFor: (userMessageId: string) => TurnEnd | undefined;
+  endFor(userMessageId: string): TurnEnd | undefined
   /** The newest turn's answered request with no reply yet (ship review D3); the page derives it once. */
-  resume?: ReturnType<typeof answeredResume>;
+  resume?: ReturnType<typeof answeredResume>
   /** The agent of the request a live resume answered (a chained pause's frame names no agent). */
-  resumedAsker?: string | undefined;
+  resumedAsker?: string
 }
 
 export interface RoutedHandlers {
-  viewTrace: (traceId: string, fresh: boolean) => void;
-  refresh: () => void;
-  runAgain: () => void;
-  editMessage: (text: string) => void;
-  stepsFor?: ((messageId: string, traceId?: string | null) => Step[] | undefined) | undefined;
+  viewTrace(traceId: string, fresh: boolean): void
+  refresh(): void
+  runAgain(): void
+  editMessage(text: string): void
+  stepsFor?(messageId: string, traceId?: string | null): Step[] | undefined
 }
 
 const truncate = (text: string, max: number) =>
-  text.length > max ? `${text.slice(0, max)}…` : text;
+  text.length > max ? `${text.slice(0, max)}…` : text
 
 const SUMMARY: Record<AgentSummary, string> = {
   running: copy.summaryRunning,
@@ -75,44 +69,44 @@ const SUMMARY: Record<AgentSummary, string> = {
   failed: copy.summaryFailed,
   mixed: copy.summaryMixed,
   didnt_finish: copy.summaryDidntFinish,
-};
+}
 
 function Spinner({ small }: { small?: boolean }) {
   // Reduced motion: a still icon; the text beside it carries the meaning (DP8).
   return (
     <Loader2
-      className={cn(small ? "size-3" : "size-4", "animate-spin motion-reduce:animate-none")}
+      className={cn(small ? 'size-3' : 'size-4', 'animate-spin motion-reduce:animate-none')}
       aria-hidden
     />
-  );
+  )
 }
 
 function SummaryIcon({ summary }: { summary: AgentSummary }) {
-  if (summary === "running")
-    return <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden />;
-  if (summary === "completed") return <Check className="size-3.5 text-success" aria-hidden />;
-  if (summary === "failed") return <X className="size-3.5 text-destructive" aria-hidden />;
-  return <Minus className="size-3.5 text-warning" aria-hidden />;
+  if (summary === 'running')
+    return <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden />
+  if (summary === 'completed') return <Check className="size-3.5 text-success" aria-hidden />
+  if (summary === 'failed') return <X className="size-3.5 text-destructive" aria-hidden />
+  return <Minus className="size-3.5 text-warning" aria-hidden />
 }
 
 /** The one live status line (§5.5), with v1a's slow/long timers: the only routed part that ticks each second. */
-function RoutedStatusLine({ live, now: fixed }: { live: LiveTurn; now?: number | undefined }) {
-  const now = useNow(1000, fixed);
-  const line = live.phase === "creating" ? null : statusLine(live.state);
+function RoutedStatusLine({ live, now: fixed }: { live: LiveTurn; now?: number }) {
+  const now = useNow(1000, fixed)
+  const line = live.phase === 'creating' ? null : statusLine(live.state)
   const text = !line
     ? copy.phaseStarting
-    : line.kind === "asking"
+    : line.kind === 'asking'
       ? copy.statusAsking(line.agent)
-      : line.kind === "writing"
+      : line.kind === 'writing'
         ? copy.statusWriting
-        : copy.statusWorking;
-  const secs = Math.max(0, Math.floor((now - live.startedAt) / 1000));
+        : copy.statusWorking
+  const secs = Math.max(0, Math.floor((now - live.startedAt) / 1000))
   return (
     <div
       className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground"
       data-testid="routed-status"
     >
-      <Spinner />{" "}
+      <Spinner />{' '}
       <span className="min-w-0 truncate" title={text}>
         {text}
       </span>
@@ -121,7 +115,7 @@ function RoutedStatusLine({ live, now: fixed }: { live: LiveTurn; now?: number |
       ) : null}
       {secs * 1000 >= tuning.LONG_MS ? <span>{copy.phaseStillWorking}</span> : null}
     </div>
-  );
+  )
 }
 
 /** One agent: summary row, expandable to its calls, its latest excerpt and the links (§5.7). */
@@ -134,31 +128,29 @@ function AgentRow({
   traceId,
   onViewTrace,
 }: {
-  row: AgentActivity | { name: string; calls: Step[]; summary?: undefined; totalMs: 0; failed: 0 };
-  live: boolean;
-  note?: string | undefined;
-  excerpt?: string | undefined;
-  agents: readonly Agent[] | undefined;
-  traceId: string | null;
-  onViewTrace?: ((traceId: string) => void) | undefined;
+  row: AgentActivity | { name: string; calls: Step[]; summary?: undefined; totalMs: 0; failed: 0 }
+  live: boolean
+  note?: string
+  excerpt?: string
+  agents: readonly Agent[] | undefined
+  traceId: string | null
+  onViewTrace?: (traceId: string) => void
 }) {
-  const [open, setOpen] = useState(false);
-  const panel = useId();
-  const resolved = open ? resolveAskedAgent(row.name, agents) : null;
+  const [open, setOpen] = useState(false)
+  const panel = useId()
+  const resolved = open ? resolveAskedAgent(row.name, agents) : null
   return (
     <li className="space-y-1">
       <Button
         type="button"
         variant="ghost"
         className={cn(
-          "h-auto w-full min-w-0 flex-wrap justify-start gap-x-2 gap-y-0.5 px-1 py-0 text-left font-normal whitespace-normal hover:bg-muted has-[>svg]:px-1",
+          'h-auto w-full min-w-0 flex-wrap justify-start gap-x-2 gap-y-0.5 px-1 py-0 text-left font-normal whitespace-normal hover:bg-muted has-[>svg]:px-1',
           TOUCH,
         )}
         aria-expanded={open}
         aria-controls={panel}
-        onClick={() => {
-          setOpen((v) => !v);
-        }}
+        onClick={() => setOpen((v) => !v)}
       >
         {open ? (
           <ChevronDown className="size-3.5 shrink-0" aria-hidden />
@@ -188,17 +180,17 @@ function AgentRow({
             <ul className="space-y-0.5">
               {row.calls.map((c) => (
                 <li key={c.key} className="flex items-center gap-1.5">
-                  {c.status === "running" ? (
+                  {c.status === 'running' ? (
                     <Spinner small />
-                  ) : c.status === "error" ? (
+                  ) : c.status === 'error' ? (
                     <X className="size-3 text-destructive" aria-hidden />
                   ) : (
                     <Check className="size-3 text-success" aria-hidden />
                   )}
                   <span className="truncate">
-                    {c.status === "running"
+                    {c.status === 'running'
                       ? copy.stepRunning
-                      : c.status === "error"
+                      : c.status === 'error'
                         ? copy.stepFailed
                         : copy.stepDone}
                   </span>
@@ -220,9 +212,7 @@ function AgentRow({
                 type="button"
                 variant="link"
                 className={LINK_BUTTON}
-                onClick={() => {
-                  onViewTrace(traceId);
-                }}
+                onClick={() => onViewTrace(traceId)}
               >
                 {copy.viewTrace}
               </Button>
@@ -230,13 +220,15 @@ function AgentRow({
             {resolved ? (
               <>
                 <Link
-                  href={`/agents/${encodeURIComponent(resolved.id)}`}
+                  to="/agents/$agentId"
+                  params={{ agentId: resolved.id }}
+                  search={{}}
                   className={LINK}
                   title={copy.currentAgentTooltip(row.name)}
                 >
                   {copy.openCurrentAgent}
                 </Link>
-                <Link href={chatHref(undefined, { agent: resolved.id })} className={LINK}>
+                <Link to="/chat" search={{ agent: resolved.id }} className={LINK}>
                   {copy.chatWith(row.name)}
                 </Link>
               </>
@@ -245,7 +237,7 @@ function AgentRow({
         </div>
       ) : null}
     </li>
-  );
+  )
 }
 
 /** "Activity · N agents" (§5.7): collapsed by default, never opened for the user while live. */
@@ -259,21 +251,21 @@ export function Activity({
   onViewTrace,
   flows,
 }: {
-  state?: Pick<TurnState, "steps" | "agentNotes"> | undefined;
-  live: boolean;
-  paused?: boolean | undefined;
+  state?: Pick<TurnState, 'steps' | 'agentNotes'>
+  live: boolean
+  paused?: boolean
   /** Names only (the flows fallback): no per-call status. */
-  names?: string[] | undefined;
-  agents: readonly Agent[] | undefined;
-  traceId: string | null;
-  onViewTrace?: ((traceId: string) => void) | undefined;
-  flows?: { failed: boolean; retry: () => void } | undefined;
+  names?: string[]
+  agents: readonly Agent[] | undefined
+  traceId: string | null
+  onViewTrace?: (traceId: string) => void
+  flows?: { failed: boolean; retry(): void }
 }) {
-  const [open, setOpen] = useState(false);
-  const listId = useId();
+  const [open, setOpen] = useState(false)
+  const listId = useId()
   // A paused turn hasn't ended: its open call waits on the request, so it reads Running.
-  const rows = state ? agentActivity(state.steps, !live && !paused) : [];
-  const policies = (state?.steps ?? []).filter((s) => s.kind === "policy");
+  const rows = state ? agentActivity(state.steps, !live && !paused) : []
+  const policies = (state?.steps ?? []).filter((s) => s.kind === 'policy')
   const nameRows =
     !rows.length && names
       ? names.map((name) => ({
@@ -282,21 +274,21 @@ export function Activity({
           totalMs: 0 as const,
           failed: 0 as const,
         }))
-      : [];
-  const count = rows.length || nameRows.length;
+      : []
+  const count = rows.length || nameRows.length
   // "Didn't finish" is its own summary, not a failure.
   const failed =
-    rows.filter((r) => r.summary === "failed" || r.summary === "mixed").length + policies.length;
-  if (!count && !policies.length && !flows?.failed) return null;
+    rows.filter((r) => r.summary === 'failed' || r.summary === 'mixed').length + policies.length
+  if (!count && !policies.length && !flows?.failed) return null
   if (flows?.failed && !count) {
     return (
       <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-        {copy.agentDetailsUnavailable}{" "}
+        {copy.agentDetailsUnavailable}{' '}
         <Button size="xs" variant="outline" className={TOUCH} onClick={flows.retry}>
           {copy.retry}
         </Button>
       </div>
-    );
+    )
   }
   return (
     <div className="space-y-1" data-testid="activity">
@@ -304,12 +296,10 @@ export function Activity({
         type="button"
         variant="outline"
         size="xs"
-        className={cn(STEP_CHIP, "max-w-none gap-1.5")}
+        className={cn(STEP_CHIP, 'max-w-none gap-1.5')}
         aria-expanded={open}
         aria-controls={listId}
-        onClick={() => {
-          setOpen((v) => !v);
-        }}
+        onClick={() => setOpen((v) => !v)}
       >
         {open ? (
           <ChevronDown className="size-3" aria-hidden />
@@ -332,10 +322,10 @@ export function Activity({
           ) : null}
           <ul className="space-y-1" aria-label={copy.agentsUsedLabel}>
             {(rows.length ? rows : nameRows).map((r) => {
-              const note = state ? notesFor(state, r.name) : undefined;
+              const note = state ? notesFor(state, r.name) : undefined
               const lastResult = [...r.calls]
                 .reverse()
-                .find((c) => c.detail && c.status !== "running")?.detail;
+                .find((c) => c.detail && c.status !== 'running')?.detail
               return (
                 <AgentRow
                   key={r.name}
@@ -347,20 +337,20 @@ export function Activity({
                   traceId={traceId}
                   onViewTrace={onViewTrace}
                 />
-              );
+              )
             })}
           </ul>
           {policies.map((p) => {
-            const limit = policyLimit(p.detail);
-            const env = limit ? POLICY_ENV[limit] : undefined;
+            const limit = policyLimit(p.detail)
+            const env = limit ? POLICY_ENV[limit] : undefined
             const fix =
-              limit === "cycle"
+              limit === 'cycle'
                 ? policyCopy.cycleFix
-                : limit === "guard"
+                : limit === 'guard'
                   ? policyCopy.guardFix
                   : env
                     ? policyCopy.raise(env)
-                    : null;
+                    : null
             return (
               <p
                 key={p.key}
@@ -370,16 +360,16 @@ export function Activity({
                 <span>
                   {limit
                     ? policyCopy.stopped(policyCopy[limit])
-                    : truncate(p.detail ?? p.name, tuning.ACTIVITY_NOTE_CHARS)}{" "}
+                    : truncate(p.detail ?? p.name, tuning.ACTIVITY_NOTE_CHARS)}{' '}
                   {fix}
                 </span>
               </p>
-            );
+            )
           })}
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 /** "Answered by OpenRuntime", plus ", using …" only from observed data (C6, DP9). */
@@ -388,7 +378,7 @@ function Attribution({ names }: { names: readonly string[] }) {
     <p className="text-xs text-muted-foreground" data-testid="attribution">
       {names.length ? copy.answeredByUsing(listAgents(names)) : copy.answeredBy}
     </p>
-  );
+  )
 }
 
 /** A saved routed reply: reply → attribution → footer → Activity (DP6). */
@@ -399,22 +389,22 @@ export function RoutedSavedReply({
   ctx,
   handlers,
 }: {
-  m: ChatMessage;
-  latest: boolean;
+  m: ChatMessage
+  latest: boolean
   /** A fixed clock (tests); by default it ticks on its own. */
-  now?: number | undefined;
-  ctx: RoutedContext;
-  handlers: RoutedHandlers;
+  now?: number
+  ctx: RoutedContext
+  handlers: RoutedHandlers
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const steps = handlers.stepsFor?.(m.id, m.trace_id);
-  const seen = useSeen(ref);
-  const flows = useFlowAgents(m.trace_id, seen && !steps?.length);
-  const { text, stopped } = splitStopped(m);
-  const usage = usageFromMessage(m);
-  const traceId = m.trace_id;
-  const names = steps?.length ? agentsAsked({ steps }) : (flows.data ?? []);
-  const state = steps?.length ? { steps, agentNotes: {} } : undefined;
+  const ref = useRef<HTMLDivElement>(null)
+  const steps = handlers.stepsFor?.(m.id, m.trace_id)
+  const seen = useSeen(ref)
+  const flows = useFlowAgents(m.trace_id, seen && !steps?.length)
+  const { text, stopped } = splitStopped(m)
+  const usage = usageFromMessage(m)
+  const traceId = m.trace_id
+  const names = steps?.length ? agentsAsked({ steps }) : (flows.data ?? [])
+  const state = steps?.length ? { steps, agentNotes: {} } : undefined
   return (
     <div ref={ref} className="space-y-2">
       <Markdown text={text} />
@@ -422,9 +412,9 @@ export function RoutedSavedReply({
       <Attribution names={names} />
       <div
         className={cn(
-          "flex flex-wrap items-center gap-2",
+          'flex flex-wrap items-center gap-2',
           !latest &&
-            "opacity-0 focus-within:opacity-100 hover:opacity-100 pointer-coarse:opacity-100",
+            'opacity-0 focus-within:opacity-100 hover:opacity-100 pointer-coarse:opacity-100',
         )}
       >
         <CopyReply text={text} />
@@ -434,12 +424,12 @@ export function RoutedSavedReply({
             size="xs"
             variant="ghost"
             className={TOUCH}
-            onClick={() => {
+            onClick={() =>
               handlers.viewTrace(
                 traceId,
                 (now ?? Date.now()) - Date.parse(m.timestamp) < tuning.TRACE_FRESH_MS,
-              );
-            }}
+              )
+            }
           >
             {copy.viewTrace}
           </Button>
@@ -451,13 +441,11 @@ export function RoutedSavedReply({
         names={state ? undefined : flows.data}
         agents={ctx.agents}
         traceId={m.trace_id ?? null}
-        onViewTrace={(id) => {
-          handlers.viewTrace(id, false);
-        }}
+        onViewTrace={(id) => handlers.viewTrace(id, false)}
         flows={flows.isError ? { failed: true, retry: () => void flows.refetch() } : undefined}
       />
     </div>
-  );
+  )
 }
 
 /**
@@ -471,45 +459,41 @@ function routedActions(
   resume: boolean,
 ): { actions: NoticeAction[]; links?: React.ReactNode } {
   if (resume)
-    return error.key === "routedReconnectForbidden"
+    return error.key === 'routedReconnectForbidden'
       ? { actions: [] }
-      : { actions: [{ label: copy.refreshStatus, onClick: handlers.refresh, primary: true }] };
+      : { actions: [{ label: copy.refreshStatus, onClick: handlers.refresh, primary: true }] }
   switch (error.key) {
-    case "routedBadRequest":
+    case 'routedBadRequest':
       return {
         actions: [
-          {
-            label: copy.editAndSend,
-            onClick: () => {
-              handlers.editMessage(text);
-            },
-            primary: true,
-          },
+          { label: copy.editAndSend, onClick: () => handlers.editMessage(text), primary: true },
         ],
-      };
-    case "routedRateLimited":
-      return { actions: [{ label: copy.retry, onClick: handlers.runAgain, primary: true }] };
-    case "routedNoAgents":
-    case "routedForbidden":
+      }
+    case 'routedRateLimited':
+      return { actions: [{ label: copy.retry, onClick: handlers.runAgain, primary: true }] }
+    case 'routedNoAgents':
+    case 'routedForbidden':
       return {
         actions: [],
         links: (
-          <ButtonLink href="/agents" size="sm" className={TOUCH}>
-            {copy.agentsPage}
-          </ButtonLink>
+          <Button asChild size="sm" className={TOUCH}>
+            <Link to="/agents" search={{}}>
+              {copy.agentsPage}
+            </Link>
+          </Button>
         ),
-      };
-    case "routedMayStillArrive":
-      return { actions: [{ label: copy.refreshStatus, onClick: handlers.refresh, primary: true }] };
-    case "routedFailed":
-      return { actions: [{ label: copy.runAgain, onClick: handlers.runAgain, primary: true }] };
+      }
+    case 'routedMayStillArrive':
+      return { actions: [{ label: copy.refreshStatus, onClick: handlers.refresh, primary: true }] }
+    case 'routedFailed':
+      return { actions: [{ label: copy.runAgain, onClick: handlers.runAgain, primary: true }] }
     default:
       return {
         actions: [
           { label: copy.refreshStatus, onClick: handlers.refresh, primary: true },
           { label: copy.runAgain, onClick: handlers.runAgain },
         ],
-      };
+      }
   }
 }
 
@@ -526,65 +510,63 @@ export function RoutedLive({
   handlers,
   tryAgain,
 }: {
-  live: LiveTurn;
-  sessionId: string;
-  hasSaved: boolean;
+  live: LiveTurn
+  sessionId: string
+  hasSaved: boolean
   /** A fixed clock (tests); by default it ticks on its own. */
-  now?: number | undefined;
-  ctx: RoutedContext;
-  handlers: RoutedHandlers;
-  tryAgain: () => void;
+  now?: number
+  ctx: RoutedContext
+  handlers: RoutedHandlers
+  tryAgain(): void
 }) {
-  const liveNow = isLivePhase(live.phase);
-  const resume = live.operation === "resume";
-  const text = routedReplyText(live.state, resume);
-  const traceId = live.state.traceId;
-  const liveUsage = usageFromMeta(live.state.usage);
-  const details = (e: ChatError) => copyDetails(e, { sessionId, traceId });
+  const liveNow = isLivePhase(live.phase)
+  const resume = live.operation === 'resume'
+  const text = routedReplyText(live.state, resume)
+  const traceId = live.state.traceId
+  const liveUsage = usageFromMeta(live.state.usage)
+  const details = (e: ChatError) => copyDetails(e, { sessionId, traceId })
   const trace = traceId ? (
     <Button
       type="button"
       variant="link"
       className={LINK_BUTTON}
-      onClick={() => {
-        handlers.viewTrace(traceId, true);
-      }}
+      onClick={() => handlers.viewTrace(traceId, true)}
     >
       {copy.viewTrace}
     </Button>
-  ) : null;
+  ) : null
   const note = (msg: string, action?: React.ReactNode) => (
     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-      {live.phase === "loading_saved" ? <Spinner /> : null}
+      {live.phase === 'loading_saved' ? <Spinner /> : null}
       {msg}
       {action}
     </div>
-  );
+  )
   // Once history holds the reply the saved rendering takes over, except while an end state needs saying.
-  if (hasSaved && (live.phase === "done" || live.phase === "paused")) return null;
+  if (hasSaved && (live.phase === 'done' || live.phase === 'paused')) return null
 
-  let end: React.ReactNode = null;
+  let end: React.ReactNode = null
   switch (live.phase) {
-    case "draining":
+    case 'draining':
       end = (
         <>
           {note(copy.replyTooLarge)}
           {trace}
         </>
-      );
-      break;
-    case "loading_saved":
-      end = note(copy.loadingSavedReply);
-      break;
-    case "history_failed":
+      )
+      break
+    case 'loading_saved':
+      end = note(copy.loadingSavedReply)
+      break
+    case 'history_failed':
       end = note(
         copy.savedReplyFailed,
         <Button size="sm" className={TOUCH} onClick={handlers.refresh}>
           {copy.retry}
         </Button>,
-      );
-      break;
-    case "known_empty":
+      )
+      break
+    case 'known_empty':
       end = (
         <KnownEmpty
           onRunAgain={resume ? handlers.refresh : handlers.runAgain}
@@ -592,16 +574,16 @@ export function RoutedLive({
         >
           {trace}
         </KnownEmpty>
-      );
-      break;
-    case "lost":
-    case "error":
-    case "not_started":
-    case "resume_uncertain":
-    case "resume_forbidden": {
+      )
+      break
+    case 'lost':
+    case 'error':
+    case 'not_started':
+    case 'resume_uncertain':
+    case 'resume_forbidden': {
       const e =
-        live.error ?? new ChatError({ phase: "stream", key: "cutOff", certainty: "unknown" });
-      if (live.phase === "lost" && text.trim()) {
+        live.error ?? new ChatError({ phase: 'stream', key: 'cutOff', certainty: 'unknown' })
+      if (live.phase === 'lost' && text.trim()) {
         end = (
           <div className="space-y-1.5">
             <p className="text-sm text-muted-foreground">{copy.partialUnconfirmed}</p>
@@ -617,16 +599,16 @@ export function RoutedLive({
               {trace}
             </div>
           </div>
-        );
-        break;
+        )
+        break
       }
-      const create = e.key === "createFailed" || e.key === "saveUserFailed";
+      const create = e.key === 'createFailed' || e.key === 'saveUserFailed'
       const { actions, links } = create
         ? {
             actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
             links: undefined,
           }
-        : routedActions(e, live.userText, handlers, resume);
+        : routedActions(e, live.userText, handlers, resume)
       end = (
         <ErrorNotice
           error={e}
@@ -634,32 +616,32 @@ export function RoutedLive({
           links={
             <>
               {links}
-              {live.phase === "error" ? trace : null}
+              {live.phase === 'error' ? trace : null}
             </>
           }
           details={details(e)}
         />
-      );
-      break;
+      )
+      break
     }
     default:
-      break;
+      break
   }
-  const showText = !!text.trim() && live.phase !== "known_empty";
+  const showText = !!text.trim() && live.phase !== 'known_empty'
   return (
     <div className="space-y-2" data-testid="routed-live">
       {showText ? <Markdown text={text} live={liveNow} /> : null}
-      {liveNow && live.phase !== "draining" ? <RoutedStatusLine live={live} now={now} /> : null}
+      {liveNow && live.phase !== 'draining' ? <RoutedStatusLine live={live} now={now} /> : null}
       {live.idle && liveNow ? (
         <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          {copy.idleNotice}{" "}
+          {copy.idleNotice}{' '}
           <Button size="xs" variant="outline" className={TOUCH} onClick={handlers.refresh}>
             {copy.refreshStatus}
           </Button>
         </div>
       ) : null}
       {end}
-      {!liveNow && live.phase === "done" ? (
+      {!liveNow && live.phase === 'done' ? (
         <>
           <Attribution names={agentsAsked(live.state)} />
           {/* The same footer the saved reply will have, so nothing shifts when history takes over. */}
@@ -671,9 +653,7 @@ export function RoutedLive({
                 size="xs"
                 variant="ghost"
                 className={TOUCH}
-                onClick={() => {
-                  handlers.viewTrace(traceId, true);
-                }}
+                onClick={() => handlers.viewTrace(traceId, true)}
               >
                 {copy.viewTrace}
               </Button>
@@ -684,15 +664,13 @@ export function RoutedLive({
       <Activity
         state={live.state}
         live={liveNow}
-        paused={live.phase === "paused"}
+        paused={live.phase === 'paused'}
         agents={ctx.agents}
         traceId={traceId}
-        onViewTrace={(id) => {
-          handlers.viewTrace(id, true);
-        }}
+        onViewTrace={(id) => handlers.viewTrace(id, true)}
       />
     </div>
-  );
+  )
 }
 
 /** A routed attempt that ended empty (EN-5), live or from the turn-end store: says so instead of E5. */
@@ -701,9 +679,9 @@ export function KnownEmpty({
   label = copy.runAgain,
   children,
 }: {
-  onRunAgain: () => void;
-  label?: string | undefined;
-  children?: React.ReactNode | undefined;
+  onRunAgain(): void
+  label?: string
+  children?: React.ReactNode
 }) {
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm" data-testid="known-empty">
@@ -713,5 +691,5 @@ export function KnownEmpty({
       </Button>
       {children}
     </div>
-  );
+  )
 }

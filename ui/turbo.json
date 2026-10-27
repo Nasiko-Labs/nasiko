@@ -1,34 +1,12 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalEnv": [
-    "NODE_ENV",
-    "OPENUI_TELEMETRY_DISABLED",
-    "DO_NOT_TRACK",
-    "NEXT_TELEMETRY_DISABLED",
-    "STORYBOOK_DISABLE_TELEMETRY",
-    "NASIKO_DEPLOYMENT",
-    "NASIKO_HARNESS",
-    "NASIKO_FLAGS",
-    "VITE_*",
-    "NASIKO_TEST_BUILD",
-    "NASIKO_API_UPSTREAM",
-    "NASIKO_WORKSPACE_ID"
-  ],
+  "//": "`node scripts/app.ts build` (no edition) runs `turbo run build`: each app package builds once, and again only when its inputs change. The shared packages are source-only (vite.shared.ts PACKAGE_ALIASES), so their sources are inputs, not tasks. Strict env mode: a build sees only the variables listed here.",
+  "globalDependencies": ["pnpm-lock.yaml", "vite.shared.ts", "tsconfig.base.json", ".env", ".env.*"],
+  "globalEnv": ["VITE_*", "NASIKO_*", "NODE_ENV"],
   "tasks": {
     "build": {
-      "dependsOn": ["^build"],
-      "outputs": ["dist/**", "dist-test*/**"]
-    },
-    "typecheck": {
-      "dependsOn": ["^build"]
-    },
-    "lint": {},
-    "test": {
-      "dependsOn": ["^build"]
-    },
-    "dev": {
-      "cache": false,
-      "persistent": true
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/shared/*/src/**", "$TURBO_ROOT$/shared/ui/public/**"],
+      "outputs": ["dist/**"]
     }
   }
 }

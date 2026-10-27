@@ -1,33 +1,27 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/BiggestSenders.tsx. Local edits: the
-// chat link is the navigation port's `Link` (`@nasiko/app-core/navigation`) with `href` (`/sessions/<id>` encoded as the lab's router encoded params, its
-// `trace`/`span` search through `hrefFor`); the row key's `@eslint-react/no-array-index-key` disable is a plain
-// comment (no such rule here); Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * Biggest senders (plans/feat-optimization-page.md R1C, R7A, R7C; eng C4, C5): the requests that carried the most
  * history in the window, or in the chart bar you picked (its chip names the interval and clears it). Each row is the
- * chat, its agent and what that message carried: ~without → ~sent, plus "Token optimization (Caveman) off" for an agent
+ * chat, its agent and what that message carried: ~without → ~sent, plus "Token optimization off" for an agent
  * with it off. Your own chats open the trace at the request (`?trace=`, `?span=` when the server sends it); another user's chat
  * is "Another user's chat" with the agent and counts, no title and no link (C4). Loads and fails on its own (R2C).
  */
-import Link from "@nasiko/app-core/navigation";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { X } from "lucide-react";
-import { Panel, PanelError } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { AgentLink } from "../../agents/components/AgentLink";
-import { fmtUtcDayTime, seriesAt } from "@nasiko/ui/lib";
-import type { Proposed } from "../api";
-import { copy } from "../copy";
-import { tokensShort } from "../lead";
-import type { TopRequest } from "../types";
-import { Outline } from "./Outline";
+import { Link } from '@tanstack/react-router'
+import { X } from 'lucide-react'
+import { Panel, PanelError } from '@nasiko/ui/composites/panel'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { AgentLink } from '@nasiko/features/agents/components/AgentLink'
+import { seriesAt } from '@nasiko/ui/lib/chart'
+import { fmtUtcDayTime } from '@nasiko/ui/lib/format'
+import type { Proposed } from '../api'
+import { copy } from '../copy'
+import { tokensShort } from '../lead'
+import type { TopRequest } from '../types'
+import { Outline } from './Outline'
 
-const SENT = seriesAt(0);
-const SAVED = seriesAt(1);
+const SENT = seriesAt(0)
+const SAVED = seriesAt(1)
 
 export function BiggestSenders({
   result,
@@ -40,18 +34,18 @@ export function BiggestSenders({
   nameOf,
   noAgents,
 }: {
-  result: Proposed<TopRequest[]> | undefined;
-  pending: boolean;
-  error: unknown;
-  onRetry: () => void;
-  period: string;
+  result: Proposed<TopRequest[]> | undefined
+  pending: boolean
+  error: unknown
+  onRetry: () => void
+  period: string
   /** The picked bar's label (C5), or null for the whole window. */
-  slice: string | null;
-  onClear: () => void;
+  slice: string | null
+  onClear: () => void
   /** The agent's display name (rows carry the raw trace name). */
-  nameOf: (agentId: string, raw: string) => string;
+  nameOf: (agentId: string, raw: string) => string
   /** R2E(2): you can access no agents, so the block shows what will show here. */
-  noAgents: boolean;
+  noAgents: boolean
 }) {
   const body = () => {
     if (!result && pending)
@@ -61,32 +55,31 @@ export function BiggestSenders({
             <Skeleton key={i} className="h-5 w-full max-w-lg" />
           ))}
         </div>
-      );
-    if (!result) return <PanelError error={error} onRetry={onRetry} what={copy.senders.what} />;
-    if (result.kind === "absent" || noAgents)
-      return <Outline small>{copy.senders.outline}</Outline>;
+      )
+    if (!result) return <PanelError error={error} onRetry={onRetry} what={copy.senders.what} />
+    if (result.kind === 'absent' || noAgents) return <Outline small>{copy.senders.outline}</Outline>
     if (!result.data.length)
       return (
         <p className="m-0 text-sm text-muted-foreground">
           {slice ? copy.senders.emptySlice(slice) : copy.senders.empty}
         </p>
-      );
+      )
     return (
       <ul className="m-0 -mx-4 flex list-none flex-col p-0">
         {result.data.map((r, i) => (
           <li
             // A redacted row has no trace id (C4), and two can match on agent, start and size: the position breaks the tie.
-            // The list is one server ranking, replaced whole, never reordered in place.
+            // eslint-disable-next-line @eslint-react/no-array-index-key -- the list is one server ranking, replaced whole, never reordered in place
             key={r.trace_id ?? `${r.agent_id}-${r.started_at}-${r.pool_tokens}-${i}`}
             className="border-t border-border px-4 py-2.5 text-sm first:border-t-0"
           >
             <SentBar pool={r.pool_tokens} sent={r.sent_tokens} />
             <Chat r={r} />
             <span className="text-muted-foreground">
-              {" · "}
+              {' · '}
               <AgentLink id={r.agent_id} name={r.agent_name}>
                 {nameOf(r.agent_id, r.agent_name)}
-              </AgentLink>{" "}
+              </AgentLink>{' '}
               <span className="tabular-nums">
                 {copy.senders.row(tokensShort(r.pool_tokens), tokensShort(r.sent_tokens))}
               </span>
@@ -97,8 +90,8 @@ export function BiggestSenders({
           </li>
         ))}
       </ul>
-    );
-  };
+    )
+  }
   return (
     <Panel
       title={copy.senders.title}
@@ -123,29 +116,28 @@ export function BiggestSenders({
     >
       {body()}
     </Panel>
-  );
+  )
 }
 
 function Chat({ r }: { r: TopRequest }) {
-  if (!r.own) return <span className="font-medium">{copy.senders.otherChat}</span>;
-  const title = r.chat_title || copy.senders.untitled;
-  if (!r.session_id || !r.trace_id) return <span className="font-medium">{title}</span>;
+  if (!r.own) return <span className="font-medium">{copy.senders.otherChat}</span>
+  const title = r.chat_title || copy.senders.untitled
+  if (!r.session_id || !r.trace_id) return <span className="font-medium">{title}</span>
   return (
     <Link
-      href={hrefFor(`/sessions/${encodeURIComponent(r.session_id)}`, {
-        trace: r.trace_id,
-        span: r.span_id ?? undefined,
-      })}
+      to="/sessions/$sessionId"
+      params={{ sessionId: r.session_id }}
+      search={{ trace: r.trace_id, span: r.span_id ?? undefined }}
       className="font-medium underline underline-offset-4 hover:text-primary-text"
     >
       {title}
     </Link>
-  );
+  )
 }
 
 /** What this message carried against what it could have: sent solid, the rest in the chart's Saved colour. */
 function SentBar({ pool, sent }: { pool: number; sent: number }) {
-  if (pool <= 0) return null;
+  if (pool <= 0) return null
   return (
     <span
       aria-hidden
@@ -157,5 +149,5 @@ function SentBar({ pool, sent }: { pool: number; sent: number }) {
       />
       <span className="h-full flex-1 rounded-r-full" style={{ backgroundColor: SAVED.fill }} />
     </span>
-  );
+  )
 }

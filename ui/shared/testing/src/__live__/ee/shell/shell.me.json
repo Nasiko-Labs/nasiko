@@ -1,0 +1,30 @@
+{
+  "fixture_version": 1,
+  "id": "shell.me",
+  "recorded_at": "2026-09-29T07:44:51.900Z",
+  "window": {
+    "start": "2026-09-29T07:44:51.900Z",
+    "end": "2026-09-29T07:44:51.904Z"
+  },
+  "anchor": "2026-09-29T07:44:38.390Z",
+  "edition": "ee",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/me",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "sub": "<admin-id>",
+    "username": "admin",
+    "is_superuser": true
+  }
+}

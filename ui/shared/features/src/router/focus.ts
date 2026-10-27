@@ -1,7 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/focus.ts. Local edits: Radix's `onCloseAutoFocus(e)`
-// (preventDefault, then focus) is Base UI's `finalFocus`: the hook returns a function giving the element to focus on
-// close, or `true` for the dialog's default; Prettier formatting.
-import { useCallback, useState } from "react";
+import { useCallback, useState } from 'react'
 
 /**
  * Focus back to the opener (plan §4.8). The router's sheets open from plain buttons and menu items, not Radix
@@ -11,28 +8,33 @@ import { useCallback, useState } from "react";
  * out of the folded group) is found again by its accessible name.
  */
 function openerOf(el: Element | null): HTMLElement | null {
-  if (!(el instanceof HTMLElement)) return null;
-  const menu = el.closest('[role="menu"]');
+  if (!(el instanceof HTMLElement)) return null
+  const menu = el.closest('[role="menu"]')
   const trigger = menu?.id
     ? document.querySelector<HTMLElement>(`[aria-controls="${CSS.escape(menu.id)}"]`)
-    : null;
-  return trigger ?? el;
+    : null
+  return trigger ?? el
 }
 export function useReturnFocus(open: boolean) {
-  const [opener, setOpener] = useState<HTMLElement | null>(null);
-  const [wasOpen, setWasOpen] = useState(open);
+  const [opener, setOpener] = useState<HTMLElement | null>(null)
+  const [wasOpen, setWasOpen] = useState(open)
   if (open !== wasOpen) {
-    setWasOpen(open);
-    if (open) setOpener(openerOf(document.activeElement));
+    setWasOpen(open)
+    if (open) setOpener(openerOf(document.activeElement))
   }
-  // Base UI's `finalFocus`: the element to focus on close, or `true` for its default (the previously focused one).
-  return useCallback((): HTMLElement | true => {
-    const label = opener?.getAttribute("aria-label");
-    const target = opener?.isConnected
-      ? opener
-      : label
-        ? document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(label)}"]`)
-        : null;
-    return target ?? true;
-  }, [opener]);
+  return useCallback(
+    (e: Event) => {
+      const label = opener?.getAttribute('aria-label')
+      const target = opener?.isConnected
+        ? opener
+        : label
+          ? document.querySelector<HTMLElement>(`[aria-label="${CSS.escape(label)}"]`)
+          : null
+      if (target) {
+        e.preventDefault()
+        target.focus()
+      }
+    },
+    [opener],
+  )
 }

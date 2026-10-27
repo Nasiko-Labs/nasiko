@@ -1,33 +1,27 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/RecentChats.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use
-// client"`; TanStack `Link` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) (a chat's href is chat/nav.ts `chatHref`); `Button asChild` + `Link` ->
-// `ButtonLink`; optional props admit `undefined`; Prettier formatting.
-"use client";
-
 /**
  * Recent chats: the viewer's newest chats (the chat rail's own list and cache, so Chat opens warm), each with who it
  * talks to, named by chat's `chatIdentity` exactly as the rail names it. Recorded harness chats stay in Chat's Recorded
  * view. The dot is the agent's status in the directory (the Orchestrator's is its own colour); the name beside it says who.
  */
-import Link from "@nasiko/app-core/navigation";
-import { useRef } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { relTime } from "../../agents/format";
-import { displayStatus } from "../../agents/status";
-import type { Agent } from "../../agents/types";
-import { sessionRows, useChatSessions } from "../../chat/api";
-import { chatIdentity } from "../../chat/identity";
-import { chatHref } from "../../chat/nav";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "../copy";
-import { RECENT_SESSION_ROWS } from "../tuning";
-import { Card, CardError, CardSkeleton, TOUCH } from "./Card";
+import { Link } from '@tanstack/react-router'
+import { useRef } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { relTime } from '@nasiko/features/agents/format'
+import { displayStatus } from '@nasiko/features/agents/status'
+import type { Agent } from '@nasiko/features/agents/types'
+import { sessionRows, useChatSessions } from '@nasiko/features/chat/api'
+import { chatIdentity } from '@nasiko/features/chat/identity'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '../copy'
+import { RECENT_SESSION_ROWS } from '../tuning'
+import { Card, CardError, CardSkeleton, TOUCH } from './Card'
 
 const DOT = {
-  running: "bg-success",
-  deploying: "bg-info",
-  attention: "bg-destructive",
-} as Partial<Record<string, string>>;
+  running: 'bg-success',
+  deploying: 'bg-info',
+  attention: 'bg-destructive',
+} as Partial<Record<string, string>>
 
 export function RecentChats({
   byId,
@@ -35,17 +29,17 @@ export function RecentChats({
   now,
   className,
 }: {
-  byId: ReadonlyMap<string, Agent>;
-  username: string;
-  now: number;
-  className?: string | undefined;
+  byId: ReadonlyMap<string, Agent>
+  username: string
+  now: number
+  className?: string
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const chats = useChatSessions();
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const chats = useChatSessions()
   const rows = sessionRows(chats.data)
     .map((r) => ({ row: r, who: chatIdentity(r, byId, username) }))
-    .filter((c) => c.who.kind !== "recorded")
-    .slice(0, RECENT_SESSION_ROWS);
+    .filter((c) => c.who.kind !== 'recorded')
+    .slice(0, RECENT_SESSION_ROWS)
   return (
     <Card
       id="overview-chats"
@@ -67,9 +61,9 @@ export function RecentChats({
         <EmptyState
           title={copy.chats.none}
           action={
-            <ButtonLink variant="outline" size="sm" className={TOUCH} href="/chat">
-              {copy.chats.start}
-            </ButtonLink>
+            <Button asChild variant="outline" size="sm" className={TOUCH}>
+              <Link to="/chat">{copy.chats.start}</Link>
+            </Button>
           }
           className="py-6 md:py-6"
         />
@@ -84,14 +78,15 @@ export function RecentChats({
               <span
                 aria-hidden
                 className={cn(
-                  "size-2 shrink-0 rounded-full",
-                  who.kind === "orchestrator"
-                    ? "bg-primary"
-                    : (DOT[displayStatus(who.status, false)] ?? "bg-muted-foreground/40"),
+                  'size-2 shrink-0 rounded-full',
+                  who.kind === 'orchestrator'
+                    ? 'bg-primary'
+                    : (DOT[displayStatus(who.status, false)] ?? 'bg-muted-foreground/40'),
                 )}
               />
               <Link
-                href={chatHref(row.session_id)}
+                to="/chat/$sessionId"
+                params={{ sessionId: row.session_id }}
                 className="min-w-0 flex-1 truncate font-medium underline-offset-4 hover:underline"
               >
                 {row.title || copy.needs.untitledChat}
@@ -107,5 +102,5 @@ export function RecentChats({
         </ul>
       )}
     </Card>
-  );
+  )
 }

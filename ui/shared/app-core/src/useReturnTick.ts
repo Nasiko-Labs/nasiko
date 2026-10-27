@@ -1,5 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/lib/useReturnTick.ts. Local edits: none (Prettier formatting only).
-import { useEffect, useState } from "react";
+import { useEffect, useState } from 'react'
 
 /**
  * A counter that goes up when the user comes back to the page (tab shown again, or the
@@ -9,23 +8,23 @@ import { useEffect, useState } from "react";
  * when the user returns, instead of mixing stale client bounds with fresh server data.
  */
 export function useReturnTick(minAgeMs = 60_000): number {
-  const [tick, setTick] = useState(0);
+  const [tick, setTick] = useState(0)
   useEffect(() => {
-    let since = Date.now();
+    let since = Date.now()
     const onReturn = () => {
-      if (document.visibilityState === "hidden") return;
-      if (Date.now() - since < minAgeMs) return;
-      since = Date.now();
-      setTick((t) => t + 1);
-    };
-    document.addEventListener("visibilitychange", onReturn);
-    window.addEventListener("focus", onReturn);
+      if (document.visibilityState === 'hidden') return
+      if (Date.now() - since < minAgeMs) return
+      since = Date.now()
+      setTick((t) => t + 1)
+    }
+    document.addEventListener('visibilitychange', onReturn)
+    window.addEventListener('focus', onReturn)
     return () => {
-      document.removeEventListener("visibilitychange", onReturn);
-      window.removeEventListener("focus", onReturn);
-    };
-  }, [minAgeMs]);
-  return tick;
+      document.removeEventListener('visibilitychange', onReturn)
+      window.removeEventListener('focus', onReturn)
+    }
+  }, [minAgeMs])
+  return tick
 }
 
 /**
@@ -35,13 +34,13 @@ export function useReturnTick(minAgeMs = 60_000): number {
  */
 export function useFrozenNow(...triggers: unknown[]): Date {
   // State, not useMemo: the Compiler needs a literal deps array, and the triggers are variadic.
-  const [frozen, setFrozen] = useState(() => ({ triggers, now: new Date() }));
+  const [frozen, setFrozen] = useState(() => ({ triggers, now: new Date() }))
   const moved =
     triggers.length !== frozen.triggers.length ||
-    triggers.some((t, i) => !Object.is(t, frozen.triggers[i]));
-  if (!moved) return frozen.now;
+    triggers.some((t, i) => !Object.is(t, frozen.triggers[i]))
+  if (!moved) return frozen.now
   // A trigger changed: re-freeze during render (React's "adjust state on prop change" pattern).
-  const next = { triggers, now: new Date() };
-  setFrozen(next);
-  return next.now;
+  const next = { triggers, now: new Date() }
+  setFrozen(next)
+  return next.now
 }

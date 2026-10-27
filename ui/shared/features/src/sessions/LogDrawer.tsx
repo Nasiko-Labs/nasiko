@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/sessions/LogDrawer.tsx. Local edits: none beyond imports
-// and Prettier formatting (`useLogStream` is the ported sessions/api.ts hook).
-"use client";
-
 /**
  * Per-agent log tail. The stream itself is `useLogStream` (sessions/api.ts).
  * - The server replays the last lines on every connect: lines are deduped by timestamp +
@@ -11,18 +7,18 @@
  *   Reconnect button and no automatic retry loop.
  * - 404 = deleted or not visible; 401 re-checks the session (the app redirects to login).
  */
-import { Pause, Play, RotateCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@nasiko/ui/primitives";
-import { copy } from "../observability/copy";
-import { LOG_LINES_MAX } from "../observability/tuning";
-import type { LogLine } from "../observability/types";
-import { fmtUtcTime } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { useLogStream } from "./api";
+import { Pause, Play, RotateCw } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '@nasiko/ui/primitives/sheet'
+import { copy } from '@nasiko/features/observability/copy'
+import { LOG_LINES_MAX } from '@nasiko/features/observability/tuning'
+import type { LogLine } from '@nasiko/features/observability/types'
+import { fmtUtcTime } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useLogStream } from './api'
 
-const lineKey = (l: LogLine) => `${l.timestamp}|${l.message}`;
+const lineKey = (l: LogLine) => `${l.timestamp}|${l.message}`
 
 export function LogDrawer({
   agent,
@@ -30,51 +26,50 @@ export function LogDrawer({
   open,
   onOpenChange,
 }: {
-  agent: string;
-  label: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  agent: string
+  label: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
-  const [lines, setLines] = useState<LogLine[]>([]);
-  const [paused, setPaused] = useState(false);
-  const [bufferedCount, setBufferedCount] = useState(0);
-  const buffered = useRef<LogLine[]>([]);
-  const seen = useRef(new Set<string>());
-  const pausedRef = useRef(paused);
-  const scroller = useRef<HTMLDivElement>(null);
+  const [lines, setLines] = useState<LogLine[]>([])
+  const [paused, setPaused] = useState(false)
+  const [bufferedCount, setBufferedCount] = useState(0)
+  const buffered = useRef<LogLine[]>([])
+  const seen = useRef(new Set<string>())
+  const pausedRef = useRef(paused)
+  const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    pausedRef.current = paused;
-  }, [paused]);
+    pausedRef.current = paused
+  }, [paused])
 
   const push = useCallback((incoming: LogLine[]) => {
     const fresh = incoming.filter((l) => {
-      const k = lineKey(l);
-      if (seen.current.has(k)) return false;
-      seen.current.add(k);
-      return true;
-    });
+      const k = lineKey(l)
+      if (seen.current.has(k)) return false
+      seen.current.add(k)
+      return true
+    })
     // Keep the dedupe set bounded: replays only repeat recent lines, so drop the oldest keys.
     for (const k of seen.current) {
-      if (seen.current.size <= LOG_LINES_MAX * 2) break;
-      seen.current.delete(k);
+      if (seen.current.size <= LOG_LINES_MAX * 2) break
+      seen.current.delete(k)
     }
-    if (!fresh.length) return;
+    if (!fresh.length) return
     if (pausedRef.current) {
-      buffered.current = [...buffered.current, ...fresh].slice(-LOG_LINES_MAX);
-      setBufferedCount(buffered.current.length);
-    } else setLines((prev) => [...prev, ...fresh].slice(-LOG_LINES_MAX));
-  }, []);
+      buffered.current = [...buffered.current, ...fresh].slice(-LOG_LINES_MAX)
+      setBufferedCount(buffered.current.length)
+    } else setLines((prev) => [...prev, ...fresh].slice(-LOG_LINES_MAX))
+  }, [])
 
-  const { state, reconnect } = useLogStream(agent, open, push);
+  const { state, reconnect } = useLogStream(agent, open, push)
 
   const resume = () => {
-    setPaused(false);
-    setLines((prev) => [...prev, ...buffered.current].slice(-LOG_LINES_MAX));
-    buffered.current = [];
-    setBufferedCount(0);
-  };
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom has no scrollTo (the lab's optional call)
-  const jump = () => scroller.current?.scrollTo?.({ top: scroller.current.scrollHeight });
+    setPaused(false)
+    setLines((prev) => [...prev, ...buffered.current].slice(-LOG_LINES_MAX))
+    buffered.current = []
+    setBufferedCount(0)
+  }
+  const jump = () => scroller.current?.scrollTo?.({ top: scroller.current.scrollHeight })
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -85,16 +80,10 @@ export function LogDrawer({
           {paused ? (
             <Button size="sm" variant="default" onClick={resume}>
               <Play className="size-3.5" aria-hidden /> Resume
-              {bufferedCount ? ` (${bufferedCount})` : ""}
+              {bufferedCount ? ` (${bufferedCount})` : ''}
             </Button>
           ) : (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setPaused(true);
-              }}
-            >
+            <Button size="sm" variant="outline" onClick={() => setPaused(true)}>
               <Pause className="size-3.5" aria-hidden /> Pause
             </Button>
           )}
@@ -102,25 +91,25 @@ export function LogDrawer({
             Jump to latest
           </Button>
           <span role="status" className="text-xs text-muted-foreground">
-            {state === "connecting"
-              ? "Connecting…"
-              : state === "open"
-                ? "Streaming"
-                : state === "closed"
+            {state === 'connecting'
+              ? 'Connecting…'
+              : state === 'open'
+                ? 'Streaming'
+                : state === 'closed'
                   ? copy.streamPaused
-                  : state === "unavailable"
-                    ? ""
-                    : "Stream error"}
+                  : state === 'unavailable'
+                    ? ''
+                    : 'Stream error'}
           </span>
-          {state === "closed" || state === "error" ? (
+          {state === 'closed' || state === 'error' ? (
             <Button size="sm" variant="outline" onClick={reconnect}>
               <RotateCw className="size-3.5" aria-hidden /> {copy.reconnect}
             </Button>
           ) : null}
         </div>
-        {state === "unavailable" ? (
+        {state === 'unavailable' ? (
           <p className="text-sm text-muted-foreground">{copy.logsUnavailable}</p>
-        ) : lines.length === 0 && state !== "connecting" ? (
+        ) : lines.length === 0 && state !== 'connecting' ? (
           <p className="text-sm text-muted-foreground">{copy.logsEmpty}</p>
         ) : (
           <div
@@ -136,15 +125,15 @@ export function LogDrawer({
                 </span>
                 <span
                   className={cn(
-                    "w-10 shrink-0",
-                    l.level === "ERROR"
-                      ? "text-destructive"
-                      : l.level === "WARN"
-                        ? "text-warning"
-                        : "text-muted-foreground",
+                    'w-10 shrink-0',
+                    l.level === 'ERROR'
+                      ? 'text-destructive'
+                      : l.level === 'WARN'
+                        ? 'text-warning'
+                        : 'text-muted-foreground',
                   )}
                 >
-                  {l.level ?? ""}
+                  {l.level ?? ''}
                 </span>
                 <span className="min-w-0 break-words">{l.message}</span>
               </div>
@@ -153,5 +142,5 @@ export function LogDrawer({
         )}
       </SheetContent>
     </Sheet>
-  );
+  )
 }

@@ -1,4 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/needs.ts. Local edits: Prettier formatting.
 /**
  * Needs you, for one agent (plans/feat-agent-centric.md PR1c; CEO R2-6, design "Needs you", DX "Errors"). Pure: the
  * hub feeds it three sources, re-sourced for this agent rather than filtered from the Overview's fleet sample.
@@ -15,91 +14,91 @@
  * The verdict "No issues found in checked data" shows only when every source answered and found nothing; a failed source
  * shows its own line with Retry, never the verdict.
  */
-import { checkSessions, type Status } from "../observability/sessions";
+import { checkSessions, type Status } from '@nasiko/features/observability/sessions'
 
 type SourceState<T> =
-  { state: "loading" } | { state: "failed" } | { state: "absent" } | { state: "ok"; value: T };
+  { state: 'loading' } | { state: 'failed' } | { state: 'absent' } | { state: 'ok'; value: T }
 
 interface Requests {
-  count: number;
-  firstChat: string | null;
-  firstRequest: string | null;
+  count: number
+  firstChat: string | null
+  firstRequest: string | null
   /** A superuser's pending requests for this agent no chat proves theirs yet: the source can't vouch for "none". */
-  unproven: number;
+  unproven: number
 }
 
 interface Rating {
-  rating: "healthy" | "watch" | "action" | "unknown";
-  reason: string | null;
+  rating: 'healthy' | 'watch' | 'action' | 'unknown'
+  reason: string | null
   /** A cost input failed: the rating can't vouch that nothing else needs action. */
-  incomplete: boolean;
+  incomplete: boolean
 }
 
 interface Sessions {
   /** This agent's sessions found in the sample. */
-  found: number;
+  found: number
   /** Of those, how many were checked (finished checking as failed or ok). */
-  checked: number;
-  failed: number;
+  checked: number
+  failed: number
   /** Rows in the sample (the latest N the viewer can see). */
-  scanned: number;
+  scanned: number
   /** Another visible agent has this raw name: its sessions may be among these. */
-  ambiguous: boolean;
+  ambiguous: boolean
 }
 
 interface BudgetNeed {
   /** null: the budget needs nothing. */
-  level: "action" | "watch" | null;
-  sentence: string;
+  level: 'action' | 'watch' | null
+  sentence: string
 }
 
 export interface HubNeedsInput {
-  requests: SourceState<Requests>;
-  status: SourceState<Rating>;
-  sessions: SourceState<Sessions>;
-  budget: SourceState<BudgetNeed>;
+  requests: SourceState<Requests>
+  status: SourceState<Rating>
+  sessions: SourceState<Sessions>
+  budget: SourceState<BudgetNeed>
 }
 
 export type NeedRow =
-  | { kind: "requests"; count: number; firstChat: string | null; firstRequest: string | null }
-  | { kind: "status"; level: "action" | "watch"; reason: string }
-  | { kind: "sessions"; failed: number; checked: number; ambiguous: boolean }
-  | { kind: "budget"; level: "action" | "watch"; sentence: string };
+  | { kind: 'requests'; count: number; firstChat: string | null; firstRequest: string | null }
+  | { kind: 'status'; level: 'action' | 'watch'; reason: string }
+  | { kind: 'sessions'; failed: number; checked: number; ambiguous: boolean }
+  | { kind: 'budget'; level: 'action' | 'watch'; sentence: string }
 
-export type HubSource = "requests" | "status" | "sessions" | "budget";
+export type HubSource = 'requests' | 'status' | 'sessions' | 'budget'
 
 export interface HubNeeds {
-  rows: NeedRow[];
-  failed: HubSource[];
+  rows: NeedRow[]
+  failed: HubSource[]
   /** The status source failed only because a cost input is missing (its own wording). */
-  statusIncomplete: boolean;
+  statusIncomplete: boolean
   /** Requests that can't be tied to the viewer's chats yet (superusers). */
-  unproven: number;
-  loading: boolean;
+  unproven: number
+  loading: boolean
   /** Every source answered (or is absent) and nothing was found. */
-  clear: boolean;
+  clear: boolean
   /** What was checked, for the coverage line; null while loading. */
   coverage: {
-    requests: boolean;
-    status: boolean;
-    sessions: Sessions | null;
-    budget: boolean;
-  } | null;
+    requests: boolean
+    status: boolean
+    sessions: Sessions | null
+    budget: boolean
+  } | null
 }
 
 /** The sessions source from the sample and its checks: the Overview's rule (`checkSessions`), plus coverage. */
 export function sessionSource(i: {
-  listError: boolean;
-  listPending: boolean;
-  found: number;
-  scanned: number;
-  verdicts: readonly (Status | undefined)[];
-  ambiguous: boolean;
+  listError: boolean
+  listPending: boolean
+  found: number
+  scanned: number
+  verdicts: readonly (Status | undefined)[]
+  ambiguous: boolean
 }): SourceState<Sessions> {
-  const v = checkSessions(i);
-  if (v.state !== "ok") return v;
+  const v = checkSessions(i)
+  if (v.state !== 'ok') return v
   return {
-    state: "ok",
+    state: 'ok',
     value: {
       found: i.found,
       checked: v.checked,
@@ -107,68 +106,67 @@ export function sessionSource(i: {
       scanned: i.scanned,
       ambiguous: i.ambiguous,
     },
-  };
+  }
 }
 
 export function hubNeeds(i: HubNeedsInput): HubNeeds {
-  const rows: NeedRow[] = [];
-  const failed: HubSource[] = [];
-  // Set from `note` (a closure): typed wide, or the checks below read as always-false.
-  let loading = false as boolean;
+  const rows: NeedRow[] = []
+  const failed: HubSource[] = []
+  let loading = false
   const note = (s: HubSource, st: SourceState<unknown>) => {
-    if (st.state === "failed") failed.push(s);
-    if (st.state === "loading") loading = true;
-  };
-  note("requests", i.requests);
-  note("status", i.status);
-  note("sessions", i.sessions);
-  note("budget", i.budget);
+    if (st.state === 'failed') failed.push(s)
+    if (st.state === 'loading') loading = true
+  }
+  note('requests', i.requests)
+  note('status', i.status)
+  note('sessions', i.sessions)
+  note('budget', i.budget)
   // An unrated agent has nothing checked: the source is absent, never "rated" (review: adversarial).
   const status: SourceState<Rating> =
-    i.status.state === "ok" && i.status.value.rating === "unknown" ? { state: "absent" } : i.status;
+    i.status.state === 'ok' && i.status.value.rating === 'unknown' ? { state: 'absent' } : i.status
   if (
-    status.state === "ok" &&
-    (status.value.rating === "action" || status.value.rating === "watch")
+    status.state === 'ok' &&
+    (status.value.rating === 'action' || status.value.rating === 'watch')
   )
-    rows.push({ kind: "status", level: status.value.rating, reason: status.value.reason ?? "" });
-  if (i.requests.state === "ok" && i.requests.value.count > 0) {
-    const { count, firstChat, firstRequest } = i.requests.value;
-    rows.push({ kind: "requests", count, firstChat, firstRequest });
+    rows.push({ kind: 'status', level: status.value.rating, reason: status.value.reason ?? '' })
+  if (i.requests.state === 'ok' && i.requests.value.count > 0) {
+    const { count, firstChat, firstRequest } = i.requests.value
+    rows.push({ kind: 'requests', count, firstChat, firstRequest })
   }
-  if (i.sessions.state === "ok" && i.sessions.value.failed > 0)
+  if (i.sessions.state === 'ok' && i.sessions.value.failed > 0)
     rows.push({
-      kind: "sessions",
+      kind: 'sessions',
       failed: i.sessions.value.failed,
       checked: i.sessions.value.checked,
       ambiguous: i.sessions.value.ambiguous,
-    });
-  if (i.budget.state === "ok" && i.budget.value.level)
-    rows.push({ kind: "budget", level: i.budget.value.level, sentence: i.budget.value.sentence });
-  const statusIncomplete = status.state === "ok" && status.value.incomplete;
-  if (statusIncomplete) failed.push("status");
-  const unproven = i.requests.state === "ok" ? i.requests.value.unproven : 0;
+    })
+  if (i.budget.state === 'ok' && i.budget.value.level)
+    rows.push({ kind: 'budget', level: i.budget.value.level, sentence: i.budget.value.sentence })
+  const statusIncomplete = status.state === 'ok' && status.value.incomplete
+  if (statusIncomplete) failed.push('status')
+  const unproven = i.requests.state === 'ok' ? i.requests.value.unproven : 0
   // Action first (health, then budget), then requests, then watch (health, then budget), then sessions.
   const rank = (r: NeedRow) =>
-    r.kind === "status"
-      ? r.level === "action"
+    r.kind === 'status'
+      ? r.level === 'action'
         ? 0
         : 2
-      : r.kind === "budget"
-        ? r.level === "action"
+      : r.kind === 'budget'
+        ? r.level === 'action'
           ? 0.5
           : 2.5
-        : r.kind === "requests"
+        : r.kind === 'requests'
           ? 1
-          : 3;
-  rows.sort((a, b) => rank(a) - rank(b));
+          : 3
+  rows.sort((a, b) => rank(a) - rank(b))
   const coverage = loading
     ? null
     : {
-        requests: i.requests.state === "ok",
-        status: status.state === "ok",
-        sessions: i.sessions.state === "ok" ? i.sessions.value : null,
-        budget: i.budget.state === "ok",
-      };
+        requests: i.requests.state === 'ok',
+        status: status.state === 'ok',
+        sessions: i.sessions.state === 'ok' ? i.sessions.value : null,
+        budget: i.budget.state === 'ok',
+      }
   return {
     rows,
     failed,
@@ -177,5 +175,5 @@ export function hubNeeds(i: HubNeedsInput): HubNeeds {
     loading,
     clear: !loading && !failed.length && !rows.length && !unproven,
     coverage,
-  };
+  }
 }

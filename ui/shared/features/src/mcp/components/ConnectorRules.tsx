@@ -1,10 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/components/ConnectorRules.tsx. Local edits:
-// `CollapsibleTrigger asChild` -> `render={<Button …/>}` (Base UI useRender); the stance `ToggleGroup` uses Base
-// UI's value array (`value={[stance]}`, the first value read back, an emptied group ignored as before); the server
-// link is the navigation port's `Link` (`@nasiko/app-core/navigation`) with `hrefFor('/mcp/<id>', { tab })`; `logoUrl` admits `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * One MCP server on one agent (plans/feat-mcp.md §5.1, legacy agent page MCP card): mark, name, a summary ("3 of 5 tools
  * allowed · 1 ask first"), an Enabled switch, and when expanded each tool with Allow / Ask / Block. A stance click saves
@@ -13,29 +6,32 @@
  * flow, so the gateway answers Ask with TOOL_ASK and stores no request to approve (nasiko-cloud-rs PR #631 reverted
  * f5cb65e7); a tool already on Ask keeps the item so its stance shows.
  */
-import Link from "@nasiko/app-core/navigation";
-import { ChevronDown, RotateCw } from "lucide-react";
-import { useState } from "react";
-import { toast } from "@nasiko/ui/toast";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { Button } from "@nasiko/ui/primitives";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { Switch } from "@nasiko/ui/primitives";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { AgentMark } from "../../agents/components/bits";
-import { cn } from "@nasiko/ui/cn";
-import { useAgentTools, useSetAccess, useSetStance } from "../api";
-import { copy, reason, STANCE } from "../copy";
-import { stanceCounts } from "../logic";
-import { ServerStatusBadge } from "./bits";
-import { STANCES, type AgentTool, type Stance } from "../types";
+import { Link } from '@tanstack/react-router'
+import { ChevronDown, RotateCw } from 'lucide-react'
+import { useState } from 'react'
+import { toast } from 'sonner'
+import { Button } from '@nasiko/ui/primitives/button'
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@nasiko/ui/primitives/collapsible'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Switch } from '@nasiko/ui/primitives/switch'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { AgentMark } from '@nasiko/features/agents/components/bits'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useAgentTools, useSetAccess, useSetStance } from '../api'
+import { copy, reason, STANCE } from '../copy'
+import { stanceCounts } from '../logic'
+import { ServerStatusBadge } from './bits'
+import { STANCES, type AgentTool, type Stance } from '../types'
 
 export interface RuleTarget {
-  connectorId: string;
-  label: string;
-  logoUrl?: string | null | undefined;
-  enabled: boolean;
+  connectorId: string
+  label: string
+  logoUrl?: string | null
+  enabled: boolean
 }
 
 export function ConnectorRules({
@@ -44,16 +40,16 @@ export function ConnectorRules({
   defaultOpen = false,
   noAsk = false,
 }: {
-  agentId: string;
-  target: RuleTarget;
-  defaultOpen?: boolean | undefined;
-  noAsk?: boolean | undefined;
+  agentId: string
+  target: RuleTarget
+  defaultOpen?: boolean
+  noAsk?: boolean
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const tools = useAgentTools(agentId, target.connectorId, true);
-  const access = useSetAccess(agentId);
-  const enabled = target.enabled;
-  const n = stanceCounts(tools.data ?? []);
+  const [open, setOpen] = useState(defaultOpen)
+  const tools = useAgentTools(agentId, target.connectorId, true)
+  const access = useSetAccess(agentId)
+  const enabled = target.enabled
+  const n = stanceCounts(tools.data ?? [])
   const summary = !enabled
     ? copy.summaryDisabled
     : tools.isPending
@@ -62,28 +58,26 @@ export function ConnectorRules({
         ? copy.toolsFailed
         : n.total
           ? copy.summary(n.allowed, n.total, n.asks)
-          : copy.summaryNoTools;
+          : copy.summaryNoTools
 
   return (
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className={cn("rounded-lg border border-border", !enabled && "bg-muted/40")}
+      className={cn('rounded-lg border border-border', !enabled && 'bg-muted/40')}
     >
       <div className="flex items-center gap-3 p-3">
-        <CollapsibleTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={open ? copy.collapse(target.label) : copy.expand(target.label)}
+        <CollapsibleTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={open ? copy.collapse(target.label) : copy.expand(target.label)}
+          >
+            <ChevronDown
+              className={cn('size-4 transition-transform', open && 'rotate-180')}
+              aria-hidden
             />
-          }
-        >
-          <ChevronDown
-            className={cn("size-4 transition-transform", open && "rotate-180")}
-            aria-hidden
-          />
+          </Button>
         </CollapsibleTrigger>
         <AgentMark name={target.label} iconUrl={target.logoUrl} size={28} />
         <div className="min-w-0 flex-1">
@@ -98,12 +92,12 @@ export function ConnectorRules({
           checked={enabled}
           disabled={access.isPending}
           aria-label={enabled ? copy.disable(target.label) : copy.enable(target.label)}
-          onCheckedChange={(v) => {
+          onCheckedChange={(v) =>
             access.mutate(
               { connectorId: target.connectorId, enabled: v },
               { onError: (e) => toast.error(copy.accessFailed(reason(e))) },
-            );
-          }}
+            )
+          }
         />
       </div>
       <CollapsibleContent className="border-t border-border p-3">
@@ -114,7 +108,7 @@ export function ConnectorRules({
           <Skeleton className="h-16" />
         ) : tools.isError ? (
           <p role="alert" className="text-sm text-destructive">
-            {copy.toolsFailed}{" "}
+            {copy.toolsFailed}{' '}
             <Button
               size="sm"
               variant="outline"
@@ -127,7 +121,7 @@ export function ConnectorRules({
         ) : !tools.data.length ? (
           <p className="text-sm text-muted-foreground">{copy.noToolsYet}</p>
         ) : (
-          <ul className={cn("divide-y divide-border", !enabled && "opacity-60")}>
+          <ul className={cn('divide-y divide-border', !enabled && 'opacity-60')}>
             {tools.data.map((t) => (
               <ToolRow
                 key={t.name}
@@ -143,7 +137,7 @@ export function ConnectorRules({
         )}
       </CollapsibleContent>
     </Collapsible>
-  );
+  )
 }
 
 function ToolRow({
@@ -154,14 +148,14 @@ function ToolRow({
   disabled,
   noAsk,
 }: {
-  agentId: string;
-  connectorId: string;
-  tool: AgentTool;
-  tools: readonly AgentTool[];
-  disabled: boolean;
-  noAsk: boolean;
+  agentId: string
+  connectorId: string
+  tool: AgentTool
+  tools: readonly AgentTool[]
+  disabled: boolean
+  noAsk: boolean
 }) {
-  const set = useSetStance(agentId, connectorId);
+  const set = useSetStance(agentId, connectorId)
   return (
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
       <div className="min-w-0 flex-1">
@@ -171,29 +165,29 @@ function ToolRow({
         ) : null}
       </div>
       <ToggleGroup
+        type="single"
         variant="outline"
         size="sm"
-        value={[tool.stance]}
+        value={tool.stance}
         disabled={disabled}
         aria-label={copy.stanceFor(tool.name)}
-        onValueChange={(vs: unknown[]) => {
-          const v = vs[0];
-          // A single group can be cleared by clicking the current item: a tool always has a stance.
-          if (typeof v !== "string" || !v || v === tool.stance) return;
+        onValueChange={(v) => {
+          // Radix lets a single group be cleared by clicking the current item: a tool always has a stance.
+          if (!v || v === tool.stance) return
           set.mutate(
             { tool: tool.name, stance: v as Stance, tools },
             { onError: (e) => toast.error(copy.ruleFailed(reason(e))) },
-          );
+          )
         }}
       >
-        {STANCES.filter((s) => !noAsk || s !== "ask" || tool.stance === "ask").map((s) => (
+        {STANCES.filter((s) => !noAsk || s !== 'ask' || tool.stance === 'ask').map((s) => (
           <ToggleGroupItem key={s} value={s} title={STANCE[s].title} className="px-3 text-xs">
             {STANCE[s].label}
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
     </li>
-  );
+  )
 }
 
 /**
@@ -206,9 +200,9 @@ export function UnavailableRow({
   status,
   logs,
 }: {
-  target: RuleTarget;
-  status: "building" | "failed";
-  logs: boolean;
+  target: RuleTarget
+  status: 'building' | 'failed'
+  logs: boolean
 }) {
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/40 p-3">
@@ -220,19 +214,18 @@ export function UnavailableRow({
           <ServerStatusBadge status={status} />
         </div>
         <div className="text-xs text-muted-foreground">
-          {status === "building" ? copy.notReadyBuilding : copy.notReadyFailed}{" "}
+          {status === 'building' ? copy.notReadyBuilding : copy.notReadyFailed}{' '}
           <Link
-            href={hrefFor(
-              `/mcp/${encodeURIComponent(target.connectorId)}`,
-              status === "failed" && logs ? { tab: "logs" } : {},
-            )}
+            to="/mcp/$connectorId"
+            params={{ connectorId: target.connectorId }}
+            search={status === 'failed' && logs ? { tab: 'logs' } : {}}
             className="text-primary-text underline-offset-4 hover:underline"
           >
-            {status === "failed" && logs ? copy.viewLogs : copy.viewServer}
+            {status === 'failed' && logs ? copy.viewLogs : copy.viewServer}
           </Link>
         </div>
       </div>
       <Switch checked={false} disabled aria-label={copy.enable(target.label)} />
     </div>
-  );
+  )
 }

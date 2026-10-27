@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/SettingsTab.tsx. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); optional props
-// admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Settings (plan §7.3, managers only): display name and description, feature flags (prompt comments; minimal-code and
  * self-review for agents whose card reads as code work), Token optimization (TokenOptimization.tsx,
@@ -9,11 +5,11 @@
  * values are write-only and cleared after submit), and delete (type the unique name).
  * Both forms are react-hook-form + zod (plan §2.4) and ask before a route change drops edits; switches save at once.
  */
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useEffect, useId, useState, type ReactNode } from "react";
-import { useForm } from "react-hook-form";
-import * as z from "zod";
-import { Button } from "@nasiko/ui/primitives";
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useEffect, useId, useState, type ReactNode } from 'react'
+import { useForm } from 'react-hook-form'
+import { z } from 'zod'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Field,
   FieldContent,
@@ -21,20 +17,20 @@ import {
   FieldGroup,
   FieldLabel,
   FieldTitle,
-} from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { Switch } from "@nasiko/ui/primitives";
-import { Textarea } from "@nasiko/ui/primitives";
-import { LeaveGuard } from "@nasiko/app-core/leave-guard";
-import { useSecretMutations, useSecrets, useUpdateAgent } from "../api";
-import { BetaBadge } from "@nasiko/ui/composites";
-import { ErrorNote, LearnMore, Section } from "../components/bits";
-import { DeleteAgentDialog } from "../components/dialogs";
-import { copy } from "../copy";
-import { withFeature, type AgentView } from "../normalize";
-import { SAVED_NOTE_MS } from "../tuning";
-import { TokenOptimization } from "./TokenOptimization";
+} from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Switch } from '@nasiko/ui/primitives/switch'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { LeaveGuard } from '@nasiko/app-core/leave-guard'
+import { useSecretMutations, useSecrets, useUpdateAgent } from '../api'
+import { BetaBadge } from '@nasiko/ui/composites/beta-badge'
+import { ErrorNote, LearnMore, Section } from '../components/bits'
+import { DeleteAgentDialog } from '../components/dialogs'
+import { copy } from '../copy'
+import { withFeature, type AgentView } from '../normalize'
+import { SAVED_NOTE_MS } from '../tuning'
+import { TokenOptimization } from './TokenOptimization'
 
 export function SettingsTab({ agent }: { agent: AgentView }) {
   return (
@@ -52,56 +48,47 @@ export function SettingsTab({ agent }: { agent: AgentView }) {
       )}
       <DangerZone agent={agent} />
     </div>
-  );
+  )
 }
 
 function useSavedNote() {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(false)
   useEffect(() => {
-    if (!on) return;
-    const t = setTimeout(() => {
-      setOn(false);
-    }, SAVED_NOTE_MS);
-    return () => {
-      clearTimeout(t);
-    };
-  }, [on]);
-  return [
-    on,
-    () => {
-      setOn(true);
-    },
-  ] as const;
+    if (!on) return
+    const t = setTimeout(() => setOn(false), SAVED_NOTE_MS)
+    return () => clearTimeout(t)
+  }, [on])
+  return [on, () => setOn(true)] as const
 }
 
 const detailsSchema = z.object({
   display_name: z.string().trim().min(1).max(200),
   description: z.string().max(2000),
-});
+})
 
 function DetailsForm({ agent }: { agent: AgentView }) {
-  const update = useUpdateAgent(agent.id);
-  const [saved, flash] = useSavedNote();
+  const update = useUpdateAgent(agent.id)
+  const [saved, flash] = useSavedNote()
   const form = useForm({
     resolver: zodResolver(detailsSchema),
-    mode: "onChange",
+    mode: 'onChange',
     defaultValues: { display_name: agent.displayName, description: agent.description },
-  });
-  const { isDirty, isValid, isSubmitting, errors } = form.formState;
-  const nameId = useId();
-  const descId = useId();
+  })
+  const { isDirty, isValid, isSubmitting, errors } = form.formState
+  const nameId = useId()
+  const descId = useId()
   // The saved values become the new baseline, so the form is clean (and the guard off) after a save.
-  const onSubmit = form.handleSubmit((v) => {
+  const onSubmit = form.handleSubmit((v) =>
     update.mutate(v, {
       onSuccess: () => {
-        form.reset(v);
-        flash();
+        form.reset(v)
+        flash()
       },
-    });
-  });
+    }),
+  )
   return (
     <Section title={copy.settings}>
-      <form className="max-w-xl space-y-3" onSubmit={(e) => void onSubmit(e)}>
+      <form className="max-w-xl space-y-3" onSubmit={onSubmit}>
         <Field className="gap-1">
           <FieldLabel htmlFor={nameId}>{copy.displayName}</FieldLabel>
           <Input
@@ -109,12 +96,12 @@ function DetailsForm({ agent }: { agent: AgentView }) {
             maxLength={200}
             required
             aria-invalid={!!errors.display_name}
-            {...form.register("display_name")}
+            {...form.register('display_name')}
           />
         </Field>
         <Field className="gap-1">
           <FieldLabel htmlFor={descId}>{copy.description}</FieldLabel>
-          <Textarea id={descId} rows={3} maxLength={2000} {...form.register("description")} />
+          <Textarea id={descId} rows={3} maxLength={2000} {...form.register('description')} />
         </Field>
         <div className="flex items-center gap-3">
           <Button type="submit" size="sm" disabled={!isDirty || !isValid || update.isPending}>
@@ -130,43 +117,41 @@ function DetailsForm({ agent }: { agent: AgentView }) {
       </form>
       <LeaveGuard when={isDirty && !isSubmitting} />
     </Section>
-  );
+  )
 }
 
 const secretSchema = z.object({
   name: z.string().trim().min(1),
   value: z.string().min(1),
-});
+})
 
 function Secrets({ id }: { id: string }) {
-  const secrets = useSecrets(id, true);
-  const m = useSecretMutations(id);
-  const [setError, setSetError] = useState<Error | null>(null);
-  const [saved, flash] = useSavedNote();
+  const secrets = useSecrets(id, true)
+  const m = useSecretMutations(id)
+  const [setError, setSetError] = useState<Error | null>(null)
+  const [saved, flash] = useSavedNote()
   const form = useForm({
     resolver: zodResolver(secretSchema),
-    mode: "onChange",
-    defaultValues: { name: "", value: "" },
-  });
-  const { isDirty, isValid, isSubmitting } = form.formState;
-  const nameId = useId();
-  const valueId = useId();
+    mode: 'onChange',
+    defaultValues: { name: '', value: '' },
+  })
+  const { isDirty, isValid, isSubmitting } = form.formState
+  const nameId = useId()
+  const valueId = useId()
   const onSubmit = form.handleSubmit((v) => {
     // Clear the value on submit either way: it must not linger in the DOM or the form state.
-    form.setValue("value", "", { shouldDirty: true, shouldValidate: true });
-    setSetError(null);
+    form.setValue('value', '', { shouldDirty: true, shouldValidate: true })
+    setSetError(null)
     // Always reset(): it drops the value from the mutation's cached variables; the error is kept locally.
     m.set.mutate(v, {
       onSuccess: () => {
-        form.reset();
-        flash();
+        form.reset()
+        flash()
       },
       onError: setSetError,
-      onSettled: () => {
-        m.set.reset();
-      },
-    });
-  });
+      onSettled: () => m.set.reset(),
+    })
+  })
   return (
     <Section title={copy.secrets} action={<LearnMore href="secrets" />}>
       <p className="text-xs text-muted-foreground">{copy.secretsHowItWorks}</p>
@@ -184,9 +169,7 @@ function Secrets({ id }: { id: string }) {
                 variant="ghost"
                 disabled={m.remove.isPending}
                 aria-label={copy.removeSecret(s.name)}
-                onClick={() => {
-                  m.remove.mutate(s.name);
-                }}
+                onClick={() => m.remove.mutate(s.name)}
               >
                 {copy.remove}
               </Button>
@@ -196,7 +179,7 @@ function Secrets({ id }: { id: string }) {
       ) : (
         <p className="text-sm text-muted-foreground">{copy.noSecrets}</p>
       )}
-      <form className="flex flex-wrap items-end gap-2" onSubmit={(e) => void onSubmit(e)}>
+      <form className="flex flex-wrap items-end gap-2" onSubmit={onSubmit}>
         <Field className="w-48 gap-1">
           <FieldLabel htmlFor={nameId}>{copy.secretName}</FieldLabel>
           <Input
@@ -205,7 +188,7 @@ function Secrets({ id }: { id: string }) {
             autoComplete="off"
             spellCheck={false}
             required
-            {...form.register("name")}
+            {...form.register('name')}
           />
         </Field>
         <Field className="w-56 gap-1">
@@ -215,7 +198,7 @@ function Secrets({ id }: { id: string }) {
             type="password"
             autoComplete="new-password"
             required
-            {...form.register("value")}
+            {...form.register('value')}
           />
         </Field>
         <Button type="submit" size="sm" disabled={!isValid || m.set.isPending}>
@@ -231,7 +214,7 @@ function Secrets({ id }: { id: string }) {
       {m.remove.isError ? <ErrorNote error={m.remove.error} context="secret" /> : null}
       <LeaveGuard when={isDirty && !isSubmitting} />
     </Section>
-  );
+  )
 }
 
 /** One switch row: label and hint on the left, the switch on the right. It saves on change. */
@@ -242,13 +225,13 @@ function FlagRow({
   disabled,
   onCheckedChange,
 }: {
-  label: string;
-  hint: ReactNode;
-  checked: boolean;
-  disabled?: boolean | undefined;
-  onCheckedChange: (on: boolean) => void;
+  label: string
+  hint: ReactNode
+  checked: boolean
+  disabled?: boolean
+  onCheckedChange: (on: boolean) => void
 }) {
-  const id = useId();
+  const id = useId()
   return (
     <Field orientation="horizontal" data-disabled={disabled} className="gap-6">
       <FieldContent>
@@ -257,21 +240,21 @@ function FlagRow({
       </FieldContent>
       <Switch id={id} checked={checked} disabled={disabled} onCheckedChange={onCheckedChange} />
     </Field>
-  );
+  )
 }
 
 /** While a write is in flight the switch shows where it is going (the mutation stays pending until the re-read). */
-const shown = (saved: boolean, pending: boolean) => (pending ? !saved : saved);
+const shown = (saved: boolean, pending: boolean) => (pending ? !saved : saved)
 
 function Features({ agent }: { agent: AgentView }) {
-  const update = useUpdateAgent(agent.id);
+  const update = useUpdateAgent(agent.id)
   return (
     <Section title={copy.features} subtitle={copy.featuresHint} action={<BetaBadge />}>
       <FlagRow
         label={copy.promptComments}
         hint={
           <>
-            {copy.promptCommentsHint}{" "}
+            {copy.promptCommentsHint}{' '}
             {/* No ligatures: JetBrains Mono draws `<!--` and `-->` as arrows. */}
             <code className="font-mono whitespace-nowrap [font-variant-ligatures:none]">
               {copy.promptCommentsOptOut}
@@ -281,13 +264,13 @@ function Features({ agent }: { agent: AgentView }) {
         }
         checked={shown(agent.promptComments, update.isPending)}
         disabled={update.isPending}
-        onCheckedChange={(on) => {
-          update.mutate({ metadata: withFeature(agent.metadata, "prompt_comments", on) });
-        }}
+        onCheckedChange={(on) =>
+          update.mutate({ metadata: withFeature(agent.metadata, 'prompt_comments', on) })
+        }
       />
       {update.isError ? <ErrorNote error={update.error} context="manage" /> : null}
     </Section>
-  );
+  )
 }
 
 /**
@@ -305,17 +288,16 @@ function Features({ agent }: { agent: AgentView }) {
  * would keep the old default until rebuilt — the two would disagree, and the switch would lie.
  */
 // ponytail: a value of "true" set from the CLI reads as off here; exact once the server stores it as a column like minimal_code_enabled.
-const SELF_REVIEW_ENV_NAME = "CODING_AGENT_SELF_REVIEW";
+const SELF_REVIEW_SECRET = 'CODING_AGENT_SELF_REVIEW'
 
 function CodingBehavior({ agent }: { agent: AgentView }) {
-  const minimal = useUpdateAgent(agent.id);
-  const secrets = useSecrets(agent.id, true);
-  const review = useSecretMutations(agent.id);
-  const minimalOn = shown(agent.minimalCode, minimal.isPending);
-  const reviewPending = review.set.isPending || review.remove.isPending;
-  const reviewSaved =
-    secrets.isSuccess && !secrets.data.some((s) => s.name === SELF_REVIEW_ENV_NAME);
-  const reviewError = review.set.error ?? review.remove.error;
+  const minimal = useUpdateAgent(agent.id)
+  const secrets = useSecrets(agent.id, true)
+  const review = useSecretMutations(agent.id)
+  const minimalOn = shown(agent.minimalCode, minimal.isPending)
+  const reviewPending = review.set.isPending || review.remove.isPending
+  const reviewSaved = secrets.isSuccess && !secrets.data.some((s) => s.name === SELF_REVIEW_SECRET)
+  const reviewError = review.set.error ?? review.remove.error
   return (
     <Section title={copy.codingBehavior} action={<BetaBadge />}>
       <FieldGroup className="gap-5">
@@ -325,12 +307,12 @@ function CodingBehavior({ agent }: { agent: AgentView }) {
           checked={minimalOn}
           disabled={minimal.isPending || reviewPending}
           onCheckedChange={(on) => {
-            minimal.mutate({ minimal_code_enabled: on });
+            minimal.mutate({ minimal_code_enabled: on })
             // `reviewSaved` means no secret is stored, which the agent reads as self-review ON.
             // Pin it off as the ladder goes on, so enabling one feature never silently enables a
             // second one that costs an extra model turn per edit.
             if (on && reviewSaved) {
-              review.set.mutate({ name: SELF_REVIEW_ENV_NAME, value: "false" });
+              review.set.mutate({ name: SELF_REVIEW_SECRET, value: 'false' })
             }
           }}
         />
@@ -342,21 +324,22 @@ function CodingBehavior({ agent }: { agent: AgentView }) {
             hint={copy.selfReviewHint}
             checked={minimalOn && shown(reviewSaved, reviewPending)}
             disabled={!minimalOn || !secrets.isSuccess || reviewPending}
-            onCheckedChange={(on) => {
-              if (on) review.remove.mutate(SELF_REVIEW_ENV_NAME);
-              else review.set.mutate({ name: SELF_REVIEW_ENV_NAME, value: "false" });
-            }}
+            onCheckedChange={(on) =>
+              on
+                ? review.remove.mutate(SELF_REVIEW_SECRET)
+                : review.set.mutate({ name: SELF_REVIEW_SECRET, value: 'false' })
+            }
           />
         </div>
       </FieldGroup>
       {minimal.isError ? <ErrorNote error={minimal.error} context="manage" /> : null}
       {reviewError ? <ErrorNote error={reviewError} context="secret" /> : null}
     </Section>
-  );
+  )
 }
 
 function DangerZone({ agent }: { agent: AgentView }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
   return (
     <Section title={copy.dangerZone} className="border-destructive/40">
       <Field orientation="horizontal" className="flex-wrap justify-between gap-4">
@@ -368,14 +351,12 @@ function DangerZone({ agent }: { agent: AgentView }) {
           variant="outline"
           size="sm"
           className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-          onClick={() => {
-            setOpen(true);
-          }}
+          onClick={() => setOpen(true)}
         >
           {copy.deleteAgent}
         </Button>
       </Field>
       <DeleteAgentDialog agent={agent} open={open} onOpenChange={setOpen} />
     </Section>
-  );
+  )
 }

@@ -1,15 +1,8 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/OnboardingDialog.tsx. Local edits: `"use client"`;
-// `useNavigate` -> `useRouter().push` from the navigation port (`@nasiko/app-core/navigation`); `NasikoMark` from
-// `@nasiko/ui/composites` (moved out of the shell so a feature can draw it); Radix's `onOpenAutoFocus` (preventDefault,
-// then focus the primary button) is Base UI's `initialFocus={primary}`; the persona cards' checked style reads Base
-// UI's `data-checked` (`has-[[data-state=checked]]` -> `has-[[data-checked]]`); callbacks that returned a void
-// expression are braced (lint); development (be271b564): the home's scope follows the persona; Prettier formatting.
-"use client";
-
 /**
  * The onboarding guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §3): the prototype's dialog, a
  * left rail of five steps beside the step itself, with Back / Skip this step / Continue below. Lazy (index.ts).
  */
+import { useNavigate } from '@tanstack/react-router'
 import {
   ArrowLeft,
   ArrowRight,
@@ -25,92 +18,78 @@ import {
   WandSparkles,
   X,
   type LucideIcon,
-} from "lucide-react";
-import { useRouter } from "@nasiko/app-core/navigation";
-import { useRef, useState } from "react";
-import { NAV_ITEMS } from "@nasiko/app-core/shell/nav";
-import { NasikoMark } from "@nasiko/ui/composites";
-import { Alert, AlertDescription } from "@nasiko/ui/primitives";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Dialog, DialogContent } from "@nasiko/ui/primitives";
-import { Progress } from "@nasiko/ui/primitives";
-import { RadioGroup, RadioGroupItem } from "@nasiko/ui/primitives";
-import { Spinner } from "@nasiko/ui/primitives";
-import type { DeployStarted } from "../deploy/UploadTab";
-import { cn } from "@nasiko/ui/cn";
-import { useGuide, useSavePersona } from "./api";
-import { AgentStep } from "./AgentStep";
-import { OptimiseStep } from "./OptimiseStep";
-import { copy } from "./copy";
-import { minutesLeft, opensFor, STEPS, type StepId } from "./logic";
-import { ModelStep } from "./ModelStep";
-import { StepHeading } from "./parts";
-import { PERSONAS, type Persona } from "./types";
+} from 'lucide-react'
+import { useRef, useState } from 'react'
+import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
+import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
+import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Dialog, DialogContent } from '@nasiko/ui/primitives/dialog'
+import { Progress } from '@nasiko/ui/primitives/progress'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
+import { Spinner } from '@nasiko/ui/primitives/spinner'
+import type { DeployStarted } from '@nasiko/features/deploy/UploadTab'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useGuide, useSavePersona } from './api'
+import { AgentStep } from './AgentStep'
+import { OptimiseStep } from './OptimiseStep'
+import { copy } from './copy'
+import { minutesLeft, opensFor, STEPS, type StepId } from './logic'
+import { ModelStep } from './ModelStep'
+import { StepHeading } from './parts'
+import { PERSONAS, type Persona } from './types'
 
-const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck];
+const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck]
 /** When each stage lights in the beam's 4 s pass (index.css `--animate-beam` / `--animate-stage`): negative, so the
  *  loop is already running when the step opens. */
-const STAGE_DELAYS = ["-3.8s", "-2.73s", "-1.67s", "-0.6s"];
-const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to;
+const STAGE_DELAYS = ['-3.8s', '-2.73s', '-1.67s', '-0.6s']
+const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
 
 export function OnboardingDialog({
   initialStep,
   onClose,
 }: {
-  initialStep: StepId;
+  initialStep: StepId
   /** Skip guide, the close button, Escape, finishing and leaving through a link all end here. */
-  onClose: () => void;
+  onClose: () => void
 }) {
-  const router = useRouter();
-  const guide = useGuide();
-  const save = useSavePersona();
-  const [index, setIndex] = useState(STEPS.indexOf(initialStep));
-  const [reached, setReached] = useState(index);
-  const [persona, setPersona] = useState<Persona | null>(guide.persona);
-  const [model, setModel] = useState<string | null>(null);
-  const [agent, setAgent] = useState<DeployStarted | null>(null);
-  const step = STEPS[index] ?? "welcome";
-  const primary = useRef<HTMLButtonElement>(null);
+  const navigate = useNavigate()
+  const guide = useGuide()
+  const save = useSavePersona()
+  const [index, setIndex] = useState(STEPS.indexOf(initialStep))
+  const [reached, setReached] = useState(index)
+  const [persona, setPersona] = useState<Persona | null>(guide.persona)
+  const [model, setModel] = useState<string | null>(null)
+  const [agent, setAgent] = useState<DeployStarted | null>(null)
+  const step = STEPS[index] ?? 'welcome'
+  const primary = useRef<HTMLButtonElement>(null)
   const go = (i: number) => {
-    setIndex(i);
-    setReached((r) => Math.max(r, i));
-  };
-  const next = () => {
-    go(index + 1);
-  };
+    setIndex(i)
+    setReached((r) => Math.max(r, i))
+  }
+  const next = () => go(index + 1)
 
   const onContinue = () => {
-    if (step === "ready") {
-      onClose();
-      return;
-    }
-    if (step !== "role") {
-      next();
-      return;
-    }
-    if (!persona) return;
+    if (step === 'ready') return onClose()
+    if (step !== 'role') return next()
+    if (!persona) return
     // Already saved (back on this step): nothing to send.
-    if (persona === guide.persona) {
-      next();
-      return;
-    }
-    save.mutate(persona, { onSuccess: next });
-  };
-  const opens = persona ? opensFor(persona) : "/";
+    if (persona === guide.persona) return next()
+    save.mutate(persona, { onSuccess: next })
+  }
+  const opens = persona ? opensFor(persona) : '/'
 
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-    >
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent
         showCloseButton={false}
         overlayClassName="backdrop-blur-sm"
         // Start on the step's own action (Get started), not the rail's first button.
-        initialFocus={primary}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          primary.current?.focus()
+        }}
         className="grid h-[min(45rem,calc(100svh-2rem))] grid-rows-1 gap-0 overflow-hidden p-0 sm:max-w-6xl md:grid-cols-[17rem_minmax(0,1fr)]"
       >
         <aside className="hidden min-h-0 flex-col gap-6 border-r bg-muted/60 p-5 md:flex">
@@ -129,33 +108,31 @@ export function OnboardingDialog({
               // Ticked only when done, not merely passed: a skipped model or agent stays a number.
               const done =
                 i !== index &&
-                (id === "welcome"
+                (id === 'welcome'
                   ? reached > 0
-                  : id === "role"
+                  : id === 'role'
                     ? !!persona && persona === guide.persona
-                    : id === "model"
+                    : id === 'model'
                       ? !!model
-                      : id === "agent" && !!agent);
+                      : id === 'agent' && !!agent)
               return (
                 <Button
                   key={id}
                   type="button"
                   variant="ghost"
                   disabled={i > reached}
-                  aria-current={i === index ? "step" : undefined}
-                  onClick={() => {
-                    go(i);
-                  }}
+                  aria-current={i === index ? 'step' : undefined}
+                  onClick={() => go(i)}
                   className={cn(
-                    "h-auto justify-start gap-3 px-2 py-2 text-left whitespace-normal",
-                    i === index && "bg-background shadow-xs hover:bg-background",
+                    'h-auto justify-start gap-3 px-2 py-2 text-left whitespace-normal',
+                    i === index && 'bg-background shadow-xs hover:bg-background',
                   )}
                 >
                   <span
                     className={cn(
-                      "flex size-6 shrink-0 items-center justify-center rounded-full border text-xs",
-                      i === index && "border-primary bg-primary text-primary-foreground",
-                      done && "border-transparent bg-foreground/10",
+                      'flex size-6 shrink-0 items-center justify-center rounded-full border text-xs',
+                      i === index && 'border-primary bg-primary text-primary-foreground',
+                      done && 'border-transparent bg-foreground/10',
                     )}
                   >
                     {done ? <Check aria-hidden className="size-3.5" /> : i + 1}
@@ -167,7 +144,7 @@ export function OnboardingDialog({
                     </span>
                   </span>
                 </Button>
-              );
+              )
             })}
           </nav>
           <div className="flex flex-col gap-2">
@@ -188,7 +165,7 @@ export function OnboardingDialog({
               {copy.guide.step(index + 1, STEPS.length)}
             </span>
             <span className="flex-1" />
-            {step !== "ready" ? (
+            {step !== 'ready' ? (
               <Button type="button" variant="ghost" size="sm" onClick={onClose}>
                 {copy.guide.skipGuide}
               </Button>
@@ -205,56 +182,54 @@ export function OnboardingDialog({
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-8 md:px-10">
-            {step === "welcome" ? <Welcome /> : null}
-            {step === "role" ? (
+            {step === 'welcome' ? <Welcome /> : null}
+            {step === 'role' ? (
               <Role
                 persona={persona}
                 onPick={(p) => {
-                  setPersona(p);
-                  save.reset();
+                  setPersona(p)
+                  save.reset()
                 }}
                 failed={save.isError}
               />
             ) : null}
-            {step === "model" ? <ModelStep connected={model} onConnected={setModel} /> : null}
-            {step === "agent" ? (
+            {step === 'model' ? <ModelStep connected={model} onConnected={setModel} /> : null}
+            {step === 'agent' ? (
               <AgentStep started={agent} onStarted={setAgent} onLeave={onClose} />
             ) : null}
-            {step === "optimise" ? (
+            {step === 'optimize' ? (
               <OptimiseStep
                 onOpenAgents={() => {
-                  onClose();
-                  router.push("/agents");
+                  onClose()
+                  void navigate({ to: '/agents' })
                 }}
               />
             ) : null}
-            {step === "ready" ? (
+            {step === 'ready' ? (
               <Ready
                 rows={[
                   {
-                    step: "role",
+                    step: 'role',
                     label: copy.ready.role,
                     value: persona ? copy.role.personas[persona].title : null,
                   },
                   {
-                    step: "model",
+                    step: 'model',
                     label: copy.ready.model,
                     value: model,
                   },
                   {
-                    step: "agent",
+                    step: 'agent',
                     label: copy.ready.agent,
                     value: agent ? copy.ready.building : null,
                   },
                 ]}
-                onEdit={(s) => {
-                  go(STEPS.indexOf(s));
-                }}
+                onEdit={(s) => go(STEPS.indexOf(s))}
                 opens={opens}
                 onOverview={onClose}
                 onOpen={() => {
-                  onClose();
-                  router.push(opens);
+                  onClose()
+                  void navigate({ to: opens })
                 }}
               />
             ) : null}
@@ -262,31 +237,25 @@ export function OnboardingDialog({
 
           <div className="flex items-center gap-2 border-t px-6 py-3">
             {index > 0 ? (
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  go(index - 1);
-                }}
-              >
+              <Button type="button" variant="ghost" onClick={() => go(index - 1)}>
                 <ArrowLeft aria-hidden />
                 {copy.guide.back}
               </Button>
             ) : null}
             <span className="flex-1" />
-            {step === "model" && !model ? (
+            {step === 'model' && !model ? (
               <span className="hidden text-sm text-muted-foreground sm:inline">
                 {copy.model.later}
               </span>
             ) : null}
-            {(step === "model" && !model) || (step === "agent" && !agent) ? (
+            {(step === 'model' && !model) || (step === 'agent' && !agent) ? (
               <Button type="button" variant="outline" onClick={next}>
                 {copy.guide.skipStep}
               </Button>
             ) : null}
             {/* Informational, so there is nothing to complete: the opt-out is worded as a
                 decision rather than as skipping an unfinished task. */}
-            {step === "optimise" ? (
+            {step === 'optimize' ? (
               <Button type="button" variant="outline" onClick={next}>
                 {copy.optimise.skip}
               </Button>
@@ -294,13 +263,13 @@ export function OnboardingDialog({
             <Button
               ref={primary}
               type="button"
-              disabled={(step === "role" && !persona) || save.isPending}
+              disabled={(step === 'role' && !persona) || save.isPending}
               onClick={onContinue}
             >
               {save.isPending ? <Spinner aria-hidden /> : null}
-              {step === "welcome"
+              {step === 'welcome'
                 ? copy.guide.getStarted
-                : step === "ready"
+                : step === 'ready'
                   ? copy.guide.finish
                   : copy.guide.continue}
               <ArrowRight aria-hidden />
@@ -309,7 +278,7 @@ export function OnboardingDialog({
         </div>
       </DialogContent>
     </Dialog>
-  );
+  )
 }
 
 function Welcome() {
@@ -332,16 +301,16 @@ function Welcome() {
         </div>
         <ol className="grid gap-x-6 gap-y-6 sm:grid-cols-4">
           {copy.welcome.stages.map((s, i) => {
-            const Icon = STAGE_ICONS[i] ?? Plug;
+            const Icon = STAGE_ICONS[i] ?? Plug
             return (
               <li key={s.title} className="relative flex flex-col gap-3">
                 <span
                   aria-hidden
                   style={{ animationDelay: STAGE_DELAYS[i] }}
                   className={cn(
-                    "flex size-10 animate-stage items-center justify-center rounded-xl border bg-muted text-foreground ring-4 ring-background motion-reduce:animate-none",
+                    'flex size-10 animate-stage items-center justify-center rounded-xl border bg-muted text-foreground ring-4 ring-background motion-reduce:animate-none',
                     i === 0 &&
-                      "motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground",
+                      'motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground',
                   )}
                 >
                   <Icon className="size-[18px]" />
@@ -354,7 +323,7 @@ function Welcome() {
                   <p className="text-sm text-pretty text-muted-foreground">{s.line}</p>
                 </div>
               </li>
-            );
+            )
           })}
         </ol>
       </div>
@@ -363,7 +332,7 @@ function Welcome() {
         {copy.welcome.note}
       </p>
     </div>
-  );
+  )
 }
 
 function Role({
@@ -371,9 +340,9 @@ function Role({
   onPick,
   failed,
 }: {
-  persona: Persona | null;
-  onPick: (p: Persona) => void;
-  failed: boolean;
+  persona: Persona | null
+  onPick: (p: Persona) => void
+  failed: boolean
 }) {
   return (
     <div className="flex flex-col gap-6">
@@ -385,17 +354,15 @@ function Role({
       ) : null}
       <RadioGroup
         aria-label={copy.role.label}
-        value={persona ?? ""}
-        onValueChange={(v) => {
-          onPick(v as Persona);
-        }}
+        value={persona ?? ''}
+        onValueChange={(v) => onPick(v as Persona)}
         className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
       >
         {PERSONAS.map((p) => (
           <label
             key={p}
             htmlFor={`persona-${p}`}
-            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
+            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-state=checked]]:border-foreground/50 has-[[data-state=checked]]:bg-accent"
           >
             <RadioGroupItem id={`persona-${p}`} value={p} className="mt-0.5" />
             <span className="flex min-w-0 flex-col gap-1">
@@ -409,7 +376,7 @@ function Role({
         ))}
       </RadioGroup>
     </div>
-  );
+  )
 }
 
 function Ready({
@@ -419,11 +386,11 @@ function Ready({
   onOverview,
   onOpen,
 }: {
-  rows: { step: StepId; label: string; value: string | null }[];
-  onEdit: (step: StepId) => void;
-  opens: string;
-  onOverview: () => void;
-  onOpen: () => void;
+  rows: { step: StepId; label: string; value: string | null }[]
+  onEdit: (step: StepId) => void
+  opens: string
+  onOverview: () => void
+  onOpen: () => void
 }) {
   return (
     <div className="flex flex-col gap-6">
@@ -436,8 +403,8 @@ function Ready({
           <li key={r.step} className="flex items-center gap-3 px-4 py-3 text-sm">
             <span
               className={cn(
-                "flex size-5 shrink-0 items-center justify-center rounded-full",
-                r.value ? "bg-primary text-primary-foreground" : "border",
+                'flex size-5 shrink-0 items-center justify-center rounded-full',
+                r.value ? 'bg-primary text-primary-foreground' : 'border',
               )}
             >
               {r.value ? <Check aria-hidden className="size-3" /> : null}
@@ -449,9 +416,7 @@ function Ready({
               variant="ghost"
               size="sm"
               aria-label={copy.ready.edit(r.label)}
-              onClick={() => {
-                onEdit(r.step);
-              }}
+              onClick={() => onEdit(r.step)}
             >
               {copy.ready.editShort}
             </Button>
@@ -473,7 +438,7 @@ function Ready({
           line={copy.ready.homeLine}
           onClick={onOverview}
         />
-        {opens !== "/" ? (
+        {opens !== '/' ? (
           <Choice
             icon={ArrowRight}
             title={copy.ready.open(pageLabel(opens))}
@@ -483,7 +448,7 @@ function Ready({
         ) : null}
       </div>
     </div>
-  );
+  )
 }
 
 function Choice({
@@ -492,10 +457,10 @@ function Choice({
   line,
   onClick,
 }: {
-  icon: LucideIcon;
-  title: string;
-  line: string;
-  onClick: () => void;
+  icon: LucideIcon
+  title: string
+  line: string
+  onClick: () => void
 }) {
   return (
     <Button
@@ -512,5 +477,5 @@ function Choice({
         <span className="block text-xs font-normal text-muted-foreground">{line}</span>
       </span>
     </Button>
-  );
+  )
 }

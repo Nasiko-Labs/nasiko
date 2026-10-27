@@ -1,24 +1,21 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/ProvidersSection.tsx. Local edits: `DropdownMenuTrigger asChild` -> `render={<Button …/>}` (Base UI useRender) and the items' Radix `onSelect` is Base UI's `onClick`; the lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Providers (plan §4.1, §4.6): the catalog with prices, custom providers (sync status; superuser actions inline)
  * and the read-only tier registry. A provider the router can't call (not built in, not a registered custom
  * provider) says so instead of looking usable.
  */
-import { AlertTriangle, MoreHorizontal } from "lucide-react";
-import { useState } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
+import { AlertTriangle, MoreHorizontal } from 'lucide-react'
+import { useState } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/dropdown-menu'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import {
   Table,
   TableBody,
@@ -26,33 +23,33 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { ConfirmDialog } from "../../agents/components/dialogs";
-import { relTime } from "../../agents/format";
-import { cn } from "@nasiko/ui/cn";
-import { useAnnounce } from "../announce";
-import { referencingConfigs, useDeleteCustomProvider, useSyncCustomProvider } from "../api";
-import { copy } from "../copy";
-import { routerError } from "../errors";
-import { isRoutable } from "../routing";
-import type { CustomProvider, ModelMapping, ProviderCatalog } from "../types";
-import { SectionError } from "./SectionError";
+} from '@nasiko/ui/primitives/table'
+import { ConfirmDialog } from '@nasiko/features/agents/components/dialogs'
+import { relTime } from '@nasiko/features/agents/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useAnnounce } from '../announce'
+import { referencingConfigs, useDeleteCustomProvider, useSyncCustomProvider } from '../api'
+import { copy } from '../copy'
+import { routerError } from '../errors'
+import { isRoutable } from '../routing'
+import type { CustomProvider, ModelMapping, ProviderCatalog } from '../types'
+import { SectionError } from './SectionError'
 
 interface Q<T> {
-  data?: T | undefined;
-  isPending: boolean;
-  isError: boolean;
-  error: unknown;
-  refetch: () => unknown;
+  data?: T
+  isPending: boolean
+  isError: boolean
+  error: unknown
+  refetch: () => unknown
 }
 
 // A table from sm; below it each provider stacks and the header is hidden.
-const ROW = "text-sm hover:bg-transparent max-sm:grid max-sm:gap-1.5 max-sm:px-4 max-sm:py-2.5";
+const ROW = 'text-sm hover:bg-transparent max-sm:grid max-sm:gap-1.5 max-sm:px-4 max-sm:py-2.5'
 const CELL =
-  "p-0 align-top whitespace-normal max-sm:block sm:px-1.5 sm:py-2.5 sm:first:pl-4 sm:last:pr-4";
-const HEAD = "h-auto px-1.5 py-2 text-xs text-muted-foreground first:pl-4 last:pr-4";
+  'p-0 align-top whitespace-normal max-sm:block sm:px-1.5 sm:py-2.5 sm:first:pl-4 sm:last:pr-4'
+const HEAD = 'h-auto px-1.5 py-2 text-xs text-muted-foreground first:pl-4 last:pr-4'
 
-const price = (v: number | null | undefined) => (v === null || v === undefined ? null : `$${v}`);
+const price = (v: number | null | undefined) => (v === null || v === undefined ? null : `$${v}`)
 
 export function ProvidersSection({
   catalog,
@@ -62,18 +59,18 @@ export function ProvidersSection({
   onAdd,
   onEdit,
 }: {
-  catalog: Q<ProviderCatalog[]>;
-  custom: Q<CustomProvider[]>;
-  registry: Q<ModelMapping[]>;
-  superuser: boolean;
-  onAdd: () => void;
-  onEdit: (p: CustomProvider) => void;
+  catalog: Q<ProviderCatalog[]>
+  custom: Q<CustomProvider[]>
+  registry: Q<ModelMapping[]>
+  superuser: boolean
+  onAdd: () => void
+  onEdit: (p: CustomProvider) => void
 }) {
-  const customs = custom.data ?? [];
-  const labels = customs.map((c) => c.label);
-  const byLabel = new Map(customs.map((c) => [c.label, c]));
+  const customs = custom.data ?? []
+  const labels = customs.map((c) => c.label)
+  const byLabel = new Map(customs.map((c) => [c.label, c]))
   // Custom providers with nothing in the catalog yet (never synced) still get a row.
-  const groups = [...(catalog.data ?? [])];
+  const groups = [...(catalog.data ?? [])]
   for (const c of customs)
     if (!groups.some((g) => g.provider === c.label))
       groups.push({
@@ -81,7 +78,7 @@ export function ProvidersSection({
         provider_id: c.id,
         display_name: c.display_name,
         models: [],
-      });
+      })
   return (
     <section
       id="router-providers"
@@ -125,11 +122,11 @@ export function ProvidersSection({
             <Table aria-label={copy.providersTitle} className="max-sm:block sm:table-fixed">
               <TableHeader className="max-sm:hidden">
                 <TableRow className="hover:bg-transparent">
-                  <TableHead className={cn(HEAD, "w-1/3")}>{copy.colProvider}</TableHead>
+                  <TableHead className={cn(HEAD, 'w-1/3')}>{copy.colProvider}</TableHead>
                   <TableHead className={HEAD}>
                     {copy.colModels} · {copy.colPrice}
                   </TableHead>
-                  <TableHead className={cn(HEAD, "w-14")}>
+                  <TableHead className={cn(HEAD, 'w-14')}>
                     <span className="sr-only">{copy.colActions}</span>
                   </TableHead>
                 </TableRow>
@@ -166,7 +163,7 @@ export function ProvidersSection({
       </div>
       <Registry registry={registry} />
     </section>
-  );
+  )
 }
 
 function ProviderRow({
@@ -176,15 +173,15 @@ function ProviderRow({
   superuser,
   onEdit,
 }: {
-  group: ProviderCatalog;
-  custom?: CustomProvider | undefined;
-  routable: boolean;
-  superuser: boolean;
-  onEdit: (p: CustomProvider) => void;
+  group: ProviderCatalog
+  custom?: CustomProvider
+  routable: boolean
+  superuser: boolean
+  onEdit: (p: CustomProvider) => void
 }) {
   return (
     <TableRow className={ROW}>
-      <TableCell className={cn(CELL, "min-w-0 space-y-1")}>
+      <TableCell className={cn(CELL, 'min-w-0 space-y-1')}>
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{group.display_name || group.provider}</span>
           {custom ? <Badge variant="outline">{copy.customBadge}</Badge> : null}
@@ -193,17 +190,17 @@ function ProviderRow({
         {custom ? <SyncStatus p={custom} /> : null}
         {!routable ? (
           <p className="flex items-start gap-1 text-xs text-warning">
-            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />{" "}
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />{' '}
             {copy.notRoutable(group.provider)}
           </p>
         ) : null}
       </TableCell>
-      <TableCell className={cn(CELL, "min-w-0")}>
+      <TableCell className={cn(CELL, 'min-w-0')}>
         {group.models.length ? (
           <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
             {group.models.map((m) => (
               <li key={m.model} className="font-mono">
-                {m.model}{" "}
+                {m.model}{' '}
                 <span className="font-sans text-muted-foreground">
                   {m.pricing_available
                     ? `${price(m.input_price_per_1m)} / ${price(m.output_price_per_1m)}`
@@ -216,77 +213,65 @@ function ProviderRow({
           <span className="text-xs text-muted-foreground">{copy.noModels}</span>
         )}
       </TableCell>
-      <TableCell className={cn(CELL, "sm:text-right")}>
+      <TableCell className={cn(CELL, 'sm:text-right')}>
         {custom && superuser ? <CustomMenu p={custom} onEdit={onEdit} /> : null}
       </TableCell>
     </TableRow>
-  );
+  )
 }
 
 function SyncStatus({ p }: { p: CustomProvider }) {
   const text =
-    p.last_sync_status === "error" || p.last_sync_error
-      ? copy.sync.failed(p.last_sync_error ?? "unknown error")
+    p.last_sync_status === 'error' || p.last_sync_error
+      ? copy.sync.failed(p.last_sync_error ?? 'unknown error')
       : p.last_sync_at
         ? copy.sync.synced(relTime(p.last_sync_at))
-        : copy.sync.never;
+        : copy.sync.never
   return (
-    <p className={`text-xs ${p.last_sync_error ? "text-warning" : "text-muted-foreground"}`}>
+    <p className={`text-xs ${p.last_sync_error ? 'text-warning' : 'text-muted-foreground'}`}>
       {text}
     </p>
-  );
+  )
 }
 
 function CustomMenu({ p, onEdit }: { p: CustomProvider; onEdit: (p: CustomProvider) => void }) {
-  const sync = useSyncCustomProvider();
-  const del = useDeleteCustomProvider();
-  const announce = useAnnounce();
-  const [confirming, setConfirming] = useState(false);
-  const refs = referencingConfigs(del.error);
+  const sync = useSyncCustomProvider()
+  const del = useDeleteCustomProvider()
+  const announce = useAnnounce()
+  const [confirming, setConfirming] = useState(false)
+  const refs = referencingConfigs(del.error)
   return (
     <div className="space-y-1">
       <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              size="sm"
-              variant="ghost"
-              className="size-8 px-0 pointer-coarse:size-11"
-              aria-label={copy.configActions(p.display_name)}
-            />
-          }
-        >
-          <MoreHorizontal className="size-4" aria-hidden />
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="size-8 px-0 pointer-coarse:size-11"
+            aria-label={copy.configActions(p.display_name)}
+          >
+            <MoreHorizontal className="size-4" aria-hidden />
+          </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            onClick={() => {
-              onEdit(p);
-            }}
-          >
-            {copy.edit}
-          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => onEdit(p)}>{copy.edit}</DropdownMenuItem>
           <DropdownMenuItem
             disabled={sync.isPending}
-            onClick={() => {
+            onSelect={() =>
               sync.mutate(p.id, {
-                onSuccess: (r) => {
-                  announce(copy.syncDone(p.display_name, r.discovered_models));
-                },
-                onError: (e) => {
-                  announce(routerError(e).problem);
-                },
-              });
-            }}
+                onSuccess: (r) => announce(copy.syncDone(p.display_name, r.discovered_models)),
+                onError: (e) => announce(routerError(e).problem),
+              })
+            }
           >
             {sync.isPending ? copy.sync.syncing : copy.syncNow}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive"
-            onClick={() => {
-              del.reset();
-              setConfirming(true);
+            onSelect={() => {
+              del.reset()
+              setConfirming(true)
             }}
           >
             {copy.delete}
@@ -304,18 +289,18 @@ function CustomMenu({ p, onEdit }: { p: CustomProvider; onEdit: (p: CustomProvid
         confirmLabel={copy.delete}
         destructive
         pending={del.isPending}
-        onConfirm={() => {
+        onConfirm={() =>
           del.mutate(p.id, {
             onSuccess: () => {
-              setConfirming(false);
-              announce(copy.deleted(p.display_name));
+              setConfirming(false)
+              announce(copy.deleted(p.display_name))
             },
-          });
-        }}
+          })
+        }
       >
         {refs ? (
           <p role="alert" className="text-sm text-destructive">
-            {copy.cpDeleteRefs(refs.join(", "))}
+            {copy.cpDeleteRefs(refs.join(', '))}
           </p>
         ) : null}
         {del.isError && !refs ? (
@@ -325,13 +310,13 @@ function CustomMenu({ p, onEdit }: { p: CustomProvider; onEdit: (p: CustomProvid
         ) : null}
       </ConfirmDialog>
     </div>
-  );
+  )
 }
 
-const TIER_HEAD = "h-auto px-0 py-1 pr-2 text-xs text-muted-foreground";
+const TIER_HEAD = 'h-auto px-0 py-1 pr-2 text-xs text-muted-foreground'
 
 function Registry({ registry }: { registry: Q<ModelMapping[]> }) {
-  if (registry.isPending) return <Skeleton className="h-16" />;
+  if (registry.isPending) return <Skeleton className="h-16" />
   if (registry.isError && !registry.data)
     return (
       <SectionError
@@ -339,9 +324,9 @@ function Registry({ registry }: { registry: Q<ModelMapping[]> }) {
         error={registry.error}
         onRetry={() => void registry.refetch()}
       />
-    );
-  const rows = registry.data ?? [];
-  const providers = [...new Set(rows.map((r) => r.provider))];
+    )
+  const rows = registry.data ?? []
+  const providers = [...new Set(rows.map((r) => r.provider))]
   return (
     <div className="rounded-lg border border-border bg-card p-4 text-sm">
       <h3 className="text-sm font-medium">{copy.registryTitle}</h3>
@@ -366,7 +351,7 @@ function Registry({ registry }: { registry: Q<ModelMapping[]> }) {
                 <TableCell className="px-0 py-1 pr-2">{p}</TableCell>
                 {[1, 2, 3].map((tier) => (
                   <TableCell key={tier} className="px-0 py-1 pr-2 font-mono">
-                    {rows.find((r) => r.provider === p && r.tier === tier)?.model ?? "—"}
+                    {rows.find((r) => r.provider === p && r.tier === tier)?.model ?? '—'}
                   </TableCell>
                 ))}
               </TableRow>
@@ -375,5 +360,5 @@ function Registry({ registry }: { registry: Q<ModelMapping[]> }) {
         </Table>
       )}
     </div>
-  );
+  )
 }

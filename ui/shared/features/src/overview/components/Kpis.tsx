@@ -1,10 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Kpis.tsx. Local edits: `"use client"`;
-// TanStack `Link to search={{}}` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) `href`; `TooltipTrigger asChild` + `span` -> `render={<span …/>}`;
-// `Spark` is exported (development 49950eb1e: GenUI draws it); Prettier formatting.
-// Development (2d95e6e79): the Tokens tile and the Runs tile's cost per run; the Agents running tile is gone (its run
-// states open Fleet health).
-"use client";
-
 /**
  * The KPI tiles: Spend, Tokens and Agent runs over the page's range (the fourth, Harnesses used, is `Harnesses.tsx`).
  * Each label links to the page that owns the number. Spend and runs come from the fleet-wide timeseries (the same
@@ -12,14 +5,15 @@
  * The month line is the summary card's `MonthBar`; the agents' run states are Fleet health's first line.
  * Sparklines are decorative: the figures above them carry the numbers.
  */
-import Link from "@nasiko/app-core/navigation";
-import { Coins, DollarSign, Workflow, type LucideIcon } from "lucide-react";
-import type { CSSProperties, ReactNode } from "react";
-import { Delta } from "@nasiko/ui/composites";
-import { KpiTile } from "@nasiko/ui/composites";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { seriesAt, type Series } from "@nasiko/ui/lib";
-import { POLARITY } from "@nasiko/ui/lib";
+import { Link } from '@tanstack/react-router'
+import { Coins, DollarSign, Workflow, type LucideIcon } from 'lucide-react'
+import type { CSSProperties, ReactNode } from 'react'
+import { Delta } from '@nasiko/ui/composites/delta'
+import { KpiTile } from '@nasiko/ui/composites/kpi-tile'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { seriesAt, type Series } from '@nasiko/ui/lib/chart'
+import { POLARITY } from '@nasiko/ui/lib/delta'
+import { cn } from '@nasiko/ui/lib/utils'
 import {
   fmtCostPerOp,
   fmtInt,
@@ -27,13 +21,13 @@ import {
   fmtMoneyShort,
   fmtPct,
   fmtTokens,
-} from "@nasiko/ui/lib";
-import type { Spend } from "../api";
-import { copy } from "../copy";
-import { SourceFailed } from "./Card";
+} from '@nasiko/ui/lib/format'
+import type { Spend } from '../api'
+import { copy } from '../copy'
+import { SourceFailed } from './Card'
 
 const pctChange = (now: number, before: number) =>
-  before > 0 ? ((now - before) / before) * 100 : null;
+  before > 0 ? ((now - before) / before) * 100 : null
 
 /** A tile's label: an icon and the owning page's link. */
 export function TileLabel({
@@ -41,47 +35,52 @@ export function TileLabel({
   to,
   children,
 }: {
-  Icon: LucideIcon;
-  to: "/tokenops" | "/sessions" | "/agents" | "/harnesses";
-  children: ReactNode;
+  Icon: LucideIcon
+  to: '/tokenops' | '/sessions' | '/agents' | '/harnesses'
+  children: ReactNode
 }) {
   return (
     <Link
-      href={to}
+      to={to}
+      search={{} as never}
       className="inline-flex items-center gap-1.5 rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline pointer-coarse:min-h-11"
     >
       <Icon className="size-4" aria-hidden />
       {children}
     </Link>
-  );
+  )
 }
 
-export const TILE = "min-w-0 gap-2 p-4";
-const PENDING = <Skeleton className="h-8 w-28 motion-reduce:animate-none" />;
+export const TILE = 'min-w-0 gap-2 p-4'
+const PENDING = <Skeleton className="h-8 w-28 motion-reduce:animate-none" />
 
-/** A tiny decorative chart under a figure: a line with a light area, or bars. */
+/** A tiny decorative chart under a figure: a line with a light area, or bars. The village's meters use it too. */
 export function Spark({
   points,
   kind,
   series,
+  className,
 }: {
   /** One point per day, keyed by its ISO start. */
-  points: readonly { key: string; value: number }[];
-  kind: "line" | "bars";
-  series: Series;
+  points: readonly { key: string; value: number }[]
+  kind: 'line' | 'bars'
+  series: Series
+  /** Overrides the size (the tiles' is `h-10 w-full`). */
+  className?: string
 }) {
-  const values = points.map((p) => p.value);
-  const max = Math.max(0, ...values);
-  if (!values.length || max <= 0) return <div className="mt-auto h-10" aria-hidden />;
-  const y = (v: number) => 30 - (v / max) * 28;
-  if (kind === "bars") {
-    const w = 100 / values.length;
+  const values = points.map((p) => p.value)
+  const max = Math.max(0, ...values)
+  if (!values.length || max <= 0)
+    return <div className={cn('mt-auto h-10', className)} aria-hidden />
+  const y = (v: number) => 30 - (v / max) * 28
+  if (kind === 'bars') {
+    const w = 100 / values.length
     return (
       <svg
         aria-hidden
         viewBox="0 0 100 32"
         preserveAspectRatio="none"
-        className="mt-auto h-10 w-full"
+        className={cn('mt-auto h-10 w-full', className)}
       >
         {points.map(({ key, value: v }, i) => (
           <rect
@@ -97,16 +96,16 @@ export function Spark({
           />
         ))}
       </svg>
-    );
+    )
   }
-  const step = values.length > 1 ? 100 / (values.length - 1) : 0;
-  const pts = values.map((v, i) => `${i * step},${y(v)}`).join(" ");
+  const step = values.length > 1 ? 100 / (values.length - 1) : 0
+  const pts = values.map((v, i) => `${i * step},${y(v)}`).join(' ')
   return (
     <svg
       aria-hidden
       viewBox="0 0 100 32"
       preserveAspectRatio="none"
-      className="mt-auto h-10 w-full"
+      className={cn('mt-auto h-10 w-full', className)}
     >
       <polygon points={`0,32 ${pts} 100,32`} fill={series.fill} opacity={0.35} />
       <polyline
@@ -117,11 +116,11 @@ export function Spark({
         vectorEffect="non-scaling-stroke"
       />
     </svg>
-  );
+  )
 }
 
 export function SpendTile({ spend }: { spend: Spend }) {
-  const { totals } = spend;
+  const { totals } = spend
   return (
     <KpiTile
       data-testid="kpi-spend"
@@ -141,7 +140,7 @@ export function SpendTile({ spend }: { spend: Spend }) {
         ) : null
       }
       value={
-        totals ? fmtMoneyFloor(totals.spend, spend.unpriced) : spend.totalsError ? "—" : PENDING
+        totals ? fmtMoneyFloor(totals.spend, spend.unpriced) : spend.totalsError ? '—' : PENDING
       }
     >
       {spend.totalsError && !totals ? (
@@ -158,11 +157,11 @@ export function SpendTile({ spend }: { spend: Spend }) {
         series={seriesAt(0)}
       />
     </KpiTile>
-  );
+  )
 }
 
 export function RunsTile({ spend }: { spend: Spend }) {
-  const { totals } = spend;
+  const { totals } = spend
   return (
     <KpiTile
       data-testid="kpi-runs"
@@ -181,7 +180,7 @@ export function RunsTile({ spend }: { spend: Spend }) {
           />
         ) : null
       }
-      value={totals ? fmtInt(totals.runs) : spend.totalsError ? "—" : PENDING}
+      value={totals ? fmtInt(totals.runs) : spend.totalsError ? '—' : PENDING}
     >
       {totals ? (
         <p className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground tabular-nums">
@@ -212,7 +211,7 @@ export function RunsTile({ spend }: { spend: Spend }) {
         series={seriesAt(1)}
       />
     </KpiTile>
-  );
+  )
 }
 
 /**
@@ -221,9 +220,9 @@ export function RunsTile({ spend }: { spend: Spend }) {
  * the optimised requests' pool, not of every token.
  */
 export function TokensTile({ spend }: { spend: Spend }) {
-  const { tokens } = spend;
-  const io = tokens ? tokens.input + tokens.output : 0;
-  const inputShare = tokens && io > 0 ? (tokens.input / io) * 100 : null;
+  const { tokens } = spend
+  const io = tokens ? tokens.input + tokens.output : 0
+  const inputShare = tokens && io > 0 ? (tokens.input / io) * 100 : null
   return (
     <KpiTile
       data-testid="kpi-tokens"
@@ -238,7 +237,7 @@ export function TokensTile({ spend }: { spend: Spend }) {
           <Delta changePct={tokens.changePct} polarity={POLARITY.tokens} current={tokens.total} />
         ) : null
       }
-      value={tokens ? fmtTokens(tokens.total) : spend.driversError ? "—" : PENDING}
+      value={tokens ? fmtTokens(tokens.total) : spend.driversError ? '—' : PENDING}
     >
       {spend.driversError && !tokens ? (
         <SourceFailed what={copy.spend.rangeWhat} onRetry={spend.retry} />
@@ -249,11 +248,11 @@ export function TokensTile({ spend }: { spend: Spend }) {
           <div aria-hidden className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted">
             <span
               className="h-full bg-(--input)"
-              style={{ width: `${inputShare}%`, "--input": seriesAt(0).fill } as CSSProperties}
+              style={{ width: `${inputShare}%`, '--input': seriesAt(0).fill } as CSSProperties}
             />
             <span
               className="h-full flex-1 bg-(--output)"
-              style={{ "--output": seriesAt(1).fill } as CSSProperties}
+              style={{ '--output': seriesAt(1).fill } as CSSProperties}
             />
           </div>
           <p className="flex justify-between text-2xs text-muted-foreground tabular-nums">
@@ -265,5 +264,5 @@ export function TokensTile({ spend }: { spend: Spend }) {
         <div className="mt-auto h-10" aria-hidden />
       )}
     </KpiTile>
-  );
+  )
 }

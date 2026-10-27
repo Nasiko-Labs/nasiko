@@ -1,54 +1,51 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/recorded.ts. Local edits: optional fields admit
-// `undefined` (exactOptionalPropertyTypes); development (84c6f11eb): the session ledger maps recorded tool calls with
-// it; Prettier formatting.
 /**
  * A recorded harness chat's tool calls as step chips (v1c §5.7, ND-10, R2, DP11). Pure. Raw values are
  * kept and each detail section is stringified and cut only when it opens (E8), so a message with 2000
  * calls and 1 MB fields maps quickly. Malformed entries are skipped with a warning naming the entry and
  * the field, never the payload (DX4).
  */
-import type { Step } from "./a2aReducer";
-import { copy } from "./copy";
-import { chatKind } from "./format";
-import { CODING_SESSION_TITLE } from "./serverContract";
-import { tuning } from "./tuning";
-import type { ChatSessionRow } from "./types";
+import type { Step } from './a2aReducer'
+import { copy } from './copy'
+import { chatKind } from './format'
+import { CODING_SESSION_TITLE } from './serverContract'
+import { tuning } from './tuning'
+import type { ChatSessionRow } from './types'
 
 /** `types/src/coding_agent.rs` ToolCall `status` (cb3aaf0c). */
 export const RECORDED_STATUSES = [
-  "succeeded",
-  "failed",
-  "denied",
-  "timed_out",
-  "cancelled",
-  "pending",
-  "running",
-  "unknown",
-] as const;
-type RecordedStatus = (typeof RECORDED_STATUSES)[number];
+  'succeeded',
+  'failed',
+  'denied',
+  'timed_out',
+  'cancelled',
+  'pending',
+  'running',
+  'unknown',
+] as const
+type RecordedStatus = (typeof RECORDED_STATUSES)[number]
 
-const ERROR_STATUSES: readonly RecordedStatus[] = ["failed", "denied", "timed_out", "cancelled"];
+const ERROR_STATUSES: readonly RecordedStatus[] = ['failed', 'denied', 'timed_out', 'cancelled']
 
-export type SectionLabel = "Arguments" | "Output" | "Error";
+export type SectionLabel = 'Arguments' | 'Output' | 'Error'
 
-export interface RecordedStep extends Omit<Step, "status" | "detail" | "kind"> {
-  kind: "tool";
-  status: "ok" | "error" | "neutral";
+export interface RecordedStep extends Omit<Step, 'status' | 'detail' | 'kind'> {
+  kind: 'tool'
+  status: 'ok' | 'error' | 'neutral'
   /** The server's status. */
-  recordedStatus: RecordedStatus;
+  recordedStatus: RecordedStatus
   /** Shown next to the name for failures and calls with no result (R2, DP11). */
-  statusWord?: string | undefined;
+  statusWord?: string
   /** Only when `timestamp_quality === 'exact'`. */
-  startedAt?: string | undefined;
-  association: "exact" | "turn" | "unknown";
+  startedAt?: string
+  association: 'exact' | 'turn' | 'unknown'
   /** The sections the call has, raw; `sectionText` formats one when it opens. */
-  sections: { label: SectionLabel; raw: unknown }[];
+  sections: { label: SectionLabel; raw: unknown }[]
 }
 
 export interface RecordedCalls {
-  steps: RecordedStep[];
+  steps: RecordedStep[]
   /** `capture_policy === 'content'`. Stored messages always say so (§2.3); defensive. */
-  captured: boolean;
+  captured: boolean
 }
 
 const STATUS_WORD: Partial<Record<RecordedStatus, string>> = {
@@ -59,15 +56,14 @@ const STATUS_WORD: Partial<Record<RecordedStatus, string>> = {
   pending: copy.noResultRecorded,
   running: copy.noResultRecorded,
   unknown: copy.statusUnknown,
-};
+}
 
-type Json = Record<string, unknown>;
-export const isObject = (v: unknown): v is Json =>
-  !!v && typeof v === "object" && !Array.isArray(v);
+type Json = Record<string, unknown>
+export const isObject = (v: unknown): v is Json => !!v && typeof v === 'object' && !Array.isArray(v)
 
 /** A message's `metadata.coding_agent` record (`types/src/coding_agent.rs`), or null when it has none. */
 export const codingAgentOf = (metadata: unknown): Json | null =>
-  isObject(metadata) && isObject(metadata.coding_agent) ? metadata.coding_agent : null;
+  isObject(metadata) && isObject(metadata.coding_agent) ? metadata.coding_agent : null
 
 /**
  * The calls on an assistant message: `metadata.coding_agent.tool_calls`, only when it is an array
@@ -75,97 +71,83 @@ export const codingAgentOf = (metadata: unknown): Json | null =>
  */
 export function toolCallsToSteps(
   metadata: unknown,
-  warn: (msg: string) => void = (m) => {
-    console.warn(m);
-  },
+  warn: (msg: string) => void = (m) => console.warn(m),
 ): RecordedCalls | null {
-  const agent = codingAgentOf(metadata);
-  const calls = agent?.tool_calls;
-  if (!Array.isArray(calls)) return null;
-  const steps: RecordedStep[] = [];
+  const agent = codingAgentOf(metadata)
+  const calls = agent?.tool_calls
+  if (!Array.isArray(calls)) return null
+  const steps: RecordedStep[] = []
   calls.forEach((c: unknown, i) => {
-    const bad = (field: string) => {
-      warn(`[chat] recorded tool call ${i}: invalid ${field}; skipped`);
-    };
-    if (!isObject(c)) {
-      bad("entry");
-      return;
-    }
-    if (typeof c.name !== "string" || !c.name.trim()) {
-      bad("name");
-      return;
-    }
-    if (typeof c.status !== "string") {
-      bad("status");
-      return;
-    }
+    const bad = (field: string) => warn(`[chat] recorded tool call ${i}: invalid ${field}; skipped`)
+    if (!isObject(c)) return bad('entry')
+    if (typeof c.name !== 'string' || !c.name.trim()) return bad('name')
+    if (typeof c.status !== 'string') return bad('status')
     const recordedStatus: RecordedStatus = (RECORDED_STATUSES as readonly string[]).includes(
       c.status,
     )
       ? (c.status as RecordedStatus)
-      : "unknown";
-    const exact = c.timestamp_quality === "exact";
-    const started = typeof c.started_at === "string" ? Date.parse(c.started_at) : Number.NaN;
-    const ended = typeof c.ended_at === "string" ? Date.parse(c.ended_at) : Number.NaN;
+      : 'unknown'
+    const exact = c.timestamp_quality === 'exact'
+    const started = typeof c.started_at === 'string' ? Date.parse(c.started_at) : Number.NaN
+    const ended = typeof c.ended_at === 'string' ? Date.parse(c.ended_at) : Number.NaN
     const durationMs =
-      typeof c.duration_ms === "number" && c.duration_ms >= 0
+      typeof c.duration_ms === 'number' && c.duration_ms >= 0
         ? c.duration_ms
         : exact && !Number.isNaN(started) && !Number.isNaN(ended) && ended >= started
           ? ended - started
-          : undefined;
-    const sections: RecordedStep["sections"] = [];
-    if ("arguments" in c) sections.push({ label: "Arguments", raw: c.arguments });
-    if ("output" in c) sections.push({ label: "Output", raw: c.output });
-    if ("error" in c) sections.push({ label: "Error", raw: c.error });
+          : undefined
+    const sections: RecordedStep['sections'] = []
+    if ('arguments' in c) sections.push({ label: 'Arguments', raw: c.arguments })
+    if ('output' in c) sections.push({ label: 'Output', raw: c.output })
+    if ('error' in c) sections.push({ label: 'Error', raw: c.error })
     steps.push({
-      key: typeof c.id === "string" && c.id ? c.id : `call-${i}`,
-      kind: "tool",
+      key: typeof c.id === 'string' && c.id ? c.id : `call-${i}`,
+      kind: 'tool',
       name: c.name,
       recordedStatus,
       status:
-        recordedStatus === "succeeded"
-          ? "ok"
+        recordedStatus === 'succeeded'
+          ? 'ok'
           : ERROR_STATUSES.includes(recordedStatus)
-            ? "error"
-            : "neutral",
+            ? 'error'
+            : 'neutral',
       statusWord: STATUS_WORD[recordedStatus],
       durationMs,
       startedAt: exact && !Number.isNaN(started) ? (c.started_at as string) : undefined,
       association:
-        c.association === "turn" || c.association === "unknown" ? c.association : "exact",
+        c.association === 'turn' || c.association === 'unknown' ? c.association : 'exact',
       sections,
-    });
-  });
-  return { steps, captured: agent?.capture_policy === "content" };
+    })
+  })
+  return { steps, captured: agent?.capture_policy === 'content' }
 }
 
 /** Empty: nothing to show but "No output". */
 export const isEmptyValue = (v: unknown) =>
   v === null ||
   v === undefined ||
-  v === "" ||
+  v === '' ||
   (Array.isArray(v) && !v.length) ||
-  (isObject(v) && !Object.keys(v).length);
+  (isObject(v) && !Object.keys(v).length)
 
 /**
  * One detail section's text, built when it opens (E8): a string as given (a CLI-truncated value stays a
  * string), anything else as indented JSON, cut at SAVED_DETAIL_MAX. `full` is for Copy full value.
  */
 export function sectionText(raw: unknown): { text: string; cut: boolean; full: string } {
-  let full: string;
-  if (typeof raw === "string") full = raw;
+  let full: string
+  if (typeof raw === 'string') full = raw
   else {
     try {
-      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- JSON.stringify returns undefined for a function or undefined, whatever its type says
-      full = JSON.stringify(raw, null, 2) ?? String(raw);
+      full = JSON.stringify(raw, null, 2) ?? String(raw)
     } catch {
-      full = String(raw);
+      full = String(raw)
     }
   }
-  const max = tuning.SAVED_DETAIL_MAX;
+  const max = tuning.SAVED_DETAIL_MAX
   return full.length > max
     ? { text: full.slice(0, max), cut: true, full }
-    : { text: full, cut: false, full };
+    : { text: full, cut: false, full }
 }
 
 /**
@@ -175,11 +157,11 @@ export function sectionText(raw: unknown): { text: string; cut: boolean; full: s
  */
 export function isMetadataOnly(
   row:
-    | Pick<ChatSessionRow, "is_coding_agent" | "message_count" | "title" | "agent_id" | "agent_url">
+    | Pick<ChatSessionRow, 'is_coding_agent' | 'message_count' | 'title' | 'agent_id' | 'agent_url'>
     | undefined,
 ): boolean {
-  if (!row || row.message_count !== 0) return false;
+  if (!row || row.message_count !== 0) return false
   return (
-    !!row.is_coding_agent || (row.title === CODING_SESSION_TITLE && chatKind(row) === "removed")
-  );
+    !!row.is_coding_agent || (row.title === CODING_SESSION_TITLE && chatKind(row) === 'removed')
+  )
 }

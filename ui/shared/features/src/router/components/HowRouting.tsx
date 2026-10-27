@@ -1,15 +1,9 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/HowRouting.tsx. Local edits: optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-// Legacy ui/ on development (3aac84f66, c721a11a8): the explainer's toggle is a top-bar action; the title gets its
-// line.
-"use client";
-
 /**
  * "How routing works" (plan §4.1): the page's disclosure, toggled from the top bar. Five numbered steps, left to right from lg on a line a
  * beam travels along and stacked below with a connecting line, then a footer with this viewer's own numbers.
  * Opens by default on a first visit with no configs; an explicit choice is remembered (prefs.ts).
  */
-import { AnimatePresence, m } from "@nasiko/ui/motion";
+import { AnimatePresence, m } from 'motion/react'
 import {
   ChevronDown,
   KeyRound,
@@ -19,21 +13,21 @@ import {
   SlidersHorizontal,
   X,
   type LucideIcon,
-} from "lucide-react";
-import { useRef, useState } from "react";
-import { PageHeader } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { enter, transitions } from "@nasiko/ui/motion";
-import { cn } from "@nasiko/ui/cn";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { copy } from "../copy";
-import { PREF_HOW, readOpen, writeOpen } from "../prefs";
-import { LinkButton } from "./bits";
+} from 'lucide-react'
+import { useRef, useState } from 'react'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { Button } from '@nasiko/ui/primitives/button'
+import { enter, transitions } from '@nasiko/ui/lib/motion'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '../copy'
+import { PREF_HOW, readOpen, writeOpen } from '../prefs'
+import { LinkButton } from './bits'
 
-const ICONS: readonly LucideIcon[] = [Send, SlidersHorizontal, Layers, KeyRound, RotateCw];
+const ICONS: readonly LucideIcon[] = [Send, SlidersHorizontal, Layers, KeyRound, RotateCw]
 /** When each step lights in the beam's 4 s pass: 0.2 s before the beam's centre reaches it (steps at 0, ¼ … 1 of the
  *  line, so centres at 0.4, 1.2 … 3.6 s); negative, so the loop is already running when the card opens. */
-const STEP_DELAYS = ["-3.8s", "-3s", "-2.2s", "-1.4s", "-0.6s"];
+const STEP_DELAYS = ['-3.8s', '-3s', '-2.2s', '-1.4s', '-0.6s']
 
 export function RouterTitle({
   configsEmpty,
@@ -42,24 +36,24 @@ export function RouterTitle({
   defaultName,
   onShowDefaults,
 }: {
-  configsEmpty: boolean;
+  configsEmpty: boolean
   /** "14" (or "at least 13") agents on the default, when there is a default. */
-  onDefault?: string | undefined;
-  total?: string | undefined;
-  defaultName?: string | undefined;
+  onDefault?: string
+  total?: string
+  defaultName?: string
   /** Narrow Your agents to the ones on the default. */
-  onShowDefaults?: (() => void) | undefined;
+  onShowDefaults?: () => void
 }) {
-  const [open, setOpen] = useState<boolean>(() => readOpen(PREF_HOW) ?? false);
-  const [touched, setTouched] = useState(() => readOpen(PREF_HOW) !== null);
+  const [open, setOpen] = useState<boolean>(() => readOpen(PREF_HOW) ?? false)
+  const [touched, setTouched] = useState(() => readOpen(PREF_HOW) !== null)
   // First visit with no configs: open by default (plan §4.1); an explicit choice always wins.
-  const shown = touched ? open : open || configsEmpty;
+  const shown = touched ? open : open || configsEmpty
   const toggle = (next: boolean) => {
-    setTouched(true);
-    setOpen(next);
-    writeOpen(PREF_HOW, next);
-  };
-  const toggleRef = useRef<HTMLButtonElement>(null);
+    setTouched(true)
+    setOpen(next)
+    writeOpen(PREF_HOW, next)
+  }
+  const toggleRef = useRef<HTMLButtonElement>(null)
   return (
     <div className="space-y-3">
       {/* The explainer's toggle is a page action: the top bar's right, above the panel it opens. */}
@@ -72,16 +66,14 @@ export function RouterTitle({
             size="sm"
             aria-expanded={shown}
             aria-controls="router-how"
-            onClick={() => {
-              toggle(!shown);
-            }}
+            onClick={() => toggle(!shown)}
             className="pointer-coarse:min-h-11"
           >
-            {copy.howItWorks}{" "}
+            {copy.howItWorks}{' '}
             <ChevronDown
               className={cn(
-                "size-4 transition-transform motion-reduce:transition-none",
-                shown && "rotate-180",
+                'size-4 transition-transform motion-reduce:transition-none',
+                shown && 'rotate-180',
               )}
               aria-hidden
             />
@@ -112,8 +104,8 @@ export function RouterTitle({
                 size="sm"
                 className="size-7 px-0 text-muted-foreground pointer-coarse:size-11"
                 onClick={() => {
-                  toggle(false);
-                  toggleRef.current?.focus();
+                  toggle(false)
+                  toggleRef.current?.focus()
                 }}
                 aria-label={copy.howClose}
               >
@@ -133,8 +125,8 @@ export function RouterTitle({
               </div>
               <ol className="grid gap-0 lg:grid-cols-5 lg:gap-4">
                 {copy.howSteps.map((step, i) => {
-                  const Icon = ICONS[i] ?? Send;
-                  const last = i === copy.howSteps.length - 1;
+                  const Icon = ICONS[i] ?? Send
+                  const last = i === copy.howSteps.length - 1
                   return (
                     <m.li
                       key={step.title}
@@ -154,9 +146,9 @@ export function RouterTitle({
                         aria-hidden
                         style={{ animationDelay: STEP_DELAYS[i] }}
                         className={cn(
-                          "relative z-10 flex size-8 shrink-0 animate-stage items-center justify-center rounded-lg border bg-muted text-foreground ring-4 ring-card motion-reduce:animate-none",
+                          'relative z-10 flex size-8 shrink-0 animate-stage items-center justify-center rounded-lg border bg-muted text-foreground ring-4 ring-card motion-reduce:animate-none',
                           i === 0 &&
-                            "motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground",
+                            'motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground',
                         )}
                       >
                         <Icon className="size-4" />
@@ -165,13 +157,13 @@ export function RouterTitle({
                         <p className="flex items-baseline gap-2 text-sm font-medium">
                           {step.title}
                           <span className="font-mono text-2xs font-normal text-muted-foreground tabular-nums">
-                            {String(i + 1).padStart(2, "0")}
+                            {String(i + 1).padStart(2, '0')}
                           </span>
                         </p>
                         <p className="text-xs text-pretty text-muted-foreground">{step.detail}</p>
                       </div>
                     </m.li>
-                  );
+                  )
                 })}
               </ol>
             </div>
@@ -181,7 +173,7 @@ export function RouterTitle({
                   {copy.howCounts(onDefault, total, defaultName)}
                   {onShowDefaults ? (
                     <>
-                      {" "}
+                      {' '}
                       <LinkButton className="text-xs" onClick={onShowDefaults}>
                         {copy.howShowDefaults}
                       </LinkButton>
@@ -195,5 +187,5 @@ export function RouterTitle({
         ) : null}
       </AnimatePresence>
     </div>
-  );
+  )
 }

@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/SecretsPage.tsx. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); `"use client"`;
-// `meQuery` is `meQueryOptions(scope)`; the lab's `ApiError` is `ProductApiError`; Prettier formatting.
 /**
  * Secrets (plans/feat-settings.md §1.2), as nasiko-cloud-rs `43833316` ui/common/pages/secrets-page.js and
  * features/secrets-manager.js (scope "user") work: every signed-in user's own secrets, by name.
@@ -9,120 +7,106 @@
  * - Delete asks inline, and says which of your router configs lose their key (the server doesn't check, ST-7).
  * - Add is an inline row: `POST` upserts, so an existing name gets the new value.
  */
-"use client";
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
+import { Copy, Eye, EyeOff, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { toast } from 'sonner'
+import { z } from 'zod'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
+import { Field, FieldError, FieldLabel } from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
+import { useConfigs, useSecrets } from '@nasiko/features/router/api'
+import { meQuery } from '@nasiko/data-access/auth'
+import { ApiError } from '@nasiko/data-access/client'
+import { useNow } from '@nasiko/app-core/useNow'
+import { useSecretWrites } from './api'
+import { copy as all } from './copy'
+import { ago, configsUsing, secretNameProblem } from './logic'
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useQuery } from "@tanstack/react-query";
-import { Copy, Eye, EyeOff, KeyRound, Lock, Plus, Trash2 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
-import { useForm } from "react-hook-form";
-import { toast } from "@nasiko/ui/toast";
-import * as z from "zod";
-import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { PanelError } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
-import { Field, FieldError, FieldLabel } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { useConfigs, useSecrets } from "../router/api";
-import {
-  meQueryOptions,
-  ProductApiError as ApiError,
-  useProductScope,
-} from "@nasiko/data-access/product";
-import { useNow } from "@nasiko/app-core/useNow";
-import { useSecretWrites } from "./api";
-import { copy as all } from "./copy";
-import { ago, configsUsing, secretNameProblem } from "./logic";
-
-const copy = all.secrets;
+const copy = all.secrets
 
 /** How long a shown value stays on screen (legacy AUTO_REMASK_MS). */
-export const REMASK_MS = 30_000;
+export const REMASK_MS = 30_000
 
 const reason = (err: unknown) =>
-  (err instanceof ApiError && err.serverMessage) || (err as Error).message;
+  (err instanceof ApiError && err.serverMessage) || (err as Error).message
 
 export function SecretsPage() {
-  const me = useQuery(meQueryOptions(useProductScope()));
-  const secrets = useSecrets();
+  const me = useQuery(meQuery)
+  const secrets = useSecrets()
   // Only for "Used by" in the delete prompt; a member's own configs (the list is the caller's).
-  const configs = useConfigs(!!me.data);
-  const w = useSecretWrites();
-  const now = useNow(60_000);
-  const [confirming, setConfirming] = useState<string | null>(null);
+  const configs = useConfigs(!!me.data)
+  const w = useSecretWrites()
+  const now = useNow(60_000)
+  const [confirming, setConfirming] = useState<string | null>(null)
   // name → plaintext, only for rows the user chose to show. Never in the query cache.
-  const [shown, setShown] = useState<ReadonlyMap<string, string>>(new Map());
-  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const [shown, setShown] = useState<ReadonlyMap<string, string>>(new Map())
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>())
   const mask = (name: string) => {
-    clearTimeout(timers.current.get(name));
-    timers.current.delete(name);
+    clearTimeout(timers.current.get(name))
+    timers.current.delete(name)
     setShown((m) => {
-      if (!m.has(name)) return m;
-      const next = new Map(m);
-      next.delete(name);
-      return next;
-    });
-  };
+      if (!m.has(name)) return m
+      const next = new Map(m)
+      next.delete(name)
+      return next
+    })
+  }
   // A re-listed secret may have been rewritten elsewhere: showing the old plaintext beside a new "Updated" would lie.
-  const listedAt = secrets.dataUpdatedAt;
+  const listedAt = secrets.dataUpdatedAt
   useEffect(() => {
-    const t = timers.current;
+    const t = timers.current
     return () => {
-      for (const id of t.values()) clearTimeout(id);
-      t.clear();
-      setShown(new Map());
-    };
-  }, [listedAt]);
+      for (const id of t.values()) clearTimeout(id)
+      t.clear()
+      setShown(new Map())
+    }
+  }, [listedAt])
 
   const reveal = (name: string) => {
-    if (shown.has(name)) {
-      mask(name);
-      return;
-    }
-    if (w.read.isPending) return;
+    if (shown.has(name)) return mask(name)
+    if (w.read.isPending) return
     w.read.mutate(name, {
       onSuccess: (value) => {
-        setShown((m) => new Map(m).set(name, value));
+        setShown((m) => new Map(m).set(name, value))
         timers.current.set(
           name,
-          setTimeout(() => {
-            mask(name);
-          }, REMASK_MS),
-        );
+          setTimeout(() => mask(name), REMASK_MS),
+        )
       },
       onError: (err) => toast.error(copy.readFailed(name, reason(err))),
-      onSettled: () => {
-        w.read.reset();
-      },
-    });
-  };
+      onSettled: () => w.read.reset(),
+    })
+  }
   const copyValue = async (name: string) => {
     // Undefined outside a secure context (a self-hosted server on plain HTTP): say why.
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- absent outside a secure context, whatever lib.dom says
-    if (!navigator.clipboard?.writeText) return void toast.error(copy.needsSecureContext);
+    if (!navigator.clipboard?.writeText) return void toast.error(copy.needsSecureContext)
     try {
-      const value = shown.get(name) ?? (await w.read.mutateAsync(name));
-      await navigator.clipboard.writeText(value);
-      toast.success(copy.copied(name));
+      const value = shown.get(name) ?? (await w.read.mutateAsync(name))
+      await navigator.clipboard.writeText(value)
+      toast.success(copy.copied(name))
     } catch (err) {
-      toast.error(copy.copyFailed(name, reason(err)));
+      toast.error(copy.copyFailed(name, reason(err)))
     } finally {
-      w.read.reset();
+      w.read.reset()
     }
-  };
-  const remove = (name: string) => {
+  }
+  const remove = (name: string) =>
     w.remove.mutate(name, {
       onSuccess: () => {
-        toast.success(copy.deleted(name));
-        setConfirming(null);
-        mask(name);
+        toast.success(copy.deleted(name))
+        setConfirming(null)
+        mask(name)
       },
       onError: (err) => toast.error(copy.deleteFailed(name, reason(err))),
-    });
-  };
+    })
 
   return (
     <div className="flex flex-col gap-6">
@@ -145,10 +129,10 @@ export function SecretsPage() {
           ) : (
             <ul className="divide-y divide-border">
               {secrets.data.map((s) => {
-                const value = shown.get(s.name);
-                const pending = w.read.isPending && w.read.variables === s.name;
+                const value = shown.get(s.name)
+                const pending = w.read.isPending && w.read.variables === s.name
                 if (confirming === s.name) {
-                  const used = configsUsing(configs.data, s.name);
+                  const used = configsUsing(configs.data, s.name)
                   return (
                     <li key={s.name} className="flex flex-wrap items-center gap-3 px-4 py-3">
                       <Name name={s.name} />
@@ -156,8 +140,8 @@ export function SecretsPage() {
                         {copy.confirm}
                         {used.length ? (
                           <span className="text-muted-foreground">
-                            {" "}
-                            {copy.usedBy(used.join(", "))}
+                            {' '}
+                            {copy.usedBy(used.join(', '))}
                           </span>
                         ) : null}
                       </span>
@@ -165,9 +149,7 @@ export function SecretsPage() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() => {
-                            setConfirming(null);
-                          }}
+                          onClick={() => setConfirming(null)}
                           disabled={w.remove.isPending}
                         >
                           {copy.cancel}
@@ -175,16 +157,14 @@ export function SecretsPage() {
                         <Button
                           size="sm"
                           variant="destructive"
-                          onClick={() => {
-                            remove(s.name);
-                          }}
+                          onClick={() => remove(s.name)}
                           disabled={w.remove.isPending}
                         >
                           {copy.confirmDelete}
                         </Button>
                       </span>
                     </li>
-                  );
+                  )
                 }
                 return (
                   <li
@@ -208,9 +188,7 @@ export function SecretsPage() {
                         aria-pressed={value !== undefined}
                         aria-label={value !== undefined ? copy.hide(s.name) : copy.show(s.name)}
                         disabled={pending}
-                        onClick={() => {
-                          reveal(s.name);
-                        }}
+                        onClick={() => reveal(s.name)}
                       >
                         {value !== undefined ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
                       </Button>
@@ -226,15 +204,13 @@ export function SecretsPage() {
                         size="icon"
                         variant="ghost"
                         aria-label={copy.delete(s.name)}
-                        onClick={() => {
-                          setConfirming(s.name);
-                        }}
+                        onClick={() => setConfirming(s.name)}
                       >
                         <Trash2 aria-hidden />
                       </Button>
                     </span>
                   </li>
-                );
+                )
               })}
             </ul>
           )}
@@ -248,7 +224,7 @@ export function SecretsPage() {
         {copy.note}
       </p>
     </div>
-  );
+  )
 }
 
 function Name({ name }: { name: string }) {
@@ -257,7 +233,7 @@ function Name({ name }: { name: string }) {
       <Lock aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
       <span className="truncate">{name}</span>
     </span>
-  );
+  )
 }
 
 const schema = z.object({
@@ -265,43 +241,34 @@ const schema = z.object({
     .string()
     .trim()
     .superRefine((n, ctx) => {
-      const p = secretNameProblem(n);
-      if (p) ctx.addIssue({ code: "custom", message: copy.nameProblem[p] });
+      const p = secretNameProblem(n)
+      if (p) ctx.addIssue({ code: 'custom', message: copy.nameProblem[p] })
     }),
   value: z.string().min(1, copy.valueRequired),
-});
+})
 
 /** The inline add row. A fresh form after each save, not reset() (plans/feat-settings.md §3). */
 function AddSecret() {
-  const [round, setRound] = useState(0);
-  return (
-    <AddSecretForm
-      key={round}
-      onSaved={() => {
-        setRound((r) => r + 1);
-      }}
-    />
-  );
+  const [round, setRound] = useState(0)
+  return <AddSecretForm key={round} onSaved={() => setRound((r) => r + 1)} />
 }
 
 function AddSecretForm({ onSaved }: { onSaved: () => void }) {
-  const id = useId();
-  const { add } = useSecretWrites();
-  const form = useForm({ resolver: zodResolver(schema), defaultValues: { name: "", value: "" } });
-  const { errors } = form.formState;
-  const onSubmit = form.handleSubmit((v) => {
+  const id = useId()
+  const { add } = useSecretWrites()
+  const form = useForm({ resolver: zodResolver(schema), defaultValues: { name: '', value: '' } })
+  const { errors } = form.formState
+  const onSubmit = form.handleSubmit((v) =>
     add.mutate(v, {
       onSuccess: () => {
-        toast.success(copy.saved(v.name));
-        onSaved();
+        toast.success(copy.saved(v.name))
+        onSaved()
       },
       onError: (err) => toast.error(copy.saveFailed(v.name, reason(err))),
       // The value must not linger in the mutation's cached variables.
-      onSettled: () => {
-        add.reset();
-      },
-    });
-  });
+      onSettled: () => add.reset(),
+    }),
+  )
   return (
     <form
       onSubmit={(e) => void onSubmit(e)}
@@ -318,7 +285,7 @@ function AddSecretForm({ onSaved }: { onSaved: () => void }) {
           spellCheck={false}
           autoCapitalize="characters"
           aria-invalid={!!errors.name}
-          {...form.register("name")}
+          {...form.register('name')}
         />
         <FieldError errors={[errors.name]} />
       </Field>
@@ -330,7 +297,7 @@ function AddSecretForm({ onSaved }: { onSaved: () => void }) {
           placeholder={copy.valuePlaceholder}
           autoComplete="off"
           aria-invalid={!!errors.value}
-          {...form.register("value")}
+          {...form.register('value')}
         />
         <FieldError errors={[errors.value]} />
       </Field>
@@ -343,5 +310,5 @@ function AddSecretForm({ onSaved }: { onSaved: () => void }) {
         <Plus aria-hidden /> {add.isPending ? copy.adding : copy.add}
       </Button>
     </form>
-  );
+  )
 }

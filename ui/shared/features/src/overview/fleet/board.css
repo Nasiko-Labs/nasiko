@@ -1,0 +1,1204 @@
+/*
+ * The Map view's board: the "Fleet Runtime / TokenOps" design (2026-10-16) with the Org beside it, at its own
+ * coordinates (layout.ts) on a frame the canvas's viewport moves and scales. Unlayered on purpose, so it beats the
+ * layered Tailwind utilities on the ui primitives it draws with (`.fb-hit` resets a Button to nothing first). The
+ * colours are the design's palette, kept here as variables, light and dark; they mean one thing each: red failing (or,
+ * on a line, spend going up), orange slow or costly, green healthy, grey idle, blue spend. Every state colour is one of
+ * the Teams card's tones (its bars: --fb-ok-strong and friends; its people tiles: --fb-ok and friends); brand colours
+ * are kept for the providers only. The palette is also scoped to `.fb-tones`, so the System card beside the board
+ * draws its dots in the same tones.
+ */
+.fb,
+.fb-tones {
+  --fb-canvas: #f4f4f2;
+  --fb-dot: #e2e0db;
+  --fb-card: #ffffff;
+  --fb-line: #e9e9e2;
+  --fb-subline: #ddd5c8;
+  --fb-h: #242628;
+  --fb-ink: #1a1a18;
+  --fb-ink2: #645c52;
+  --fb-ink3: #8a8880;
+  --fb-red: #ef4444;
+  /* The Teams card's tones: its bars (strong) and its people tiles (soft). */
+  --fb-ok-strong: #3ac36d;
+  --fb-warn-strong: #fa9b3c;
+  --fb-bad-strong: #ef4444;
+  --fb-ok: #aeeaa9;
+  --fb-warn: #fdba74;
+  --fb-bad2: #f87171;
+  --fb-bad: var(--fb-bad-strong);
+  --fb-idle: #e4e4e2;
+  --fb-none: #f1f1ef;
+  --fb-good-bg: #e3f6e8;
+  --fb-good: #16a34a;
+  --fb-up-bg: #fde4e4;
+  --fb-up: #dc2626;
+  --fb-spark: var(--fb-ok-strong);
+  --fb-thresh: var(--fb-warn);
+  --fb-spike: var(--fb-warn-strong);
+  --fb-track: #f5f2ec;
+  --fb-saved1: #d9f6d6;
+  --fb-saved2: #aeeaa9;
+  --fb-tick: #1a1a18;
+  --fb-rest: #eee9e1;
+  --fb-anthropic: #f97316;
+  --fb-anthropic-tile: #d97757;
+  --fb-gemini: #3b82f6;
+  --fb-openai: #1a1a18;
+  --fb-cursor: #57534e;
+  --fb-other: #a8a29e;
+  --fb-tooltile: #bdbdbd;
+  --fb-a0: #ea580c;
+  --fb-a1: #fb923c;
+  --fb-a2: #fed7aa;
+  --fb-o0: #1a1a18;
+  --fb-o1: #78716c;
+  --fb-o2: #c8c2bb;
+  --fb-b0: #2563eb;
+  --fb-b1: #60a5fa;
+  --fb-b2: #bfdbfe;
+  --fb-n0: #a8a29e;
+  --fb-n1: #c8c2bb;
+  --fb-n2: #e2ddd6;
+  /* Selection: the sidebar's current-page fill; what it touches gets a lighter one. */
+  --fb-sel: var(--sidebar-accent);
+  --fb-rel: color-mix(in oklab, var(--sidebar-accent) 55%, transparent);
+  --fb-hover: color-mix(in oklab, var(--sidebar-accent) 70%, transparent);
+  --fb-selring: #a8a29e;
+  /* A picked card's ring: a light grey, never the ink. */
+  --fb-cardring: #d6d3cd;
+  --fb-slot: #ecebe8;
+  /* Token lines: spend blue (its tokens a deeper blue), spend going up red, calls a lighter blue. */
+  --fb-flow: #7fb2f7;
+  --fb-token: #1d5fd6;
+  --fb-hot: #f08b8b;
+  --fb-hot-token: #dc2626;
+  --fb-call: #a9c8ef;
+}
+.fb {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-color: var(--fb-canvas);
+  background-image: radial-gradient(var(--fb-dot) 1.4px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+.dark .fb,
+.dark .fb-tones {
+  --fb-canvas: #17181a;
+  --fb-dot: #2a2c2f;
+  --fb-card: #1f2023;
+  --fb-line: #2e3034;
+  --fb-subline: #3a3c40;
+  --fb-h: #ecebe8;
+  --fb-ink: #ecebe8;
+  --fb-ink2: #b3aba1;
+  --fb-ink3: #8a8880;
+  --fb-red: #f87171;
+  --fb-ok-strong: #34b062;
+  --fb-warn-strong: #e8892f;
+  --fb-bad-strong: #e5484d;
+  --fb-ok: #2f7a45;
+  --fb-warn: #a8673a;
+  --fb-bad2: #a8403f;
+  --fb-idle: #34363a;
+  --fb-none: #26282b;
+  --fb-good-bg: #173524;
+  --fb-good: #4ade80;
+  --fb-up-bg: #3f1d1d;
+  --fb-up: #f87171;
+  --fb-track: #2c2e31;
+  --fb-saved1: #24452c;
+  --fb-saved2: #2f7a45;
+  --fb-tick: #ecebe8;
+  --fb-rest: #34363a;
+  --fb-openai: #ecebe8;
+  --fb-o0: #ecebe8;
+  --fb-o1: #a8a29e;
+  --fb-o2: #57534e;
+  --fb-tooltile: #4a4c50;
+  --fb-n0: #78716c;
+  --fb-n1: #57534e;
+  --fb-n2: #3f3c39;
+  --fb-selring: #78716c;
+  --fb-cardring: #4a4c50;
+  --fb-slot: #2a2c2f;
+  --fb-flow: #3f6fb4;
+  --fb-token: #93c5fd;
+  --fb-hot: #a3484b;
+  --fb-hot-token: #fca5a5;
+  --fb-call: #2f4f7a;
+}
+
+.fb-note {
+  position: absolute;
+  margin: 0;
+  font-size: 12px;
+  color: var(--fb-ink2);
+}
+.fb-frame {
+  position: absolute;
+  z-index: 1;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  color: var(--fb-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+}
+/*
+ * The lines draw under the cards (they run in the board's gaps and end at a card's edge); the few that run inside a
+ * card draw over it, in the overlay. Neither takes a click.
+ */
+.fb-lines {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+/* A Button drawn as the design's own element: nothing of the primitive's look is kept. */
+.fb .fb-hit {
+  all: unset;
+  box-sizing: border-box;
+  cursor: pointer;
+  display: block;
+  min-width: 0;
+}
+.fb .fb-hit:focus-visible,
+.fb-frame a:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.fb-h {
+  position: absolute;
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
+  letter-spacing: 0.16px;
+  color: var(--fb-h);
+}
+/* Every card has the same padding and the same title row (Ans, 2026-10-17: one set of measurements inside cards). */
+.fb-card {
+  position: absolute;
+  box-sizing: border-box;
+  background: var(--fb-card);
+  border: 1px solid var(--fb-line);
+  border-radius: 12px;
+  padding: 12px;
+  cursor: pointer;
+}
+.fb-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  height: 20px;
+  margin-bottom: 10px;
+}
+.fb-title h3 {
+  margin: 0;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--fb-ink);
+}
+.fb .fb-cardpick {
+  display: inline;
+  border-radius: 4px;
+}
+.fb .fb-cardpick:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--fb-subline);
+  text-underline-offset: 3px;
+}
+/* The routers' card: its title beside its one row of tiles. */
+.fb-card.fb-inline {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.fb-inline .fb-title {
+  flex: none;
+  margin: 0;
+}
+.fb-count {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fb-ink3);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.fb-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 20px;
+}
+.fb-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fb-ink);
+}
+.fb-val {
+  flex: none;
+  color: var(--fb-ink2);
+  font-variant-numeric: tabular-nums;
+}
+.fb-red {
+  color: var(--fb-red);
+}
+
+/*
+ * Selection: the part filled like the sidebar's current page, what it touches a lighter fill, the rest quiet. A row's
+ * fill reaches 4px past it (a shadow, so nothing moves); small parts (a harness cell, a model's segment, a mark) get a
+ * soft ring instead, which keeps their colour readable.
+ */
+.fb-focus .fb-dim {
+  opacity: 0.28;
+}
+.fb-frame .fb-hit,
+.fb-frame .fb-dim,
+.fb-frame .fb-hcol,
+.fb-frame .fb-pcol,
+.fb-frame .fb-card,
+.fb-frame .fb-card > *,
+.fb-frame .fb-cardfade {
+  transition:
+    opacity 160ms ease-out,
+    background-color 120ms ease-out,
+    box-shadow 120ms ease-out;
+}
+.fb .fb-rowhit {
+  border-radius: 5px;
+}
+.fb .fb-rowhit:hover {
+  background: var(--fb-hover);
+  box-shadow: 0 0 0 4px var(--fb-hover);
+}
+.fb .fb-rowhit.fb-rel,
+.fb .fb-team.fb-rel {
+  background: var(--fb-rel);
+  box-shadow: 0 0 0 4px var(--fb-rel);
+}
+.fb .fb-rowhit.fb-sel,
+.fb .fb-team.fb-sel {
+  background: var(--fb-sel);
+  box-shadow: 0 0 0 4px var(--fb-sel);
+}
+.fb .fb-rowhit.fb-sel .fb-name {
+  font-weight: 500;
+}
+.fb .fb-cell.fb-sel {
+  border-radius: 4px;
+  box-shadow:
+    0 0 0 2px var(--fb-card),
+    0 0 0 4px var(--fb-selring);
+}
+.fb .fb-model.fb-rel .fb-name {
+  color: var(--fb-ink);
+}
+/* A picked card: a light grey ring, the other cards faded (with their lines, Lines dims them). */
+.fb .fb-card.fb-cardsel,
+.fb .fb-saved.fb-cardsel {
+  border-color: var(--fb-cardring);
+  box-shadow: 0 0 0 4px color-mix(in oklab, var(--fb-cardring) 55%, transparent);
+}
+/* Only the content fades: the card stays opaque, so the lines under it stay hidden. */
+.fb .fb-card.fb-cardfade > * {
+  opacity: 0.35;
+}
+.fb .fb-saved.fb-cardfade {
+  opacity: 0.35;
+}
+.fb-picking .fb-h,
+.fb-picking + .fb-legend {
+  opacity: 0.6;
+}
+/* A whole card or the globe lit with a selection (the savings, when a router is picked). */
+.fb .fb-card.fb-rel,
+.fb .fb-saved.fb-rel {
+  border-color: var(--fb-selring);
+  box-shadow: 0 0 0 4px var(--fb-rel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fb-frame .fb-hit,
+  .fb-frame .fb-dim,
+  .fb-frame .fb-hcol,
+  .fb-frame .fb-pcol,
+  .fb-frame .fb-card,
+  .fb-frame .fb-card > *,
+  .fb-frame .fb-cardfade {
+    transition: none;
+  }
+}
+
+/* Token lines: spend runs its tokens along the line; calls are a lighter, finer dash. */
+.fb-ln {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 160ms ease-out;
+}
+.fb-ln.spend {
+  stroke: var(--fb-flow);
+  opacity: 0.5;
+}
+.fb-ln.calls {
+  stroke: var(--fb-call);
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+}
+.fb-ln.hot {
+  stroke: var(--fb-hot);
+}
+.fb-ln.spend.hot {
+  opacity: 0.85;
+}
+.fb-ln.on,
+.fb-ln.spend.hot.on {
+  opacity: 1;
+}
+.fb-ln.calls.on {
+  stroke: var(--fb-flow);
+}
+.fb-ln.off,
+.fb-ln.spend.hot.off {
+  opacity: 0.07;
+}
+/* Hovering the bill: every line it pays for turns green; red stays where spend is going up. */
+.fb-paying .fb-ln.spend:not(.hot),
+.fb-paying .fb-ln.calls:not(.hot) {
+  stroke: var(--fb-ok-strong);
+  opacity: 0.75;
+}
+.fb-paying .fb-run:not(.hot) {
+  stroke: var(--fb-good);
+}
+.fb-run {
+  fill: none;
+  stroke: var(--fb-token);
+  stroke-linecap: round;
+  stroke-dasharray: 0.01 22;
+  opacity: 0.35;
+  animation: fb-run 1.8s linear infinite;
+}
+.fb-run.hot {
+  stroke: var(--fb-hot-token);
+}
+.fb-run.calls {
+  stroke-dasharray: 0.01 22;
+}
+.fb-run.on {
+  opacity: 0.95;
+}
+@keyframes fb-run {
+  to {
+    stroke-dashoffset: -22.01;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fb-run,
+  .fb-ln {
+    animation: none;
+    transition: none;
+  }
+}
+.fb-legend {
+  position: absolute;
+  display: flex;
+  gap: 16px;
+  white-space: nowrap;
+  margin: 0;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--fb-ink2);
+}
+.fb-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.fb-legend svg {
+  overflow: visible;
+}
+
+/* Day tiles and states. */
+.t-ok {
+  background: var(--fb-ok);
+}
+.t-bad {
+  background: var(--fb-bad2);
+}
+.t-warn {
+  background: var(--fb-warn);
+}
+.t-idle {
+  background: var(--fb-idle);
+}
+.t-none {
+  background: var(--fb-none);
+}
+
+/* Agents: one row each (so each has its own lines), the big tile today, eighteen days beside it. */
+.fb-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fb .fb-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 21px;
+}
+.fb-agent .fb-name {
+  flex: 1;
+}
+.fb-agent .fb-val {
+  width: 56px;
+  text-align: right;
+}
+.fb-tiles {
+  display: flex;
+  gap: 5px;
+}
+.fb-big {
+  flex: none;
+  width: 21px;
+  height: 21px;
+  border-radius: 4px;
+}
+.fb-big.t-ok {
+  background: var(--fb-ok-strong);
+}
+.fb-big.t-warn {
+  background: var(--fb-warn-strong);
+}
+.fb-big.t-bad {
+  background: var(--fb-bad-strong);
+}
+.fb-days {
+  display: grid;
+  grid-template-columns: repeat(9, 9px);
+  grid-template-rows: 9px 9px;
+  gap: 3px;
+}
+.fb-days > span {
+  border-radius: 3px;
+}
+
+/* Workflows: the Teams card's row shape (runs as the bar, a tile per step, the state where a team has its pace). */
+.fb-teamlist.fb-flowlist {
+  padding-left: 0;
+}
+
+.fb-mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 4px;
+  color: #fff;
+  background: var(--fb-tooltile);
+}
+.fb-mark svg {
+  width: 62%;
+  height: 62%;
+  fill: currentColor;
+}
+.fb-mono {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+}
+.m-claude {
+  background: var(--fb-anthropic-tile);
+}
+.m-openai,
+.m-cursor {
+  background: var(--fb-openai);
+  color: var(--fb-card);
+}
+.m-gemini {
+  background: none;
+  color: var(--fb-gemini);
+}
+.m-gemini svg {
+  width: 88%;
+  height: 88%;
+}
+.m-none {
+  background: var(--fb-other);
+}
+
+/* Connectors and tools: each tool its 16 px mark; a state dot where it needs a look; faded when just turned off. */
+.fb-toolgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 28px);
+  gap: 8px;
+}
+.fb .fb-tool,
+.fb .fb-router {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+}
+.fb .fb-tool.fb-off {
+  opacity: 0.38;
+}
+.fb-focus .fb-tool.fb-off.fb-dim {
+  opacity: 0.12;
+}
+.fb-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.fb-tool > .fb-dot,
+.fb-router > .fb-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  box-shadow: 0 0 0 2px var(--fb-card);
+}
+.fb-dot.t-ok {
+  background: var(--fb-ok-strong);
+}
+.fb-dot.t-warn {
+  background: var(--fb-warn-strong);
+}
+.fb-dot.t-bad {
+  background: var(--fb-bad-strong);
+}
+.fb-dot.t-idle {
+  background: var(--fb-n1);
+}
+.fb-dot.t-none {
+  background: var(--fb-n2);
+}
+
+/* Local harnesses, across the bottom: a block per kind side by side, 44 seats each (installs by spend, then grey). */
+.fb-harness {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 20px;
+}
+.fb-hcol .fb-row {
+  font-size: 13px;
+}
+.fb-hcol {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fb-hgrid {
+  display: grid;
+  grid-template-columns: repeat(11, 11px);
+  grid-template-rows: repeat(4, 11px);
+  gap: 3px;
+}
+.fb-slot {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+  background: var(--fb-slot);
+}
+.fb .fb-cell {
+  width: 11px;
+  height: 11px;
+  border-radius: 3px;
+}
+/* Installs by spend in the teams' greens: busy the bar's green, light use the people tiles' green. */
+.fb .h-high,
+.fb-key .h-high {
+  background: var(--fb-ok-strong);
+}
+.fb .h-low,
+.fb-key .h-low {
+  background: var(--fb-ok);
+}
+.fb .h-empty,
+.fb-key .h-empty {
+  background: var(--fb-idle);
+}
+.fb .h-bad,
+.fb-key .h-bad {
+  background: var(--fb-bad-strong);
+}
+.fb .h-warn,
+.fb-key .h-warn {
+  background: var(--fb-warn-strong);
+}
+
+.fb-change {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 18px;
+  background: var(--fb-good-bg);
+  color: var(--fb-good);
+}
+.fb-change.up {
+  background: var(--fb-up-bg);
+  color: var(--fb-up);
+}
+/* Total spend as a bill: the amount, then lines with dotted leaders, rules between the sides, the total. */
+.fb-amount {
+  display: block;
+  font-size: 26px;
+  line-height: 32px;
+  font-weight: 500;
+  letter-spacing: -0.2px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fb-ink);
+}
+.fb-rule {
+  display: block;
+  margin: 8px 0 6px;
+  border-top: 1px dashed var(--fb-subline);
+}
+.fb-bhead {
+  margin: 0 0 2px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--fb-ink3);
+}
+.fb-bline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  font-size: 13px;
+}
+/* A button sizes to its content: a bill line that is one fills the card, so its leader and amount line up. */
+.fb .fb-billrow {
+  width: 100%;
+}
+.fb-billcard .fb-rowhit .fb-bline,
+.fb-billcard > .fb-bline {
+  padding: 0 1px;
+}
+.fb-leader {
+  flex: 1;
+  min-width: 8px;
+  align-self: flex-end;
+  margin-bottom: 6px;
+  border-bottom: 1px dotted var(--fb-subline);
+}
+.fb-bline .fb-name {
+  flex: none;
+  max-width: 60%;
+}
+.fb-saveline .fb-val {
+  color: var(--fb-good);
+}
+.fb-btotal {
+  font-weight: 600;
+}
+.fb-btotal .fb-val {
+  color: var(--fb-ink);
+}
+.fb-billcard .fb-btotal {
+  margin-top: 4px;
+  padding-top: 4px;
+  height: 26px;
+  border-top: 3px double var(--fb-subline);
+}
+.fb-perday {
+  margin-top: 10px;
+}
+.fb-sparkbox {
+  position: relative;
+  margin-left: -6px;
+}
+.fb-spark {
+  display: block;
+}
+.fb-thresh {
+  stroke: var(--fb-thresh);
+  stroke-width: 1;
+}
+/* A peak day: a dot on the line, a button that opens the day in the drawer. */
+.fb .fb-spike {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border-radius: 50%;
+  background: var(--fb-spike);
+  box-shadow: 0 0 0 2px var(--fb-card);
+  transition: transform 120ms ease-out;
+}
+.fb .fb-spike:hover,
+.fb .fb-spike.fb-sel {
+  transform: scale(1.3);
+  box-shadow:
+    0 0 0 2px var(--fb-card),
+    0 0 0 4px var(--fb-selring);
+}
+
+/* LLM routers: a small tile each, its main provider's mark in it; a dot only on one that is down. */
+.fb-chips {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.fb .fb-router {
+  border: 1px solid var(--fb-line);
+}
+.fb-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fb-ink3);
+}
+
+/* Providers and models: a column per provider, a bar per model on one scale. */
+.fb-pcols {
+  display: grid;
+  column-gap: 14px;
+}
+.fb-pcol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.fb .fb-phead {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  margin-bottom: 2px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.fb .fb-model {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.fb-mrow {
+  display: flex;
+  justify-content: space-between;
+  gap: 4px;
+  height: 13px;
+  font-size: 11px;
+  line-height: 13px;
+}
+.fb-mrow .fb-name {
+  color: var(--fb-ink2);
+}
+.fb-bar {
+  position: relative;
+  display: block;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--fb-rest);
+}
+.fb-bar > i {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  border-radius: 2px;
+}
+.p-anthropic {
+  background: var(--fb-anthropic);
+}
+.p-google,
+.p-gemini {
+  background: var(--fb-gemini);
+}
+.p-openai {
+  background: var(--fb-openai);
+}
+.p-cursor {
+  background: var(--fb-cursor);
+}
+.p-none {
+  background: var(--fb-other);
+}
+.p-anthropic.s0 {
+  background: var(--fb-a0);
+}
+.p-anthropic.s1 {
+  background: var(--fb-a1);
+}
+.p-anthropic.s2 {
+  background: var(--fb-a2);
+}
+.p-openai.s0 {
+  background: var(--fb-o0);
+}
+.p-openai.s1 {
+  background: var(--fb-o1);
+}
+.p-openai.s2 {
+  background: var(--fb-o2);
+}
+.p-google.s0,
+.p-gemini.s0 {
+  background: var(--fb-b0);
+}
+.p-google.s1,
+.p-gemini.s1 {
+  background: var(--fb-b1);
+}
+.p-google.s2,
+.p-gemini.s2 {
+  background: var(--fb-b2);
+}
+.p-none.s0,
+.p-cursor.s0 {
+  background: var(--fb-n0);
+}
+.p-none.s1,
+.p-cursor.s1 {
+  background: var(--fb-n1);
+}
+.p-none.s2,
+.p-cursor.s2 {
+  background: var(--fb-n2);
+}
+
+/* Org: every team against its own budget, its people as tiles; the org's line branches down the left to each. */
+.fb-sub {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fb-ink2);
+}
+.fb-orgport {
+  display: block;
+  height: 0;
+}
+.fb-teamlist {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 4px;
+  padding-left: 14px;
+}
+.fb .fb-team {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-radius: 5px;
+}
+.fb-team .fb-row {
+  font-size: 13px;
+}
+.fb-team .fb-val {
+  font-size: 12px;
+}
+.fb-of {
+  color: var(--fb-ink3);
+}
+.fb-bbar {
+  position: relative;
+  display: block;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--fb-track);
+}
+.fb-bbar i {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: 3px;
+}
+.fb-bbar .b-ok {
+  background: var(--fb-ok-strong);
+}
+.fb-bbar .b-warn {
+  background: var(--fb-warn-strong);
+}
+.fb-bbar .b-bad {
+  background: var(--fb-bad-strong);
+}
+.fb-bbar.none .fb-bfill {
+  background: var(--fb-other);
+}
+.fb-bbar .fb-btick {
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--fb-tick);
+}
+.fb-trow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 10px;
+}
+.fb-people {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+}
+.fb-people > span {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.fb-people > .fb-more {
+  width: auto;
+  height: auto;
+  margin-left: 2px;
+  font-size: 10px;
+  line-height: 10px;
+  color: var(--fb-ink3);
+}
+.fb-pace {
+  font-size: 11px;
+  line-height: 10px;
+  white-space: nowrap;
+  color: var(--fb-ink3);
+  font-variant-numeric: tabular-nums;
+}
+.fb-pace.fb-red {
+  color: var(--fb-up);
+}
+.fb-warn {
+  color: var(--fb-spike);
+}
+
+/* The overlay over the cards: the org's lines inside the Teams card. */
+.fb-over {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 2;
+  transform-origin: 0 0;
+  pointer-events: none;
+  font-family: var(--font-sans);
+}
+/* A card's colour key, in the drawer (CardPanel), drawn in the board's tones. */
+.fb-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fb-ink2);
+}
+.fb-key > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.fb-key i {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+
+/* Monthly budget: the gauge and its numbers (opens the token battery), then what no budget governs. */
+.fb-chip {
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  background: var(--fb-good-bg);
+  color: var(--fb-good);
+}
+.fb-chip.up {
+  background: var(--fb-up-bg);
+  color: var(--fb-up);
+}
+.fb .fb-bread {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+}
+/* Sized here: the Button primitive sizes any svg in it to an icon's 16 px, and unlayered CSS beats that. */
+.fb .fb-bread .fb-gauge {
+  flex: none;
+  display: block;
+  width: 96px;
+  height: 56px;
+}
+.fb-gtrack {
+  stroke: var(--fb-track);
+}
+.fb-garc.g-ok {
+  stroke: var(--fb-ok-strong);
+}
+.fb-garc.g-warn {
+  stroke: var(--fb-warn-strong);
+}
+.fb-garc.g-bad {
+  stroke: var(--fb-bad-strong);
+}
+.fb-gtick {
+  stroke: var(--fb-tick);
+  stroke-width: 1.5;
+}
+.fb-breadout {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-bottom: 2px;
+}
+.fb-bamount {
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--fb-ink);
+}
+.fb-faint {
+  color: var(--fb-ink3);
+}
+/* Under the gauge: what no budget governs. */
+.fb-bunder {
+  display: flex;
+  flex-direction: column;
+  margin-top: 10px;
+}
+.fb-budget .fb-btotal {
+  font-size: 13px;
+  font-weight: 600;
+}
+.fb-budget .fb-bline {
+  font-size: 12px;
+  height: 18px;
+}
+
+/* Saved: the bubble in the teams' greens, and the ways to save more still open on it. */
+.fb .fb-saved {
+  position: absolute;
+  box-sizing: border-box;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 35% 30%, var(--fb-saved1) 0%, var(--fb-saved2) 100%);
+  box-shadow:
+    0 0 0 6px color-mix(in oklab, var(--fb-ok) 30%, transparent),
+    0 12px 28px -14px color-mix(in oklab, var(--fb-ok-strong) 60%, transparent);
+  color: var(--fb-ink);
+  text-decoration: none;
+  overflow: hidden;
+  transition: transform 160ms ease-out;
+}
+.fb .fb-saved:hover {
+  transform: scale(1.03);
+}
+.fb-saved > span {
+  position: relative;
+}
+/* The globe: a wire sphere, its meridians turning (each one's width eased like a cosine), behind the amount. */
+.fb-globe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+.fb-gshell,
+.fb-glat,
+.fb-glon {
+  fill: none;
+  stroke: var(--fb-good);
+  stroke-width: 1;
+}
+.fb-gshell {
+  opacity: 0.35;
+}
+.fb-glat {
+  opacity: 0.22;
+}
+.fb-glon {
+  opacity: 0.3;
+  transform-box: view-box;
+  transform-origin: center;
+  animation: fb-turn 12s ease-in-out infinite;
+}
+@keyframes fb-turn {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(-1);
+  }
+}
+.fb-savedval {
+  font-size: 24px;
+  line-height: 30px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  font-variant-numeric: tabular-nums;
+}
+.fb-savedlabel {
+  font-size: 14px;
+  line-height: 20px;
+}
+.fb-savedsub {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--fb-ink2);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fb .fb-saved,
+  .fb .fb-spike {
+    transition: none;
+  }
+  .fb-glon {
+    animation: none;
+  }
+}
+
+/* Opportunities: the ways to save more, largest first, each a pick; what they add up to under them. */
+.fb-opps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fb .fb-opp {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  height: 20px;
+  font-size: 13px;
+}
+.fb-good {
+  color: var(--fb-good);
+}
+.fb-opptotal {
+  margin-top: 2px;
+  color: var(--fb-ink3);
+}

@@ -1,21 +1,14 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/components/RegisterDialog.tsx. Local edits: the 201's
-// landing `navigate({ to: '/mcp/$connectorId' })` is `useRouter().push('/mcp/<id>', { scroll: false })` from
-// the navigation port (`@nasiko/app-core/navigation`); the auth `Select` gets `items` (value -> option label) so Base UI's trigger shows the label, not
-// the raw value; the dialog's `onOpenChange` ternary is an `if` (lint: no void expression in a ternary); Prettier
-// formatting.
-"use client";
-
 /**
  * Register server (plans/feat-mcp.md §4, legacy register modal). Probe detects the auth type (and sets it); each auth
  * type shows only its own fields, and only non-empty ones are sent (`registerBody`). A 201 opens the new server's page,
  * where its credential, OAuth and agent access live. Mounted only while open, so each open starts empty.
  */
-import { useRouter } from "@nasiko/app-core/navigation";
-import { CheckCircle2, Search, XCircle } from "lucide-react";
-import { useId } from "react";
-import { Controller, useForm, useWatch } from "react-hook-form";
-import { toast } from "@nasiko/ui/toast";
-import { Button } from "@nasiko/ui/primitives";
+import { useNavigate } from '@tanstack/react-router'
+import { CheckCircle2, Search, XCircle } from 'lucide-react'
+import { useId } from 'react'
+import { Controller, useForm, useWatch } from 'react-hook-form'
+import { toast } from 'sonner'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Dialog,
   DialogContent,
@@ -23,89 +16,91 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@nasiko/ui/primitives";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/dialog'
+import {
+  Field,
+  FieldDescription,
+  FieldError,
+  FieldGroup,
+  FieldLabel,
+} from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
-import { Textarea } from "@nasiko/ui/primitives";
-import { useProbe, useRegister } from "../api";
-import { AUTH_LABEL, AUTH_OPTION, copy, reason } from "../copy";
-import { authFields, registerBody, type RegisterValues } from "../logic";
-import { AUTH_TYPES } from "../types";
+} from '@nasiko/ui/primitives/select'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { useProbe, useRegister } from '../api'
+import { AUTH_LABEL, AUTH_OPTION, copy, reason } from '../copy'
+import { authFields, registerBody, type RegisterValues } from '../logic'
+import { AUTH_TYPES } from '../types'
 
 const EMPTY: RegisterValues = {
-  name: "",
-  display_name: "",
-  url: "",
-  auth_type: "none",
-  credential_header_name: "",
-  basic_username: "",
-  basic_password: "",
-  oauth_client_id: "",
-  oauth_client_secret: "",
-  url_param_name: "",
-  description: "",
-};
+  name: '',
+  display_name: '',
+  url: '',
+  auth_type: 'none',
+  credential_header_name: '',
+  basic_username: '',
+  basic_password: '',
+  oauth_client_id: '',
+  oauth_client_secret: '',
+  url_param_name: '',
+  description: '',
+}
 
-const SECRET = new Set<keyof RegisterValues>(["basic_password", "oauth_client_secret"]);
+const SECRET = new Set<keyof RegisterValues>(['basic_password', 'oauth_client_secret'])
 const isHttpUrl = (v: string) => {
   try {
-    return ["http:", "https:"].includes(new URL(v.trim()).protocol);
+    return ['http:', 'https:'].includes(new URL(v.trim()).protocol)
   } catch {
-    return false;
+    return false
   }
-};
+}
 
 export function RegisterDialog({ onClose }: { onClose: () => void }) {
-  const id = useId();
-  const router = useRouter();
-  const register = useRegister();
-  const probe = useProbe();
-  const form = useForm<RegisterValues>({ defaultValues: EMPTY });
-  const { errors } = form.formState;
+  const id = useId()
+  const navigate = useNavigate()
+  const register = useRegister()
+  const probe = useProbe()
+  const form = useForm<RegisterValues>({ defaultValues: EMPTY })
+  const { errors } = form.formState
   // useWatch, not form.watch: the React Compiler memoises a watch() read.
-  const authType = useWatch({ control: form.control, name: "auth_type" });
+  const authType = useWatch({ control: form.control, name: 'auth_type' })
 
   const submit = form.handleSubmit((v) => {
     register.mutate(registerBody(v), {
       onSuccess: (c) => {
-        onClose();
-        toast.success(copy.registered(c.display_name || c.name));
-        router.push(`/mcp/${encodeURIComponent(c.connector_id)}`, { scroll: false });
+        onClose()
+        toast.success(copy.registered(c.display_name || c.name))
+        void navigate({ to: '/mcp/$connectorId', params: { connectorId: c.connector_id } })
       },
-    });
-  });
+    })
+  })
 
   const runProbe = () => {
-    const url = form.getValues("url").trim();
+    const url = form.getValues('url').trim()
     if (!isHttpUrl(url)) {
-      form.setError("url", { message: copy.badUrl }, { shouldFocus: true });
-      return;
+      form.setError('url', { message: copy.badUrl }, { shouldFocus: true })
+      return
     }
-    probe.mutate(url, {
-      onSuccess: (p) => {
-        form.setValue("auth_type", p.auth_type);
-      },
-    });
-  };
+    probe.mutate(url, { onSuccess: (p) => form.setValue('auth_type', p.auth_type) })
+  }
 
   const text = (
-    name: Exclude<keyof RegisterValues, "auth_type" | "description">,
+    name: Exclude<keyof RegisterValues, 'auth_type' | 'description'>,
     opts: { required?: boolean; url?: boolean } = {},
   ) => {
-    const f: { label: string; placeholder?: string; hint?: string } = copy.fields[name];
+    const f: { label: string; placeholder?: string; hint?: string } = copy.fields[name]
     return (
       <Field data-invalid={!!errors[name]} className="gap-1.5">
         <FieldLabel htmlFor={`${id}-${name}`}>{f.label}</FieldLabel>
         <Input
           id={`${id}-${name}`}
-          type={SECRET.has(name) ? "password" : opts.url ? "url" : "text"}
+          type={SECRET.has(name) ? 'password' : opts.url ? 'url' : 'text'}
           autoComplete="off"
           placeholder={f.placeholder}
           aria-invalid={!!errors[name]}
@@ -116,9 +111,7 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
                 : opts.url && v.trim() && !isHttpUrl(v)
                   ? copy.badUrl
                   : true,
-            onChange: () => {
-              form.clearErrors(name);
-            },
+            onChange: () => form.clearErrors(name),
           })}
         />
         {errors[name] ? (
@@ -127,16 +120,11 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
           <FieldDescription>{f.hint}</FieldDescription>
         ) : null}
       </Field>
-    );
-  };
+    )
+  }
 
   return (
-    <Dialog
-      open
-      onOpenChange={(o) => {
-        if (!o && !register.isPending) onClose();
-      }}
-    >
+    <Dialog open onOpenChange={(o) => (o || register.isPending ? null : onClose())}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-lg">
         <form onSubmit={(e) => void submit(e)} noValidate className="flex flex-col gap-4">
           <DialogHeader>
@@ -144,17 +132,17 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
             <DialogDescription>{copy.registerDesc}</DialogDescription>
           </DialogHeader>
           <FieldGroup className="gap-4">
-            {text("name", { required: true })}
-            {text("display_name")}
+            {text('name', { required: true })}
+            {text('display_name')}
             <div className="space-y-2">
               <div className="flex items-end gap-2">
-                <div className="min-w-0 flex-1">{text("url", { required: true, url: true })}</div>
+                <div className="min-w-0 flex-1">{text('url', { required: true, url: true })}</div>
                 <Button
                   type="button"
                   variant="outline"
                   disabled={probe.isPending}
                   onClick={runProbe}
-                  className={errors.url ? "mb-6" : undefined}
+                  className={errors.url ? 'mb-6' : undefined}
                 >
                   <Search aria-hidden /> {probe.isPending ? copy.probing : copy.probe}
                 </Button>
@@ -182,13 +170,7 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
                 control={form.control}
                 name="auth_type"
                 render={({ field }) => (
-                  <Select
-                    items={AUTH_TYPES.map((t) => ({ value: t, label: AUTH_OPTION[t] }))}
-                    value={field.value}
-                    onValueChange={(v) => {
-                      field.onChange(v);
-                    }}
-                  >
+                  <Select value={field.value} onValueChange={field.onChange}>
                     <SelectTrigger id={`${id}-auth`} className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -206,8 +188,8 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
             {authFields(authType).map((name) => (
               <div key={name}>
                 {/* url_param needs its name (`register_connector`: 400 without it). */}
-                {text(name as Exclude<keyof RegisterValues, "auth_type" | "description">, {
-                  required: name === "url_param_name",
+                {text(name as Exclude<keyof RegisterValues, 'auth_type' | 'description'>, {
+                  required: name === 'url_param_name',
                 })}
               </div>
             ))}
@@ -217,7 +199,7 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
                 id={`${id}-description`}
                 rows={2}
                 placeholder={copy.fields.description.placeholder}
-                {...form.register("description")}
+                {...form.register('description')}
               />
             </Field>
           </FieldGroup>
@@ -237,5 +219,5 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
         </form>
       </DialogContent>
     </Dialog>
-  );
+  )
 }

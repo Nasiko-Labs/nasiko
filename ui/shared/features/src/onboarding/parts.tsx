@@ -1,6 +1,4 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/parts.tsx. Local edits: none beyond imports and
-// Prettier (Base UI's Dialog is named by its Title and described by its Description, as Radix's was).
-import { DialogDescription, DialogTitle } from "@nasiko/ui/primitives";
+import { DialogDescription, DialogTitle } from '@nasiko/ui/primitives/dialog'
 
 /** Each step's h2 is the dialog's title (Radix names the dialog by it), its intro the description. */
 export function StepHeading({ title, intro }: { title: string; intro: string }) {
@@ -11,5 +9,5 @@ export function StepHeading({ title, intro }: { title: string; intro: string }) 
       </DialogTitle>
       <DialogDescription className="max-w-2xl text-base text-pretty">{intro}</DialogDescription>
     </div>
-  );
+  )
 }

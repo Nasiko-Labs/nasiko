@@ -1,79 +1,70 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/GithubTab.tsx. Local edits: the clone opens its
-// build with `useRouter().push('/builds/<id>')` from the navigation port (`@nasiko/app-core/navigation`); `Button asChild` + `Link` -> `ButtonLink`
-// (../agents/components/ButtonLink.tsx) to `/deploy?method=upload`; Base UI's `RadioGroup` passes its value untyped
-// (read as a string) and marks the checked item `data-checked` (`has-[[data-state=checked]]` ->
-// `has-[[data-checked]]`); the lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * From GitHub (plans/feat-deploy.md §4.2; design review 6): the connection, a searchable repository list with one
  * selectable row (`?repo=` in the URL), branch and name, then `POST /api/github/clone` → the build page. A version clash
  * is only known after the clone (VERSION_CONFLICT in the upload row); the build page's "Deploy as vX" comes back here
  * with `?version=`, sent as `version_override`.
  */
-import { useRouter } from "@nasiko/app-core/navigation";
-import { AlertTriangle, ExternalLink, FolderGit2, Lock, SearchX } from "lucide-react";
-import { useId, useMemo, useState } from "react";
-import { CopyButton } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { PanelError } from "@nasiko/ui/composites";
-import { SearchInput } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { Alert, AlertDescription, AlertTitle } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
-import { Field, FieldDescription, FieldLabel } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { RadioGroup, RadioGroupItem } from "@nasiko/ui/primitives";
-import { ScrollArea } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { relTime } from "../agents/format";
-import { ButtonLink } from "../agents/components/ButtonLink";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
+import { Link, useNavigate } from '@tanstack/react-router'
+import { AlertTriangle, ExternalLink, FolderGit2, Lock, SearchX } from 'lucide-react'
+import { useId, useMemo, useState } from 'react'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
+import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
+import { Field, FieldDescription, FieldLabel } from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
+import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { relTime } from '@nasiko/features/agents/format'
+import { ApiError } from '@nasiko/data-access/client'
 import {
   useGithubClone,
   useGithubConfigured,
   useGithubLogout,
   useGithubRepos,
   useGithubUser,
-} from "./api";
-import { copy } from "./copy";
-import type { DeployStarted } from "./UploadTab";
-import { filterRepos, useGithubConnect } from "./github";
-import { nameFromFile, nameProblem, uploadCommand } from "./name";
-import type { DeploySearch } from "./search";
-import { Requirements } from "./components/Requirements";
-import { parseVersion } from "./version";
+} from './api'
+import { copy } from './copy'
+import type { DeployStarted } from './UploadTab'
+import { filterRepos, useGithubConnect } from './github'
+import { nameFromFile, nameProblem, uploadCommand } from './name'
+import type { DeploySearch } from './search'
+import { Requirements } from './components/Requirements'
+import { parseVersion } from './version'
 
 const RULES = {
-  dockerfile: { state: "unknown" },
-  entrypoint: { state: "unknown" },
-  version: { state: "unknown" },
-  size: { state: "unknown" },
-} as const;
+  dockerfile: { state: 'unknown' },
+  entrypoint: { state: 'unknown' },
+  version: { state: 'unknown' },
+  size: { state: 'unknown' },
+} as const
 
 /** Only a plain GitHub repository URL goes into the copied CLI line (it's pasted into a terminal). */
-const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/;
+const GITHUB_REPO_URL = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+$/
 export function GithubTab({
   search,
   setSearch,
   onStarted,
 }: {
-  search: DeploySearch;
-  setSearch: (patch: Partial<DeploySearch>) => void;
-  onStarted?: ((to: DeployStarted) => void) | undefined;
+  search: DeploySearch
+  setSearch: (patch: Partial<DeploySearch>) => void
+  onStarted?: (to: DeployStarted) => void
 }) {
-  const configured = useGithubConfigured();
-  const on = configured.data === true;
-  const user = useGithubUser(on);
-  const connected = !!user.data?.connected && user.data.valid !== false;
-  const repos = useGithubRepos(on && connected);
-  const { state: connectState, connect } = useGithubConnect();
-  const logout = useGithubLogout();
+  const configured = useGithubConfigured()
+  const on = configured.data === true
+  const user = useGithubUser(on)
+  const connected = !!user.data?.connected && user.data.valid !== false
+  const repos = useGithubRepos(on && connected)
+  const { state: connectState, connect } = useGithubConnect()
+  const logout = useGithubLogout()
 
   if (configured.isPending)
-    return <PageLoader label={copy.github.loading} inline className="min-h-64" />;
+    return <PageLoader label={copy.github.loading} inline className="min-h-64" />
   if (configured.isError)
     return (
       <PanelError
@@ -81,28 +72,25 @@ export function GithubTab({
         onRetry={() => void configured.refetch()}
         what={copy.github.what}
       />
-    );
+    )
   if (!on) {
     return (
       <StateCard
         title={copy.github.notConfigured}
         action={
-          <ButtonLink
-            href="/deploy?method=upload"
-            size="sm"
-            variant="outline"
-            className="pointer-coarse:min-h-11"
-          >
-            {copy.github.useUpload}
-          </ButtonLink>
+          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+            <Link to="/deploy" search={{ method: 'upload' }}>
+              {copy.github.useUpload}
+            </Link>
+          </Button>
         }
       >
         {copy.github.notConfiguredHint}
       </StateCard>
-    );
+    )
   }
 
-  const login = user.data?.login ?? "";
+  const login = user.data?.login ?? ''
   const connection = user.isPending ? (
     <Skeleton className="h-9 w-64" />
   ) : connected ? (
@@ -114,9 +102,7 @@ export function GithubTab({
         size="sm"
         className="h-auto px-0 pointer-coarse:min-h-11"
         disabled={logout.isPending}
-        onClick={() => {
-          logout.mutate(undefined, { onSuccess: () => void connect() });
-        }}
+        onClick={() => logout.mutate(undefined, { onSuccess: () => void connect() })}
       >
         {copy.github.switchAccount}
       </Button>
@@ -131,24 +117,24 @@ export function GithubTab({
       <Button
         type="button"
         className="pointer-coarse:min-h-11"
-        disabled={connectState.kind === "waiting"}
+        disabled={connectState.kind === 'waiting'}
         onClick={() => void connect()}
       >
         {user.data?.connected ? copy.github.reconnect : copy.github.connect}
       </Button>
-      {connectState.kind === "waiting" ? (
+      {connectState.kind === 'waiting' ? (
         <p className="text-xs text-muted-foreground" role="status">
           {copy.github.waiting}
         </p>
       ) : null}
-      {connectState.kind === "failed" ? (
+      {connectState.kind === 'failed' ? (
         <p className="text-xs text-destructive" role="alert">
           {copy.github.connectFailed}
         </p>
       ) : null}
-      {connectState.kind === "blocked" ? (
+      {connectState.kind === 'blocked' ? (
         <p className="text-xs" role="alert">
-          {copy.github.blocked}{" "}
+          {copy.github.blocked}{' '}
           <a
             href={connectState.url}
             target="_blank"
@@ -161,7 +147,7 @@ export function GithubTab({
         </p>
       ) : null}
     </div>
-  );
+  )
 
   return (
     <div className="@container/github flex flex-col gap-4">
@@ -188,7 +174,7 @@ export function GithubTab({
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 function RepoPicker({
@@ -198,44 +184,44 @@ function RepoPicker({
   login,
   onStarted,
 }: {
-  search: DeploySearch;
-  setSearch: (patch: Partial<DeploySearch>) => void;
-  repos: ReturnType<typeof useGithubRepos>;
-  login: string;
-  onStarted?: ((to: DeployStarted) => void) | undefined;
+  search: DeploySearch
+  setSearch: (patch: Partial<DeploySearch>) => void
+  repos: ReturnType<typeof useGithubRepos>
+  login: string
+  onStarted?: (to: DeployStarted) => void
 }) {
-  const ids = useId();
-  const router = useRouter();
-  const clone = useGithubClone();
-  const [q, setQ] = useState("");
-  const all = useMemo(() => repos.data ?? [], [repos.data]);
-  const shown = useMemo(() => filterRepos(all, q), [all, q]);
-  const picked = all.find((r) => r.full_name === search.repo) ?? null;
+  const ids = useId()
+  const navigate = useNavigate()
+  const clone = useGithubClone()
+  const [q, setQ] = useState('')
+  const all = useMemo(() => repos.data ?? [], [repos.data])
+  const shown = useMemo(() => filterRepos(all, q), [all, q])
+  const picked = all.find((r) => r.full_name === search.repo) ?? null
   // Typed values win; otherwise the picked repository's default branch and name (never overwriting what was typed).
-  const [typedBranch, setTypedBranch] = useState<string | null>(null);
-  const [typedName, setTypedName] = useState<string | null>(search.name ?? null);
-  const branch = typedBranch ?? picked?.default_branch ?? "";
-  const name = typedName ?? (picked ? nameFromFile(picked.name) : "");
-  const [touched, setTouched] = useState({ branch: false, name: !!search.name });
-  const [pickError, setPickError] = useState(false);
+  const [typedBranch, setTypedBranch] = useState<string | null>(null)
+  const [typedName, setTypedName] = useState<string | null>(search.name ?? null)
+  const branch = typedBranch ?? picked?.default_branch ?? ''
+  const name = typedName ?? (picked ? nameFromFile(picked.name) : '')
+  const [touched, setTouched] = useState({ branch: false, name: !!search.name })
+  const [pickError, setPickError] = useState(false)
 
-  const nameErr = touched.name || clone.isError ? nameProblem(name) : null;
-  const override = search.version && parseVersion(search.version) ? search.version : undefined;
-  const err = clone.error instanceof ApiError ? clone.error : null;
-  const errText = err && typeof err.body === "string" ? err.body : err?.message;
-  const branchErr = err?.status === 422 && /invalid request/i.test(errText ?? "") ? errText : null;
-  const serverNameErr = err?.status === 400 ? errText : null;
+  const nameErr = touched.name || clone.isError ? nameProblem(name) : null
+  const override = search.version && parseVersion(search.version) ? search.version : undefined
+  const err = clone.error instanceof ApiError ? clone.error : null
+  const errText = err && typeof err.body === 'string' ? err.body : err?.message
+  const branchErr = err?.status === 422 && /invalid request/i.test(errText ?? '') ? errText : null
+  const serverNameErr = err?.status === 400 ? errText : null
 
   const submit = () => {
     if (!picked) {
-      setPickError(true);
-      document.getElementById(`${ids}-repos`)?.focus();
-      return;
+      setPickError(true)
+      document.getElementById(`${ids}-repos`)?.focus()
+      return
     }
-    setTouched({ branch: true, name: true });
+    setTouched({ branch: true, name: true })
     // Say what's missing and go there (never a red border alone).
-    if (!branch.trim()) return document.getElementById(`${ids}-branch`)?.focus();
-    if (nameProblem(name)) return document.getElementById(`${ids}-name`)?.focus();
+    if (!branch.trim()) return void document.getElementById(`${ids}-branch`)?.focus()
+    if (nameProblem(name)) return void document.getElementById(`${ids}-name`)?.focus()
     clone.mutate(
       {
         repository_full_name: picked.full_name,
@@ -244,16 +230,16 @@ function RepoPicker({
         ...(override ? { version_override: override } : {}),
       },
       {
-        onSuccess: (buildId) => {
-          if (onStarted) onStarted({ buildId });
-          else router.push(`/builds/${encodeURIComponent(buildId)}`);
-        },
+        onSuccess: (buildId) =>
+          onStarted
+            ? onStarted({ buildId })
+            : void navigate({ to: '/builds/$buildId', params: { buildId } }),
       },
-    );
-  };
+    )
+  }
 
   if (repos.isPending)
-    return <PageLoader label={copy.github.loadingRepos} inline className="min-h-64" />;
+    return <PageLoader label={copy.github.loadingRepos} inline className="min-h-64" />
   if (repos.isError)
     return (
       <PanelError
@@ -261,59 +247,53 @@ function RepoPicker({
         onRetry={() => void repos.refetch()}
         what={copy.github.what}
       />
-    );
+    )
   if (!all.length)
     return (
       <EmptyState
         icon={FolderGit2}
         title={copy.github.noRepos(login)}
         action={
-          <ButtonLink
-            href="/deploy?method=upload"
-            size="sm"
-            variant="outline"
-            className="pointer-coarse:min-h-11"
-          >
-            {copy.github.useUpload}
-          </ButtonLink>
+          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+            <Link to="/deploy" search={{ method: 'upload' }}>
+              {copy.github.useUpload}
+            </Link>
+          </Button>
         }
       >
         {copy.github.noReposHint}
       </EmptyState>
-    );
+    )
 
   return (
     <form
       noValidate
       className="flex flex-col gap-4"
       onSubmit={(e) => {
-        e.preventDefault();
-        submit();
+        e.preventDefault()
+        submit()
       }}
     >
       <SearchInput
         aria-label={copy.github.search}
         placeholder={copy.github.searchPlaceholder}
         value={q}
-        onChange={(e) => {
-          setQ(e.target.value);
-        }}
+        onChange={(e) => setQ(e.target.value)}
       />
       {shown.length ? (
         <ScrollArea className="rounded-md border [&>[data-slot=scroll-area-viewport]]:max-h-72 [&>[data-slot=scroll-area-viewport]>div]:block!">
           <RadioGroup
             id={`${ids}-repos`}
             aria-label={copy.github.reposLabel}
-            value={search.repo ?? ""}
+            value={search.repo ?? ''}
             // A new repository starts from its own branch and name: what was typed for the last one doesn't carry over.
-            onValueChange={(value: unknown) => {
-              const v = String(value);
-              setPickError(false);
-              clone.reset();
-              setTypedBranch(null);
-              setTypedName(null);
-              setTouched({ branch: false, name: false });
-              setSearch({ repo: v, version: undefined });
+            onValueChange={(v) => {
+              setPickError(false)
+              clone.reset()
+              setTypedBranch(null)
+              setTypedName(null)
+              setTouched({ branch: false, name: false })
+              setSearch({ repo: v, version: undefined })
             }}
             className="gap-0 divide-y"
           >
@@ -321,7 +301,7 @@ function RepoPicker({
               <label
                 key={r.id}
                 htmlFor={`${ids}-${r.id}`}
-                className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-accent/50 has-[[data-checked]]:bg-accent pointer-coarse:min-h-11"
+                className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-accent/50 has-[[data-state=checked]]:bg-accent pointer-coarse:min-h-11"
                 data-testid="repo-row"
               >
                 <RadioGroupItem id={`${ids}-${r.id}`} value={r.full_name} className="mt-0.5" />
@@ -336,7 +316,7 @@ function RepoPicker({
                     ) : null}
                   </span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {r.description ? `${r.description} · ` : ""}
+                    {r.description ? `${r.description} · ` : ''}
                     {copy.github.updated(relTime(r.updated_at))}
                   </span>
                 </span>
@@ -354,9 +334,7 @@ function RepoPicker({
               size="sm"
               variant="outline"
               className="pointer-coarse:min-h-11"
-              onClick={() => {
-                setQ("");
-              }}
+              onClick={() => setQ('')}
             >
               {copy.github.clearSearch}
             </Button>
@@ -383,8 +361,8 @@ function RepoPicker({
               autoComplete="off"
               spellCheck={false}
               onChange={(e) => {
-                setTypedBranch(e.target.value);
-                setTouched((t) => ({ ...t, branch: true }));
+                setTypedBranch(e.target.value)
+                setTouched((t) => ({ ...t, branch: true }))
               }}
               aria-invalid={!!branchErr || (touched.branch && !branch.trim())}
               aria-describedby={`${ids}-branch-msg`}
@@ -408,8 +386,8 @@ function RepoPicker({
               autoComplete="off"
               spellCheck={false}
               onChange={(e) => {
-                setTypedName(e.target.value);
-                setTouched((t) => ({ ...t, name: true }));
+                setTypedName(e.target.value)
+                setTouched((t) => ({ ...t, name: true }))
               }}
               aria-invalid={!!(nameErr || serverNameErr)}
               aria-describedby={`${ids}-name-msg`}
@@ -443,7 +421,7 @@ function RepoPicker({
       ) : null}
 
       <Button type="submit" className="w-full pointer-coarse:min-h-11" disabled={clone.isPending}>
-        <span className="truncate">{copy.github.submit(picked?.full_name ?? "")}</span>
+        <span className="truncate">{copy.github.submit(picked?.full_name ?? '')}</span>
       </Button>
       {picked && GITHUB_REPO_URL.test(picked.html_url) ? (
         <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground @max-[768px]/github:hidden">
@@ -456,5 +434,5 @@ function RepoPicker({
         </div>
       ) : null}
     </form>
-  );
+  )
 }

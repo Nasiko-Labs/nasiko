@@ -1,5 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/harnesses/HarnessesPage.tsx. Local edits: the lab's shared
-// `EmptyState` is `LabEmptyState`; Prettier formatting.
 /**
  * Harnesses: the viewer's own coding-harness usage (plans/feat-harness-org-view.md). This is the core (OSS) page; an
  * edition layer that fills the `harnessOrgScope` slot renders its own org-level page instead (the route decides).
@@ -11,13 +9,13 @@
  *
  * All state lives in the URL. The harness chip and Compare replace history. At most one status line.
  */
-import { SquareTerminal } from "lucide-react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { useUsersMe } from "./api";
-import { copy } from "./copy";
-import { useHarnessWindow, useUsageLevel, type SetSearch } from "./level";
-import { useLiveIndividual } from "./liveIndividual";
-import type { HarnessesSearch } from "./search";
+import { SquareTerminal } from 'lucide-react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { useUsersMe } from './api'
+import { copy } from './copy'
+import { useHarnessWindow, useUsageLevel, type SetSearch } from './level'
+import { useLiveIndividual } from './liveIndividual'
+import type { HarnessesSearch } from './search'
 import {
   HarnessHeader,
   LevelLoading,
@@ -25,32 +23,29 @@ import {
   UsageError,
   UserLevel,
   ViewerError,
-} from "./components/PageParts";
+} from './components/PageParts'
 
 export function HarnessesPage({
   search,
   setSearch,
 }: {
-  search: HarnessesSearch;
-  setSearch: SetSearch;
+  search: HarnessesSearch
+  setSearch: SetSearch
 }) {
-  const { today, from, win, days, compare } = useHarnessWindow(search);
-  const me = useUsersMe(undefined);
+  const { today, from, win, days, compare } = useHarnessWindow(search)
+  const me = useUsersMe(undefined)
   // The landing request: the server scopes it to the viewer.
-  const req = { ...win.params, compare };
-  const level = useUsageLevel(me.data?.id, req, win.key, !!me.data);
-  const { usage, res, absent } = level;
-  const live = useLiveIndividual(me.data?.id, win, compare, absent);
+  const req = { ...win.params, compare }
+  const level = useUsageLevel(me.data?.id, req, win.key, !!me.data)
+  const { usage, res, absent } = level
+  const live = useLiveIndividual(me.data?.id, win, compare, absent)
 
-  const toggleHarness = (h: string) => {
-    setSearch({ harness: search.harness === h ? undefined : h }, { replace: true });
-  };
+  const toggleHarness = (h: string) =>
+    setSearch({ harness: search.harness === h ? undefined : h }, { replace: true })
   const widen =
-    search.preset === "30d"
+    search.preset === '30d'
       ? undefined
-      : () => {
-          setSearch({ preset: "30d", from: undefined, to: undefined });
-        };
+      : () => setSearch({ preset: '30d', from: undefined, to: undefined })
 
   const header = (
     <HarnessHeader
@@ -65,11 +60,11 @@ export function HarnessesPage({
       refreshFailed={level.refreshFailed}
       onRetry={() => void usage.refetch()}
     />
-  );
+  )
 
   if (me.isError)
-    return <ViewerError header={header} fix="GET /api/users/me failed. Reload to retry." />;
-  if (!me.data || (usage.isPending && !absent)) return <LevelLoading header={header} />;
+    return <ViewerError header={header} fix="GET /api/users/me failed. Reload to retry." />
+  if (!me.data || (usage.isPending && !absent)) return <LevelLoading header={header} />
 
   // ── Not found or not visible (coded 404) ──
   if (level.notVisible)
@@ -80,7 +75,7 @@ export function HarnessesPage({
           {copy.notVisibleHint}
         </EmptyState>
       </div>
-    );
+    )
 
   if (absent)
     return (
@@ -93,12 +88,12 @@ export function HarnessesPage({
         onToggle={toggleHarness}
         name={me.data.display_name}
       />
-    );
+    )
 
-  if (!res) return <UsageError header={header} onRetry={() => void usage.refetch()} />;
+  if (!res) return <UsageError header={header} onRetry={() => void usage.refetch()} />
 
   return (
-    <div className={`flex flex-col gap-4 ${level.stale ? "opacity-80" : ""}`}>
+    <div className={`flex flex-col gap-4 ${level.stale ? 'opacity-80' : ''}`}>
       {header}
       <UserLevel
         res={res}
@@ -115,5 +110,5 @@ export function HarnessesPage({
         onWiden={widen}
       />
     </div>
-  );
+  )
 }

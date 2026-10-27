@@ -1,4 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/links.ts. Local edits: none (Prettier formatting only).
 /**
  * Link to the existing nasiko UI's session/trace view (plan F4, A18). Built only from a
  * validated env base plus URLSearchParams-encoded ids — never from response strings.
@@ -10,11 +9,11 @@ export function traceLink(
   sessionId: string | null,
   traceId: string,
 ): string | null {
-  if (!base) return null;
-  const url = new URL("observability-session", base.endsWith("/") ? base : `${base}/`);
-  const qs = new URLSearchParams();
-  if (sessionId) qs.set("session_id", sessionId);
-  qs.set("trace_id", traceId);
-  url.search = qs.toString();
-  return url.toString();
+  if (!base) return null
+  const url = new URL('observability-session', base.endsWith('/') ? base : `${base}/`)
+  const qs = new URLSearchParams()
+  if (sessionId) qs.set('session_id', sessionId)
+  qs.set('trace_id', traceId)
+  url.search = qs.toString()
+  return url.toString()
 }

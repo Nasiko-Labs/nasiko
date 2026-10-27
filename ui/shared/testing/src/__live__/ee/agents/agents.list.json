@@ -1,0 +1,818 @@
+{
+  "fixture_version": 1,
+  "id": "agents.list",
+  "recorded_at": "2026-09-29T07:44:51.904Z",
+  "window": {
+    "start": "2026-09-29T07:44:51.904Z",
+    "end": "2026-09-29T07:44:51.911Z"
+  },
+  "anchor": "2026-09-29T07:44:38.390Z",
+  "edition": "ee",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/agents",
+    "query": {
+      "limit": "100",
+      "offset": "0"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": [
+    {
+      "id": "5eed0002-0003-4000-8000-000000000003",
+      "name": "admin-claude-code",
+      "display_name": "Claude Code (admin@example.com)",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [
+        "local",
+        "coding-agent"
+      ],
+      "metadata": {
+        "integration_id": "claude",
+        "source": "nasiko-cli-integration"
+      },
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0002-0003-4000-8000-000000000005",
+      "name": "admin-codex",
+      "display_name": "Codex (admin@example.com)",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [
+        "local",
+        "coding-agent"
+      ],
+      "metadata": {
+        "integration_id": "codex",
+        "source": "nasiko-cli-integration"
+      },
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0002-0003-4000-8000-000000000004",
+      "name": "admin-cursor",
+      "display_name": "Cursor (admin@example.com)",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [
+        "local",
+        "coding-agent"
+      ],
+      "metadata": {
+        "integration_id": "cursor",
+        "source": "nasiko-cli-integration"
+      },
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000003",
+      "name": "seed-code-reviewer",
+      "display_name": "Code Reviewer",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.2.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000d",
+      "name": "seed-data-cleaner",
+      "display_name": "Data Cleaner",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000006",
+      "name": "seed-doc-writer",
+      "display_name": "Doc Writer",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.1.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000013",
+      "name": "seed-growth-analyst",
+      "display_name": "Growth Analyst",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.2.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000f",
+      "name": "seed-hr-helpdesk",
+      "display_name": "HR Helpdesk",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.2.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000008",
+      "name": "seed-invoice-parser",
+      "display_name": "Invoice Parser",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.3.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000012",
+      "name": "seed-legal-reviewer",
+      "display_name": "Legal Reviewer",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.1.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000e",
+      "name": "seed-meeting-notes",
+      "display_name": "Meeting Notes",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.1.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000b",
+      "name": "seed-onboarding-guide",
+      "display_name": "Onboarding Guide",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.2.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000010",
+      "name": "seed-pricing-engine",
+      "display_name": "Pricing Engine",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.3.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000011",
+      "name": "seed-qa-tester",
+      "display_name": "QA Tester",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000002",
+      "name": "seed-research-agent",
+      "display_name": "Research Agent",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.1.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000007",
+      "name": "seed-sales-assistant",
+      "display_name": "Sales Assistant",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.2.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000c",
+      "name": "seed-security-scanner",
+      "display_name": "Security Scanner",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.3.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000004",
+      "name": "seed-sql-analyst",
+      "display_name": "SQL Analyst",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.3.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-00000000000a",
+      "name": "seed-summarizer",
+      "display_name": "Summarizer",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.1.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000001",
+      "name": "seed-support-bot",
+      "display_name": "Support Bot",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000009",
+      "name": "seed-translator",
+      "display_name": "Translator",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    },
+    {
+      "id": "5eed0000-0001-4000-8000-000000000005",
+      "name": "seed-triage-router",
+      "display_name": "Triage Router",
+      "description": "Seeded by nasiko-ui-lab (scripts/seed-trace-usage.ts)",
+      "owner_id": "<admin-id>",
+      "url": null,
+      "icon_url": null,
+      "version": "1.0.0",
+      "protocol_version": "0.3.0",
+      "preferred_transport": "JSONRPC",
+      "documentation_url": null,
+      "capabilities": {
+        "chat_agent": false,
+        "pushNotifications": false,
+        "stateTransitionHistory": false,
+        "streaming": false
+      },
+      "security_schemes": {},
+      "default_input_modes": [
+        "application/json",
+        "text/plain"
+      ],
+      "default_output_modes": [
+        "application/json"
+      ],
+      "skills": [],
+      "tags": [],
+      "metadata": {},
+      "status": "registered",
+      "image": null,
+      "transport_path": null,
+      "created_at": "2026-09-29T07:44:38.765967Z",
+      "updated_at": "2026-09-29T07:44:38.765967Z"
+    }
+  ]
+}

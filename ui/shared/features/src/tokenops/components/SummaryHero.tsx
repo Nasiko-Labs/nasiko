@@ -1,11 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/tokenops/components/SummaryHero.tsx
-// (the bento, 8bf09bf29; the tour target, dd9fe0f64). Local edits, as in this file's earlier port: the spike clause's
-// `m.span layoutId` is `MorphSpan` from `@nasiko/ui/motion`; `d3-shape`'s `area`/`line`/`curveMonotoneX` come from
-// `@nasiko/ui/charts-kit` (the UI package owns the dependency) and `m` from `@nasiko/ui/motion`; `Reveal` is
-// `RevealGroup`; the Month-end figure's Budgets link is the budgets slot's `OpenLink` (1c28b0bb9); optional props admit `undefined`; the `@eslint-react`
-// directives are plain comments (no such rule here); Prettier formatting.
-"use client";
-
 /**
  * TokenOps hero: one bento that answers "what did we spend, and is it normal" before anything is opened.
  *
@@ -18,15 +10,19 @@
  * The narrative is the answer; the tiles back it and never repeat a whole sentence. The spike clause links to that
  * day's sessions and is a shared `layoutId` source for the day panel and the Sessions header morph.
  */
-import type { ReactNode } from "react";
-import { area, curveMonotoneX, line } from "@nasiko/ui/charts-kit";
-import { Delta, PanelError, RevealGroup, RevealItem, SpotlightCard } from "@nasiko/ui/composites";
-import { m, MorphSpan } from "@nasiko/ui/motion";
-import { Badge, Skeleton } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
+import { area, curveMonotoneX, line } from 'd3-shape'
+import { m } from 'motion/react'
+import type { ReactNode } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { SpotlightCard } from '@nasiko/ui/composites/spotlight-card'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Delta } from '@nasiko/ui/composites/delta'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { morphId } from '@nasiko/features/observability/tuning'
+import { spikeSentence, type Spike } from '@nasiko/features/narrative/tokenops'
+import { describeDelta, POLARITY, TONE_CLASS, type Polarity } from '@nasiko/ui/lib/delta'
 import {
-  describeDelta,
   fmtCostPerOp,
   fmtInt,
   fmtLatency,
@@ -34,15 +30,12 @@ import {
   fmtMoneyFloor,
   fmtShortDay,
   fmtTokens,
-  POLARITY,
-  TONE_CLASS,
-  type Polarity,
-} from "@nasiko/ui/lib";
-import { morphId } from "../../observability/tuning";
-import { spikeSentence, type Spike } from "../../narrative/tokenops";
-import { FORECAST_MIN_DAYS, type MonthSummary } from "../forecast";
-import type { TimelinePoint } from "../series";
-import type { FinopsDashboardData, KpiValue } from "../types";
+} from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import { FORECAST_MIN_DAYS, type MonthSummary } from '../forecast'
+import type { TimelinePoint } from '../series'
+import type { FinopsDashboardData, KpiValue } from '../types'
+import { Reveal, RevealItem } from '@nasiko/ui/composites/reveal'
 
 export function SummaryHero({
   sentences,
@@ -60,39 +53,37 @@ export function SummaryHero({
   onRetry,
   children,
 }: {
-  sentences: string[];
-  spike: Spike | null;
+  sentences: string[]
+  spike: Spike | null
   /** Wraps the spike link text in a link to that day's sessions. */
-  spikeLink: (children: ReactNode) => ReactNode;
-  windowLabel: string;
+  spikeLink: (children: ReactNode) => ReactNode
+  windowLabel: string
   /** What Δ compares against, when "the period before" alone would mislead (This month). */
-  compareLabel?: string | undefined;
-  data: FinopsDashboardData | undefined;
+  compareLabel?: string
+  data: FinopsDashboardData | undefined
   /** The window's buckets, drawn as the lead's spend curve. */
-  points: TimelinePoint[];
-  compare: boolean;
-  unpriced: boolean;
-  month: MonthSummary | null;
-  loading: boolean;
-  error: unknown;
-  onRetry: () => void;
+  points: TimelinePoint[]
+  compare: boolean
+  unpriced: boolean
+  month: MonthSummary | null
+  loading: boolean
+  error: unknown
+  onRetry: () => void
   /** The savings strip, the bento's last row. */
-  children?: ReactNode;
+  children?: ReactNode
 }) {
   // Budgets are Enterprise only: the link is the layer's, and an OSS build has neither it nor the route.
-  const OpenBudgets = useSlots().budgets.OpenLink;
-  if (error) return <PanelError error={error} onRetry={onRetry} what="the summary" />;
-  const kpis = data?.kpis;
+  const OpenBudgets = useSlots().budgets.OpenLink
+  if (error) return <PanelError error={error} onRetry={onRetry} what="the summary" />
+  const kpis = data?.kpis
   const delta = (k: KpiValue | undefined, polarity: Polarity) =>
-    k && compare ? (
-      <Delta changePct={k.change_pct} polarity={polarity} current={k.current} />
-    ) : null;
+    k && compare ? <Delta changePct={k.change_pct} polarity={polarity} current={k.current} /> : null
   return (
     <section data-tour="tokenops-summary" aria-labelledby="summary-title">
       <h2 id="summary-title" className="sr-only">
         Summary
       </h2>
-      <RevealGroup className="grid gap-3 lg:grid-cols-12">
+      <Reveal className="grid gap-3 lg:grid-cols-12">
         <RevealItem className="lg:col-span-7">
           <Lead
             windowLabel={windowLabel}
@@ -114,7 +105,7 @@ export function SummaryHero({
         >
           <Tile
             label="Total spend"
-            value={kpis ? fmtMoneyFloor(kpis.total_spend.current, unpriced) : "—"}
+            value={kpis ? fmtMoneyFloor(kpis.total_spend.current, unpriced) : '—'}
             aside={delta(kpis?.total_spend, POLARITY.spend)}
           />
           <Tile
@@ -131,7 +122,7 @@ export function SummaryHero({
                   {fmtMoney(month.high)}
                 </>
               ) : (
-                "—"
+                '—'
               )
             }
           >
@@ -139,17 +130,17 @@ export function SummaryHero({
           </Tile>
           <Tile
             label="Cost / operation"
-            value={kpis ? fmtCostPerOp(kpis.cost_per_operation.current) : "—"}
+            value={kpis ? fmtCostPerOp(kpis.cost_per_operation.current) : '—'}
             aside={delta(kpis?.cost_per_operation, POLARITY.costPerOp)}
           />
           <Tile
             label="Operations"
-            value={kpis ? fmtInt(kpis.total_operations.current) : "—"}
+            value={kpis ? fmtInt(kpis.total_operations.current) : '—'}
             aside={delta(kpis?.total_operations, POLARITY.operations)}
           />
           <Tile
             label="p95 latency"
-            value={kpis ? fmtLatency(kpis.latency_p95_ms.current) : "—"}
+            value={kpis ? fmtLatency(kpis.latency_p95_ms.current) : '—'}
             aside={delta(kpis?.latency_p95_ms, POLARITY.p95)}
           />
           <Tile
@@ -158,17 +149,18 @@ export function SummaryHero({
               kpis ? (
                 <>
                   {fmtInt(kpis.active_agents.current)}
-                  {/* `kpis` comes from `data`, so the total is there too. */}
-                  <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-                    of {fmtInt(data.summary.total_agents)}
-                  </span>
+                  {data ? (
+                    <span className="ml-1.5 text-sm font-normal text-muted-foreground">
+                      of {fmtInt(data.summary.total_agents)}
+                    </span>
+                  ) : null}
                 </>
               ) : (
-                "—"
+                '—'
               )
             }
           >
-            {kpis && data.summary.total_agents > 0 ? (
+            {kpis && data && data.summary.total_agents > 0 ? (
               <Meter pct={(kpis.active_agents.current / data.summary.total_agents) * 100} />
             ) : null}
           </Tile>
@@ -197,9 +189,9 @@ export function SummaryHero({
         ) : null}
 
         {children ? <RevealItem className="lg:col-span-12">{children}</RevealItem> : null}
-      </RevealGroup>
+      </Reveal>
     </section>
-  );
+  )
 }
 
 /** The narrative card, over the window's spend curve. Its backdrop is the page's one effect area. */
@@ -215,16 +207,16 @@ function Lead({
   changePct,
   points,
 }: {
-  windowLabel: string;
-  compareLabel?: string | undefined;
-  compare: boolean;
-  loading: boolean;
-  sentences: string[];
-  spike: Spike | null;
-  spikeLink: (children: ReactNode) => ReactNode;
-  unpriced: boolean;
-  changePct: number | null | undefined;
-  points: TimelinePoint[];
+  windowLabel: string
+  compareLabel?: string
+  compare: boolean
+  loading: boolean
+  sentences: string[]
+  spike: Spike | null
+  spikeLink: (children: ReactNode) => ReactNode
+  unpriced: boolean
+  changePct: number | null | undefined
+  points: TimelinePoint[]
 }) {
   return (
     <SpotlightCard className="h-full min-h-64">
@@ -232,7 +224,7 @@ function Lead({
         <Badge variant="outline" className="border-primary/30 bg-primary/10 text-primary-text">
           <span>{windowLabel}</span>
           <span aria-hidden>·</span>
-          <span>{compare ? `vs ${compareLabel ?? "the period before"}` : "Compare is off"}</span>
+          <span>{compare ? `vs ${compareLabel ?? 'the period before'}` : 'Compare is off'}</span>
         </Badge>
         {loading ? (
           <div aria-busy="true" className="flex flex-col gap-2">
@@ -244,16 +236,16 @@ function Lead({
           <p className="max-w-[60ch] text-xl leading-8 text-balance text-foreground">
             <span data-testid="summary-narrative">
               {emphasize(
-                sentences.filter((s) => !spike || !s.startsWith("Spend peaked")).join(" "),
+                sentences.filter((s) => !spike || !s.startsWith('Spend peaked')).join(' '),
                 changePct,
               )}
             </span>
             {spike ? (
               <>
-                {" "}
-                <MorphSpan layoutId={morphId(`day-header-${spike.date}`)} className="inline">
+                {' '}
+                <m.span layoutId={morphId(`day-header-${spike.date}`)} className="inline">
                   {spikeSentence(spike)}
-                </MorphSpan>
+                </m.span>
                 .
               </>
             ) : null}
@@ -274,41 +266,35 @@ function Lead({
       </div>
       <SpendCurve points={points} spikeIso={spike?.date} />
     </SpotlightCard>
-  );
+  )
 }
 
-const CURVE_W = 600;
-const CURVE_H = 72;
+const CURVE_W = 600
+const CURVE_H = 72
 
 /**
  * The window's spend as a filled curve along the card's foot, with the peak marked. Decorative here (`aria-hidden`):
  * the Spend over time chart below carries the same buckets with axes, a tooltip and a Table view.
  */
-function SpendCurve({
-  points,
-  spikeIso,
-}: {
-  points: TimelinePoint[];
-  spikeIso?: string | undefined;
-}) {
-  if (points.length < 2) return <div className="h-6" />;
-  const max = Math.max(...points.map((p) => p.spend), 0);
-  if (max <= 0) return <div className="h-6" />;
-  const x = (i: number) => (i / (points.length - 1)) * CURVE_W;
-  const y = (v: number) => CURVE_H - 4 - (v / max) * (CURVE_H - 12);
+function SpendCurve({ points, spikeIso }: { points: TimelinePoint[]; spikeIso?: string }) {
+  if (points.length < 2) return <div className="h-6" />
+  const max = Math.max(...points.map((p) => p.spend), 0)
+  if (max <= 0) return <div className="h-6" />
+  const x = (i: number) => (i / (points.length - 1)) * CURVE_W
+  const y = (v: number) => CURVE_H - 4 - (v / max) * (CURVE_H - 12)
   const fill = area<TimelinePoint>()
     .x((_, i) => x(i))
     .y0(CURVE_H)
     .y1((p) => y(p.spend))
-    .curve(curveMonotoneX)(points);
+    .curve(curveMonotoneX)(points)
   const stroke = line<TimelinePoint>()
     .x((_, i) => x(i))
     .y((p) => y(p.spend))
-    .curve(curveMonotoneX)(points);
+    .curve(curveMonotoneX)(points)
   const peakIndex = points.findIndex((p) =>
     spikeIso ? p.iso.startsWith(spikeIso) : p.spend === max,
-  );
-  const peak = points[peakIndex];
+  )
+  const peak = points[peakIndex]
   return (
     <svg
       aria-hidden
@@ -337,7 +323,7 @@ function SpendCurve({
         vectorEffect="non-scaling-stroke"
         initial={{ pathLength: 0 }}
         animate={{ pathLength: 1 }}
-        transition={{ duration: 0.9, ease: "easeOut" }}
+        transition={{ duration: 0.9, ease: 'easeOut' }}
       />
       {peak ? (
         <line
@@ -351,7 +337,7 @@ function SpendCurve({
         />
       ) : null}
     </svg>
-  );
+  )
 }
 
 /** Money in bold and the "N% more/less" (or "N× …") change in its tone; the words carry the direction, so colour is never alone. */
@@ -359,21 +345,21 @@ function emphasize(text: string, changePct: number | null | undefined): ReactNod
   return text.split(/(\$[\d,]+(?:\.\d+)?|\d+% (?:more|less)|[\d,]+× as much as)/).map((part, i) =>
     i % 2 === 0 ? (
       part
-    ) : part.startsWith("$") ? (
-      // a piece of one split sentence: parts can repeat, position is identity
+    ) : part.startsWith('$') ? (
+      // eslint-disable-next-line @eslint-react/no-array-index-key -- a piece of one split sentence: parts can repeat, position is identity
       <strong key={i} className="font-semibold">
         {part}
       </strong>
     ) : (
       <span
-        // a piece of one split sentence: parts can repeat, position is identity
+        // eslint-disable-next-line @eslint-react/no-array-index-key -- a piece of one split sentence: parts can repeat, position is identity
         key={i}
-        className={cn("font-medium", TONE_CLASS[describeDelta(changePct, POLARITY.spend).tone])}
+        className={cn('font-medium', TONE_CLASS[describeDelta(changePct, POLARITY.spend).tone])}
       >
         {part}
       </span>
     ),
-  );
+  )
 }
 
 function Tile({
@@ -382,10 +368,10 @@ function Tile({
   value,
   children,
 }: {
-  label: string;
-  aside?: ReactNode;
-  value: ReactNode;
-  children?: ReactNode;
+  label: string
+  aside?: ReactNode
+  value: ReactNode
+  children?: ReactNode
 }) {
   return (
     // A `dl` group: only `dt`/`dd` may sit in it, so the aside (a delta) lives in the term's row.
@@ -401,7 +387,7 @@ function Tile({
         {children}
       </dd>
     </RevealItem>
-  );
+  )
 }
 
 function Stat({ label, value, children }: { label: string; value: string; children: ReactNode }) {
@@ -413,7 +399,7 @@ function Stat({ label, value, children }: { label: string; value: string; childr
         {children}
       </dd>
     </div>
-  );
+  )
 }
 
 function Meter({ pct }: { pct: number }) {
@@ -424,17 +410,17 @@ function Meter({ pct }: { pct: number }) {
         style={{ width: `${Math.min(100, pct)}%` }}
       />
     </div>
-  );
+  )
 }
 
 /** Month to date against the forecast band. */
 function MonthMeter({ month }: { month: MonthSummary | null }) {
-  if (!month) return <Skeleton className="h-1.5 w-full" aria-label="Loading month" />;
-  const high = month.show && month.high ? month.high : null;
-  const low = month.show && month.low ? month.low : null;
-  const over = high !== null && month.mtd > high;
-  const scale = high ? Math.max(high, month.mtd) : Math.max(month.mtd, 1);
-  const pct = (v: number) => `${Math.min(100, (v / scale) * 100)}%`;
+  if (!month) return <Skeleton className="h-1.5 w-full" aria-label="Loading month" />
+  const high = month.show && month.high ? month.high : null
+  const low = month.show && month.low ? month.low : null
+  const over = high !== null && month.mtd > high
+  const scale = high ? Math.max(high, month.mtd) : Math.max(month.mtd, 1)
+  const pct = (v: number) => `${Math.min(100, (v / scale) * 100)}%`
   return (
     <div className="flex flex-col gap-1.5" role="group" aria-label="Month progress">
       <div className="relative h-1.5 w-full rounded-full bg-muted" aria-hidden>
@@ -447,27 +433,27 @@ function MonthMeter({ month }: { month: MonthSummary | null }) {
         ) : null}
         <div
           className={cn(
-            "absolute inset-y-0 left-0 rounded-full",
-            over ? "bg-warning" : "bg-primary",
+            'absolute inset-y-0 left-0 rounded-full',
+            over ? 'bg-warning' : 'bg-primary',
           )}
           style={{ width: pct(month.mtd) }}
         />
       </div>
       <p className="text-xs text-muted-foreground">
-        <span className="font-medium text-foreground tabular-nums">{fmtMoney(month.mtd)}</span>{" "}
+        <span className="font-medium text-foreground tabular-nums">{fmtMoney(month.mtd)}</span>{' '}
         spent this month
         {over ? (
           <span className="font-medium text-warning"> · over forecast</span>
         ) : high === null ? (
           <>
-            {" "}
-            ·{" "}
+            {' '}
+            ·{' '}
             {month.elapsedDays < 1
-              ? "forecast starts tomorrow"
+              ? 'forecast starts tomorrow'
               : `forecast appears after ${FORECAST_MIN_DAYS} days`}
           </>
         ) : null}
       </p>
     </div>
-  );
+  )
 }

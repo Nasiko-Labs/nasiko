@@ -1,8 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/page-header.tsx. Local edits: `cn` import mapped to
-// ../lib/cn; `className` typed `| undefined` (exactOptionalPropertyTypes).
 /** The one page heading (plan §8 Phase 1): optional breadcrumb, `h1`, one line of description, actions. */
-import type { ReactNode } from "react";
-import { cn } from "../lib/cn";
+import type { ReactNode } from 'react'
+import { cn } from '@nasiko/ui/lib/utils'
 
 export function PageHeader({
   title,
@@ -11,15 +9,15 @@ export function PageHeader({
   breadcrumb,
   className,
 }: {
-  title: ReactNode;
-  description?: ReactNode;
-  actions?: ReactNode;
+  title: ReactNode
+  description?: ReactNode
+  actions?: ReactNode
   /** A shadcn `Breadcrumb`, shown above the title. */
-  breadcrumb?: ReactNode;
-  className?: string | undefined;
+  breadcrumb?: ReactNode
+  className?: string
 }) {
   return (
-    <header className={cn("flex flex-col gap-2", className)}>
+    <header className={cn('flex flex-col gap-2', className)}>
       {breadcrumb}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -29,5 +27,5 @@ export function PageHeader({
         {actions ? <div className="flex flex-wrap items-center gap-2">{actions}</div> : null}
       </div>
     </header>
-  );
+  )
 }

@@ -1,12 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/OptimizationPage.tsx. Local edits: `"use
-// client"`; `strategyQuery`/`budgetQuery`/`tiersQuery`/`previewQuery` take the scope and leaving drops the previews
-// by the scoped prefix `productKey(scope, 'optimization', 'preview')`; Base UI: the strategy RadioGroup's
-// `onValueChange` passes `(value, eventDetails)`, Radix's `group-has-[[data-state=checked]]` is
-// `group-has-[[data-checked]]`, the budget ToggleGroup is value-array based (`value={[level]}`, an emptied pick
-// ignored as the lab's `v &&`) with `loopFocus={false}` for Radix's `loop={false}`, and `TooltipTrigger asChild` ->
-// `render={<span …/>}`; a named eslint-disable on the lab's defensive data check; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * Your settings on /optimization (plans/feat-context-optimization.md §3; plans/feat-optimization-page.md P2, P10, R2D,
  * R2G, E4, C8): how much past conversation each new message carries, for every signed-in user, OSS and EE. The page's
@@ -21,20 +12,18 @@
  * Save sends only what changed, both routes at once; a field that fails keeps its draft (2C). While anything is unsaved
  * the Save bar sticks to the bottom of the viewport (R2G); LeaveGuard lets the page's own search moves through (C8).
  */
-"use client";
-
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Fragment, useEffect, useId, useState, type ReactNode } from "react";
-import { Controller, useForm, useWatch } from "react-hook-form";
-import { toast } from "@nasiko/ui/toast";
-import { LeaveGuard } from "@nasiko/app-core/leave-guard";
-import { PageLoader } from "@nasiko/ui/composites";
-import { PanelError } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Label } from "@nasiko/ui/primitives";
-import { RadioGroup, RadioGroupItem } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { Switch } from "@nasiko/ui/primitives";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Fragment, useEffect, useId, useState, type ReactNode } from 'react'
+import { Controller, useForm, useWatch } from 'react-hook-form'
+import { toast } from 'sonner'
+import { LeaveGuard } from '@nasiko/app-core/leave-guard'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Label } from '@nasiko/ui/primitives/label'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { Switch } from '@nasiko/ui/primitives/switch'
 import {
   Table,
   TableBody,
@@ -42,16 +31,15 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { ToggleGroup, ToggleGroupItem } from "@nasiko/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
-import { Chosen } from "../settings/components/Chosen";
-import { SettingRow, SettingRows } from "../settings/components/SettingRow";
-import { PICTURE, TILE } from "../settings/components/tileStyles";
-import { cn } from "@nasiko/ui/cn";
-import { productKey, useProductScope } from "@nasiko/data-access/product";
-import { budgetQuery, previewQuery, strategyQuery, tiersQuery, useSavePreferences } from "./api";
-import { copy } from "./copy";
+} from '@nasiko/ui/primitives/table'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
+import { Chosen } from '@nasiko/features/settings/components/Chosen'
+import { SettingRow, SettingRows } from '@nasiko/features/settings/components/SettingRow'
+import { PICTURE, TILE } from '@nasiko/features/settings/components/tileStyles'
+import { cn } from '@nasiko/ui/lib/utils'
+import { budgetQuery, previewQuery, strategyQuery, tiersQuery, useSavePreferences } from './api'
+import { copy } from './copy'
 import {
   approx,
   changedFields,
@@ -59,30 +47,29 @@ import {
   tierFigure,
   type PreferenceEdit,
   type SaveOutcome,
-} from "./logic";
-import { LEVELS, STRATEGIES, type Level, type Strategy } from "./types";
+} from './logic'
+import { LEVELS, STRATEGIES, type Level, type Strategy } from './types'
 
-type Values = Required<PreferenceEdit>;
+type Values = Required<PreferenceEdit>
 
 /** `previewEnabled`: the last-chat preview may run (E4: the section has been on screen, or #settings was opened). */
 export function OptimizationPage({ previewEnabled }: { previewEnabled: boolean }) {
-  const scope = useProductScope();
-  const strategy = useQuery(strategyQuery(scope));
-  const budget = useQuery(budgetQuery(scope));
+  const strategy = useQuery(strategyQuery)
+  const budget = useQuery(budgetQuery)
   // Remounted after each Save with the next draft (never reset(): CLAUDE.md Settings).
   const [form, setForm] = useState<{
-    generation: number;
-    draft: Values | null;
-    errors: SaveOutcome["failed"];
+    generation: number
+    draft: Values | null
+    errors: SaveOutcome['failed']
   }>({
     generation: 0,
     draft: null,
     errors: [],
-  });
-  const withSwitch = strategy.data?.enabled !== undefined;
-  const loading = strategy.isPending || budget.isPending;
+  })
+  const withSwitch = strategy.data?.enabled !== undefined
+  const loading = strategy.isPending || budget.isPending
   // An error with cached data (a background refetch) keeps the form; only a first load that failed swaps it out.
-  const failed = (!strategy.data && strategy.error) || (!budget.data && budget.error) || null;
+  const failed = (!strategy.data && strategy.error) || (!budget.data && budget.error) || null
   return (
     <div className="flex flex-col gap-6">
       {/* Without the switch (today's server) the one fact the form can't show: it is always on (1A). */}
@@ -95,8 +82,7 @@ export function OptimizationPage({ previewEnabled }: { previewEnabled: boolean }
           what={copy.title.toLowerCase()}
           onRetry={() => void Promise.all([strategy.refetch(), budget.refetch()])}
         />
-      ) : // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's belt and braces: the form needs both
-      loading || !strategy.data || !budget.data ? (
+      ) : loading || !strategy.data || !budget.data ? (
         <PageLoader label={copy.loading} />
       ) : (
         <PreferencesForm
@@ -110,19 +96,19 @@ export function OptimizationPage({ previewEnabled }: { previewEnabled: boolean }
           initialErrors={form.errors}
           withSwitch={withSwitch}
           previewEnabled={previewEnabled}
-          onSaved={(submitted, outcome) => {
+          onSaved={(submitted, outcome) =>
             setForm((f) => ({
               generation: f.generation + 1,
               // 2C: what saved is the server's value now and what failed is still the draft, so either way the remount
               // starts from what was submitted; with nothing failed it starts from the refetched server values.
               draft: outcome.failed.length ? submitted : null,
               errors: outcome.failed,
-            }));
-          }}
+            }))
+          }
         />
       )}
     </div>
-  );
+  )
 }
 
 function PreferencesForm({
@@ -133,61 +119,61 @@ function PreferencesForm({
   previewEnabled,
   onSaved,
 }: {
-  saved: Values;
+  saved: Values
   /** The draft a failed field kept (2C); the server's values otherwise. */
-  initial: Values | null;
-  initialErrors: SaveOutcome["failed"];
-  withSwitch: boolean;
-  previewEnabled: boolean;
-  onSaved: (submitted: Values, outcome: SaveOutcome) => void;
+  initial: Values | null
+  initialErrors: SaveOutcome['failed']
+  withSwitch: boolean
+  previewEnabled: boolean
+  onSaved: (submitted: Values, outcome: SaveOutcome) => void
 }) {
-  const id = useId();
-  const save = useSavePreferences(copy.saveFailed);
-  const tiers = useQuery(tiersQuery(useProductScope()));
-  const form = useForm<Values>({ defaultValues: initial ?? saved });
+  const id = useId()
+  const save = useSavePreferences(copy.saveFailed)
+  const tiers = useQuery(tiersQuery)
+  const form = useForm<Values>({ defaultValues: initial ?? saved })
   // The server's values when this form mounted: a refetch that brings another tab's change must not turn an untouched
   // field into an edit that Save would write back.
-  const [base] = useState(saved);
-  const draft = useWatch({ control: form.control }) as Values;
-  const edit = changedFields(base, draft, withSwitch);
-  const dirty = Object.keys(edit).length > 0;
+  const [base] = useState(saved)
+  const draft = useWatch({ control: form.control }) as Values
+  const edit = changedFields(base, draft, withSwitch)
+  const dirty = Object.keys(edit).length > 0
   const errorFor = (field: keyof Values) => {
-    const e = initialErrors.find((x) => x.field === field);
+    const e = initialErrors.find((x) => x.field === field)
     return e && edit[field] !== undefined
       ? copy.fieldFailed(copy.fieldName[field], e.message)
-      : undefined;
-  };
+      : undefined
+  }
 
   const submit = form.handleSubmit((v) => {
-    const changes = changedFields(base, v, withSwitch);
+    const changes = changedFields(base, v, withSwitch)
     save.mutate(
       { edit: changes, strategy: v.strategy },
       {
         onSuccess: (outcome) => {
           if (outcome.saved.length)
-            toast.success(copy.saved(outcome.saved.map((f) => copy.fieldName[f])));
-          onSaved(v, outcome);
+            toast.success(copy.saved(outcome.saved.map((f) => copy.fieldName[f])))
+          onSaved(v, outcome)
         },
       },
-    );
-  });
+    )
+  })
 
   const sections = numberVisible([
-    { key: "switch" as const, shown: withSwitch },
-    { key: "strategy" as const, shown: true },
-    { key: "budget" as const, shown: true },
-  ]);
-  const off = withSwitch && !draft.enabled;
-  const figure = tierFigure(tiers.data ?? undefined, draft.strategy, draft.level);
+    { key: 'switch' as const, shown: withSwitch },
+    { key: 'strategy' as const, shown: true },
+    { key: 'budget' as const, shown: true },
+  ])
+  const off = withSwitch && !draft.enabled
+  const figure = tierFigure(tiers.data ?? undefined, draft.strategy, draft.level)
 
-  const body: Record<(typeof sections)[number]["key"], (n: number) => ReactNode> = {
+  const body: Record<(typeof sections)[number]['key'], (n: number) => ReactNode> = {
     switch: (n) => (
       <SettingRow
         htmlFor={`${id}-enabled`}
         label={copy.section(n, copy.switchTitle)}
         hint={off ? copy.switchOffNote : copy.switchHint}
         hintId={`${id}-enabled-hint`}
-        error={errorFor("enabled")}
+        error={errorFor('enabled')}
       >
         <Controller
           control={form.control}
@@ -200,7 +186,7 @@ function PreferencesForm({
                 checked={field.value}
                 onCheckedChange={field.onChange}
                 aria-describedby={`${id}-enabled-hint`}
-                aria-invalid={!!errorFor("enabled")}
+                aria-invalid={!!errorFor('enabled')}
               />
             </div>
           )}
@@ -212,7 +198,7 @@ function PreferencesForm({
         label={copy.section(n, copy.strategyTitle)}
         hint={copy.strategyHint}
         hintId={`${id}-strategy-hint`}
-        error={errorFor("strategy")}
+        error={errorFor('strategy')}
         stacked
       >
         <Controller
@@ -223,21 +209,19 @@ function PreferencesForm({
               aria-label={copy.strategyTitle}
               aria-describedby={`${id}-strategy-hint`}
               value={field.value}
-              onValueChange={(v) => {
-                field.onChange(v as Strategy);
-              }}
+              onValueChange={(v) => field.onChange(v as Strategy)}
               disabled={off}
-              aria-invalid={!!errorFor("strategy")}
+              aria-invalid={!!errorFor('strategy')}
               // 6A: tiles stack until the card is 640 px wide (explicit grid-cols-1: the overflow pitfall).
               className="grid grid-cols-1 gap-3 @[640px]:grid-cols-3 @[640px]:gap-4"
             >
               {STRATEGIES.map((s) => (
-                <Label key={s} className={cn(TILE, off && "cursor-not-allowed opacity-60")}>
+                <Label key={s} className={cn(TILE, off && 'cursor-not-allowed opacity-60')}>
                   {/* The name heads the tile and is the radio's name; the words under it describe the choice. */}
                   <span
                     className={cn(
                       PICTURE,
-                      "flex flex-col gap-1 bg-card p-3 pr-8 @[640px]:min-h-24",
+                      'flex flex-col gap-1 bg-card p-3 pr-8 @[640px]:min-h-24',
                     )}
                   >
                     <span className="font-medium text-foreground">
@@ -270,7 +254,7 @@ function PreferencesForm({
           </>
         }
         hintId={`${id}-budget-hint`}
-        error={errorFor("level")}
+        error={errorFor('level')}
         stacked
       >
         <Controller
@@ -278,18 +262,17 @@ function PreferencesForm({
           name="level"
           render={({ field }) => (
             <ToggleGroup
+              type="single"
               variant="outline"
               size="sm"
-              value={[field.value]}
-              onValueChange={(v: unknown[]) => {
-                if (typeof v[0] === "string" && v[0]) field.onChange(v[0]);
-              }}
+              value={field.value}
+              onValueChange={(v) => v && field.onChange(v as Level)}
               aria-label={copy.budgetTitle}
               aria-describedby={`${id}-budget-hint`}
-              aria-invalid={!!errorFor("level")}
+              aria-invalid={!!errorFor('level')}
               disabled={off}
               // 6B: as on the Overview, arrows stop at the ends.
-              loopFocus={false}
+              loop={false}
               className="w-fit"
             >
               {LEVELS.map((l) => (
@@ -309,7 +292,7 @@ function PreferencesForm({
         )}
       </SettingRow>
     ),
-  };
+  }
 
   return (
     <form onSubmit={(e) => void submit(e)} noValidate>
@@ -338,7 +321,7 @@ function PreferencesForm({
       {/* C8: a sort, window change or bar click keeps the draft; leaving the page still asks. */}
       <LeaveGuard when={dirty && !save.isPending} samePath />
     </form>
-  );
+  )
 }
 
 /** CX-6 (2F, E6): what each tier keeps from the last chat, for the draft strategy; hidden when the server lacks it. */
@@ -347,21 +330,18 @@ function LastChatPreview({
   current,
   enabled,
 }: {
-  strategy: Strategy;
-  current: Level;
-  enabled: boolean;
+  strategy: Strategy
+  current: Level
+  enabled: boolean
 }) {
   // E4: a dry run spends embedding calls, so it waits until the section is on screen (the skeleton holds its place).
-  const scope = useProductScope();
-  const preview = useQuery({ ...previewQuery(scope, strategy), enabled });
+  const preview = useQuery({ ...previewQuery(strategy), enabled })
   // E6: the previews last for the page visit, every strategy's; leaving drops them so the next visit reads the latest chat.
-  const queryClient = useQueryClient();
+  const queryClient = useQueryClient()
   useEffect(
-    () => () => {
-      queryClient.removeQueries({ queryKey: productKey(scope, "optimization", "preview") });
-    },
-    [queryClient, scope],
-  );
+    () => () => queryClient.removeQueries({ queryKey: ['optimization', 'preview'] }),
+    [queryClient],
+  )
   if (preview.isPending)
     return (
       // 2F: a table-shaped skeleton (header + 3 tiers + baseline would jump less than one block).
@@ -370,11 +350,11 @@ function LastChatPreview({
           <Skeleton key={i} className="h-8 w-full rounded-md" />
         ))}
       </div>
-    );
+    )
   if (preview.isError)
     return (
       <p className="text-sm text-muted-foreground">
-        {copy.preview.failed}{" "}
+        {copy.preview.failed}{' '}
         <Button
           // Inside the form: a plain button, or Retry would also submit it.
           type="button"
@@ -386,15 +366,15 @@ function LastChatPreview({
           {copy.retry}
         </Button>
       </p>
-    );
-  const r = preview.data;
-  if (r.kind === "absent") return null;
-  if (r.kind === "no-session")
-    return <p className="text-sm text-muted-foreground">{copy.preview.noChats}</p>;
-  const p = r.preview;
-  const n = (v: number) => `~${approx(v).toLocaleString("en-US")}`;
+    )
+  const r = preview.data
+  if (r.kind === 'absent') return null
+  if (r.kind === 'no-session')
+    return <p className="text-sm text-muted-foreground">{copy.preview.noChats}</p>
+  const p = r.preview
+  const n = (v: number) => `~${approx(v).toLocaleString('en-US')}`
   // Message counts are exact; only tokens are estimates.
-  const exact = (v: number) => v.toLocaleString("en-US");
+  const exact = (v: number) => v.toLocaleString('en-US')
   return (
     <div className="flex flex-col gap-1.5">
       <p className="text-sm text-muted-foreground">
@@ -435,18 +415,20 @@ function LastChatPreview({
           <TableRow>
             <TableCell className="text-muted-foreground">
               <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <span tabIndex={0} className="underline decoration-dotted underline-offset-4" />
-                  }
-                >
-                  {copy.preview.without}
+                <TooltipTrigger asChild>
+                  <span
+                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
+                    tabIndex={0}
+                    className="underline decoration-dotted underline-offset-4"
+                  >
+                    {copy.preview.without}
+                  </span>
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">{copy.preview.baselineTip}</TooltipContent>
               </Tooltip>
             </TableCell>
             <TableCell className="text-right text-muted-foreground tabular-nums">
-              {p.pool.messages.toLocaleString("en-US")}
+              {p.pool.messages.toLocaleString('en-US')}
               <span className="@[640px]:hidden"> · {n(p.pool.tokens)}</span>
             </TableCell>
             <TableCell className="hidden text-right text-muted-foreground tabular-nums @[640px]:table-cell">
@@ -456,5 +438,5 @@ function LastChatPreview({
         </TableBody>
       </Table>
     </div>
-  );
+  )
 }

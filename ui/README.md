@@ -110,7 +110,7 @@ include the harness traffic too; a seed agent the CLI later adopts (`nasiko agen
 line and your own usage. `VITE_NASIKO_MOCK=harnesses npm run dev:live` previews the page with mock data (in the EE
 build, `npm run dev:live:ee`, the org levels too). The proposed contract: `docs/designs/openruntime-harness-recommendations.md`.
 
-**Live contract.** `npm run record:live` records seed-only server responses into `common/src/test/__live__/` (it starts its own
+**Live contract.** `npm run record:live` records seed-only server responses into `shared/testing/src/__live__/` (it starts its own
 throwaway server and database, so the dev stack is untouched), and `npm test` checks the mocks, types and error handling
 against them. EE runs on its own `nasiko_ee` database: `npm run ee:server`, `npm run seed:ee`, `npm run record:live --
 --edition ee`, and `npm run dev:live:ee` for the lab against it. Guide: `docs/live-contract.md`.

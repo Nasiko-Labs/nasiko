@@ -1,68 +1,24 @@
 {
   "name": "@nasiko/app-core",
-  "version": "0.1.0",
   "private": true,
+  "version": "0.0.0",
   "type": "module",
-  "description": "Browser application infrastructure shared by every workspace composition root and its features: URL state, search helpers, session flags, edition model and slots, shell data (nav, shared search context, copy). No Next route files; no Enterprise imports.",
-  "sideEffects": [
-    "./src/zod-jitless.ts"
-  ],
-  "exports": {
-    "./deferred": "./src/deferred.tsx",
-    "./draftKeys": "./src/draftKeys.ts",
-    "./edition/edition": "./src/edition/edition.ts",
-    "./edition/edition-context": "./src/edition/edition-context.ts",
-    "./edition/EditionProvider": "./src/edition/EditionProvider.tsx",
-    "./env": "./src/env.ts",
-    "./leave-guard": "./src/leave-guard.tsx",
-    "./navigation": "./src/navigation.tsx",
-    "./password": "./src/password.ts",
-    "./perf-marks": "./src/perf-marks.ts",
-    "./report-error": "./src/report-error.ts",
-    "./router-provider": "./src/router-provider.tsx",
-    "./search": "./src/search.ts",
-    "./session": "./src/session.ts",
-    "./shell/context": "./src/shell/context.ts",
-    "./shell/copy": "./src/shell/copy.ts",
-    "./shell/nav": "./src/shell/nav.ts",
-    "./shell/panelSlot": "./src/shell/panelSlot.ts",
-    "./shell/rowStyles": "./src/shell/rowStyles.ts",
-    "./shell/SectionNav": "./src/shell/SectionNav.tsx",
-    "./shell/SidebarPanel": "./src/shell/SidebarPanel.tsx",
-    "./shell/sidebarState": "./src/shell/sidebarState.ts",
-    "./shell/TopBar": "./src/shell/TopBar.tsx",
-    "./siblings": "./src/siblings.ts",
-    "./sign-out": "./src/sign-out.ts",
-    "./slice": "./src/slice.ts",
-    "./stale-build": "./src/stale-build.ts",
-    "./tour": "./src/tour.ts",
-    "./url-state": "./src/url-state.ts",
-    "./useNow": "./src/useNow.ts",
-    "./useReturnTick": "./src/useReturnTick.ts",
-    "./zod-jitless": "./src/zod-jitless.ts"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "lint": "eslint src --max-warnings 0"
-  },
+  "description": "Edition slots, environment, session and URL helpers, stale-build recovery, and the shell pieces pages share (top bar, navigation, theme).",
   "dependencies": {
-    "@nasiko/contracts": "workspace:*",
     "@nasiko/data-access": "workspace:*",
-    "lucide-react": "1.49.0",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "zod": "4.6.5",
-    "@tanstack/react-router": "1.170.39"
+    "@nasiko/ui": "workspace:*",
+    "@tanstack/react-query": "^5.103.3",
+    "@tanstack/react-router": "^1.170.39",
+    "lucide-react": "^1.48.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.6.5",
+    "zustand": "5.0.15"
   },
   "devDependencies": {
-    "@nasiko/config": "workspace:*",
-    "@testing-library/jest-dom": "7.0.1",
-    "@testing-library/react": "16.3.3",
-    "@testing-library/user-event": "14.6.7",
-    "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0",
-    "eslint": "9.39.5",
-    "typescript": "5.9.3",
-    "vitest": "5.0.3"
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "msw": "^2.15.0",
+    "vitest": "^4.1.11"
   }
 }

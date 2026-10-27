@@ -1,5 +1,5 @@
 // UI copy is US English (optimization, not optimisation). Scans what a user can read (string literals, template text,
-// regex literals, since tests match copy with them, and JSX text) in common/src, e2e/ and every edition's src/ for
+// regex literals, since tests match copy with them, and JSX text) in every package's src/ and e2e/ for
 // British spellings. Identifiers and comments are not copy and are skipped, as are module specifiers (they name files).
 // ponytail: a word list, not a dictionary; switch to cspell with en-US if a spelling outside SPELLING slips through.
 // Usage: node scripts/check-spelling.ts [file…]   (default: every .ts/.tsx under the roots below)
@@ -7,11 +7,20 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import ts from 'typescript'
-import { findEditions } from './editions.ts'
 
 const UI = join(dirname(fileURLToPath(import.meta.url)), '..')
-const ROOTS = ['common/src', 'e2e', ...findEditions(UI).map((e) => `${e.dir}/src`)]
 const SKIP_DIR = /^(node_modules|dist|\.tanstack)$/
+// Every package with a src/ (the shared ones, each edition's app and feature packages), found by shape so this names
+// none; the design playground and the desktop packagers keep no product copy.
+const PACKAGE = /^(shared\/[^/]+|([^/]+\/)+(app|features\/[^/]+))\/package\.json$/
+const packageDirs = (dir: string, rel = ''): string[] =>
+  readdirSync(join(UI, dir)).flatMap((f) => {
+    const p = rel ? `${rel}/${f}` : f
+    if (SKIP_DIR.test(f) || f.startsWith('.')) return []
+    if (f === 'package.json') return PACKAGE.test(p) ? [rel] : []
+    return statSync(join(UI, p)).isDirectory() && p.split('/').length < 4 ? packageDirs(p, p) : []
+  })
+const ROOTS = [...packageDirs('').map((d) => `${d}/src`), 'e2e']
 
 /** British stem → the US spelling to use instead. */
 const SPELLING: [RegExp, string][] = [

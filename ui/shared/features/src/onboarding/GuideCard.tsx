@@ -1,56 +1,62 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/GuideCard.tsx. Local edits: `"use client"`;
-// Prettier formatting.
-"use client";
-
 /**
  * The Overview's Setup guide for returning users (spec §4): the header button and the empty-fleet card's body. Both
  * reopen the guide at the first step not done yet.
  */
-import { BookOpen, Check } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { useAgentsDirectory } from "../agents/api";
-import { useConfigs } from "../router/api";
-import { cn } from "@nasiko/ui/cn";
-import { openGuide, useGuide } from "./api";
-import { copy } from "./copy";
-import { firstOpenStep, ticks as tick, type Ticks } from "./logic";
+import { BookOpen, Check } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Progress } from '@nasiko/ui/primitives/progress'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { useConfigs } from '@nasiko/features/router/api'
+import { cn } from '@nasiko/ui/lib/utils'
+import { openGuide, useGuide } from './api'
+import { copy } from './copy'
+import { firstOpenStep, ticks as tick, type Ticks } from './logic'
 
 function useTicks(): Ticks {
-  const { persona } = useGuide();
-  const configs = useConfigs().data?.length ?? 0;
-  const agents = useAgentsDirectory().data?.length ?? 0;
-  return tick({ persona, configs, agents });
+  const { persona } = useGuide()
+  const configs = useConfigs().data?.length ?? 0
+  const agents = useAgentsDirectory().data?.length ?? 0
+  return tick({ persona, configs, agents })
 }
 
 export function SetupGuideButton({ className }: { className?: string }) {
-  const t = useTicks();
+  const t = useTicks()
   return (
     <Button
       variant="outline"
       size="sm"
       className={className}
-      onClick={() => {
-        openGuide(firstOpenStep(t));
-      }}
+      onClick={() => openGuide(firstOpenStep(t))}
     >
       <BookOpen aria-hidden /> {copy.card.title}
     </Button>
-  );
+  )
 }
 
 const ROWS = [
-  ["role", copy.steps.role],
-  ["model", copy.steps.model],
-  ["agent", copy.steps.agent],
-] as const;
+  ['role', copy.steps.role],
+  ['model', copy.steps.model],
+  ['agent', copy.steps.agent],
+] as const
 
 export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
-  const t = useTicks();
+  const t = useTicks()
   // "Resume" only once a step is done: before that there is nothing to resume.
-  const started = t.role || t.model || t.agent;
+  const started = t.role || t.model || t.agent
+  const done = ROWS.filter(([id]) => t[id]).length
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">{copy.card.intro}</p>
+      <div className="flex max-w-xl items-center gap-3">
+        <Progress
+          value={(done / ROWS.length) * 100}
+          aria-label={copy.card.progress(done, ROWS.length)}
+          className="h-1.5"
+        />
+        <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+          {copy.card.progress(done, ROWS.length)}
+        </span>
+      </div>
       {/* Each row opens the guide at its own step; the button below opens it at the first one not done. */}
       <ul className="-mx-2 flex max-w-xl flex-col">
         {ROWS.map(([id, s]) => (
@@ -58,24 +64,22 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
             <Button
               variant="ghost"
               className={cn(
-                "h-auto w-full justify-start gap-3 px-2 py-1 text-left font-normal whitespace-normal",
+                'h-auto w-full justify-start gap-3 px-2 py-1 text-left font-normal whitespace-normal',
                 buttonClassName,
               )}
-              onClick={() => {
-                openGuide(id);
-              }}
+              onClick={() => openGuide(id)}
             >
               <span
                 aria-hidden
                 className={cn(
-                  "flex size-5 shrink-0 items-center justify-center rounded-full",
-                  t[id] ? "bg-primary text-primary-foreground" : "border",
+                  'flex size-5 shrink-0 items-center justify-center rounded-full',
+                  t[id] ? 'bg-primary text-primary-foreground' : 'border',
                 )}
               >
                 {t[id] ? <Check className="size-3" /> : null}
               </span>
               <span className="flex-1">
-                <span className="font-medium">{s.title}</span>{" "}
+                <span className="font-medium">{s.title}</span>{' '}
                 <span className="text-muted-foreground">· {s.sub}</span>
               </span>
               <span className="text-xs text-muted-foreground">
@@ -88,13 +92,11 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
       <Button
         variant="outline"
         size="sm"
-        className={cn("self-start", buttonClassName)}
-        onClick={() => {
-          openGuide(firstOpenStep(t));
-        }}
+        className={cn('self-start', buttonClassName)}
+        onClick={() => openGuide(firstOpenStep(t))}
       >
         {started ? copy.card.resume : copy.card.start}
       </Button>
     </div>
-  );
+  )
 }

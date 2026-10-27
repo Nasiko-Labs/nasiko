@@ -1,26 +1,20 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/OverviewTab.tsx. Local edits: `agentDetailQuery`
-// takes the product scope (`useProductScope()`); optional props admit `undefined` (exactOptionalPropertyTypes);
-// development (5d46c313f, c96a2ba3a): the tab is the agent hub (../../hub/components/HubTimeline.tsx), today's facts
-// moved to ./DetailsTab.tsx; Prettier formatting.
-"use client";
-
 /**
  * Overview: the agent hub (plans/feat-agent-centric.md PR1, design "Hub section order"): the crash card when the agent
  * needs attention (field-presence rule unchanged), a deploy prompt when it isn't deployed, then the hub itself (Needs
  * you, the sentence, the timeline, recent runs, layer cards). Today's facts moved to the Details tab (PR1c).
  */
-import { Button } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { HubTimeline } from "../../hub/components/HubTimeline";
-import { isUnavailable, useDeployment, useErrorLogs } from "../api";
-import { Section } from "../components/bits";
-import { copy } from "../copy";
-import { relTime } from "../format";
-import type { AgentView } from "../normalize";
-import type { DisplayStatus } from "../status";
-import { CRASH_LINES_SHOWN } from "../tuning";
-import { NotDeployedPrompt } from "./NotDeployedPrompt";
-import { TokenOptimization } from "./TokenOptimization";
+import { Button } from '@nasiko/ui/primitives/button'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { HubTimeline } from '@nasiko/features/hub/components/HubTimeline'
+import { isUnavailable, useDeployment, useErrorLogs } from '../api'
+import { Section } from '../components/bits'
+import { copy } from '../copy'
+import { relTime } from '../format'
+import type { AgentView } from '../normalize'
+import type { DisplayStatus } from '../status'
+import { CRASH_LINES_SHOWN } from '../tuning'
+import { NotDeployedPrompt } from './NotDeployedPrompt'
+import { TokenOptimization } from './TokenOptimization'
 
 export function OverviewTab({
   agent,
@@ -29,23 +23,23 @@ export function OverviewTab({
   ownerLabel,
   onViewLogs,
 }: {
-  agent: AgentView;
-  display: DisplayStatus;
-  raw?: string | undefined;
-  ownerLabel: string;
-  onViewLogs: () => void;
+  agent: AgentView
+  display: DisplayStatus
+  raw?: string
+  ownerLabel: string
+  onViewLogs: () => void
 }) {
-  const deployment = useDeployment(agent.id, !agent.isHarness);
-  const errors = useErrorLogs(agent.id, display === "attention");
-  const dep = deployment.data;
-  const depRow = dep && !isUnavailable(dep) ? dep : null;
+  const deployment = useDeployment(agent.id, !agent.isHarness)
+  const errors = useErrorLogs(agent.id, display === 'attention')
+  const dep = deployment.data
+  const depRow = dep && !isUnavailable(dep) ? dep : null
   // Needs attention covers `crashed` and `failed`; a failed deploy isn't a crash.
-  const failed = raw === "failed";
-  const cardTitle = failed ? copy.failedTitle : copy.crashTitle;
+  const failed = raw === 'failed'
+  const cardTitle = failed ? copy.failedTitle : copy.crashTitle
 
   return (
     <div className="space-y-4">
-      {display === "attention" ? (
+      {display === 'attention' ? (
         <section
           aria-label={cardTitle}
           className="space-y-2 rounded-lg border border-warning/50 bg-warning/5 p-4 text-sm"
@@ -87,7 +81,7 @@ export function OverviewTab({
         </section>
       ) : null}
 
-      {display === "not-deployed" && !agent.isHarness ? (
+      {display === 'not-deployed' && !agent.isHarness ? (
         <Section title={copy.activeVersion}>
           <NotDeployedPrompt name={agent.name} />
         </Section>
@@ -102,5 +96,5 @@ export function OverviewTab({
         }
       />
     </div>
-  );
+  )
 }

@@ -1,9 +1,10 @@
-# One workspace for the whole UI, one lockfile: the ui/ root (the tooling), common/ (the React core), design/, the
-# desktop packagers and every edition with dependencies of its own. Found by shape, like scripts/editions.ts, so the
-# file names no edition and the published copy finds only what the public tree has.
+# One workspace for the whole UI, one lockfile: the ui/ root (the tooling), the shared packages (shared/*), each
+# edition's app and feature packages, design/ and the desktop packagers. Found by shape, like scripts/editions.ts, so
+# the file names no edition and the published copy finds only what the public tree has.
 packages:
   - '*'
   - '*/*'
+  - '*/*/*'
 
 # npm's layout: one flat node_modules at ui/. An edition's app dir (oss/ and the ones beside it) is not a package and
 # resolves every dependency from there.

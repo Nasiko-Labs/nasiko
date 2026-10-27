@@ -1,19 +1,12 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/RecentSessions.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use
-// client"`; TanStack `Link` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) (`/sessions/<id>?preset=7d` through `pageHref`); `Button asChild` + `Link`
-// -> `ButtonLink`; the lab's `ApiError` is `ProductApiError`; optional props admit `undefined`; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
-"use client";
-
 /**
  * Recent sessions (plans/feat-overview.md §9): the five newest of the last 7 days, failures first, with the status marks
  * from the same checks Needs you uses (the newest 25, eng review R7). Tempo errors say the trace store is needed.
  */
-import Link from "@nasiko/app-core/navigation";
-import { CircleAlert, CircleCheck, CircleDashed } from "lucide-react";
-import { useRef } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { ButtonLink } from "../../agents/components/ButtonLink";
+import { Link } from '@tanstack/react-router'
+import { CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
+import { useRef } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -21,27 +14,22 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { relTime } from "../../agents/format";
-import { sessionCost, type Status } from "../../observability/sessions";
-import { fmtMoney } from "@nasiko/ui/lib";
-import { ProductApiError } from "@nasiko/data-access/product";
-import type { NeedsYou } from "../api";
-import { copy } from "../copy";
-import { LAST_WEEK, RECENT_SESSION_ROWS } from "../tuning";
-import { Card, CardError, CardSkeleton, pageHref, TOUCH } from "./Card";
+} from '@nasiko/ui/primitives/table'
+import { relTime } from '@nasiko/features/agents/format'
+import { serverStatus, sessionCost, type Status } from '@nasiko/features/observability/sessions'
+import { fmtMoney } from '@nasiko/ui/lib/format'
+import { ApiError } from '@nasiko/data-access/client'
+import type { NeedsYou } from '../api'
+import { copy } from '../copy'
+import { LAST_WEEK, RECENT_SESSION_ROWS } from '../tuning'
+import { Card, CardError, CardSkeleton, TOUCH } from './Card'
 
 const MARK: Partial<Record<Status, { Icon: typeof CircleCheck; tone: string; label: string }>> = {
-  failed: { Icon: CircleAlert, tone: "text-destructive", label: copy.sessions.failed },
-  ok: { Icon: CircleCheck, tone: "text-success", label: copy.sessions.ok },
-  running: { Icon: CircleDashed, tone: "text-muted-foreground", label: copy.sessions.running },
-};
-const TRACE_STORE = new Set([500, 502, 503]);
-
-/** `session/list.status` narrowed to what the UI draws. */
-const SERVER_STATUS = new Set<Status>(["failed", "ok", "running"]);
-const serverStatus = (raw: string | null | undefined): Status =>
-  raw && SERVER_STATUS.has(raw as Status) ? (raw as Status) : "unchecked";
+  failed: { Icon: CircleAlert, tone: 'text-destructive', label: copy.sessions.failed },
+  ok: { Icon: CircleCheck, tone: 'text-success', label: copy.sessions.ok },
+  running: { Icon: CircleDashed, tone: 'text-muted-foreground', label: copy.sessions.running },
+}
+const TRACE_STORE = new Set([500, 502, 503])
 
 export function RecentSessions({
   sessions,
@@ -49,22 +37,22 @@ export function RecentSessions({
   now,
   className,
 }: {
-  sessions: NeedsYou["sessions"];
-  displayName: (raw: string) => string;
-  now: number;
-  className?: string | undefined;
+  sessions: NeedsYou['sessions']
+  displayName: (raw: string) => string
+  now: number
+  className?: string
 }) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const list = sessions.recent;
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const list = sessions.recent
   // The server already returns the page and its status, newest first. This used
   // to re-sort a 25-row sample so client-checked failures floated up; it no
   // longer has to, because the failures have their own exact row in Needs you.
-  const rows = list.rows.slice(0, RECENT_SESSION_ROWS);
+  const rows = list.rows.slice(0, RECENT_SESSION_ROWS)
   // A bare 502 is the proxy with the server down (StateCard's rule), not the trace store (/ship review).
   const serverDown =
-    list.error instanceof ProductApiError && list.error.status === 502 && !list.error.serverMessage;
+    list.error instanceof ApiError && list.error.status === 502 && !list.error.serverMessage
   const traceStore =
-    list.error instanceof ProductApiError && TRACE_STORE.has(list.error.status) && !serverDown;
+    list.error instanceof ApiError && TRACE_STORE.has(list.error.status) && !serverDown
   return (
     <Card
       id="overview-sessions"
@@ -116,13 +104,13 @@ export function RecentSessions({
               // The server's own status. `null` means it has no recorded request
               // to judge by — "unchecked", never "ok" — and an unrecognised
               // value is treated the same rather than rendered raw.
-              const st = serverStatus(s.status);
+              const st = serverStatus(s.status) ?? 'unchecked'
               const mark = MARK[st] ?? {
                 Icon: CircleDashed,
-                tone: "text-muted-foreground",
+                tone: 'text-muted-foreground',
                 label: copy.sessions.unchecked,
-              };
-              const cost = sessionCost(s);
+              }
+              const cost = sessionCost(s)
               return (
                 <TableRow key={s.session_id} data-testid="recent-session">
                   <TableCell className="h-11 px-0">
@@ -134,7 +122,9 @@ export function RecentSessions({
                   </TableCell>
                   <TableCell className="truncate px-1 font-medium">
                     <Link
-                      href={pageHref(`/sessions/${encodeURIComponent(s.session_id)}`, LAST_WEEK)}
+                      to="/sessions/$sessionId"
+                      params={{ sessionId: s.session_id }}
+                      search={LAST_WEEK as never}
                       className="underline-offset-4 hover:underline"
                     >
                       {s.first_input || s.session_id}
@@ -144,30 +134,27 @@ export function RecentSessions({
                     {s.agent_id ? displayName(s.agent_id) : copy.needs.unknownAgent}
                   </TableCell>
                   <TableCell className="truncate px-1 text-right text-muted-foreground tabular-nums">
-                    {cost === null ? "—" : fmtMoney(cost)}
+                    {cost === null ? '—' : fmtMoney(cost)}
                   </TableCell>
                   <TableCell className="px-1 text-right text-muted-foreground tabular-nums">
-                    {relTime(s.start_time, Math.max(now, Date.parse(s.start_time ?? "") || now))}
+                    {relTime(s.start_time, Math.max(now, Date.parse(s.start_time ?? '') || now))}
                   </TableCell>
                 </TableRow>
-              );
+              )
             })}
           </TableBody>
         </Table>
       )}
     </Card>
-  );
+  )
 }
 
 function OpenSessions() {
   return (
-    <ButtonLink
-      variant="link"
-      size="sm"
-      className={`h-auto px-0 ${TOUCH}`}
-      href={pageHref("/sessions", LAST_WEEK)}
-    >
-      {copy.sessions.open}
-    </ButtonLink>
-  );
+    <Button asChild variant="link" size="sm" className={`h-auto px-0 ${TOUCH}`}>
+      <Link to="/sessions" search={LAST_WEEK as never}>
+        {copy.sessions.open}
+      </Link>
+    </Button>
+  )
 }

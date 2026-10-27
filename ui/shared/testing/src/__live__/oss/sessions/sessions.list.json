@@ -1,0 +1,536 @@
+{
+  "fixture_version": 1,
+  "id": "sessions.list",
+  "recorded_at": "2026-10-13T14:47:29.000Z",
+  "window": {
+    "start": "2026-10-13T14:47:29.000Z",
+    "end": "2026-10-13T14:47:29.020Z"
+  },
+  "anchor": "2026-10-13T14:46:26.338Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ef5607af2bc0fc5cbd2a390d2eade24fa92505fb",
+    "dirty": true,
+    "openapi_sha256": "abef657510d9e2f43f1592aae203b43075cf021a7b0417f6e03c853c4ca2fbb0",
+    "binary_mtime": "2026-10-13T14:11:28.341Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/session/list",
+    "query": {
+      "start_time": "{sessionsStart}",
+      "limit": "25"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "sessions": [
+        {
+          "id": "5eed-sess-doc-writer-2026-10-13",
+          "session_id": "5eed-sess-doc-writer-2026-10-13",
+          "agent_id": "seed-doc-writer",
+          "num_traces": null,
+          "start_time": "2026-10-13T11:00:05.613Z",
+          "end_time": "2026-10-13T11:00:05.613Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-onboarding-guide-2026-10-13",
+          "session_id": "5eed-sess-onboarding-guide-2026-10-13",
+          "agent_id": "seed-onboarding-guide",
+          "num_traces": null,
+          "start_time": "2026-10-13T08:11:02.252Z",
+          "end_time": "2026-10-13T08:11:02.252Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-pricing-engine-2026-10-13",
+          "session_id": "5eed-sess-pricing-engine-2026-10-13",
+          "agent_id": "seed-pricing-engine",
+          "num_traces": null,
+          "start_time": "2026-10-13T07:03:09.665Z",
+          "end_time": "2026-10-13T07:03:09.665Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-legacy-migrator-2026-10-13",
+          "session_id": "5eed-sess-legacy-migrator-2026-10-13",
+          "agent_id": "seed-legacy-migrator",
+          "num_traces": null,
+          "start_time": "2026-10-13T06:53:09.713Z",
+          "end_time": "2026-10-13T06:53:09.713Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-data-cleaner-2026-10-13",
+          "session_id": "5eed-sess-data-cleaner-2026-10-13",
+          "agent_id": "seed-data-cleaner",
+          "num_traces": null,
+          "start_time": "2026-10-13T06:40:03.069Z",
+          "end_time": "2026-10-13T06:40:03.069Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-code-reviewer-2026-10-13",
+          "session_id": "5eed-sess-code-reviewer-2026-10-13",
+          "agent_id": "seed-code-reviewer",
+          "num_traces": null,
+          "start_time": "2026-10-13T06:11:30.358Z",
+          "end_time": "2026-10-13T06:11:30.358Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-meeting-notes-2026-10-13",
+          "session_id": "5eed-sess-meeting-notes-2026-10-13",
+          "agent_id": "seed-meeting-notes",
+          "num_traces": null,
+          "start_time": "2026-10-13T06:09:58.871Z",
+          "end_time": "2026-10-13T06:09:58.871Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-sales-assistant-2026-10-13",
+          "session_id": "5eed-sess-sales-assistant-2026-10-13",
+          "agent_id": "seed-sales-assistant",
+          "num_traces": null,
+          "start_time": "2026-10-13T06:09:50.420Z",
+          "end_time": "2026-10-13T06:09:50.420Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-legal-reviewer-2026-10-13",
+          "session_id": "5eed-sess-legal-reviewer-2026-10-13",
+          "agent_id": "seed-legal-reviewer",
+          "num_traces": null,
+          "start_time": "2026-10-13T05:48:35.512Z",
+          "end_time": "2026-10-13T05:48:35.512Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-security-scanner-2026-10-13",
+          "session_id": "5eed-sess-security-scanner-2026-10-13",
+          "agent_id": "seed-security-scanner",
+          "num_traces": null,
+          "start_time": "2026-10-13T05:04:08.637Z",
+          "end_time": "2026-10-13T05:04:08.637Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-hr-helpdesk-2026-10-13",
+          "session_id": "5eed-sess-hr-helpdesk-2026-10-13",
+          "agent_id": "seed-hr-helpdesk",
+          "num_traces": null,
+          "start_time": "2026-10-13T04:22:11.796Z",
+          "end_time": "2026-10-13T04:22:11.796Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-sql-analyst-2026-10-13",
+          "session_id": "5eed-sess-sql-analyst-2026-10-13",
+          "agent_id": "seed-sql-analyst",
+          "num_traces": null,
+          "start_time": "2026-10-13T03:13:45.745Z",
+          "end_time": "2026-10-13T03:13:45.745Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-invoice-parser-2026-10-13",
+          "session_id": "5eed-sess-invoice-parser-2026-10-13",
+          "agent_id": "seed-invoice-parser",
+          "num_traces": null,
+          "start_time": "2026-10-13T03:13:22.639Z",
+          "end_time": "2026-10-13T03:13:22.639Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-research-agent-2026-10-13",
+          "session_id": "5eed-sess-research-agent-2026-10-13",
+          "agent_id": "seed-research-agent",
+          "num_traces": null,
+          "start_time": "2026-10-13T02:10:07.896Z",
+          "end_time": "2026-10-13T02:10:07.896Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-support-bot-2026-10-13",
+          "session_id": "5eed-sess-support-bot-2026-10-13",
+          "agent_id": "seed-support-bot",
+          "num_traces": null,
+          "start_time": "2026-10-13T01:41:46.525Z",
+          "end_time": "2026-10-13T01:41:46.525Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-triage-router-2026-10-13",
+          "session_id": "5eed-sess-triage-router-2026-10-13",
+          "agent_id": "seed-triage-router",
+          "num_traces": null,
+          "start_time": "2026-10-13T01:35:01.077Z",
+          "end_time": "2026-10-13T01:35:01.077Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-translator-2026-10-13",
+          "session_id": "5eed-sess-translator-2026-10-13",
+          "agent_id": "seed-translator",
+          "num_traces": null,
+          "start_time": "2026-10-13T01:13:19.726Z",
+          "end_time": "2026-10-13T01:13:19.726Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-qa-tester-2026-10-13",
+          "session_id": "5eed-sess-qa-tester-2026-10-13",
+          "agent_id": "seed-qa-tester",
+          "num_traces": null,
+          "start_time": "2026-10-13T00:43:40.146Z",
+          "end_time": "2026-10-13T00:43:40.146Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        },
+        {
+          "id": "5eed-sess-summarizer-2026-10-13",
+          "session_id": "5eed-sess-summarizer-2026-10-13",
+          "agent_id": "seed-summarizer",
+          "num_traces": null,
+          "start_time": "2026-10-13T00:27:40.813Z",
+          "end_time": "2026-10-13T00:27:40.813Z",
+          "duration_ms": null,
+          "first_input": null,
+          "last_output": null,
+          "token_usage": {
+            "total": null
+          },
+          "trace_latency_ms_p50": null,
+          "trace_latency_ms_p99": null,
+          "cost_summary": {
+            "total": {
+              "cost": null
+            }
+          },
+          "status": null,
+          "failed_flows": 0,
+          "error_count": null,
+          "session_annotations": [],
+          "session_annotation_summaries": []
+        }
+      ],
+      "total_agents": 22,
+      "successful_agents": 0,
+      "matching_count": 19,
+      "pagination": {
+        "end_cursor": null,
+        "has_next_page": false
+      }
+    }
+  },
+  "source": "no-trace-data"
+}

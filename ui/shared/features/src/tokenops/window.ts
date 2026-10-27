@@ -1,6 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/window.ts. Local edits: `@/lib/format` -> `@nasiko/ui/lib` (`@/lib/search` is the ported lib); `resolveWindow`'s optional `from`/`to` admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
-import { fmtMonthYear, fmtShortDay } from "@nasiko/ui/lib";
-import { isRealDate, type Preset } from "@nasiko/app-core/search";
+import { fmtMonthYear, fmtShortDay } from '@nasiko/ui/lib/format'
+import { isRealDate, type Preset } from '@nasiko/ui/lib/search'
 
 /**
  * Time window resolution (plan: single time control, A6, A15).
@@ -14,62 +13,62 @@ import { isRealDate, type Preset } from "@nasiko/app-core/search";
  * - `now` is rounded down to the minute so query keys stay stable across renders.
  */
 export interface ApiWindowParams {
-  range?: "24h" | "7d" | "30d";
-  start_time?: string;
-  end_time?: string;
+  range?: '24h' | '7d' | '30d'
+  start_time?: string
+  end_time?: string
 }
 
 export interface ResolvedWindow {
-  preset: Preset;
-  label: string;
-  start: Date;
-  end: Date;
-  prevStart: Date;
-  prevEnd: Date;
+  preset: Preset
+  label: string
+  start: Date
+  end: Date
+  prevStart: Date
+  prevEnd: Date
   /** Params for the current window. */
-  params: ApiWindowParams;
+  params: ApiWindowParams
   /** Params for the previous window (always explicit bounds). */
-  prevParams: ApiWindowParams;
+  prevParams: ApiWindowParams
   /** Stable key for queries: changes only when the window changes. */
-  key: string;
+  key: string
 }
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
 /** One day in milliseconds, for callers that turn spans into day counts. */
-export const DAY_MS = DAY;
-const RANGE_HOURS = { "24h": 24, "7d": 168, "30d": 720 } as const;
+export const DAY_MS = DAY
+const RANGE_HOURS = { '24h': 24, '7d': 168, '30d': 720 } as const
 
 function floorToMinute(d: Date): Date {
-  return new Date(Math.floor(d.getTime() / MINUTE) * MINUTE);
+  return new Date(Math.floor(d.getTime() / MINUTE) * MINUTE)
 }
 
 export function utcMonthStart(d: Date, offsetMonths = 0): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + offsetMonths, 1));
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + offsetMonths, 1))
 }
 
 export function monthKey(d: Date): string {
-  return d.toISOString().slice(0, 7);
+  return d.toISOString().slice(0, 7)
 }
 
 export function resolveWindow(
-  input: { preset: Preset; from?: string | undefined; to?: string | undefined },
+  input: { preset: Preset; from?: string; to?: string },
   nowInput: Date,
 ): ResolvedWindow {
-  const now = floorToMinute(nowInput);
-  let preset = input.preset;
-  let start: Date;
-  let end: Date;
-  let params: ApiWindowParams;
-  let label: string;
+  const now = floorToMinute(nowInput)
+  let preset = input.preset
+  let start: Date
+  let end: Date
+  let params: ApiWindowParams
+  let label: string
 
   // Defence in depth: the search schema already rejects impossible dates, but an invalid
   // custom range must never reach `new Date(...).toISOString()` (it throws).
   // A future `from` (stale or hand-edited link) would clamp end below start: fall back too.
-  const today = now.toISOString().slice(0, 10);
+  const today = now.toISOString().slice(0, 10)
   if (
-    preset === "custom" &&
+    preset === 'custom' &&
     !(
       input.from &&
       input.to &&
@@ -79,43 +78,43 @@ export function resolveWindow(
       input.from <= today
     )
   )
-    preset = "30d";
+    preset = '30d'
 
   switch (preset) {
-    case "24h":
-    case "7d":
-    case "30d": {
-      end = now;
-      start = new Date(end.getTime() - RANGE_HOURS[preset] * HOUR);
-      params = { range: preset };
-      label = preset === "24h" ? "Last 24 hours" : preset === "7d" ? "Last 7 days" : "Last 30 days";
-      break;
+    case '24h':
+    case '7d':
+    case '30d': {
+      end = now
+      start = new Date(end.getTime() - RANGE_HOURS[preset] * HOUR)
+      params = { range: preset }
+      label = preset === '24h' ? 'Last 24 hours' : preset === '7d' ? 'Last 7 days' : 'Last 30 days'
+      break
     }
-    case "mtd": {
-      start = utcMonthStart(now);
-      end = now;
-      params = { start_time: start.toISOString(), end_time: end.toISOString() };
-      label = "This month";
-      break;
+    case 'mtd': {
+      start = utcMonthStart(now)
+      end = now
+      params = { start_time: start.toISOString(), end_time: end.toISOString() }
+      label = 'This month'
+      break
     }
-    case "last-month": {
-      start = utcMonthStart(now, -1);
-      end = utcMonthStart(now);
-      params = { start_time: start.toISOString(), end_time: end.toISOString() };
-      label = fmtMonthYear(start);
-      break;
+    case 'last-month': {
+      start = utcMonthStart(now, -1)
+      end = utcMonthStart(now)
+      params = { start_time: start.toISOString(), end_time: end.toISOString() }
+      label = fmtMonthYear(start)
+      break
     }
-    case "custom": {
-      start = new Date(`${input.from}T00:00:00Z`);
-      const toEnd = new Date(`${input.to}T00:00:00Z`).getTime() + DAY;
-      end = new Date(Math.min(toEnd, now.getTime()));
-      params = { start_time: start.toISOString(), end_time: end.toISOString() };
-      label = `${fmtShortDay(start)} – ${fmtShortDay(new Date(toEnd - DAY))} (UTC)`;
-      break;
+    case 'custom': {
+      start = new Date(`${input.from}T00:00:00Z`)
+      const toEnd = new Date(`${input.to}T00:00:00Z`).getTime() + DAY
+      end = new Date(Math.min(toEnd, now.getTime()))
+      params = { start_time: start.toISOString(), end_time: end.toISOString() }
+      label = `${fmtShortDay(start)} – ${fmtShortDay(new Date(toEnd - DAY))} (UTC)`
+      break
     }
   }
 
-  return withPrevious(preset, label, start, end, params);
+  return withPrevious(preset, label, start, end, params)
 }
 
 /**
@@ -124,13 +123,13 @@ export function resolveWindow(
  * than a silent fallback to 30 days.
  */
 export function dayWindow(date: string, nowInput: Date): ResolvedWindow {
-  const now = floorToMinute(nowInput);
-  const start = new Date(`${date}T00:00:00Z`);
-  const end = new Date(Math.max(start.getTime(), Math.min(start.getTime() + DAY, now.getTime())));
-  return withPrevious("custom", `${fmtShortDay(start)} (UTC)`, start, end, {
+  const now = floorToMinute(nowInput)
+  const start = new Date(`${date}T00:00:00Z`)
+  const end = new Date(Math.max(start.getTime(), Math.min(start.getTime() + DAY, now.getTime())))
+  return withPrevious('custom', `${fmtShortDay(start)} (UTC)`, start, end, {
     start_time: start.toISOString(),
     end_time: end.toISOString(),
-  });
+  })
 }
 
 function withPrevious(
@@ -140,9 +139,9 @@ function withPrevious(
   end: Date,
   params: ApiWindowParams,
 ): ResolvedWindow {
-  const len = end.getTime() - start.getTime();
-  const prevStart = new Date(start.getTime() - len);
-  const prevEnd = start;
+  const len = end.getTime() - start.getTime()
+  const prevStart = new Date(start.getTime() - len)
+  const prevEnd = start
   return {
     preset,
     label,
@@ -153,5 +152,5 @@ function withPrevious(
     params,
     prevParams: { start_time: prevStart.toISOString(), end_time: prevEnd.toISOString() },
     key: `${preset}|${start.toISOString()}|${end.toISOString()}`,
-  };
+  }
 }

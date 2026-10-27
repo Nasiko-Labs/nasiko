@@ -1,119 +1,55 @@
-import type { Meta, StoryObj } from "@storybook/react-vite";
-import { Gauge } from "./gauge";
-import { Heatmap } from "./heatmap";
-import { CategoryBarChart, TimeSeriesChart } from "./series";
+// The chart kit (Bklit-derived, MIT; see NOTICE): a line chart the way pages compose it. Charts keep a Table view
+// on the page itself; this story checks the kit renders and animates to rest.
+import type { Meta, StoryObj } from '@storybook/react-vite'
+import { fmtShortDay } from '@nasiko/ui/lib/format'
+import { ChartDateFormat } from './chart-formatters'
+import { Grid } from './grid'
+import { Line } from './line'
+import { LineChart } from './line-chart'
+import { ChartTooltip } from './tooltip/chart-tooltip'
+import { XAxis } from './x-axis'
+import { YAxis } from './y-axis'
 
-/** Synthetic, seeded data: the same numbers every run (ADR-0003 side-by-side review). */
-const days = Array.from({ length: 30 }, (_, i) => {
-  const d = new Date(Date.UTC(2026, 8, 1 + i));
-  const seed = (i * 9301 + 49297) % 233280;
-  return {
-    day: d.toISOString().slice(5, 10),
-    spend: Math.round(120 + (seed / 233280) * 80),
-    tokens: Math.round(40 + (seed / 233280) * 60),
-    errors: i % 7 === 3 ? null : Math.round((seed / 233280) * 5),
-  };
-});
-const usd = (v: number) => `$${v.toFixed(0)}`;
+const meta: Meta = { title: 'Charts/Line' }
+export default meta
 
-const meta = { title: "Charts/Overview" } satisfies Meta;
-export default meta;
+const DAY = 86_400_000
+const START = Date.UTC(2026, 8, 1)
+const data = Array.from({ length: 14 }, (_, i) => ({
+  date: new Date(START + i * DAY),
+  claude: 8 + Math.round(6 * Math.sin(i / 2)) + i,
+  codex: 4 + ((i * 7) % 5),
+}))
+const SERIES = [
+  { key: 'claude', label: 'Claude Code', color: 'var(--chart-1-edge)' },
+  { key: 'codex', label: 'Codex', color: 'var(--chart-2-edge)' },
+] as const
 
-export const TimeSeries: StoryObj = {
+export const TwoSeries: StoryObj = {
   render: () => (
-    <TimeSeriesChart
-      description="Daily spend and token volume, last 30 days"
-      data={days}
-      xKey="day"
-      series={[
-        { key: "spend", label: "Spend (USD)" },
-        { key: "tokens", label: "Tokens (k)" },
-      ]}
-      formatY={usd}
-    />
+    <figure aria-label="Turns per day by harness" className="h-64 max-w-2xl">
+      <ChartDateFormat value={(d) => fmtShortDay(d.toISOString())}>
+        <LineChart
+          data={data}
+          xDataKey="date"
+          aspectRatio="auto"
+          className="h-full"
+          margin={{ top: 8, right: 12, bottom: 28, left: 40 }}
+        >
+          <Grid />
+          <YAxis numTicks={4} />
+          {SERIES.map((s) => (
+            <Line key={s.key} dataKey={s.key} stroke={s.color} strokeWidth={2} fadeEdges={false} />
+          ))}
+          <XAxis numTicks={6} />
+          <ChartTooltip
+            showDatePill={false}
+            rows={(p) =>
+              SERIES.map((s) => ({ color: s.color, label: s.label, value: String(p[s.key]) }))
+            }
+          />
+        </LineChart>
+      </ChartDateFormat>
+    </figure>
   ),
-};
-
-export const StackedArea: StoryObj = {
-  render: () => (
-    <TimeSeriesChart
-      stacked
-      description="Stacked spend and tokens"
-      data={days}
-      xKey="day"
-      series={[
-        { key: "spend", label: "Spend" },
-        { key: "tokens", label: "Tokens" },
-      ]}
-    />
-  ),
-};
-
-export const MissingPeriods: StoryObj = {
-  name: "Line with missing periods (no tween across gaps)",
-  render: () => (
-    <TimeSeriesChart
-      description="Errors per day with gaps"
-      data={days}
-      xKey="day"
-      series={[{ key: "errors", label: "Errors", slot: 2 }]}
-    />
-  ),
-};
-
-export const CategoryBars: StoryObj = {
-  render: () => (
-    <CategoryBarChart
-      description="Spend by agent, top 6 + other"
-      data={[
-        { agent: "alpha", spend: 410 },
-        { agent: "beta", spend: 320 },
-        { agent: "gamma", spend: 210 },
-        { agent: "delta", spend: 120 },
-        { agent: "epsilon", spend: 90 },
-        { agent: "zeta", spend: 40 },
-        { agent: "other", spend: 35 },
-      ]}
-      xKey="agent"
-      series={[{ key: "spend", label: "Spend" }]}
-      formatY={usd}
-    />
-  ),
-};
-
-export const GaugeStory: StoryObj = {
-  name: "Gauge",
-  render: () => (
-    <div className="flex flex-wrap gap-6">
-      <Gauge
-        label="Budget used"
-        value={62}
-        max={100}
-        formatValue={(v) => `${v}%`}
-        thresholds={[0.75, 0.9]}
-      />
-      <Gauge
-        label="Budget used"
-        value={93}
-        max={100}
-        formatValue={(v) => `${v}%`}
-        thresholds={[0.75, 0.9]}
-      />
-      <Gauge label="Budget used" value={null} max={100} formatValue={(v) => `${v}%`} />
-    </div>
-  ),
-};
-
-export const HeatmapStory: StoryObj = {
-  name: "Heatmap (keyboard: arrows, Enter)",
-  render: () => {
-    const rows = ["alpha", "beta", "gamma", "delta"];
-    const cols = Array.from({ length: 24 }, (_, h) => `${h}h`);
-    const values = rows.map((_, r) =>
-      cols.map((_, c) => (c % 11 === r ? null : ((r + 1) * (c + 3) * 7) % 50)),
-    );
-    return (
-      <Heatmap label="Requests by agent and hour" rows={rows} columns={cols} values={values} />
-    );
-  },
-};
+}

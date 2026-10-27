@@ -1,0 +1,40 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.share-targets",
+  "recorded_at": "2026-09-30T14:28:36.609Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.609Z",
+    "end": "2026-09-30T14:28:36.611Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/share-targets",
+    "query": {
+      "q": "adm"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "users": [
+        {
+          "display_name": null,
+          "user_id": "<admin-id>",
+          "username": "admin"
+        }
+      ]
+    },
+    "message": "Share targets retrieved successfully",
+    "status_code": 200
+  }
+}

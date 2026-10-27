@@ -1,32 +1,20 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/RouterPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; the tab panels' Radix `forceMount` is Base UI's `keepMounted` (each panel stays
-// mounted and `hidden`, as in the lab); the filter tiles' pressed classes are `aria-pressed:` (Base UI's `Toggle` sets
-// `aria-pressed`, not Radix's `data-state=on`); Base UI's `Tabs` passes its value untyped (narrowed as in the lab); the
-// budgets wiring stays commented out exactly as in the lab (no server serves `/api/budgets*`, R-L10); development
-// (09a5b8905, 1c28b0bb9): the Budgets tab is the budgets slot's (`useRouterTab`, `RouterTab`; Enterprise only);
-// Prettier formatting.
-// Previous/Next in the routing sheet (legacy ui/ on development, b7d5ba691).
-// Legacy ui/ on development (3aac84f66, c721a11a8): the summary tiles became the Agents table's own filter tabs
-// (`SourceTabs`), and the section tabs are underlined.
-"use client";
-
 /**
- * The LLM router page (plan §4). Order: title + "How routing works" → summary tiles (filters) → tabs: Your agents ·
- * Your configs · Providers (`?tab=`, one at a time). It shows configured routing and who pays, not observed calls (R-L5).
+ * The LLM router page (plan §4). Order: title + "How routing works" → tabs: Your agents · Your configs · Providers
+ * (`?tab=`, one at a time). The routing summary is the Agents table's own filter tabs, the only thing it filters. It shows configured routing and who pays, not observed calls (R-L5).
  *
  *   useOwnedAgents ─► ids ─► useRowReads (limiter, 4 at a time) ─► rows ─┬─► summary strip / counts / Affects N
  *   useConfigs · useSecrets · useCatalog · useCustomProviders ───────────┴─► sections and sheets
  */
-import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { PageLoader } from "@nasiko/ui/composites";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { useOwnedAgents } from "../agents/api";
-import { ErrorState } from "../observability/StateCard";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { siblingsAround } from "@nasiko/app-core/siblings";
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
-import { useAnnounce } from "./announce";
+import { useQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { useOwnedAgents } from '@nasiko/features/agents/api'
+import { ErrorState } from '@nasiko/features/observability/StateCard'
+import { meQuery } from '@nasiko/data-access/auth'
+import { siblingsAround } from '@nasiko/app-core/siblings'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { useAnnounce } from './announce'
 import {
   useCatalog,
   useConfigs,
@@ -37,18 +25,18 @@ import {
   useSecrets,
   useSetDefault,
   useUsageByAgent,
-} from "./api";
-import { AgentsSection, type AgentRow, type SpendState } from "./components/AgentsSection";
-import { Announcer } from "./components/bits";
-import { RouterTitle } from "./components/HowRouting";
-import { ConfigSheet, type EditorMode } from "./components/ConfigSheet";
-import { ConfigsSection } from "./components/ConfigsSection";
-import { CustomProviderSheet, type CustomMode } from "./components/CustomProviderSheet";
-import { DeleteConfigDialog } from "./components/DeleteConfigDialog";
-import { ProvidersSection } from "./components/ProvidersSection";
-import { RoutingSheet } from "./components/RoutingSheet";
-import { copy } from "./copy";
-import { routerError } from "./errors";
+} from './api'
+import { AgentsSection, type AgentRow, type SpendState } from './components/AgentsSection'
+import { Announcer } from './components/bits'
+import { RouterTitle } from './components/HowRouting'
+import { ConfigSheet, type EditorMode } from './components/ConfigSheet'
+import { ConfigsSection } from './components/ConfigsSection'
+import { CustomProviderSheet, type CustomMode } from './components/CustomProviderSheet'
+import { DeleteConfigDialog } from './components/DeleteConfigDialog'
+import { ProvidersSection } from './components/ProvidersSection'
+import { RoutingSheet } from './components/RoutingSheet'
+import { copy } from './copy'
+import { routerError } from './errors'
 import {
   attachedAgents,
   catalogIndex,
@@ -57,101 +45,101 @@ import {
   duplicateName,
   summarize,
   type ClearableField,
-} from "./routing";
-import { ROUTER_TABS, type RouterSearch, type RouterTab, type SourceFilter } from "./search";
-import { SPEND_LIMIT } from "./tuning";
-import type { AgentUsage, LlmConfig } from "./types";
+} from './routing'
+import { ROUTER_TABS, type RouterSearch, type RouterTab, type SourceFilter } from './search'
+import { SPEND_LIMIT } from './tuning'
+import type { AgentUsage, LlmConfig } from './types'
 
-const FILTER_SOURCE: Record<SourceFilter, "attached" | "owner-default" | "none"> = {
-  attached: "attached",
-  default: "owner-default",
-  none: "none",
-};
+const FILTER_SOURCE: Record<SourceFilter, 'attached' | 'owner-default' | 'none'> = {
+  attached: 'attached',
+  default: 'owner-default',
+  none: 'none',
+}
 
 export function RouterPage({
   search,
   setSearch,
 }: {
-  search: RouterSearch;
-  setSearch: (patch: Partial<RouterSearch>) => void;
+  search: RouterSearch
+  setSearch: (patch: Partial<RouterSearch>) => void
 }) {
   return (
     <Announcer>
       <Page search={search} setSearch={setSearch} />
     </Announcer>
-  );
+  )
 }
 
 function Page({
   search,
   setSearch,
 }: {
-  search: RouterSearch;
-  setSearch: (patch: Partial<RouterSearch>) => void;
+  search: RouterSearch
+  setSearch: (patch: Partial<RouterSearch>) => void
 }) {
-  const me = useQuery(meQueryOptions(useProductScope())).data;
-  const superuser = !!me?.is_superuser;
-  const owned = useOwnedAgents(me?.sub);
+  const me = useQuery(meQuery).data
+  const superuser = !!me?.is_superuser
+  const owned = useOwnedAgents(me?.sub)
   const agents = useMemo(
     () =>
       [...(owned.data ?? [])].sort((a, b) =>
         (a.display_name || a.name).localeCompare(b.display_name || b.name),
       ),
     [owned.data],
-  );
-  const ids = useMemo(() => agents.map((a) => a.id), [agents]);
-  const { reads, retry } = useRowReads(ids);
-  const configs = useConfigs();
-  useRowsFollowConfigs(configs.data);
-  const secrets = useSecrets();
-  const catalog = useCatalog();
-  const custom = useCustomProviders();
-  const registry = useRegistry();
-  const usage = useUsageByAgent(ids.length > 0);
-  const setDefault = useSetDefault();
+  )
+  const ids = useMemo(() => agents.map((a) => a.id), [agents])
+  const { reads, retry } = useRowReads(ids)
+  const configs = useConfigs()
+  useRowsFollowConfigs(configs.data)
+  const secrets = useSecrets()
+  const catalog = useCatalog()
+  const custom = useCustomProviders()
+  const registry = useRegistry()
+  const usage = useUsageByAgent(ids.length > 0)
+  const setDefault = useSetDefault()
   // Budgets are Enterprise only (docs/requirements/budgets.md): a layer may add the tab, and the OSS build has none.
-  const budgetSlot = useSlots().budgets;
-  const hasBudgets = budgetSlot.useRouterTab();
-  const BudgetsTab = budgetSlot.RouterTab;
-  const announce = useAnnounce();
+  const budgetSlot = useSlots().budgets
+  const hasBudgets = budgetSlot.useRouterTab()
+  const BudgetsTab = budgetSlot.RouterTab
+  const announce = useAnnounce()
 
-  const [editor, setEditor] = useState<EditorMode | null>(null);
-  const [routingFor, setRoutingFor] = useState<string | null>(null);
+  const [editor, setEditor] = useState<EditorMode | null>(null)
+  const [routingFor, setRoutingFor] = useState<string | null>(null)
   // The agents table's order when the sheet opened from it, for the sheet's Previous/Next; [] from elsewhere.
-  const [routingOrder, setRoutingOrder] = useState<readonly string[]>([]);
-  const [customMode, setCustomMode] = useState<CustomMode | null>(null);
-  const [deleting, setDeleting] = useState<LlmConfig | null>(null);
-  const [updated, setUpdated] = useState<ReadonlyMap<string, number>>(new Map());
+  const [routingOrder, setRoutingOrder] = useState<readonly string[]>([])
+  const [customMode, setCustomMode] = useState<CustomMode | null>(null)
+  const [deleting, setDeleting] = useState<LlmConfig | null>(null)
+  const [updated, setUpdated] = useState<ReadonlyMap<string, number>>(new Map())
 
-  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
+  const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
   const agentLabel = useCallback(
     (id: string) => {
-      const a = agentById.get(id);
-      return a ? a.display_name || a.name : undefined;
+      const a = agentById.get(id)
+      return a ? a.display_name || a.name : undefined
     },
     [agentById],
-  );
+  )
   const rows: AgentRow[] = useMemo(
-    () => agents.map((agent, i) => ({ agent, read: reads[i] ?? { state: "pending" } })),
+    () => agents.map((agent, i) => ({ agent, read: reads[i] ?? { state: 'pending' } })),
     [agents, reads],
-  );
-  const summary = useMemo(() => summarize(reads), [reads]);
-  const customLabels = useMemo(() => (custom.data ?? []).map((c) => c.label), [custom.data]);
-  const idx = useMemo(() => catalogIndex(catalog.data), [catalog.data]);
-  const secretNames = useMemo(() => secrets.data?.map((s) => s.name), [secrets.data]);
+  )
+  const summary = useMemo(() => summarize(reads), [reads])
+  const customLabels = useMemo(() => (custom.data ?? []).map((c) => c.label), [custom.data])
+  const idx = useMemo(() => catalogIndex(catalog.data), [catalog.data])
+  const secretNames = useMemo(() => secrets.data?.map((s) => s.name), [secrets.data])
   const warnings = useCallback(
     (c: LlmConfig) =>
       configWarnings(c, { secrets: secretNames, customLabels, idx, catalogLoaded: !!catalog.data }),
     [secretNames, customLabels, idx, catalog.data],
-  );
+  )
 
   const spend: SpendState = useMemo(() => {
-    const owned = new Set(ids);
-    const byAgent = new Map<string, AgentUsage>();
-    let dropped = 0;
+    const owned = new Set(ids)
+    const byAgent = new Map<string, AgentUsage>()
+    let dropped = 0
     for (const u of usage.data ?? []) {
-      if (u.agent_id && owned.has(u.agent_id)) byAgent.set(u.agent_id, u);
-      else dropped += u.request_count;
+      if (u.agent_id && owned.has(u.agent_id)) byAgent.set(u.agent_id, u)
+      else dropped += u.request_count
     }
     return {
       byAgent,
@@ -160,16 +148,16 @@ function Page({
       pending: usage.isPending && ids.length > 0,
       partial: (usage.data?.length ?? 0) >= SPEND_LIMIT,
       anyUnpriced: [...byAgent.values()].some((u) => u.request_count > 0 && u.total_cost_usd === 0),
-    };
-  }, [usage.data, usage.isError, usage.isPending, ids]);
+    }
+  }, [usage.data, usage.isError, usage.isPending, ids])
 
-  const source = search.source;
+  const source = search.source
   const filtered = source
-    ? rows.filter((r) => r.read.state === "ok" && r.read.routing.source === FILTER_SOURCE[source])
-    : rows;
-  const filterLabel = search.source ? copy.filterNames[search.source] : null;
-  const routingAgent = routingFor ? agentById.get(routingFor) : undefined;
-  const routingStep = routingFor ? siblingsAround(routingOrder, routingFor) : null;
+    ? rows.filter((r) => r.read.state === 'ok' && r.read.routing.source === FILTER_SOURCE[source])
+    : rows
+  const filterLabel = search.source ? copy.filterNames[search.source] : null
+  const routingAgent = routingFor ? agentById.get(routingFor) : undefined
+  const routingStep = routingFor ? siblingsAround(routingOrder, routingFor) : null
   const attached = useMemo(
     () =>
       deleting
@@ -179,78 +167,66 @@ function Page({
           ).map((id) => [id, agentById.get(id)?.display_name || id] as const)
         : [],
     [deleting, rows, agentById],
-  );
+  )
 
-  const onDefault = (c: LlmConfig, on: boolean) => {
+  const onDefault = (c: LlmConfig, on: boolean) =>
     setDefault.mutate(
       { config: c, on },
       {
-        onSuccess: () => {
-          announce(copy.saved(c.name));
-        },
-        onError: (e) => {
-          announce(routerError(e).problem);
-        },
+        onSuccess: () => announce(copy.saved(c.name)),
+        onError: (e) => announce(routerError(e).problem),
       },
-    );
-  };
-  const onDuplicate = (source: LlmConfig, without?: ClearableField) => {
+    )
+  const onDuplicate = (source: LlmConfig, without?: ClearableField) =>
     setEditor({
-      kind: "duplicate",
+      kind: 'duplicate',
       source,
       without,
       name: duplicateName(
         source.name,
         (configs.data ?? []).map((c) => c.name),
       ),
-    });
-  };
+    })
   const focusSection = (id: string) => {
-    const el = document.getElementById(id);
-    el?.scrollIntoView({ block: "start" });
-    (el?.querySelector("h2") as HTMLElement | null)?.focus();
-  };
+    const el = document.getElementById(id)
+    el?.scrollIntoView({ block: 'start' })
+    ;(el?.querySelector('h2') as HTMLElement | null)?.focus()
+  }
   const focusEl = (id: string) => {
-    const el = document.getElementById(id);
-    el?.scrollIntoView({ block: "center" });
-    el?.focus();
-  };
+    const el = document.getElementById(id)
+    el?.scrollIntoView({ block: 'center' })
+    el?.focus()
+  }
   // Every tab stays mounted (inactive ones `hidden`, so each keeps its state); a jump into another tab focuses once
   // that tab is shown.
   // `#router-budgets` (Needs you, the session ledger) opens the Budgets tab.
   const wanted: RouterTab =
     search.tab ??
-    (typeof window !== "undefined" && window.location.hash === "#router-budgets"
-      ? "budgets"
-      : "agents");
-  const tab: RouterTab = wanted === "budgets" && !hasBudgets ? "agents" : wanted;
-  const pendingFocus = useRef<(() => void) | null>(null);
+    (typeof window !== 'undefined' && window.location.hash === '#router-budgets'
+      ? 'budgets'
+      : 'agents')
+  const tab: RouterTab = wanted === 'budgets' && !hasBudgets ? 'agents' : wanted
+  const pendingFocus = useRef<(() => void) | null>(null)
   useEffect(() => {
-    const focus = pendingFocus.current;
-    pendingFocus.current = null;
-    focus?.();
-  }, [tab]);
+    const focus = pendingFocus.current
+    pendingFocus.current = null
+    focus?.()
+  }, [tab])
   const goTo = (t: RouterTab, focus: () => void) => {
-    if (t === tab) {
-      focus();
-      return;
-    }
-    pendingFocus.current = focus;
-    setSearch({ tab: t === "agents" ? undefined : t });
-  };
+    if (t === tab) return focus()
+    pendingFocus.current = focus
+    setSearch({ tab: t === 'agents' ? undefined : t })
+  }
   /** A summary tile (or "Show them") filters Your agents, so it opens their tab. */
   const showAgents = (next: SourceFilter | undefined, focus = false) => {
-    setSearch({ source: next, tab: undefined });
-    if (!focus) return;
-    if (tab === "agents") focusSection("router-agents");
-    else
-      pendingFocus.current = () => {
-        focusSection("router-agents");
-      };
-  };
+    setSearch({ source: next, tab: undefined })
+    if (!focus) return
+    if (tab === 'agents') focusSection('router-agents')
+    else pendingFocus.current = () => focusSection('router-agents')
+  }
 
   // The tab's own `#router-budgets` scroll waits on the page's other reads (it owns the rest).
-  const pageReady = !owned.isPending && reads.every((r) => r.state !== "pending");
+  const pageReady = !owned.isPending && reads.every((r) => r.state !== 'pending')
 
   if (owned.isError && !owned.data) {
     return (
@@ -258,7 +234,7 @@ function Page({
         <RouterTitle configsEmpty={false} />
         <ErrorState error={owned.error} onRetry={() => void owned.refetch()} />
       </div>
-    );
+    )
   }
 
   const defaultDetail = summary.defaultConfig
@@ -266,7 +242,7 @@ function Page({
         summary.defaultConfig.provider,
         !!summary.defaultConfig.api_key_secret_name,
       )
-    : null;
+    : null
 
   return (
     <div className="space-y-5">
@@ -277,9 +253,7 @@ function Page({
         }
         total={String(summary.total)}
         defaultName={configs.data?.find((c) => c.is_default)?.name}
-        onShowDefaults={() => {
-          showAgents("default", true);
-        }}
+        onShowDefaults={() => showAgents('default', true)}
       />
       {/* One loader until the first paint's reads settle (data or error); a section's error still shows its card. */}
       {owned.isPending || configs.isPending || catalog.isPending ? (
@@ -288,11 +262,11 @@ function Page({
         <>
           <Tabs
             value={tab}
-            onValueChange={(t: unknown) => {
+            onValueChange={(t) =>
               setSearch({
-                tab: t === "configs" || t === "providers" || t === "budgets" ? t : undefined,
-              });
-            }}
+                tab: t === 'configs' || t === 'providers' || t === 'budgets' ? t : undefined,
+              })
+            }
           >
             <TabsList
               data-tour="router-tabs"
@@ -300,43 +274,41 @@ function Page({
               aria-label={copy.anchorsLabel}
               className="w-full max-w-full justify-start overflow-x-auto border-b border-border"
             >
-              {ROUTER_TABS.filter((t) => t !== "budgets" || hasBudgets).map((t) => (
+              {ROUTER_TABS.filter((t) => t !== 'budgets' || hasBudgets).map((t) => (
                 <TabsTrigger key={t} value={t} className="min-h-10 flex-none px-3">
                   {copy.anchors[t]}
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="agents" keepMounted hidden={tab !== "agents"} className="pt-4">
+            <TabsContent value="agents" forceMount hidden={tab !== 'agents'} className="pt-4">
               <AgentsSection
                 filters={
                   <SourceTabs
                     value={source}
-                    onChange={(v) => {
-                      showAgents(v);
-                    }}
+                    onChange={(v) => showAgents(v)}
                     tabs={[
                       {
-                        value: "all",
+                        value: 'all',
                         label: copy.filterAll,
                         count: String(summary.total),
                         name: copy.summaryAgents(String(summary.total)),
                       },
                       {
-                        value: "default",
+                        value: 'default',
                         label: copy.filterNames.default,
                         count: kpiCount(summary.onDefault),
                         name: copy.summaryDefault(countText(summary.onDefault), defaultDetail),
                         title: defaultDetail ?? copy.kpiNoDefault,
                       },
                       {
-                        value: "attached",
+                        value: 'attached',
                         label: copy.filterNames.attached,
                         count: kpiCount(summary.attached),
                         name: copy.summaryAttached(countText(summary.attached)),
                         title: copy.kpiAttachedNote,
                       },
                       {
-                        value: "none",
+                        value: 'none',
                         label: copy.filterNames.none,
                         count: kpiCount(summary.none),
                         name: copy.summaryNone(countText(summary.none)),
@@ -350,38 +322,28 @@ function Page({
                 spend={spend}
                 updated={updated}
                 onChange={(a, order) => {
-                  setRoutingFor(a.id);
-                  setRoutingOrder(order);
+                  setRoutingFor(a.id)
+                  setRoutingOrder(order)
                 }}
                 onRetry={retry}
-                onShowConfig={(id) => {
-                  goTo("configs", () => {
-                    focusEl(`config-${id}`);
-                  });
-                }}
+                onShowConfig={(id) => goTo('configs', () => focusEl(`config-${id}`))}
                 filterLabel={filterLabel}
               />
             </TabsContent>
-            <TabsContent value="configs" keepMounted hidden={tab !== "configs"} className="pt-4">
+            <TabsContent value="configs" forceMount hidden={tab !== 'configs'} className="pt-4">
               <ConfigsSection
                 configs={configs}
                 reads={reads}
                 warnings={warnings}
-                onNew={() => {
-                  setEditor({ kind: "create" });
-                }}
-                onEdit={(c) => {
-                  setEditor({ kind: "edit", config: c });
-                }}
-                onDuplicate={(c) => {
-                  onDuplicate(c);
-                }}
+                onNew={() => setEditor({ kind: 'create' })}
+                onEdit={(c) => setEditor({ kind: 'edit', config: c })}
+                onDuplicate={(c) => onDuplicate(c)}
                 onDelete={setDeleting}
                 onDefault={onDefault}
               />
             </TabsContent>
             {hasBudgets && BudgetsTab ? (
-              <TabsContent value="budgets" keepMounted hidden={tab !== "budgets"} className="pt-4">
+              <TabsContent value="budgets" forceMount hidden={tab !== 'budgets'} className="pt-4">
                 <BudgetsTab
                   agents={agents.map((a) => ({ id: a.id, name: a.display_name || a.name }))}
                   agentName={agentLabel}
@@ -390,23 +352,14 @@ function Page({
                 />
               </TabsContent>
             ) : null}
-            <TabsContent
-              value="providers"
-              keepMounted
-              hidden={tab !== "providers"}
-              className="pt-4"
-            >
+            <TabsContent value="providers" forceMount hidden={tab !== 'providers'} className="pt-4">
               <ProvidersSection
                 catalog={catalog}
                 custom={custom}
                 registry={registry}
                 superuser={superuser}
-                onAdd={() => {
-                  setCustomMode({ kind: "create" });
-                }}
-                onEdit={(p) => {
-                  setCustomMode({ kind: "edit", provider: p });
-                }}
+                onAdd={() => setCustomMode({ kind: 'create' })}
+                onEdit={(p) => setCustomMode({ kind: 'edit', provider: p })}
               />
             </TabsContent>
           </Tabs>
@@ -415,24 +368,14 @@ function Page({
 
       <ConfigSheet
         mode={editor}
-        onClose={() => {
-          setEditor(null);
-        }}
+        onClose={() => setEditor(null)}
         configs={configs.data}
         catalog={catalog}
         customLabels={customLabels}
         reads={reads}
-        onDuplicate={(src, without) => {
-          onDuplicate(src, without);
-        }}
-        onSetDefault={(c) => {
-          onDefault(c, true);
-        }}
-        onFocusAgents={() => {
-          goTo("agents", () => {
-            focusSection("router-agents");
-          });
-        }}
+        onDuplicate={(src, without) => onDuplicate(src, without)}
+        onSetDefault={(c) => onDefault(c, true)}
+        onFocusAgents={() => goTo('agents', () => focusSection('router-agents'))}
       />
       <RoutingSheet
         target={
@@ -459,33 +402,22 @@ function Page({
         viewer={{ sub: me?.sub, superuser }}
         configs={configs.data}
         catalog={catalog.data}
-        onClose={() => {
-          setRoutingFor(null);
-        }}
-        onSaved={(id, at) => {
-          setUpdated((m) => new Map(m).set(id, at));
-        }}
+        onClose={() => setRoutingFor(null)}
+        onSaved={(id, at) => setUpdated((m) => new Map(m).set(id, at))}
       />
-      <CustomProviderSheet
-        mode={customMode}
-        onClose={() => {
-          setCustomMode(null);
-        }}
-      />
+      <CustomProviderSheet mode={customMode} onClose={() => setCustomMode(null)} />
       <DeleteConfigDialog
         config={deleting}
         reads={reads}
         attached={attached}
-        onClose={() => {
-          setDeleting(null);
-        }}
+        onClose={() => setDeleting(null)}
         onChangeRouting={(id) => {
-          setRoutingFor(id);
-          setRoutingOrder([]);
+          setRoutingFor(id)
+          setRoutingOrder([])
         }}
       />
     </div>
-  );
+  )
 }
 
 /**
@@ -497,22 +429,20 @@ function SourceTabs({
   onChange,
   tabs,
 }: {
-  value: SourceFilter | undefined;
-  onChange: (v: SourceFilter | undefined) => void;
+  value: SourceFilter | undefined
+  onChange: (v: SourceFilter | undefined) => void
   tabs: {
-    value: SourceFilter | "all";
-    label: string;
-    count: string;
-    name: string;
-    title?: string | undefined;
-  }[];
+    value: SourceFilter | 'all'
+    label: string
+    count: string
+    name: string
+    title?: string
+  }[]
 }) {
   return (
     <Tabs
-      value={value ?? "all"}
-      onValueChange={(v: unknown) => {
-        onChange(v === "all" ? undefined : (v as SourceFilter));
-      }}
+      value={value ?? 'all'}
+      onValueChange={(v) => onChange(v === 'all' ? undefined : (v as SourceFilter))}
       className="max-w-full min-w-0"
     >
       {/* Phones: the four tabs scroll sideways inside the card rather than overflow it. */}
@@ -523,7 +453,7 @@ function SourceTabs({
             value={t.value}
             aria-label={t.name}
             title={t.title}
-            // No tab panels: every tab narrows the one agents table.
+            // No tab panels: every tab narrows the one agents table (Radix would point at a panel that isn't there).
             aria-controls="router-agents"
           >
             {t.label} <span className="text-xs text-muted-foreground tabular-nums">{t.count}</span>
@@ -531,8 +461,8 @@ function SourceTabs({
         ))}
       </TabsList>
     </Tabs>
-  );
+  )
 }
 
 /** The tab's count: "13+" while some rows are unread (the tab's name keeps "at least 13"). */
-const kpiCount = (c: { n: number; atLeast: boolean }) => `${c.n}${c.atLeast ? "+" : ""}`;
+const kpiCount = (c: { n: number; atLeast: boolean }) => `${c.n}${c.atLeast ? '+' : ''}`

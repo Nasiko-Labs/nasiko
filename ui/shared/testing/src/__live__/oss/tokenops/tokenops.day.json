@@ -1,0 +1,422 @@
+{
+  "fixture_version": 1,
+  "id": "tokenops.day",
+  "recorded_at": "2026-09-29T05:55:36.986Z",
+  "window": {
+    "start": "2026-09-29T05:55:36.986Z",
+    "end": "2026-09-29T05:55:36.991Z"
+  },
+  "anchor": "2026-09-29T05:55:34.182Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": "2026-09-29T04:15:34.033Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/observability/finops/spend-calendar/day",
+    "query": {
+      "date": "{prevDay}"
+    }
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "date": "2026-09-28",
+      "hours": [
+        {
+          "hour": 0,
+          "spend_usd": 0.032931,
+          "top_agents": [
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.032931
+            }
+          ],
+          "others_spend_usd": 0
+        },
+        {
+          "hour": 1,
+          "spend_usd": 0.067062,
+          "top_agents": [
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.064708
+            }
+          ],
+          "others_spend_usd": 0.002354
+        },
+        {
+          "hour": 2,
+          "spend_usd": 0.002073,
+          "top_agents": [],
+          "others_spend_usd": 0.002073
+        },
+        {
+          "hour": 3,
+          "spend_usd": 0.018072,
+          "top_agents": [],
+          "others_spend_usd": 0.018072
+        },
+        {
+          "hour": 4,
+          "spend_usd": 0.079095,
+          "top_agents": [
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.048563
+            }
+          ],
+          "others_spend_usd": 0.030532
+        },
+        {
+          "hour": 5,
+          "spend_usd": 0.025725,
+          "top_agents": [],
+          "others_spend_usd": 0.025725
+        },
+        {
+          "hour": 6,
+          "spend_usd": 0.246676,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.064598
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.001268
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.109033
+            }
+          ],
+          "others_spend_usd": 0.071777
+        },
+        {
+          "hour": 7,
+          "spend_usd": 0.302105,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.035305
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.114609
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.002928
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.027741
+            }
+          ],
+          "others_spend_usd": 0.121522
+        },
+        {
+          "hour": 8,
+          "spend_usd": 0.267051,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.044194
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.045009
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.023288
+            }
+          ],
+          "others_spend_usd": 0.15456
+        },
+        {
+          "hour": 9,
+          "spend_usd": 0.418966,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.045328
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.115779
+            }
+          ],
+          "others_spend_usd": 0.257859
+        },
+        {
+          "hour": 10,
+          "spend_usd": 0.234394,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.091662
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.023925
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.032425
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.026212
+            }
+          ],
+          "others_spend_usd": 0.06017
+        },
+        {
+          "hour": 11,
+          "spend_usd": 0.189702,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.041075
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.022968
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.061216
+            }
+          ],
+          "others_spend_usd": 0.064443
+        },
+        {
+          "hour": 12,
+          "spend_usd": 0.334924,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.073935
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.078015
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.020693
+            }
+          ],
+          "others_spend_usd": 0.162281
+        },
+        {
+          "hour": 13,
+          "spend_usd": 0.35883,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.133902
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.033131
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.055176
+            }
+          ],
+          "others_spend_usd": 0.136621
+        },
+        {
+          "hour": 14,
+          "spend_usd": 0.274797,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.059271
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.085319
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.019909
+            }
+          ],
+          "others_spend_usd": 0.110298
+        },
+        {
+          "hour": 15,
+          "spend_usd": 0.330646,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.05097
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.03452
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.102494
+            }
+          ],
+          "others_spend_usd": 0.142662
+        },
+        {
+          "hour": 16,
+          "spend_usd": 0.355846,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.036537
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.06567
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.0805
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.057203
+            }
+          ],
+          "others_spend_usd": 0.115936
+        },
+        {
+          "hour": 17,
+          "spend_usd": 0.456988,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.046296
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.13753
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.148125
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.018096
+            }
+          ],
+          "others_spend_usd": 0.106941
+        },
+        {
+          "hour": 18,
+          "spend_usd": 0.325438,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.139976
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.012665
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.05827
+            }
+          ],
+          "others_spend_usd": 0.114527
+        },
+        {
+          "hour": 19,
+          "spend_usd": 0.453789,
+          "top_agents": [
+            {
+              "agent_name": "Code Reviewer",
+              "spend_usd": 0.161388
+            },
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.032528
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.0954
+            }
+          ],
+          "others_spend_usd": 0.164473
+        },
+        {
+          "hour": 20,
+          "spend_usd": 0.268764,
+          "top_agents": [
+            {
+              "agent_name": "Invoice Parser",
+              "spend_usd": 0.048381
+            },
+            {
+              "agent_name": "Pricing Engine",
+              "spend_usd": 0.066738
+            },
+            {
+              "agent_name": "Doc Writer",
+              "spend_usd": 0.098722
+            }
+          ],
+          "others_spend_usd": 0.054923
+        },
+        {
+          "hour": 21,
+          "spend_usd": 0,
+          "top_agents": [],
+          "others_spend_usd": 0
+        },
+        {
+          "hour": 22,
+          "spend_usd": 0,
+          "top_agents": [],
+          "others_spend_usd": 0
+        },
+        {
+          "hour": 23,
+          "spend_usd": 0,
+          "top_agents": [],
+          "others_spend_usd": 0
+        }
+      ],
+      "avg_hourly_spend_usd": 0.210161,
+      "top_agents": [
+        {
+          "agent_name": "Code Reviewer",
+          "spend_usd": 1.024437
+        },
+        {
+          "agent_name": "Invoice Parser",
+          "spend_usd": 0.849728
+        },
+        {
+          "agent_name": "Pricing Engine",
+          "spend_usd": 0.842529
+        },
+        {
+          "agent_name": "Doc Writer",
+          "spend_usd": 0.409431
+        }
+      ],
+      "others_spend_usd": 1.917749
+    },
+    "status_code": 200,
+    "message": "Day drilldown retrieved successfully"
+  }
+}

@@ -1,16 +1,14 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/Transcript.tsx. Local edits: none beyond
-// imports and Prettier.
 /**
  * The one scroller (plan §6.9): follows new output while within FOLLOW_PX of the bottom, else
  * offers Jump to latest; Load older keeps the first visible turn where it was.
  */
-import { ArrowDown, RotateCw } from "lucide-react";
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "../copy";
-import { tuning } from "../tuning";
-import { CHAT_COLUMN } from "./turnStyles";
+import { ArrowDown, RotateCw } from 'lucide-react'
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '../copy'
+import { tuning } from '../tuning'
+import { CHAT_COLUMN } from './turnStyles'
 
 export function Transcript({
   children,
@@ -20,52 +18,52 @@ export function Transcript({
   olderFailed,
   onLoadOlder,
 }: {
-  children: ReactNode;
+  children: ReactNode
   /** Changes whenever the rendered content grows (turn count + live text length). */
-  contentKey: string;
-  hasOlder: boolean;
-  loadingOlder: boolean;
-  olderFailed: boolean;
-  onLoadOlder: () => void;
+  contentKey: string
+  hasOlder: boolean
+  loadingOlder: boolean
+  olderFailed: boolean
+  onLoadOlder(): void
 }) {
-  const scroller = useRef<HTMLDivElement>(null);
-  const following = useRef(true);
-  const anchor = useRef<{ height: number; top: number } | null>(null);
-  const [atBottom, setAtBottom] = useState(true);
+  const scroller = useRef<HTMLDivElement>(null)
+  const following = useRef(true)
+  const anchor = useRef<{ height: number; top: number } | null>(null)
+  const [atBottom, setAtBottom] = useState(true)
 
   const onScroll = useCallback(() => {
-    const el = scroller.current;
-    if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight <= tuning.FOLLOW_PX;
-    following.current = near;
-    setAtBottom(near);
-  }, []);
+    const el = scroller.current
+    if (!el) return
+    const near = el.scrollHeight - el.scrollTop - el.clientHeight <= tuning.FOLLOW_PX
+    following.current = near
+    setAtBottom(near)
+  }, [])
 
   useLayoutEffect(() => {
-    const el = scroller.current;
-    if (!el) return;
+    const el = scroller.current
+    if (!el) return
     if (anchor.current) {
       // Older rows were prepended: keep the same content under the viewport.
-      el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height);
-      anchor.current = null;
-      return;
+      el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.height)
+      anchor.current = null
+      return
     }
-    if (following.current) el.scrollTop = el.scrollHeight;
-  }, [contentKey]);
+    if (following.current) el.scrollTop = el.scrollHeight
+  }, [contentKey])
 
   const loadOlder = () => {
-    const el = scroller.current;
-    if (el) anchor.current = { height: el.scrollHeight, top: el.scrollTop };
-    onLoadOlder();
-  };
+    const el = scroller.current
+    if (el) anchor.current = { height: el.scrollHeight, top: el.scrollTop }
+    onLoadOlder()
+  }
 
   const jump = () => {
-    const el = scroller.current;
-    if (!el) return;
-    following.current = true;
-    setAtBottom(true);
-    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-  };
+    const el = scroller.current
+    if (!el) return
+    following.current = true
+    setAtBottom(true)
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+  }
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -77,10 +75,10 @@ export function Transcript({
         className="h-full overflow-y-auto outline-none"
         data-testid="transcript"
       >
-        <div className={cn(CHAT_COLUMN, "space-y-6 py-6")}>
+        <div className={cn(CHAT_COLUMN, 'space-y-6 py-6')}>
           {olderFailed ? (
             <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              {copy.olderFailed}{" "}
+              {copy.olderFailed}{' '}
               <Button
                 size="xs"
                 variant="outline"
@@ -117,5 +115,5 @@ export function Transcript({
         </Button>
       ) : null}
     </div>
-  );
+  )
 }

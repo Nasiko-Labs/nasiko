@@ -19,11 +19,24 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { loadEnv, type Plugin, type UserConfig } from 'vite'
-import { BOOT_GUARD_SCRIPT } from './common/src/lib/staleBuildBoot.ts'
-import { ZOD_JITLESS_SCRIPT } from './common/src/lib/zodJitless.ts'
+import { BOOT_GUARD_SCRIPT } from './shared/app-core/src/staleBuildBoot.ts'
+import { ZOD_JITLESS_SCRIPT } from './shared/app-core/src/zodJitless.ts'
 
 export const ROOT = dirname(fileURLToPath(import.meta.url))
-export const COMMON_SRC = join(ROOT, 'common/src')
+/** The shared packages, `shared/<name>/src`, each imported as `@nasiko/<name>/…`. */
+export const SHARED = join(ROOT, 'shared')
+/** The core's routes, which every control-plane edition serves. */
+export const CORE_ROUTES = join(SHARED, 'app-shell/src/routes')
+/**
+ * One alias per shared package, to its source: a package is never built on its own, the app's build compiles it. An
+ * alias rather than package.json `exports`: TypeScript resolves an extensionless specifier through `paths`
+ * (tsconfig.base.json lists the same), not through an `exports` pattern.
+ */
+export const PACKAGE_ALIASES: Record<string, string> = Object.fromEntries(
+  readdirSync(SHARED)
+    .filter((d) => existsSync(join(SHARED, d, 'src')))
+    .map((d) => [`@nasiko/${d}`, join(SHARED, d, 'src')]),
+)
 
 export interface AppOptions {
   /** 'oss', 'ee', …: the cache dir and the id the app's `src/edition.ts` declares. */
@@ -32,7 +45,7 @@ export interface AppOptions {
   appDir: string
   /** Layer `src/` dirs stacked on the core, lowest first (EE: its own src). */
   layers?: string[]
-  /** One alias per layer (EE: `@ee`). */
+  /** One alias per layer package (an edition's feature packages, beside its app). */
   alias?: Record<string, string>
   mode: string
   /**
@@ -110,7 +123,7 @@ export function shippedRoutes(routeDirs: string[]): string[] {
 /** Fails any import that resolves outside this edition's allowed roots: EE code can never reach an OSS build. */
 function leakGuard(o: AppOptions): Plugin {
   const allowed = [
-    join(ROOT, 'common'),
+    SHARED,
     o.appDir,
     ...(o.layers ?? []),
     // The live-contract tests drive the recorder and seed scripts; nothing in an app bundle may.
@@ -157,7 +170,7 @@ function routesManifest(routes: string[]): Plugin {
 
 /**
  * `dist/nasiko-spa.json`: whether this build can answer API calls from the mock seed. A production build honours mock
- * mode or partial mocks only under VITE_NASIKO_ALLOW_MOCK_BUILD (common/src/lib/env.ts `readEnv`, which this can't
+ * mode or partial mocks only under VITE_NASIKO_ALLOW_MOCK_BUILD (shared/app-core/src/env.ts `readEnv`, which this can't
  * import: it reads `import.meta.env` as it loads). Each server's build.rs refuses such a bundle in a release binary. A
  * live build also drops MSW's worker, which nothing in it registers.
  */
@@ -229,7 +242,7 @@ function analyticsInBuildsOnly(): Plugin {
   }
 }
 
-/** zod's `jitless` switch (common/src/lib/zodJitless.ts), inline after `<title>` so it runs before any module does. */
+/** zod's `jitless` switch (shared/app-core/src/zodJitless.ts), inline after `<title>` so it runs before any module does. */
 function zodJitless(): Plugin {
   return {
     name: 'nasiko:zod-jitless',
@@ -239,7 +252,7 @@ function zodJitless(): Plugin {
 }
 
 /**
- * The stale-build boot guard (common/src/lib/staleBuildBoot.ts), inline right after `<title>`: after `<meta charset>`
+ * The stale-build boot guard (shared/app-core/src/staleBuildBoot.ts), inline right after `<title>`: after `<meta charset>`
  * (the shell is served without a charset, so it must stay in the first 1024 bytes) and before the entry module and the
  * stylesheets, whose load errors it catches. `cspHashes` hashes it with the page's other inline scripts.
  */
@@ -264,19 +277,19 @@ export function nasikoApp(o: AppOptions): UserConfig {
   const routes = shippedRoutes(
     ownRoutes
       ? [join(src, 'routes')]
-      : [join(COMMON_SRC, 'routes'), ...(o.layers ?? []).map((l) => join(l, 'routes'))],
+      : [CORE_ROUTES, ...(o.layers ?? []).map((l) => join(l, 'routes'))],
   )
   return {
     root: src,
     envDir: ROOT,
-    publicDir: join(ROOT, 'common/public'),
+    publicDir: join(SHARED, 'ui/public'),
     cacheDir: join(ROOT, 'node_modules/.vite', o.id),
     plugins: [
       leakGuard(o),
       // Must run before react(): it generates the edition's src/routeTree.gen.ts from the core's routes.
       tanstackRouter({
         target: 'react',
-        routesDirectory: ownRoutes ? join(src, 'routes') : join(COMMON_SRC, 'routes'),
+        routesDirectory: ownRoutes ? join(src, 'routes') : CORE_ROUTES,
         // A layer's own `routes/` (EE: `/weave`) mount beside the core's; `shippedRoutes` above already failed a
         // path served twice. Without layers the core's directory (or the app's own) is read as is.
         ...(o.layers?.length && !ownRoutes
@@ -284,10 +297,10 @@ export function nasikoApp(o: AppOptions): UserConfig {
               virtualRouteConfig: {
                 type: 'root' as const,
                 file: '__root.tsx',
-                children: [COMMON_SRC, ...o.layers].map((dir) => ({
+                children: [CORE_ROUTES, ...o.layers.map((l) => join(l, 'routes'))].map((dir) => ({
                   type: 'physical' as const,
                   pathPrefix: '',
-                  directory: relative(join(COMMON_SRC, 'routes'), join(dir, 'routes')) || '.',
+                  directory: relative(CORE_ROUTES, dir) || '.',
                 })),
               },
             }
@@ -313,7 +326,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       babel({
         presets: [reactCompilerPreset()],
         exclude:
-          /[\\/]node_modules[\\/]|[\\/]src[\\/](genui[\\/]lang|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
+          /[\\/]node_modules[\\/]|[\\/]shared[\\/](mocks|testing)[\\/]|[\\/]src[\\/](genui[\\/]lang|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
       }),
       tailwindcss(),
       routesManifest(routes),
@@ -325,9 +338,9 @@ export function nasikoApp(o: AppOptions): UserConfig {
     ],
     resolve: {
       alias: {
+        ...PACKAGE_ALIASES,
         ...o.alias,
         '@edition': src,
-        '@': COMMON_SRC,
       },
     },
     // Port 3000 is deliberate: gstack /qa only probes 3000, 4000 and 8080.
@@ -357,7 +370,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
             groups: [
               {
                 name: 'charts',
-                test: /node_modules[\\/](@visx|d3-|reduce-css-calc|reduce-function-call|math-expression-evaluator|balanced-match)|common[\\/]src[\\/]components[\\/]charts[\\/]/,
+                test: /node_modules[\\/](@visx|d3-|reduce-css-calc|reduce-function-call|math-expression-evaluator|balanced-match)|shared[\\/]ui[\\/]src[\\/]charts[\\/]/,
               },
             ],
           },

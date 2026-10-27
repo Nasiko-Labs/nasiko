@@ -1,7 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/LayerCards.tsx. Local edits:
-// links are the navigation port's `Link` (`href`, `hrefFor` for a search); query keys are scoped (`productKey(scope,
-// …)`; the scope from `useProductScope()`); `meQuery` is `meQueryOptions(scope)`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * The layers on this agent (plans/feat-agent-centric.md PR1c; design "Layer cards"): Routing, Tools and Optimization,
  * one figure each and a link to the page that owns it (Budget became its own section, `HubBudget.tsx`). A fixed three-slot row that hides the slots this viewer
@@ -12,41 +8,40 @@
  * | Tools | connectors and tools blocked by rule (configured, never observed blocks) | hidden (managers only) |
  * | Optimization | Token optimization, the owner's history strategy, window tokens saved | Token optimization only |
  */
-import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import type { ReactNode } from "react";
-import { Card } from "@nasiko/ui/primitives";
-import type { AgentView } from "../../agents/normalize";
-import { useAgentBlockedTools, useAgentConnectors } from "../../mcp/api";
-import { strategyQuery } from "../../optimization/api";
-import { copy as optCopy } from "../../optimization/copy";
-import { useAgentRouting } from "../../router/api";
-import { configPin, routingSentence } from "../../router/routing";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { fmtTokens } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import type { SavedTotal } from "../api";
-import { copy } from "../copy";
-import { TOOL_CARD_CONNECTORS } from "../tuning";
+import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
+import { Card } from '@nasiko/ui/primitives/card'
+import type { AgentView } from '@nasiko/features/agents/normalize'
+import { useAgentBlockedTools, useAgentConnectors } from '@nasiko/features/mcp/api'
+import { strategyQuery } from '@nasiko/features/optimization/api'
+import { copy as optCopy } from '@nasiko/features/optimization/copy'
+import { useAgentRouting } from '@nasiko/features/router/api'
+import { configPin, routingSentence } from '@nasiko/features/router/routing'
+import { meQuery } from '@nasiko/data-access/auth'
+import { fmtTokens } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { SavedTotal } from '../api'
+import { copy } from '../copy'
+import { TOOL_CARD_CONNECTORS } from '../tuning'
 
 const LINK =
-  "inline-flex items-center text-xs text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11";
+  'inline-flex items-center text-xs text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11'
 
 export function LayerCards({
   agent,
   saved,
   optimizationExtra,
 }: {
-  agent: AgentView;
+  agent: AgentView
   /** This agent's tokens saved in the window (the hub's savings read); null when not reported. */
-  saved: SavedTotal | null | undefined;
+  saved: SavedTotal | null | undefined
   /** Rendered in the Optimization card: a harness owner's Token optimization switch (no Settings tab, eng D10). */
-  optimizationExtra?: ReactNode | undefined;
+  optimizationExtra?: ReactNode
 }) {
-  const me = useQuery(meQueryOptions(useProductScope())).data;
-  const owner = !!me?.sub && me.sub === agent.ownerId;
-  const reader = owner || !!me?.is_superuser;
+  const me = useQuery(meQuery).data
+  const owner = !!me?.sub && me.sub === agent.ownerId
+  const reader = owner || !!me?.is_superuser
   return (
     // Auto-fit: hidden slots leave no empty columns; the visible cards share the row (design "Layer cards").
     <section
@@ -57,7 +52,7 @@ export function LayerCards({
       {agent.canManage ? <ToolsSlot id={agent.id} /> : null}
       <OptimizationSlot agent={agent} owner={owner} saved={saved} extra={optimizationExtra} />
     </section>
-  );
+  )
 }
 
 function Slot({
@@ -66,73 +61,73 @@ function Slot({
   badge,
   wide,
 }: {
-  title: string;
-  children: ReactNode;
-  badge?: ReactNode | undefined;
+  title: string
+  children: ReactNode
+  badge?: ReactNode
   /** Two columns from `sm`: a card that carries a full control (a harness owner's switch). */
-  wide?: boolean | undefined;
+  wide?: boolean
 }) {
   return (
-    <Card className={cn("min-w-0 gap-1.5 p-3", wide && "sm:col-span-2")}>
+    <Card className={cn('min-w-0 gap-1.5 p-3', wide && 'sm:col-span-2')}>
       <h3 className="m-0 flex items-center gap-2 text-xs font-medium text-muted-foreground">
         {title}
         {badge}
       </h3>
       {children}
     </Card>
-  );
+  )
 }
 
 const Figure = ({ children }: { children: ReactNode }) => (
   <p className="m-0 truncate text-base font-semibold tabular-nums">{children}</p>
-);
+)
 const Line = ({ children }: { children: ReactNode }) => (
   <p className="m-0 text-xs text-muted-foreground">{children}</p>
-);
+)
 
 function RoutingSlot({ id }: { id: string }) {
-  const routing = useAgentRouting(id, true);
+  const routing = useAgentRouting(id, true)
   // A failed or forbidden read hides the card, as RoutingCard does.
-  if (routing.isError) return null;
-  const r = routing.data;
-  const config = r?.llm_config ?? null;
+  if (routing.isError) return null
+  const r = routing.data
+  const config = r?.llm_config ?? null
   // The router's own rules (routing.ts): an agent pin, else the config's pin, else its model; tiered configs have no
   // one model, so the figure is the routing sentence's short form (review: Codex).
-  const pin = r?.pinned_model ?? (config ? configPin(config) : null);
-  const figure = pin ?? config?.model ?? (config ? routingSentence(config, null).short : null);
+  const pin = r?.pinned_model ?? (config ? configPin(config) : null)
+  const figure = pin ?? config?.model ?? (config ? routingSentence(config, null).short : null)
   return (
     <Slot title={copy.cards.routing}>
       {routing.isPending ? (
         <Line>…</Line>
       ) : config ? (
         <>
-          <Figure>{figure ?? "—"}</Figure>
+          <Figure>{figure ?? '—'}</Figure>
           <Line>
             {config.name}
-            {pin ? ` · ${copy.cards.routingPinned}` : ""}
+            {pin ? ` · ${copy.cards.routingPinned}` : ''}
           </Line>
-          <Link href="/router" className={LINK}>
+          <Link to="/router" className={LINK}>
             {copy.cards.routingOpen}
           </Link>
         </>
       ) : (
         <>
           <Line>{copy.cards.routingNone}</Line>
-          <Link href="/router" className={LINK}>
+          <Link to="/router" className={LINK}>
             {copy.cards.routingSetUp}
           </Link>
         </>
       )}
     </Slot>
-  );
+  )
 }
 
 function ToolsSlot({ id }: { id: string }) {
-  const connectors = useAgentConnectors(id, true);
-  const enabled = (connectors.data ?? []).filter((c) => c.enabled);
-  const checked = enabled.slice(0, TOOL_CARD_CONNECTORS).map((c) => c.connector_id);
-  const blocked = useAgentBlockedTools(id, checked, checked.length > 0);
-  if (connectors.isError) return null;
+  const connectors = useAgentConnectors(id, true)
+  const enabled = (connectors.data ?? []).filter((c) => c.enabled)
+  const checked = enabled.slice(0, TOOL_CARD_CONNECTORS).map((c) => c.connector_id)
+  const blocked = useAgentBlockedTools(id, checked, checked.length > 0)
+  if (connectors.isError) return null
   return (
     <Slot title={copy.cards.tools}>
       {connectors.isPending ? (
@@ -147,11 +142,11 @@ function ToolsSlot({ id }: { id: string }) {
       ) : (
         <Line>{copy.cards.toolsNone}</Line>
       )}
-      <Link href={hrefFor(`/agents/${encodeURIComponent(id)}`, { tab: "mcp" })} className={LINK}>
+      <Link to="/agents/$agentId" params={{ agentId: id }} search={{ tab: 'mcp' }} className={LINK}>
         {enabled.length ? copy.cards.toolsOpen : copy.cards.toolsSetUp}
       </Link>
     </Slot>
-  );
+  )
 }
 
 function OptimizationSlot({
@@ -160,13 +155,13 @@ function OptimizationSlot({
   saved,
   extra,
 }: {
-  agent: AgentView;
-  owner: boolean;
-  saved: SavedTotal | null | undefined;
-  extra?: ReactNode | undefined;
+  agent: AgentView
+  owner: boolean
+  saved: SavedTotal | null | undefined
+  extra?: ReactNode
 }) {
   // The history strategy is the owner's own preference (it applies to their chats), so only the owner reads it.
-  const strategy = useQuery({ ...strategyQuery(useProductScope()), enabled: owner });
+  const strategy = useQuery({ ...strategyQuery, enabled: owner })
   return (
     <Slot title={copy.cards.optimization} wide={!!extra}>
       <Figure>{agent.compressEnabled ? copy.cards.compressOn : copy.cards.compressOff}</Figure>
@@ -181,9 +176,9 @@ function OptimizationSlot({
         </Line>
       ) : null}
       {extra}
-      <Link href="/optimization" className={LINK}>
+      <Link to="/optimization" className={LINK}>
         {copy.cards.optimizationOpen}
       </Link>
     </Slot>
-  );
+  )
 }

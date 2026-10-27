@@ -1,11 +1,9 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/components/CallCard.tsx. Local edits: none beyond
-// imports and Prettier formatting.
 /**
  * A flow with one call and nothing under it (plans/feat-flows.md F12): the most common flow today, so it reads as a
  * call, never as a one-bar swimlane with an empty Steps table.
  */
-import { Panel } from "@nasiko/ui/composites";
-import { copy } from "../copy";
+import { Panel } from '@nasiko/ui/composites/panel'
+import { copy } from '../copy'
 
 export function CallCard({ agent, request }: { agent: string; request: string | null }) {
   return (
@@ -21,5 +19,5 @@ export function CallCard({ agent, request }: { agent: string; request: string | 
         </dl>
       ) : null}
     </Panel>
-  );
+  )
 }

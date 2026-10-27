@@ -1,4 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/events.ts. Local edits: Prettier formatting.
 /**
  * Change markers for the agent hub (plans/feat-agent-centric.md PR1 "Marker sources", eng "Markers"). Pure: the hub
  * page feeds it the reads, tests feed it records.
@@ -15,98 +14,98 @@
  *
  * Ids (`?marker=`, X3): `build:<build id>`, `version:<version>`, `crash:<crashed_at ISO>`, `event:<event id>`.
  */
-import type { AgentVersion } from "../agents/types";
-import type { BuildRecord } from "../deploy/types";
-import { copy } from "./copy";
-import { BUILDS_READ } from "./tuning";
-import type { AgentEvent } from "./types";
+import type { AgentVersion } from '@nasiko/features/agents/types'
+import type { BuildRecord } from '@nasiko/features/deploy/types'
+import { copy } from './copy'
+import { BUILDS_READ } from './tuning'
+import type { AgentEvent } from './types'
 
-type MarkerKind = "build" | "version" | "crash" | "event";
+type MarkerKind = 'build' | 'version' | 'crash' | 'event'
 
 export interface Marker {
-  id: string;
-  kind: MarkerKind;
+  id: string
+  kind: MarkerKind
   /** The event log's kind (`restart`, `route_change`, …); the build's or crash's kind otherwise. */
-  sub: string;
-  at: number;
+  sub: string
+  at: number
   /** What happened, short: "Build completed", "Crashed", or the event's own summary. */
-  label: string;
+  label: string
   /** The version, when the record names one (without the leading `v`). */
-  version: string | null;
+  version: string | null
   /** The time is the record's last update, not a recorded moment of the change itself. */
-  approximate: boolean;
+  approximate: boolean
   /** Feedback tone: a crash and a budget stop are drawn in status colours; everything else is neutral. */
-  alert: boolean;
+  alert: boolean
   /** The build record behind the marker, for the "Open build" link. */
-  buildId: string | null;
+  buildId: string | null
   /** Who made the change, when the event log says. */
-  actor: string | null;
+  actor: string | null
 }
 
 export interface MarkerInput {
   /** null when the viewer can't read builds (`{available:false}`) or the agent has none to read (a harness). */
-  builds: readonly BuildRecord[] | null;
-  versions: readonly AgentVersion[] | null;
-  crashedAt: string | null;
-  events: readonly AgentEvent[] | null;
-  win: { start: Date; end: Date };
+  builds: readonly BuildRecord[] | null
+  versions: readonly AgentVersion[] | null
+  crashedAt: string | null
+  events: readonly AgentEvent[] | null
+  win: { start: Date; end: Date }
   /** Coding harnesses have no builds, versions or crashes: their markers come from the event log only (R2-10). */
-  harness: boolean;
+  harness: boolean
 }
 
 export interface MarkerSet {
   /** In the window, oldest first. */
-  markers: Marker[];
+  markers: Marker[]
   /**
    * The builds read hit its cap while its oldest record is still inside the window, so older deploys in the window
    * may be missing: the axis says "latest 20 build records checked".
    */
-  buildsCapped: boolean;
+  buildsCapped: boolean
 }
 
-const parse = (iso: string | null | undefined) => (iso ? Date.parse(iso) : Number.NaN);
-const stripV = (v: string) => v.replace(/^v/i, "");
+const parse = (iso: string | null | undefined) => (iso ? Date.parse(iso) : Number.NaN)
+const stripV = (v: string) => v.replace(/^v/i, '')
 
 function buildMarkers(input: MarkerInput): Marker[] {
-  const out: Marker[] = [];
-  const builds = input.builds ?? [];
-  const byBuild = new Map<string, AgentVersion>();
-  for (const v of input.versions ?? []) if (v.build_id) byBuild.set(v.build_id, v);
+  const out: Marker[] = []
+  const builds = input.builds ?? []
+  const byBuild = new Map<string, AgentVersion>()
+  for (const v of input.versions ?? []) if (v.build_id) byBuild.set(v.build_id, v)
   for (const b of builds) {
-    if (b.status !== "success" && b.status !== "failed") continue;
-    const at = parse(b.updated_at);
-    if (Number.isNaN(at)) continue;
-    const version = byBuild.get(b.id)?.version ?? b.version_tag;
+    if (b.status !== 'success' && b.status !== 'failed') continue
+    const at = parse(b.updated_at)
+    if (Number.isNaN(at)) continue
+    const version = byBuild.get(b.id)?.version ?? b.version_tag
     out.push({
       id: `build:${b.id}`,
-      kind: "build",
+      kind: 'build',
       sub: b.status,
       at,
-      label: b.status === "success" ? copy.marker.buildDone : copy.marker.buildFailed,
+      label: b.status === 'success' ? copy.marker.buildDone : copy.marker.buildFailed,
       version: version ? stripV(version) : null,
-      approximate: b.status === "success",
+      approximate: b.status === 'success',
       alert: false,
       buildId: b.id,
       actor: null,
-    });
+    })
   }
   // A version string can be recorded twice (the registry overwrites a version in place): one marker per version,
   // the newest record, so `version:<v>` ids stay unique.
-  const seen = new Set<string>();
+  const seen = new Set<string>()
   const newestFirst = [...(input.versions ?? [])].sort((a, b) =>
     b.created_at.localeCompare(a.created_at),
-  );
+  )
   for (const v of newestFirst) {
     // Joined to a build in the read: that build's marker carries it. Built but outside the read: not drawn (eng).
-    if (v.build_id && input.builds !== null) continue;
-    if (seen.has(v.version)) continue;
-    seen.add(v.version);
-    const at = parse(v.created_at);
-    if (Number.isNaN(at)) continue;
+    if (v.build_id && input.builds !== null) continue
+    if (seen.has(v.version)) continue
+    seen.add(v.version)
+    const at = parse(v.created_at)
+    if (Number.isNaN(at)) continue
     out.push({
       id: `version:${v.version}`,
-      kind: "version",
-      sub: "version",
+      kind: 'version',
+      sub: 'version',
       at,
       label: copy.marker.versionRecorded,
       version: stripV(v.version),
@@ -114,44 +113,44 @@ function buildMarkers(input: MarkerInput): Marker[] {
       alert: false,
       buildId: null,
       actor: null,
-    });
+    })
   }
-  return out;
+  return out
 }
 
 function eventMarkers(events: readonly AgentEvent[]): Marker[] {
   return events.flatMap((e) => {
-    const at = parse(e.at);
-    if (Number.isNaN(at)) return [];
+    const at = parse(e.at)
+    if (Number.isNaN(at)) return []
     return [
       {
         id: `event:${e.id}`,
-        kind: "event" as const,
+        kind: 'event' as const,
         sub: e.kind,
         at,
         label: e.summary,
         version: null,
         approximate: false,
-        alert: e.kind === "crash" || e.kind === "budget_stop",
+        alert: e.kind === 'crash' || e.kind === 'budget_stop',
         buildId: null,
         actor: e.actor,
       },
-    ];
-  });
+    ]
+  })
 }
 
 export function markersFor(input: MarkerInput): MarkerSet {
-  const from = input.win.start.getTime();
-  const to = input.win.end.getTime();
-  const all: Marker[] = [];
+  const from = input.win.start.getTime()
+  const to = input.win.end.getTime()
+  const all: Marker[] = []
   if (!input.harness) {
-    all.push(...buildMarkers(input));
-    const crashAt = parse(input.crashedAt);
+    all.push(...buildMarkers(input))
+    const crashAt = parse(input.crashedAt)
     if (input.crashedAt && !Number.isNaN(crashAt))
       all.push({
         id: `crash:${input.crashedAt}`,
-        kind: "crash",
-        sub: "crash",
+        kind: 'crash',
+        sub: 'crash',
         at: crashAt,
         label: copy.marker.crashed,
         version: null,
@@ -159,28 +158,28 @@ export function markersFor(input: MarkerInput): MarkerSet {
         alert: true,
         buildId: null,
         actor: null,
-      });
+      })
   }
-  if (input.events) all.push(...eventMarkers(input.events));
-  const inWindow = (m: Marker) => m.at >= from && m.at < to;
-  const builds = input.builds ?? [];
+  if (input.events) all.push(...eventMarkers(input.events))
+  const inWindow = (m: Marker) => m.at >= from && m.at < to
+  const builds = input.builds ?? []
   // The read's oldest record, by the time its marker would sit at; an unparseable time can't prove the cap was
   // outside the window, so it counts as inside (the coverage line shows rather than hides).
-  const times = builds.map((b) => parse(b.updated_at));
-  const oldest = times.some(Number.isNaN) ? from : Math.min(...times);
+  const times = builds.map((b) => parse(b.updated_at))
+  const oldest = times.some(Number.isNaN) ? from : Math.min(...times)
   return {
     markers: all.filter(inWindow).sort((a, b) => a.at - b.at || a.id.localeCompare(b.id)),
     buildsCapped: builds.length >= BUILDS_READ && oldest >= from,
-  };
+  }
 }
 
 /** A marker's name everywhere it is listed: "Build completed · v1.4.2". */
-export const markerText = (m: Marker) => (m.version ? `${m.label} · v${m.version}` : m.label);
+export const markerText = (m: Marker) => (m.version ? `${m.label} · v${m.version}` : m.label)
 
 /** The newest marker, for the hub's one sentence; null when the window has none. */
-export const latestMarker = (set: MarkerSet): Marker | null => set.markers.at(-1) ?? null;
+export const latestMarker = (set: MarkerSet): Marker | null => set.markers.at(-1) ?? null
 
-const ID_RE = /^(build|version|crash|event):.+$/;
+const ID_RE = /^(build|version|crash|event):.+$/
 
 /**
  * What to do with a `?marker=` id (X3): keep it while the markers read is pending or failed (never judged on a
@@ -190,9 +189,9 @@ const ID_RE = /^(build|version|crash|event):.+$/;
 export function markerIdState(
   id: string | undefined,
   set: MarkerSet | null,
-): "none" | "pending" | "found" | "drop" {
-  if (!id) return "none";
-  if (!ID_RE.test(id)) return "drop";
-  if (!set) return "pending";
-  return set.markers.some((m) => m.id === id) ? "found" : "drop";
+): 'none' | 'pending' | 'found' | 'drop' {
+  if (!id) return 'none'
+  if (!ID_RE.test(id)) return 'drop'
+  if (!set) return 'pending'
+  return set.markers.some((m) => m.id === id) ? 'found' : 'drop'
 }

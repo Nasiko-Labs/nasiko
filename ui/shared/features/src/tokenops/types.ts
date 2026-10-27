@@ -1,10 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/types.ts. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); `WireSubset` comes from
-// `@nasiko/data-access/product` (the ported client); `ProviderCatalogEntry` is written out by hand (the lab's generated
-// `@/lib/api/schema.gen` `ProviderCatalog` + `ModelEntry`, as shared/mocks/src/types.ts does), since the generated
-// OpenAPI types are not an export of the private Weave transport; `WireSubset`-typed optional fields admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * Finops wire types, hand-written from the Rust structs in
  * nasiko-cloud-rs @ cb3aaf0c, `oss/server/src/observability/service.rs`
@@ -28,186 +21,187 @@
  * - `is_capped` is always false on the current server.
  * - Timeseries/calendar arrays are sparse: only buckets with data appear.
  */
-import * as z from "zod";
-import type { WireSubset } from "@nasiko/data-access/product";
+import { z } from 'zod'
+import type { WireSubset } from '@nasiko/data-access/client'
+import type { components } from '@nasiko/data-access/schema.gen'
 
 export interface KpiValue {
-  current: number;
-  previous: number;
-  change_pct: number | null;
+  current: number
+  previous: number
+  change_pct: number | null
 }
 
 export interface FinopsKpis {
-  total_spend: KpiValue;
-  total_tokens: KpiValue;
-  cost_per_operation: KpiValue;
+  total_spend: KpiValue
+  total_tokens: KpiValue
+  cost_per_operation: KpiValue
   /** Fleet-wide p50 (label kept for backward compat server-side). */
-  avg_latency_ms: KpiValue;
-  total_agents: KpiValue;
-  active_agents: KpiValue;
-  total_operations: KpiValue;
-  total_tool_calls: KpiValue;
-  latency_p95_ms: KpiValue;
-  latency_p99_ms: KpiValue;
+  avg_latency_ms: KpiValue
+  total_agents: KpiValue
+  active_agents: KpiValue
+  total_operations: KpiValue
+  total_tool_calls: KpiValue
+  latency_p95_ms: KpiValue
+  latency_p99_ms: KpiValue
 }
 
 interface FinopsSummary {
-  total_cost: number;
-  total_operations: number;
-  operations_last_24h: number;
-  average_cost: number;
-  active_agents: number;
-  total_agents: number;
-  total_container_hours: number;
-  unpriced_calls: number;
+  total_cost: number
+  total_operations: number
+  operations_last_24h: number
+  average_cost: number
+  active_agents: number
+  total_agents: number
+  total_container_hours: number
+  unpriced_calls: number
   /** Spend priced from inferred rates or usage evidence (`cost_estimated`), ea233d20. */
-  estimated_cost: number;
+  estimated_cost: number
   /** Rows materialized before pricing confidence was recorded; counted over every agent name in the window. */
-  unknown_confidence_calls: number;
+  unknown_confidence_calls: number
 }
 
 export interface AgentFinopsRow {
-  agent_id: string;
+  agent_id: string
   /** Display name, not the raw trace agent name. */
-  agent_name: string;
-  total_cost: number;
-  operations: number;
-  is_capped: boolean;
-  avg_cost_per_operation: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-  total_tokens: number;
-  avg_latency_ms: number | null;
-  avg_latency_p95_ms: number | null;
-  avg_latency_p99_ms: number | null;
-  tool_call_count: number;
-  version: string | null;
-  container_hours: number;
+  agent_name: string
+  total_cost: number
+  operations: number
+  is_capped: boolean
+  avg_cost_per_operation: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  total_tokens: number
+  avg_latency_ms: number | null
+  avg_latency_p95_ms: number | null
+  avg_latency_p99_ms: number | null
+  tool_call_count: number
+  version: string | null
+  container_hours: number
   /**
    * The preceding window of the same length, present only with
    * `compare=previous`. A subset — enough for a delta, not a second row.
    */
-  previous?: AgentFinopsPrevious | null;
+  previous?: AgentFinopsPrevious | null
 }
 
 export interface AgentFinopsPrevious {
-  total_cost: number;
-  operations: number;
-  total_tokens: number;
-  tool_call_count: number;
-  avg_latency_ms: number | null;
+  total_cost: number
+  operations: number
+  total_tokens: number
+  tool_call_count: number
+  avg_latency_ms: number | null
 }
 
 export interface WorkflowFinopsRow {
-  maf_id: string;
-  workflow_name: string;
-  total_cost: number;
-  executions: number;
-  avg_cost_per_execution: number;
-  prompt_tokens: number;
-  completion_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-  total_tokens: number;
-  avg_latency_ms: number | null;
+  maf_id: string
+  workflow_name: string
+  total_cost: number
+  executions: number
+  avg_cost_per_execution: number
+  prompt_tokens: number
+  completion_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  total_tokens: number
+  avg_latency_ms: number | null
 }
 
 export type FinopsAttributions =
-  { view: "agent"; rows: AgentFinopsRow[] } | { view: "workflow"; rows: WorkflowFinopsRow[] };
+  { view: 'agent'; rows: AgentFinopsRow[] } | { view: 'workflow'; rows: WorkflowFinopsRow[] }
 
 export interface FinopsDashboardData {
-  summary: FinopsSummary;
-  agents: AgentFinopsRow[];
+  summary: FinopsSummary
+  agents: AgentFinopsRow[]
   token_usage: {
-    total_tokens: number;
-    prompt_tokens: number;
-    completion_tokens: number;
-    cache_read_tokens: number;
-    cache_creation_tokens: number;
-    avg_tokens_per_operation: number;
-  };
-  kpis: FinopsKpis;
-  attributions: FinopsAttributions;
+    total_tokens: number
+    prompt_tokens: number
+    completion_tokens: number
+    cache_read_tokens: number
+    cache_creation_tokens: number
+    avg_tokens_per_operation: number
+  }
+  kpis: FinopsKpis
+  attributions: FinopsAttributions
   spend_by_agent: {
-    slices: { agent_name: string; spend_usd: number; pct: number }[];
-    total_spend_usd: number;
-  };
+    slices: { agent_name: string; spend_usd: number; pct: number }[]
+    total_spend_usd: number
+  }
 }
 
 export interface SpendTimeseriesPoint {
-  bucket_start: string;
-  spend_usd: number;
-  operations: number;
-  tool_calls: number;
+  bucket_start: string
+  spend_usd: number
+  operations: number
+  tool_calls: number
   /** Raw trace agent name. */
-  top_agent_name: string | null;
-  top_agent_spend_usd: number | null;
-  p50_latency_ms: number | null;
-  p95_latency_ms: number | null;
-  p99_latency_ms: number | null;
+  top_agent_name: string | null
+  top_agent_spend_usd: number | null
+  p50_latency_ms: number | null
+  p95_latency_ms: number | null
+  p99_latency_ms: number | null
 }
 
 export interface FinopsSpendTimeseries {
-  bucket: "hour" | "day";
-  points: SpendTimeseriesPoint[];
+  bucket: 'hour' | 'day'
+  points: SpendTimeseriesPoint[]
   /**
    * Per-agent series, only with `group_by=agent`: the top spenders plus one
    * `other` aggregate, which together sum to `points`.
    */
-  series?: SpendAgentSeries[] | null;
+  series?: SpendAgentSeries[] | null
   /** The preceding window, only with `compare=previous`. Same bucketing. */
-  previous?: SpendTimeseriesPoint[] | null;
+  previous?: SpendTimeseriesPoint[] | null
 }
 
 export interface SpendAgentSeries {
   /** Raw trace agent name; `null` on the aggregate `other` series. */
-  agent_name: string | null;
+  agent_name: string | null
   /** Set only when exactly one live agent carries that name. */
-  agent_id: string | null;
-  is_other: boolean;
-  total_spend_usd: number;
-  points: SpendAgentPoint[];
+  agent_id: string | null
+  is_other: boolean
+  total_spend_usd: number
+  points: SpendAgentPoint[]
 }
 
 export interface SpendAgentPoint {
-  bucket_start: string;
-  spend_usd: number;
-  operations: number;
+  bucket_start: string
+  spend_usd: number
+  operations: number
 }
 
 export interface SpendCalendarDay {
-  date: string;
-  spend_usd: number;
-  operations: number;
-  intensity: number;
+  date: string
+  spend_usd: number
+  operations: number
+  intensity: number
 }
 
 export interface FinopsSpendCalendar {
-  days: SpendCalendarDay[];
-  highlighted_dates: string[];
+  days: SpendCalendarDay[]
+  highlighted_dates: string[]
 }
 
 interface AgentSpendSlice {
   /** Raw trace agent name. */
-  agent_name: string;
-  spend_usd: number;
+  agent_name: string
+  spend_usd: number
 }
 
 interface SpendHourPoint {
-  hour: number;
-  spend_usd: number;
-  top_agents: AgentSpendSlice[];
-  others_spend_usd: number;
+  hour: number
+  spend_usd: number
+  top_agents: AgentSpendSlice[]
+  others_spend_usd: number
 }
 
 export interface FinopsDayDrilldown {
-  date: string;
-  hours: SpendHourPoint[];
-  avg_hourly_spend_usd: number;
-  top_agents: AgentSpendSlice[];
-  others_spend_usd: number;
+  date: string
+  hours: SpendHourPoint[]
+  avg_hourly_spend_usd: number
+  top_agents: AgentSpendSlice[]
+  others_spend_usd: number
 }
 
 /**
@@ -216,25 +210,25 @@ export interface FinopsDayDrilldown {
  * "needs a newer nasiko-server" state on 404.
  */
 interface TopTraceRow {
-  trace_id: string;
-  session_id: string | null;
-  agent_id: string | null;
-  agent_name: string;
-  model: string | null;
-  provider: string | null;
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_creation_tokens: number;
-  cost_usd: number;
-  latency_ms: number | null;
-  tool_call_count: number;
-  started_at: string;
+  trace_id: string
+  session_id: string | null
+  agent_id: string | null
+  agent_name: string
+  model: string | null
+  provider: string | null
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  cost_usd: number
+  latency_ms: number | null
+  tool_call_count: number
+  started_at: string
 }
 
 export interface TopTracesData {
-  rows: TopTraceRow[];
-  has_more: boolean;
+  rows: TopTraceRow[]
+  has_more: boolean
 }
 
 /**
@@ -242,34 +236,13 @@ export interface TopTracesData {
  * their current prices (`pricing_available: false` means served but unpriced) and, for a custom provider, its id
  * and display name. TokenOps reads provider and model names; the router page reads the rest.
  */
-export interface ProviderCatalogModelEntry {
-  cache_creation_price_per_1m?: number | null | undefined;
-  cache_read_price_per_1m?: number | null | undefined;
-  currency?: string | null | undefined;
-  effective_from?: string | null | undefined;
-  effective_until?: string | null | undefined;
-  input_price_per_1m?: number | null | undefined;
-  model: string;
-  notes?: string | null | undefined;
-  output_price_per_1m?: number | null | undefined;
-  /** Whether a currently-effective price row backs this model. `false` ⇒ served but its cost is not tracked. */
-  pricing_available: boolean;
-}
-
-export interface ProviderCatalogEntry {
-  /** Human-friendly name of the custom provider, if this is a DB-registered custom endpoint. */
-  display_name?: string | null | undefined;
-  models: ProviderCatalogModelEntry[];
-  provider: string;
-  /** UUID of the custom provider, if this is a DB-registered custom endpoint. */
-  provider_id?: string | null | undefined;
-}
+export type ProviderCatalogEntry = components['schemas']['ProviderCatalog']
 
 // ─── response schemas (lib/api/client.ts `Checked`): the fields the UI reads, extras allowed ────────────────────
 // These endpoints drifted before (CHANGELOG 0.9.0.0); every recorded live response passes them (schemas.live.test.ts).
 
-const num = z.number();
-const kpi = z.looseObject({ current: num, previous: num, change_pct: num.nullable() });
+const num = z.number()
+const kpi = z.looseObject({ current: num, previous: num, change_pct: num.nullable() })
 const agentRow = z.looseObject({
   agent_id: z.string(),
   agent_name: z.string(),
@@ -283,7 +256,7 @@ const agentRow = z.looseObject({
   avg_latency_ms: num.nullable(),
   avg_latency_p95_ms: num.nullable(),
   container_hours: num,
-});
+})
 const workflowRow = z.looseObject({
   maf_id: z.string(),
   workflow_name: z.string(),
@@ -294,7 +267,7 @@ const workflowRow = z.looseObject({
   cache_read_tokens: num,
   total_tokens: num,
   avg_latency_ms: num.nullable(),
-});
+})
 
 /** `GET /api/observability/finops/dashboard` data (KpiStrip, the attribution table, the summary line). */
 export const finopsDashboardSchema = z.looseObject({
@@ -318,19 +291,16 @@ export const finopsDashboardSchema = z.looseObject({
     latency_p95_ms: kpi,
     latency_p99_ms: kpi,
   }),
-  attributions: z.discriminatedUnion("view", [
-    z.looseObject({ view: z.literal("agent"), rows: z.array(agentRow) }),
-    z.looseObject({ view: z.literal("workflow"), rows: z.array(workflowRow) }),
+  attributions: z.discriminatedUnion('view', [
+    z.looseObject({ view: z.literal('agent'), rows: z.array(agentRow) }),
+    z.looseObject({ view: z.literal('workflow'), rows: z.array(workflowRow) }),
   ]),
-}) satisfies z.ZodType<WireSubset<FinopsDashboardData>>;
+}) satisfies z.ZodType<WireSubset<FinopsDashboardData>>
 
 /** The dashboard fields Harnesses' individual fallback reads (the per-agent rows and the summary). */
-export const finopsDashboardRowsSchema = finopsDashboardSchema.pick({
-  summary: true,
-  agents: true,
-});
+export const finopsDashboardRowsSchema = finopsDashboardSchema.pick({ summary: true, agents: true })
 
-const slice = z.looseObject({ agent_name: z.string(), spend_usd: num });
+const slice = z.looseObject({ agent_name: z.string(), spend_usd: num })
 
 /** `GET /api/observability/finops/spend-calendar/day` data (the day panel). */
 export const finopsDaySchema = z.looseObject({
@@ -346,7 +316,7 @@ export const finopsDaySchema = z.looseObject({
   avg_hourly_spend_usd: num,
   top_agents: z.array(slice),
   others_spend_usd: num,
-}) satisfies z.ZodType<WireSubset<FinopsDayDrilldown>>;
+}) satisfies z.ZodType<WireSubset<FinopsDayDrilldown>>
 
 /** `GET /api/llm-router/providers` body (TokenOps filters, the router's Providers section, `dedupeCatalog`). */
 export const providerCatalogSchema = z.looseObject({
@@ -366,7 +336,7 @@ export const providerCatalogSchema = z.looseObject({
       ),
     }),
   ),
-}) satisfies z.ZodType<WireSubset<{ data: ProviderCatalogEntry[] }>>;
+}) satisfies z.ZodType<WireSubset<{ data: ProviderCatalogEntry[] }>>
 
 /**
  * Proposed: token optimisation savings for a window. No endpoint exists yet, so the Token
@@ -374,24 +344,24 @@ export const providerCatalogSchema = z.looseObject({
  * agents with optimisation on; savings are input tokens the optimiser removed before the call.
  */
 interface OptimisationAgentRow {
-  agent_id: string;
-  agent_name: string;
-  calls: number;
-  input_tokens_before: number;
-  input_tokens_after: number;
+  agent_id: string
+  agent_name: string
+  calls: number
+  input_tokens_before: number
+  input_tokens_after: number
   /** At API list price. */
-  est_cost_saved_usd: number;
+  est_cost_saved_usd: number
 }
 
 /** @public Synced from nasiko-cloud-rs (PR #28) with the savings types. */
 export interface OptimisationSummary {
-  agents: OptimisationAgentRow[];
-  total_agents: number;
-  fleet_spend_usd: number;
+  agents: OptimisationAgentRow[]
+  total_agents: number
+  fleet_spend_usd: number
   /** What the optimised agents were billed (after optimisation). */
-  optimised_spend_usd: number;
+  optimised_spend_usd: number
   /** The biggest spender with optimisation off. */
-  top_unoptimised: { agent_id: string; agent_name: string; spend_usd: number } | null;
+  top_unoptimised: { agent_id: string; agent_name: string; spend_usd: number } | null
 }
 
 /**
@@ -404,19 +374,19 @@ export interface OptimisationSummary {
  * them here would let two surfaces disagree about what the denominator was.
  */
 export interface Savings {
-  saved_tokens: number;
-  saved_input_tokens: number;
-  saved_output_tokens: number;
-  saved_cost_usd: number;
-  actual_tokens: number;
-  actual_cost_usd: number;
+  saved_tokens: number
+  saved_input_tokens: number
+  saved_output_tokens: number
+  saved_cost_usd: number
+  actual_tokens: number
+  actual_cost_usd: number
   /** `actual + saved` — what it would have cost without the layer. */
-  baseline_tokens: number;
-  baseline_cost_usd: number;
+  baseline_tokens: number
+  baseline_cost_usd: number
   /** Null when the baseline is zero: undefined, not a fabricated 0. */
-  token_reduction_pct: number | null;
-  cost_reduction_pct: number | null;
-  basis: SavingsBasis;
+  token_reduction_pct: number | null
+  cost_reduction_pct: number | null
+  basis: SavingsBasis
 }
 
 /**
@@ -424,72 +394,72 @@ export interface Savings {
  * `seed_default` and `fixture` are a percentage applied to counted eligible traffic, for the two
  * layers whose counterfactual cannot be observed. `mixed` is a roll-up of both kinds.
  */
-export type SavingsBasis = "measured" | "fixture" | "seed_default" | "mixed";
+export type SavingsBasis = 'measured' | 'fixture' | 'seed_default' | 'mixed'
 
 interface SavingsFactor {
-  input_token_delta_pct: number;
-  output_token_delta_pct: number;
-  basis: string;
-  measured_at: string;
+  input_token_delta_pct: number
+  output_token_delta_pct: number
+  basis: string
+  measured_at: string
   /** One sentence on where the number came from. Served verbatim; show it, don't paraphrase. */
-  notes: string;
-  sample_count?: number;
-  confidence_pct?: number;
+  notes: string
+  sample_count?: number
+  confidence_pct?: number
   /** Counted, never assumed — which is why a seeded row still reacts to the feature being off. */
-  eligible_input_tokens: number;
-  eligible_output_tokens: number;
+  eligible_input_tokens: number
+  eligible_output_tokens: number
 }
 
 interface LayerSavings extends Savings {
-  layer: string;
-  factor?: SavingsFactor;
+  layer: string
+  factor?: SavingsFactor
 }
 
 export interface ProgramSavings extends Savings {
-  program: string;
+  program: string
   /** How this program is named to users, decided server-side. */
-  label: string;
-  layers: LayerSavings[];
-  by_tier?: { tier: string; saved_tokens: number; saved_cost_usd: number }[];
+  label: string
+  layers: LayerSavings[]
+  by_tier?: { tier: string; saved_tokens: number; saved_cost_usd: number }[]
   /** Why this program's figure is zero, when it is. */
-  note?: string;
+  note?: string
 }
 
 interface AgentSavingsRow extends Savings {
-  agent_id: string;
-  agent_name: string;
-  calls: number;
-  input_tokens_before: number;
-  input_tokens_after: number;
+  agent_id: string
+  agent_name: string
+  calls: number
+  input_tokens_before: number
+  input_tokens_after: number
 }
 
 interface SessionSavingsRow extends Savings {
-  session_id: string;
-  started_at: string;
-  turn_count: number;
-  agent_names: string[];
+  session_id: string
+  started_at: string
+  turn_count: number
+  agent_names: string[]
 }
 
 interface SavingsCoverage {
-  calls_in_window: number;
-  calls_with_any_layer_enabled: number;
-  agents_total: number;
-  agents_optimized: number;
-  agents_with_compress_enabled: number;
-  agents_with_minimal_code_enabled: number;
-  agents_with_prompt_comments: number;
-  optimized_spend_usd: number;
-  unoptimized_spend_usd: number;
-  top_unoptimized?: { agent_id: string; agent_name: string; spend_usd: number };
+  calls_in_window: number
+  calls_with_any_layer_enabled: number
+  agents_total: number
+  agents_optimized: number
+  agents_with_compress_enabled: number
+  agents_with_minimal_code_enabled: number
+  agents_with_prompt_comments: number
+  optimized_spend_usd: number
+  unoptimized_spend_usd: number
+  top_unoptimized?: { agent_id: string; agent_name: string; spend_usd: number }
   /** Share of measured savings calibrated against real usage rather than the fallback divisor. */
-  calibrated_pct: number | null;
+  calibrated_pct: number | null
 }
 
 export interface SavingsData {
-  window: { start: string; end: string };
-  total: Savings;
-  by_program: ProgramSavings[];
-  by_agent: AgentSavingsRow[];
-  by_session: SessionSavingsRow[];
-  coverage: SavingsCoverage;
+  window: { start: string; end: string }
+  total: Savings
+  by_program: ProgramSavings[]
+  by_agent: AgentSavingsRow[]
+  by_session: SessionSavingsRow[]
+  coverage: SavingsCoverage
 }

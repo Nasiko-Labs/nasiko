@@ -1,10 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/FleetHealth.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use
-// client"`; TanStack `Link` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) (the agent's `/agents/<id>`; the counts' `/agents?health=<rating>` through
-// `pageHref`); `Badge asChild` + `Link` -> `Badge render={<Link …/>}` and `TooltipTrigger asChild` + `span` ->
-// `render={<span …/>}` (Base UI useRender: the same elements); optional props admit `undefined`; Prettier formatting.
-// Development (2d95e6e79): the card opens with the directory's run states.
-"use client";
-
 /**
  * Fleet health (plans/feat-overview.md §5.3): counts over every visible agent (design review 16B), each linking to the
  * Agents catalog filtered by that rating (15A, computed by the same `useFleetHealth`, eng review R1), a square per agent
@@ -14,74 +7,68 @@
  * Redesign 2026-10-19: it sits beside Needs you and opens with the run states the summary's old Agents running tile
  * showed ("14 of 19 running · 1 deploying · 2 crashed or failed"), so the summary's tiles can carry money and tokens.
  */
-import Link from "@nasiko/app-core/navigation";
-import { CircleCheck, TriangleAlert } from "lucide-react";
-import { useRef } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
-import { displayStatus, isHarness, type DisplayStatus } from "../../agents/status";
-import { fmtLatency } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import type { FleetHealth as FleetHealthData } from "../api";
-import { copy } from "../copy";
-import type { Rating } from "../health";
-import { HEALTH_LIST_ROWS } from "../tuning";
-import { Card, CardError, CardSkeleton, pageHref, SourceFailed, TOUCH } from "./Card";
+import { Link } from '@tanstack/react-router'
+import { CircleCheck, TriangleAlert } from 'lucide-react'
+import { useRef } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
+import { displayStatus, isHarness, type DisplayStatus } from '@nasiko/features/agents/status'
+import { fmtLatency } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { FleetHealth as FleetHealthData } from '../api'
+import { copy } from '../copy'
+import type { Rating } from '../health'
+import { HEALTH_LIST_ROWS } from '../tuning'
+import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
 
-const ORDER: readonly Rating[] = ["healthy", "watch", "action", "unknown"];
+const ORDER: readonly Rating[] = ['healthy', 'watch', 'action', 'unknown']
 /** Status tokens, never the accent (design review 12A). */
 const SEGMENT: Record<Rating, string> = {
-  healthy: "bg-success",
-  watch: "bg-warning",
-  action: "bg-destructive",
-  unknown: "bg-muted-foreground/30",
-};
+  healthy: 'bg-success',
+  watch: 'bg-warning',
+  action: 'bg-destructive',
+  unknown: 'bg-muted-foreground/30',
+}
 /** Each count is a status `Badge` that links to the filtered catalog; zero counts stay quiet. */
-const BADGE: Record<Rating, "success" | "warning" | "destructive" | "muted"> = {
-  healthy: "success",
-  watch: "warning",
-  action: "destructive",
-  unknown: "muted",
-};
+const BADGE: Record<Rating, 'success' | 'warning' | 'destructive' | 'muted'> = {
+  healthy: 'success',
+  watch: 'warning',
+  action: 'destructive',
+  unknown: 'muted',
+}
 
-const PARTS = ["deploying", "attention", "stopped", "not-deployed"] as const;
+const PARTS = ['deploying', 'attention', 'stopped', 'not-deployed'] as const
 
 /** "14 of 19 running · 1 deploying · 2 crashed or failed": the directory's run states, harnesses left out. */
 function runStates(fleet: FleetHealthData): string {
   const states: DisplayStatus[] = [...fleet.byId.values()]
     .filter((a) => !isHarness(a))
-    .map((a) => displayStatus(a.status, false));
-  if (!states.length) return copy.kpi.noAgents;
-  const count = (s: DisplayStatus) => states.filter((x) => x === s).length;
+    .map((a) => displayStatus(a.status, false))
+  if (!states.length) return copy.kpi.noAgents
+  const count = (s: DisplayStatus) => states.filter((x) => x === s).length
   return [
-    copy.kpi.running(count("running"), states.length),
+    copy.kpi.running(count('running'), states.length),
     ...PARTS.filter((s) => count(s) > 0).map((s) => copy.kpi.agentParts[s](count(s))),
-  ].join(" · ");
+  ].join(' · ')
 }
 
-export function FleetHealth({
-  fleet,
-  className,
-}: {
-  fleet: FleetHealthData;
-  className?: string | undefined;
-}) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const s = fleet.summary;
-  const total = s ? ORDER.reduce((n, r) => n + s.counts[r], 0) : 0;
-  const rated = s ? total - s.counts.unknown : 0;
+export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; className?: string }) {
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const s = fleet.summary
+  const total = s ? ORDER.reduce((n, r) => n + s.counts[r], 0) : 0
+  const rated = s ? total - s.counts.unknown : 0
   const healthy = s
     ? [...s.byId.values()]
-        .filter((a) => a.rating === "healthy")
+        .filter((a) => a.rating === 'healthy')
         .sort((a, b) => a.name.localeCompare(b.name))
-    : [];
-  const listed = s ? [...s.watch, ...healthy].slice(0, HEALTH_LIST_ROWS) : [];
+    : []
+  const listed = s ? [...s.watch, ...healthy].slice(0, HEALTH_LIST_ROWS) : []
   const squares = s
     ? [...s.byId.values()].sort(
         (a, b) => ORDER.indexOf(a.rating) - ORDER.indexOf(b.rating) || a.name.localeCompare(b.name),
       )
-    : [];
+    : []
   return (
     <Card
       id="overview-health"
@@ -103,30 +90,31 @@ export function FleetHealth({
           <p className="flex flex-wrap gap-1.5">
             {ORDER.map((r) => {
               const names =
-                r === "action"
+                r === 'action'
                   ? s.action.map((a) => a.name)
-                  : r === "watch"
+                  : r === 'watch'
                     ? s.watch.map((a) => a.name)
-                    : [];
+                    : []
               return (
                 <Badge
                   key={r}
-                  render={
-                    <Link
-                      href={pageHref("/agents", { health: r })}
-                      aria-label={copy.health.countLink(copy.ratingCount[r](s.counts[r]), names)}
-                    />
-                  }
-                  variant={s.counts[r] ? BADGE[r] : "outline"}
+                  asChild
+                  variant={s.counts[r] ? BADGE[r] : 'outline'}
                   className={cn(
-                    "font-normal tabular-nums focus-visible:ring-ring dark:focus-visible:ring-ring",
+                    'font-normal tabular-nums focus-visible:ring-ring dark:focus-visible:ring-ring',
                     TOUCH,
-                    !s.counts[r] && "text-muted-foreground",
+                    !s.counts[r] && 'text-muted-foreground',
                   )}
                 >
-                  {copy.ratingCount[r](s.counts[r])}
+                  <Link
+                    to="/agents"
+                    search={{ health: r } as never}
+                    aria-label={copy.health.countLink(copy.ratingCount[r](s.counts[r]), names)}
+                  >
+                    {copy.ratingCount[r](s.counts[r])}
+                  </Link>
                 </Badge>
-              );
+              )
             })}
           </p>
           {/* auto-fill keeps a square's size fixed by the card, so a small fleet stays small; a large one wraps. */}
@@ -137,9 +125,9 @@ export function FleetHealth({
           >
             {squares.map((a) => (
               <Tooltip key={a.id}>
-                <TooltipTrigger
-                  render={<span className={cn("h-5 rounded-xs", SEGMENT[a.rating])} />}
-                />
+                <TooltipTrigger asChild>
+                  <span className={cn('h-5 rounded-xs', SEGMENT[a.rating])} />
+                </TooltipTrigger>
                 <TooltipContent>{`${a.name} · ${copy.rating[a.rating]}`}</TooltipContent>
               </Tooltip>
             ))}
@@ -161,22 +149,24 @@ export function FleetHealth({
               ) : null}
               <ul className="divide-y divide-border" aria-label={copy.health.title}>
                 {listed.map((a) => {
-                  const p95 = fleet.p95.get(a.id);
+                  const p95 = fleet.p95.get(a.id)
                   return (
                     <li
                       key={a.id}
-                      className={cn("flex min-h-11 items-center gap-3 py-1.5 text-sm", TOUCH)}
+                      className={cn('flex min-h-11 items-center gap-3 py-1.5 text-sm', TOUCH)}
                     >
                       <span className="min-w-0 flex-1 truncate">
                         <Link
-                          href={`/agents/${encodeURIComponent(a.id)}`}
+                          to="/agents/$agentId"
+                          params={{ agentId: a.id }}
+                          search={{}}
                           className="font-medium underline-offset-4 hover:underline"
                         >
                           {a.name}
                         </Link>
                         {a.reasons[0] ? (
                           <span className="text-xs text-muted-foreground">
-                            {" "}
+                            {' '}
                             · {a.reasons[0].text}
                           </span>
                         ) : null}
@@ -184,11 +174,11 @@ export function FleetHealth({
                       {/* A plain icon and the word, never a tinted pill: tinted badges are only the counts above (design 9A). */}
                       <span
                         className={cn(
-                          "inline-flex shrink-0 items-center gap-1 text-xs",
-                          a.rating === "watch" ? "text-warning" : "text-success",
+                          'inline-flex shrink-0 items-center gap-1 text-xs',
+                          a.rating === 'watch' ? 'text-warning' : 'text-success',
                         )}
                       >
-                        {a.rating === "watch" ? (
+                        {a.rating === 'watch' ? (
                           <TriangleAlert className="size-3.5" aria-hidden />
                         ) : (
                           <CircleCheck className="size-3.5" aria-hidden />
@@ -199,10 +189,10 @@ export function FleetHealth({
                         className="w-14 shrink-0 text-right font-mono text-xs text-muted-foreground tabular-nums"
                         title={copy.health.colP95}
                       >
-                        {p95 === undefined ? "—" : fmtLatency(p95)}
+                        {p95 === undefined ? '—' : fmtLatency(p95)}
                       </span>
                     </li>
-                  );
+                  )
                 })}
               </ul>
             </div>
@@ -210,5 +200,5 @@ export function FleetHealth({
         </div>
       )}
     </Card>
-  );
+  )
 }

@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/RequestCard.tsx. Local edits: `import * as z from "zod"` (a named import keeps all zod locales in the bundle); the sign-in link
-// (the lab's `<Button asChild><a>`) is a plain anchor with `buttonVariants()` and the Slot's data attributes (Base UI's
-// Button would give the anchor a button role); `ApiError` is `ProductApiError`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * A request that pauses a turn (plan §6.8, EN5, DS7). Buttons render only while the request is
  * pending: `allowed_actions` is static per kind (hitl.rs:256-262), so it can't tell a receipt
@@ -9,35 +5,29 @@
  * The typed answer is react-hook-form + zod (plan §2.4). It has no leave guard: the card sits in a
  * live turn, not a page form, and leaving the chat keeps the request pending to answer later.
  */
-import { CircleAlert, CircleCheck, KeyRound, ShieldQuestion } from "lucide-react";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { useId, useState } from "react";
-import { Controller, useForm } from "react-hook-form";
-import * as z from "zod";
-import {
-  Button,
-  buttonVariants,
-  Checkbox,
-  Field,
-  FieldLabel,
-  FieldLegend,
-  FieldSet,
-  Textarea,
-} from "@nasiko/ui/primitives";
-import { AgentLink } from "../../agents/components/AgentLink";
-import { safeHttpUrl } from "../../agents/normalize";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import { fmtLongDay, fmtUtcTime } from "@nasiko/ui/lib";
-import type { ResolveBody } from "../api";
-import { announce } from "../announce";
-import { copy } from "../copy";
-import type { HitlDto, HitlFrame, HitlOption } from "../types";
+import { CircleAlert, CircleCheck, KeyRound, ShieldQuestion } from 'lucide-react'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { useId, useState } from 'react'
+import { Controller, useForm } from 'react-hook-form'
+import { z } from 'zod'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Checkbox } from '@nasiko/ui/primitives/checkbox'
+import { Field, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { AgentLink } from '@nasiko/features/agents/components/AgentLink'
+import { safeHttpUrl } from '@nasiko/features/agents/normalize'
+import { ApiError } from '@nasiko/data-access/client'
+import { fmtLongDay, fmtUtcTime } from '@nasiko/ui/lib/format'
+import type { ResolveBody } from '../api'
+import { announce } from '../announce'
+import { copy } from '../copy'
+import type { HitlDto, HitlFrame, HitlOption } from '../types'
 
 export interface RequestActions {
-  resolve: (id: string, body: ResolveBody) => Promise<HitlDto>;
-  cancel: (id: string) => Promise<HitlDto>;
+  resolve(id: string, body: ResolveBody): Promise<HitlDto>
+  cancel(id: string): Promise<HitlDto>
   /** Called once a request is answered or dismissed, to start the resume. */
-  onDone: (req: HitlDto) => void;
+  onDone(req: HitlDto): void
 }
 
 /**
@@ -48,19 +38,19 @@ export interface RequestActions {
  * orchestrator MCP approval, which has no arguments).
  */
 function actionPreview(action: unknown): string | null {
-  if (!action || typeof action !== "object") return null;
-  const a = action as Record<string, unknown>;
-  if (a.type === "diff" && typeof a.diff === "string") return a.diff;
-  if (a.type === "edit") {
-    const oldText = typeof a.oldText === "string" ? a.oldText : "";
-    const newText = typeof a.newText === "string" ? a.newText : "";
-    const minus = oldText ? oldText.split("\n").map((l) => `- ${l}`) : [];
-    const plus = newText.split("\n").map((l) => `+ ${l}`);
-    return [...minus, ...plus].join("\n");
+  if (!action || typeof action !== 'object') return null
+  const a = action as Record<string, unknown>
+  if (a.type === 'diff' && typeof a.diff === 'string') return a.diff
+  if (a.type === 'edit') {
+    const oldText = typeof a.oldText === 'string' ? a.oldText : ''
+    const newText = typeof a.newText === 'string' ? a.newText : ''
+    const minus = oldText ? oldText.split('\n').map((l) => `- ${l}`) : []
+    const plus = newText.split('\n').map((l) => `+ ${l}`)
+    return [...minus, ...plus].join('\n')
   }
-  if (a.type === "command" && typeof a.command === "string") return a.command;
-  if (a.type === "raw" && a.value !== undefined) return JSON.stringify(a.value, null, 2);
-  return null;
+  if (a.type === 'command' && typeof a.command === 'string') return a.command
+  if (a.type === 'raw' && a.value !== undefined) return JSON.stringify(a.value, null, 2)
+  return null
 }
 
 export function RequestCard({
@@ -71,31 +61,31 @@ export function RequestCard({
   id,
   label,
 }: {
-  request?: HitlDto | undefined;
+  request?: HitlDto
   /** The live stream's frame, used until history has the row. */
-  frame?: HitlFrame | undefined;
-  agentName: string;
-  actions: RequestActions;
-  id?: string | undefined;
+  frame?: HitlFrame
+  agentName: string
+  actions: RequestActions
+  id?: string
   /** "Request i of N" when a pager shows one of several. */
-  label?: string | undefined;
+  label?: string
 }) {
-  const kind = request?.kind ?? frame?.kind ?? "input_required";
-  const question = request?.question ?? frame?.question ?? null;
-  const status = request?.status ?? "pending";
-  const requestId = request?.id ?? frame?.id ?? "";
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [authStarted, setAuthStarted] = useState(false);
-  const hintId = useId();
+  const kind = request?.kind ?? frame?.kind ?? 'input_required'
+  const question = request?.question ?? frame?.question ?? null
+  const status = request?.status ?? 'pending'
+  const requestId = request?.id ?? frame?.id ?? ''
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState<string | null>(null)
+  const [authStarted, setAuthStarted] = useState(false)
+  const hintId = useId()
 
-  if (status !== "pending") {
-    const Icon = status === "resolved" ? CircleCheck : CircleAlert;
+  if (status !== 'pending') {
+    const Icon = status === 'resolved' ? CircleCheck : CircleAlert
     const answer =
-      request?.human_response && typeof request.human_response === "object"
+      request?.human_response && typeof request.human_response === 'object'
         ? (request.human_response as { answer?: unknown }).answer
-        : undefined;
+        : undefined
     return (
       <div
         className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm"
@@ -109,13 +99,12 @@ export function RequestCard({
           ) : null}
           {answer !== undefined ? (
             <div className="text-muted-foreground">
-              {/* eslint-disable-next-line @typescript-eslint/no-base-to-string -- the server's answer: text, or a list of texts */}
-              “{Array.isArray(answer) ? answer.join(", ") : String(answer)}”
+              “{Array.isArray(answer) ? answer.join(', ') : String(answer)}”
             </div>
           ) : null}
         </div>
       </div>
-    );
+    )
   }
 
   // Shown on the card and spoken by the page's announcer (the only live region, §8.1).
@@ -123,76 +112,66 @@ export function RequestCard({
     const text =
       err instanceof ApiError && err.serverMessage
         ? copy.serverSaid(err.serverMessage)
-        : copy.request.submitFailed;
-    setError(text);
-    announce(text);
-  };
+        : copy.request.submitFailed
+    setError(text)
+    announce(text)
+  }
 
   // Promise chains, not try/finally: the React Compiler can't compile a finally clause yet.
   const run = (label: string, fn: () => Promise<HitlDto>) => {
-    setBusy(label);
-    setError(null);
-    return new Promise<HitlDto>((ok) => {
-      ok(fn());
-    })
+    setBusy(label)
+    setError(null)
+    return new Promise<HitlDto>((ok) => ok(fn()))
       .then((res) => {
         if (res.already_resolved || res.already_canceled) {
-          setNote(copy.request.handledElsewhere);
-          announce(copy.request.handledElsewhere);
+          setNote(copy.request.handledElsewhere)
+          announce(copy.request.handledElsewhere)
         }
-        actions.onDone(res);
+        actions.onDone(res)
       })
       .catch((err: unknown) => {
         if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
-          setNote(copy.request.handledElsewhere);
-          announce(copy.request.handledElsewhere);
-          actions.onDone({ ...(request as HitlDto), id: requestId, status: "expired" });
-        } else fail(err);
+          setNote(copy.request.handledElsewhere)
+          announce(copy.request.handledElsewhere)
+          actions.onDone({ ...(request as HitlDto), id: requestId, status: 'expired' })
+        } else fail(err)
       })
-      .finally(() => {
-        setBusy(null);
-      });
-  };
+      .finally(() => setBusy(null))
+  }
   const resolve = (label: string, body: ResolveBody) =>
-    run(label, () => actions.resolve(requestId, body));
+    run(label, () => actions.resolve(requestId, body))
 
   const startAuth = () => {
-    if (busy || authStarted) return;
-    setBusy("start");
-    setError(null);
-    return new Promise<unknown>((ok) => {
-      ok(actions.resolve(requestId, { auth_action: "start" }));
-    })
-      .then(() => {
-        setAuthStarted(true);
-      })
+    if (busy || authStarted) return
+    setBusy('start')
+    setError(null)
+    return new Promise<unknown>((ok) => ok(actions.resolve(requestId, { auth_action: 'start' })))
+      .then(() => setAuthStarted(true))
       .catch(fail)
-      .finally(() => {
-        setBusy(null);
-      });
-  };
+      .finally(() => setBusy(null))
+  }
 
-  const options = Array.isArray(question?.options) ? question.options : [];
-  const multi = question?.multi_select === true;
+  const options = Array.isArray(question?.options) ? question.options : []
+  const multi = question?.multi_select === true
   const allowCustom =
-    question?.allow_custom_input === true || (!options.length && kind === "input_required");
-  const tool = typeof question?.tool_name === "string" ? question.tool_name : copy.request.thisTool;
+    question?.allow_custom_input === true || (!options.length && kind === 'input_required')
+  const tool = typeof question?.tool_name === 'string' ? question.tool_name : copy.request.thisTool
   const provider =
-    typeof question?.provider === "string" ? question.provider : copy.request.theService;
-  const agentId = request?.execution.agent_id ?? null;
+    typeof question?.provider === 'string' ? question.provider : copy.request.theService
+  const agentId = request?.execution.agent_id ?? null
   const requestedBy = (
     <>
-      {copy.request.requestedBy}{" "}
+      {copy.request.requestedBy}{' '}
       <AgentLink id={agentId} name={agentName}>
         {agentName}
       </AgentLink>
     </>
-  );
-  const authUrl = safeHttpUrl(typeof question?.auth_url === "string" ? question.auth_url : null);
-  const canCancel = !request || request.allowed_actions.includes("cancel");
-  const expires = request?.expires_at ? fmtLongDay(request.expires_at) : "";
+  )
+  const authUrl = safeHttpUrl(typeof question?.auth_url === 'string' ? question.auth_url : null)
+  const canCancel = !request || request.allowed_actions.includes('cancel')
+  const expires = request?.expires_at ? fmtLongDay(request.expires_at) : ''
 
-  const Icon = kind === "auth_required" ? KeyRound : ShieldQuestion;
+  const Icon = kind === 'auth_required' ? KeyRound : ShieldQuestion
   return (
     <section
       id={id}
@@ -204,24 +183,24 @@ export function RequestCard({
       <div className="flex items-start gap-2">
         <Icon className="mt-0.5 size-4 text-warning" aria-hidden />
         <div className="min-w-0 flex-1 space-y-2">
-          {kind === "tool_approval" ? (
+          {kind === 'tool_approval' ? (
             <>
               <div className="font-mono font-medium">{tool}</div>
               <div className="text-xs text-muted-foreground">
                 {requestedBy}
-                {request?.created_at ? ` · ${fmtUtcTime(request.created_at)} UTC` : ""}
+                {request?.created_at ? ` · ${fmtUtcTime(request.created_at)} UTC` : ''}
               </div>
               {(() => {
                 // Coding approvals carry the action (file diff / shell command) so
                 // the approver can judge it; orchestrator MCP approvals carry none.
-                const preview = actionPreview(question?.action);
+                const preview = actionPreview(question?.action)
                 return preview ? (
                   <pre className="max-h-48 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-xs whitespace-pre-wrap">
                     {preview}
                   </pre>
                 ) : (
                   <p className="text-xs text-muted-foreground">{copy.request.noArguments}</p>
-                );
+                )
               })()}
             </>
           ) : (
@@ -232,7 +211,7 @@ export function RequestCard({
             </>
           )}
 
-          {kind === "input_required" && options.length && !multi ? (
+          {kind === 'input_required' && options.length && !multi ? (
             <div className="flex flex-wrap gap-2">
               {options.map((o) => (
                 <Button
@@ -250,24 +229,24 @@ export function RequestCard({
             </div>
           ) : null}
 
-          {kind === "input_required" && (multi || allowCustom) ? (
+          {kind === 'input_required' && (multi || allowCustom) ? (
             <AnswerForm
               multi={multi}
               allowCustom={allowCustom}
               options={options}
               legend={question?.message ?? copy.request.header}
               busy={busy}
-              onAnswer={(body) => void resolve("submit", body)}
+              onAnswer={(body) => void resolve('submit', body)}
             />
           ) : null}
 
-          {kind === "tool_approval" ? (
+          {kind === 'tool_approval' ? (
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
                 className="pointer-coarse:min-h-11"
                 disabled={!!busy}
-                onClick={() => void resolve("once", { decision: "approve", scope: "once" })}
+                onClick={() => void resolve('once', { decision: 'approve', scope: 'once' })}
               >
                 {copy.request.approveOnce}
               </Button>
@@ -277,7 +256,7 @@ export function RequestCard({
                 className="pointer-coarse:min-h-11"
                 disabled={!!busy}
                 aria-describedby={hintId}
-                onClick={() => void resolve("session", { decision: "approve", scope: "session" })}
+                onClick={() => void resolve('session', { decision: 'approve', scope: 'session' })}
               >
                 {copy.request.alwaysAllow(tool)}
               </Button>
@@ -286,7 +265,7 @@ export function RequestCard({
                 variant="outline"
                 className="pointer-coarse:min-h-11"
                 disabled={!!busy}
-                onClick={() => void resolve("reject", { decision: "reject" })}
+                onClick={() => void resolve('reject', { decision: 'reject' })}
               >
                 {copy.request.reject}
               </Button>
@@ -296,7 +275,7 @@ export function RequestCard({
             </div>
           ) : null}
 
-          {kind === "auth_required" ? (
+          {kind === 'auth_required' ? (
             authStarted ? (
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-muted-foreground">{copy.request.waitingSignIn}</span>
@@ -304,7 +283,7 @@ export function RequestCard({
                   size="sm"
                   className="pointer-coarse:min-h-11"
                   disabled={!!busy}
-                  onClick={() => void resolve("confirm", { auth_action: "confirm" })}
+                  onClick={() => void resolve('confirm', { auth_action: 'confirm' })}
                 >
                   {copy.request.signedIn}
                 </Button>
@@ -312,20 +291,17 @@ export function RequestCard({
             ) : authUrl ? (
               // A real link: the browser opens it inside the click, so popup blockers leave it alone.
               <div className="flex flex-wrap items-center gap-2">
-                {/* The lab's `<Button asChild><a>`: Base UI's Button would give the anchor a button role. */}
-                <a
-                  href={authUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => void startAuth()}
-                  onAuxClick={() => void startAuth()}
-                  data-slot="button"
-                  data-variant="default"
-                  data-size="sm"
-                  className={buttonVariants({ size: "sm", className: "pointer-coarse:min-h-11" })}
-                >
-                  {copy.request.signIn(provider)}
-                </a>
+                <Button asChild size="sm" className="pointer-coarse:min-h-11">
+                  <a
+                    href={authUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={() => void startAuth()}
+                    onAuxClick={() => void startAuth()}
+                  >
+                    {copy.request.signIn(provider)}
+                  </a>
+                </Button>
                 <span className="text-xs text-muted-foreground">
                   {copy.request.opensHost(new URL(authUrl).host)}
                 </span>
@@ -349,7 +325,7 @@ export function RequestCard({
                 variant="ghost"
                 className="min-h-8 pointer-coarse:min-h-11"
                 disabled={!!busy}
-                onClick={() => void run("cancel", () => actions.cancel(requestId))}
+                onClick={() => void run('cancel', () => actions.cancel(requestId))}
               >
                 {copy.request.dismiss}
               </Button>
@@ -364,14 +340,14 @@ export function RequestCard({
         </div>
       </div>
     </section>
-  );
+  )
 }
 
 /** A typed or multi-select answer: some text, or (multi-select) at least one option or some text. */
 const answerSchema = z
   .object({ multi: z.boolean(), picked: z.array(z.string()), custom: z.string() })
-  .refine((v) => !!v.custom.trim() || (v.multi && v.picked.length > 0));
-type Answer = z.infer<typeof answerSchema>;
+  .refine((v) => !!v.custom.trim() || (v.multi && v.picked.length > 0))
+type Answer = z.infer<typeof answerSchema>
 
 function AnswerForm({
   multi,
@@ -381,14 +357,14 @@ function AnswerForm({
   busy,
   onAnswer,
 }: {
-  multi: boolean;
-  allowCustom: boolean;
-  options: HitlOption[];
-  legend: string;
-  busy: string | null;
-  onAnswer: (body: ResolveBody) => void;
+  multi: boolean
+  allowCustom: boolean
+  options: HitlOption[]
+  legend: string
+  busy: string | null
+  onAnswer(body: ResolveBody): void
 }) {
-  const base = useId();
+  const base = useId()
   const {
     control,
     register,
@@ -396,15 +372,15 @@ function AnswerForm({
     formState: { isValid },
   } = useForm<Answer>({
     resolver: zodResolver(answerSchema),
-    mode: "onChange",
-    defaultValues: { multi, picked: [], custom: "" },
-  });
+    mode: 'onChange',
+    defaultValues: { multi, picked: [], custom: '' },
+  })
   const submit = handleSubmit(({ picked, custom }) => {
-    const text = custom.trim();
+    const text = custom.trim()
     onAnswer(
       multi ? { answer: picked, ...(text ? { custom_answer: text } : {}) } : { answer: text },
-    );
-  });
+    )
+  })
   return (
     <form className="space-y-2" onSubmit={(e) => void submit(e)}>
       {multi ? (
@@ -424,11 +400,13 @@ function AnswerForm({
                     <Checkbox
                       id={`${base}-${i}`}
                       checked={field.value.includes(o.label)}
-                      onCheckedChange={(on) => {
+                      onCheckedChange={(on) =>
                         field.onChange(
-                          on ? [...field.value, o.label] : field.value.filter((x) => x !== o.label),
-                        );
-                      }}
+                          on === true
+                            ? [...field.value, o.label]
+                            : field.value.filter((x) => x !== o.label),
+                        )
+                      }
                     />
                     <FieldLabel htmlFor={`${base}-${i}`} className="font-normal">
                       {o.label}
@@ -444,9 +422,9 @@ function AnswerForm({
         <Field>
           <Textarea
             aria-label={options.length ? copy.request.somethingElse : legend}
-            placeholder={options.length ? copy.request.somethingElse : ""}
+            placeholder={options.length ? copy.request.somethingElse : ''}
             rows={2}
-            {...register("custom")}
+            {...register('custom')}
           />
         </Field>
       ) : null}
@@ -456,8 +434,8 @@ function AnswerForm({
         className="pointer-coarse:min-h-11"
         disabled={!!busy || !isValid}
       >
-        {busy === "submit" ? copy.loading : copy.request.submit}
+        {busy === 'submit' ? copy.loading : copy.request.submit}
       </Button>
     </form>
-  );
+  )
 }

@@ -1,20 +1,13 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/deploy/AgentBuildsTab.tsx. Local edits: row links are
-// the navigation port's `Link` (`@nasiko/app-core/navigation`) to `/builds/<id>`; `Button asChild` + `Link` -> `ButtonLink` (../agents/components/ButtonLink.tsx) to
-// `hrefFor('/deploy', { name })`; the lab's `EmptyState` is `LabEmptyState`; optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * An agent's Builds tab (plans/feat-deploy.md §6; design review 1): that agent's last 20 builds
  * (`GET /api/builds/agent/{id}`), each opening the same Build page. Rows follow the Builds list (two lines on phones).
  */
-import Link from "@nasiko/app-core/navigation";
-import { Hammer } from "lucide-react";
-import { PageLoader } from "@nasiko/ui/composites";
-import { PanelError } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { ButtonLink } from "../agents/components/ButtonLink";
-import { hrefFor } from "@nasiko/app-core/url-state";
+import { Link } from '@tanstack/react-router'
+import { Hammer } from 'lucide-react'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { PanelError } from '@nasiko/ui/composites/panel'
+import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -22,42 +15,38 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { relTime } from "../agents/format";
-import { useAgentBuilds, useFailureDetails } from "./api";
-import { copy } from "./copy";
-import { failureReason } from "./errors";
-import { buildSource, fmtElapsed, isActive } from "./steps";
-import { BuildBadge } from "./components/BuildBadge";
+} from '@nasiko/ui/primitives/table'
+import { relTime } from '@nasiko/features/agents/format'
+import { useAgentBuilds, useFailureDetails } from './api'
+import { copy } from './copy'
+import { failureReason } from './errors'
+import { buildSource, fmtElapsed, isActive } from './steps'
+import { BuildBadge } from './components/BuildBadge'
 
 export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentName?: string }) {
-  const q = useAgentBuilds(agentId);
-  const rows = q.data?.available ? q.data.value : [];
-  const reasons = useFailureDetails(rows.filter((b) => b.status === "failed").map((b) => b.id));
-  const now = q.dataUpdatedAt;
-  if (q.isPending) return <PageLoader label={copy.builds.loading} inline className="min-h-64" />;
+  const q = useAgentBuilds(agentId)
+  const rows = q.data?.available ? q.data.value : []
+  const reasons = useFailureDetails(rows.filter((b) => b.status === 'failed').map((b) => b.id))
+  const now = q.dataUpdatedAt
+  if (q.isPending) return <PageLoader label={copy.builds.loading} inline className="min-h-64" />
   if (q.isError)
     return (
       <PanelError error={q.error} onRetry={() => void q.refetch()} what={copy.agentBuilds.what} />
-    );
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- the lab's guard, kept as written
-  if (q.data && !q.data.available) return <StateCard title={copy.builds.noRights} />;
+    )
+  if (q.data && !q.data.available) return <StateCard title={copy.builds.noRights} />
   const deploy = (
-    <ButtonLink
-      href={hrefFor("/deploy", { name: agentName })}
-      size="sm"
-      variant="outline"
-      className="pointer-coarse:min-h-11"
-    >
-      {copy.agentBuilds.deploy}
-    </ButtonLink>
-  );
+    <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+      <Link to="/deploy" search={{ name: agentName }}>
+        {copy.agentBuilds.deploy}
+      </Link>
+    </Button>
+  )
   if (!rows.length)
     return (
       <EmptyState icon={Hammer} title={copy.agentBuilds.empty} action={deploy}>
         {copy.agentBuilds.emptyHint}
       </EmptyState>
-    );
+    )
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -76,8 +65,8 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
         </TableHeader>
         <TableBody>
           {rows.map((b) => {
-            const reason = b.status === "failed" ? reasons.get(b.id) : undefined;
-            const end = isActive(b.status) ? now : Date.parse(b.updated_at);
+            const reason = b.status === 'failed' ? reasons.get(b.id) : undefined
+            const end = isActive(b.status) ? now : Date.parse(b.updated_at)
             return (
               <TableRow
                 key={b.id}
@@ -87,12 +76,13 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
               >
                 <TableCell className="min-w-0 max-md:p-0">
                   <Link
-                    href={`/builds/${encodeURIComponent(b.id)}`}
+                    to="/builds/$buildId"
+                    params={{ buildId: b.id }}
                     className="font-mono font-medium underline-offset-4 hover:underline pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center"
                   >
                     {b.version_tag}
                   </Link>
-                  {b.status === "failed" ? (
+                  {b.status === 'failed' ? (
                     <p className="truncate text-xs text-muted-foreground">
                       {reason ? failureReason(reason) : copy.status.failed}
                     </p>
@@ -111,10 +101,10 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
                   {fmtElapsed(end - Date.parse(b.created_at))}
                 </TableCell>
               </TableRow>
-            );
+            )
           })}
         </TableBody>
       </Table>
     </div>
-  );
+  )
 }

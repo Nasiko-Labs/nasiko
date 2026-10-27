@@ -1,17 +1,12 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/copy-button.tsx. Local edits: `CopyMenuItem` keeps the
-// menu open through Base UI's `closeOnClick={false}` + `onClick` (the lab's Radix `onSelect` + `preventDefault`);
-// imports mapped to ../primitives/*, ../lib/useCopy and ../lib/cn; optional props typed `| undefined`.
-"use client";
-
 /** Copy controls on shadcn `Button` and `DropdownMenuItem`, over `useCopy` (plan §6.6 of feat-agents). */
-import { Check, Copy } from "lucide-react";
-import { cn } from "../lib/cn";
-import { useCopy } from "../lib/useCopy";
-import { Button } from "../primitives/button";
-import { DropdownMenuItem } from "../primitives/dropdown-menu";
+import { Check, Copy } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { DropdownMenuItem } from '@nasiko/ui/primitives/dropdown-menu'
+import { useCopy } from '@nasiko/ui/lib/useCopy'
+import { cn } from '@nasiko/ui/lib/utils'
 
-const COPIED = "Copied";
-const COPY_FAILED = "Copy failed — select and copy manually.";
+const COPIED = 'Copied'
+const COPY_FAILED = 'Copy failed — select and copy manually.'
 
 /** Copies `text`; on failure the text stays visible and selectable with a note. */
 export function CopyButton({
@@ -20,15 +15,15 @@ export function CopyButton({
   showText = false,
   className,
 }: {
-  text: string;
-  label: string;
-  showText?: boolean | undefined;
-  className?: string | undefined;
+  text: string
+  label: string
+  showText?: boolean
+  className?: string
 }) {
-  const [state, onCopy] = useCopy(text);
+  const [state, onCopy] = useCopy(text)
   return (
-    <span className={cn("inline-flex flex-wrap items-center gap-1.5", className)}>
-      {showText || state === "failed" ? (
+    <span className={cn('inline-flex flex-wrap items-center gap-1.5', className)}>
+      {showText || state === 'failed' ? (
         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs select-all">{text}</code>
       ) : null}
       <Button
@@ -39,62 +34,62 @@ export function CopyButton({
         onClick={() => void onCopy()}
         aria-label={label}
       >
-        <span key={state} data-copy-feedback={state} aria-hidden>
-          {state === "copied" ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-        </span>
+        {state === 'copied' ? (
+          <Check className="size-3.5" aria-hidden />
+        ) : (
+          <Copy className="size-3.5" aria-hidden />
+        )}
         <span className="sr-only">{label}</span>
       </Button>
-      {state === "copied" ? (
+      {state === 'copied' ? (
         <span className="text-xs text-muted-foreground" role="status">
           {COPIED}
         </span>
       ) : null}
-      {state === "failed" ? (
+      {state === 'failed' ? (
         <span className="text-xs text-warning" role="alert">
           {COPY_FAILED}
         </span>
       ) : null}
     </span>
-  );
+  )
 }
 
 /**
  * A copy action inside a DropdownMenu: a real menu item, so arrow keys reach it. The menu
  * stays open to show the result; on failure the text is shown selectable.
  */
-export function CopyMenuItem({ text, label }: { text: string; label?: string | undefined }) {
-  const [state, run] = useCopy(text);
+export function CopyMenuItem({ text, label }: { text: string; label?: string }) {
+  const [state, run] = useCopy(text)
   return (
     <DropdownMenuItem
       className="flex-col items-start gap-1"
-      closeOnClick={false}
-      onClick={() => {
-        void run();
+      onSelect={(e) => {
+        e.preventDefault()
+        void run()
       }}
     >
       <span className="flex w-full items-center justify-between gap-2">
         <code className="truncate font-mono text-xs" title={text}>
           {label ?? text}
         </code>
-        {state === "copied" ? (
+        {state === 'copied' ? (
           <span
             className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground"
             role="status"
           >
-            <span data-copy-feedback="copied" aria-hidden>
-              <Check className="size-3.5" />
-            </span>
+            <Check className="size-3.5" aria-hidden />
             {COPIED}
           </span>
         ) : (
           <Copy className="size-3.5 shrink-0" aria-hidden />
         )}
       </span>
-      {state === "failed" ? (
+      {state === 'failed' ? (
         <span className="text-xs text-warning" role="alert">
           {COPY_FAILED} <code className="font-mono select-all">{text}</code>
         </span>
       ) : null}
     </DropdownMenuItem>
-  );
+  )
 }

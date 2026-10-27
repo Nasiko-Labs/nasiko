@@ -1,8 +1,5 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/series.ts. Local edits: `@/lib/format` -> `@nasiko/ui/lib`; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
-import { fmtShortDay, fmtUtcHour } from "@nasiko/ui/lib";
-import type { SpendTimeseriesPoint } from "./types";
+import { fmtShortDay, fmtUtcHour } from '@nasiko/ui/lib/format'
+import type { SpendTimeseriesPoint } from './types'
 
 /**
  * The server returns sparse buckets (only buckets with rows). Charts need real zeros
@@ -10,24 +7,24 @@ import type { SpendTimeseriesPoint } from "./types";
  */
 export interface TimelinePoint {
   /** Raw ISO bucket start — clicks resolve by index to this, never to the formatted label (A20). */
-  iso: string;
-  label: string;
-  spend: number;
-  operations: number;
-  p50: number | null;
-  p95: number | null;
-  p99: number | null;
-  topAgent: string | null;
-  topAgentSpend: number | null;
+  iso: string
+  label: string
+  spend: number
+  operations: number
+  p50: number | null
+  p95: number | null
+  p99: number | null
+  topAgent: string | null
+  topAgentSpend: number | null
 }
 
 /** Both bucket sizes are labelled in UTC, matching the UTC day a click opens. */
-export function bucketLabel(d: Date, bucket: "hour" | "day"): string {
-  return bucket === "hour" ? fmtUtcHour(d) : fmtShortDay(d);
+export function bucketLabel(d: Date, bucket: 'hour' | 'day'): string {
+  return bucket === 'hour' ? fmtUtcHour(d) : fmtShortDay(d)
 }
 
 /** Bucket cap: a malformed window can never render thousands of bars. */
-export const MAX_BUCKETS = 800;
+export const MAX_BUCKETS = 800
 
 /**
  * What a timeline needs from a point: a bucket, a spend and an op count. The
@@ -36,11 +33,11 @@ export const MAX_BUCKETS = 800;
  */
 export type TimelineSource = Pick<
   SpendTimeseriesPoint,
-  "bucket_start" | "spend_usd" | "operations"
+  'bucket_start' | 'spend_usd' | 'operations'
 > &
-  Partial<SpendTimeseriesPoint>;
+  Partial<SpendTimeseriesPoint>
 
-function toPoint(d: Date, bucket: "hour" | "day", p: TimelineSource | undefined): TimelinePoint {
+function toPoint(d: Date, bucket: 'hour' | 'day', p: TimelineSource | undefined): TimelinePoint {
   return {
     iso: d.toISOString(),
     label: bucketLabel(d, bucket),
@@ -51,41 +48,41 @@ function toPoint(d: Date, bucket: "hour" | "day", p: TimelineSource | undefined)
     p99: p?.p99_latency_ms ?? null,
     topAgent: p?.top_agent_name ?? null,
     topAgentSpend: p?.top_agent_spend_usd ?? null,
-  };
+  }
 }
 
 /** Points as returned, without filling — used while a previous window's placeholder data is shown. */
 export function toTimeline(
   points: SpendTimeseriesPoint[],
-  bucket: "hour" | "day",
+  bucket: 'hour' | 'day',
 ): TimelinePoint[] {
-  return points.map((p) => toPoint(new Date(Date.parse(p.bucket_start)), bucket, p));
+  return points.map((p) => toPoint(new Date(Date.parse(p.bucket_start)), bucket, p))
 }
 
-const HOUR = 3_600_000;
-const DAY = 24 * HOUR;
+const HOUR = 3_600_000
+const DAY = 24 * HOUR
 
 export function zeroFillTimeline(
   points: readonly TimelineSource[],
-  bucket: "hour" | "day",
+  bucket: 'hour' | 'day',
   start: Date,
   end: Date,
 ): TimelinePoint[] {
-  const step = bucket === "hour" ? HOUR : DAY;
+  const step = bucket === 'hour' ? HOUR : DAY
   const floor = (t: number) => {
-    const d = new Date(t);
-    return bucket === "hour"
+    const d = new Date(t)
+    return bucket === 'hour'
       ? Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours())
-      : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  };
-  const byStart = new Map(points.map((p) => [floor(Date.parse(p.bucket_start)), p]));
-  const out: TimelinePoint[] = [];
+      : Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+  }
+  const byStart = new Map(points.map((p) => [floor(Date.parse(p.bucket_start)), p]))
+  const out: TimelinePoint[] = []
   for (
     let t = floor(start.getTime()), n = 0;
     t < end.getTime() && n < MAX_BUCKETS;
     t += step, n++
   ) {
-    out.push(toPoint(new Date(t), bucket, byStart.get(t)));
+    out.push(toPoint(new Date(t), bucket, byStart.get(t)))
   }
-  return out;
+  return out
 }

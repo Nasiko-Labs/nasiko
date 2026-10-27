@@ -1,12 +1,11 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/lib/useMediaQuery.ts. Local edits: braces on the unsubscribe callback (eslint no-confusing-void-expression).
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore } from 'react'
 
 /** Read once, at event time (e.g. just before scrolling); false where matchMedia is missing. */
 export function prefersReducedMotion(): boolean {
   return (
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
 }
 
 /**
@@ -17,14 +16,12 @@ export function prefersReducedMotion(): boolean {
 export function useMediaQuery(query: string, fallback = true): boolean {
   return useSyncExternalStore(
     (onChange) => {
-      if (typeof window.matchMedia !== "function") return () => {};
-      const mql = window.matchMedia(query);
-      mql.addEventListener("change", onChange);
-      return () => {
-        mql.removeEventListener("change", onChange);
-      };
+      if (typeof window.matchMedia !== 'function') return () => {}
+      const mql = window.matchMedia(query)
+      mql.addEventListener('change', onChange)
+      return () => mql.removeEventListener('change', onChange)
     },
-    () => (typeof window.matchMedia === "function" ? window.matchMedia(query).matches : fallback),
+    () => (typeof window.matchMedia === 'function' ? window.matchMedia(query).matches : fallback),
     () => fallback,
-  );
+  )
 }

@@ -1,15 +1,15 @@
 # OpenRuntime UI Lab: design notes
 
 What exists today, in one place (app-shell increment, `plans/feat-app-shell.md`, design review 8A; themes from
-`docs/lab-vs-react-migration-review.md` §6.4, decided 2026-09-29). Values live in code: colours in `common/src/index.css`,
-motion in `common/src/lib/motion.ts`, theme logic in `common/src/app/shell/theme.ts`.
-`common/src/app/shell/design-doc.test.ts` fails if a token named here is missing from `index.css`.
+`docs/lab-vs-react-migration-review.md` §6.4, decided 2026-09-29). Values live in code: colours in `shared/ui/src/styles/index.css`,
+motion in `shared/ui/src/lib/motion.ts`, theme logic in `shared/app-core/src/shell/theme.ts`.
+`shared/app-shell/src/shell/design-doc.test.ts` fails if a token named here is missing from `index.css`.
 
 ## Colour tokens
 
 E## Colour tokens
 
-Every colour is a CSS variable in `common/src/index.css`, exposed to Tailwind through `@theme inline` (`bg-card`,
+Every colour is a CSS variable in `shared/ui/src/styles/index.css`, exposed to Tailwind through `@theme inline` (`bg-card`,
 `text-muted-foreground`, ...). Never use literal colours in components.
 
 | Token | Use |
@@ -47,7 +47,7 @@ Every colour is a CSS variable in `common/src/index.css`, exposed to Tailwind th
   diagonal; fixed `--preview-light-*` / `--preview-dark-*` tokens, the same in every theme and mode), each theme a nav
   tint and button in its light `--primary`. The radio stays in the tile, visually hidden; the chosen tile has a
   `--primary` ring, a check mark and its name in medium weight, so the choice never relies on colour alone.
-- **Contrast (WCAG AA), every theme × mode, checked by `common/src/app/shell/contrast.test.ts`:** text ≥ 7:1 and secondary
+- **Contrast (WCAG AA), every theme × mode, checked by `shared/app-shell/src/shell/contrast.test.ts`:** text ≥ 7:1 and secondary
   text ≥ 4.5:1 on cards; text on the primary and on its hover shade ≥ 4.5:1; accent text on page and cards ≥ 4.5:1;
   the active nav text on its tint ≥ 4.5:1; the ring ≥ 3:1; status colours ≥ 4.5:1; the dark logo ≥ 7:1.
 - Colours never animate when the mode or theme changes.
@@ -74,7 +74,7 @@ Every colour is a CSS variable in `common/src/index.css`, exposed to Tailwind th
 - At most five series, then Other. Stacked segments have 2 px card-coloured gaps. Light mode draws a 2 px top edge in
   the series edge token, `--chart-1-edge` … `--chart-5-edge` (≥ 3:1 on white); dark mode turns edges off (edge = fill; fills are 4–13:1 on dark cards).
 - Lines, dots, heat cells and thin bars draw in the edge token (a pastel fill is too light for them on white);
-  `common/src/lib/chart.ts` (`seriesAt`, `OTHER_SERIES`) picks them; the visx kit (`common/src/components/charts/`) draws bars
+  `shared/ui/src/lib/chart.ts` (`seriesAt`, `OTHER_SERIES`) picks them; the visx kit (`shared/ui/src/charts/`) draws bars
   with `edge` and stacks with `stackGap={2}`; `components/shared/chart-marks.tsx` `Swatch` is the legend key.
 - **Motion:** bars grow from the baseline, lines sweep left to right, scatter points spring in (staggered), the
   hovered column stays solid while the rest fade, and the tooltip follows with a spring. Under reduced motion every
@@ -86,7 +86,7 @@ Every colour is a CSS variable in `common/src/index.css`, exposed to Tailwind th
 - Hanken Grotesk Variable for UI (`--font-sans`) and JetBrains Mono Variable for figures and ids (`--font-mono`),
   self-hosted through `@fontsource-variable`, Latin subset. No font CDN. `index.html` preloads the sans file.
 - Sizes in use: page titles `text-xl` semibold (`PageHeader`), panel titles `text-sm` semibold, body `text-sm`,
-  captions `text-xs`. Named steps below that (in `common/src/index.css` `@theme`, never an arbitrary `text-[11px]`):
+  captions `text-xs`. Named steps below that (in `shared/ui/src/styles/index.css` `@theme`, never an arbitrary `text-[11px]`):
   `text-2xs` 11 px (sidebar group headers, uppercase medium with 0.04em tracking; keyboard hints; small badges),
   `text-3xs` 10 px (the MOCK DATA / LIVE badge), `text-4xs` 9 px and `text-5xs` 8 px (monograms, the collapsed rail's
   one-letter badge), `text-code` 13 px (mono ids and code), `text-lead` 17 px (the trace narrative).
@@ -102,7 +102,7 @@ e
 
 ## Motion
 
-Presets in `common/src/lib/motion.ts`; new motion uses the names, never raw numbers. Everything sits under
+Presets in `shared/ui/src/lib/motion.ts`; new motion uses the names, never raw numbers. Everything sits under
 `MotionConfig reducedMotion="user"`; CSS motion has `motion-reduce:` variants.
 
 | Preset | Value | Used by |
@@ -137,7 +137,7 @@ Presets in `common/src/lib/motion.ts`; new motion uses the names, never raw numb
 | Waitlist (OSS only) | above the footer, linking to the waitlist page (`env.waitlistUrl`): a `--card` card (8 px radius, hairline) with an "Early access" pill on its top edge (`--primary` fill, mono 10 px caps, a waving flag, a glint circling its edge: `--animate-orbit` / `--animate-flag-wave`), a title, one muted line and a full-width outline "Join the waitlist" that opens a new tab; in the rail one ticket-icon row with a tooltip. Not shown while a page's panel holds the sidebar (Chat, Settings), so Chat's dot background stays its one effect; no dismiss. The login page has the plain line "New to Nasiko? Join the waitlist" under Sign in |
 | State | shadcn's `sidebar_state` cookie; first visit opens at ≥ 1280 px, on every page |
 
-Add a nav item in `common/src/app/shell/nav.ts` (label, icon, route, group, `shared`, `also`) once its page exists.
+Add a nav item in `shared/app-core/src/shell/nav.ts` (label, icon, route, group, `shared`, `also`) once its page exists.
 
 ## Chat surfaces (v1c)
 

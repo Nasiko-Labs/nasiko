@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/ContextBlock.tsx. Local edits:
-// `TooltipTrigger asChild` -> `render={<span …/>}` (Base UI useRender; the same focusable span); Prettier formatting.
-// Ported ahead of the Optimization screens by the Sessions/trace batch (the span panel's Summary shows it).
 /**
  * The trace's Optimization block (plans/feat-context-optimization.md §5, design review 1B, 2A, 5A, 6A; sketch v2 2a):
  * what one request carried against the baseline, on the span that holds the report. Contained in the span Summary
@@ -13,24 +10,24 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
-import { fmtBytes } from "@nasiko/ui/lib";
-import { copy } from "../copy";
-import { approx, tokenDelta, type ContextReport } from "../logic";
+} from '@nasiko/ui/primitives/table'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
+import { fmtBytes } from '@nasiko/ui/lib/format'
+import { copy } from '../copy'
+import { approx, tokenDelta, type ContextReport } from '../logic'
 
 // Tokens are estimates (shown with ~); message counts are exact.
-const n = (v: number) => approx(v).toLocaleString("en-US");
-const exact = (v: number) => v.toLocaleString("en-US");
+const n = (v: number) => approx(v).toLocaleString('en-US')
+const exact = (v: number) => v.toLocaleString('en-US')
 // Row labels are row headers, so each value is read with its row; styled as the cells.
-const ROW = "h-auto p-2 font-normal text-muted-foreground";
+const ROW = 'h-auto p-2 font-normal text-muted-foreground'
 
 export function ContextBlock({ report }: { report: ContextReport }) {
-  const delta = tokenDelta(report);
+  const delta = tokenDelta(report)
   const detail = copy.trace.withDetail(
     report.level ? copy.level(report.level) : null,
     report.strategy ? copy.strategies[report.strategy].name : null,
-  );
+  )
   return (
     <div className="flex flex-col gap-1.5">
       <div className="rounded-lg border border-border">
@@ -47,15 +44,14 @@ export function ContextBlock({ report }: { report: ContextReport }) {
               </TableHead>
               <TableHead className="font-normal text-muted-foreground">
                 <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <span
-                        tabIndex={0}
-                        className="underline decoration-dotted underline-offset-4"
-                      />
-                    }
-                  >
-                    {copy.preview.without}
+                  <TooltipTrigger asChild>
+                    <span
+                      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
+                      tabIndex={0}
+                      className="underline decoration-dotted underline-offset-4"
+                    >
+                      {copy.preview.without}
+                    </span>
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">{copy.preview.baselineTip}</TooltipContent>
                 </Tooltip>
@@ -83,7 +79,7 @@ export function ContextBlock({ report }: { report: ContextReport }) {
                 ~{n(report.kept.tokens)}
                 {delta !== null && delta !== 0 ? (
                   <span className="text-muted-foreground">
-                    {" "}
+                    {' '}
                     {delta > 0 ? `+${delta}` : `−${-delta}`}%
                   </span>
                 ) : null}
@@ -114,5 +110,5 @@ export function ContextBlock({ report }: { report: ContextReport }) {
       </div>
       <p className="text-xs text-muted-foreground">{copy.preview.estimates}</p>
     </div>
-  );
+  )
 }

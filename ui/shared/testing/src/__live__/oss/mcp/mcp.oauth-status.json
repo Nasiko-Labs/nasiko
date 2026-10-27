@@ -1,0 +1,36 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.oauth-status",
+  "recorded_at": "2026-09-30T14:28:36.596Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.596Z",
+    "end": "2026-09-30T14:28:36.600Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/connectors/{mcpOauth}/oauth/status",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "authorized": false,
+      "connector_id": "5eed000e-0000-4000-8000-000000000007",
+      "expires_at": null,
+      "name": "jira-cloud",
+      "scope": null
+    },
+    "message": "OAuth status retrieved successfully",
+    "status_code": 200
+  }
+}

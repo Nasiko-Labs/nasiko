@@ -24,7 +24,7 @@ The seed has a direct chat with a saved reply (c001), one whose last message nev
 
 ### Mock scenarios
 
-Every stream scenario from `common/src/mocks/chat.ts` works with `?mock=` (full mock mode only). Direct scenarios need an agent: open `/chat`, pick one, then add `&mock=<name>` (or use a chat from the rail). A test keeps this table in step with `CHAT_SCENARIOS`; an unknown name shows a dev-only banner listing the valid ones.
+Every stream scenario from `shared/mocks/src/chat.ts` works with `?mock=` (full mock mode only). Direct scenarios need an agent: open `/chat`, pick one, then add `&mock=<name>` (or use a chat from the rail). A test keeps this table in step with `CHAT_SCENARIOS`; an unknown name shows a dev-only banner listing the valid ones.
 
 | Scenario | URL | Do | You see |
 |---|---|---|---|
@@ -72,7 +72,7 @@ Every stream scenario from `common/src/mocks/chat.ts` works with `?mock=` (full 
 
 Dev aids (dev and mock builds only; production strips them):
 - `&debug=turn` shows the raw frames this tab received and, on a routed turn, its mode, operation, attempt, settle key (the trace id) and the agents asked. **Copy details** on a notice points here.
-- `?tune=<key>:<ms>` (repeatable) or `localStorage['ui-lab:chat-tuning'] = '{"LOST_REPLY_AFTER_MS":5000}'` override the timings in `common/src/features/chat/tuning.ts`.
+- `?tune=<key>:<ms>` (repeatable) or `localStorage['ui-lab:chat-tuning'] = '{"LOST_REPLY_AFTER_MS":5000}'` override the timings in `shared/features/src/chat/tuning.ts`.
 
 ## Partial live
 
@@ -169,7 +169,7 @@ The one-running-agent preselect can't be set up from the URL; `ChatPage.v1c.test
 
 ### Page variants
 
-`?mock=` takes a comma list: at most one stream scenario plus any page variants, e.g. `/chat?mock=many-chats,no-agents` (the same convention as `VITE_NASIKO_MOCK`). The dev banner names each unknown entry. Tests set them with `configureChatMock({ manyChats: true })` or `configureMocks({ variant: 'no-agents' })`. A test keeps `CHAT_PAGE_VARIANT_KEYS` (`common/src/features/chat/scenarioKeys.ts`) equal to `CHAT_PAGE_VARIANTS` (`common/src/mocks/handlers.ts`).
+`?mock=` takes a comma list: at most one stream scenario plus any page variants, e.g. `/chat?mock=many-chats,no-agents` (the same convention as `VITE_NASIKO_MOCK`). The dev banner names each unknown entry. Tests set them with `configureChatMock({ manyChats: true })` or `configureMocks({ variant: 'no-agents' })`. A test keeps `CHAT_PAGE_VARIANT_KEYS` (`shared/features/src/chat/scenarioKeys.ts`) equal to `CHAT_PAGE_VARIANTS` (`shared/mocks/src/handlers.ts`).
 
 | Variant | Effect |
 |---|---|
@@ -191,7 +191,7 @@ Clear the localStorage keys starting `ui-lab:chat-draft:` (drafts and the rememb
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, it } from 'vitest'
-import { renderApp } from '@/test/renderApp'
+import { renderApp } from '@nasiko/testing/renderApp'
 
 it('no target: Enter opens the Send to list and keeps the text', async () => {
   renderApp('/chat')
@@ -228,13 +228,13 @@ If the upload's build fails on your stack (it returned `not_found` on 2026-09-27
 
 `nasiko upload oss/agents/simulated-agent`, then its page's **Try it** or `/chat?agent=<its uuid>`. You see "Starting chat…" for about 2 s (the LLM title), "Waiting for Simulated Agent…", lorem ipsum streaming in, then a duration chip and **View trace**. Clean up with `nasiko rm --name simulated-agent` and `npm run seed:reset`.
 
-The live streams are shaped differently from A2A 1.0 in ways the mocks didn't cover at first: one artifact per chunk, agent frames still in their JSON-RPC envelope, and a second, server-owned task that closes after the agent's. The recorded streams are replay fixtures in `common/src/features/chat/__fixtures__/`.
+The live streams are shaped differently from A2A 1.0 in ways the mocks didn't cover at first: one artifact per chunk, agent frames still in their JSON-RPC envelope, and a second, server-owned task that closes after the agent's. The recorded streams are replay fixtures in `shared/features/src/chat/__fixtures__/`.
 
 ## Routed smoke (X6)
 
 `node scripts/smoke-chat-routed.ts` runs the routed flow the UI uses (create → user row → dispatch) against a live server and checks the server half: the orchestrator called the expected agent, the server saved exactly one assistant row with the turn's trace id, and the script never POSTed an assistant row. `--help` lists the options:
 - `--runs 5` is the release bar (5 of 5);
-- `--record` writes the scrubbed stream to `common/src/features/chat/__fixtures__/live-routed.json`;
+- `--record` writes the scrubbed stream to `shared/features/src/chat/__fixtures__/live-routed.json`;
 - `--agent`/`--prompt` pick another running agent;
 - auth: `NASIKO_URL` + `NASIKO_TOKEN`, then `--cluster <name>`, then the active cluster in `~/.nasiko/config.json`. It never prints the token.
 

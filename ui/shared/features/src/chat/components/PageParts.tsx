@@ -1,11 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/PageParts.tsx. Local edits: the confirm
-// dialog's Radix `onCloseAutoFocus` is Base UI's `finalFocus` (the prop is named for it), and its action closes the
-// dialog itself unless `keepOpen` (Radix's AlertDialogAction closed it after its handler; Base UI's is a plain button);
-// the Harnesses links are the navigation port's `Link` (`@nasiko/app-core/navigation`); optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
-// formatting.
 /** Pieces both chat views share: their props, the confirm dialog, the send error and the notes. */
-import Link from "@nasiko/app-core/navigation";
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
+import { Link } from '@tanstack/react-router'
+import { useEffect, useRef, type ReactNode, type RefObject } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -15,27 +10,27 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  Button,
-} from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { AgentLinkTo } from "../../agents/components/bits";
-import { TargetBanner } from "./NewChat";
-import { ModalAnnouncer } from "./StatusAnnouncer";
-import { copy } from "../copy";
-import { CHAT_COLUMN } from "./turnStyles";
-import type { ChatSearch } from "../search";
-import type { TurnRegistry } from "../turnRegistry";
-import { tuning } from "../tuning";
-import { sendErrorText } from "../errors";
+} from '@nasiko/ui/primitives/alert-dialog'
+import { Button } from '@nasiko/ui/primitives/button'
+import { cn } from '@nasiko/ui/lib/utils'
+import { AgentLinkTo } from '@nasiko/features/agents/components/bits'
+import { TargetBanner } from './NewChat'
+import { ModalAnnouncer } from './StatusAnnouncer'
+import { copy } from '../copy'
+import { CHAT_COLUMN } from './turnStyles'
+import type { ChatSearch } from '../search'
+import type { TurnRegistry } from '../turnRegistry'
+import { tuning } from '../tuning'
+import { sendErrorText } from '../errors'
 
 export interface ViewProps {
-  userId: string;
-  registry: TurnRegistry;
-  search: ChatSearch;
-  railButton: ReactNode;
-  newChatRef: RefObject<HTMLAnchorElement | null>;
+  userId: string
+  registry: TurnRegistry
+  search: ChatSearch
+  railButton: ReactNode
+  newChatRef: RefObject<HTMLAnchorElement | null>
   /** For recorded chats' names (the list prefixes harness names with `<username>-`, §2.2). */
-  username?: string | undefined;
+  username?: string
 }
 
 export function ConfirmDialog({
@@ -45,28 +40,27 @@ export function ConfirmDialog({
   body,
   primary,
   secondary,
-  finalFocus,
+  onCloseAutoFocus,
 }: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  title: string;
-  body: string;
+  open: boolean
+  onOpenChange(open: boolean): void
+  title: string
+  body: string
   /** `keepOpen`: the action closes the dialog itself once it succeeds (delete). */
   primary: {
-    label: string;
-    onClick: () => void;
-    destructive?: boolean | undefined;
-    keepOpen?: boolean | undefined;
-    busy?: boolean | undefined;
-  };
-  secondary?: { label: string; onClick: () => void } | undefined;
-  /** Where focus goes on close (Base UI's `finalFocus`: false keeps it where the callback put it); default: back to
-   *  the trigger. */
-  finalFocus?: (() => boolean | HTMLElement | null | undefined) | undefined;
+    label: string
+    onClick(): void
+    destructive?: boolean
+    keepOpen?: boolean
+    busy?: boolean
+  }
+  secondary?: { label: string; onClick(): void }
+  /** Where focus goes on close; default: back to the trigger. */
+  onCloseAutoFocus?: (e: Event) => void
 }) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent {...(finalFocus ? { finalFocus } : {})}>
+      <AlertDialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           <AlertDialogDescription>{body}</AlertDialogDescription>
@@ -77,20 +71,19 @@ export function ConfirmDialog({
             <Button
               variant="outline"
               onClick={() => {
-                onOpenChange(false);
-                secondary.onClick();
+                onOpenChange(false)
+                secondary.onClick()
               }}
             >
               {secondary.label}
             </Button>
           ) : null}
           <AlertDialogAction
-            variant={primary.destructive ? "destructive" : "default"}
+            variant={primary.destructive ? 'destructive' : 'default'}
             disabled={primary.busy}
-            onClick={() => {
-              primary.onClick();
-              // Radix's action closed the dialog after its handler; Base UI's is a plain button.
-              if (!primary.keepOpen) onOpenChange(false);
+            onClick={(e) => {
+              if (primary.keepOpen) e.preventDefault()
+              primary.onClick()
             }}
           >
             {primary.label}
@@ -99,19 +92,19 @@ export function ConfirmDialog({
         <ModalAnnouncer />
       </AlertDialogContent>
     </AlertDialog>
-  );
+  )
 }
 
 export function SendError({ error, inline = false }: { error: unknown; inline?: boolean }) {
-  const text = sendErrorText(error);
+  const text = sendErrorText(error)
   return text ? (
     <p
-      className={cn(inline ? "mt-1.5 px-1" : CHAT_COLUMN, "text-sm text-destructive")}
+      className={cn(inline ? 'mt-1.5 px-1' : CHAT_COLUMN, 'text-sm text-destructive')}
       data-testid="send-error"
     >
       {text}
     </p>
-  ) : null;
+  ) : null
 }
 
 export function NotRunningBanner({
@@ -119,27 +112,25 @@ export function NotRunningBanner({
   name,
   refetch,
 }: {
-  agentId: string;
-  name: string;
-  refetch: () => void;
+  agentId: string
+  name: string
+  refetch(): void
 }) {
   // DS17: refetch status on focus and every STATUS_POLL_MS; the banner clears itself.
   // The ref keeps one interval alive across re-renders (callers pass an inline refetch).
-  const latest = useRef(refetch);
+  const latest = useRef(refetch)
   useEffect(() => {
-    latest.current = refetch;
-  }, [refetch]);
+    latest.current = refetch
+  }, [refetch])
   useEffect(() => {
-    const tick = () => {
-      latest.current();
-    };
-    const id = setInterval(tick, tuning.STATUS_POLL_MS);
-    window.addEventListener("focus", tick);
+    const tick = () => latest.current()
+    const id = setInterval(tick, tuning.STATUS_POLL_MS)
+    window.addEventListener('focus', tick)
     return () => {
-      clearInterval(id);
-      window.removeEventListener("focus", tick);
-    };
-  }, []);
+      clearInterval(id)
+      window.removeEventListener('focus', tick)
+    }
+  }, [])
   return (
     <TargetBanner
       action={
@@ -153,7 +144,7 @@ export function NotRunningBanner({
     >
       {copy.targetNotRunning(name)}
     </TargetBanner>
-  );
+  )
 }
 
 /** A harness session recorded under the metadata-only policy (v1c §5.7): nothing to show, and why. */
@@ -165,25 +156,27 @@ export function MetadataOnly() {
     >
       <p>{copy.metadataOnly}</p>
       <Link
-        href="/harnesses"
+        to="/harnesses"
+        search={{}}
         className="inline-flex items-center text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11"
       >
         {copy.viewInHarnesses}
       </Link>
     </div>
-  );
+  )
 }
 
-export function ReadOnlyNote({ why }: { why: "recorded" | "removed" }) {
+export function ReadOnlyNote({ why }: { why: 'recorded' | 'removed' }) {
   return (
     <div className="shrink-0 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
       <div role="note" className={cn(CHAT_COLUMN)}>
         <div className="flex min-h-11 flex-wrap items-center gap-2 rounded-xl border border-border bg-card px-3 py-2.5 text-sm text-muted-foreground shadow-xs">
-          {why === "recorded" ? (
+          {why === 'recorded' ? (
             <>
-              {copy.recordedReadOnly}{" "}
+              {copy.recordedReadOnly}{' '}
               <Link
-                href="/harnesses"
+                to="/harnesses"
+                search={{}}
                 className="inline-flex items-center text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11"
               >
                 {copy.viewInHarnesses}
@@ -195,5 +188,5 @@ export function ReadOnlyNote({ why }: { why: "recorded" | "removed" }) {
         </div>
       </div>
     </div>
-  );
+  )
 }

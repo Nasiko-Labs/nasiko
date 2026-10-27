@@ -1,6 +1,3 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/RecentRuns.tsx. Local edits:
-// links are the navigation port's `Link` (`href`, `hrefFor` for a search); optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * Recent runs (plans/feat-agent-centric.md PR1c; CEO R2-5, R2-7; eng "Hub sessions", "Flows list"): two short lists,
  * never merged. Sessions come from the hub's bounded sample (last 7 days, the latest N across the fleet filtered to this
@@ -9,20 +6,19 @@
  * Side by side from `lg`, stacked below. Each row opens the shipped zoom: a session's trace, a flow's page. A harness
  * owner sees their own recorded sessions with it instead of the sample, each opening its ledger (PR1b).
  */
-import Link from "@nasiko/app-core/navigation";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { Panel, PanelSkeleton } from "@nasiko/ui/composites";
-import { Badge } from "@nasiko/ui/primitives";
-import { useAgentsDirectory } from "../../agents/api";
-import { relTime } from "../../agents/format";
-import { fmtUtcDayTime } from "@nasiko/ui/lib";
-import type { useHarnessChats, useHubFlows, useHubSessions } from "../api";
-import { copy } from "../copy";
-import { RetryLine } from "./RetryLine";
-import { RUNS_SHOWN } from "../tuning";
+import { Link } from '@tanstack/react-router'
+import { Panel, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { relTime } from '@nasiko/features/agents/format'
+import { fmtUtcDayTime } from '@nasiko/ui/lib/format'
+import type { useHarnessChats, useHubFlows, useHubSessions } from '../api'
+import { copy } from '../copy'
+import { RetryLine } from './RetryLine'
+import { RUNS_SHOWN } from '../tuning'
 
 const LINK =
-  "inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11";
+  'inline-flex items-center text-sm text-primary-text underline-offset-4 hover:underline pointer-coarse:min-h-11'
 
 export function RecentRuns({
   agentName,
@@ -31,12 +27,12 @@ export function RecentRuns({
   statuses,
   flows,
 }: {
-  agentName: string;
+  agentName: string
   /** A harness owner's own recorded sessions (PR1b): listed instead of the sample, each opening its ledger. */
-  harnessChats?: ReturnType<typeof useHarnessChats> | undefined;
-  sessions: ReturnType<typeof useHubSessions>;
-  statuses: ReadonlyMap<string, string>;
-  flows: ReturnType<typeof useHubFlows>;
+  harnessChats?: ReturnType<typeof useHarnessChats>
+  sessions: ReturnType<typeof useHubSessions>
+  statuses: ReadonlyMap<string, string>
+  flows: ReturnType<typeof useHubFlows>
 }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
@@ -47,7 +43,7 @@ export function RecentRuns({
       )}
       <FlowsList flows={flows} />
     </div>
-  );
+  )
 }
 
 function SessionsList({
@@ -55,18 +51,18 @@ function SessionsList({
   sessions,
   statuses,
 }: {
-  agentName: string;
-  sessions: ReturnType<typeof useHubSessions>;
-  statuses: ReadonlyMap<string, string>;
+  agentName: string
+  sessions: ReturnType<typeof useHubSessions>
+  statuses: ReadonlyMap<string, string>
 }) {
-  const dir = useAgentsDirectory();
+  const dir = useAgentsDirectory()
   // Sessions name agents by raw name: another visible agent with it makes the match ambiguous (eng), never merged.
-  const shared = (dir.byNameAll.get(agentName)?.length ?? 0) > 1;
+  const shared = (dir.byNameAll.get(agentName)?.length ?? 0) > 1
   const all = (
-    <Link href={hrefFor("/sessions", { agent: agentName, preset: "7d" })} className={LINK}>
+    <Link to="/sessions" search={{ agent: agentName, preset: '7d' }} className={LINK}>
       {copy.runs.sessionsAll(agentName)}
     </Link>
-  );
+  )
   return (
     <Panel title={copy.runs.sessions} subtitle={copy.runs.sessionsWindow}>
       {sessions.isPending ? (
@@ -86,13 +82,15 @@ function SessionsList({
                   className="flex flex-wrap items-center justify-between gap-2 py-1.5"
                 >
                   <Link
-                    href={`/sessions/${encodeURIComponent(s.session_id)}`}
+                    to="/sessions/$sessionId"
+                    params={{ sessionId: s.session_id }}
+                    search={{}}
                     className="inline-flex items-center font-mono text-xs underline-offset-4 hover:underline pointer-coarse:min-h-11"
                   >
                     {s.session_id.slice(0, 8)}
                   </Link>
                   <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {statuses.get(s.session_id) === "failed" ? (
+                    {statuses.get(s.session_id) === 'failed' ? (
                       <Badge variant="destructive">{copy.runs.failed}</Badge>
                     ) : null}
                     {relTime(s.start_time)}
@@ -109,15 +107,15 @@ function SessionsList({
         </div>
       )}
     </Panel>
-  );
+  )
 }
 
 function HarnessSessions({
   agentName,
   chats,
 }: {
-  agentName: string;
-  chats: ReturnType<typeof useHarnessChats>;
+  agentName: string
+  chats: ReturnType<typeof useHarnessChats>
 }) {
   return (
     <Panel title={copy.runs.sessions} subtitle={copy.runs.harnessWindow}>
@@ -136,9 +134,9 @@ function HarnessSessions({
                 >
                   {/* Every recorded harness session has the server's one title: the row is its time and size. */}
                   <Link
-                    href={hrefFor(`/sessions/${encodeURIComponent(s.session_id)}`, {
-                      view: "ledger",
-                    })}
+                    to="/sessions/$sessionId"
+                    params={{ sessionId: s.session_id }}
+                    search={{ view: 'ledger' }}
                     className="inline-flex min-w-0 items-center truncate underline-offset-4 hover:underline pointer-coarse:min-h-11"
                   >
                     {copy.runs.harnessRow(fmtUtcDayTime(s.created_at), s.message_count)}
@@ -153,14 +151,14 @@ function HarnessSessions({
             <p className="m-0 text-sm text-muted-foreground">{copy.runs.harnessNone}</p>
           )}
           <p className="m-0">
-            <Link href={hrefFor("/sessions", { agent: agentName, preset: "7d" })} className={LINK}>
+            <Link to="/sessions" search={{ agent: agentName, preset: '7d' }} className={LINK}>
               {copy.runs.sessionsAll(agentName)}
             </Link>
           </p>
         </div>
       )}
     </Panel>
-  );
+  )
 }
 
 function FlowsList({ flows }: { flows: ReturnType<typeof useHubFlows> }) {
@@ -180,13 +178,14 @@ function FlowsList({ flows }: { flows: ReturnType<typeof useHubFlows> }) {
                   className="flex flex-wrap items-center justify-between gap-2 py-1.5"
                 >
                   <Link
-                    href={`/flows/${encodeURIComponent(f.flow_id)}`}
+                    to="/flows/$flowId"
+                    params={{ flowId: f.flow_id }}
                     className="min-w-0 truncate underline-offset-4 hover:underline pointer-coarse:py-3"
                   >
                     {f.title || f.flow_id.slice(0, 8)}
                   </Link>
                   <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Badge variant={f.status === "failed" ? "destructive" : "outline"}>
+                    <Badge variant={f.status === 'failed' ? 'destructive' : 'outline'}>
                       {f.status}
                     </Badge>
                     {relTime(f.created_at)}
@@ -203,12 +202,12 @@ function FlowsList({ flows }: { flows: ReturnType<typeof useHubFlows> }) {
             <RetryLine label={copy.runs.flowsPartial} onRetry={() => void flows.refetch()} />
           ) : null}
           <p className="m-0">
-            <Link href="/flows" className={LINK}>
+            <Link to="/flows" className={LINK}>
               {copy.runs.flowsAll}
             </Link>
           </p>
         </div>
       )}
     </Panel>
-  );
+  )
 }

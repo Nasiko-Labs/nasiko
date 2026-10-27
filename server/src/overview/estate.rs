@@ -1,7 +1,7 @@
 //! The estate (OV-1): every node the Overview's map draws, the flows between its six cards, and
 //! what the viewer owns or touches. Pure: built from a [`Snapshot`].
 //!
-//! The wire shape is the UI's `estateSchema` (`ui/common/src/features/overview/estate/types.ts`).
+//! The wire shape is the UI's `estateSchema` (`ui/shared/features/src/overview/estate/types.ts`).
 //! Ids: people, agents, harnesses, workflows, tools and routers are their own UUIDs; a model is
 //! `model:<name>`, a provider `provider:<name>`, and the path coding harnesses take with no router
 //! is `router:direct`.

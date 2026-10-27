@@ -1,0 +1,59 @@
+{
+  "fixture_version": 1,
+  "id": "harnesses.org-units",
+  "recorded_at": "2026-09-29T07:44:51.937Z",
+  "window": {
+    "start": "2026-09-29T07:44:51.937Z",
+    "end": "2026-09-29T07:44:51.939Z"
+  },
+  "anchor": "2026-09-29T07:44:38.390Z",
+  "edition": "ee",
+  "identity": "admin",
+  "server": {
+    "sha": "ea233d201502a205e78339a7cb2688856b9ec2fa",
+    "dirty": false,
+    "openapi_sha256": "71f2d54fd3466adb48d9d26eed66afe028ed153262b6eeb57445c5b03b6bd9f7",
+    "binary_mtime": null
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/org/units",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": [
+      {
+        "created_at": "2026-09-29T07:44:42.032320Z",
+        "depth": 1,
+        "external_id": null,
+        "id": "<unit-seed-eng>",
+        "idp_synced_at": null,
+        "lead_id": "<user-seed-ee-lead>",
+        "lead_username": "seed-ee-lead",
+        "member_count": 1,
+        "name": "seed-eng",
+        "parent_id": null,
+        "provider": null,
+        "source": "manual"
+      },
+      {
+        "created_at": "2026-09-29T07:44:42.043513Z",
+        "depth": 2,
+        "external_id": null,
+        "id": "<unit-seed-eng-platform>",
+        "idp_synced_at": null,
+        "lead_id": null,
+        "lead_username": null,
+        "member_count": 1,
+        "name": "seed-eng-platform",
+        "parent_id": "<unit-seed-eng>",
+        "provider": null,
+        "source": "manual"
+      }
+    ],
+    "message": "2 org units fetched successfully",
+    "status_code": 200
+  }
+}

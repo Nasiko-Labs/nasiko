@@ -1,9 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/agents/detail/AccessTab.tsx. Local edits: the agent picker
-// `Select` takes `value={null}` for no pick (the lab's Radix `''`), narrows Base UI's nullable `onValueChange` value
-// and gets `items` (id → name) so the trigger shows the agent's name; optional fields admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-"use client";
-
 /**
  * Access (plan §7.3, managers only): public toggle (waits for the server), user grants with
  * username search, any grantee kinds an edition layer adds (`granteeKinds`; EE: org units), and the agent-to-agent
@@ -13,20 +7,20 @@
  * enforced at ea233d20 (the tab says so). EE: the agents allowed to call this one; grants only add access. Neither
  * blocks anything, so nothing asks for confirmation.
  */
-import { useId, useState } from "react";
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
-import { Button } from "@nasiko/ui/primitives";
-import { Checkbox } from "@nasiko/ui/primitives";
-import { Field, FieldLabel } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
+import { useId, useState } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Checkbox } from '@nasiko/ui/primitives/checkbox'
+import { Field, FieldLabel } from '@nasiko/ui/primitives/field'
+import { Input } from '@nasiko/ui/primitives/input'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/select'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import {
   useAgentGrants,
   useAgentsDirectory,
@@ -34,22 +28,22 @@ import {
   useGrants,
   useUserGrants,
   useUserSearch,
-} from "../api";
-import { ErrorNote, LearnMore, Section } from "../components/bits";
-import { copy } from "../copy";
-import type { AgentView } from "../normalize";
-import { isHarness } from "../status";
-import { USER_SEARCH_MIN } from "../tuning";
+} from '../api'
+import { ErrorNote, LearnMore, Section } from '../components/bits'
+import { copy } from '../copy'
+import type { AgentView } from '../normalize'
+import { isHarness } from '../status'
+import { USER_SEARCH_MIN } from '../tuning'
 
 export function AccessTab({ agent }: { agent: AgentView }) {
-  const grants = useGrants(agent.id, true);
-  const users = useUserGrants(agent.id, true);
-  const acl = useAgentGrants(agent.id, true);
-  const m = useGrantMutations(agent.id);
-  const dir = useAgentsDirectory();
-  const publicId = useId();
-  const { granteeKinds } = useSlots();
-  const ee = grants.data?.edition === "ee";
+  const grants = useGrants(agent.id, true)
+  const users = useUserGrants(agent.id, true)
+  const acl = useAgentGrants(agent.id, true)
+  const m = useGrantMutations(agent.id)
+  const dir = useAgentsDirectory()
+  const publicId = useId()
+  const { granteeKinds } = useSlots()
+  const ee = grants.data?.edition === 'ee'
 
   return (
     <div className="space-y-4">
@@ -64,9 +58,7 @@ export function AccessTab({ agent }: { agent: AgentView }) {
               id={publicId}
               checked={grants.data.is_public}
               disabled={m.setPublic.isPending}
-              onCheckedChange={(v) => {
-                m.setPublic.mutate(v);
-              }}
+              onCheckedChange={(v) => m.setPublic.mutate(v === true)}
             />
             <FieldLabel htmlFor={publicId} className="font-normal">
               {copy.publicToggle}
@@ -85,7 +77,7 @@ export function AccessTab({ agent }: { agent: AgentView }) {
           <ul className="divide-y divide-border text-sm">
             {users.data.map((u) => (
               <li key={u.user_id} className="flex items-center justify-between py-1.5">
-                <span className={u.username ? undefined : "font-mono text-xs"}>
+                <span className={u.username ? undefined : 'font-mono text-xs'}>
                   {u.username ?? u.user_id}
                 </span>
                 <Button
@@ -93,9 +85,7 @@ export function AccessTab({ agent }: { agent: AgentView }) {
                   variant="ghost"
                   disabled={m.removeUser.isPending}
                   aria-label={copy.removeNamed(u.username ?? u.user_id)}
-                  onClick={() => {
-                    m.removeUser.mutate(u.user_id);
-                  }}
+                  onClick={() => m.removeUser.mutate(u.user_id)}
                 >
                   {copy.remove}
                 </Button>
@@ -110,9 +100,7 @@ export function AccessTab({ agent }: { agent: AgentView }) {
           <UserPicker
             exclude={new Set([agent.ownerId, ...(users.data ?? []).map((u) => u.user_id)])}
             pending={m.addUser.isPending}
-            onPick={(id) => {
-              m.addUser.mutate(id);
-            }}
+            onPick={(id) => m.addUser.mutate(id)}
           />
         ) : null}
         {m.addUser.isError ? <ErrorNote error={m.addUser.error} context="manage" /> : null}
@@ -145,9 +133,7 @@ export function AccessTab({ agent }: { agent: AgentView }) {
                   aria-label={copy.removeNamed(
                     g.target_name ?? dir.byId.get(g.target_agent_id)?.name ?? g.target_agent_id,
                   )}
-                  onClick={() => {
-                    m.removeAgent.mutate(g.target_agent_id);
-                  }}
+                  onClick={() => m.removeAgent.mutate(g.target_agent_id)}
                 >
                   {copy.remove}
                 </Button>
@@ -169,16 +155,14 @@ export function AccessTab({ agent }: { agent: AgentView }) {
                 !(acl.data ?? []).some((g) => g.target_agent_id === a.id),
             )}
             pending={m.addAgent.isPending}
-            onPick={(id) => {
-              m.addAgent.mutate(id);
-            }}
+            onPick={(id) => m.addAgent.mutate(id)}
           />
         ) : null}
         {m.addAgent.isError ? <ErrorNote error={m.addAgent.error} context="manage" /> : null}
         {m.removeAgent.isError ? <ErrorNote error={m.removeAgent.error} context="manage" /> : null}
       </Section>
     </div>
-  );
+  )
 }
 
 function UserPicker({
@@ -186,14 +170,14 @@ function UserPicker({
   pending,
   onPick,
 }: {
-  exclude: ReadonlySet<string>;
-  pending: boolean;
-  onPick: (id: string) => void;
+  exclude: ReadonlySet<string>
+  pending: boolean
+  onPick: (id: string) => void
 }) {
-  const [q, setQ] = useState("");
-  const search = useUserSearch(q);
-  const hits = (search.data ?? []).filter((u) => !exclude.has(u.id));
-  const short = q.trim().length < USER_SEARCH_MIN;
+  const [q, setQ] = useState('')
+  const search = useUserSearch(q)
+  const hits = (search.data ?? []).filter((u) => !exclude.has(u.id))
+  const short = q.trim().length < USER_SEARCH_MIN
   return (
     <div className="space-y-2 pt-2">
       <Field className="max-w-sm gap-2">
@@ -201,9 +185,7 @@ function UserPicker({
         <Input
           id="grant-user-search"
           value={q}
-          onChange={(e) => {
-            setQ(e.target.value);
-          }}
+          onChange={(e) => setQ(e.target.value)}
           placeholder={copy.searchUsers}
           autoComplete="off"
         />
@@ -220,7 +202,7 @@ function UserPicker({
           {hits.map((u) => (
             <li key={u.id} className="flex items-center justify-between px-2 py-1">
               <span>
-                {u.display_name || u.username}{" "}
+                {u.display_name || u.username}{' '}
                 <span className="text-xs text-muted-foreground">{u.username}</span>
               </span>
               <Button
@@ -229,8 +211,8 @@ function UserPicker({
                 disabled={pending}
                 aria-label={copy.addNamed(u.display_name || u.username)}
                 onClick={() => {
-                  onPick(u.id);
-                  setQ("");
+                  onPick(u.id)
+                  setQ('')
                 }}
               >
                 {copy.add}
@@ -240,7 +222,7 @@ function UserPicker({
         </ul>
       ) : null}
     </div>
-  );
+  )
 }
 
 function AgentPicker({
@@ -248,24 +230,18 @@ function AgentPicker({
   pending,
   onPick,
 }: {
-  options: { id: string; name: string; display_name?: string | null | undefined }[];
-  pending: boolean;
-  onPick: (id: string) => void;
+  options: { id: string; name: string; display_name?: string | null }[]
+  pending: boolean
+  onPick: (id: string) => void
 }) {
-  const [id, setId] = useState("");
-  const fieldId = useId();
+  const [id, setId] = useState('')
+  const fieldId = useId()
   return (
     <div className="flex flex-wrap items-end gap-2 pt-2">
       <Field className="w-auto gap-1">
         <FieldLabel htmlFor={fieldId}>{copy.addAgent}</FieldLabel>
-        {/* No value shows the placeholder; it resets after each Allow. */}
-        <Select
-          value={id || null}
-          onValueChange={(v: string | null) => {
-            setId(v ?? "");
-          }}
-          items={Object.fromEntries(options.map((a) => [a.id, a.display_name || a.name]))}
-        >
+        {/* value "" shows the placeholder (Radix Select); it resets after each Allow. */}
+        <Select value={id} onValueChange={setId}>
           <SelectTrigger id={fieldId} className="min-w-56">
             <SelectValue placeholder={copy.chooseAgent} />
           </SelectTrigger>
@@ -283,12 +259,12 @@ function AgentPicker({
         variant="outline"
         disabled={!id || pending}
         onClick={() => {
-          onPick(id);
-          setId("");
+          onPick(id)
+          setId('')
         }}
       >
         {copy.allow}
       </Button>
     </div>
-  );
+  )
 }

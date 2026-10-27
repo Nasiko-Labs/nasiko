@@ -1,9 +1,7 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/router/components/SectionError.tsx. Local edits: optional props admit `undefined`
-// (exactOptionalPropertyTypes); Prettier formatting.
-import { RotateCw } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { copy } from "../copy";
-import { routerError } from "../errors";
+import { RotateCw } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { copy } from '../copy'
+import { routerError } from '../errors'
 
 /** A section's failed read: problem, cause, action and Retry (plan §4.8, §4.9). */
 export function SectionError({
@@ -11,11 +9,11 @@ export function SectionError({
   onRetry,
   title,
 }: {
-  error: unknown;
-  onRetry: () => void;
-  title?: string | undefined;
+  error: unknown
+  onRetry: () => void
+  title?: string
 }) {
-  const v = routerError(error);
+  const v = routerError(error)
   return (
     <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border bg-card p-4 text-sm">
       <div className="space-y-0.5">
@@ -28,5 +26,5 @@ export function SectionError({
         <RotateCw className="size-3.5" aria-hidden /> {copy.retry}
       </Button>
     </div>
-  );
+  )
 }

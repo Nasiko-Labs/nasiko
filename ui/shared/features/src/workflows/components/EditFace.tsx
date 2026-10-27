@@ -1,31 +1,25 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/components/EditFace.tsx. Local edits: `"use
-// client"`; scoped `workflowKeys`; Prettier formatting. The leave guard (legacy ui/ on development, 3aac84f66: 2d2c113ab,
-// ef9a174b1) is the navigation port's `LeaveGuard`.
-"use client";
-
 /**
  * The editor face (plans/feat-workflows.md §5): always for a draft (Save & run, Deploy), behind Edit for a live
  * workflow (Cancel, Save & run: saving edits the live row). The run endpoint runs the stored row, so running the
  * edits means saving them first.
  */
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, Play } from "lucide-react";
-import { useRef, useState, type ReactNode } from "react";
-import { toast } from "@nasiko/ui/toast";
-import { LeaveGuard } from "@nasiko/app-core/leave-guard";
-import { Button } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
-import { Label } from "@nasiko/ui/primitives";
-import { useProductScope } from "@nasiko/data-access/product";
-import { useAgentsDirectory } from "../../agents/api";
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Loader2, Play } from 'lucide-react'
+import { useRef, useState, type ReactNode } from 'react'
+import { toast } from 'sonner'
+import { LeaveGuard } from '@nasiko/app-core/leave-guard'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Input } from '@nasiko/ui/primitives/input'
+import { Label } from '@nasiko/ui/primitives/label'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import {
   generateWorkflow,
   promoteWorkflow,
   runWorkflow,
   updateWorkflow,
   workflowKeys,
-} from "../api";
-import { copy, reason } from "../copy";
+} from '../api'
+import { copy, reason } from '../copy'
 import {
   agentOptions,
   descriptionOf,
@@ -36,10 +30,10 @@ import {
   snapshot,
   toPayload,
   type EditorStep,
-} from "../logic";
-import type { Workflow } from "../types";
-import { PlanComposer } from "./PlanComposer";
-import { StepEditor } from "./StepEditor";
+} from '../logic'
+import type { Workflow } from '../types'
+import { PlanComposer } from './PlanComposer'
+import { StepEditor } from './StepEditor'
 
 export function EditFace({
   wf,
@@ -47,81 +41,79 @@ export function EditFace({
   onRun,
   children,
 }: {
-  wf: Workflow;
-  onCancel: () => void;
-  onRun: (execId: string) => void;
-  children?: ReactNode;
+  wf: Workflow
+  onCancel: () => void
+  onRun: (execId: string) => void
+  children?: ReactNode
 }) {
-  const queryClient = useQueryClient();
-  const scope = useProductScope();
-  const agents = useAgentsDirectory();
-  const live = isDeployed(wf);
-  const initialDesc = descriptionOf(wf);
-  const [name, setName] = useState(wf.name);
-  const [desc, setDesc] = useState(initialDesc);
-  const [steps, setSteps] = useState<EditorStep[]>(() => fromMaf(wf.maf_json?.steps));
+  const queryClient = useQueryClient()
+  const agents = useAgentsDirectory()
+  const live = isDeployed(wf)
+  const initialDesc = descriptionOf(wf)
+  const [name, setName] = useState(wf.name)
+  const [desc, setDesc] = useState(initialDesc)
+  const [steps, setSteps] = useState<EditorStep[]>(() => fromMaf(wf.maf_json?.steps))
   const [generatedFrom, setGeneratedFrom] = useState<string | null>(() =>
     wf.maf_json?.steps?.length ? initialDesc.trim() : null,
-  );
-  const [planned, setPlanned] = useState(() => snapshot("", "", steps));
+  )
+  const [planned, setPlanned] = useState(() => snapshot('', '', steps))
   // What the server holds: what the editor opened with, then what it last saved (even if the run or promote failed).
-  const [opened, setOpened] = useState(() => snapshot(wf.name, initialDesc, steps));
-  const dirty = snapshot(name, desc, steps) !== opened;
-  const failedAt = useRef<"Save" | "Run" | "Deploy">("Save");
+  const [opened, setOpened] = useState(() => snapshot(wf.name, initialDesc, steps))
+  const dirty = snapshot(name, desc, steps) !== opened
+  const failedAt = useRef<'Save' | 'Run' | 'Deploy'>('Save')
 
-  const gen = useMutation({ mutationFn: generateWorkflow });
-  const generate = (description: string) => {
+  const gen = useMutation({ mutationFn: generateWorkflow })
+  const generate = (description: string) =>
     gen.mutate(description, {
       onSuccess: (plan) => {
-        const next = fromPlan(plan);
-        setSteps(next);
-        setPlanned(snapshot("", "", next));
-        setGeneratedFrom(description);
+        const next = fromPlan(plan)
+        setSteps(next)
+        setPlanned(snapshot('', '', next))
+        setGeneratedFrom(description)
       },
-    });
-  };
+    })
 
-  const { steps: payload, index } = toPayload(steps);
-  const key = workflowKeys.detail(scope, wf.id);
+  const { steps: payload, index } = toPayload(steps)
+  const key = workflowKeys.detail(wf.id)
   const act = useMutation({
-    mutationFn: async (then: "run" | "deploy") => {
-      failedAt.current = "Save";
+    mutationFn: async (then: 'run' | 'deploy') => {
+      failedAt.current = 'Save'
       const saved = await updateWorkflow(wf.id, {
         // An empty name would be stored as one; an emptied description is cleared.
         name: name.trim() || undefined,
         description: desc.trim() || null,
         steps: payload,
-      });
-      setOpened(snapshot(name, desc, steps));
-      failedAt.current = then === "run" ? "Run" : "Deploy";
-      if (then === "run") {
-        const r = await runWorkflow(wf.id);
-        queryClient.setQueryData(key, saved);
-        return r.execution_id;
+      })
+      setOpened(snapshot(name, desc, steps))
+      failedAt.current = then === 'run' ? 'Run' : 'Deploy'
+      if (then === 'run') {
+        const r = await runWorkflow(wf.id)
+        queryClient.setQueryData(key, saved)
+        return r.execution_id
       }
-      queryClient.setQueryData(key, await promoteWorkflow(wf.id));
-      return null;
+      queryClient.setQueryData(key, await promoteWorkflow(wf.id))
+      return null
     },
     onSuccess: (execId) => {
-      void queryClient.invalidateQueries({ queryKey: workflowKeys.lists(scope) });
-      if (execId) onRun(execId);
-      else toast.success(copy.deployedToast);
+      void queryClient.invalidateQueries({ queryKey: workflowKeys.lists })
+      if (execId) onRun(execId)
+      else toast.success(copy.deployedToast)
     },
     onError: (err) => {
       // A save that landed before the run or promote failed is still the row now.
-      void queryClient.invalidateQueries({ queryKey: key });
-      toast.error(copy.stepFailed(failedAt.current, remapStepError(reason(err), index)));
+      void queryClient.invalidateQueries({ queryKey: key })
+      toast.error(copy.stepFailed(failedAt.current, remapStepError(reason(err), index)))
     },
-  });
-  const save = (then: "run" | "deploy") => {
-    if (!payload.length) return void toast.error(copy.needsStep);
-    act.mutate(then);
-  };
-  const busy = act.isPending || gen.isPending;
-  const spin = (then: "run" | "deploy") =>
+  })
+  const save = (then: 'run' | 'deploy') => {
+    if (!payload.length) return void toast.error(copy.needsStep)
+    act.mutate(then)
+  }
+  const busy = act.isPending || gen.isPending
+  const spin = (then: 'run' | 'deploy') =>
     act.isPending && act.variables === then ? (
       <Loader2 className="animate-spin" aria-hidden />
-    ) : null;
+    ) : null
 
   return (
     <>
@@ -131,13 +123,7 @@ export function EditFace({
       </h1>
       <div className="flex flex-col gap-2">
         <Label htmlFor="wf-name">{copy.nameLabel}</Label>
-        <Input
-          id="wf-name"
-          value={name}
-          onChange={(e) => {
-            setName(e.target.value);
-          }}
-        />
+        <Input id="wf-name" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
       <PlanComposer
         value={desc}
@@ -145,7 +131,7 @@ export function EditFace({
         onGenerate={generate}
         generatedFrom={generatedFrom}
         confirmReplace={
-          steps.some((s) => s.taskDescription.trim()) && snapshot("", "", steps) !== planned
+          steps.some((s) => s.taskDescription.trim()) && snapshot('', '', steps) !== planned
         }
         busy={gen.isPending}
         error={gen.error}
@@ -161,37 +147,21 @@ export function EditFace({
             <Button variant="ghost" disabled={busy} onClick={onCancel}>
               {copy.cancel}
             </Button>
-            <Button
-              disabled={busy}
-              onClick={() => {
-                save("run");
-              }}
-            >
-              {spin("run") ?? <Play aria-hidden />} {copy.saveAndRun}
+            <Button disabled={busy} onClick={() => save('run')}>
+              {spin('run') ?? <Play aria-hidden />} {copy.saveAndRun}
             </Button>
           </>
         ) : (
           <>
-            <Button
-              variant="outline"
-              disabled={busy}
-              onClick={() => {
-                save("run");
-              }}
-            >
-              {spin("run") ?? <Play aria-hidden />} {copy.saveAndRun}
+            <Button variant="outline" disabled={busy} onClick={() => save('run')}>
+              {spin('run') ?? <Play aria-hidden />} {copy.saveAndRun}
             </Button>
-            <Button
-              disabled={busy}
-              onClick={() => {
-                save("deploy");
-              }}
-            >
-              {spin("deploy")} {copy.deploy}
+            <Button disabled={busy} onClick={() => save('deploy')}>
+              {spin('deploy')} {copy.deploy}
             </Button>
           </>
         )}
       </div>
     </>
-  );
+  )
 }

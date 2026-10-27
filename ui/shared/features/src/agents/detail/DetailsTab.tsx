@@ -1,55 +1,42 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/agents/detail/DetailsTab.tsx (c96a2ba3a,
-// 913173d30: the Overview tab's facts, moved here when the agent hub took Overview over; c721a11a8: what the agent does
-// in the main column beside a facts column, long text and skill lists trimmed behind Show more, copy buttons on the
-// live card and raw JSON, one Try it). Local edits: `agentDetailQuery` takes the product scope (`useProductScope()`);
-// optional props admit `undefined` (exactOptionalPropertyTypes); Disclosure toggles given braces; Prettier formatting.
-"use client";
-
 /**
  * Details (plans/feat-agent-centric.md PR1c "Where today's Overview tab goes"): the facts the Overview carried before
  * the agent hub took it over. What the agent does (description, skills, how to call it) is the main column, with the
  * facts (routing, active version, technical details) in a narrow column beside it; the live card (fetched only when
  * opened) and the raw responses last. Owner-controlled text renders as text only.
  */
-import { useQuery } from "@tanstack/react-query";
-import { useProductScope } from "@nasiko/data-access/product";
-import { useId, useState, type ReactNode } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import { Disclosure } from "@nasiko/ui/composites";
-import { RoutingCard } from "../../router/components/RoutingCard";
-import { agentDetailQuery, isUnavailable, useDeployment, useLiveCard, useVersions } from "../api";
-import { CliCommand, LearnMore, Section } from "../components/bits";
-import { CopyButton } from "@nasiko/ui/composites";
-import { relTime } from "../format";
-import { copy } from "../copy";
-import { exampleTexts, safeHttpUrl, type AgentView } from "../normalize";
-import type { DisplayStatus } from "../status";
-import {
-  CLAMP_DESCRIPTION_CHARS,
-  CLAMP_SKILL_CHARS,
-  EXAMPLES_SHOWN,
-  SKILLS_SHOWN,
-} from "../tuning";
-import { NotDeployedPrompt } from "./NotDeployedPrompt";
+import { useQuery } from '@tanstack/react-query'
+import { useId, useState, type ReactNode } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { cn } from '@nasiko/ui/lib/utils'
+import { Disclosure } from '@nasiko/ui/composites/disclosure'
+import { RoutingCard } from '@nasiko/features/router/components/RoutingCard'
+import { agentDetailQuery, isUnavailable, useDeployment, useLiveCard, useVersions } from '../api'
+import { CliCommand, LearnMore, Section } from '../components/bits'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { relTime } from '../format'
+import { copy } from '../copy'
+import { exampleTexts, safeHttpUrl, type AgentView } from '../normalize'
+import type { DisplayStatus } from '../status'
+import { CLAMP_DESCRIPTION_CHARS, CLAMP_SKILL_CHARS, EXAMPLES_SHOWN, SKILLS_SHOWN } from '../tuning'
+import { NotDeployedPrompt } from './NotDeployedPrompt'
 
 export function DetailsTab({
   agent,
   display,
   ownerLabel,
 }: {
-  agent: AgentView;
-  display: DisplayStatus;
-  ownerLabel: string;
+  agent: AgentView
+  display: DisplayStatus
+  ownerLabel: string
 }) {
-  const deployment = useDeployment(agent.id, !agent.isHarness);
-  const versions = useVersions(agent.id, !agent.isHarness);
-  const active = versions.data?.find((v) => v.is_active);
-  const dep = deployment.data;
-  const depRow = dep && !isUnavailable(dep) ? dep : null;
-  const docs = safeHttpUrl(agent.documentationUrl);
+  const deployment = useDeployment(agent.id, !agent.isHarness)
+  const versions = useVersions(agent.id, !agent.isHarness)
+  const active = versions.data?.find((v) => v.is_active)
+  const dep = deployment.data
+  const depRow = dep && !isUnavailable(dep) ? dep : null
+  const docs = safeHttpUrl(agent.documentationUrl)
 
   return (
     <div className="space-y-4">
@@ -85,14 +72,14 @@ export function DetailsTab({
                   <Skeleton className="h-24" />
                 ) : isUnavailable(dep) ? (
                   <p className="text-sm text-muted-foreground">{copy.deploymentUnavailable}</p>
-                ) : display === "not-deployed" ? (
+                ) : display === 'not-deployed' ? (
                   <NotDeployedPrompt name={agent.name} />
                 ) : (
                   <dl className={FACTS}>
                     <Row label={copy.version} value={active?.version ?? agent.version} mono />
-                    <Row label={copy.deployed} value={active ? relTime(active.created_at) : "—"} />
-                    <Row label={copy.image} value={active?.image_tag ?? "—"} mono />
-                    <Row label={copy.serviceUrl} value={depRow?.service_url ?? "—"} mono />
+                    <Row label={copy.deployed} value={active ? relTime(active.created_at) : '—'} />
+                    <Row label={copy.image} value={active?.image_tag ?? '—'} mono />
+                    <Row label={copy.serviceUrl} value={depRow?.service_url ?? '—'} mono />
                   </dl>
                 )}
               </Facts>
@@ -105,10 +92,10 @@ export function DetailsTab({
                   label={copy.tech.history}
                   value={yesNo(agent.capabilities.stateTransitionHistory)}
                 />
-                <Row label={copy.tech.inputModes} value={agent.inputModes.join(", ") || "—"} />
-                <Row label={copy.tech.outputModes} value={agent.outputModes.join(", ") || "—"} />
-                <Row label={copy.tech.protocol} value={agent.protocolVersion || "—"} />
-                <Row label={copy.tech.transport} value={agent.preferredTransport || "—"} />
+                <Row label={copy.tech.inputModes} value={agent.inputModes.join(', ') || '—'} />
+                <Row label={copy.tech.outputModes} value={agent.outputModes.join(', ') || '—'} />
+                <Row label={copy.tech.protocol} value={agent.protocolVersion || '—'} />
+                <Row label={copy.tech.transport} value={agent.preferredTransport || '—'} />
                 {agent.integrationId ? (
                   <Row label={copy.tech.harness} value={agent.integrationId} />
                 ) : null}
@@ -133,7 +120,7 @@ export function DetailsTab({
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -141,19 +128,19 @@ export function DetailsTab({
  * the description to a few lines, the first skills, each skill's first examples; one toggle shows it all.
  */
 function WhatItDoes({ agent }: { agent: AgentView }) {
-  const [expanded, setExpanded] = useState(false);
-  const long = (t: string | null | undefined, max: number) => (t?.length ?? 0) > max;
+  const [expanded, setExpanded] = useState(false)
+  const long = (t: string | null | undefined, max: number) => (t?.length ?? 0) > max
   const trimmable =
     long(agent.description, CLAMP_DESCRIPTION_CHARS) ||
     agent.skills.length > SKILLS_SHOWN ||
     agent.skills.some(
       (s) => long(s.description, CLAMP_SKILL_CHARS) || exampleTexts(s).length > EXAMPLES_SHOWN,
-    );
-  const trim = trimmable && !expanded;
-  const skills = trim ? agent.skills.slice(0, SKILLS_SHOWN) : agent.skills;
+    )
+  const trim = trimmable && !expanded
+  const skills = trim ? agent.skills.slice(0, SKILLS_SHOWN) : agent.skills
   return (
     <Section title={copy.whatItDoes}>
-      <p className={cn("max-w-prose text-sm whitespace-pre-wrap", trim && "line-clamp-4")}>
+      <p className={cn('max-w-prose text-sm whitespace-pre-wrap', trim && 'line-clamp-4')}>
         {agent.description || copy.noDescription}
       </p>
       <h3 className="pt-2 text-sm font-semibold">
@@ -167,13 +154,13 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
       {agent.skills.length ? (
         <ul className="divide-y rounded-md border">
           {skills.map((s) => {
-            const examples = exampleTexts(s);
+            const examples = exampleTexts(s)
             return (
               <li key={s.id} className="space-y-1 px-3 py-2.5 text-sm">
                 <div className="font-medium">{s.name}</div>
                 {/* Cards often repeat the name as the description; say it once. */}
                 {s.description && !sameText(s.description, s.name) ? (
-                  <div className={cn("max-w-prose text-muted-foreground", trim && "line-clamp-2")}>
+                  <div className={cn('max-w-prose text-muted-foreground', trim && 'line-clamp-2')}>
                     {s.description}
                   </div>
                 ) : null}
@@ -188,7 +175,7 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
                   </div>
                 ) : null}
               </li>
-            );
+            )
           })}
         </ul>
       ) : (
@@ -199,9 +186,7 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
           variant="link"
           size="sm"
           aria-expanded={expanded}
-          onClick={() => {
-            setExpanded((e) => !e);
-          }}
+          onClick={() => setExpanded((e) => !e)}
           className="h-auto self-start p-0 text-sm pointer-coarse:min-h-11"
         >
           {expanded
@@ -218,22 +203,22 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
         </div>
       )}
     </Section>
-  );
+  )
 }
 
-const yesNo = (v: boolean) => (v ? copy.yes : copy.no);
+const yesNo = (v: boolean) => (v ? copy.yes : copy.no)
 
 /** "Analyse a funnel" and "Analyse a funnel." say the same thing. */
 const sameText = (a: string, b: string) => {
   const norm = (t: string) =>
     t
       .trim()
-      .replace(/[.!]+$/, "")
-      .toLowerCase();
-  return norm(a) === norm(b);
-};
+      .replace(/[.!]+$/, '')
+      .toLowerCase()
+  return norm(a) === norm(b)
+}
 
-const FACTS = "grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm";
+const FACTS = 'grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm'
 
 /** One labelled group in the facts column; groups share a card and are split by a rule. */
 function Facts({
@@ -241,11 +226,11 @@ function Facts({
   action,
   children,
 }: {
-  title: string;
-  action?: ReactNode;
-  children: ReactNode;
+  title: string
+  action?: ReactNode
+  children: ReactNode
 }) {
-  const id = useId();
+  const id = useId()
   return (
     <section aria-labelledby={id} className="space-y-3 border-t p-4 first:border-t-0">
       <div className="flex items-center justify-between gap-2">
@@ -256,31 +241,29 @@ function Facts({
       </div>
       {children}
     </section>
-  );
+  )
 }
 
 function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
   return (
     <>
       <dt className="text-muted-foreground">{label}</dt>
-      <dd className={mono ? "min-w-0 font-mono text-xs leading-5 break-words" : "min-w-0"}>
+      <dd className={mono ? 'min-w-0 font-mono text-xs leading-5 break-words' : 'min-w-0'}>
         {value}
       </dd>
     </>
-  );
+  )
 }
 
 function LiveCard({ id }: { id: string }) {
-  const [open, setOpen] = useState(false);
-  const card = useLiveCard(id, open);
+  const [open, setOpen] = useState(false)
+  const card = useLiveCard(id, open)
   return (
     <Disclosure
       id="agent-live-card"
       title={copy.liveCard}
       open={open}
-      onToggle={() => {
-        setOpen((o) => !o);
-      }}
+      onToggle={() => setOpen((o) => !o)}
     >
       {card.isPending ? (
         <Skeleton className="h-16" />
@@ -290,21 +273,19 @@ function LiveCard({ id }: { id: string }) {
         <JsonBlock value={card.data} label={copy.copyLiveCard} className="max-h-80" />
       )}
     </Disclosure>
-  );
+  )
 }
 
 /** The unnormalized responses, as text (an escape hatch when the view model looks wrong). */
 function ViewRaw({ id, deployment }: { id: string; deployment: unknown }) {
-  const raw = useQuery(agentDetailQuery(useProductScope(), id)).data;
-  const [open, setOpen] = useState(false);
+  const raw = useQuery(agentDetailQuery(id)).data
+  const [open, setOpen] = useState(false)
   return (
     <Disclosure
       id="agent-view-raw"
       title={copy.viewRaw}
       open={open}
-      onToggle={() => {
-        setOpen((o) => !o);
-      }}
+      onToggle={() => setOpen((o) => !o)}
     >
       <JsonBlock
         value={{ detail: raw ?? null, deployment: deployment ?? null }}
@@ -312,7 +293,7 @@ function ViewRaw({ id, deployment }: { id: string; deployment: unknown }) {
         className="max-h-96"
       />
     </Disclosure>
-  );
+  )
 }
 
 /** Pretty-printed JSON with a copy button pinned to its top-right corner. */
@@ -321,17 +302,17 @@ function JsonBlock({
   label,
   className,
 }: {
-  value: unknown;
-  label: string;
-  className?: string | undefined;
+  value: unknown
+  label: string
+  className?: string
 }) {
-  const text = JSON.stringify(value, null, 2);
+  const text = JSON.stringify(value, null, 2)
   return (
     <div className="relative mb-3">
-      <pre className={cn("overflow-auto rounded bg-muted p-3 pr-12 font-mono text-xs", className)}>
+      <pre className={cn('overflow-auto rounded bg-muted p-3 pr-12 font-mono text-xs', className)}>
         {text}
       </pre>
       <CopyButton text={text} label={label} className="absolute top-1.5 right-1.5" />
     </div>
-  );
+  )
 }

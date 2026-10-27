@@ -1,8 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/PasswordPage.tsx. Local edits: `"use client"`; the
-// shell's `signOut` comes through `useSignOut()` (`@nasiko/app-core/sign-out`, provided by the app shell with its
-// query client bound: a feature can't import `@/app/shell/signOut`), and its `navigate` pushes `/login` with the same
-// search through the port's `useRouter` (`hrefFor`); `meQuery` is `meQueryOptions(scope)`; the lab's `ApiError` is
-// `ProductApiError`; Prettier formatting.
 /**
  * Settings → Account → Password: self-service password change (nasiko-cloud-rs `43833316`,
  * ui/common/features/change-password-modal.js, here in the page). `POST /api/auth/change-password` confirms with the
@@ -13,142 +8,131 @@
  *   loss); anything else is a toast.
  * The form is remounted after a change (never `reset()`, see CLAUDE.md Settings), so its fields start empty.
  */
-"use client";
-
-import { useQuery } from "@tanstack/react-query";
-import { Eye, EyeOff } from "lucide-react";
-import { useRouter } from "@nasiko/app-core/navigation";
-import { useId, useState } from "react";
-import { useForm } from "react-hook-form";
-import { toast } from "@nasiko/ui/toast";
-import { PageHeader } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Input } from "@nasiko/ui/primitives";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Eye, EyeOff } from 'lucide-react'
+import { useNavigate } from '@tanstack/react-router'
+import { useId, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { toast } from 'sonner'
+import { useSignOut } from '@nasiko/app-core/sign-out'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Input } from '@nasiko/ui/primitives/input'
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
   InputGroupInput,
-} from "@nasiko/ui/primitives";
-import {
-  apiFetch,
-  meQueryOptions,
-  ProductApiError as ApiError,
-  useProductScope,
-  type Me,
-} from "@nasiko/data-access/product";
-import { useSignOut } from "@nasiko/app-core/sign-out";
-import { hrefFor } from "@nasiko/app-core/url-state";
+} from '@nasiko/ui/primitives/input-group'
+import { apiFetch, ApiError } from '@nasiko/data-access/client'
+import { meQuery, type Me } from '@nasiko/data-access/auth'
 import {
   PASSWORD_MAX,
   PASSWORD_MIN,
   passwordProblem,
   type PasswordProblem,
-} from "@nasiko/app-core/password";
-import { SettingRow, SettingRows } from "./components/SettingRow";
-import { copy as settingsCopy } from "./copy";
+} from '@nasiko/app-core/password'
+import { SettingRow, SettingRows } from './components/SettingRow'
+import { copy as settingsCopy } from './copy'
 
-const copy = settingsCopy.password;
+const copy = settingsCopy.password
 
-type Values = { current: string; next: string; confirm: string };
+type Values = { current: string; next: string; confirm: string }
 
 const problemText = (p: PasswordProblem) =>
-  p === "short"
+  p === 'short'
     ? copy.problem.short(PASSWORD_MIN)
-    : p === "long"
+    : p === 'long'
       ? copy.problem.long(PASSWORD_MAX)
-      : copy.problem[p];
+      : copy.problem[p]
 
 /** The legacy dialog's order: the first failing check is the one reported. */
 function firstProblem(v: Values): [keyof Values, string] | null {
-  if (!v.current) return ["current", copy.currentRequired];
-  if (!v.next) return ["next", copy.nextRequired];
-  const p = passwordProblem(v.next);
-  if (p) return ["next", problemText(p)];
-  if (v.next === v.current) return ["next", copy.same];
-  if (v.next !== v.confirm) return ["confirm", copy.mismatch];
-  return null;
+  if (!v.current) return ['current', copy.currentRequired]
+  if (!v.next) return ['next', copy.nextRequired]
+  const p = passwordProblem(v.next)
+  if (p) return ['next', problemText(p)]
+  if (v.next === v.current) return ['next', copy.same]
+  if (v.next !== v.confirm) return ['confirm', copy.mismatch]
+  return null
 }
 
 /** The server's messages are lowercase fragments; the field reads them as sentences. */
-const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+const sentence = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
 
 export function PasswordPage() {
-  const me = useQuery(meQueryOptions(useProductScope()));
-  const [generation, setGeneration] = useState(0);
+  const me = useQuery(meQuery)
+  const [generation, setGeneration] = useState(0)
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={copy.label} description={copy.sub} />
       {me.data ? (
-        <PasswordForm
-          key={generation}
-          me={me.data}
-          onChanged={() => {
-            setGeneration((g) => g + 1);
-          }}
-        />
+        <PasswordForm key={generation} me={me.data} onChanged={() => setGeneration((g) => g + 1)} />
       ) : null}
     </div>
-  );
+  )
 }
 
 function PasswordForm({ me, onChanged }: { me: Me; onChanged: () => void }) {
-  const id = useId();
-  const router = useRouter();
-  const signOut = useSignOut();
-  const [busy, setBusy] = useState(false);
+  const id = useId()
+  const queryClient = useQueryClient()
+  const signOut = useSignOut()
+  const navigate = useNavigate()
+  const [busy, setBusy] = useState(false)
   // Each field reveals on its own (the login page's eye toggle).
   const [shown, setShown] = useState<Record<keyof Values, boolean>>({
     current: false,
     next: false,
     confirm: false,
-  });
-  const form = useForm<Values>({ defaultValues: { current: "", next: "", confirm: "" } });
-  const { errors } = form.formState;
+  })
+  const form = useForm<Values>({ defaultValues: { current: '', next: '', confirm: '' } })
+  const { errors } = form.formState
 
   const submit = form.handleSubmit(async (v) => {
-    const problem = firstProblem(v);
+    const problem = firstProblem(v)
     if (problem) {
-      form.setError(problem[0], { message: problem[1] }, { shouldFocus: true });
-      return;
+      form.setError(problem[0], { message: problem[1] }, { shouldFocus: true })
+      return
     }
     // One request at a time: a second one would send a current password the first already replaced.
-    if (busy) return;
-    setBusy(true);
+    if (busy) return
+    setBusy(true)
     try {
-      const body = await apiFetch<unknown>("/api/auth/change-password", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+      const body = await apiFetch<unknown>('/api/auth/change-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ current_password: v.current, new_password: v.next }),
-      });
+      })
       if (body !== null) {
-        toast.success(copy.changed);
-        onChanged();
-        return;
+        toast.success(copy.changed)
+        onChanged()
+        return
       }
       await signOut({
+        queryClient,
         userId: me.sub,
-        navigate: (to) => {
-          router.push(hrefFor(to.to, to.search.signout ? to.search : { password: "changed" }));
-          return Promise.resolve();
-        },
-      });
+        navigate: (to) =>
+          navigate({
+            to: '/login',
+            search: to.search.signout ? to.search : { password: 'changed' },
+          }),
+      })
     } catch (err) {
-      const b = err instanceof ApiError ? (err.body as { code?: unknown } | null) : null;
-      const code = typeof b?.code === "string" ? b.code : "";
-      const message = sentence((err instanceof ApiError && err.serverMessage) || copy.failed);
-      if (code === "current_password_incorrect")
-        form.setError("current", { message }, { shouldFocus: true });
-      else if (code.startsWith("password_"))
-        form.setError("next", { message }, { shouldFocus: true });
+      const b = err instanceof ApiError ? (err.body as { code?: unknown } | null) : null
+      const code = typeof b?.code === 'string' ? b.code : ''
+      const message = sentence((err instanceof ApiError && err.serverMessage) || copy.failed)
+      if (code === 'current_password_incorrect')
+        form.setError('current', { message }, { shouldFocus: true })
+      else if (code.startsWith('password_'))
+        form.setError('next', { message }, { shouldFocus: true })
       else
         toast.error(
           err instanceof ApiError && !err.isServerUnreachable ? message : copy.unreachable,
-        );
+        )
     } finally {
-      setBusy(false);
+      setBusy(false)
     }
-  });
+  })
 
   const row = (
     name: keyof Values,
@@ -167,16 +151,14 @@ function PasswordForm({ me, onChanged }: { me: Me; onChanged: () => void }) {
       <InputGroup>
         <InputGroupInput
           id={`${id}-${name}`}
-          type={shown[name] ? "text" : "password"}
+          type={shown[name] ? 'text' : 'password'}
           autoComplete={autoComplete}
           placeholder={placeholder}
           aria-invalid={!!errors[name]}
           aria-describedby={hint ? `${id}-${name}-hint` : undefined}
           {...form.register(name, {
             // The message always describes the current value: acting on the field clears it.
-            onChange: () => {
-              form.clearErrors(name);
-            },
+            onChange: () => form.clearErrors(name),
           })}
         />
         <InputGroupAddon align="inline-end">
@@ -185,16 +167,14 @@ function PasswordForm({ me, onChanged }: { me: Me; onChanged: () => void }) {
             aria-label={copy.show(label)}
             aria-pressed={shown[name]}
             aria-controls={`${id}-${name}`}
-            onClick={() => {
-              setShown((s) => ({ ...s, [name]: !s[name] }));
-            }}
+            onClick={() => setShown((s) => ({ ...s, [name]: !s[name] }))}
           >
             {shown[name] ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
           </InputGroupButton>
         </InputGroupAddon>
       </InputGroup>
     </SettingRow>
-  );
+  )
 
   return (
     <form data-tour="password-form" onSubmit={(e) => void submit(e)} noValidate>
@@ -207,16 +187,16 @@ function PasswordForm({ me, onChanged }: { me: Me; onChanged: () => void }) {
           </Button>
         }
       >
-        {row("current", copy.current, copy.currentPlaceholder, "current-password")}
+        {row('current', copy.current, copy.currentPlaceholder, 'current-password')}
         {row(
-          "next",
+          'next',
           copy.next,
           copy.nextPlaceholder,
-          "new-password",
+          'new-password',
           copy.policy(PASSWORD_MIN, PASSWORD_MAX),
         )}
-        {row("confirm", copy.confirm, copy.confirmPlaceholder, "new-password")}
+        {row('confirm', copy.confirm, copy.confirmPlaceholder, 'new-password')}
       </SettingRows>
     </form>
-  );
+  )
 }

@@ -1,52 +1,39 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/workflows/WorkflowsPage.tsx. Local edits: the lab's `EmptyState` (shared/state-card) is `LabEmptyState`; `"use client"`;
-// TanStack `Link`/`useNavigate` -> the navigation port's `Link` (`@nasiko/app-core/navigation`) and `useRouter().push` (`/workflows/<id>`); `Button asChild` + `Link` ->
-// `ButtonLink`; `DropdownMenuTrigger asChild` -> `render={<Button …/>}` and the items' Radix `onSelect` -> Base UI's
-// `onClick`; the sort `Select` gets `items` (Base UI's trigger shows the label) and passes its value untyped (read as a
-// string); scoped `workflowListQuery`/`dropFromLists`; the list search's optional fields admit `undefined`; Prettier formatting.
-// Previous/Next (legacy ui/ on development, 2d2c113ab): the cards' link and open carry the shown list.
-// Legacy ui/ on development (3aac84f66, c721a11a8): the module's title, Create in the top bar
-// (`CreateWorkflowLink`), the prefixed sort label.
-"use client";
-
 /**
  * Deployed or draft workflows (plans/feat-workflows.md §2): sorted by the server, searched here. On `main` the rows
  * carry no metrics (W-3), so the metric chips, health, last-run line and sort are hidden, and Drafts is absent (W-1).
  */
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import Link, { type HistoryState } from "@nasiko/app-core/navigation";
-import { useSiblingState } from "@nasiko/app-core/siblings";
-import { useRouter } from "@nasiko/app-core/navigation";
-import { EllipsisVertical, RotateCw, SearchX, Workflow } from "lucide-react";
-import { memo, useDeferredValue, useState } from "react";
-import { toast } from "@nasiko/ui/toast";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { useProductScope } from "@nasiko/data-access/product";
-import { PageHeader } from "@nasiko/ui/composites";
-import { PageLoader } from "@nasiko/ui/composites";
-import { SearchInput } from "@nasiko/ui/composites";
-import { LabEmptyState as EmptyState, StateCard } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Card } from "@nasiko/ui/primitives";
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useNavigate, type HistoryState } from '@tanstack/react-router'
+import { EllipsisVertical, RotateCw, SearchX, Workflow } from 'lucide-react'
+import { memo, useDeferredValue, useState } from 'react'
+import { toast } from 'sonner'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
+import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-} from "@nasiko/ui/primitives";
+} from '@nasiko/ui/primitives/dropdown-menu'
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@nasiko/ui/primitives";
-import { ButtonLink } from "../agents/components/ButtonLink";
-import { relTime } from "../agents/format";
-import { fmtLongDay, fmtPct, fmtTokens } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { dropFromLists, workflowListQuery } from "./api";
-import { HEALTH_LABEL, SORT_LABEL, copy, reason, type ListMode } from "./copy";
-import { useStartRun } from "./run";
+} from '@nasiko/ui/primitives/select'
+import { relTime } from '@nasiko/features/agents/format'
+import { fmtLongDay, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
+import { useSiblingState } from '@nasiko/app-core/siblings'
+import { cn } from '@nasiko/ui/lib/utils'
+import { dropFromLists, workflowListQuery } from './api'
+import { HEALTH_LABEL, SORT_LABEL, copy, reason, type ListMode } from './copy'
+import { useStartRun } from './run'
 import {
   agentsOf,
   descriptionOf,
@@ -55,77 +42,76 @@ import {
   isDraftsAbsent,
   lastRun,
   stepsOf,
-} from "./logic";
+} from './logic'
 import {
   DRAFT_SORTS,
   WORKFLOW_SORTS,
   type DraftSort,
   type DraftsSearch,
   type WorkflowSort,
-} from "./search";
-import type { WorkflowRow } from "./types";
-import { Chip, CreateWorkflowLink, SectionNav, ToneBadge } from "./components/bits";
-import { DeleteWorkflowDialog } from "./components/DeleteWorkflowDialog";
+} from './search'
+import type { WorkflowRow } from './types'
+import { Chip, CreateWorkflowLink, SectionNav, ToneBadge } from './components/bits'
+import { DeleteWorkflowDialog } from './components/DeleteWorkflowDialog'
 
 /** The last-run line's dot; the words beside it carry the meaning. */
 const DOT = {
-  success: "bg-success",
-  error: "bg-destructive",
-  warning: "bg-warning",
-  info: "bg-info",
-  brand: "bg-primary",
-  neutral: "bg-muted-foreground",
-} as const;
+  success: 'bg-success',
+  error: 'bg-destructive',
+  warning: 'bg-warning',
+  info: 'bg-info',
+  brand: 'bg-primary',
+  neutral: 'bg-muted-foreground',
+} as const
 
-const HEALTH_TONE = { healthy: "success", degraded: "warning", unhealthy: "error" } as const;
+const HEALTH_TONE = { healthy: 'success', degraded: 'warning', unhealthy: 'error' } as const
 
-type ListSearch = DraftsSearch | { q?: string | undefined; sort?: WorkflowSort | undefined };
+type ListSearch = DraftsSearch | { q?: string; sort?: WorkflowSort }
 
 export function WorkflowsPage({
   mode,
   search,
   setSearch,
 }: {
-  mode: ListMode;
-  search: ListSearch;
-  setSearch: (patch: { q?: string | undefined; sort?: string | undefined }) => void;
+  mode: ListMode
+  search: ListSearch
+  setSearch: (patch: Partial<{ q: string; sort: string }>) => void
 }) {
-  const text = copy.list[mode];
-  const queryClient = useQueryClient();
-  const scope = useProductScope();
-  const sort = search.sort ?? (mode === "deployed" ? "recent" : "all");
+  const text = copy.list[mode]
+  const queryClient = useQueryClient()
+  const sort = search.sort ?? (mode === 'deployed' ? 'recent' : 'all')
   const list = useQuery(
-    mode === "deployed"
-      ? workflowListQuery(scope, { mode, sort: sort as WorkflowSort })
-      : workflowListQuery(scope, { mode, sort: sort as DraftSort }),
-  );
-  const term = search.q ?? "";
-  const q = useDeferredValue(term).trim().toLowerCase();
-  const [deleting, setDeleting] = useState<WorkflowRow | null>(null);
+    mode === 'deployed'
+      ? workflowListQuery({ mode, sort: sort as WorkflowSort })
+      : workflowListQuery({ mode, sort: sort as DraftSort }),
+  )
+  const term = search.q ?? ''
+  const q = useDeferredValue(term).trim().toLowerCase()
+  const [deleting, setDeleting] = useState<WorkflowRow | null>(null)
 
-  const startRun = useStartRun();
+  const startRun = useStartRun()
 
   // The drafts endpoint also returns promoted drafts: each workflow shows in one list only.
-  const rows = (list.data ?? []).filter((wf) => isDeployed(wf) === (mode === "deployed"));
-  const metrics = hasMetrics(rows);
+  const rows = (list.data ?? []).filter((wf) => isDeployed(wf) === (mode === 'deployed'))
+  const metrics = hasMetrics(rows)
   const shown = q
     ? rows.filter((wf) => `${wf.name} ${descriptionOf(wf)}`.toLowerCase().includes(q))
-    : rows;
-  const linkState = useSiblingState(shown.map((wf) => wf.id));
-  const empty = list.isSuccess && rows.length === 0;
-  const absent = mode === "drafts" && list.isError && isDraftsAbsent(list.error);
-  const sorts: readonly string[] = mode === "deployed" ? WORKFLOW_SORTS : DRAFT_SORTS;
-  const sortLabel = SORT_LABEL[mode] as Record<string, string>;
+    : rows
+  const linkState = useSiblingState(shown.map((wf) => wf.id))
+  const empty = list.isSuccess && rows.length === 0
+  const absent = mode === 'drafts' && list.isError && isDraftsAbsent(list.error)
+  const sorts: readonly string[] = mode === 'deployed' ? WORKFLOW_SORTS : DRAFT_SORTS
+  const sortLabel = SORT_LABEL[mode] as Record<string, string>
 
-  const create = <CreateWorkflowLink />;
+  const create = <CreateWorkflowLink />
 
-  let body;
+  let body
   if (absent)
     body = (
       <StateCard tone="info" title={copy.draftsAbsent}>
         {copy.draftsAbsentText}
       </StateCard>
-    );
+    )
   else if (list.isError && !list.data)
     body = (
       <StateCard
@@ -138,8 +124,8 @@ export function WorkflowsPage({
           </Button>
         }
       />
-    );
-  else if (list.isPending) body = <PageLoader label={text.loading} />;
+    )
+  else if (list.isPending) body = <PageLoader label={text.loading} />
   else if (empty)
     body = (
       <EmptyState
@@ -147,41 +133,34 @@ export function WorkflowsPage({
         title={text.empty}
         action={
           <>
-            <ButtonLink
-              variant="ghost"
-              href={mode === "deployed" ? "/workflows/drafts" : "/workflows"}
-            >
-              {text.other}
-            </ButtonLink>
-            <ButtonLink variant="outline" href="/workflows/new">
-              {copy.create}
-            </ButtonLink>
+            <Button asChild variant="ghost">
+              <Link to={mode === 'deployed' ? '/workflows/drafts' : '/workflows'}>
+                {text.other}
+              </Link>
+            </Button>
+            <Button asChild variant="outline">
+              <Link to="/workflows/new">{copy.create}</Link>
+            </Button>
           </>
         }
       >
         {text.emptyText}
       </EmptyState>
-    );
+    )
   else if (!shown.length)
     body = (
       <EmptyState
         icon={SearchX}
         title={copy.noMatch}
         action={
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              setSearch({ q: undefined });
-            }}
-          >
+          <Button size="sm" variant="outline" onClick={() => setSearch({ q: undefined })}>
             {copy.clearSearch}
           </Button>
         }
       >
         {copy.noMatchText}
       </EmptyState>
-    );
+    )
   else
     body = (
       <ul
@@ -196,24 +175,20 @@ export function WorkflowsPage({
               mode={mode}
               metrics={metrics}
               linkState={linkState}
-              onRun={() => {
-                startRun(wf.id);
-              }}
-              onDelete={() => {
-                setDeleting(wf);
-              }}
+              onRun={() => startRun(wf.id)}
+              onDelete={() => setDeleting(wf)}
             />
           </li>
         ))}
       </ul>
-    );
+    )
 
   return (
     <div className="space-y-4">
       {/* Create is the module's action: the top bar's right, the same on every section. */}
       <TopBar actions={absent ? null : create} />
       <PageHeader title={copy.title} description={copy.sub} />
-      <SectionNav current={mode === "deployed" ? "/workflows" : "/workflows/drafts"} />
+      <SectionNav current={mode === 'deployed' ? '/workflows' : '/workflows/drafts'} />
       {absent ? null : (
         // One row the width of the grid: search on the left, the sort on the right.
         <div data-tour="workflows-toolbar" className="flex flex-wrap items-center gap-2">
@@ -221,9 +196,7 @@ export function WorkflowsPage({
             aria-label={text.search}
             placeholder={copy.searchPlaceholder}
             value={term}
-            onChange={(e) => {
-              setSearch({ q: e.target.value || undefined });
-            }}
+            onChange={(e) => setSearch({ q: e.target.value || undefined })}
             disabled={empty}
             className="w-full max-w-none sm:w-72"
           />
@@ -231,10 +204,7 @@ export function WorkflowsPage({
           {metrics ? (
             <Select
               value={sort}
-              items={sortLabel}
-              onValueChange={(v) => {
-                setSearch({ sort: v === sorts[0] ? undefined : (v as string) });
-              }}
+              onValueChange={(v) => setSearch({ sort: v === sorts[0] ? undefined : v })}
               disabled={empty}
             >
               <SelectTrigger size="sm" aria-label={copy.sortLabel} className="text-xs sm:ml-auto">
@@ -254,16 +224,14 @@ export function WorkflowsPage({
       {body}
       <DeleteWorkflowDialog
         workflow={deleting}
-        onClose={() => {
-          setDeleting(null);
-        }}
+        onClose={() => setDeleting(null)}
         onDeleted={(wf) => {
-          dropFromLists(queryClient, scope, wf.id);
-          toast.success(copy.deleted);
+          dropFromLists(queryClient, wf.id)
+          toast.success(copy.deleted)
         }}
       />
     </div>
-  );
+  )
 }
 
 /** Memoized: every search keystroke re-renders the page. */
@@ -275,34 +243,37 @@ const WorkflowCard = memo(function WorkflowCard({
   onRun,
   onDelete,
 }: {
-  wf: WorkflowRow;
-  mode: ListMode;
-  metrics: boolean;
-  linkState: () => HistoryState;
-  onRun: () => void;
-  onDelete: () => void;
+  wf: WorkflowRow
+  mode: ListMode
+  metrics: boolean
+  linkState: () => HistoryState
+  onRun: () => void
+  onDelete: () => void
 }) {
-  const router = useRouter();
-  const steps = stepsOf(wf);
-  const agents = agentsOf(wf);
-  const status = lastRun(wf);
-  const health = wf.health && wf.health !== "unknown" ? wf.health : null;
-  const description = descriptionOf(wf);
-  const href = `/workflows/${encodeURIComponent(wf.id)}`;
-  const open = () => {
-    router.push(href, { scroll: false, state: linkState() });
-  };
+  const navigate = useNavigate()
+  const steps = stepsOf(wf)
+  const agents = agentsOf(wf)
+  const status = lastRun(wf)
+  const health = wf.health && wf.health !== 'unknown' ? wf.health : null
+  const description = descriptionOf(wf)
+  const open = () =>
+    void navigate({
+      to: '/workflows/$workflowId',
+      params: { workflowId: wf.id },
+      search: {},
+      state: linkState,
+    })
   const chips = [
     copy.steps(steps),
     copy.runs(wf.execution_count ?? 0),
-    metrics && wf.success_rate != null ? copy.success(fmtPct(wf.success_rate)) : "",
-    metrics && wf.total_tokens ? copy.tokens(fmtTokens(wf.total_tokens)) : "",
-    mode === "drafts" && wf.updated_at
+    metrics && wf.success_rate != null ? copy.success(fmtPct(wf.success_rate)) : '',
+    metrics && wf.total_tokens ? copy.tokens(fmtTokens(wf.total_tokens)) : '',
+    mode === 'drafts' && wf.updated_at
       ? copy.updated(relTime(wf.updated_at))
       : wf.created_at
         ? copy.created(fmtLongDay(wf.created_at))
-        : "",
-  ].filter(Boolean);
+        : '',
+  ].filter(Boolean)
   return (
     // The title link stretches over the card; the menu sits above it.
     <Card
@@ -312,7 +283,9 @@ const WorkflowCard = memo(function WorkflowCard({
       <div className="flex items-start gap-2">
         <h2 className="min-w-0 flex-1 truncate font-medium">
           <Link
-            href={href}
+            to="/workflows/$workflowId"
+            params={{ workflowId: wf.id }}
+            search={{}}
             state={linkState}
             className="underline-offset-4 after:absolute after:inset-0 after:rounded-xl hover:underline focus-visible:outline-none"
           >
@@ -320,22 +293,20 @@ const WorkflowCard = memo(function WorkflowCard({
           </Link>
         </h2>
         <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`${copy.actions}: ${wf.name}`}
-                className="relative z-10 -mt-1 -mr-2"
-              />
-            }
-          >
-            <EllipsisVertical aria-hidden />
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={`${copy.actions}: ${wf.name}`}
+              className="relative z-10 -mt-1 -mr-2"
+            >
+              <EllipsisVertical aria-hidden />
+            </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={open}>{copy.open}</DropdownMenuItem>
-            {steps > 0 ? <DropdownMenuItem onClick={onRun}>{copy.runNow}</DropdownMenuItem> : null}
-            <DropdownMenuItem variant="destructive" onClick={onDelete}>
+            <DropdownMenuItem onSelect={open}>{copy.open}</DropdownMenuItem>
+            {steps > 0 ? <DropdownMenuItem onSelect={onRun}>{copy.runNow}</DropdownMenuItem> : null}
+            <DropdownMenuItem variant="destructive" onSelect={onDelete}>
               {copy.delete}
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -361,17 +332,17 @@ const WorkflowCard = memo(function WorkflowCard({
       <div className="mt-auto flex items-center gap-3 text-xs">
         {agents.length ? (
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            {agents.join(" · ")}
+            {agents.join(' · ')}
           </span>
         ) : null}
         {status ? (
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <span aria-hidden className={cn("size-1.5 rounded-full", DOT[status.tone])} />
+            <span aria-hidden className={cn('size-1.5 rounded-full', DOT[status.tone])} />
             {status.text}
-            {status.at ? ` ${relTime(status.at)}` : ""}
+            {status.at ? ` ${relTime(status.at)}` : ''}
           </span>
         ) : null}
       </div>
     </Card>
-  );
-});
+  )
+})

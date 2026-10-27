@@ -1,16 +1,11 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/shared/state-card.tsx. Local edits: imports mapped to
-// ../primitives/* and ../lib/cn; optional props typed `| undefined` (exactOptionalPropertyTypes). Exported from the
-// composites index as `LabEmptyState` (the index already exports a different `EmptyState` from ./states).
-"use client";
-
 /**
  * Page- and section-level states on shadcn `Alert` and `Empty` (plan §8 Phase 1): what happened,
  * then what to do about it. Never a bare "No items found". Feature code maps its errors onto these
  * (observability `ErrorState`, agents `ErrorNote`, TokenOps `ServerDown`); the look lives here once.
  */
-import { AlertTriangle, Info, ServerOff, type LucideIcon } from "lucide-react";
-import type { ReactNode } from "react";
-import { Alert, AlertDescription, AlertTitle } from "../primitives/alert";
+import { AlertTriangle, Info, ServerOff, type LucideIcon } from 'lucide-react'
+import type { ReactNode } from 'react'
+import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import {
   Empty,
   EmptyContent,
@@ -18,41 +13,41 @@ import {
   EmptyHeader,
   EmptyMedia,
   EmptyTitle,
-} from "../primitives/empty";
-import { cn } from "../lib/cn";
+} from '@nasiko/ui/primitives/empty'
+import { cn } from '@nasiko/ui/lib/utils'
 
-export type StateTone = "info" | "warning" | "error";
+export type StateTone = 'info' | 'warning' | 'error'
 
-const ICON = { info: Info, warning: AlertTriangle, error: ServerOff } as const;
+const ICON = { info: Info, warning: AlertTriangle, error: ServerOff } as const
 // On the Alert, not the icon: the primitive's `[&>svg]:text-current` outranks a class on the svg itself.
 const COLOR = {
-  info: "[&>svg]:text-info",
-  warning: "[&>svg]:text-warning",
-  error: "[&>svg]:text-destructive",
-} as const;
+  info: '[&>svg]:text-info',
+  warning: '[&>svg]:text-warning',
+  error: '[&>svg]:text-destructive',
+} as const
 
 /** Info is announced politely (`status`); warning and error interrupt (`alert`). */
 export function StateCard({
-  tone = "info",
+  tone = 'info',
   title,
   children,
   fix,
   action,
   className,
 }: {
-  tone?: StateTone | undefined;
-  title: ReactNode;
-  children?: ReactNode;
+  tone?: StateTone
+  title: ReactNode
+  children?: ReactNode
   /** The next step, in plain words or a command. */
-  fix?: ReactNode;
-  action?: ReactNode;
-  className?: string | undefined;
+  fix?: ReactNode
+  action?: ReactNode
+  className?: string
 }) {
-  const Icon = ICON[tone];
+  const Icon = ICON[tone]
   return (
     <Alert
-      role={tone === "info" ? "status" : "alert"}
-      className={cn("gap-y-2 p-5", COLOR[tone], className)}
+      role={tone === 'info' ? 'status' : 'alert'}
+      className={cn('gap-y-2 p-5', COLOR[tone], className)}
     >
       <Icon aria-hidden />
       <AlertTitle className="line-clamp-none">{title}</AlertTitle>
@@ -64,7 +59,7 @@ export function StateCard({
         </AlertDescription>
       ) : null}
     </Alert>
-  );
+  )
 }
 
 /**
@@ -79,17 +74,17 @@ export function EmptyState({
   action,
   className,
 }: {
-  icon?: LucideIcon | undefined;
-  title: ReactNode;
-  children?: ReactNode;
-  action?: ReactNode;
-  className?: string | undefined;
+  icon?: LucideIcon
+  title: ReactNode
+  children?: ReactNode
+  action?: ReactNode
+  className?: string
 }) {
   return (
     <Empty
       className={cn(
-        "gap-2 border border-border px-4 py-8 md:p-8",
-        Icon && "gap-4 py-12 md:py-14",
+        'gap-2 border border-border px-4 py-8 md:p-8',
+        Icon && 'gap-4 py-12 md:py-14',
         className,
       )}
     >
@@ -99,14 +94,14 @@ export function EmptyState({
             <Icon aria-hidden className="size-5" />
           </EmptyMedia>
         ) : null}
-        <EmptyTitle className={Icon ? "text-base" : "text-sm"}>{title}</EmptyTitle>
+        <EmptyTitle className={Icon ? 'text-base' : 'text-sm'}>{title}</EmptyTitle>
         {children ? (
-          <EmptyDescription className={Icon ? "text-sm" : "text-xs"}>{children}</EmptyDescription>
+          <EmptyDescription className={Icon ? 'text-sm' : 'text-xs'}>{children}</EmptyDescription>
         ) : null}
       </EmptyHeader>
       {action ? (
         <EmptyContent className="flex-row flex-wrap justify-center gap-2">{action}</EmptyContent>
       ) : null}
     </Empty>
-  );
+  )
 }

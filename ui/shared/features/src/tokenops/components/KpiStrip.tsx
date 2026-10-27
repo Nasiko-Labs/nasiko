@@ -1,93 +1,84 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/components/KpiStrip.tsx. Local edits: primitives
-// from `@nasiko/ui/primitives`, composites from `@nasiko/ui/composites`, `cn`/formatters/`POLARITY` from
-// `@nasiko/ui/cn` and `@nasiko/ui/lib`; optional props typed `| undefined`; Prettier formatting.
-"use client";
-
 /**
  * KPI strip (plan A1, A7, A14): four primary KPIs plus a "More metrics" expander.
  * Deltas come straight from the server's `KpiValue.change_pct` (null → "new").
  */
-import { AlertTriangle, ChevronDown } from "lucide-react";
-import { Badge, Button } from "@nasiko/ui/primitives";
-import { cn } from "@nasiko/ui/cn";
-import {
-  fmtCostPerOp,
-  fmtInt,
-  fmtLatency,
-  fmtMoneyFloor,
-  fmtTokens,
-  POLARITY,
-  type Polarity,
-} from "@nasiko/ui/lib";
-import type { FinopsDashboardData, KpiValue } from "../types";
-import { Delta, KpiTile, PanelError, PanelSkeleton } from "@nasiko/ui/composites";
+import { AlertTriangle, ChevronDown } from 'lucide-react'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
+import { cn } from '@nasiko/ui/lib/utils'
+import { POLARITY, type Polarity } from '@nasiko/ui/lib/delta'
+import { fmtCostPerOp, fmtInt, fmtLatency, fmtMoneyFloor, fmtTokens } from '@nasiko/ui/lib/format'
+import type { FinopsDashboardData, KpiValue } from '../types'
+import { PanelError, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { Delta } from '@nasiko/ui/composites/delta'
+import { KpiTile } from '@nasiko/ui/composites/kpi-tile'
 
 interface KpiDef {
-  label: string;
-  value: (d: FinopsDashboardData, floor: boolean) => string;
-  kpi: (d: FinopsDashboardData) => KpiValue;
-  polarity: Polarity;
+  label: string
+  value: (d: FinopsDashboardData, floor: boolean) => string
+  kpi: (d: FinopsDashboardData) => KpiValue
+  polarity: Polarity
 }
 
 const PRIMARY: KpiDef[] = [
   {
-    label: "Spend",
+    label: 'Spend',
     value: (d, floor) => fmtMoneyFloor(d.kpis.total_spend.current, floor),
     kpi: (d) => d.kpis.total_spend,
     polarity: POLARITY.spend,
   },
   {
-    label: "Operations",
+    label: 'Operations',
     value: (d) => fmtInt(d.kpis.total_operations.current),
     kpi: (d) => d.kpis.total_operations,
     polarity: POLARITY.operations,
   },
   {
-    label: "Cost / operation",
+    label: 'Cost / operation',
     value: (d) => fmtCostPerOp(d.kpis.cost_per_operation.current),
     kpi: (d) => d.kpis.cost_per_operation,
     polarity: POLARITY.costPerOp,
   },
   {
-    label: "p95 latency",
+    label: 'p95 latency',
     value: (d) => fmtLatency(d.kpis.latency_p95_ms.current),
     kpi: (d) => d.kpis.latency_p95_ms,
     polarity: POLARITY.p95,
   },
-];
+]
 
 const MORE: KpiDef[] = [
   {
-    label: "Tokens",
+    label: 'Tokens',
     value: (d) => fmtTokens(d.kpis.total_tokens.current),
     kpi: (d) => d.kpis.total_tokens,
     polarity: POLARITY.tokens,
   },
   {
-    label: "Tool calls",
+    label: 'Tool calls',
     value: (d) => fmtInt(d.kpis.total_tool_calls.current),
     kpi: (d) => d.kpis.total_tool_calls,
     polarity: POLARITY.toolCalls,
   },
   {
-    label: "p50 latency",
+    label: 'p50 latency',
     value: (d) => fmtLatency(d.kpis.avg_latency_ms.current),
     kpi: (d) => d.kpis.avg_latency_ms,
     polarity: POLARITY.latency,
   },
   {
-    label: "p99 latency",
+    label: 'p99 latency',
     value: (d) => fmtLatency(d.kpis.latency_p99_ms.current),
     kpi: (d) => d.kpis.latency_p99_ms,
     polarity: POLARITY.p99,
   },
   {
-    label: "Active agents",
+    label: 'Active agents',
     value: (d) => `${fmtInt(d.kpis.active_agents.current)} of ${fmtInt(d.summary.total_agents)}`,
     kpi: (d) => d.kpis.active_agents,
     polarity: POLARITY.agents,
   },
-];
+]
 
 export function KpiStrip({
   data,
@@ -100,22 +91,22 @@ export function KpiStrip({
   compareLabel,
   hideDeltas,
 }: {
-  data: FinopsDashboardData | undefined;
+  data: FinopsDashboardData | undefined
   /** Compare period off: every Δ reads "comparison unavailable". */
-  hideDeltas?: boolean | undefined;
-  loading: boolean;
-  error: unknown;
-  onRetry: () => void;
-  more: boolean;
-  onToggleMore: () => void;
-  windowLabel: string;
+  hideDeltas?: boolean
+  loading: boolean
+  error: unknown
+  onRetry: () => void
+  more: boolean
+  onToggleMore: () => void
+  windowLabel: string
   /** What Δ compares against, when "previous period" alone would mislead (This month). */
-  compareLabel?: string | undefined;
+  compareLabel?: string
 }) {
-  if (loading && !data) return <PanelSkeleton height={92} />;
-  if (error && !data) return <PanelError error={error} onRetry={onRetry} what="KPIs" />;
-  if (!data) return null;
-  const floor = data.summary.unpriced_calls > 0;
+  if (loading && !data) return <PanelSkeleton height={92} />
+  if (error && !data) return <PanelError error={error} onRetry={onRetry} what="KPIs" />
+  if (!data) return null
+  const floor = data.summary.unpriced_calls > 0
   return (
     <section aria-label={`Key metrics, ${windowLabel}`}>
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -132,7 +123,7 @@ export function KpiStrip({
               variant="warning"
               title="These calls used tokens but their model has no price, so spend totals are a floor."
             >
-              <AlertTriangle className="size-3" aria-hidden />{" "}
+              <AlertTriangle className="size-3" aria-hidden />{' '}
               {data.summary.unpriced_calls.toLocaleString()} calls unpriced in this window
             </Badge>
           ) : null}
@@ -145,9 +136,9 @@ export function KpiStrip({
           aria-controls="more-kpis"
           className="text-xs"
         >
-          {more ? "Fewer metrics" : "More metrics"}{" "}
+          {more ? 'Fewer metrics' : 'More metrics'}{' '}
           <ChevronDown
-            className={cn("size-3.5 transition-transform", more && "rotate-180")}
+            className={cn('size-3.5 transition-transform', more && 'rotate-180')}
             aria-hidden
           />
         </Button>
@@ -160,7 +151,7 @@ export function KpiStrip({
         </div>
       ) : null}
     </section>
-  );
+  )
 }
 
 function Tile({
@@ -170,13 +161,13 @@ function Tile({
   compact,
   hideDeltas,
 }: {
-  def: KpiDef;
-  data: FinopsDashboardData;
-  floor: boolean;
-  compact?: boolean | undefined;
-  hideDeltas?: boolean | undefined;
+  def: KpiDef
+  data: FinopsDashboardData
+  floor: boolean
+  compact?: boolean
+  hideDeltas?: boolean
 }) {
-  const k = def.kpi(data);
+  const k = def.kpi(data)
   return (
     <KpiTile
       label={def.label}
@@ -191,5 +182,5 @@ function Tile({
       value={def.value(data, floor)}
       compact={compact}
     />
-  );
+  )
 }

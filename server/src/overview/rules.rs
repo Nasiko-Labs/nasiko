@@ -2,7 +2,7 @@
 //!
 //! Every rule compares a thing with its own recent past (the last 7 days against the 7 before, or
 //! its own 30-day baseline), never with a fleet-wide bar — the same stance as the Overview's fleet
-//! ratings (`ui/common/src/features/overview/health.ts`), whose thresholds these mirror. A rule
+//! ratings (`ui/shared/features/src/overview/health.ts`), whose thresholds these mirror. A rule
 //! only fires on enough data ([`MIN_BASE`]) to say so, and quotes the numbers it fired on.
 //!
 //! A problem's id is `<rule>:<entity id>`: stable across reads, so the decisions people record

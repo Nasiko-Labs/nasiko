@@ -1,20 +1,18 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/components/RecordedCalls.tsx. Local edits: optional props
-// admit `undefined` (exactOptionalPropertyTypes); Prettier formatting.
 /**
  * A recorded harness reply's tool calls (v1c §5.7): chips above the assistant text, in array order. More
  * than 5 calls collapse to one summary chip ("N tool calls · K failed") followed by the failed calls'
  * chips (at most 20, E8); expanding shows the first 50 with "Show all N". A chip opens its detail full
  * column width below the chips, never inside a chip (DS10). Detail is always preformatted text.
  */
-import { ChevronDown, ChevronUp, Wrench } from "lucide-react";
-import { useId, useMemo, useState } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { relTime } from "../../agents/format";
-import { fmtLatency } from "@nasiko/ui/lib";
-import { useCopy } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { announce } from "../announce";
-import { copy } from "../copy";
+import { ChevronDown, ChevronUp, Wrench } from 'lucide-react'
+import { useId, useMemo, useState } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { relTime } from '@nasiko/features/agents/format'
+import { fmtLatency } from '@nasiko/ui/lib/format'
+import { useCopy } from '@nasiko/ui/lib/useCopy'
+import { cn } from '@nasiko/ui/lib/utils'
+import { announce } from '../announce'
+import { copy } from '../copy'
 import {
   isEmptyValue,
   sectionText,
@@ -22,56 +20,50 @@ import {
   type RecordedCalls as Calls,
   type RecordedStep,
   type SectionLabel,
-} from "../recorded";
-import { useNow } from "../hooks";
-import { tuning } from "../tuning";
-import type { ChatMessage } from "../types";
-import { StepIcon } from "./StepIcon";
-import { STEP_CHIP } from "./turnStyles";
+} from '../recorded'
+import { useNow } from '../hooks'
+import { tuning } from '../tuning'
+import type { ChatMessage } from '../types'
+import { StepIcon } from './StepIcon'
+import { STEP_CHIP } from './turnStyles'
 
 /** Calls shown before the summary chip takes over, failed chips kept after it, and calls per page (§5.7, E8). */
-const INLINE_MAX = 5;
-const FAILED_PREVIEW_MAX = 20;
-const EXPANDED_MAX = 50;
+const INLINE_MAX = 5
+const FAILED_PREVIEW_MAX = 20
+const EXPANDED_MAX = 50
 
 const LABEL: Record<SectionLabel, string> = {
   Arguments: copy.sectionArguments,
   Output: copy.sectionOutput,
   Error: copy.sectionError,
-};
+}
 
 /** Memoized per message (E8): the raw calls map once; details format when they open. */
-export function RecordedCallsFor({
-  message,
-  now: fixed,
-}: {
-  message: ChatMessage;
-  now?: number | undefined;
-}) {
-  const calls = useMemo(() => toolCallsToSteps(message.metadata), [message.id, message.metadata]); // eslint-disable-line react-hooks/exhaustive-deps
+export function RecordedCallsFor({ message, now: fixed }: { message: ChatMessage; now?: number }) {
+  const calls = useMemo(() => toolCallsToSteps(message.metadata), [message.id, message.metadata]) // eslint-disable-line react-hooks/exhaustive-deps
   // Relative times ("5 min ago") move slowly: this reply's own clock, not the page's.
-  const now = useNow(tuning.RECORDED_CLOCK_MS, fixed);
-  return calls ? <RecordedCalls calls={calls} now={now} /> : null;
+  const now = useNow(tuning.RECORDED_CLOCK_MS, fixed)
+  return calls ? <RecordedCalls calls={calls} now={now} /> : null
 }
 
 export function RecordedCalls({ calls, now }: { calls: Calls; now: number }) {
-  const base = useId();
-  const [openAt, setOpenAt] = useState<number | null>(null);
-  const [expanded, setExpanded] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const all = calls.steps.map((step, i) => ({ step, i }));
-  if (!all.length) return null;
-  const failed = all.filter((x) => x.step.status === "error");
-  const collapsed = all.length > INLINE_MAX;
+  const base = useId()
+  const [openAt, setOpenAt] = useState<number | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const all = calls.steps.map((step, i) => ({ step, i }))
+  if (!all.length) return null
+  const failed = all.filter((x) => x.step.status === 'error')
+  const collapsed = all.length > INLINE_MAX
   const shown = !collapsed
     ? all
     : !expanded
       ? failed.slice(0, FAILED_PREVIEW_MAX)
       : showAll
         ? all
-        : all.slice(0, EXPANDED_MAX);
-  const open = openAt === null ? undefined : all[openAt];
-  const detailId = `${base}-detail`;
+        : all.slice(0, EXPANDED_MAX)
+  const open = openAt === null ? undefined : all[openAt]
+  const detailId = `${base}-detail`
   return (
     <div className="space-y-2" data-testid="recorded-calls">
       <ul className="flex flex-wrap items-center gap-1.5" aria-label={copy.toolCalls}>
@@ -83,12 +75,10 @@ export function RecordedCalls({ calls, now }: { calls: Calls; now: number }) {
               size="xs"
               className={STEP_CHIP}
               aria-expanded={expanded}
-              onClick={() => {
-                setExpanded((v) => !v);
-              }}
+              onClick={() => setExpanded((v) => !v)}
               data-testid="calls-summary"
             >
-              <Wrench className="size-3.5" aria-hidden />{" "}
+              <Wrench className="size-3.5" aria-hidden />{' '}
               {copy.toolCallsSummary(all.length, failed.length)}
               {expanded ? (
                 <ChevronUp className="size-3" aria-hidden />
@@ -105,9 +95,7 @@ export function RecordedCalls({ calls, now }: { calls: Calls; now: number }) {
               now={now}
               open={openAt === i}
               controls={detailId}
-              onToggle={() => {
-                setOpenAt(openAt === i ? null : i);
-              }}
+              onToggle={() => setOpenAt(openAt === i ? null : i)}
             />
           </li>
         ))}
@@ -123,9 +111,7 @@ export function RecordedCalls({ calls, now }: { calls: Calls; now: number }) {
               size="xs"
               variant="ghost"
               className="pointer-coarse:min-h-11"
-              onClick={() => {
-                setShowAll(true);
-              }}
+              onClick={() => setShowAll(true)}
             >
               {copy.showAllCalls(all.length)}
             </Button>
@@ -134,7 +120,7 @@ export function RecordedCalls({ calls, now }: { calls: Calls; now: number }) {
       </ul>
       {open ? <RecordedDetail id={detailId} step={open.step} captured={calls.captured} /> : null}
     </div>
-  );
+  )
 }
 
 function RecordedChip({
@@ -144,18 +130,18 @@ function RecordedChip({
   controls,
   onToggle,
 }: {
-  step: RecordedStep;
-  now: number;
-  open: boolean;
-  controls: string;
-  onToggle: () => void;
+  step: RecordedStep
+  now: number
+  open: boolean
+  controls: string
+  onToggle(): void
 }) {
   return (
     <Button
       type="button"
       variant="outline"
       size="xs"
-      className={cn(STEP_CHIP, "max-w-full")}
+      className={cn(STEP_CHIP, 'max-w-full')}
       aria-expanded={open}
       aria-controls={open ? controls : undefined}
       onClick={onToggle}
@@ -167,8 +153,8 @@ function RecordedChip({
       {step.statusWord ? (
         <span
           className={cn(
-            "shrink-0 whitespace-nowrap",
-            step.status === "error" && "text-destructive",
+            'shrink-0 whitespace-nowrap',
+            step.status === 'error' && 'text-destructive',
           )}
         >
           · {step.statusWord}
@@ -184,7 +170,7 @@ function RecordedChip({
           · {relTime(step.startedAt, now)}
         </span>
       ) : null}
-      {step.association === "turn" ? (
+      {step.association === 'turn' ? (
         <span
           className="shrink-0 rounded bg-muted px-1 text-xs whitespace-nowrap"
           title={copy.inferredTip}
@@ -193,13 +179,13 @@ function RecordedChip({
           <span className="sr-only">: {copy.inferredTip}</span>
         </span>
       ) : null}
-      {step.association === "unknown" ? (
+      {step.association === 'unknown' ? (
         <span className="shrink-0 rounded bg-muted px-1 text-xs whitespace-nowrap">
           {copy.linkUnknown}
         </span>
       ) : null}
     </Button>
-  );
+  )
 }
 
 function RecordedDetail({
@@ -207,9 +193,9 @@ function RecordedDetail({
   step,
   captured,
 }: {
-  id: string;
-  step: RecordedStep;
-  captured: boolean;
+  id: string
+  step: RecordedStep
+  captured: boolean
 }) {
   return (
     <div
@@ -236,16 +222,14 @@ function RecordedDetail({
         ))
       )}
     </div>
-  );
+  )
 }
 
 /** Stringified and cut only here, when the detail is open (E8). */
 function SectionBody({ raw }: { raw: unknown }) {
-  const { text, cut, full } = useMemo(() => sectionText(raw), [raw]);
-  const [, run] = useCopy(full);
-  const copyFull = async () => {
-    announce((await run()) ? copy.copied : copy.copyFailed);
-  };
+  const { text, cut, full } = useMemo(() => sectionText(raw), [raw])
+  const [, run] = useCopy(full)
+  const copyFull = async () => announce((await run()) ? copy.copied : copy.copyFailed)
   return (
     <>
       <pre className="max-h-80 overflow-auto rounded bg-background p-2 break-words whitespace-pre-wrap">
@@ -266,5 +250,5 @@ function SectionBody({ raw }: { raw: unknown }) {
         </p>
       ) : null}
     </>
-  );
+  )
 }

@@ -1,11 +1,9 @@
-"use client";
-
-// Ported from nasiko-ui-lab@1b99bdda common/src/app/shell/LoginShowcase.tsx. Local edits: `NasikoMark` from `@nasiko/ui/composites` (the shell's NasikoMark.tsx moved there so a feature can draw the mark); `"use client"`; `useReducedMotion` (motion/react, foundation-only here) -> `useOsReducedMotion` from `@nasiko/ui/motion` (the same OS query); `durations` from `@nasiko/ui/motion` (the lab's `lib/motion.ts`, ported there); `cn` from `@nasiko/ui/cn`.
-import { useEffect, useRef, useState } from "react";
-import { durations, useOsReducedMotion } from "@nasiko/ui/motion";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "@nasiko/app-core/shell/copy";
-import { NasikoMark } from "@nasiko/ui/composites";
+import { useReducedMotion } from 'motion/react'
+import { useEffect, useRef, useState } from 'react'
+import { durations } from '@nasiko/ui/lib/motion'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from '@nasiko/app-core/shell/copy'
+import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 
 /**
  * The login page's showcase: the user's "Nasiko Console" prototype, screen "01 Sign in" (docs/superpowers/specs/
@@ -16,71 +14,67 @@ import { NasikoMark } from "@nasiko/ui/composites";
  * it, ringed in the theme's primary. Decorative only: aria-hidden, inert, CSS motion, still under reduced motion; the
  * stack tilts a little with the pointer, as in the prototype. Colours are the per-mode `--showcase-*` tokens (index.css). Hidden below `md`.
  */
-const WORDS = copy.login.showcaseWords;
+const WORDS = copy.login.showcaseWords
 /** Bottom plate first, as the prototype stacks them: Frameworks, Tools, Coding Harnesses, Agents on top. */
-const PLATES = [...WORDS].reverse();
+const PLATES = [...WORDS].reverse()
 const EDGES = [
-  "var(--showcase-layer-1-edge)",
-  "var(--showcase-layer-2-edge)",
-  "var(--showcase-layer-3-edge)",
-  "var(--showcase-layer-4-edge)",
-];
+  'var(--showcase-layer-1-edge)',
+  'var(--showcase-layer-2-edge)',
+  'var(--showcase-layer-3-edge)',
+  'var(--showcase-layer-4-edge)',
+]
 const FILLS = [
-  "var(--showcase-layer-1)",
-  "var(--showcase-layer-2)",
-  "var(--showcase-layer-3)",
-  "var(--showcase-layer-4)",
-];
+  'var(--showcase-layer-1)',
+  'var(--showcase-layer-2)',
+  'var(--showcase-layer-3)',
+  'var(--showcase-layer-4)',
+]
 
 /** The stack at rest, and how far the pointer tilts it (the prototype's ±8° / ±11° at the panel's edges). */
-const TILT = { x: 56, z: -38, xRange: 16, zRange: 22 };
+const TILT = { x: 56, z: -38, xRange: 16, zRange: 22 }
 const tiltOf = (tx: number, ty: number) =>
-  `rotateX(${TILT.x - ty * TILT.xRange}deg) rotateZ(${TILT.z + tx * TILT.zRange}deg)`;
+  `rotateX(${TILT.x - ty * TILT.xRange}deg) rotateZ(${TILT.z + tx * TILT.zRange}deg)`
 
 export function LoginShowcase() {
-  const reduce = useOsReducedMotion();
-  const panel = useRef<HTMLDivElement>(null);
-  const stack = useRef<HTMLDivElement>(null);
+  const reduce = useReducedMotion()
+  const panel = useRef<HTMLDivElement>(null)
+  const stack = useRef<HTMLDivElement>(null)
   // The prototype's mouse tilt (user request 2026-10-01). The panel stays inert (pointer-events-none, aria-hidden): the
   // page's pointer position is read from window and written straight to the stack, one frame at a time, so nothing
   // re-renders. Outside the panel the stack eases back to rest; under reduced motion it never moves.
   useEffect(() => {
-    if (reduce) return;
-    let frame = 0;
+    if (reduce) return
+    let frame = 0
     const onMove = (e: PointerEvent) => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(frame)
       frame = requestAnimationFrame(() => {
-        const box = panel.current?.getBoundingClientRect();
-        const el = stack.current;
-        if (!box || !el || !box.width) return;
-        const tx = (e.clientX - box.left) / box.width - 0.5;
-        const ty = (e.clientY - box.top) / box.height - 0.5;
-        const inside = Math.abs(tx) <= 0.5 && Math.abs(ty) <= 0.5;
-        el.style.transform = inside ? tiltOf(tx, ty) : tiltOf(0, 0);
-      });
-    };
+        const box = panel.current?.getBoundingClientRect()
+        const el = stack.current
+        if (!box || !el || !box.width) return
+        const tx = (e.clientX - box.left) / box.width - 0.5
+        const ty = (e.clientY - box.top) / box.height - 0.5
+        const inside = Math.abs(tx) <= 0.5 && Math.abs(ty) <= 0.5
+        el.style.transform = inside ? tiltOf(tx, ty) : tiltOf(0, 0)
+      })
+    }
     const onLeave = () => {
-      if (stack.current) stack.current.style.transform = tiltOf(0, 0);
-    };
-    window.addEventListener("pointermove", onMove);
-    document.documentElement.addEventListener("pointerleave", onLeave);
+      if (stack.current) stack.current.style.transform = tiltOf(0, 0)
+    }
+    window.addEventListener('pointermove', onMove)
+    document.documentElement.addEventListener('pointerleave', onLeave)
     return () => {
-      cancelAnimationFrame(frame);
-      window.removeEventListener("pointermove", onMove);
-      document.documentElement.removeEventListener("pointerleave", onLeave);
-    };
-  }, [reduce]);
-  const [index, setIndex] = useState(0);
+      cancelAnimationFrame(frame)
+      window.removeEventListener('pointermove', onMove)
+      document.documentElement.removeEventListener('pointerleave', onLeave)
+    }
+  }, [reduce])
+  const [index, setIndex] = useState(0)
   useEffect(() => {
-    if (reduce) return;
-    const t = setInterval(() => {
-      setIndex((i) => (i + 1) % WORDS.length);
-    }, durations.wordHold);
-    return () => {
-      clearInterval(t);
-    };
-  }, [reduce]);
-  const active = WORDS[index] ?? WORDS[0];
+    if (reduce) return
+    const t = setInterval(() => setIndex((i) => (i + 1) % WORDS.length), durations.wordHold)
+    return () => clearInterval(t)
+  }, [reduce])
+  const active = WORDS[index] ?? WORDS[0]
   return (
     <div
       aria-hidden
@@ -100,7 +94,7 @@ export function LoginShowcase() {
             style={{ transform: tiltOf(0, 0) }}
           >
             {PLATES.map((label, i) => {
-              const on = label === active;
+              const on = label === active
               return (
                 <div
                   key={label}
@@ -109,10 +103,10 @@ export function LoginShowcase() {
                     background: FILLS[i],
                     // The lit plate rises out of the stack; its edge and ring turn the brand's gold (the logo colour).
                     borderColor: on
-                      ? "color-mix(in oklab, var(--logo) 80%, transparent)"
+                      ? 'color-mix(in oklab, var(--logo) 80%, transparent)'
                       : EDGES[i],
                     transform: `translateZ(${i * 54 + (on ? 26 : 0)}px)`,
-                    boxShadow: `inset 0 1px 0 ${EDGES[i]}, 0 ${16 + i * 4}px 40px -18px var(--showcase-layer-shadow)${on ? ", 0 0 0 1.5px color-mix(in oklab, var(--logo) 60%, transparent)" : ""}`,
+                    boxShadow: `inset 0 1px 0 ${EDGES[i]}, 0 ${16 + i * 4}px 40px -18px var(--showcase-layer-shadow)${on ? ', 0 0 0 1.5px color-mix(in oklab, var(--logo) 60%, transparent)' : ''}`,
                   }}
                 >
                   {i === PLATES.length - 1 ? (
@@ -120,14 +114,14 @@ export function LoginShowcase() {
                   ) : null}
                   <span
                     className={cn(
-                      "absolute bottom-4.5 left-6 text-[13px] font-semibold tracking-[.02em] whitespace-nowrap transition-colors duration-500",
-                      on ? "text-primary-text" : "text-(--showcase-tag)",
+                      'absolute bottom-4.5 left-6 text-[13px] font-semibold tracking-[.02em] whitespace-nowrap transition-colors duration-500',
+                      on ? 'text-primary-text' : 'text-(--showcase-tag)',
                     )}
                   >
                     {label}
                   </span>
                 </div>
-              );
+              )
             })}
           </div>
         </div>
@@ -138,10 +132,10 @@ export function LoginShowcase() {
             <span
               key={w}
               className={cn(
-                "inline-flex h-7.5 items-center rounded-full border px-3.25 text-[13px] font-medium backdrop-blur-sm transition-colors duration-300",
+                'inline-flex h-7.5 items-center rounded-full border px-3.25 text-[13px] font-medium backdrop-blur-sm transition-colors duration-300',
                 w === active
-                  ? "border-transparent bg-(--showcase-chip-on) text-(--showcase-chip-on-fg)"
-                  : "border-(--showcase-glass-border) bg-(--showcase-chip) text-(--showcase-chip-fg)",
+                  ? 'border-transparent bg-(--showcase-chip-on) text-(--showcase-chip-on-fg)'
+                  : 'border-(--showcase-glass-border) bg-(--showcase-chip) text-(--showcase-chip-fg)',
               )}
             >
               {w}
@@ -165,7 +159,7 @@ export function LoginShowcase() {
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -186,16 +180,16 @@ export function LoginGlow() {
         <Blob className="bottom-[10%] left-[55%] h-1/2 w-2/5 bg-showcase-glow-4 [animation-delay:-9s] [animation-duration:11s]" />
       </div>
     </div>
-  );
+  )
 }
 
 function Blob({ className }: { className: string }) {
   return (
     <div
       className={cn(
-        "absolute animate-glow rounded-full opacity-75 motion-reduce:animate-none",
+        'absolute animate-glow rounded-full opacity-75 motion-reduce:animate-none',
         className,
       )}
     />
-  );
+  )
 }

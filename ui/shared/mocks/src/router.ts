@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/mocks/router.ts. Local edits: imports mapped to the destination packages; Prettier formatting.
-/* eslint-disable @typescript-eslint/no-non-null-assertion -- ported verbatim; the seeded lookups always hit */
-/* eslint-disable @typescript-eslint/no-unnecessary-condition -- request bodies are checked as the server does, whatever their declared type */
 /**
  * LLM router mock state (plan §6): configs, per-agent routing, user secret names, custom providers and the tier
  * registry, derived from the agents mock and mutated by the `router` handlers. Behaviour mirrors nasiko-server
@@ -28,41 +25,41 @@ import type {
   SecretEntry,
   UpdateConfigBody,
   UpdateCustomProviderBody,
-} from "@nasiko/features/router/types";
-import type { MockAgent } from "./agents";
-import { MockHttpError } from "./aggregate";
-import type { Seed } from "./seed";
-import { ADMIN_ID } from "./seed-harness";
+} from '@nasiko/features/router/types'
+import type { MockAgent } from './agents'
+import { MockHttpError } from './aggregate'
+import type { Seed } from './seed'
+import { ADMIN_ID } from './seed-harness'
 
 export interface MockConfig extends LlmConfig {
-  created_by: string;
-  deleted: boolean;
+  created_by: string
+  deleted: boolean
 }
 
 interface MockRouting {
-  llm_config_id: string | null;
-  pinned_model: string | null;
-  inbound_format: string;
+  llm_config_id: string | null
+  pinned_model: string | null
+  inbound_format: string
 }
 
 interface MockCustomProvider extends CustomProvider {
-  deleted: boolean;
-  models: string[];
+  deleted: boolean
+  models: string[]
 }
 
 export interface RouterState {
-  configs: MockConfig[];
-  routing: Map<string, MockRouting>;
-  secrets: Map<string, SecretEntry[]>;
-  custom: MockCustomProvider[];
-  registry: ModelMapping[];
+  configs: MockConfig[]
+  routing: Map<string, MockRouting>
+  secrets: Map<string, SecretEntry[]>
+  custom: MockCustomProvider[]
+  registry: ModelMapping[]
 }
 
-const SUPPORTED_PROVIDERS = ["openai", "anthropic", "gemini", "openrouter"];
-const INBOUND = ["openai", "anthropic", "gemini"];
-const pad = (n: number) => String(n).padStart(12, "0");
-export const configId = (n: number) => `5eed0007-0000-4000-8000-${pad(n)}`;
-const customId = (n: number) => `5eed0008-0000-4000-8000-${pad(n)}`;
+const SUPPORTED_PROVIDERS = ['openai', 'anthropic', 'gemini', 'openrouter']
+const INBOUND = ['openai', 'anthropic', 'gemini']
+const pad = (n: number) => String(n).padStart(12, '0')
+export const configId = (n: number) => `5eed0007-0000-4000-8000-${pad(n)}`
+const customId = (n: number) => `5eed0008-0000-4000-8000-${pad(n)}`
 
 /** The seed's routing layout. Agents are the admin's own, in list order (created_at DESC is irrelevant here). */
 export function buildRouterState(
@@ -70,11 +67,11 @@ export function buildRouterState(
   now: number,
   opts: { empty?: boolean; legacy?: boolean } = {},
 ): RouterState {
-  const iso = new Date(now - 7 * 86_400_000).toISOString();
+  const iso = new Date(now - 7 * 86_400_000).toISOString()
   const mk = (
     n: number,
     created_by: string,
-    c: Partial<LlmConfig> & Pick<LlmConfig, "name" | "provider">,
+    c: Partial<LlmConfig> & Pick<LlmConfig, 'name' | 'provider'>,
   ): MockConfig => ({
     id: configId(n),
     model: null,
@@ -93,178 +90,178 @@ export function buildRouterState(
     created_by,
     deleted: false,
     ...c,
-  });
+  })
   const others = [
     ...new Set(agents.filter((a) => !a.deleted && a.owner_id !== ADMIN_ID).map((a) => a.owner_id)),
-  ];
+  ]
   const configs: MockConfig[] = opts.empty
     ? []
     : [
         mk(1, ADMIN_ID, {
-          name: "anthropic-default",
-          provider: "anthropic",
-          model: "claude-sonnet-4",
-          fallback_models: ["openai/gpt-4o-mini"],
+          name: 'anthropic-default',
+          provider: 'anthropic',
+          model: 'claude-sonnet-4',
+          fallback_models: ['openai/gpt-4o-mini'],
           temperature: 0.3,
-          api_key_secret_name: "ANTHROPIC_API_KEY",
+          api_key_secret_name: 'ANTHROPIC_API_KEY',
           is_default: true,
         }),
         mk(2, ADMIN_ID, {
-          name: "research-tiers",
-          provider: "openai",
-          model: "gpt-4o-mini",
-          tier1_model: "gpt-4o",
-          tier2_model: "gpt-4o-mini",
-          tier3_model: "gpt-4o-mini",
-          fallback_models: ["gpt-4o-mini"],
-          api_key_secret_name: "OPENAI_API_KEY",
+          name: 'research-tiers',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          tier1_model: 'gpt-4o',
+          tier2_model: 'gpt-4o-mini',
+          tier3_model: 'gpt-4o-mini',
+          fallback_models: ['gpt-4o-mini'],
+          api_key_secret_name: 'OPENAI_API_KEY',
         }),
         mk(3, ADMIN_ID, {
-          name: "fast-openai",
-          provider: "openai",
-          model: "gpt-4o-mini",
+          name: 'fast-openai',
+          provider: 'openai',
+          model: 'gpt-4o-mini',
           pinned: true,
-          pinned_model: "gpt-4o-mini",
+          pinned_model: 'gpt-4o-mini',
           max_tokens: 1024,
         }),
         mk(4, ADMIN_ID, {
-          name: "local-models",
-          provider: "custom",
-          model: "custom-local",
-          fallback_models: ["anthropic/claude-sonnet-4"],
+          name: 'local-models',
+          provider: 'custom',
+          model: 'custom-local',
+          fallback_models: ['anthropic/claude-sonnet-4'],
         }),
-      ];
+      ]
   if (!opts.empty && others[0])
     configs.push(
       mk(5, others[0], {
-        name: "team-default",
-        provider: "anthropic",
-        model: "claude-sonnet-4",
-        api_key_secret_name: "ANTHROPIC_API_KEY",
+        name: 'team-default',
+        provider: 'anthropic',
+        model: 'claude-sonnet-4',
+        api_key_secret_name: 'ANTHROPIC_API_KEY',
         is_default: true,
       }),
-    );
+    )
   if (opts.legacy) {
     // Data made outside the page (CLI, legacy UI): the page must show it as stored, with warnings (DX #9).
     configs.push(
       mk(6, ADMIN_ID, {
-        name: "cli-openrouter",
-        provider: "openrouter",
-        model: "meta-llama/llama-3-70b",
+        name: 'cli-openrouter',
+        provider: 'openrouter',
+        model: 'meta-llama/llama-3-70b',
       }),
       mk(7, ADMIN_ID, {
-        name: "lost-key",
-        provider: "openai",
-        model: "gpt-4o",
-        api_key_secret_name: "DELETED_KEY",
+        name: 'lost-key',
+        provider: 'openai',
+        model: 'gpt-4o',
+        api_key_secret_name: 'DELETED_KEY',
       }),
-      mk(8, ADMIN_ID, { name: "old-endpoint", provider: "retired-llm", model: "retired-1" }),
+      mk(8, ADMIN_ID, { name: 'old-endpoint', provider: 'retired-llm', model: 'retired-1' }),
       mk(9, ADMIN_ID, {
-        name: "off-catalog",
-        provider: "anthropic",
-        model: "claude-9-preview",
-        fallback_models: ["openai/gpt-7"],
+        name: 'off-catalog',
+        provider: 'anthropic',
+        model: 'claude-9-preview',
+        fallback_models: ['openai/gpt-7'],
       }),
-    );
+    )
   }
-  const routing = new Map<string, MockRouting>();
-  const mine = agents.filter((a) => !a.deleted && a.owner_id === ADMIN_ID);
-  const a2a = mine.filter((a) => !a.tags.includes("coding-agent"));
-  const harness = mine.find((a) => a.tags.includes("coding-agent"));
+  const routing = new Map<string, MockRouting>()
+  const mine = agents.filter((a) => !a.deleted && a.owner_id === ADMIN_ID)
+  const a2a = mine.filter((a) => !a.tags.includes('coding-agent'))
+  const harness = mine.find((a) => a.tags.includes('coding-agent'))
   for (const a of agents)
-    routing.set(a.id, { llm_config_id: null, pinned_model: null, inbound_format: "openai" });
+    routing.set(a.id, { llm_config_id: null, pinned_model: null, inbound_format: 'openai' })
   if (!opts.empty) {
     const set = (a: MockAgent | undefined, r: Partial<MockRouting>) => {
-      if (a) routing.set(a.id, { ...routing.get(a.id)!, ...r });
-    };
-    set(a2a[0], { llm_config_id: configId(2) });
-    set(a2a[1], { llm_config_id: configId(2), pinned_model: "gpt-4o" });
-    set(a2a[2], { llm_config_id: configId(3) });
-    set(a2a[3], { llm_config_id: configId(4) });
-    set(harness, { llm_config_id: configId(1), inbound_format: "anthropic" });
-    if (opts.legacy) set(a2a[4], { llm_config_id: configId(7) });
+      if (a) routing.set(a.id, { ...routing.get(a.id)!, ...r })
+    }
+    set(a2a[0], { llm_config_id: configId(2) })
+    set(a2a[1], { llm_config_id: configId(2), pinned_model: 'gpt-4o' })
+    set(a2a[2], { llm_config_id: configId(3) })
+    set(a2a[3], { llm_config_id: configId(4) })
+    set(harness, { llm_config_id: configId(1), inbound_format: 'anthropic' })
+    if (opts.legacy) set(a2a[4], { llm_config_id: configId(7) })
   }
   const secret = (name: string): SecretEntry => ({
     id: `5eed0009-0000-4000-8000-${pad(name.length)}`,
     name,
     created_at: iso,
     updated_at: iso,
-  });
+  })
   return {
     configs,
     routing,
     secrets: new Map([
-      [ADMIN_ID, [secret("ANTHROPIC_API_KEY"), secret("OPENAI_API_KEY")]],
-      ...others.map((o) => [o, [secret("ANTHROPIC_API_KEY")]] as [string, SecretEntry[]]),
+      [ADMIN_ID, [secret('ANTHROPIC_API_KEY'), secret('OPENAI_API_KEY')]],
+      ...others.map((o) => [o, [secret('ANTHROPIC_API_KEY')]] as [string, SecretEntry[]]),
     ]),
     custom: [
       {
         id: customId(1),
-        label: "custom",
-        display_name: "Custom",
-        base_url: "http://localhost:11434/v1",
-        kind: "openai",
+        label: 'custom',
+        display_name: 'Custom',
+        base_url: 'http://localhost:11434/v1',
+        kind: 'openai',
         api_version: null,
-        default_model: "custom-local",
+        default_model: 'custom-local',
         catalog_sync_enabled: true,
         api_key_set: true,
         last_sync_at: new Date(now - 3_600_000).toISOString(),
-        last_sync_status: "ok",
+        last_sync_status: 'ok',
         last_sync_error: null,
         created_at: iso,
         deleted: false,
-        models: ["custom-local"],
+        models: ['custom-local'],
       },
     ],
     registry: [
-      { provider: "anthropic", tier: 1, model: "claude-sonnet-4" },
-      { provider: "anthropic", tier: 2, model: "claude-sonnet-4" },
-      { provider: "anthropic", tier: 3, model: "claude-sonnet-4" },
-      { provider: "openai", tier: 1, model: "gpt-4o" },
-      { provider: "openai", tier: 2, model: "gpt-4o-mini" },
-      { provider: "openai", tier: 3, model: "gpt-4o-mini" },
+      { provider: 'anthropic', tier: 1, model: 'claude-sonnet-4' },
+      { provider: 'anthropic', tier: 2, model: 'claude-sonnet-4' },
+      { provider: 'anthropic', tier: 3, model: 'claude-sonnet-4' },
+      { provider: 'openai', tier: 1, model: 'gpt-4o' },
+      { provider: 'openai', tier: 2, model: 'gpt-4o-mini' },
+      { provider: 'openai', tier: 3, model: 'gpt-4o-mini' },
     ],
-  };
+  }
 }
 
 /** A config as `CONFIG_JSON` returns it (no owner or deleted flag). */
 function configJson(c: MockConfig): LlmConfig {
-  const { created_by: _o, deleted: _d, ...wire } = c;
-  return wire;
+  const { created_by: _o, deleted: _d, ...wire } = c
+  return wire
 }
 
 /** The nested config in the agent routing response: CONFIG_JSON (agents/llm_config.rs, ea233d20) has no timestamps. */
 function routingConfigJson(c: MockConfig): RoutingConfig {
-  const { created_at: _c, updated_at: _u, ...rest } = configJson(c);
-  return rest;
+  const { created_at: _c, updated_at: _u, ...rest } = configJson(c)
+  return rest
 }
 
 // ─── configs ────────────────────────────────────────────────────────────────
 
 const live = (s: RouterState, user: string) =>
-  s.configs.filter((c) => c.created_by === user && !c.deleted);
+  s.configs.filter((c) => c.created_by === user && !c.deleted)
 
 export function listConfigs(s: RouterState, user: string): LlmConfig[] {
   return live(s, user)
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(configJson);
+    .map(configJson)
 }
 
 function findConfig(s: RouterState, id: string, user: string): MockConfig {
-  const c = live(s, user).find((x) => x.id === id);
-  if (!c) throw new MockHttpError(404, "llm config not found");
-  return c;
+  const c = live(s, user).find((x) => x.id === id)
+  if (!c) throw new MockHttpError(404, 'llm config not found')
+  return c
 }
 
 /** `resolve_provider_label`: a built-in name, a custom label, or a custom provider UUID → its label. */
 function providerLabel(s: RouterState, provider: string): string {
-  const custom = s.custom.find((p) => !p.deleted && (p.id === provider || p.label === provider));
-  if (custom) return custom.label;
-  if (SUPPORTED_PROVIDERS.includes(provider)) return provider;
+  const custom = s.custom.find((p) => !p.deleted && (p.id === provider || p.label === provider))
+  if (custom) return custom.label
+  if (SUPPORTED_PROVIDERS.includes(provider)) return provider
   throw new MockHttpError(
     400,
-    `unsupported provider '${provider}' (expected a built-in [${SUPPORTED_PROVIDERS.join(", ")}] or a registered custom provider)`,
-  );
+    `unsupported provider '${provider}' (expected a built-in [${SUPPORTED_PROVIDERS.join(', ')}] or a registered custom provider)`,
+  )
 }
 
 /** `ensure_secret`: upsert when a value comes with the name; a missing name without a value is a 400. Runs BEFORE the config write. */
@@ -275,11 +272,11 @@ function ensureSecret(
   value: string | null | undefined,
   now: number,
 ) {
-  if (!name) return;
-  const list = s.secrets.get(user) ?? [];
-  const stamp = new Date(now).toISOString();
+  if (!name) return
+  const list = s.secrets.get(user) ?? []
+  const stamp = new Date(now).toISOString()
   if (value) {
-    const hit = list.find((x) => x.name === name);
+    const hit = list.find((x) => x.name === name)
     s.secrets.set(
       user,
       hit
@@ -293,11 +290,11 @@ function ensureSecret(
               updated_at: stamp,
             },
           ],
-    );
-    return;
+    )
+    return
   }
   if (!list.some((x) => x.name === name))
-    throw new MockHttpError(400, `secret '${name}' not found; provide secret_value to store it`);
+    throw new MockHttpError(400, `secret '${name}' not found; provide secret_value to store it`)
 }
 
 function validateModel(
@@ -306,14 +303,14 @@ function validateModel(
   pinned: string | null | undefined,
 ) {
   if (model !== undefined && model !== null && !model.trim())
-    throw new MockHttpError(400, "model must not be empty when provided");
+    throw new MockHttpError(400, 'model must not be empty when provided')
   if ((model === undefined || model === null) && !hasTier)
     throw new MockHttpError(
       400,
-      "either model or at least one tier model (tier1_model, tier2_model, tier3_model) is required",
-    );
+      'either model or at least one tier model (tier1_model, tier2_model, tier3_model) is required',
+    )
   if (pinned !== undefined && pinned !== null && !pinned.trim())
-    throw new MockHttpError(400, "pinned_model must not be empty");
+    throw new MockHttpError(400, 'pinned_model must not be empty')
 }
 
 export function createConfig(
@@ -322,18 +319,18 @@ export function createConfig(
   body: CreateConfigBody,
   now: number,
 ): LlmConfig {
-  if (!body.name?.trim()) throw new MockHttpError(400, "name must not be empty");
-  const provider = providerLabel(s, body.provider);
+  if (!body.name?.trim()) throw new MockHttpError(400, 'name must not be empty')
+  const provider = providerLabel(s, body.provider)
   validateModel(
     body.model,
     !!(body.tier1_model || body.tier2_model || body.tier3_model),
     body.pinned_model,
-  );
+  )
   if (live(s, user).some((c) => c.name === body.name))
-    throw new MockHttpError(409, `an LLM config named '${body.name}' already exists`);
-  ensureSecret(s, user, body.api_key_secret_name, body.secret_value, now);
-  if (body.is_default) for (const c of live(s, user)) c.is_default = false;
-  const stamp = new Date(now).toISOString();
+    throw new MockHttpError(409, `an LLM config named '${body.name}' already exists`)
+  ensureSecret(s, user, body.api_key_secret_name, body.secret_value, now)
+  if (body.is_default) for (const c of live(s, user)) c.is_default = false
+  const stamp = new Date(now).toISOString()
   const c: MockConfig = {
     id: configId(100 + s.configs.length),
     name: body.name,
@@ -353,9 +350,9 @@ export function createConfig(
     updated_at: stamp,
     created_by: user,
     deleted: false,
-  };
-  s.configs.push(c);
-  return configJson(c);
+  }
+  s.configs.push(c)
+  return configJson(c)
 }
 
 /** COALESCE merge: a field sent as null (or absent) keeps its value. */
@@ -366,19 +363,19 @@ export function updateConfig(
   body: UpdateConfigBody,
   now: number,
 ): LlmConfig {
-  const c = findConfig(s, id, user);
-  const provider = body.provider ? providerLabel(s, body.provider) : null;
+  const c = findConfig(s, id, user)
+  const provider = body.provider ? providerLabel(s, body.provider) : null
   if (body.model !== undefined && body.model !== null && !body.model.trim())
-    throw new MockHttpError(400, "model must not be empty when provided");
+    throw new MockHttpError(400, 'model must not be empty when provided')
   if (body.pinned_model !== undefined && body.pinned_model !== null && !body.pinned_model.trim())
-    throw new MockHttpError(400, "pinned_model must not be empty");
+    throw new MockHttpError(400, 'pinned_model must not be empty')
   if (body.name !== undefined && body.name !== null) {
-    if (!body.name.trim()) throw new MockHttpError(400, "name must not be empty");
+    if (!body.name.trim()) throw new MockHttpError(400, 'name must not be empty')
     if (live(s, user).some((x) => x.name === body.name && x.id !== id))
-      throw new MockHttpError(409, `an LLM config named '${body.name}' already exists`);
+      throw new MockHttpError(409, `an LLM config named '${body.name}' already exists`)
   }
-  ensureSecret(s, user, body.api_key_secret_name, body.secret_value, now);
-  const keep = <T>(v: T | null | undefined, was: T): T => (v === null || v === undefined ? was : v);
+  ensureSecret(s, user, body.api_key_secret_name, body.secret_value, now)
+  const keep = <T>(v: T | null | undefined, was: T): T => (v === null || v === undefined ? was : v)
   Object.assign(c, {
     name: keep(body.name, c.name),
     provider: provider ?? c.provider,
@@ -393,8 +390,8 @@ export function updateConfig(
     tier2_model: keep(body.tier2_model, c.tier2_model),
     tier3_model: keep(body.tier3_model, c.tier3_model),
     updated_at: new Date(now).toISOString(),
-  });
-  return configJson(c);
+  })
+  return configJson(c)
 }
 
 export function deleteConfig(
@@ -404,21 +401,21 @@ export function deleteConfig(
   liveAgents: ReadonlySet<string>,
   forceInUse?: number,
 ) {
-  const c = findConfig(s, id, user);
+  const c = findConfig(s, id, user)
   const n =
     forceInUse ??
     [...s.routing.entries()].filter(([agent, r]) => r.llm_config_id === id && liveAgents.has(agent))
-      .length;
-  if (n > 0) throw new MockHttpError(409, `config is attached to ${n} agent(s); detach it first`);
-  c.deleted = true;
-  c.is_default = false;
+      .length
+  if (n > 0) throw new MockHttpError(409, `config is attached to ${n} agent(s); detach it first`)
+  c.deleted = true
+  c.is_default = false
 }
 
 export function setDefault(s: RouterState, id: string, user: string, on: boolean): LlmConfig {
-  const c = findConfig(s, id, user);
-  if (on) for (const x of live(s, user)) x.is_default = x.id === id;
-  else c.is_default = false;
-  return configJson(c);
+  const c = findConfig(s, id, user)
+  if (on) for (const x of live(s, user)) x.is_default = x.id === id
+  else c.is_default = false
+  return configJson(c)
 }
 
 // ─── agent routing ──────────────────────────────────────────────────────────
@@ -428,17 +425,17 @@ export function resolveRouting(s: RouterState, agent: MockAgent) {
   const r = s.routing.get(agent.id) ?? {
     llm_config_id: null,
     pinned_model: null,
-    inbound_format: "openai",
-  };
+    inbound_format: 'openai',
+  }
   const attached = r.llm_config_id
     ? s.configs.find((c) => c.id === r.llm_config_id && !c.deleted)
-    : undefined;
-  const def = s.configs.find((c) => c.created_by === agent.owner_id && c.is_default && !c.deleted);
+    : undefined
+  const def = s.configs.find((c) => c.created_by === agent.owner_id && c.is_default && !c.deleted)
   const [config, source] = attached
-    ? ([attached, "attached"] as const)
+    ? ([attached, 'attached'] as const)
     : def
-      ? ([def, "owner-default"] as const)
-      : ([null, "none"] as const);
+      ? ([def, 'owner-default'] as const)
+      : ([null, 'none'] as const)
   return {
     agent_id: agent.id,
     llm_config_id: r.llm_config_id,
@@ -446,7 +443,7 @@ export function resolveRouting(s: RouterState, agent: MockAgent) {
     source,
     inbound_format: r.inbound_format,
     pinned_model: r.pinned_model,
-  };
+  }
 }
 
 /**
@@ -463,116 +460,116 @@ export function patchRouting(
     ...(s.routing.get(agent.id) ?? {
       llm_config_id: null,
       pinned_model: null,
-      inbound_format: "openai",
+      inbound_format: 'openai',
     }),
-  };
-  if ("llm_config_id" in body) {
+  }
+  if ('llm_config_id' in body) {
     if (body.llm_config_id) {
       const ok = s.configs.some(
         (c) => c.id === body.llm_config_id && c.created_by === agent.owner_id && !c.deleted,
-      );
-      if (!ok) throw new MockHttpError(400, "llm config not found or not owned by the agent owner");
-      r.llm_config_id = body.llm_config_id;
+      )
+      if (!ok) throw new MockHttpError(400, 'llm config not found or not owned by the agent owner')
+      r.llm_config_id = body.llm_config_id
     } else {
-      r.llm_config_id = null;
+      r.llm_config_id = null
     }
-    r.pinned_model = null;
-    s.routing.set(agent.id, { ...r });
-  } else if ("pinned_model" in body) {
+    r.pinned_model = null
+    s.routing.set(agent.id, { ...r })
+  } else if ('pinned_model' in body) {
     if (body.pinned_model !== null && body.pinned_model !== undefined && !body.pinned_model.trim())
-      throw new MockHttpError(400, "pinned_model must not be empty");
-    if (opts.failPin) throw new MockHttpError(500, "internal error");
-    r.pinned_model = body.pinned_model ?? null;
-    s.routing.set(agent.id, { ...r });
+      throw new MockHttpError(400, 'pinned_model must not be empty')
+    if (opts.failPin) throw new MockHttpError(500, 'internal error')
+    r.pinned_model = body.pinned_model ?? null
+    s.routing.set(agent.id, { ...r })
   }
   if (body.inbound_format) {
     if (!INBOUND.includes(body.inbound_format))
       throw new MockHttpError(
         400,
-        `unsupported inbound_format '${body.inbound_format}' (expected one of: ${INBOUND.join(", ")})`,
-      );
-    s.routing.set(agent.id, { ...r, inbound_format: body.inbound_format });
+        `unsupported inbound_format '${body.inbound_format}' (expected one of: ${INBOUND.join(', ')})`,
+      )
+    s.routing.set(agent.id, { ...r, inbound_format: body.inbound_format })
   }
   // LlmConfigUpdateResponse (agents/llm_config.rs): the GET's fields without inbound_format.
-  const { inbound_format: _f, ...patched } = resolveRouting(s, agent);
-  return patched;
+  const { inbound_format: _f, ...patched } = resolveRouting(s, agent)
+  return patched
 }
 
 // ─── secrets, registry, custom providers ────────────────────────────────────
 
 /** secrets/routes.rs `create_secret`: an upsert (a known name gets the new value and `updated_at`). */
 export function upsertSecret(s: RouterState, user: string, name: string, now: number): SecretEntry {
-  ensureSecret(s, user, name, "value", now);
-  return (s.secrets.get(user) ?? []).find((x) => x.name === name)!;
+  ensureSecret(s, user, name, 'value', now)
+  return (s.secrets.get(user) ?? []).find((x) => x.name === name)!
 }
 
 /** `update_secret` / `delete_secret`: false when the caller has no secret by that name (a 404). */
 export function touchSecret(s: RouterState, user: string, name: string, now: number): boolean {
-  if (!(s.secrets.get(user) ?? []).some((x) => x.name === name)) return false;
-  ensureSecret(s, user, name, "value", now);
-  return true;
+  if (!(s.secrets.get(user) ?? []).some((x) => x.name === name)) return false
+  ensureSecret(s, user, name, 'value', now)
+  return true
 }
 export function deleteSecret(s: RouterState, user: string, name: string): boolean {
-  const list = s.secrets.get(user) ?? [];
-  if (!list.some((x) => x.name === name)) return false;
+  const list = s.secrets.get(user) ?? []
+  if (!list.some((x) => x.name === name)) return false
   s.secrets.set(
     user,
     list.filter((x) => x.name !== name),
-  );
-  return true;
+  )
+  return true
 }
 
 export const listSecrets = (s: RouterState, user: string): SecretEntry[] =>
-  [...(s.secrets.get(user) ?? [])].sort((a, b) => a.name.localeCompare(b.name));
+  [...(s.secrets.get(user) ?? [])].sort((a, b) => a.name.localeCompare(b.name))
 
 export const listCustom = (s: RouterState): CustomProvider[] =>
-  s.custom.filter((p) => !p.deleted).map(({ deleted: _d, models: _m, ...wire }) => wire);
+  s.custom.filter((p) => !p.deleted).map(({ deleted: _d, models: _m, ...wire }) => wire)
 
 function slugify(name: string): string {
   return name
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
 }
 
 /** `custom_providers.rs` `validate_dialect`: `kind` defaults to openai; Azure needs an api-version. */
 export function validateDialect(kind: string | undefined, apiVersion: string | undefined) {
-  const k = (kind ?? "openai").trim();
-  const v = apiVersion?.trim() || null;
-  if (k === "openai" || k === "bedrock-converse")
-    return { kind: k as ProviderKind, api_version: null };
-  if (k === "azure-openai") {
+  const k = (kind ?? 'openai').trim()
+  const v = apiVersion?.trim() || null
+  if (k === 'openai' || k === 'bedrock-converse')
+    return { kind: k as ProviderKind, api_version: null }
+  if (k === 'azure-openai') {
     if (!v)
       throw new MockHttpError(
         400,
         "api_version is required for kind 'azure-openai' (e.g. 2024-10-21)",
-      );
-    return { kind: k as ProviderKind, api_version: v };
+      )
+    return { kind: k as ProviderKind, api_version: v }
   }
   throw new MockHttpError(
     400,
     `unknown kind '${k}' (expected 'openai', 'azure-openai', or 'bedrock-converse')`,
-  );
+  )
 }
 
 /** `dialect.rs` `normalize_base`: Azure accepts the portal's `…/openai` form too. */
 const normalizeBase = (kind: string, base: string) => {
-  const b = base.trim().replace(/\/+$/, "");
-  return kind === "azure-openai" ? b.replace(/\/openai$/, "").replace(/\/+$/, "") : b;
-};
+  const b = base.trim().replace(/\/+$/, '')
+  return kind === 'azure-openai' ? b.replace(/\/openai$/, '').replace(/\/+$/, '') : b
+}
 
 export function createCustom(s: RouterState, body: CreateCustomProviderBody, now: number) {
-  const dialect = validateDialect(body.kind, body.api_version);
-  const display = body.display_name?.trim();
-  const base = normalizeBase(dialect.kind, body.base_url ?? "");
-  if (!display || !base) throw new MockHttpError(400, "display_name and base_url are required");
-  if (!body.api_key?.trim()) throw new MockHttpError(400, "api_key is required");
-  let label = slugify(display);
-  if (["openai", "anthropic", "gemini"].includes(label)) label = `${label}-custom`;
-  let candidate = label;
+  const dialect = validateDialect(body.kind, body.api_version)
+  const display = body.display_name?.trim()
+  const base = normalizeBase(dialect.kind, body.base_url ?? '')
+  if (!display || !base) throw new MockHttpError(400, 'display_name and base_url are required')
+  if (!body.api_key?.trim()) throw new MockHttpError(400, 'api_key is required')
+  let label = slugify(display)
+  if (['openai', 'anthropic', 'gemini'].includes(label)) label = `${label}-custom`
+  let candidate = label
   for (let i = 2; s.custom.some((p) => !p.deleted && p.label === candidate); i++)
-    candidate = `${label}-${i}`;
+    candidate = `${label}-${i}`
   const p: MockCustomProvider = {
     id: customId(100 + s.custom.length),
     label: candidate,
@@ -590,60 +587,60 @@ export function createCustom(s: RouterState, body: CreateCustomProviderBody, now
     created_at: new Date(now).toISOString(),
     deleted: false,
     models: [],
-  };
-  s.custom.push(p);
-  return { id: p.id, label: p.label, discovered_models: 0, priced_models: 0 };
+  }
+  s.custom.push(p)
+  return { id: p.id, label: p.label, discovered_models: 0, priced_models: 0 }
 }
 
 export function updateCustom(s: RouterState, id: string, body: UpdateCustomProviderBody) {
-  const p = s.custom.find((x) => x.id === id && !x.deleted);
-  if (!p) throw new MockHttpError(404, "no such custom provider");
-  if (body.display_name) p.display_name = body.display_name;
-  const kind = p.kind ?? "openai";
-  const version = body.api_version?.trim();
-  if (kind === "azure-openai" && body.api_version !== undefined && !version)
-    throw new MockHttpError(400, "api_version cannot be cleared for kind 'azure-openai'");
-  if (body.base_url) p.base_url = normalizeBase(kind, body.base_url);
-  if (kind === "azure-openai" && version) p.api_version = version;
-  if (body.api_key) p.api_key_set = true;
-  if (body.default_model) p.default_model = body.default_model;
-  if (body.catalog_sync_enabled !== undefined) p.catalog_sync_enabled = body.catalog_sync_enabled;
-  return { id };
+  const p = s.custom.find((x) => x.id === id && !x.deleted)
+  if (!p) throw new MockHttpError(404, 'no such custom provider')
+  if (body.display_name) p.display_name = body.display_name
+  const kind = p.kind ?? 'openai'
+  const version = body.api_version?.trim()
+  if (kind === 'azure-openai' && body.api_version !== undefined && !version)
+    throw new MockHttpError(400, "api_version cannot be cleared for kind 'azure-openai'")
+  if (body.base_url) p.base_url = normalizeBase(kind, body.base_url)
+  if (kind === 'azure-openai' && version) p.api_version = version
+  if (body.api_key) p.api_key_set = true
+  if (body.default_model) p.default_model = body.default_model
+  if (body.catalog_sync_enabled !== undefined) p.catalog_sync_enabled = body.catalog_sync_enabled
+  return { id }
 }
 
 export function deleteCustom(s: RouterState, id: string) {
-  const p = s.custom.find((x) => x.id === id && !x.deleted);
-  if (!p) throw new MockHttpError(404, "no such custom provider");
+  const p = s.custom.find((x) => x.id === id && !x.deleted)
+  if (!p) throw new MockHttpError(404, 'no such custom provider')
   const refs = s.configs
     .filter((c) => c.provider === p.label && !c.deleted)
     .map((c) => c.name)
-    .sort();
+    .sort()
   if (refs.length)
     throw new MockHttpError(
       409,
-      "provider is still referenced by LLM configs; repoint them first",
+      'provider is still referenced by LLM configs; repoint them first',
       {
-        message: "provider is still referenced by LLM configs; repoint them first",
+        message: 'provider is still referenced by LLM configs; repoint them first',
         referencing_configs: refs,
       },
-    );
-  p.deleted = true;
-  return { id };
+    )
+  p.deleted = true
+  return { id }
 }
 
 export function syncCustom(s: RouterState, id: string, now: number, fail: boolean) {
-  const p = s.custom.find((x) => x.id === id && !x.deleted);
-  if (!p) throw new MockHttpError(404, "no such custom provider");
+  const p = s.custom.find((x) => x.id === id && !x.deleted)
+  if (!p) throw new MockHttpError(404, 'no such custom provider')
   if (fail) {
-    p.last_sync_status = "error";
-    p.last_sync_error = "connection refused";
-    throw new MockHttpError(500, "internal error");
+    p.last_sync_status = 'error'
+    p.last_sync_error = 'connection refused'
+    throw new MockHttpError(500, 'internal error')
   }
-  p.last_sync_at = new Date(now).toISOString();
-  p.last_sync_status = "ok";
-  p.last_sync_error = null;
-  if (!p.models.length) p.models = [p.default_model ?? `${p.label}-model`];
-  return { discovered_models: p.models.length };
+  p.last_sync_at = new Date(now).toISOString()
+  p.last_sync_status = 'ok'
+  p.last_sync_error = null
+  if (!p.models.length) p.models = [p.default_model ?? `${p.label}-model`]
+  return { discovered_models: p.models.length }
 }
 
 // ─── usage (token_usage, per agent) ─────────────────────────────────────────
@@ -665,12 +662,12 @@ export function usageByAgent(
   days: number,
   now: number,
 ): AgentUsage[] {
-  if (user !== ADMIN_ID) return [];
-  const since = Math.max(now - days * 86_400_000, Date.parse(seed.anchor) - 30 * 86_400_000);
-  const names = new Map(seed.agents.map((a) => [a.id, a.name]));
-  const by = new Map<string, AgentUsage & { _lat: number }>();
+  if (user !== ADMIN_ID) return []
+  const since = Math.max(now - days * 86_400_000, Date.parse(seed.anchor) - 30 * 86_400_000)
+  const names = new Map(seed.agents.map((a) => [a.id, a.name]))
+  const by = new Map<string, AgentUsage & { _lat: number }>()
   for (const t of seed.traces) {
-    if (!t.agent_id || t.ts < since || t.ts > now) continue;
+    if (!t.agent_id || t.ts < since || t.ts > now) continue
     const row = by.get(t.agent_id) ?? {
       agent_id: t.agent_id,
       agent_name: names.get(t.agent_id) ?? null,
@@ -681,14 +678,14 @@ export function usageByAgent(
       total_cost_usd: 0,
       avg_latency_ms: null,
       _lat: 0,
-    };
-    row.request_count++;
-    row.total_input_tokens += t.input_tokens;
-    row.total_output_tokens += t.output_tokens;
-    row.total_tokens += t.input_tokens + t.output_tokens;
-    row.total_cost_usd += t.cost_usd;
-    row._lat += t.latency_ms;
-    by.set(t.agent_id, row);
+    }
+    row.request_count++
+    row.total_input_tokens += t.input_tokens
+    row.total_output_tokens += t.output_tokens
+    row.total_tokens += t.input_tokens + t.output_tokens
+    row.total_cost_usd += t.cost_usd
+    row._lat += t.latency_ms
+    by.set(t.agent_id, row)
   }
   return [...by.values()]
     .map(({ _lat, ...r }) => ({
@@ -696,5 +693,5 @@ export function usageByAgent(
       total_cost_usd: Math.round(r.total_cost_usd * 1e6) / 1e6,
       avg_latency_ms: r.request_count ? _lat / r.request_count : null,
     }))
-    .sort((a, b) => b.total_tokens - a.total_tokens);
+    .sort((a, b) => b.total_tokens - a.total_tokens)
 }

@@ -1,64 +1,58 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/sessionLookup.test.ts. Local edits: `setupMockServer()`
-// starts the msw server for the file (the lab started it globally in its test setup); Prettier formatting.
 /**
  * The chat lookup cache (sessionLookup.ts): deleting a chat forgets its row
  * (useDeleteChat → forgetSessionLookup), so a deleted chat found past the rail can't come back
  * from the cache.
  */
-import { http, HttpResponse } from "msw";
-import { afterEach, describe, expect, it } from "vitest";
-import { server, setupMockServer } from "@nasiko/testing/pinned-seed";
-import { clearSessionLookup, forgetSessionLookup, lookupSession } from "./sessionLookup";
-import type { ChatSessionRow } from "./types";
+import { http, HttpResponse } from 'msw'
+import { afterEach, describe, expect, it } from 'vitest'
+import { server } from '@nasiko/testing/setup'
+import { clearSessionLookup, forgetSessionLookup, lookupSession } from './sessionLookup'
+import type { ChatSessionRow } from './types'
 
-setupMockServer();
-
-const SID = "5eedc000-0000-4000-8000-00000000e001";
-const OTHER = "5eedc000-0000-4000-8000-00000000e002";
+const SID = '5eedc000-0000-4000-8000-00000000e001'
+const OTHER = '5eedc000-0000-4000-8000-00000000e002'
 const row = (session_id: string) =>
   ({
     session_id,
-    user_id: "u",
+    user_id: 'u',
     agent_id: null,
-    agent_url: "/api/orchestrator/a2a",
-    title: "T",
-    created_at: "",
-    updated_at: "",
-  }) as ChatSessionRow;
+    agent_url: '/api/orchestrator/a2a',
+    title: 'T',
+    created_at: '',
+    updated_at: '',
+  }) as ChatSessionRow
 
-afterEach(() => {
-  clearSessionLookup();
-});
+afterEach(() => clearSessionLookup())
 
-describe("forgetSessionLookup", () => {
-  it("after a found row is forgotten, the next lookup asks the server again", async () => {
-    let gets = 0;
-    let rows = [row(SID), row(OTHER)];
+describe('forgetSessionLookup', () => {
+  it('after a found row is forgotten, the next lookup asks the server again', async () => {
+    let gets = 0
+    let rows = [row(SID), row(OTHER)]
     server.use(
-      http.get("/api/chat/sessions", () => {
-        gets++;
+      http.get('/api/chat/sessions', () => {
+        gets++
         return HttpResponse.json({
           data: rows,
           has_more: false,
           next_cursor: null,
           prev_cursor: null,
-        });
+        })
       }),
-    );
-    expect(await lookupSession(SID)).toMatchObject({ status: "found", row: { session_id: SID } });
-    expect(await lookupSession(OTHER)).toMatchObject({ status: "found" });
-    expect(gets).toBe(2);
+    )
+    expect(await lookupSession(SID)).toMatchObject({ status: 'found', row: { session_id: SID } })
+    expect(await lookupSession(OTHER)).toMatchObject({ status: 'found' })
+    expect(gets).toBe(2)
     // Cached: no request.
-    expect(await lookupSession(SID)).toMatchObject({ status: "found" });
-    expect(gets).toBe(2);
+    expect(await lookupSession(SID)).toMatchObject({ status: 'found' })
+    expect(gets).toBe(2)
 
     // The chat is deleted on the server and forgotten here.
-    rows = [row(OTHER)];
-    forgetSessionLookup(SID);
-    expect(await lookupSession(SID)).toEqual({ status: "absent" });
-    expect(gets).toBe(3);
+    rows = [row(OTHER)]
+    forgetSessionLookup(SID)
+    expect(await lookupSession(SID)).toEqual({ status: 'absent' })
+    expect(gets).toBe(3)
     // Only that chat's row was dropped.
-    expect(await lookupSession(OTHER)).toMatchObject({ status: "found" });
-    expect(gets).toBe(3);
-  });
-});
+    expect(await lookupSession(OTHER)).toMatchObject({ status: 'found' })
+    expect(gets).toBe(3)
+  })
+})

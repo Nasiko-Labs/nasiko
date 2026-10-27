@@ -1,9 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/Lead.tsx. Local edits: `Button
-// asChild` around the Chat link -> `ButtonLink` (agents/components/ButtonLink.tsx); the TokenOps link is the navigation
-// port's `Link` (`@nasiko/app-core/navigation`) with `hrefFor('/tokenops', …)`; optional props typed `| undefined`;
-// development (5d46c313f): `@nasiko/app-core/slice`; Prettier formatting.
-// The bento (legacy ui/ on development, 3aac84f66: 8bf09bf29): `Reveal` is `RevealGroup`; `m` and `transitions` from
-// @nasiko/ui/motion.
 /**
  * The /optimization lead (plans/feat-optimization-page.md R1A, R1B, R2A, R2B, R2E, R4B, R5A, R7A; eng C1–C3, C5, C6):
  * a bento: a lead card (the page's one effect area) whose h2 is the answer, then the five-number sentence with the TokenOps link, coverage, cost
@@ -11,22 +5,20 @@
  * beside it, then the chart in its card. It loads and
  * fails on its own (R2C); every number comes from reports, never from switch counts (C1).
  */
-import Link from "@nasiko/app-core/navigation";
-import type { ReactNode } from "react";
-import {
-  PanelError,
-  PanelSkeleton,
-  RevealGroup,
-  RevealItem,
-  SpotlightCard,
-} from "@nasiko/ui/composites";
-import { m, transitions } from "@nasiko/ui/motion";
-import { Card, Skeleton } from "@nasiko/ui/primitives";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import type { ResolvedWindow } from "../../tokenops/window";
-import { fmtMoney, fmtShortDay, seriesAt } from "@nasiko/ui/lib";
-import { copy } from "../copy";
+import { Link } from '@tanstack/react-router'
+import { m } from 'motion/react'
+import type { ReactNode } from 'react'
+import { SpotlightCard } from '@nasiko/ui/composites/spotlight-card'
+import { PanelError, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { Reveal, RevealItem } from '@nasiko/ui/composites/reveal'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import type { ResolvedWindow } from '@nasiko/features/tokenops/window'
+import { seriesAt } from '@nasiko/ui/lib/chart'
+import { fmtMoney, fmtShortDay } from '@nasiko/ui/lib/format'
+import { transitions } from '@nasiko/ui/lib/motion'
+import { copy } from '../copy'
 import {
   latestChange,
   pctOf,
@@ -35,16 +27,16 @@ import {
   trendOf,
   TREND_DAYS,
   type LeadState,
-} from "../lead";
-import { savedOf, type BucketSize } from "@nasiko/app-core/slice";
-import type { SettingsChange } from "../types";
-import { Outline } from "./Outline";
-import { SavingsTrend, type LabelledRow } from "./SavingsTrend";
-import { Without } from "./Without";
+} from '../lead'
+import { savedOf, type BucketSize } from '@nasiko/app-core/slice'
+import type { SettingsChange } from '../types'
+import { Outline } from './Outline'
+import { SavingsTrend, type LabelledRow } from './SavingsTrend'
+import { Without } from './Without'
 
 /** The trend chart's own colours, so the bar and the chart read as one. */
-const SENT = seriesAt(0);
-const SAVED = seriesAt(1);
+const SENT = seriesAt(0)
+const SAVED = seriesAt(1)
 
 export function Lead({
   state,
@@ -61,53 +53,50 @@ export function Lead({
   compression,
   onSelect,
 }: {
-  state: LeadState;
-  error: unknown;
-  onRetry: () => void;
-  win: Pick<ResolvedWindow, "label" | "start" | "preset"> & {
-    from?: string | undefined;
-    to?: string | undefined;
-  };
-  superuser: boolean;
-  rows: LabelledRow[];
-  tableRows: LabelledRow[];
-  unit: BucketSize;
-  tableUnit: BucketSize;
+  state: LeadState
+  error: unknown
+  onRetry: () => void
+  win: Pick<ResolvedWindow, 'label' | 'start' | 'preset'> & { from?: string; to?: string }
+  superuser: boolean
+  rows: LabelledRow[]
+  tableRows: LabelledRow[]
+  unit: BucketSize
+  tableUnit: BucketSize
   /** R6B: what sits under the lead's words on a phone (the Your settings link). */
-  under?: ReactNode | undefined;
-  history: SettingsChange[] | undefined;
+  under?: ReactNode
+  history: SettingsChange[] | undefined
   /** C1: history compression for your chats, or null when Needs attention says it (or it isn't known yet). */
-  compression: string | null;
-  onSelect: (iso: string, size: BucketSize) => void;
+  compression: string | null
+  onSelect: (iso: string, size: BucketSize) => void
 }) {
-  const hourly = win.preset === "24h";
+  const hourly = win.preset === '24h'
   const heading =
-    state.kind === "loading"
+    state.kind === 'loading'
       ? null
-      : state.kind === "error"
+      : state.kind === 'error'
         ? copy.lead.heading.error
-        : state.kind === "absent"
+        : state.kind === 'absent'
           ? copy.lead.heading.absent
-          : state.kind === "no-agents"
+          : state.kind === 'no-agents'
             ? copy.lead.heading.noAgents
-            : state.kind === "no-reports"
+            : state.kind === 'no-reports'
               ? copy.lead.heading.noReports
-              : state.kind === "low-coverage"
+              : state.kind === 'low-coverage'
                 ? copy.lead.heading.lowCoverage
                 : state.share > 0
                   ? copy.lead.heading.saving(pctOf(state.share))
-                  : copy.lead.heading.none;
+                  : copy.lead.heading.none
 
-  const figures = state.kind === "saving" || state.kind === "low-coverage" ? state : null;
+  const figures = state.kind === 'saving' || state.kind === 'low-coverage' ? state : null
   return (
     <section
       data-tour="optimization-lead"
       aria-labelledby="optimization-lead-h"
-      aria-busy={state.kind === "loading"}
+      aria-busy={state.kind === 'loading'}
       className="flex flex-col gap-3"
     >
-      <RevealGroup className="grid gap-3 lg:grid-cols-12">
-        <RevealItem className={figures ? "lg:col-span-7" : "lg:col-span-12"}>
+      <Reveal className="grid gap-3 lg:grid-cols-12">
+        <RevealItem className={figures ? 'lg:col-span-7' : 'lg:col-span-12'}>
           {/* The page's one effect area (CLAUDE.md "Aceternity effects"). */}
           <SpotlightCard className="h-full">
             <div className="relative flex flex-1 flex-col gap-3 p-5">
@@ -119,9 +108,9 @@ export function Lead({
                 <h2
                   id="optimization-lead-h"
                   className={
-                    state.kind === "error"
-                      ? "sr-only"
-                      : "text-2xl font-semibold tracking-tight text-balance"
+                    state.kind === 'error'
+                      ? 'sr-only'
+                      : 'text-2xl font-semibold tracking-tight text-balance'
                   }
                 >
                   {heading}
@@ -143,7 +132,7 @@ export function Lead({
                 history={history}
               />
               {under}
-              {compression && state.kind !== "loading" && state.kind !== "error" ? (
+              {compression && state.kind !== 'loading' && state.kind !== 'error' ? (
                 <p className="m-0 text-xs text-muted-foreground">{compression}</p>
               ) : null}
               {figures ? (
@@ -174,7 +163,7 @@ export function Lead({
               value={`~${tokensShort(savedOf(figures.savings))}`}
               // C2: under half the requests reported, the page states no percentage.
               note={
-                figures.kind === "saving"
+                figures.kind === 'saving'
                   ? copy.lead.figures.fewer(pctOf(figures.share))
                   : undefined
               }
@@ -183,7 +172,7 @@ export function Lead({
               label={copy.lead.figures.notBilled}
               value={
                 savedCost(figures.savings) === null
-                  ? "—"
+                  ? '—'
                   : `≈ ${fmtMoney(savedCost(figures.savings) ?? 0)}`
               }
               note={
@@ -195,8 +184,8 @@ export function Lead({
             />
           </dl>
         ) : null}
-      </RevealGroup>
-      {state.kind === "saving" || state.kind === "low-coverage" ? (
+      </Reveal>
+      {state.kind === 'saving' || state.kind === 'low-coverage' ? (
         <Card className="p-4">
           <SavingsTrend
             rows={rows}
@@ -207,26 +196,26 @@ export function Lead({
             onSelect={onSelect}
           />
         </Card>
-      ) : state.kind === "loading" ? (
+      ) : state.kind === 'loading' ? (
         <PanelSkeleton height={240} />
-      ) : state.kind === "error" ? null : (
+      ) : state.kind === 'error' ? null : (
         // R2B: the chart's place and shape, static (never read as loading), saying what will show here.
         <Outline>
-          {state.kind === "absent"
+          {state.kind === 'absent'
             ? copy.lead.chart.outline(hourly)
-            : state.kind === "no-reports"
+            : state.kind === 'no-reports'
               ? copy.lead.noReportsLine
               : copy.lead.noAgentsLine}
         </Outline>
       )}
     </section>
-  );
+  )
 }
 
 /** Sent against saved for the window, one bar; the figures beside it carry the values in words. */
 function SplitBar({ sent, saved }: { sent: number; saved: number }) {
-  const total = sent + saved;
-  if (total <= 0) return null;
+  const total = sent + saved
+  if (total <= 0) return null
   return (
     <div aria-hidden className="mt-auto flex h-2.5 w-full gap-0.5 overflow-hidden rounded-full">
       <div className="h-full flex-1 rounded-l-full" style={{ backgroundColor: SENT.fill }} />
@@ -238,7 +227,7 @@ function SplitBar({ sent, saved }: { sent: number; saved: number }) {
         transition={transitions.disclosure}
       />
     </div>
-  );
+  )
 }
 
 function Figure({
@@ -247,11 +236,11 @@ function Figure({
   note,
   meter,
 }: {
-  label: ReactNode;
-  value: string;
-  note?: string | undefined;
+  label: ReactNode
+  value: string
+  note?: string
   /** 0–100: a thin meter under the note. */
-  meter?: number | undefined;
+  meter?: number
 }) {
   return (
     <RevealItem className="flex min-w-0 flex-col gap-1.5 rounded-xl border bg-card p-4 transition-colors hover:border-foreground/20">
@@ -271,7 +260,7 @@ function Figure({
         ) : null}
       </dd>
     </RevealItem>
-  );
+  )
 }
 
 function Body({
@@ -282,40 +271,37 @@ function Body({
   superuser,
   history,
 }: {
-  state: LeadState;
-  error: unknown;
-  onRetry: () => void;
-  win: Pick<ResolvedWindow, "start" | "preset"> & {
-    from?: string | undefined;
-    to?: string | undefined;
-  };
-  superuser: boolean;
-  history: SettingsChange[] | undefined;
+  state: LeadState
+  error: unknown
+  onRetry: () => void
+  win: Pick<ResolvedWindow, 'start' | 'preset'> & { from?: string; to?: string }
+  superuser: boolean
+  history: SettingsChange[] | undefined
 }) {
-  if (state.kind === "loading") return <Skeleton aria-hidden className="h-5 w-full max-w-xl" />;
-  if (state.kind === "error")
-    return <PanelError error={error} onRetry={onRetry} what={copy.lead.chart.what} />;
-  if (state.kind === "absent")
-    return <p className="m-0 text-sm text-muted-foreground">{copy.lead.absentLine}</p>;
-  if (state.kind === "no-reports")
+  if (state.kind === 'loading') return <Skeleton aria-hidden className="h-5 w-full max-w-xl" />
+  if (state.kind === 'error')
+    return <PanelError error={error} onRetry={onRetry} what={copy.lead.chart.what} />
+  if (state.kind === 'absent')
+    return <p className="m-0 text-sm text-muted-foreground">{copy.lead.absentLine}</p>
+  if (state.kind === 'no-reports')
     return (
       <div>
-        <ButtonLink href="/chat" size="sm" variant="outline" className="pointer-coarse:min-h-11">
-          {copy.lead.startChat}
-        </ButtonLink>
+        <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
+          <Link to="/chat">{copy.lead.startChat}</Link>
+        </Button>
       </div>
-    );
-  if (state.kind === "no-agents") return null;
-  const s = state.savings;
-  const coverage = state.coverage;
-  const cost = savedCost(s);
-  const saved = savedOf(s);
-  const trend = state.kind === "saving" ? trendOf(s.series) : null;
-  const change = latestChange(history);
+    )
+  if (state.kind === 'no-agents') return null
+  const s = state.savings
+  const coverage = state.coverage
+  const cost = savedCost(s)
+  const saved = savedOf(s)
+  const trend = state.kind === 'saving' ? trendOf(s.series) : null
+  const change = latestChange(history)
   const recordedLate =
     s.recorded_since && Date.parse(s.recorded_since) > win.start.getTime()
       ? copy.savings.coverage(fmtShortDay(s.recorded_since))
-      : null;
+      : null
   const notes = [
     coverage ? copy.lead.basedOn(coverage.reports, coverage.eligible, pctOf(coverage.share)) : null,
     s.priced_reports !== undefined && cost !== null && s.priced_reports < s.reports
@@ -324,7 +310,7 @@ function Body({
     recordedLate,
     trend ? copy.lead.trend(trend.direction, pctOf(trend.from), pctOf(trend.to), TREND_DAYS) : null,
     change ? copy.lead.change(change.field, changeValue(change), fmtShortDay(change.at)) : null,
-  ].filter(Boolean);
+  ].filter(Boolean)
   return (
     <div className="flex flex-col gap-1">
       <p className="m-0 text-sm">
@@ -334,27 +320,28 @@ function Body({
           tokensShort(s.pool_tokens),
           tokensShort(saved),
           cost !== null ? fmtMoney(cost) : null,
-          state.kind === "saving" ? pctOf(state.share) : null,
-        )}{" "}
+          state.kind === 'saving' ? pctOf(state.share) : null,
+        )}{' '}
         <Link
-          href={hrefFor("/tokenops", { preset: win.preset, from: win.from, to: win.to })}
+          to="/tokenops"
+          search={{ preset: win.preset, from: win.from, to: win.to }}
           className="underline underline-offset-4 hover:text-primary-text"
         >
           {copy.lead.tokenops}
         </Link>
       </p>
-      {notes.length ? <p className="m-0 text-xs text-muted-foreground">{notes.join(" ")}</p> : null}
+      {notes.length ? <p className="m-0 text-xs text-muted-foreground">{notes.join(' ')}</p> : null}
     </div>
-  );
+  )
 }
 
 /** CX-H values are the server's enum words; show them as the settings form names them. */
 function changeValue(c: SettingsChange): string {
-  if (c.field === "strategy")
+  if (c.field === 'strategy')
     return Object.hasOwn(copy.strategies, c.to)
       ? copy.strategies[c.to as keyof typeof copy.strategies].name
-      : c.to;
-  if (c.field === "level")
-    return c.to === "low" || c.to === "medium" || c.to === "high" ? copy.level(c.to) : c.to;
-  return c.to;
+      : c.to
+  if (c.field === 'level')
+    return c.to === 'low' || c.to === 'medium' || c.to === 'high' ? copy.level(c.to) : c.to
+  return c.to
 }

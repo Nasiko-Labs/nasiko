@@ -1,42 +1,37 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/overview/components/Harnesses.tsx. Local edits: `"use
-// client"`; `Button asChild` + `Link to="/harnesses" search={{}}` -> `ButtonLink href="/harnesses"`; `Card asChild` +
-// `<section>` -> `Card render={<section …/>}`; optional props admit `undefined`; Prettier formatting.
-// Development (2d95e6e79): the estimated cost is the tile's figure, the connected count under it.
-"use client";
-
 /**
  * Harnesses used (plans/feat-overview.md §8), the KPI row's fourth tile: connected harnesses, active developers, and
  * each harness's share and est. cost over the page's range, from the landing request (the server picks the scope). On OSS
  * (a bare 404) it shows the viewer's own usage and says so, exactly as the Harnesses page does. The share bar uses each
  * harness's chart token, never the accent; the list under it carries the same numbers as text.
  */
-import { SquareTerminal } from "lucide-react";
-import type { CSSProperties } from "react";
-import { KpiTile } from "@nasiko/ui/composites";
-import { Card } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { ButtonLink } from "../../agents/components/ButtonLink";
-import { HARNESSES } from "../../harnesses/constants";
-import { fmtMoney, fmtPct } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import type { HarnessSummary } from "../api";
-import { copy } from "../copy";
-import { SourceFailed, TOUCH } from "./Card";
-import { TILE, TileLabel } from "./Kpis";
+import { Link } from '@tanstack/react-router'
+import { SquareTerminal } from 'lucide-react'
+import type { CSSProperties } from 'react'
+import { KpiTile } from '@nasiko/ui/composites/kpi-tile'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Card } from '@nasiko/ui/primitives/card'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { HARNESSES } from '@nasiko/features/harnesses/constants'
+import { fmtMoney, fmtPct } from '@nasiko/ui/lib/format'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { HarnessSummary } from '../api'
+import { copy } from '../copy'
+import { SourceFailed, TOUCH } from './Card'
+import { TILE, TileLabel } from './Kpis'
 
-const known = new Map<string, { name: string; color: string }>(HARNESSES.map((h) => [h.id, h]));
-const colorOf = (id: string) => known.get(id)?.color ?? "var(--chart-other)";
+const known = new Map<string, { name: string; color: string }>(HARNESSES.map((h) => [h.id, h]))
+const colorOf = (id: string) => known.get(id)?.color ?? 'var(--chart-other)'
 
 function pricedOf(data: HarnessSummary) {
-  const priced = data.harnesses.filter((h) => !h.unpriced && (h.cost ?? 0) > 0);
-  return { priced, total: priced.reduce((n, h) => n + (h.cost ?? 0), 0) };
+  const priced = data.harnesses.filter((h) => !h.unpriced && (h.cost ?? 0) > 0)
+  return { priced, total: priced.reduce((n, h) => n + (h.cost ?? 0), 0) }
 }
 
 const Dot = () => (
   <span aria-hidden className="text-muted-foreground">
     ·
   </span>
-);
+)
 
 /**
  * The first run's Harnesses: one line instead of the KPI tile, so an empty fleet has no loud zero over empty space. The
@@ -48,72 +43,76 @@ export function HarnessesLine({
   days,
   className,
 }: {
-  data: HarnessSummary;
-  days: number;
-  className?: string | undefined;
+  data: HarnessSummary
+  days: number
+  className?: string
 }) {
-  const { total } = pricedOf(data);
+  const { total } = pricedOf(data)
   const link = (label: string) => (
     // Underlined: inside a sentence a link can't be told from the text by colour (WCAG 1.4.1).
-    <ButtonLink
+    <Button
+      asChild
       variant="link"
       size="sm"
       className={`h-6 px-0 text-sm underline underline-offset-4 ${TOUCH}`}
-      href="/harnesses"
     >
-      {label}
-    </ButtonLink>
-  );
+      <Link to="/harnesses" search={{} as never}>
+        {label}
+      </Link>
+    </Button>
+  )
   return (
     <Card
-      render={<section aria-label={copy.harnesses.title} data-testid="overview-harnesses" />}
+      asChild
       className={cn(
-        "flex-row flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm",
+        'flex-row flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
         className,
       )}
     >
-      {/* A failed read brings its own warning icon. */}
-      {data.error ? null : (
-        <SquareTerminal aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      )}
-      {data.isPending ? (
-        <Skeleton className="h-4 w-56 motion-reduce:animate-none" />
-      ) : data.error ? (
-        <SourceFailed what={copy.harnesses.what} onRetry={data.retry} />
-      ) : data.notVisible ? (
-        <span className="text-muted-foreground">{copy.harnesses.notVisible}</span>
-      ) : !data.connected ? (
-        <>
-          <span>{copy.harnesses.noneYet}</span>
-          <Dot />
-          <span>{link(copy.harnesses.connect)}.</span>
-        </>
-      ) : (
-        <>
-          <span className="tabular-nums">{copy.harnesses.connected(data.connected)}</span>
-          {data.ownOnly ? (
-            <span className="text-muted-foreground">({copy.kpi.yourUsage})</span>
-          ) : null}
-          {total > 0 ? (
-            <>
-              <Dot />
-              <span className="text-muted-foreground tabular-nums">
-                {copy.harnesses.lineCost(fmtMoney(total), days)}
-              </span>
-            </>
-          ) : null}
-          <Dot />
-          {link(copy.harnesses.open)}
-        </>
-      )}
+      <section aria-label={copy.harnesses.title} data-testid="overview-harnesses">
+        {/* A failed read brings its own warning icon. */}
+        {data.error ? null : (
+          <SquareTerminal aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        {data.isPending ? (
+          <Skeleton className="h-4 w-56 motion-reduce:animate-none" />
+        ) : data.error ? (
+          <SourceFailed what={copy.harnesses.what} onRetry={data.retry} />
+        ) : data.notVisible ? (
+          <span className="text-muted-foreground">{copy.harnesses.notVisible}</span>
+        ) : !data.connected ? (
+          <>
+            <span>{copy.harnesses.noneYet}</span>
+            <Dot />
+            <span>{link(copy.harnesses.connect)}.</span>
+          </>
+        ) : (
+          <>
+            <span className="tabular-nums">{copy.harnesses.connected(data.connected)}</span>
+            {data.ownOnly ? (
+              <span className="text-muted-foreground">({copy.kpi.yourUsage})</span>
+            ) : null}
+            {total > 0 ? (
+              <>
+                <Dot />
+                <span className="text-muted-foreground tabular-nums">
+                  {copy.harnesses.lineCost(fmtMoney(total), days)}
+                </span>
+              </>
+            ) : null}
+            <Dot />
+            {link(copy.harnesses.open)}
+          </>
+        )}
+      </section>
     </Card>
-  );
+  )
 }
 
 export function Harnesses({ data, days }: { data: HarnessSummary; days: number }) {
-  const { priced, total } = pricedOf(data);
-  const share = (h: HarnessSummary["harnesses"][number]) =>
-    total > 0 && !h.unpriced ? ((h.cost ?? 0) / total) * 100 : null;
+  const { priced, total } = pricedOf(data)
+  const share = (h: HarnessSummary['harnesses'][number]) =>
+    total > 0 && !h.unpriced ? ((h.cost ?? 0) / total) * 100 : null
   return (
     <KpiTile
       data-testid="overview-harnesses"
@@ -136,16 +135,16 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
         data.isPending ? (
           <Skeleton className="h-8 w-28 motion-reduce:animate-none" />
         ) : data.error || data.notVisible ? (
-          "—"
+          '—'
         ) : total > 0 ? (
           // The estimated cost is the figure (redesign 2026-10-19): often the largest dollar amount on the page.
           <>
-            {fmtMoney(total)}{" "}
+            {fmtMoney(total)}{' '}
             <span className="text-base font-normal text-muted-foreground">{copy.kpi.est}</span>
           </>
         ) : (
           <>
-            {data.connected}{" "}
+            {data.connected}{' '}
             <span className="text-base font-normal text-muted-foreground">
               {copy.kpi.connected}
             </span>
@@ -159,15 +158,12 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
         <p className="text-xs text-muted-foreground">{copy.harnesses.notVisible}</p>
       ) : !data.connected ? (
         <p className="text-xs">
-          {copy.harnesses.none}{" "}
-          <ButtonLink
-            variant="link"
-            size="sm"
-            className={`h-auto px-0 text-xs ${TOUCH}`}
-            href="/harnesses"
-          >
-            {copy.harnesses.connect}
-          </ButtonLink>
+          {copy.harnesses.none}{' '}
+          <Button asChild variant="link" size="sm" className={`h-auto px-0 text-xs ${TOUCH}`}>
+            <Link to="/harnesses" search={{} as never}>
+              {copy.harnesses.connect}
+            </Link>
+          </Button>
         </p>
       ) : (
         <>
@@ -186,30 +182,30 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
                   <span
                     key={h.id}
                     className="h-full bg-(--bar)"
-                    style={{ width: `${share(h)}%`, "--bar": colorOf(h.id) } as CSSProperties}
+                    style={{ width: `${share(h)}%`, '--bar': colorOf(h.id) } as CSSProperties}
                   />
                 ))}
               </div>
             ) : null}
             <ul className="grid grid-cols-[auto_1fr_auto_auto] items-center gap-x-2 gap-y-0.5 text-xs">
               {data.harnesses.map((h) => {
-                const s = share(h);
+                const s = share(h)
                 return (
                   <li key={h.id} className="contents">
                     <span
                       aria-hidden
                       className="size-2.5 rounded-xs bg-(--bar)"
-                      style={{ "--bar": colorOf(h.id) } as CSSProperties}
+                      style={{ '--bar': colorOf(h.id) } as CSSProperties}
                     />
                     <span className="truncate">{known.get(h.id)?.name ?? h.id}</span>
                     <span className="text-right text-muted-foreground tabular-nums">
-                      {s === null ? "" : fmtPct(s)}
+                      {s === null ? '' : fmtPct(s)}
                     </span>
                     <span className="text-right text-muted-foreground tabular-nums">
                       {h.unpriced ? copy.harnesses.unpriced : fmtMoney(h.cost ?? 0)}
                     </span>
                   </li>
-                );
+                )
               })}
             </ul>
             <p className="text-[0.6875rem] text-muted-foreground">
@@ -219,5 +215,5 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
         </>
       )}
     </KpiTile>
-  );
+  )
 }

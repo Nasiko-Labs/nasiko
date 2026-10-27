@@ -1,12 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/components/DayPanel.tsx. Local edits: the chart
-// kit parts come from `@nasiko/ui/charts-kit` (incl. `seriesAt`/`OTHER_SERIES`, the lab's `@/lib/chart`); the
-// sessions link's `m.span layoutId` is `MorphSpan` from `@nasiko/ui/motion` (the same `m.span`; the app scope
-// loads `domMax`, so the shared-layout morph plays as in the lab); primitives from `@nasiko/ui/primitives`, composites from
-// `@nasiko/ui/composites`, `cn`/formatters/`prefersReducedMotion` from `@nasiko/ui/cn` and `@nasiko/ui/lib`;
-// optional props typed `| undefined`; lint-driven mechanical edits (void arrow bodies braced,
-// unnecessary assertions dropped); Prettier formatting.
-"use client";
-
 /**
  * F2 day panel: 24 UTC hours stacked by the day's top 4 agents + Others (plan A5, A9, A11).
  *
@@ -21,45 +12,44 @@
  * another day leaves focus where the user is and is announced politely. Closing returns
  * focus to whatever opened the day last.
  */
-import { BarChart3, ListTree, Table2, X } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { BarChart3, ListTree, Table2, X } from 'lucide-react'
+import { m } from 'motion/react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import { Bar } from '@nasiko/ui/charts/bar'
+import { BarChart } from '@nasiko/ui/charts/bar-chart'
+import { BarXAxis } from '@nasiko/ui/charts/bar-x-axis'
+import type { TooltipData } from '@nasiko/ui/charts/chart-context'
+import { ChartHover } from '@nasiko/ui/charts/chart-hover'
+import { Grid } from '@nasiko/ui/charts/grid'
+import { ReferenceLine } from '@nasiko/ui/charts/reference-line'
+import { ChartTooltip } from '@nasiko/ui/charts/tooltip/chart-tooltip'
+import { YAxis } from '@nasiko/ui/charts/y-axis'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
-  Bar,
-  BarChart,
-  BarXAxis,
-  ChartHover,
-  ChartTooltip,
-  Grid,
-  OTHER_SERIES,
-  ReferenceLine,
-  seriesAt,
-  YAxis,
-  type TooltipData,
-} from "@nasiko/ui/charts-kit";
-import {
-  Button,
   TableBody,
   TableCaption,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
-} from "@nasiko/ui/primitives";
-import { fmtLongDay, fmtMoney, fmtMoneyAxis, prefersReducedMotion } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
+} from '@nasiko/ui/primitives/table'
+import { morphId } from '@nasiko/features/observability/tuning'
+import { prefersReducedMotion } from '@nasiko/ui/lib/useMediaQuery'
+import { cn } from '@nasiko/ui/lib/utils'
 import {
   buildConcentration,
   segmentAt,
   type Concentration,
   type ConcentrationRow,
-} from "../concentration";
-import type { FinopsDayDrilldown } from "../types";
-import { Panel, PanelEmpty, PanelError, PanelSkeleton, Swatch } from "@nasiko/ui/composites";
-import { MorphSpan } from "@nasiko/ui/motion";
-import { morphId } from "../../observability/tuning";
-import { CELL, ChartTable, HEAD, NUM, ROW_HEAD, STICKY_HEAD } from "./ChartTable";
+} from '../concentration'
+import { fmtLongDay, fmtMoney, fmtMoneyAxis } from '@nasiko/ui/lib/format'
+import type { FinopsDayDrilldown } from '../types'
+import { Panel, PanelEmpty, PanelError, PanelSkeleton } from '@nasiko/ui/composites/panel'
+import { CELL, ChartTable, HEAD, NUM, ROW_HEAD, STICKY_HEAD } from './ChartTable'
+import { Swatch } from '@nasiko/ui/composites/chart-marks'
+import { OTHER_SERIES, seriesAt } from '@nasiko/ui/lib/chart'
 
-const TITLE_ID = "day-panel-title";
+const TITLE_ID = 'day-panel-title'
 
 export function DayPanel({
   date,
@@ -76,63 +66,62 @@ export function DayPanel({
   sessionsLink,
   morph = true,
 }: {
-  date: string;
-  data: FinopsDayDrilldown | undefined;
-  loading: boolean;
-  error: unknown;
-  onRetry: () => void;
-  onClose: () => void;
+  date: string
+  data: FinopsDayDrilldown | undefined
+  loading: boolean
+  error: unknown
+  onRetry: () => void
+  onClose: () => void
   /** True right after the user opened the panel: take focus and scroll into view, then call onAnnounced. */
-  announce: boolean;
-  onAnnounced: () => void;
+  announce: boolean
+  onAnnounced: () => void
   /** False for names the page can't map to one agent (ambiguous, not yet loaded, or no access). */
-  canFilterAgent: (displayName: string) => boolean;
-  onFilterAgent: (displayName: string) => void;
-  onViewTraces: () => void;
+  canFilterAgent: (displayName: string) => boolean
+  onFilterAgent: (displayName: string) => void
+  onViewTraces: () => void
   /** "See sessions →" for this day; also the header's shared-layout (morph) source. */
-  sessionsLink?: ReactNode;
+  sessionsLink?: ReactNode
   /** False when another element on the page already owns this day's morph (the summary's spike clause). */
-  morph?: boolean | undefined;
+  morph?: boolean
 }) {
-  const [asTable, setAsTable] = useState(false);
-  const opener = useRef<HTMLElement | null>(null);
-  const panel = useRef<HTMLElement>(null);
-  const heading = useRef<HTMLHeadingElement>(null);
+  const [asTable, setAsTable] = useState(false)
+  const opener = useRef<HTMLElement | null>(null)
+  const panel = useRef<HTMLElement>(null)
+  const heading = useRef<HTMLHeadingElement>(null)
   // Remember what opened this day (calendar cell, timeline row); focus goes back there on close.
   useEffect(() => {
-    const active = document.activeElement;
+    const active = document.activeElement
     if (
       active instanceof HTMLElement &&
       active !== document.body &&
       !panel.current?.contains(active)
     )
-      opener.current = active;
-  }, [date]);
+      opener.current = active
+  }, [date])
   // A user open: bring the panel into view and move focus to it. Later day changes (e.g.
   // arrowing through the calendar with the panel open) leave focus where the user is.
   useEffect(() => {
-    if (!announce) return;
-    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- jsdom has no scrollIntoView (the lab's optional call)
+    if (!announce) return
     heading.current?.scrollIntoView?.({
-      block: "start",
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
-    heading.current?.focus({ preventScroll: true });
-    onAnnounced();
-  }, [announce, onAnnounced]);
+      block: 'start',
+      behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+    })
+    heading.current?.focus({ preventScroll: true })
+    onAnnounced()
+  }, [announce, onAnnounced])
   useEffect(
     () => () => {
-      if (opener.current?.isConnected) opener.current.focus();
+      if (opener.current?.isConnected) opener.current.focus()
     },
     [],
-  );
+  )
   // The body re-renders (skeleton) when the filter changes the query; keep focus on the heading.
   const filter = (name: string) => {
-    onFilterAgent(name);
-    heading.current?.focus({ preventScroll: true });
-  };
-  const label = fmtLongDay(date);
-  const c = data ? buildConcentration(data) : null;
+    onFilterAgent(name)
+    heading.current?.focus({ preventScroll: true })
+  }
+  const label = fmtLongDay(date)
+  const c = data ? buildConcentration(data) : null
   return (
     <Panel
       title={`${label} · hour by hour (UTC)`}
@@ -148,27 +137,21 @@ export function DayPanel({
       actions={
         <>
           {/* The label names the action; no aria-pressed ("Chart, pressed" would claim the chart is showing). */}
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              setAsTable((v) => !v);
-            }}
-          >
+          <Button variant="ghost" size="sm" onClick={() => setAsTable((v) => !v)}>
             {asTable ? (
               <BarChart3 className="size-4" aria-hidden />
             ) : (
               <Table2 className="size-4" aria-hidden />
             )}
-            {asTable ? "Chart" : "Table"}
+            {asTable ? 'Chart' : 'Table'}
           </Button>
           {sessionsLink ? (
-            <MorphSpan
+            <m.span
               layoutId={morph ? morphId(`day-header-${date}`) : undefined}
               className="inline-flex items-center"
             >
               {sessionsLink}
-            </MorphSpan>
+            </m.span>
           ) : null}
           <Button variant="outline" size="sm" onClick={onViewTraces}>
             <ListTree className="size-4" aria-hidden /> View traces
@@ -201,7 +184,7 @@ export function DayPanel({
             {c.series.map((s, i) => {
               const spend = s.isOthers
                 ? (data?.others_spend_usd ?? 0)
-                : (data?.top_agents[i]?.spend_usd ?? 0);
+                : (data?.top_agents[i]?.spend_usd ?? 0)
               return (
                 <li key={s.key}>
                   {s.isOthers || !canFilterAgent(s.label) ? (
@@ -216,7 +199,7 @@ export function DayPanel({
                       <span className="inline-flex min-w-0 items-center gap-1.5">
                         <Swatch series={s.isOthers ? OTHER_SERIES : seriesAt(i)} />
                         <span
-                          className={s.isOthers ? "truncate" : "truncate text-muted-foreground"}
+                          className={s.isOthers ? 'truncate' : 'truncate text-muted-foreground'}
                         >
                           {s.label}
                         </span>
@@ -227,9 +210,7 @@ export function DayPanel({
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => {
-                        filter(s.label);
-                      }}
+                      onClick={() => filter(s.label)}
                       className="group h-auto w-full justify-between gap-2 rounded px-2 py-1 text-left text-xs font-normal hover:bg-muted"
                       title={`Filter the page to ${s.label}`}
                     >
@@ -243,16 +224,16 @@ export function DayPanel({
                     </Button>
                   )}
                 </li>
-              );
+              )
             })}
           </ul>
         </div>
       )}
     </Panel>
-  );
+  )
 }
 
-const HOUR_MARGIN = { top: 8, right: 8, bottom: 28, left: 52 };
+const HOUR_MARGIN = { top: 8, right: 8, bottom: 28, left: 52 }
 
 /**
  * The stacked hourly bars. A click filters by the agent whose segment is under the pointer
@@ -264,40 +245,40 @@ function HourChart({
   canFilterAgent,
   onFilterAgent,
 }: {
-  c: Concentration;
-  label: string;
-  canFilterAgent: (displayName: string) => boolean;
-  onFilterAgent: (displayName: string) => void;
+  c: Concentration
+  label: string
+  canFilterAgent: (displayName: string) => boolean
+  onFilterAgent: (displayName: string) => void
 }) {
-  const hovered = useRef<TooltipData | null>(null);
-  const pressed = useRef<TooltipData | null>(null);
+  const hovered = useRef<TooltipData | null>(null)
+  const pressed = useRef<TooltipData | null>(null)
   const onHover = useCallback((h: TooltipData | null) => {
-    hovered.current = h;
-  }, []);
-  const colour = (i: number) => (c.series[i]?.isOthers ? OTHER_SERIES : seriesAt(i));
+    hovered.current = h
+  }, [])
+  const colour = (i: number) => (c.series[i]?.isOthers ? OTHER_SERIES : seriesAt(i))
   const onClick = (e: MouseEvent<HTMLElement>) => {
-    const h = pressed.current;
-    if (!h) return;
-    const y = e.clientY - e.currentTarget.getBoundingClientRect().top - HOUR_MARGIN.top;
-    const s = segmentAt(c.series, h.yPositions, h.point, y);
-    if (s && !s.isOthers && canFilterAgent(s.label)) onFilterAgent(s.label);
-  };
+    const h = pressed.current
+    if (!h) return
+    const y = e.clientY - e.currentTarget.getBoundingClientRect().top - HOUR_MARGIN.top
+    const s = segmentAt(c.series, h.yPositions, h.point, y)
+    if (s && !s.isOthers && canFilterAgent(s.label)) onFilterAgent(s.label)
+  }
   return (
     <figure
       className="m-0 h-55"
-      aria-label={`Hourly spend on ${label}; top agent ${c.series[0]?.label ?? "none"}.`}
+      aria-label={`Hourly spend on ${label}; top agent ${c.series[0]?.label ?? 'none'}.`}
     >
       {/* Pointer-only, so presentation: the legend buttons and the Table view carry the same filter by keyboard. */}
       <div
         role="presentation"
         className="h-full cursor-pointer"
         onPointerDown={() => {
-          pressed.current = hovered.current;
+          pressed.current = hovered.current
         }}
         onClick={onClick}
       >
         <BarChart
-          data={c.rows}
+          data={c.rows as unknown as Record<string, unknown>[]}
           xDataKey="label"
           stacked
           stackGap={2}
@@ -330,7 +311,7 @@ function HourChart({
         </BarChart>
       </div>
     </figure>
-  );
+  )
 }
 
 function HourTooltip({ c, row }: { c: Concentration; row: ConcentrationRow }) {
@@ -348,7 +329,7 @@ function HourTooltip({ c, row }: { c: Concentration; row: ConcentrationRow }) {
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 function HoursTable({
@@ -356,9 +337,9 @@ function HoursTable({
   canFilterAgent,
   onFilterAgent,
 }: {
-  c: Concentration;
-  canFilterAgent: (displayName: string) => boolean;
-  onFilterAgent: (displayName: string) => void;
+  c: Concentration
+  canFilterAgent: (displayName: string) => boolean
+  onFilterAgent: (displayName: string) => void
 }) {
   return (
     <ChartTable className="max-h-80">
@@ -370,11 +351,11 @@ function HoursTable({
           <TableHead scope="col" className={HEAD}>
             Hour (UTC)
           </TableHead>
-          <TableHead scope="col" className={cn(HEAD, "text-right")}>
+          <TableHead scope="col" className={cn(HEAD, 'text-right')}>
             Total
           </TableHead>
           {c.series.map((s) => (
-            <TableHead key={s.key} scope="col" className={cn(HEAD, "text-right")}>
+            <TableHead key={s.key} scope="col" className={cn(HEAD, 'text-right')}>
               {s.isOthers || !canFilterAgent(s.label) ? (
                 s.label
               ) : (
@@ -382,9 +363,7 @@ function HoursTable({
                   variant="link"
                   size="sm"
                   className="h-auto p-0 text-xs"
-                  onClick={() => {
-                    onFilterAgent(s.label);
-                  }}
+                  onClick={() => onFilterAgent(s.label)}
                   title={`Filter the page to ${s.label}`}
                 >
                   {s.label}
@@ -410,5 +389,5 @@ function HoursTable({
         ))}
       </TableBody>
     </ChartTable>
-  );
+  )
 }

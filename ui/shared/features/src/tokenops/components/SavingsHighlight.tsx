@@ -1,7 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/tokenops/components/SavingsHighlight.tsx. Local edits:
-// `Button` from `@nasiko/ui/primitives`, formatters from `@nasiko/ui/lib`; Prettier formatting.
-"use client";
-
 /**
  * The savings headline, always visible.
  *
@@ -13,25 +9,25 @@
  * Deliberately two figures, not four. The full four-up breakdown is thirty pixels further down; a
  * banner that repeats it is just noise above the thing it duplicates.
  */
-import { TrendingDown } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { fmtMoney, fmtPct, fmtTokens } from "@nasiko/ui/lib";
-import type { OptimisationView } from "../optimisation";
-import { isUnconfigured } from "../optimisation";
+import { TrendingDown } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { fmtMoney, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
+import type { OptimisationView } from '../optimisation'
+import { isUnconfigured } from '../optimisation'
 
 export function SavingsHighlight({
   data,
   onSeeDetail,
 }: {
-  data: OptimisationView | undefined;
+  data: OptimisationView | undefined
   /** Opens (and scrolls to) the full section. */
-  onSeeDetail: () => void;
+  onSeeDetail: () => void
 }) {
   // Nothing on: the nudge belongs in the section's own empty state, not as a banner claiming a
   // saving of zero. A page that opens with "£0 saved" reads as a broken feature.
-  if (!data || isUnconfigured(data)) return null;
+  if (!data || isUnconfigured(data)) return null
 
-  const pct = data.savedPct == null ? null : fmtPct(data.savedPct);
+  const pct = data.savedPct == null ? null : fmtPct(data.savedPct)
   return (
     <section
       aria-labelledby="savings-highlight-title"
@@ -46,12 +42,12 @@ export function SavingsHighlight({
         </span>
         <div className="min-w-0">
           <h3 id="savings-highlight-title" className="text-sm font-medium">
-            Optimisation saved you {fmtMoney(data.costSaved)}
+            Optimization saved you {fmtMoney(data.costSaved)}
             {pct ? <> · {pct} fewer tokens</> : null}
           </h3>
           <p className="text-xs text-muted-foreground">
             {fmtTokens(data.tokensSaved)} tokens never sent
-            {data.topCategory ? <> — mostly {inSentence(data.topCategory.label)}</> : null}. Across{" "}
+            {data.topCategory ? <> — mostly {inSentence(data.topCategory.label)}</> : null}. Across{' '}
             {data.optimisedCount} of {data.totalAgents} agents.
           </p>
         </div>
@@ -60,10 +56,10 @@ export function SavingsHighlight({
         See the breakdown <span aria-hidden>↓</span>
       </Button>
     </section>
-  );
+  )
 }
 
-/** Lower-cases only the first letter, so a team name keeps its capital mid-sentence: "smaller prompts (Caveman)". */
+/** Lower-cases only the first letter, so a proper name keeps its capital mid-sentence. */
 function inSentence(label: string) {
-  return label.charAt(0).toLowerCase() + label.slice(1);
+  return label.charAt(0).toLowerCase() + label.slice(1)
 }

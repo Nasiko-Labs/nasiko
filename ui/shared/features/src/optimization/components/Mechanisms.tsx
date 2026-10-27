@@ -1,39 +1,29 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/optimization/components/Mechanisms.tsx. Local edits: `"use
-// client"`; links are the navigation port's `Link` (`@nasiko/app-core/navigation`) with `href`, the Your settings link `useSettingsHref()` (./settingsHref.ts: this
-// page, its search, `#settings`; the lab's `search={(prev) => prev} hash="settings"`); `strategyQuery`/`budgetQuery`
-// take the scope; Prettier formatting.
-// The redesign of TokenOps, Optimization, Overview and Harnesses (legacy ui/ on development, 3aac84f66: 8bf09bf29),
-// merged into this port.
 /**
  * What's optimizing your tokens (plans/feat-optimization-page.md §11, ledger B12): every mechanism that cuts tokens,
  * what it trims, where it is set and its state now, so nobody has to know that PACMS is a personal setting while
- * caveman and ponytail are per-agent switches. Programs carry their internal names in brackets (B12), from the savings
- * data's own `label` and `program` where it answers.
+ * caveman and ponytail are per-agent switches. Program names come from the savings data's own
+ * `label` where it answers.
  *
  * - History selection: your own setting, on this page (Your settings); tier sizes are a superuser setting.
- * - Smaller prompts (Caveman), Less code written (Ponytail), Prompt comments: switches on each agent's Settings tab
+ * - Smaller prompts, Less code written, Prompt comments: switches on each agent's Settings tab
  *   (P5: this block links there, it never edits them). Counts (workspace-wide) and savings come from `/finops/savings`
  *   (main's real endpoint, synced from nasiko-cloud-rs `c8052fed` `savings.rs`); a server without it keeps the rows and links (R2B) and says what will show.
  */
-"use client";
+import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
+import type { ReactNode } from 'react'
+import { Panel } from '@nasiko/ui/composites/panel'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Skeleton } from '@nasiko/ui/primitives/skeleton'
+import { useSavings } from '@nasiko/features/tokenops/api'
+import type { ResolvedWindow } from '@nasiko/features/tokenops/window'
+import { isEndpointAbsent } from '@nasiko/data-access/detect'
+import { budgetQuery, strategyQuery } from '../api'
+import { copy } from '../copy'
+import { Codename, type CodenameKey } from './Codename'
+import { tokensShort } from '../lead'
 
-import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import type { ReactNode } from "react";
-import { Panel } from "@nasiko/ui/composites";
-import { Button } from "@nasiko/ui/primitives";
-import { Skeleton } from "@nasiko/ui/primitives";
-import { useSavings } from "../../tokenops/api";
-import { programName } from "../../tokenops/optimisation";
-import type { ResolvedWindow } from "../../tokenops/window";
-import { isEndpointAbsent, useProductScope } from "@nasiko/data-access/product";
-import { budgetQuery, strategyQuery } from "../api";
-import { copy } from "../copy";
-import { Codename, type CodenameKey } from "./Codename";
-import { tokensShort } from "../lead";
-import { useSettingsHref } from "./settingsHref";
-
-const NO_FILTERS = {};
+const NO_FILTERS = {}
 
 export function Mechanisms({
   win,
@@ -41,24 +31,22 @@ export function Mechanisms({
   superuser,
   enabled,
 }: {
-  win: ResolvedWindow;
-  period: string;
-  superuser: boolean;
-  enabled: boolean;
+  win: ResolvedWindow
+  period: string
+  superuser: boolean
+  enabled: boolean
 }) {
-  const scope = useProductScope();
-  const strategy = useQuery(strategyQuery(scope));
-  const budget = useQuery(budgetQuery(scope));
-  const settingsHref = useSettingsHref();
-  const savings = useSavings(win, NO_FILTERS, "total", enabled);
-  const m = copy.mechanisms;
+  const strategy = useQuery(strategyQuery)
+  const budget = useQuery(budgetQuery)
+  const savings = useSavings(win, NO_FILTERS, 'total', enabled)
+  const m = copy.mechanisms
   // `useSavings` keeps the previous window's data while a new one loads (keepPreviousData): never show that under this
   // window's period, and never let it hide this window's failure.
-  const data = savings.isPlaceholderData ? undefined : savings.data;
-  const absent = savings.isError && isEndpointAbsent(savings.error);
-  const failed = savings.isError && !absent;
-  const program = (id: string) => data?.by_program.find((p) => p.program === id);
-  const cov = data?.coverage;
+  const data = savings.isPlaceholderData ? undefined : savings.data
+  const absent = savings.isError && isEndpointAbsent(savings.error)
+  const failed = savings.isError && !absent
+  const program = (id: string) => data?.by_program.find((p) => p.program === id)
+  const cov = data?.coverage
 
   // A skeleton only while a read is pending; a failed or absent preference read shows no state (R2C: never a forever
   // skeleton), since Your settings below has its own error and Retry.
@@ -69,20 +57,20 @@ export function Mechanisms({
         ? null
         : strategy.data.enabled === false
           ? m.off
-          : `${copy.strategies[strategy.data.strategy].name} · ${copy.level(budget.data.level)}`;
+          : `${copy.strategies[strategy.data.strategy].name} · ${copy.level(budget.data.level)}`
 
-  const programRow = (id: "caveman" | "ponytail", fallback: string) => {
-    const p = program(id);
+  const programRow = (id: 'caveman' | 'ponytail', fallback: string) => {
+    const p = program(id)
     return {
-      name: p ? programName(p.label, p.program) : fallback,
+      name: p ? p.label : fallback,
       saved:
         p && p.saved_tokens > 0
-          ? m.saved(tokensShort(p.saved_tokens), p.basis !== "measured")
+          ? m.saved(tokensShort(p.saved_tokens), p.basis !== 'measured')
           : null,
-    };
-  };
-  const caveman = programRow("caveman", m.caveman);
-  const ponytail = programRow("ponytail", m.ponytail);
+    }
+  }
+  const caveman = programRow('caveman', m.caveman)
+  const ponytail = programRow('ponytail', m.ponytail)
   // Loading: a skeleton; absent or failed: no state (the footnote says why); otherwise the count. The server counts
   // every live agent in the workspace (savings.rs `coverage`), not the viewer's, so the line says so.
   const count = (on: number | undefined, total?: number) =>
@@ -90,7 +78,7 @@ export function Mechanisms({
       ? undefined
       : on === undefined
         ? null
-        : m.agentsOn(on, total);
+        : m.agentsOn(on, total)
 
   return (
     <Panel title={m.title} subtitle={period} labelledBy="optimization-mechanisms-h">
@@ -102,17 +90,19 @@ export function Mechanisms({
           where={
             <>
               <Link
-                href={settingsHref}
+                to="/optimization"
+                search={(prev) => prev}
+                hash="settings"
                 className="underline underline-offset-4 hover:text-primary-text"
               >
                 {m.historyWhere}
               </Link>
               {superuser ? (
                 <>
-                  {" · "}
-                  {m.tiersNote}{" "}
+                  {' · '}
+                  {m.tiersNote}{' '}
                   <Link
-                    href="/settings/optimization-tiers"
+                    to="/settings/optimization-tiers"
                     className="underline underline-offset-4 hover:text-primary-text"
                   >
                     {m.tiersWhere}
@@ -126,7 +116,6 @@ export function Mechanisms({
         />
         <Row
           name={caveman.name}
-          codename="caveman"
           trims={m.cavemanTrims}
           where={<AgentsLink label={m.cavemanWhere} />}
           state={count(cov?.agents_with_compress_enabled, cov?.agents_total)}
@@ -134,7 +123,6 @@ export function Mechanisms({
         />
         <Row
           name={ponytail.name}
-          codename="ponytail"
           trims={m.ponytailTrims}
           where={<AgentsLink label={m.ponytailWhere} />}
           state={count(cov?.agents_with_minimal_code_enabled)}
@@ -152,7 +140,7 @@ export function Mechanisms({
         <p className="m-0 text-xs text-muted-foreground">{m.absent}</p>
       ) : failed ? (
         <p className="m-0 text-xs text-muted-foreground">
-          {m.failed}{" "}
+          {m.failed}{' '}
           <Button
             variant="link"
             size="sm"
@@ -164,19 +152,19 @@ export function Mechanisms({
         </p>
       ) : null}
     </Panel>
-  );
+  )
 }
 
 /** Per-agent switches live on each agent's Settings tab; the link opens your agents. */
 function AgentsLink({ label }: { label: string }) {
   return (
     <>
-      {label}:{" "}
-      <Link href="/agents/mine" className="underline underline-offset-4 hover:text-primary-text">
+      {label}:{' '}
+      <Link to="/agents/mine" className="underline underline-offset-4 hover:text-primary-text">
         {copy.mechanisms.yourAgents}
       </Link>
     </>
-  );
+  )
 }
 
 function Row({
@@ -187,14 +175,14 @@ function Row({
   state,
   saved,
 }: {
-  name: string;
+  name: string
   /** The team name this row introduces in a tooltip (B12). */
-  codename?: CodenameKey;
-  trims: string;
-  where: ReactNode;
+  codename?: CodenameKey
+  trims: string
+  where: ReactNode
   /** undefined while loading; null when there is nothing to show. */
-  state: string | null | undefined;
-  saved: string | null;
+  state: string | null | undefined
+  saved: string | null
 }) {
   return (
     // A tile per mechanism: what it trims and where it is set on the left, its state now on the right.
@@ -218,5 +206,5 @@ function Row({
         {saved ? <span className="text-xs text-muted-foreground tabular-nums">{saved}</span> : null}
       </div>
     </li>
-  );
+  )
 }

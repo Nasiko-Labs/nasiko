@@ -1,45 +1,36 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/overview/components/SavedByAgent.tsx
-// (2d95e6e79: Home's PR2d panel on the Overview). Local edits: the agent link is the navigation port's `Link` to
-// `/agents/<id>`; the shared `EmptyState` is `LabEmptyState`; optional props admit `undefined`; Prettier formatting.
 /**
  * Saved tokens by agent (Home's PR2d panel, on the Overview since 2026-10-19): the agents token optimisation saved the
  * most for over the range, largest first, each name opening the agent's hub, the rest folded into an Other row. Bars
  * are decorative: each row prints its value. "Other" has no bar, since the rest summed would dwarf the named agents.
  */
-import Link from "@nasiko/app-core/navigation";
-import { useRef } from "react";
-import { LabEmptyState as EmptyState } from "@nasiko/ui/composites";
-import { seriesAt } from "@nasiko/ui/lib";
-import { fmtTokens } from "@nasiko/ui/lib";
-import type { SavedByAgent as SavedByAgentData } from "../api";
-import { copy } from "../copy";
-import { SAVED_BARS } from "../tuning";
-import { Card, CardError, CardSkeleton, TOUCH } from "./Card";
+import { Link } from '@tanstack/react-router'
+import { useRef } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { seriesAt } from '@nasiko/ui/lib/chart'
+import { fmtTokens } from '@nasiko/ui/lib/format'
+import type { SavedByAgent as SavedByAgentData } from '../api'
+import { copy } from '../copy'
+import { SAVED_BARS } from '../tuning'
+import { Card, CardError, CardSkeleton, TOUCH } from './Card'
 
-const SAVED = seriesAt(1);
-const ROW = "grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-3 text-sm";
+const SAVED = seriesAt(1)
+const ROW = 'grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-3 text-sm'
 
-export function SavedByAgent({
-  data,
-  className,
-}: {
-  data: SavedByAgentData;
-  className?: string | undefined;
-}) {
-  const titleRef = useRef<HTMLHeadingElement>(null);
-  const rows = data.rows;
-  const bars = rows?.slice(0, SAVED_BARS) ?? [];
-  const rest = rows?.slice(SAVED_BARS) ?? [];
-  const max = Math.max(0, ...bars.map((b) => b.tokens));
-  const bases = new Set(rows?.map((r) => r.basis));
-  const basis = bases.size > 1 ? "mixed" : ([...bases][0] ?? null);
+export function SavedByAgent({ data, className }: { data: SavedByAgentData; className?: string }) {
+  const titleRef = useRef<HTMLHeadingElement>(null)
+  const rows = data.rows
+  const bars = rows?.slice(0, SAVED_BARS) ?? []
+  const rest = rows?.slice(SAVED_BARS) ?? []
+  const max = Math.max(0, ...bars.map((b) => b.tokens))
+  const bases = new Set(rows?.map((r) => r.basis))
+  const basis = bases.size > 1 ? 'mixed' : ([...bases][0] ?? null)
   return (
     <Card
       id="overview-saved"
       title={copy.saved.title}
       to="/tokenops"
       linkLabel={copy.saved.link}
-      linkSearch={{ open: "optimise" }}
+      linkSearch={{ open: 'optimize' }}
       titleRef={titleRef}
       meta={bars.length ? copy.saved.subtitle(basis) : undefined}
       className={className}
@@ -56,7 +47,9 @@ export function SavedByAgent({
             {bars.map((b) => (
               <li key={b.id} className={ROW}>
                 <Link
-                  href={`/agents/${encodeURIComponent(b.id)}`}
+                  to="/agents/$agentId"
+                  params={{ agentId: b.id }}
+                  search={{}}
                   title={b.name}
                   className={`truncate underline-offset-4 hover:underline ${TOUCH} pointer-coarse:flex pointer-coarse:items-center`}
                 >
@@ -91,5 +84,5 @@ export function SavedByAgent({
         </div>
       )}
     </Card>
-  );
+  )
 }

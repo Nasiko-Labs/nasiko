@@ -1,101 +1,89 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/settings/SettingsLayout.tsx. Local edits: `"use client"`;
-// the router seam: `useRouterState().location` is the port's `usePathname()` and `useSearchParams()` (`section` read as a
-// string or null), and each row's link is the navigation port's `Link` (`@nasiko/app-core/navigation`) with `href` (`hrefFor('/settings', { section })` for the
-// workspace page) in place of TanStack's `to`/`search`, keeping `replace` and `aria-current`; `SidebarMenuButton
-// asChild` -> `render={<Link …/>}` (Base UI useRender; the label stays the button's child); `meQuery` is
-// `meQueryOptions(scope)`; optional props typed `| undefined`; Prettier formatting.
-// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the open section is the breadcrumb's level, and
-// Account settings is its own first level.
-// Keyboard shortcuts (51901c342) is the account's third section.
 /**
  * The Settings module (plans/feat-settings.md §1), around each of its pages. Its sections are the sidebar's drill-in
  * panel (`SidebarPanel`: one sidebar, never two side by side); with the sidebar collapsed they fall back as Chat's
  * rail does: the same nav in a full-height column beside the rail from 1024 px, a sheet opened from above the page
  * below that. The page scrolls in its own column (the shell fills the viewport on /settings, as on /chat). The rows
- * are nasiko-cloud-rs (`origin/development` a4853db4) `ui/oss/navigation.js` `MODULE_NAVS.settings` plus
+ * are nasiko-cloud-rs (`origin/development` a4853db4) `ui/oss/app/navigation.js` `MODULE_NAVS.settings` plus
  * the EE layer's `nav-ext-ee.js`:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Optimization tiers (`/settings/optimization-tiers`), Registry.
  *   `/settings?section=` for the sections of the one form.
- * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`).
+ * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks` (EE: Memory
+ *   recall, `/settings/memory`).
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees Secrets only:
  * the workspace sections are superuser-gated on the API. This is the sidebar's Organization → Settings.
  * With `account`, the same layout holds the account's own settings (the account menu's Settings): Appearance
  * (`/account/appearance`; the lab's, this browser's mode and theme) and Password (`/account/password`; Change
  * password). Optimization moved to /optimization (plans/feat-optimization-page.md P2).
  */
-"use client";
-
-import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import { usePathname, useSearchParams } from "@nasiko/app-core/navigation";
-import { PanelLeft, Settings } from "lucide-react";
-import { useState, type ReactNode } from "react";
-import { useSlots } from "@nasiko/app-core/edition/edition-context";
-import type { SettingsSection } from "@nasiko/app-core/edition/edition";
-import { ACTIVE_ROW, ROW } from "@nasiko/app-core/shell/rowStyles";
-import { SidebarPanel } from "@nasiko/app-core/shell/SidebarPanel";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { Button } from "@nasiko/ui/primitives";
-import { Sheet, SheetContent, SheetTitle } from "@nasiko/ui/primitives";
+import { useQuery } from '@tanstack/react-query'
+import { Link, useRouterState } from '@tanstack/react-router'
+import { PanelLeft, Settings } from 'lucide-react'
+import { useState, type ReactNode } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import type { SettingsSection } from '@nasiko/app-core/edition/edition'
+import { ACTIVE_ROW, ROW } from '@nasiko/app-core/shell/rowStyles'
+import { SidebarPanel } from '@nasiko/app-core/shell/SidebarPanel'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Sheet, SheetContent, SheetTitle } from '@nasiko/ui/primitives/sheet'
 import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-} from "@nasiko/ui/primitives";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { hrefFor } from "@nasiko/app-core/url-state";
-import { useMediaQuery } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import { copy } from "./copy";
-import { CORE_SECTIONS } from "./search";
+} from '@nasiko/ui/primitives/sidebar'
+import { meQuery } from '@nasiko/data-access/auth'
+import { useMediaQuery } from '@nasiko/ui/lib/useMediaQuery'
+import { cn } from '@nasiko/ui/lib/utils'
+import { copy } from './copy'
+import { CORE_SECTIONS } from './search'
 
 interface Row {
-  key: string;
-  label: string;
-  // A layer's `personalSettingsLinks` entry carries its own route (e.g. `/settings/memory`), not one of the core's.
-  to: string;
-  section?: string | undefined;
+  key: string
+  label: string
+  // A layer's own `personalSettingsLinks` entry carries its own route (e.g. `/settings/memory`), not one of the
+  // core's — same widening `LayerNavItem` uses for the app sidebar (edition.ts).
+  to: string
+  section?: string
 }
 
 /** `rows` with each layer section inserted after the row it names (or appended). */
 function withLayer(rows: Row[], layer: readonly SettingsSection[]): Row[] {
-  const out = [...rows];
+  const out = [...rows]
   for (const s of layer) {
-    const row: Row = { key: s.key, label: s.label, to: "/settings", section: s.key };
-    const at = s.after ? out.findIndex((r) => r.key === s.after) : -1;
-    if (at < 0) out.push(row);
-    else out.splice(at + 1, 0, row);
+    const row: Row = { key: s.key, label: s.label, to: '/settings', section: s.key }
+    const at = s.after ? out.findIndex((r) => r.key === s.after) : -1
+    if (at < 0) out.push(row)
+    else out.splice(at + 1, 0, row)
   }
-  return out;
+  return out
 }
 
 export function SettingsLayout({
   children,
   account = false,
 }: {
-  children: ReactNode;
-  account?: boolean;
+  children: ReactNode
+  account?: boolean
 }) {
-  const me = useQuery(meQueryOptions(useProductScope()));
+  const me = useQuery(meQuery)
   // Chat's breakpoint for an inline rail (ChatPage `wide`).
-  const wide = useMediaQuery("(min-width: 1024px)");
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const { settingsSections, personalSettingsLinks } = useSlots();
-  const pathname = usePathname();
-  const params = useSearchParams();
-  const admin = me.data?.is_superuser === true;
-  const inGroup = (g: "workspace" | "security") => settingsSections.filter((s) => s.group === g);
+  const wide = useMediaQuery('(min-width: 1024px)')
+  const [sheetOpen, setSheetOpen] = useState(false)
+  const { settingsSections, personalSettingsLinks } = useSlots()
+  const location = useRouterState({ select: (s) => s.location })
+  const admin = me.data?.is_superuser === true
+  const inGroup = (g: 'workspace' | 'security') => settingsSections.filter((s) => s.group === g)
   const groups: { key: string; label: string; rows: Row[] }[] = account
     ? [
         {
-          key: "account",
+          key: 'account',
           label: copy.nav.account,
           rows: [
-            { key: "appearance", label: copy.appearance.label, to: "/account/appearance" },
-            { key: "password", label: copy.password.label, to: "/account/password" },
-            { key: "shortcuts", label: copy.shortcuts.label, to: "/account/shortcuts" },
+            { key: 'appearance', label: copy.appearance.label, to: '/account/appearance' },
+            { key: 'password', label: copy.password.label, to: '/account/password' },
+            { key: 'shortcuts', label: copy.shortcuts.label, to: '/account/shortcuts' },
           ],
         },
       ]
@@ -103,56 +91,60 @@ export function SettingsLayout({
         ...(admin
           ? [
               {
-                key: "workspace",
+                key: 'workspace',
                 label: copy.nav.workspace,
                 rows: withLayer(
                   CORE_SECTIONS.flatMap((k): Row[] => [
                     {
                       key: k,
                       label: copy.sections[k].label,
-                      to: "/settings",
+                      to: '/settings',
                       // General is the default: its link carries no section.
-                      section: k === "general" ? undefined : k,
+                      section: k === 'general' ? undefined : k,
                     },
                     // A sub-page after Flow limits (plans/feat-context-optimization.md F4): its own route and read.
-                    ...(k === "limits"
+                    ...(k === 'limits'
                       ? [
                           {
-                            key: "optimization-tiers",
+                            key: 'optimization-tiers',
                             label: copy.optimizationTiers.label,
-                            to: "/settings/optimization-tiers" as const,
+                            to: '/settings/optimization-tiers' as const,
                           },
                         ]
                       : []),
                   ]),
-                  inGroup("workspace"),
+                  inGroup('workspace'),
                 ),
               },
             ]
           : []),
         {
-          key: "security",
+          key: 'security',
           label: copy.nav.security,
           rows: [
-            ...withLayer([], admin ? inGroup("security") : []),
-            { key: "secrets", label: copy.secrets.title, to: "/settings/secrets" },
-            // Every user's own, like Secrets — never gated by `admin` (a layer's own route, not a `?section=` page).
+            ...withLayer([], admin ? inGroup('security') : []),
+            { key: 'secrets', label: copy.secrets.title, to: '/settings/secrets' },
+            // Every user's own, like Secrets above — never gated by `admin` (personalSettingsLinks is a plain nav
+            // link to the layer's own route, not a `/settings?section=` page).
             ...personalSettingsLinks.map((l): Row => ({ key: l.key, label: l.label, to: l.to })),
           ],
         },
-      ];
-  const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.key)));
-  const raw = params.get("section");
+      ]
+  const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.key)))
+  const raw = (location.search as { section?: unknown }).section
   // A sub-page (Secrets, Tiers, Appearance, Password, Shortcuts) is current by its path; the workspace page by `?section=`.
-  const page = groups.flatMap((g) => g.rows).find((r) => r.to === pathname && r.to !== "/settings");
-  const onSubPage = page !== undefined;
-  const current = page ? page.key : raw !== null && known.has(raw) ? raw : "general";
+  const page = groups
+    .flatMap((g) => g.rows)
+    .find((r) => r.to === location.pathname && r.to !== '/settings')
+  const onSubPage = page !== undefined
+  const current = page ? page.key : typeof raw === 'string' && known.has(raw) ? raw : 'general'
   const linkProps = (r: Row) => ({
-    href: r.to === "/settings" ? hrefFor(r.to, { section: r.section }) : r.to,
+    to: r.to,
+    search: r.to === '/settings' ? { section: r.section } : undefined,
     // Sections of the workspace page replace each other; a move between pages is pushed.
-    replace: r.to === "/settings" && !onSubPage,
-    "aria-current": current === r.key ? ("page" as const) : undefined,
-  });
+    replace: r.to === '/settings' && !onSubPage,
+    'aria-current': current === r.key ? ('page' as const) : undefined,
+  })
   const nav = (framed = false, onNavigate?: () => void) => (
     <SectionsNav
       groups={groups}
@@ -162,13 +154,13 @@ export function SettingsLayout({
       framed={framed}
       title={account ? copy.accountTitle : copy.title}
     />
-  );
-  const label = groups.flatMap((g) => g.rows).find((r) => r.key === current)?.label;
+  )
+  const label = groups.flatMap((g) => g.rows).find((r) => r.key === current)?.label
   return (
     <>
       {/* Settings › Secrets; Account settings has no nav item of its own, so it is the first level. */}
       <TopBar
-        root={account ? <Link href="/account/appearance">{copy.accountTitle}</Link> : undefined}
+        root={account ? <Link to="/account/appearance">{copy.accountTitle}</Link> : undefined}
         trail={label ? [label] : []}
       />
       <SidebarPanel panel={nav()}>
@@ -185,15 +177,13 @@ export function SettingsLayout({
                   <SheetTitle className="sr-only">{copy.nav.label}</SheetTitle>
                   {/* The sheet's close button sits top-right; start the list below it. */}
                   <div className="flex h-full min-h-0 flex-col pt-4">
-                    {nav(true, () => {
-                      setSheetOpen(false);
-                    })}
+                    {nav(true, () => setSheetOpen(false))}
                   </div>
                 </SheetContent>
               </Sheet>
             )}
             {/* `relative`: the scroll box is the positioning context, so an absolutely placed child (Radix's hidden form
-                input behind a Switch) scrolls inside it instead of stretching the document and moving the shell. */}
+              input behind a Switch) scrolls inside it instead of stretching the document and moving the shell. */}
             <div className="@container relative min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
               <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 @[768px]:pt-6">
                 {inSidebar || wide ? null : (
@@ -201,9 +191,7 @@ export function SettingsLayout({
                     variant="ghost"
                     size="sm"
                     className="-ml-2 self-start text-muted-foreground pointer-coarse:min-h-11"
-                    onClick={() => {
-                      setSheetOpen(true);
-                    }}
+                    onClick={() => setSheetOpen(true)}
                   >
                     <PanelLeft aria-hidden />
                     {copy.nav.label}
@@ -216,22 +204,23 @@ export function SettingsLayout({
         )}
       </SidebarPanel>
     </>
-  );
+  )
 }
 
 interface NavProps {
-  groups: { key: string; label: string; rows: Row[] }[];
-  current: string;
+  groups: { key: string; label: string; rows: Row[] }[]
+  current: string
   linkProps: (r: Row) => {
-    href: string;
-    replace: boolean;
-    "aria-current": "page" | undefined;
-  };
+    to: Row['to']
+    search: { section?: string } | undefined
+    replace: boolean
+    'aria-current': 'page' | undefined
+  }
   /** Closes the sheet after a pick. */
-  onNavigate?: (() => void) | undefined;
-  title: string;
+  onNavigate?: () => void
+  title: string
   /** Beside the rail or in the sheet: the title is a 48 px header row, as Chat's rail has (in the sidebar it sits under Back). */
-  framed?: boolean;
+  framed?: boolean
 }
 
 /**
@@ -247,8 +236,8 @@ function SectionsNav({ groups, current, linkProps, onNavigate, framed = false, t
     >
       <p
         className={cn(
-          "flex items-center gap-2 px-5 text-sm font-semibold",
-          framed ? "h-12 shrink-0" : "mt-2",
+          'flex items-center gap-2 px-5 text-sm font-semibold',
+          framed ? 'h-12 shrink-0' : 'mt-2',
         )}
       >
         <Settings aria-hidden className="size-4 text-muted-foreground" />
@@ -263,13 +252,13 @@ function SectionsNav({ groups, current, linkProps, onNavigate, framed = false, t
             {g.rows.map((r) => (
               <SidebarMenuItem key={r.key}>
                 <SidebarMenuButton
+                  asChild
                   isActive={current === r.key}
                   className={cn(ROW, ACTIVE_ROW)}
-                  render={
-                    <Link {...linkProps(r)} {...(onNavigate ? { onClick: onNavigate } : {})} />
-                  }
                 >
-                  {r.label}
+                  <Link {...linkProps(r)} onClick={onNavigate}>
+                    {r.label}
+                  </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}
@@ -277,5 +266,5 @@ function SectionsNav({ groups, current, linkProps, onNavigate, framed = false, t
         </SidebarGroup>
       ))}
     </nav>
-  );
+  )
 }

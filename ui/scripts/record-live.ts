@@ -29,19 +29,19 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
-import { generateSeed } from '../common/src/mocks/seed.ts'
-import { MCP_CONNECTORS, mcpConnectorId } from '../common/src/mocks/seed-mcp.ts'
+import { generateSeed } from '../shared/mocks/src/seed.ts'
+import { MCP_CONNECTORS, mcpConnectorId } from '../shared/mocks/src/seed-mcp.ts'
 import {
   ADMIN_ID,
   adminHarnessAgents,
   generateHarnessSeed,
   harnessTurns,
-} from '../common/src/mocks/seed-harness.ts'
+} from '../shared/mocks/src/seed-harness.ts'
 import {
   CAPTURE_OFF_AGENT,
   generateSpans,
   observabilityData,
-} from '../common/src/mocks/spanBuilder.ts'
+} from '../shared/mocks/src/spanBuilder.ts'
 import { readCredentials } from './lib/eeOrg.ts'
 import {
   ERRORS,
@@ -70,7 +70,7 @@ import {
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const LIVE_DIR = join(ROOT, '.live')
-const FIXTURES = join(ROOT, 'common/src/test/__live__')
+const FIXTURES = join(ROOT, 'shared/testing/src/__live__')
 const MANIFEST = join(FIXTURES, 'manifest.json')
 const TEMPO_CONFIG = join(ROOT, 'scripts/live/tempo.yaml')
 export const FIXTURE_VERSION = 1

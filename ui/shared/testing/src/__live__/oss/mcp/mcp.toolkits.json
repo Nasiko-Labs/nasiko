@@ -1,0 +1,84 @@
+{
+  "fixture_version": 1,
+  "id": "mcp.toolkits",
+  "recorded_at": "2026-09-30T14:28:36.555Z",
+  "window": {
+    "start": "2026-09-30T14:28:36.555Z",
+    "end": "2026-09-30T14:28:36.571Z"
+  },
+  "anchor": "2026-09-30T14:28:34.234Z",
+  "edition": "oss",
+  "identity": "admin",
+  "server": {
+    "sha": "a6feda17b873f12bac56addd44fda43ff7d6c37a",
+    "dirty": false,
+    "openapi_sha256": "8082e58f9e220358b2c225ae5b11c6e295a3b67fd21b945e6e73c16a5f2d67d7",
+    "binary_mtime": "2026-09-30T14:28:12.734Z"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/mcp/composio/toolkits",
+    "query": {}
+  },
+  "status": 200,
+  "content_type": "application/json",
+  "body": {
+    "data": {
+      "toolkits": [
+        {
+          "auth_flow": "oauth",
+          "connector_id": "5eed000e-0000-4000-8000-000000000001",
+          "description": "Repositories, issues and pull requests.",
+          "display_name": "GitHub",
+          "is_connected": true,
+          "logo_url": null,
+          "name": "github",
+          "tool_count": 4
+        },
+        {
+          "auth_flow": "oauth",
+          "connector_id": "5eed000e-0000-4000-8000-000000000002",
+          "description": "Read, search and send email.",
+          "display_name": "Gmail",
+          "is_connected": false,
+          "logo_url": null,
+          "name": "gmail",
+          "tool_count": 2
+        },
+        {
+          "auth_flow": "oauth",
+          "connector_id": "5eed000e-0000-4000-8000-000000000005",
+          "description": "Issues, projects and cycles.",
+          "display_name": "Linear",
+          "is_connected": false,
+          "logo_url": null,
+          "name": "linear",
+          "tool_count": 2
+        },
+        {
+          "auth_flow": "oauth",
+          "connector_id": "5eed000e-0000-4000-8000-000000000004",
+          "description": "Pages and databases in your workspace.",
+          "display_name": "Notion",
+          "is_connected": false,
+          "logo_url": null,
+          "name": "notion",
+          "tool_count": 2
+        },
+        {
+          "auth_flow": "oauth",
+          "connector_id": "5eed000e-0000-4000-8000-000000000003",
+          "description": "Post and read channel messages.",
+          "display_name": "Slack",
+          "is_connected": false,
+          "logo_url": null,
+          "name": "slack",
+          "tool_count": 3
+        }
+      ],
+      "total": 5
+    },
+    "message": "Toolkits retrieved successfully",
+    "status_code": 200
+  }
+}

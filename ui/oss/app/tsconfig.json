@@ -1,24 +1,38 @@
 {
-  "extends": "@nasiko/config/tsconfig/base",
+  "//": "One tsc program per edition: a core page that links a route this edition lacks fails here.",
+  "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "jsx": "react-jsx",
-    "noEmit": true,
-    "incremental": true,
-    "allowJs": false,
+    "tsBuildInfoFile": "../../node_modules/.tmp/tsconfig.oss.tsbuildinfo",
     "paths": {
-      "@/*": ["./src/*"]
-    },
-    "types": ["node", "vitest/globals", "@testing-library/jest-dom/vitest", "vite/client"],
-    "allowImportingTsExtensions": true
+      "@nasiko/app-core/*": [
+        "../../shared/app-core/src/*"
+      ],
+      "@nasiko/app-shell/*": [
+        "../../shared/app-shell/src/*"
+      ],
+      "@nasiko/data-access/*": [
+        "../../shared/data-access/src/*"
+      ],
+      "@nasiko/features/*": [
+        "../../shared/features/src/*"
+      ],
+      "@nasiko/mocks/*": [
+        "../../shared/mocks/src/*"
+      ],
+      "@nasiko/testing/*": [
+        "../../shared/testing/src/*"
+      ],
+      "@nasiko/ui/*": [
+        "../../shared/ui/src/*"
+      ],
+      "@edition/*": [
+        "./src/*"
+      ]
+    }
   },
   "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "tests/**/*.ts",
-    "tests/**/*.tsx",
-    "vitest.config.ts",
-    "postcss.config.mjs",
-    "vite.config.ts"
-  ],
-  "exclude": ["node_modules", "dist", "dist-test"]
+    "src",
+    "../../shared/*/src",
+    "../../.storybook/preview.tsx"
+  ]
 }

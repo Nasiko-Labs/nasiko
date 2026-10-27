@@ -1,17 +1,15 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/chat/turnResume.ts. Local edits: none beyond imports and
-// Prettier.
 /**
  * Resuming after a request is answered (§3.3, EN9; routed §5.4, EN-4, NE-3): stream the continuation into the
  * chat's turn. The server saves a resumed reply, so this never POSTs a message.
  */
-import { emptyTurn } from "./a2aReducer";
-import { tuning } from "./tuning";
-import type { Core } from "./turnCore";
-import { isLivePhase, type ChatMode } from "./turnMachine";
+import { emptyTurn } from './a2aReducer'
+import { tuning } from './tuning'
+import type { Core } from './turnCore'
+import { isLivePhase, type ChatMode } from './turnMachine'
 
 export function createResume(core: Core, stream: (sessionId: string) => Promise<void>) {
-  const { deps, turns, starting, releases, pendingResume, abortCount, reconnected } = core;
-  const { notify, acquire, hold, claim, run, started } = core;
+  const { deps, turns, starting, releases, pendingResume, abortCount, reconnected } = core
+  const { notify, acquire, hold, claim, run, started } = core
 
   /**
    * Reconnect after a routed request is answered (§5.4): one reconnect per hitl id; asked while
@@ -25,37 +23,37 @@ export function createResume(core: Core, stream: (sessionId: string) => Promise<
     baselineReplies?: number,
     attempt = 0,
   ): Promise<void> {
-    if (reconnected.has(requestId)) return;
-    const t = turns.get(sessionId);
+    if (reconnected.has(requestId)) return
+    const t = turns.get(sessionId)
     if ((t && isLivePhase(t.phase)) || starting.has(sessionId) || releases.has(sessionId)) {
-      pendingResume.set(sessionId, { requestId, userMessageId, forTurn: t?.id, baselineReplies });
-      return;
+      pendingResume.set(sessionId, { requestId, userMessageId, forTurn: t?.id, baselineReplies })
+      return
     }
-    reconnected.add(requestId);
-    const gen = core.generation;
-    const aborts = abortCount.get(sessionId) ?? 0;
-    await claim(sessionId, "resume", async () => {
-      const releaseLock = await acquire(sessionId);
+    reconnected.add(requestId)
+    const gen = core.generation
+    const aborts = abortCount.get(sessionId) ?? 0
+    await claim(sessionId, 'resume', async () => {
+      const releaseLock = await acquire(sessionId)
       if (!releaseLock) {
         // The chat's lock is held: this tab's own lock mid-release, or another tab still reading the
         // paused stream (which never hears about an answer given here). Try again for a while.
-        reconnected.delete(requestId);
+        reconnected.delete(requestId)
         if (attempt < tuning.RESUME_LOCK_RETRIES)
           setTimeout(() => {
             if (gen === core.generation && (abortCount.get(sessionId) ?? 0) === aborts)
-              void resumeRouted(sessionId, requestId, userMessageId, baselineReplies, attempt + 1);
-          }, tuning.RESUME_LOCK_RETRY_MS);
-        return undefined;
+              void resumeRouted(sessionId, requestId, userMessageId, baselineReplies, attempt + 1)
+          }, tuning.RESUME_LOCK_RETRY_MS)
+        return undefined
       }
-      const runId = deps.newId();
-      hold(sessionId, runId, releaseLock);
+      const runId = deps.newId()
+      hold(sessionId, runId, releaseLock)
       turns.set(sessionId, {
         id: deps.newId(),
         sessionId,
         agentId: null,
-        userText: t?.userText ?? "",
+        userText: t?.userText ?? '',
         userMessageId: userMessageId ?? t?.userMessageId,
-        phase: "waiting",
+        phase: 'waiting',
         state: emptyTurn(),
         startedAt: deps.now(),
         idle: false,
@@ -66,15 +64,15 @@ export function createResume(core: Core, stream: (sessionId: string) => Promise<
         pendingSave: null,
         frames: [],
         resumedRequestId: requestId,
-        chatMode: "routed",
-        operation: "resume",
+        chatMode: 'routed',
+        operation: 'resume',
         attempt: `resume:${requestId}`,
         baselineReplies,
-      });
-      notify();
-      void run(sessionId, runId, () => stream(sessionId));
-      return started(sessionId);
-    });
+      })
+      notify()
+      void run(sessionId, runId, () => stream(sessionId))
+      return started(sessionId)
+    })
   }
 
   /**
@@ -87,28 +85,28 @@ export function createResume(core: Core, stream: (sessionId: string) => Promise<
     requestId: string,
     agentId: string | null,
     userMessageId?: string,
-    chatMode: ChatMode = "direct",
+    chatMode: ChatMode = 'direct',
     baselineReplies?: number,
   ): Promise<void> {
-    if (chatMode === "routed")
-      return resumeRouted(sessionId, requestId, userMessageId, baselineReplies);
-    const t = turns.get(sessionId);
-    if (t && (isLivePhase(t.phase) || t.resumedRequestId === requestId || t.phase === "unsaved"))
-      return;
-    if (starting.has(sessionId)) return;
-    await claim(sessionId, "resume", async () => {
-      const releaseLock = await acquire(sessionId);
-      if (!releaseLock) return undefined;
-      const runId = deps.newId();
-      hold(sessionId, runId, releaseLock);
+    if (chatMode === 'routed')
+      return resumeRouted(sessionId, requestId, userMessageId, baselineReplies)
+    const t = turns.get(sessionId)
+    if (t && (isLivePhase(t.phase) || t.resumedRequestId === requestId || t.phase === 'unsaved'))
+      return
+    if (starting.has(sessionId)) return
+    await claim(sessionId, 'resume', async () => {
+      const releaseLock = await acquire(sessionId)
+      if (!releaseLock) return undefined
+      const runId = deps.newId()
+      hold(sessionId, runId, releaseLock)
       turns.set(sessionId, {
         id: deps.newId(),
         sessionId,
         agentId: agentId ?? t?.agentId ?? null,
-        userText: t?.userText ?? "",
+        userText: t?.userText ?? '',
         userMessageId: userMessageId ?? t?.userMessageId,
         userRowServer: t?.userRowServer,
-        phase: "waiting",
+        phase: 'waiting',
         state: emptyTurn(),
         startedAt: deps.now(),
         idle: false,
@@ -119,18 +117,18 @@ export function createResume(core: Core, stream: (sessionId: string) => Promise<
         pendingSave: null,
         frames: [],
         resumedRequestId: requestId,
-        chatMode: "direct",
-        operation: "resume",
+        chatMode: 'direct',
+        operation: 'resume',
         // Its own attempt (v1c §5.8): a resume after `paused` ends on its own.
         attempt: `resume:${requestId}`,
-      });
-      notify();
-      void run(sessionId, runId, () => stream(sessionId));
-      return started(sessionId);
-    });
+      })
+      notify()
+      void run(sessionId, runId, () => stream(sessionId))
+      return started(sessionId)
+    })
   }
 
   core.startQueuedResume = (sessionId, q) =>
-    void resumeRouted(sessionId, q.requestId, q.userMessageId, q.baselineReplies);
-  return { resume };
+    void resumeRouted(sessionId, q.requestId, q.userMessageId, q.baselineReplies)
+  return { resume }
 }

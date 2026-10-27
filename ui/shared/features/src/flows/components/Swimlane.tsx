@@ -1,6 +1,3 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/flows/components/Swimlane.tsx. Local edits: `TooltipTrigger
-// asChild` + `Button` -> `TooltipTrigger render={<Button …/>}` (Base UI useRender; the bar's contents stay its
-// children); Prettier formatting.
 /**
  * The swimlane timeline (plans/feat-flows.md F2, F3, F10, F13, F17, F21-F23, F25, F27, F28; sizes S1).
  *
@@ -16,18 +13,18 @@
  * lanes, Home/End, Enter selects (`?step=`) and Enter again clears it, as does Esc. Selection is a thick edge and bold
  * text: never the focus ring (that's focus) or the critical path's outline.
  */
-import { Hand, X } from "lucide-react";
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Button } from "@nasiko/ui/primitives";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@nasiko/ui/primitives";
-import { OTHER_SERIES, seriesAt } from "@nasiko/ui/lib";
-import { cn } from "@nasiko/ui/cn";
-import type { Call } from "../calls";
-import { copy } from "../copy";
-import { barLabel, taskOf } from "../barLabel";
-import { moveFrom, type Move } from "../keys";
-import type { Lane, LaneModel } from "../lanes";
-import { fmtDuration, fmtWait } from "../precision";
+import { Hand, X } from 'lucide-react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
+import { OTHER_SERIES, seriesAt } from '@nasiko/ui/lib/chart'
+import { cn } from '@nasiko/ui/lib/utils'
+import type { Call } from '../calls'
+import { copy } from '../copy'
+import { barLabel, taskOf } from '../barLabel'
+import { moveFrom, type Move } from '../keys'
+import type { Lane, LaneModel } from '../lanes'
+import { fmtDuration, fmtWait } from '../precision'
 import {
   BREAK_PX,
   cssAt,
@@ -38,51 +35,51 @@ import {
   type Axis,
   type Edge,
   type FanOut,
-} from "../timeline";
+} from '../timeline'
 
 /** S1: lane 32 px, bars 20 px, sub-rows 24 px; the label column is as wide as a name needs, up to 14 rem (F30). */
-const AXIS_PX = 24;
-const ROW_PX = 24;
-const LANE_MIN_PX = 32;
-const BAR_PX = 20;
-const BRACKET_PX = 14;
+const AXIS_PX = 24
+const ROW_PX = 24
+const LANE_MIN_PX = 32
+const BAR_PX = 20
+const BRACKET_PX = 14
 /** Calls starting this close together share one trunk. */
-const TRUNK_PX = 24;
-const GRID = "grid grid-cols-[minmax(8rem,14rem)_1fr] gap-x-3 max-sm:grid-cols-[6rem_1fr]";
+const TRUNK_PX = 24
+const GRID = 'grid grid-cols-[minmax(8rem,14rem)_1fr] gap-x-3 max-sm:grid-cols-[6rem_1fr]'
 /** The label column stays in place while a phone scrolls the time area (F24). */
-const STICKY = "max-sm:sticky max-sm:left-0 max-sm:z-10 max-sm:bg-card";
+const STICKY = 'max-sm:sticky max-sm:left-0 max-sm:z-10 max-sm:bg-card'
 const KEYS: Record<string, Move> = {
-  ArrowLeft: "prev",
-  ArrowRight: "next",
-  ArrowUp: "up",
-  ArrowDown: "down",
-  Home: "first",
-  End: "last",
-};
+  ArrowLeft: 'prev',
+  ArrowRight: 'next',
+  ArrowUp: 'up',
+  ArrowDown: 'down',
+  Home: 'first',
+  End: 'last',
+}
 
 export interface SwimlaneProps {
-  model: LaneModel;
-  axis: Axis;
-  now: number;
+  model: LaneModel
+  axis: Axis
+  now: number
   /** The Orchestrator's own lane (routed flows): from the flow's start to its end, or now. */
-  orchestrator: { startMs: number; endMs: number | null } | null;
-  fanOuts: readonly FanOut[];
+  orchestrator: { startMs: number; endMs: number | null } | null
+  fanOuts: readonly FanOut[]
   /** Calls on the critical path, when it's proven and switched on (F22). */
-  critical: ReadonlySet<string> | null;
-  label: string;
+  critical: ReadonlySet<string> | null
+  label: string
   /** The selected call's key (`?step=`). */
-  selected: string | null;
-  onSelect: (key: string | null) => void;
+  selected: string | null
+  onSelect: (key: string | null) => void
 }
 
 const laneHeight = (lane: Lane, bracket: boolean) =>
-  Math.max(LANE_MIN_PX, (bracket ? BRACKET_PX : 0) + lane.rows.length * ROW_PX + 8);
+  Math.max(LANE_MIN_PX, (bracket ? BRACKET_PX : 0) + lane.rows.length * ROW_PX + 8)
 
 /** A bar's top inside its lane. */
 const barTop = (lane: Lane, row: number, bracket: boolean) => {
-  const top = bracket ? BRACKET_PX : 0;
-  return lane.rows.length === 1 && !bracket ? (LANE_MIN_PX - BAR_PX) / 2 : top + 4 + row * ROW_PX;
-};
+  const top = bracket ? BRACKET_PX : 0
+  return lane.rows.length === 1 && !bracket ? (LANE_MIN_PX - BAR_PX) / 2 : top + 4 + row * ROW_PX
+}
 
 export function Swimlane({
   model,
@@ -95,101 +92,97 @@ export function Swimlane({
   selected,
   onSelect,
 }: SwimlaneProps) {
-  const [showAll, setShowAll] = useState(false);
-  const lanes = showAll ? [...model.lanes, ...model.hidden] : model.lanes;
-  const laneOf = new Map<string, string>();
+  const [showAll, setShowAll] = useState(false)
+  const lanes = showAll ? [...model.lanes, ...model.hidden] : model.lanes
+  const laneOf = new Map<string, string>()
   for (const l of [...model.lanes, ...model.hidden])
-    for (const c of [...l.rows.flat(), ...l.overflow]) laneOf.set(c.key, l.id);
+    for (const c of [...l.rows.flat(), ...l.overflow]) laneOf.set(c.key, l.id)
   // A bracket sits on the lane of its first call.
-  const bracketsBy = new Map<string, FanOut[]>();
+  const bracketsBy = new Map<string, FanOut[]>()
   for (const f of fanOuts) {
-    const lane = f.keys[0] ? laneOf.get(f.keys[0]) : undefined;
-    if (lane) bracketsBy.set(lane, [...(bracketsBy.get(lane) ?? []), f]);
+    const lane = f.keys[0] ? laneOf.get(f.keys[0]) : undefined
+    if (lane) bracketsBy.set(lane, [...(bracketsBy.get(lane) ?? []), f])
   }
 
   // Roving focus over the drawn bars.
-  const drawn = lanes.map((l) => l.rows.flat());
-  const keys = new Set(drawn.flat().map((c) => c.key));
-  const [active, setActive] = useState<string | null>(null);
+  const drawn = lanes.map((l) => l.rows.flat())
+  const keys = new Set(drawn.flat().map((c) => c.key))
+  const [active, setActive] = useState<string | null>(null)
   const current =
     (active && keys.has(active) ? active : null) ??
     (selected && keys.has(selected) ? selected : null) ??
-    moveFrom(drawn, null, "first");
-  const bars = useRef(new Map<string, HTMLButtonElement>());
+    moveFrom(drawn, null, 'first')
+  const bars = useRef(new Map<string, HTMLButtonElement>())
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
-    if (e.key === "Escape") {
-      onSelect(null);
-      return;
+    if (e.key === 'Escape') {
+      onSelect(null)
+      return
     }
-    const move = KEYS[e.key];
-    if (!move) return;
-    e.preventDefault();
-    const next = moveFrom(drawn, current, move);
-    if (!next) return;
-    setActive(next);
-    bars.current.get(next)?.focus();
-  };
+    const move = KEYS[e.key]
+    if (!move) return
+    e.preventDefault()
+    const next = moveFrom(drawn, current, move)
+    if (!next) return
+    setActive(next)
+    bars.current.get(next)?.focus()
+  }
 
   // Where each drawn bar's centre sits, for the connectors.
-  const centre = new Map<string, { y: number; call: Call }>();
-  let y = AXIS_PX + (orchestrator ? LANE_MIN_PX : 0);
+  const centre = new Map<string, { y: number; call: Call }>()
+  let y = AXIS_PX + (orchestrator ? LANE_MIN_PX : 0)
   for (const lane of lanes) {
-    const b = bracketsBy.has(lane.id);
+    const b = bracketsBy.has(lane.id)
     lane.rows.forEach((row, i) => {
-      for (const c of row) centre.set(c.key, { y: y + barTop(lane, i, b) + BAR_PX / 2, call: c });
-    });
-    y += laneHeight(lane, b);
+      for (const c of row) centre.set(c.key, { y: y + barTop(lane, i, b) + BAR_PX / 2, call: c })
+    })
+    y += laneHeight(lane, b)
   }
   const path = critical
     ? [...critical]
         .flatMap((k) => centre.get(k) ?? [])
         .sort((a, b) => a.call.startMs - b.call.startMs)
-    : [];
+    : []
   // Caller → call links (muted), and consecutive calls on the critical path (accent), one curve per pair.
-  const edges = new Map<string, Edge>();
+  const edges = new Map<string, Edge>()
   for (const { call } of centre.values()) {
-    const from = call.parentKey ? centre.get(call.parentKey) : undefined;
-    const to = centre.get(call.key);
-    if (from && to) edges.set(call.key, { from, to, onPath: false });
+    const from = call.parentKey ? centre.get(call.parentKey) : undefined
+    const to = centre.get(call.key)
+    if (from && to) edges.set(call.key, { from, to, onPath: false })
   }
   // A call the critical path reaches is joined by that link alone: one line into each bar.
   path.slice(1).forEach((to, i) => {
-    const from = path[i];
-    if (from) edges.set(to.call.key, { from, to, onPath: true });
-  });
+    const from = path[i]
+    if (from) edges.set(to.call.key, { from, to, onPath: true })
+  })
 
   // The curves are drawn in pixels: the track's width is measured (none until it is, e.g. in jsdom).
-  const trackRef = useRef<HTMLDivElement>(null);
-  const [trackPx, setTrackPx] = useState(0);
+  const trackRef = useRef<HTMLDivElement>(null)
+  const [trackPx, setTrackPx] = useState(0)
   useEffect(() => {
-    const el = trackRef.current;
-    if (!el || typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(([entry]) => {
-      setTrackPx(entry?.contentRect.width ?? 0);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-    };
-  }, []);
+    const el = trackRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([entry]) => setTrackPx(entry?.contentRect.width ?? 0))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   const xAt = (t: number) => {
-    const p = position(axis, t);
-    return (trackPx - (axis.gap ? BREAK_PX : 0)) * p.frac + p.px;
-  };
+    const p = position(axis, t)
+    return (trackPx - (axis.gap ? BREAK_PX : 0)) * p.frac + p.px
+  }
   // Calls a caller made together (starts within TRUNK_PX) branch off one trunk, just left of the first of them; a
   // call made later drops on its own line instead of running a long elbow back to that trunk.
-  const trunk = new Map<string, number>();
+  const trunk = new Map<string, number>()
   const drops = [...edges.values()]
     .filter((e) => xAt(e.from.call.endMs ?? now) > xAt(e.to.call.startMs) + 1)
-    .sort((a, b) => a.to.call.startMs - b.to.call.startMs);
-  const lastTrunk = new Map<string, { bx: number; x: number }>();
+    .sort((a, b) => a.to.call.startMs - b.to.call.startMs)
+  const lastTrunk = new Map<string, { bx: number; x: number }>()
   for (const e of drops) {
-    const bx = xAt(e.to.call.startMs);
-    const prev = lastTrunk.get(e.from.call.key);
+    const bx = xAt(e.to.call.startMs)
+    const prev = lastTrunk.get(e.from.call.key)
     const x =
-      prev && bx - prev.bx <= TRUNK_PX ? prev.x : Math.max(xAt(e.from.call.startMs) + 4, bx - 8);
-    if (!prev || prev.x !== x) lastTrunk.set(e.from.call.key, { bx, x });
-    trunk.set(e.to.call.key, x);
+      prev && bx - prev.bx <= TRUNK_PX ? prev.x : Math.max(xAt(e.from.call.startMs) + 4, bx - 8)
+    if (!prev || prev.x !== x) lastTrunk.set(e.from.call.key, { bx, x })
+    trunk.set(e.to.call.key, x)
   }
 
   return (
@@ -200,7 +193,7 @@ export function Swimlane({
         <div
           role="group"
           aria-label={label}
-          className={cn("relative flex flex-col max-sm:min-w-160", BAR_TINT)}
+          className={cn('relative flex flex-col max-sm:min-w-160', BAR_TINT)}
         >
           <AxisRow axis={axis} />
           {orchestrator ? (
@@ -218,12 +211,12 @@ export function Swimlane({
                   className="absolute top-1/2 z-2 h-3 -translate-y-1/2 border-x-2"
                   style={{
                     ...span(axis, orchestrator.startMs, orchestrator.endMs ?? now),
-                    borderColor: "var(--chart-other-edge)",
+                    borderColor: 'var(--chart-other-edge)',
                   }}
                 >
                   <span
                     className="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 rounded-full"
-                    style={{ backgroundColor: "var(--chart-other-edge)" }}
+                    style={{ backgroundColor: 'var(--chart-other-edge)' }}
                   />
                 </div>
               </Track>
@@ -242,19 +235,19 @@ export function Swimlane({
               selected={selected}
               current={current}
               onSelect={(key) => {
-                setActive(key);
+                setActive(key)
                 // A pressed bar toggles off, as its aria-pressed promises.
-                onSelect(selected === key ? null : key);
+                onSelect(selected === key ? null : key)
               }}
               onKeyDown={onKeyDown}
               refFor={(key) => (el) => {
-                if (el) bars.current.set(key, el);
-                else bars.current.delete(key);
+                if (el) bars.current.set(key, el)
+                else bars.current.delete(key)
               }}
             />
           ))}
           {/* Above the lane bands and parallel bands, under the bars (z-2), which are opaque: no curve crosses text. */}
-          <div aria-hidden className={cn(GRID, "pointer-events-none absolute inset-0 z-1")}>
+          <div aria-hidden className={cn(GRID, 'pointer-events-none absolute inset-0 z-1')}>
             <div />
             <div ref={trackRef} className="relative">
               {trackPx > 0 && edges.size ? (
@@ -262,9 +255,9 @@ export function Swimlane({
                   {[...edges].map(([key, e]) => (
                     <path
                       key={key}
-                      data-edge={e.onPath ? "critical" : "call"}
+                      data-edge={e.onPath ? 'critical' : 'call'}
                       d={curve(e, xAt, now, BAR_PX, trunk.get(e.to.call.key))}
-                      stroke={e.onPath ? "var(--info)" : "var(--chart-other-edge)"}
+                      stroke={e.onPath ? 'var(--info)' : 'var(--chart-other-edge)'}
                       strokeOpacity={e.onPath ? 1 : 0.7}
                       strokeWidth={e.onPath ? 1.75 : 1.25}
                       strokeLinecap="round"
@@ -283,9 +276,7 @@ export function Swimlane({
               variant="ghost"
               size="sm"
               className="pointer-coarse:min-h-11"
-              onClick={() => {
-                setShowAll((v) => !v);
-              }}
+              onClick={() => setShowAll((v) => !v)}
             >
               {showAll ? copy.panel.hideLanes : copy.panel.showLanes(model.hidden.length)}
             </Button>
@@ -293,12 +284,12 @@ export function Swimlane({
         </div>
       ) : null}
     </div>
-  );
+  )
 }
 
 function AxisRow({ axis }: { axis: Axis }) {
   return (
-    <div className={cn(GRID, "h-6 border-b border-border")} aria-hidden>
+    <div className={cn(GRID, 'h-6 border-b border-border')} aria-hidden>
       <div className={STICKY} />
       <div className="relative text-2xs text-muted-foreground tabular-nums">
         {ticks(axis).map((t) => (
@@ -307,7 +298,7 @@ function AxisRow({ axis }: { axis: Axis }) {
             className="absolute top-1 -translate-x-1/2 whitespace-nowrap first:translate-x-0 last:-translate-x-full max-sm:even:hidden"
             style={{ left: t.left }}
           >
-            {t.offsetMs === 0 ? "0" : `+${fmtDuration(t.offsetMs)}`}
+            {t.offsetMs === 0 ? '0' : `+${fmtDuration(t.offsetMs)}`}
           </span>
         ))}
         {axis.gap ? (
@@ -325,7 +316,7 @@ function AxisRow({ axis }: { axis: Axis }) {
         ) : null}
       </div>
     </div>
-  );
+  )
 }
 
 /** A lane's name sits level with its first bar (a 20 px line on a 20 px bar), never centred in a tall lane. */
@@ -335,22 +326,22 @@ function LaneLabel({
   colour,
   top,
 }: {
-  name: string;
-  indent: number;
-  colour: number | null;
-  top: number;
+  name: string
+  indent: number
+  colour: number | null
+  top: number
 }) {
-  const s = colour === null ? OTHER_SERIES : seriesAt(colour);
+  const s = colour === null ? OTHER_SERIES : seriesAt(colour)
   return (
     <div
       aria-hidden
-      className={cn("flex h-full min-w-0 items-start gap-2 pl-2", STICKY)}
+      className={cn('flex h-full min-w-0 items-start gap-2 pl-2', STICKY)}
       style={{ paddingLeft: 8 + indent * 12, paddingTop: top }}
     >
       <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ backgroundColor: s.edge }} />
       <span className="truncate text-sm leading-5">{name}</span>
     </div>
-  );
+  )
 }
 
 function Track({
@@ -358,9 +349,9 @@ function Track({
   height,
   children,
 }: {
-  axis: Axis;
-  height: number;
-  children: React.ReactNode;
+  axis: Axis
+  height: number
+  children: React.ReactNode
 }) {
   return (
     <div className="relative" style={{ height }}>
@@ -381,7 +372,7 @@ function Track({
       ) : null}
       {children}
     </div>
-  );
+  )
 }
 
 function LaneRow({
@@ -398,20 +389,20 @@ function LaneRow({
   onKeyDown,
   refFor,
 }: {
-  stripe: boolean;
-  lane: Lane;
-  axis: Axis;
-  now: number;
-  brackets: readonly FanOut[];
-  fromCaller: ReadonlyMap<string, string>;
-  critical: ReadonlySet<string> | null;
-  selected: string | null;
-  current: string | null;
-  onSelect: (key: string) => void;
-  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
-  refFor: (key: string) => (el: HTMLButtonElement | null) => void;
+  stripe: boolean
+  lane: Lane
+  axis: Axis
+  now: number
+  brackets: readonly FanOut[]
+  fromCaller: ReadonlyMap<string, string>
+  critical: ReadonlySet<string> | null
+  selected: string | null
+  current: string | null
+  onSelect: (key: string) => void
+  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void
+  refFor: (key: string) => (el: HTMLButtonElement | null) => void
 }) {
-  const hasBracket = brackets.length > 0;
+  const hasBracket = brackets.length > 0
   return (
     <div className={cn(GRID, stripe && STRIPE)}>
       <LaneLabel
@@ -447,9 +438,7 @@ function LaneRow({
               critical={critical}
               selected={selected === c.key}
               tabbable={current === c.key}
-              onSelect={() => {
-                onSelect(c.key);
-              }}
+              onSelect={() => onSelect(c.key)}
               onKeyDown={onKeyDown}
               ref={refFor(c.key)}
             />
@@ -462,7 +451,7 @@ function LaneRow({
         ) : null}
       </Track>
     </div>
-  );
+  )
 }
 
 function Bar({
@@ -479,25 +468,25 @@ function Bar({
   onKeyDown,
   ref,
 }: {
-  call: Call;
-  axis: Axis;
-  now: number;
-  top: number;
-  colour: number | null;
-  from: string | null;
-  critical: ReadonlySet<string> | null;
-  selected: boolean;
-  tabbable: boolean;
-  onSelect: () => void;
-  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
-  ref: (el: HTMLButtonElement | null) => void;
+  call: Call
+  axis: Axis
+  now: number
+  top: number
+  colour: number | null
+  from: string | null
+  critical: ReadonlySet<string> | null
+  selected: boolean
+  tabbable: boolean
+  onSelect: () => void
+  onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void
+  ref: (el: HTMLButtonElement | null) => void
 }) {
-  const s = colour === null ? OTHER_SERIES : seriesAt(colour);
-  const failed = call.status === "failed";
-  const waiting = call.status === "awaiting_human";
-  const open = call.endMs === null && !waiting;
-  const pending = call.status === "pending";
-  const end = call.endMs ?? now;
+  const s = colour === null ? OTHER_SERIES : seriesAt(colour)
+  const failed = call.status === 'failed'
+  const waiting = call.status === 'awaiting_human'
+  const open = call.endMs === null && !waiting
+  const pending = call.status === 'pending'
+  const end = call.endMs ?? now
   // A call waiting on a human worked until it paused: that part is drawn as work, the hatched bar is the wait.
   const pausedAt =
     waiting &&
@@ -505,14 +494,11 @@ function Bar({
     call.waitStartMs > call.startMs &&
     call.waitStartMs < end
       ? call.waitStartMs
-      : null;
-  const onPath = critical?.has(call.key) ?? false;
-  const fill = tint(
-    s.fill,
-    pending ? "10%" : critical && !onPath ? "var(--bar-dim)" : "var(--bar)",
-  );
-  const task = taskOf(call);
-  const name = barLabel(call, from, onPath);
+      : null
+  const onPath = critical?.has(call.key) ?? false
+  const fill = tint(s.fill, pending ? '10%' : critical && !onPath ? 'var(--bar-dim)' : 'var(--bar)')
+  const task = taskOf(call)
+  const name = barLabel(call, from, onPath)
   return (
     <>
       {pausedAt !== null ? (
@@ -523,8 +509,8 @@ function Bar({
           style={{
             top,
             ...span(axis, call.startMs, pausedAt),
-            backgroundColor: "var(--card)",
-            backgroundImage: `linear-gradient(${tint(s.fill, "var(--bar)")}, ${tint(s.fill, "var(--bar)")})`,
+            backgroundColor: 'var(--card)',
+            backgroundImage: `linear-gradient(${tint(s.fill, 'var(--bar)')}, ${tint(s.fill, 'var(--bar)')})`,
             borderLeftColor: s.edge,
           }}
         >
@@ -533,79 +519,73 @@ function Bar({
         </div>
       ) : null}
       <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              ref={ref}
-              type="button"
-              variant="ghost"
-              tabIndex={tabbable ? 0 : -1}
-              aria-label={name}
-              aria-pressed={selected}
-              data-call={call.key}
-              onClick={onSelect}
-              onKeyDown={onKeyDown}
-              className={cn(
-                // A narrow bar keeps its drawn width; on coarse pointers its hit area grows (F25).
-                "absolute z-2 flex h-5 min-w-0.5 justify-start gap-1 overflow-hidden rounded-sm border-l-2 px-1 py-0 text-2xs leading-none font-normal whitespace-nowrap shadow-none hover:brightness-95",
-                "pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']",
-                pending && "border border-dashed",
-                call.maybeSame && "outline-1 outline-muted-foreground outline-dashed",
-                // Selection is its own mark (a thick edge and bold text), never the focus ring or the path's outline.
-                selected && "border-l-4 font-semibold",
-              )}
-              style={{
-                top,
-                ...span(axis, pausedAt ?? call.startMs, end),
-                // Opaque (a tint over the card) so the curves under it never cross its text.
-                backgroundColor: "var(--card)",
-                backgroundImage: waiting
-                  ? "repeating-linear-gradient(45deg, color-mix(in oklab, var(--warning) 35%, transparent) 0 2px, transparent 2px 6px)"
-                  : // Off the critical path only the fill dims: the 11 px label keeps its contrast.
-                    `linear-gradient(${fill}, ${fill})`,
-                borderLeftColor: failed
-                  ? "var(--destructive)"
-                  : waiting
-                    ? "var(--warning)"
-                    : s.edge,
-              }}
-            />
-          }
-        >
-          {/* Text on a tinted bar stays foreground (4.5:1 at 11 px); the X and the red edge carry the colour. */}
-          {failed ? <X className="size-3 shrink-0 text-destructive" aria-hidden /> : null}
-          {failed ? <span className="font-medium">{copy.stepStatus.failed}</span> : null}
-          {waiting && pausedAt !== null ? (
-            <Hand className="size-3 shrink-0 text-foreground" aria-hidden />
-          ) : waiting ? (
-            <span className="font-medium">{copy.panel.waitingOnYou}</span>
-          ) : null}
-          {/* A paused call's hatch is just the wait: its task stays in the tooltip and the accessible name. */}
-          {task && pausedAt === null ? <span className="truncate">{task}</span> : null}
-          {from && pausedAt === null ? <span>· {copy.panel.from(from)}</span> : null}
-          {!open && !waiting ? (
-            <span className="tabular-nums">{fmtDuration(end - call.startMs, call.exactEnd)}</span>
-          ) : null}
-          {open ? (
-            <span
-              aria-hidden
-              className="absolute inset-y-0 right-0 w-1 animate-pulse bg-info motion-reduce:animate-none motion-reduce:bg-info/60"
-            />
-          ) : null}
+        <TooltipTrigger asChild>
+          <Button
+            ref={ref}
+            type="button"
+            variant="ghost"
+            tabIndex={tabbable ? 0 : -1}
+            aria-label={name}
+            aria-pressed={selected}
+            data-call={call.key}
+            onClick={onSelect}
+            onKeyDown={onKeyDown}
+            className={cn(
+              // A narrow bar keeps its drawn width; on coarse pointers its hit area grows (F25).
+              'absolute z-2 flex h-5 min-w-0.5 justify-start gap-1 overflow-hidden rounded-sm border-l-2 px-1 py-0 text-2xs leading-none font-normal whitespace-nowrap shadow-none hover:brightness-95',
+              "pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']",
+              pending && 'border border-dashed',
+              call.maybeSame && 'outline-1 outline-muted-foreground outline-dashed',
+              // Selection is its own mark (a thick edge and bold text), never the focus ring or the path's outline.
+              selected && 'border-l-4 font-semibold',
+            )}
+            style={{
+              top,
+              ...span(axis, pausedAt ?? call.startMs, end),
+              // Opaque (a tint over the card) so the curves under it never cross its text.
+              backgroundColor: 'var(--card)',
+              backgroundImage: waiting
+                ? 'repeating-linear-gradient(45deg, color-mix(in oklab, var(--warning) 35%, transparent) 0 2px, transparent 2px 6px)'
+                : // Off the critical path only the fill dims: the 11 px label keeps its contrast.
+                  `linear-gradient(${fill}, ${fill})`,
+              borderLeftColor: failed ? 'var(--destructive)' : waiting ? 'var(--warning)' : s.edge,
+            }}
+          >
+            {/* Text on a tinted bar stays foreground (4.5:1 at 11 px); the X and the red edge carry the colour. */}
+            {failed ? <X className="size-3 shrink-0 text-destructive" aria-hidden /> : null}
+            {failed ? <span className="font-medium">{copy.stepStatus.failed}</span> : null}
+            {waiting && pausedAt !== null ? (
+              <Hand className="size-3 shrink-0 text-foreground" aria-hidden />
+            ) : waiting ? (
+              <span className="font-medium">{copy.panel.waitingOnYou}</span>
+            ) : null}
+            {/* A paused call's hatch is just the wait: its task stays in the tooltip and the accessible name. */}
+            {task && pausedAt === null ? <span className="truncate">{task}</span> : null}
+            {from && pausedAt === null ? <span>· {copy.panel.from(from)}</span> : null}
+            {!open && !waiting ? (
+              <span className="tabular-nums">{fmtDuration(end - call.startMs, call.exactEnd)}</span>
+            ) : null}
+            {open ? (
+              <span
+                aria-hidden
+                className="absolute inset-y-0 right-0 w-1 animate-pulse bg-info motion-reduce:animate-none motion-reduce:bg-info/60"
+              />
+            ) : null}
+          </Button>
         </TooltipTrigger>
         <TooltipContent>{name}</TooltipContent>
       </Tooltip>
     </>
-  );
+  )
 }
 
 /** Every other lane is a faint band across its name and its track, so a bar always reads against its lane. */
-const STRIPE = "bg-muted/40";
+const STRIPE = 'bg-muted/40'
 
 /**
  * How strongly a bar's series fill shows over the card. Pastels at a third vanish on white, so light mode runs them
  * twice as strong; dark cards need less. `--bar-dim` is a bar off the critical path.
  */
-const BAR_TINT = "[--bar:70%] [--bar-dim:30%] dark:[--bar:34%] dark:[--bar-dim:16%]";
+const BAR_TINT = '[--bar:70%] [--bar-dim:30%] dark:[--bar:34%] dark:[--bar-dim:16%]'
 
-const tint = (fill: string, pct: string) => `color-mix(in oklab, ${fill} ${pct}, transparent)`;
+const tint = (fill: string, pct: string) => `color-mix(in oklab, ${fill} ${pct}, transparent)`

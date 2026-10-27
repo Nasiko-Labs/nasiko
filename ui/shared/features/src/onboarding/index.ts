@@ -1,10 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/onboarding/index.ts. Local edits: `"use client"` (it builds a
-// lazy client component); Prettier formatting.
-"use client";
-
 /** The guide's public entry: the dialog loads in its own chunk when first shown (the shell budget has no room). */
-import { deferred } from "@nasiko/app-core/deferred";
+import { deferred } from '@nasiko/app-core/deferred'
 
 export const OnboardingDialog = deferred(() =>
-  import("./OnboardingDialog").then((m) => m.OnboardingDialog),
-);
+  import('./OnboardingDialog').then((m) => m.OnboardingDialog),
+)

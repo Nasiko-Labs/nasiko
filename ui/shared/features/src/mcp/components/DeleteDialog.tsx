@@ -1,13 +1,8 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/components/DeleteDialog.tsx. Local edits: the landing
-// `navigate({ to: '/mcp', search: {} })` is `useRouter().push('/mcp', { scroll: false })` from the navigation port (`@nasiko/app-core/navigation`);
-// Prettier formatting.
-"use client";
-
-import { useRouter } from "@nasiko/app-core/navigation";
-import { toast } from "@nasiko/ui/toast";
-import { ConfirmDialog } from "../../agents/components/dialogs";
-import { useDeleteConnector } from "../api";
-import { copy } from "../copy";
+import { useNavigate } from '@tanstack/react-router'
+import { toast } from 'sonner'
+import { ConfirmDialog } from '@nasiko/features/agents/components/dialogs'
+import { useDeleteConnector } from '../api'
+import { copy } from '../copy'
 
 /** Delete a server (legacy danger zone): revokes all agent access, then back to the catalog. */
 export function DeleteDialog({
@@ -16,13 +11,13 @@ export function DeleteDialog({
   open,
   onOpenChange,
 }: {
-  id: string;
-  label: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  id: string
+  label: string
+  open: boolean
+  onOpenChange: (open: boolean) => void
 }) {
-  const router = useRouter();
-  const del = useDeleteConnector(id);
+  const navigate = useNavigate()
+  const del = useDeleteConnector(id)
   return (
     <ConfirmDialog
       open={open}
@@ -33,15 +28,15 @@ export function DeleteDialog({
       destructive
       pending={del.isPending}
       error={del.error}
-      onConfirm={() => {
+      onConfirm={() =>
         del.mutate(undefined, {
           onSuccess: () => {
-            onOpenChange(false);
-            toast.success(copy.deleted(label));
-            router.push("/mcp", { scroll: false });
+            onOpenChange(false)
+            toast.success(copy.deleted(label))
+            void navigate({ to: '/mcp', search: {} })
           },
-        });
-      }}
+        })
+      }
     />
-  );
+  )
 }

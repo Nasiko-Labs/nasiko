@@ -1,11 +1,6 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/components/ui/command.tsx (shadcn new-york-v4 over cmdk). Local edits:
-// `cn` from "../lib/cn"; the dialog parts are this package's Base UI dialog (`./dialog`) instead of the Radix one, and
-// `CommandDialog`'s children are plain nodes (Base UI's dialog root also accepts a render function).
-"use client"
-
 import * as React from "react"
 import { Command as CommandPrimitive } from "cmdk"
-import { cn } from "../lib/cn"
+import { cn } from "@nasiko/ui/lib/utils"
 import { SearchIcon } from "lucide-react"
 
 import {
@@ -14,7 +9,7 @@ import {
   DialogDescription,
   DialogHeader,
   DialogTitle,
-} from "./dialog"
+} from "@nasiko/ui/primitives/dialog"
 
 function Command({
   className,
@@ -39,8 +34,7 @@ function CommandDialog({
   className,
   showCloseButton = true,
   ...props
-}: Omit<React.ComponentProps<typeof Dialog>, "children"> & {
-  children?: React.ReactNode
+}: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string

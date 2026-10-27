@@ -1,16 +1,15 @@
-// Ported from the legacy ui/ on development (3aac84f66) common/src/features/hub/components/BucketPanel.tsx. Local edits: Prettier formatting.
 /**
  * The selected bucket (design "Bucket selection"; `?slice=`, pushed): its totals, the changes recorded in it with
  * their record links (the same items as a flag's panel, so the Table view loses nothing), and where its day leads
  * (Sessions within 7 days, else TokenOps' day panel). Inline under the lanes.
  */
-import { X } from "lucide-react";
-import { Button } from "@nasiko/ui/primitives";
-import { fmtInt, fmtLatency, fmtMoneyFloor } from "@nasiko/ui/lib";
-import { copy } from "../copy";
-import type { Flag, HubRow } from "../timeline";
-import { DayLinks } from "./DayLinks";
-import { MarkerItem } from "./MarkerRail";
+import { X } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { fmtInt, fmtLatency, fmtMoneyFloor } from '@nasiko/ui/lib/format'
+import { copy } from '../copy'
+import type { Flag, HubRow } from '../timeline'
+import { DayLinks } from './DayLinks'
+import { MarkerItem } from './MarkerRail'
 
 export function BucketPanel({
   row,
@@ -22,16 +21,16 @@ export function BucketPanel({
   now,
   onClose,
 }: {
-  row: HubRow;
-  flag: Flag | null;
+  row: HubRow
+  flag: Flag | null
   /** The viewer may see this agent's numbers (the gate passed and the timeseries loaded). */
-  money: boolean;
+  money: boolean
   /** Some calls had no price: spend is a floor. */
-  unpriced: boolean;
-  agentId: string;
-  agentName: string;
-  now: Date;
-  onClose: () => void;
+  unpriced: boolean
+  agentId: string
+  agentName: string
+  now: Date
+  onClose: () => void
 }) {
   return (
     <section
@@ -79,5 +78,5 @@ export function BucketPanel({
       )}
       <DayLinks row={row} agentId={agentId} agentName={agentName} now={now} />
     </section>
-  );
+  )
 }

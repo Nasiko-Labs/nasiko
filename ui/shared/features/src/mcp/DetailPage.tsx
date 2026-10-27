@@ -1,62 +1,51 @@
-// Ported from nasiko-ui-lab@1b99bdda common/src/features/mcp/DetailPage.tsx. Local edits: `meQuery` is
-// `meQueryOptions(useProductScope())`; the tab changes and the bad-tab fallback (`navigate({ to: '.', search,
-// replace })`) are `useSearchState(detailSearchSchema).navigate` (the History API; a tab change replaces the whole
-// search as the lab's did, the fallback keeps the rest); the not-found link is the navigation port's `Link` (`@nasiko/app-core/navigation`); `DropdownMenuTrigger
-// asChild` -> `render={<Button …/>}` (Base UI useRender) and the Delete item's Radix `onSelect` is Base UI's
-// `onClick`; `ApiError` is `ProductApiError`; optional props admit `undefined` (exactOptionalPropertyTypes); Prettier
-// formatting.
-// The top bar (legacy ui/ on development, 3aac84f66: e8379db5a): the server's breadcrumb level.
-"use client";
-
 /**
  * A custom MCP server's page (plans/feat-mcp.md §5), laid out like the agent detail: header with its status and
  * Connect, tabs in `?tab=`. Access, Logs and Settings are the owner's (or a superuser's): the server gates those reads.
  * A hidden or unknown tab falls back to Overview with replace. A 404 is "not found or not visible" (the server never
  * says which).
  */
-import { useQuery } from "@tanstack/react-query";
-import Link from "@nasiko/app-core/navigation";
-import { MoreHorizontal } from "lucide-react";
-import { useEffect, useState } from "react";
-import { Badge } from "@nasiko/ui/primitives";
-import { Button } from "@nasiko/ui/primitives";
+import { useQuery } from '@tanstack/react-query'
+import { Link, useNavigate } from '@tanstack/react-router'
+import { MoreHorizontal } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button } from '@nasiko/ui/primitives/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
-} from "@nasiko/ui/primitives";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@nasiko/ui/primitives";
-import { CopyButton, CopyMenuItem } from "@nasiko/ui/composites";
-import { PageHeader } from "@nasiko/ui/composites";
-import { TopBar } from "@nasiko/app-core/shell/TopBar";
-import { PageLoader } from "@nasiko/ui/composites";
-import { StateCard } from "@nasiko/ui/composites";
-import { AgentMark } from "../agents/components/bits";
-import { isUuid } from "../agents/normalize";
-import { meQueryOptions, useProductScope } from "@nasiko/data-access/product";
-import { ProductApiError as ApiError } from "@nasiko/data-access/product";
-import { useSearchState } from "@nasiko/app-core/url-state";
-import { useConnector } from "./api";
-import { ServerStatusBadge } from "./components/bits";
-import { ConnectControl } from "./components/ConnectControl";
-import { DeleteDialog } from "./components/DeleteDialog";
-import { copy, reason } from "./copy";
-import { AccessTab } from "./detail/AccessTab";
-import { AgentsTab } from "./detail/AgentsTab";
-import { LogsTab } from "./detail/LogsTab";
-import { OverviewTab } from "./detail/OverviewTab";
-import { SettingsTab } from "./detail/SettingsTab";
-import { authFlowOf, labelOf, serverStatus } from "./logic";
-import { useOAuthPopup } from "./oauth";
-import { detailSearchSchema, type DetailSearch, type DetailTab } from "./search";
-import type { ConnectorDetail } from "./types";
+} from '@nasiko/ui/primitives/dropdown-menu'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { CopyButton, CopyMenuItem } from '@nasiko/ui/composites/copy-button'
+import { PageHeader } from '@nasiko/ui/composites/page-header'
+import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { PageLoader } from '@nasiko/ui/composites/page-loader'
+import { StateCard } from '@nasiko/ui/composites/state-card'
+import { AgentMark } from '@nasiko/features/agents/components/bits'
+import { isUuid } from '@nasiko/features/agents/normalize'
+import { meQuery } from '@nasiko/data-access/auth'
+import { ApiError } from '@nasiko/data-access/client'
+import { useConnector } from './api'
+import { ServerStatusBadge } from './components/bits'
+import { ConnectControl } from './components/ConnectControl'
+import { DeleteDialog } from './components/DeleteDialog'
+import { copy, reason } from './copy'
+import { AccessTab } from './detail/AccessTab'
+import { AgentsTab } from './detail/AgentsTab'
+import { LogsTab } from './detail/LogsTab'
+import { OverviewTab } from './detail/OverviewTab'
+import { SettingsTab } from './detail/SettingsTab'
+import { authFlowOf, labelOf, serverStatus } from './logic'
+import { useOAuthPopup } from './oauth'
+import type { DetailSearch, DetailTab } from './search'
+import type { ConnectorDetail } from './types'
 
 export function DetailPage({ id, search }: { id: string; search: DetailSearch }) {
   // The server's path parameter is a UUID (anything else is a 400); ids are lowercase on the wire.
-  if (!isUuid(id)) return <NotFound />;
-  return <Detail id={id.toLowerCase()} search={search} />;
+  if (!isUuid(id)) return <NotFound />
+  return <Detail id={id.toLowerCase()} search={search} />
 }
 
 function NotFound() {
@@ -65,39 +54,43 @@ function NotFound() {
       title={copy.notFound}
       fix={copy.notFoundFix}
       action={
-        <Link href="/mcp" className="text-sm text-primary-text underline-offset-4 hover:underline">
+        <Link
+          to="/mcp"
+          search={{}}
+          className="text-sm text-primary-text underline-offset-4 hover:underline"
+        >
           {copy.backToCatalog}
         </Link>
       }
     />
-  );
+  )
 }
 
 function tabsFor(c: ConnectorDetail, manage: boolean): DetailTab[] {
-  const tabs: DetailTab[] = ["overview", "agents"];
-  if (manage) tabs.push("access");
-  if (manage && c.source_kind === "uploaded_build") tabs.push("logs");
-  if (manage) tabs.push("settings");
-  return tabs;
+  const tabs: DetailTab[] = ['overview', 'agents']
+  if (manage) tabs.push('access')
+  if (manage && c.source_kind === 'uploaded_build') tabs.push('logs')
+  if (manage) tabs.push('settings')
+  return tabs
 }
 
 function Detail({ id, search }: { id: string; search: DetailSearch }) {
-  const q = useConnector(id);
-  const me = useQuery(meQueryOptions(useProductScope())).data;
-  const { navigate } = useSearchState(detailSearchSchema);
-  const openPopup = useOAuthPopup();
-  const c = q.data;
-  const manage = !!c && (c.is_owner || !!me?.is_superuser);
-  const allowed = c ? tabsFor(c, manage) : [];
+  const q = useConnector(id)
+  const me = useQuery(meQuery).data
+  const navigate = useNavigate()
+  const openPopup = useOAuthPopup()
+  const c = q.data
+  const manage = !!c && (c.is_owner || !!me?.is_superuser)
+  const allowed = c ? tabsFor(c, manage) : []
   const current: DetailTab = allowed.includes(search.tab as DetailTab)
     ? (search.tab as DetailTab)
-    : "overview";
-  const badTab = !!c && !!search.tab && current !== search.tab;
+    : 'overview'
+  const badTab = !!c && !!search.tab && current !== search.tab
   useEffect(() => {
-    if (badTab) navigate({ search: (s) => ({ ...s, tab: undefined }), replace: true });
-  }, [badTab, navigate]);
+    if (badTab) void navigate({ to: '.', search: (s) => ({ ...s, tab: undefined }), replace: true })
+  }, [badTab, navigate])
 
-  if (q.isPending) return <PageLoader label={copy.loadingServer} />;
+  if (q.isPending) return <PageLoader label={copy.loadingServer} />
   if (q.isError)
     return q.error instanceof ApiError && (q.error.status === 404 || q.error.status === 403) ? (
       <NotFound />
@@ -112,22 +105,16 @@ function Detail({ id, search }: { id: string; search: DetailSearch }) {
           </Button>
         }
       />
-    );
+    )
 
-  if (!c) return null;
-  const setTab = (t: string) => {
-    navigate({ search: t === "overview" ? {} : { tab: t } });
-  };
+  if (!c) return null
+  const setTab = (t: string) =>
+    void navigate({ to: '.', search: t === 'overview' ? {} : { tab: t } })
 
   return (
     <div className="space-y-4">
       <Header connector={c} manage={manage} meName={me?.username} openPopup={openPopup} />
-      <Tabs
-        value={current}
-        onValueChange={(t) => {
-          setTab(String(t));
-        }}
-      >
+      <Tabs value={current} onValueChange={setTab}>
         <TabsList data-tour="mcp-detail-tabs" className="max-w-full justify-start overflow-x-auto">
           {allowed.map((t) => (
             <TabsTrigger key={t} value={t}>
@@ -141,24 +128,24 @@ function Detail({ id, search }: { id: string; search: DetailSearch }) {
         <TabsContent value="agents" className="pt-3">
           <AgentsTab connector={c} manage={manage} agentId={search.agent} openPopup={openPopup} />
         </TabsContent>
-        {allowed.includes("access") ? (
+        {allowed.includes('access') ? (
           <TabsContent value="access" className="pt-3">
             <AccessTab connector={c} />
           </TabsContent>
         ) : null}
-        {allowed.includes("logs") ? (
+        {allowed.includes('logs') ? (
           <TabsContent value="logs" className="pt-3">
             <LogsTab connector={c} />
           </TabsContent>
         ) : null}
-        {allowed.includes("settings") ? (
+        {allowed.includes('settings') ? (
           <TabsContent value="settings" className="pt-3">
             <SettingsTab connector={c} />
           </TabsContent>
         ) : null}
       </Tabs>
     </div>
-  );
+  )
 }
 
 function Header({
@@ -167,18 +154,17 @@ function Header({
   meName,
   openPopup,
 }: {
-  connector: ConnectorDetail;
-  manage: boolean;
-  meName?: string | undefined;
-  openPopup: (url: string | undefined) => void;
+  connector: ConnectorDetail
+  manage: boolean
+  meName?: string
+  openPopup: (url: string | undefined) => void
 }) {
-  const [delOpen, setDelOpen] = useState(false);
-  const label = labelOf(c);
-  const status = serverStatus(c);
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- kept from the Next port (absent during a server render); always present in the SPA
-  const link = `${globalThis.location?.origin ?? ""}/mcp/${c.connector_id}`;
-  const version = c.version ?? c.upload_info?.version;
-  const owner = c.is_owner ? copy.you : (c.owner_username ?? meName ?? "—");
+  const [delOpen, setDelOpen] = useState(false)
+  const label = labelOf(c)
+  const status = serverStatus(c)
+  const link = `${globalThis.location?.origin ?? ''}/mcp/${c.connector_id}`
+  const version = c.version ?? c.upload_info?.version
+  const owner = c.is_owner ? copy.you : (c.owner_username ?? meName ?? '—')
   return (
     <div data-tour="mcp-detail-header" className="flex items-start gap-3">
       <TopBar trail={[label]} />
@@ -206,7 +192,7 @@ function Header({
         }
         actions={
           <div data-tour="mcp-detail-actions" className="flex items-start gap-2">
-            {status !== "building" && status !== "failed" ? (
+            {status !== 'building' && status !== 'failed' ? (
               <ConnectControl
                 target={{
                   id: c.connector_id,
@@ -219,17 +205,15 @@ function Header({
               />
             ) : null}
             <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="size-8 p-0 pointer-coarse:size-11"
-                    aria-label={copy.moreActions(label)}
-                  />
-                }
-              >
-                <MoreHorizontal className="size-4" aria-hidden />
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="size-8 p-0 pointer-coarse:size-11"
+                  aria-label={copy.moreActions(label)}
+                >
+                  <MoreHorizontal className="size-4" aria-hidden />
+                </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <CopyMenuItem text={c.connector_id} label={copy.copyId} />
@@ -239,9 +223,7 @@ function Header({
                     <DropdownMenuSeparator />
                     <DropdownMenuItem
                       className="text-destructive"
-                      onClick={() => {
-                        setDelOpen(true);
-                      }}
+                      onSelect={() => setDelOpen(true)}
                     >
                       {copy.delete}
                     </DropdownMenuItem>
@@ -254,5 +236,5 @@ function Header({
       />
       <DeleteDialog id={c.connector_id} label={label} open={delOpen} onOpenChange={setDelOpen} />
     </div>
-  );
+  )
 }
