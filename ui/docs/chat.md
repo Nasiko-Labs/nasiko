@@ -40,7 +40,6 @@ Every stream scenario from `common/src/mocks/chat.ts` works with `?mock=` (full 
 | `hitl-options` | `/chat?agent=<seed id>&mock=hitl-options` | send, pick a region | the request card; answering resumes |
 | `stream-garbage` | `/chat?agent=<seed id>&mock=stream-garbage` | send | a skipped unreadable frame |
 | `failed` | `/chat?agent=<seed id>&mock=failed` | send | "The agent reported an error." |
-| `failed-budget` | `/chat?agent=<seed id>&mock=failed-budget` | send | "Your LLM budget is used up.", no Run again or Agent logs |
 | `empty-reply` | `/chat?agent=<seed id>&mock=empty-reply` | send | "No reply has been saved…" |
 | `routed-plain` | `/chat?auto=1&mock=routed-plain` | send anything | the full routed turn (the routed default) |
 | `routed-multi-agent` | `/chat?auto=1&mock=routed-multi-agent` | send | two agents, "using a and b" |

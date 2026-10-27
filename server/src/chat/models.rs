@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_failed_turn_is_kept_as_text_under_the_key_history_skips() {
-        let raw = "Error code: 402 - {'code': 'budget_exceeded', 'error': 'used up'}";
+        let raw = "Error code: 503 - {'code': 'upstream_down', 'error': 'try later'}";
         let m = turn_error_metadata(raw, "agent");
         let e = &m[nasiko_orchestrator::session_history::TURN_ERROR_METADATA_KEY];
         assert_eq!(e["message"], raw, "stored as sent, never parsed");
