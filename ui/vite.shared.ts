@@ -216,6 +216,19 @@ function cspHashes(): Plugin {
   }
 }
 
+/**
+ * Reo (product analytics) reports from built bundles only: the dev server, and with it every e2e and sweep run, drops
+ * the loader between index.html's "Start/End of Reo Javascript" comments, so no local session counts as a visit.
+ */
+function analyticsInBuildsOnly(): Plugin {
+  return {
+    name: 'nasiko:analytics-in-builds-only',
+    apply: 'serve',
+    transformIndexHtml: (html) =>
+      html.replace(/\s*<!-- Start of Reo Javascript -->[\s\S]*?<!-- End of Reo Javascript -->/, ''),
+  }
+}
+
 /** zod's `jitless` switch (common/src/lib/zodJitless.ts), inline after `<title>` so it runs before any module does. */
 function zodJitless(): Plugin {
   return {
@@ -305,6 +318,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       tailwindcss(),
       routesManifest(routes),
       apiMode(),
+      analyticsInBuildsOnly(),
       zodJitless(),
       bootGuard(),
       cspHashes(),
