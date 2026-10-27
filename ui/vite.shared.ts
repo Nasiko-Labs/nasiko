@@ -3,7 +3,15 @@
  * core: it never names a private edition. Each edition's own vite.config.ts passes its layers in.
  */
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import babel from '@rolldown/plugin-babel'
@@ -146,6 +154,35 @@ function routesManifest(routes: string[]): Plugin {
   }
 }
 
+/**
+ * `dist/nasiko-spa.json`: whether this build can answer API calls from the mock seed. A production build honours mock
+ * mode or partial mocks only under VITE_NASIKO_ALLOW_MOCK_BUILD (common/src/lib/env.ts `readEnv`, which this can't
+ * import: it reads `import.meta.env` as it loads). Each server's build.rs refuses such a bundle in a release binary. A
+ * live build also drops MSW's worker, which nothing in it registers.
+ */
+function apiMode(): Plugin {
+  let out = ''
+  let mocks = false
+  return {
+    name: 'nasiko:api-mode',
+    apply: 'build',
+    configResolved(c) {
+      out = c.build.outDir
+      const env = c.env as Record<string, string | undefined>
+      mocks =
+        env.VITE_NASIKO_ALLOW_MOCK_BUILD === 'true' &&
+        (env.VITE_NASIKO_API_MODE?.trim() === 'mock' || !!env.VITE_NASIKO_MOCK?.trim())
+    },
+    closeBundle() {
+      writeFileSync(
+        join(out, 'nasiko-spa.json'),
+        `${JSON.stringify({ apiMode: mocks ? 'mock' : 'live' })}\n`,
+      )
+      if (!mocks) rmSync(join(out, 'mockServiceWorker.js'), { force: true })
+    },
+  }
+}
+
 /** The sha256 source list of an HTML page's inline scripts, for a CSP `script-src` without 'unsafe-inline'. */
 export function inlineScriptHashes(html: string): string[] {
   return [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(
@@ -257,6 +294,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       }),
       tailwindcss(),
       routesManifest(routes),
+      apiMode(),
       bootGuard(),
       cspHashes(),
     ],

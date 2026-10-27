@@ -49,6 +49,26 @@ fn find_ui_root(start: &Path) -> Option<PathBuf> {
     None
 }
 
+/// A release binary must not answer from fabricated data: refuse a mock-data
+/// bundle (`nasiko-spa.json`, written by `ui/vite.shared.ts`) unless
+/// `NASIKO_ALLOW_MOCK_UI=1` ships it on purpose. A missing bundle is not
+/// refused here: crates that depend on this one compile it too, without its
+/// UI.
+fn refuse_mock_bundle_in_release(bundle: &Path) {
+    println!("cargo:rerun-if-env-changed=NASIKO_ALLOW_MOCK_UI");
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        return;
+    }
+    let mock = std::fs::read_to_string(bundle.join("nasiko-spa.json"))
+        .is_ok_and(|s| s.contains(r#""apiMode":"mock""#));
+    assert!(
+        !mock || std::env::var("NASIKO_ALLOW_MOCK_UI").is_ok_and(|v| v == "1"),
+        "{} is a mock-data build (VITE_NASIKO_ALLOW_MOCK_BUILD=true), and a release binary must serve \
+         the live UI. Rebuild it with `just build-ui`, or set NASIKO_ALLOW_MOCK_UI=1 to ship it on purpose.",
+        bundle.display()
+    );
+}
+
 fn main() {
     let manifest_dir = PathBuf::from(
         std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is always set by cargo"),
@@ -80,6 +100,8 @@ fn main() {
         );
     }
 
+    refuse_mock_bundle_in_release(&bundle);
+
     // Absolute, so it does not inherit this crate's depth.
     println!("cargo:rustc-env=NASIKO_UI={}", ui_root.display());
 
@@ -88,10 +110,4 @@ fn main() {
     // now — the React sources reach the binary only through it.
     println!("cargo:rerun-if-changed={}", bundle.display());
     println!("cargo:rerun-if-changed=build.rs");
-
-    // `sqlx::migrate!` embeds the migration set at compile time, so the directory
-    // itself is a compile-time input. The macro tracks each file it already saw, but
-    // not the directory — so without this an *added* .sql would not rebuild the
-    // server, and booting it to apply the migration would silently apply nothing.
-    println!("cargo:rerun-if-changed=../migrations");
 }
