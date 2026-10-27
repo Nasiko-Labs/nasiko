@@ -64,10 +64,8 @@ const NOT_FUNCTIONS: [&str; 28] = [
 ];
 
 pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
-    let bodies: Vec<&str> = text::numbered_lines(input)
-        .into_iter()
-        .map(|(_, body)| body)
-        .collect();
+    let (prefixes, bodies): (Vec<&str>, Vec<&str>) =
+        text::numbered_lines(input).into_iter().unzip();
     let keep = policy.level.code_body_keep();
     let regions = if is_indent_language(&bodies) {
         indent_regions(&bodies, keep)
@@ -77,7 +75,7 @@ pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
     if regions.is_empty() {
         return None;
     }
-    Some(render(input, &bodies, &regions, policy))
+    Some(render(input, &prefixes, &bodies, &regions, policy))
 }
 
 // ── Indentation reader (Python) ─────────────────────────────────────────────────────────────────
@@ -378,7 +376,13 @@ fn push_trim(
     }
 }
 
-fn render(input: &str, bodies: &[&str], regions: &[(usize, usize)], policy: &Policy<'_>) -> String {
+fn render(
+    input: &str,
+    prefixes: &[&str],
+    bodies: &[&str],
+    regions: &[(usize, usize)],
+    policy: &Policy<'_>,
+) -> String {
     let raw: Vec<&str> = input.lines().collect();
     let mut out = String::with_capacity(input.len());
     let mut pending = regions.iter().peekable();
@@ -392,7 +396,7 @@ fn render(input: &str, bodies: &[&str], regions: &[(usize, usize)], policy: &Pol
                 .take_while(|c| c.is_whitespace())
                 .collect();
             out.push_str(&indent);
-            out.push_str(&marker::elided_lines(end + 1 - start, policy.recovery_ref));
+            out.push_str(&elision_marker(prefixes, start, end, policy));
             out.push('\n');
             pending.next();
             i = end + 1;
@@ -406,6 +410,17 @@ fn render(input: &str, bodies: &[&str], regions: &[(usize, usize)], policy: &Pol
         out.pop();
     }
     out
+}
+
+/// A numbered view names the cut lines by the view's own numbers; anything else gets a count.
+fn elision_marker(prefixes: &[&str], start: usize, end: usize, policy: &Policy<'_>) -> String {
+    match (
+        text::line_number(prefixes[start]),
+        text::line_number(prefixes[end]),
+    ) {
+        (Some(first), Some(last)) => marker::elided_line_range(first, last, policy.recovery_ref),
+        _ => marker::elided_lines(end + 1 - start, policy.recovery_ref),
+    }
 }
 
 #[cfg(test)]
@@ -587,6 +602,22 @@ mod tests {
         for line in out.lines().filter(|l| !l.contains('⋯')) {
             assert!(numbered.contains(line), "rewrote {line:?}");
         }
+    }
+
+    #[test]
+    fn numbered_views_name_the_cut_lines_by_their_own_numbers() {
+        let numbered: String = python()
+            .lines()
+            .enumerate()
+            .map(|(i, l)| format!("{:>6}\t{l}\n", i + 1900))
+            .collect();
+        let out = compress(&numbered, &policy(Level::Balanced)).unwrap();
+        let marker = out.lines().find(|l| l.contains('⋯')).unwrap();
+        assert!(
+            marker.contains("lines 19") && marker.contains('–'),
+            "marker must name the cut range: {marker}"
+        );
+        assert!(!marker.contains("lines elided"), "{marker}");
     }
 
     #[test]

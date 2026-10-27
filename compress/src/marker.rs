@@ -35,6 +35,12 @@ pub(crate) fn elided_lines(n: usize, recovery_ref: Option<&str>) -> String {
     wrap(&format!("{n} lines elided"), recovery_ref)
 }
 
+/// Names the cut lines by the view's own numbers, so an agent can fetch exactly that range back
+/// with one read instead of narrowing towards it step by step.
+pub(crate) fn elided_line_range(first: u64, last: u64, recovery_ref: Option<&str>) -> String {
+    wrap(&format!("lines {first}–{last} elided"), recovery_ref)
+}
+
 pub(crate) fn elided_items(n: usize, of: usize, recovery_ref: Option<&str>) -> String {
     wrap(&format!("{n} of {of} items elided"), recovery_ref)
 }

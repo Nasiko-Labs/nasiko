@@ -45,6 +45,14 @@ pub(crate) fn split_line_number(line: &str) -> Option<(&str, &str)> {
     None
 }
 
+/// The number inside a prefix returned by [`split_line_number`] (`  1923\t` → 1923).
+pub(crate) fn line_number(prefix: &str) -> Option<u64> {
+    let digits = prefix
+        .trim_start()
+        .trim_end_matches(|c: char| !c.is_ascii_digit());
+    digits.parse().ok()
+}
+
 /// Every line of `text` as `(line-number prefix, rest)`. Prefixes are split off only when at
 /// least four in five non-blank lines carry one — an agent's file view — so a stray `3|` in
 /// ordinary text is left alone. Unnumbered lines get an empty prefix.
