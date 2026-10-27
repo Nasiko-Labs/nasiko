@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::completion::{CompletionEvent, UsageModel};
@@ -15,7 +16,6 @@ use crate::guard::CallGuard;
 use crate::policy::DelegationPolicy;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
 use crate::tool::{A2aTool, A2aToolError};
-use nasiko_types::agent_call::AgentCallHandle;
 
 /// The outcome of one `toolset.call()`, with a real pause recovered from `rig`'s type-erased
 /// `Result<String, ToolSetError>` instead of being indistinguishable from an ordinary failure.
@@ -60,32 +60,6 @@ fn classify_tool_result(result: &Result<String, ToolSetError>) -> ToolOutcome {
     ToolOutcome::NotAwaitingHuman
 }
 
-/// End one agent call's in-flight handle (see `CallGuard::before_call`) once `toolset.call()`
-/// has returned. A pause is the agent answering with a question, so only an ordinary error
-/// counts as a failed call. The handle is dropped here, which is what ends the call's span.
-fn finish_agent_call(
-    handle: Option<Box<dyn AgentCallHandle>>,
-    result: &Result<String, ToolSetError>,
-) {
-    let Some(mut handle) = handle else {
-        return;
-    };
-    let paused = matches!(
-        classify_tool_result(result),
-        ToolOutcome::AwaitingHuman { .. }
-    );
-    handle.set_succeeded(result.is_ok() || paused);
-}
-
-/// What the policy + call-guard gate decided for one tool call.
-enum CallAdmission {
-    /// Already reported on `tx` and pushed onto `results_for_context`; skip the call.
-    Blocked,
-    /// Cleared every gate. Carries the guard's in-flight handle (`None` without a guard),
-    /// held across the call and passed to `finish_agent_call` once it returns.
-    Admitted(Option<Box<dyn AgentCallHandle>>),
-}
-
 /// Attribute one completion's total token cost evenly across the tool calls
 /// it produced — the API gives one usage figure per completion, not per tool
 /// call, so this is the best available granularity for `CallGuard::after_call`.
@@ -120,6 +94,52 @@ fn blocked_note(tool_name: &str, reason: &str) -> String {
     )
 }
 
+/// How often one agent may fail in a single request before the loop stops
+/// calling it. Left alone, the model re-calls a failing agent until it runs out
+/// of turns, and every retry is another paid completion.
+const MAX_AGENT_FAILURES: usize = 2;
+
+/// Whether `tool_name` has failed often enough in this request to stop calling it.
+fn gave_up_on(failures: &HashMap<String, usize>, tool_name: &str) -> bool {
+    failures
+        .get(tool_name)
+        .is_some_and(|n| *n >= MAX_AGENT_FAILURES)
+}
+
+fn retry_limit_reason() -> String {
+    format!(
+        "it already failed {MAX_AGENT_FAILURES} times in this request; answer without it and say it failed"
+    )
+}
+
+/// The retry limit for one tool call, in `call_is_blocked`'s reporting style.
+/// Checked first: a call the loop has given up on spends nothing, flow budget
+/// included.
+async fn retry_limit_reached(
+    tc: &ToolCall,
+    agent_display: &str,
+    failures: &HashMap<String, usize>,
+    tx: &mpsc::Sender<OrchestratorEvent>,
+    turn_idx: usize,
+    results_for_context: &mut Vec<String>,
+) -> bool {
+    let name = &tc.function.name;
+    if !gave_up_on(failures, name) {
+        return false;
+    }
+    let reason = retry_limit_reason();
+    let _ = tx
+        .send(OrchestratorEvent::PolicyRejected {
+            agent: agent_display.to_string(),
+            reason: reason.clone(),
+            turn: turn_idx + 1,
+            kind: PolicyRejectionKind::RetryLimit,
+        })
+        .await;
+    results_for_context.push(blocked_note(name, &reason));
+    true
+}
+
 /// The policy + call-guard gate for one tool call, in `run_stream_inner`'s
 /// event-channel reporting style (`OrchestratorEvent::PolicyRejected` plus a
 /// message telling the model not to retry). Both of its branches call this —
@@ -127,10 +147,10 @@ fn blocked_note(tool_name: &str, reason: &str) -> String {
 /// it has, and this used to be a byte-for-byte copy in each, with no structural
 /// signal that a change to one needed the other.
 ///
-/// `CallAdmission::Blocked` means the call was blocked (already reported on `tx`
-/// and already pushed onto `results_for_context`), so the caller should
-/// `continue` its loop rather than call the tool.
-async fn admit_call(
+/// `true` means the call was blocked — already reported on `tx` and already
+/// pushed onto `results_for_context` — so the caller should `continue` its loop
+/// rather than call the tool.
+async fn call_is_blocked(
     tc: &ToolCall,
     agent_display: &str,
     config: &OrchestratorConfig,
@@ -138,7 +158,7 @@ async fn admit_call(
     tx: &mpsc::Sender<OrchestratorEvent>,
     turn_idx: usize,
     results_for_context: &mut Vec<String>,
-) -> CallAdmission {
+) -> bool {
     let name = &tc.function.name;
 
     // Operator policy first, before the flow guard: a call the policy rejects
@@ -154,27 +174,25 @@ async fn admit_call(
             })
             .await;
         results_for_context.push(blocked_note(name, &reason));
-        return CallAdmission::Blocked;
+        return true;
     }
 
-    let Some(g) = guard else {
-        return CallAdmission::Admitted(None);
-    };
-    match g.before_call(agent_display).await {
-        Ok(handle) => CallAdmission::Admitted(Some(handle)),
-        Err(reason) => {
-            let _ = tx
-                .send(OrchestratorEvent::PolicyRejected {
-                    agent: agent_display.to_string(),
-                    reason: reason.clone(),
-                    turn: turn_idx + 1,
-                    kind: PolicyRejectionKind::FlowGuard,
-                })
-                .await;
-            results_for_context.push(blocked_note(name, &reason));
-            CallAdmission::Blocked
-        }
+    if let Some(g) = guard
+        && let Err(reason) = g.before_call(agent_display).await
+    {
+        let _ = tx
+            .send(OrchestratorEvent::PolicyRejected {
+                agent: agent_display.to_string(),
+                reason: reason.clone(),
+                turn: turn_idx + 1,
+                kind: PolicyRejectionKind::FlowGuard,
+            })
+            .await;
+        results_for_context.push(blocked_note(name, &reason));
+        return true;
     }
+
+    false
 }
 
 /// The orchestrator's system prompt. One builder for both loops — `run()` and
@@ -326,18 +344,6 @@ pub struct OrchestratorConfig {
     /// framing of what this orchestrator is for, while a policy is operator
     /// rules that outlive any one caller.
     pub policy: Option<Arc<dyn DelegationPolicy>>,
-    /// Text sent with every agent call this orchestration makes, as its own
-    /// message part after the model's own message. `None` sends the model's
-    /// own wording unchanged.
-    ///
-    /// Distinct from `preamble`, which reaches only this orchestrator's own
-    /// system prompt: a minted sub-leg is a fresh conversation with a different
-    /// model that never sees the preamble, so content that has to hold for the
-    /// *agents* has to travel on the wire to each of them. The loop carries it
-    /// as a resolved string rather than a callback because it is by definition
-    /// the same for every leg — resolving it once per turn is what keeps a
-    /// fan-out from paying for it N times.
-    pub outbound_prefix: Option<String>,
 }
 
 impl Default for OrchestratorConfig {
@@ -351,7 +357,6 @@ impl Default for OrchestratorConfig {
             base_url: None,
             api_key: None,
             policy: None,
-            outbound_prefix: None,
         }
     }
 }
@@ -403,14 +408,6 @@ impl Orchestrator {
             context,
             guard: None,
         }
-    }
-
-    /// This turn's IP-3 measurement (tool-result bytes in and out), shared with the clone
-    /// `run_stream` hands to its spawned task — so a streaming turn's compression is visible here
-    /// even though nothing else about that turn's context is. Take it before the run, read it
-    /// after.
-    pub fn compression_tally(&self) -> crate::context::CompressionTally {
-        self.context.compression_tally()
     }
 
     pub fn with_a2a_client(mut self, client: A2aClient) -> Self {
@@ -465,10 +462,16 @@ impl Orchestrator {
         let mut turns = Vec::new();
         let mut context_compacted = false;
         let mut delegated = false;
+        let mut failures: HashMap<String, usize> = HashMap::new();
 
         // Preamble is STABLE across turns — provider can cache this prefix.
         // All dynamic context goes into user messages instead.
         for turn_idx in 0..self.config.max_turns {
+            if let Some(g) = &self.guard
+                && let Err(reason) = g.before_completion().await
+            {
+                return Err(OrchestratorError::Refused(reason));
+            }
             let window = self.context.window();
 
             // Build the user prompt with context embedded (changes each turn)
@@ -554,6 +557,17 @@ impl Orchestrator {
                         .unwrap_or(name)
                         .replace('_', "-");
 
+                    if gave_up_on(&failures, name) {
+                        let reason = retry_limit_reason();
+                        trace.tool_calls.push(ToolCallTrace {
+                            tool_name: name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                            result: Err(reason.clone()),
+                        });
+                        results_for_context.push(blocked_note(name, &reason));
+                        continue;
+                    }
+
                     // Operator policy first — see the streaming path's own note.
                     // Shares `policy_refusal`/`blocked_note` with that path, so
                     // the two entry points cannot reach different verdicts or
@@ -570,27 +584,22 @@ impl Orchestrator {
                     }
 
                     // Enforce call guard
-                    let mut call_handle = None;
-                    if let Some(g) = &self.guard {
-                        match g.before_call(&agent_display).await {
-                            Ok(handle) => call_handle = Some(handle),
-                            Err(reason) => {
-                                tracing::warn!(tool = %name, %reason, "call guard blocked");
-                                trace.tool_calls.push(ToolCallTrace {
-                                    tool_name: name.clone(),
-                                    arguments: tc.function.arguments.clone(),
-                                    result: Err(format!("blocked: {}", reason)),
-                                });
-                                results_for_context.push(format!("[{}] Blocked: {}", name, reason));
-                                continue;
-                            }
-                        }
+                    if let Some(g) = &self.guard
+                        && let Err(reason) = g.before_call(&agent_display).await
+                    {
+                        tracing::warn!(tool = %name, %reason, "call guard blocked");
+                        trace.tool_calls.push(ToolCallTrace {
+                            tool_name: name.clone(),
+                            arguments: tc.function.arguments.clone(),
+                            result: Err(format!("blocked: {}", reason)),
+                        });
+                        results_for_context.push(format!("[{}] Blocked: {}", name, reason));
+                        continue;
                     }
 
                     tracing::info!(turn = turn_idx + 1, tool = %name, "executing tool");
 
                     let result = toolset.call(name, args_str).await;
-                    finish_agent_call(call_handle, &result);
 
                     // A pause is not a tool outcome to trace or reason over — stop the whole run
                     // immediately, before it's recorded as just another failed/successful call.
@@ -614,7 +623,8 @@ impl Orchestrator {
                             let completed_names = tool_calls[..results_for_context.len()]
                                 .iter()
                                 .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>();
+                                .collect::<Vec<_>>()
+                                .join("+");
                             self.context.push_tool_result(
                                 &completed_names,
                                 &results_for_context.join("\n\n"),
@@ -654,6 +664,7 @@ impl Orchestrator {
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             tracing::warn!(tool = %name, error = %e, "tool failed");
+                            *failures.entry(name.clone()).or_default() += 1;
                             results_for_context.push(format!("[{}] Error: {}", name, e));
                         }
                     }
@@ -665,7 +676,8 @@ impl Orchestrator {
                     &tool_calls
                         .iter()
                         .map(|tc| tc.function.name.as_str())
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
+                        .join("+"),
                     &combined,
                 );
 
@@ -785,8 +797,7 @@ impl Orchestrator {
 
         for agent in agents {
             let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
-                .with_policy(self.config.policy.clone())
-                .with_outbound_prefix(self.config.outbound_prefix.clone());
+                .with_policy(self.config.policy.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -851,8 +862,7 @@ async fn run_stream_inner(
         let tool = A2aTool::new(agent.clone(), agents_ctx.a2a_client.clone())
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec())
-            .with_policy(config.policy.clone())
-            .with_outbound_prefix(config.outbound_prefix.clone());
+            .with_policy(config.policy.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
@@ -865,8 +875,19 @@ async fn run_stream_inner(
     // policy's final-answer review below, which may treat an answer produced
     // without a single successful call differently — see [`DelegationPolicy`].
     let mut delegated = false;
+    let mut failures: HashMap<String, usize> = HashMap::new();
 
     for turn_idx in 0..config.max_turns {
+        if let Some(g) = guard
+            && let Err(reason) = g.before_completion().await
+        {
+            let _ = tx
+                .send(OrchestratorEvent::Error {
+                    message: reason.clone(),
+                })
+                .await;
+            return Err(OrchestratorError::Refused(reason));
+        }
         let window = context.window();
 
         // Restated per turn, not only in the system prompt: the turn that writes
@@ -1015,20 +1036,28 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    let call_handle = match admit_call(
+                    if retry_limit_reached(
                         tc,
                         &agent_display,
-                        config,
-                        guard,
+                        &failures,
                         tx,
                         turn_idx,
                         &mut results_for_context,
                     )
                     .await
+                        || call_is_blocked(
+                            tc,
+                            &agent_display,
+                            config,
+                            guard,
+                            tx,
+                            turn_idx,
+                            &mut results_for_context,
+                        )
+                        .await
                     {
-                        CallAdmission::Blocked => continue,
-                        CallAdmission::Admitted(handle) => handle,
-                    };
+                        continue;
+                    }
 
                     let policy_score = config
                         .policy
@@ -1053,7 +1082,6 @@ async fn run_stream_inner(
                     let started = std::time::Instant::now();
                     let result = toolset.call(name, args_str).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
-                    finish_agent_call(call_handle, &result);
 
                     // A pause is not a tool outcome to relay as ToolResult or reason over — stop
                     // this run immediately, before the LLM ever sees it as a completed call.
@@ -1078,7 +1106,8 @@ async fn run_stream_inner(
                             let completed_names = tool_calls[..results_for_context.len()]
                                 .iter()
                                 .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>();
+                                .collect::<Vec<_>>()
+                                .join("+");
                             context.push_tool_result(
                                 &completed_names,
                                 &results_for_context.join("\n\n"),
@@ -1113,6 +1142,7 @@ async fn run_stream_inner(
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let err_str = e.to_string();
+                            *failures.entry(name.clone()).or_default() += 1;
                             let _ = tx
                                 .send(OrchestratorEvent::ToolResult {
                                     agent: agent_display,
@@ -1132,7 +1162,8 @@ async fn run_stream_inner(
                     &tool_calls
                         .iter()
                         .map(|tc| tc.function.name.as_str())
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
+                        .join("+"),
                     &combined,
                 );
             } else {
@@ -1261,20 +1292,28 @@ async fn run_stream_inner(
                         .unwrap_or(name)
                         .replace('_', "-");
 
-                    let call_handle = match admit_call(
+                    if retry_limit_reached(
                         tc,
                         &agent_display,
-                        config,
-                        guard,
+                        &failures,
                         tx,
                         turn_idx,
                         &mut results_for_context,
                     )
                     .await
+                        || call_is_blocked(
+                            tc,
+                            &agent_display,
+                            config,
+                            guard,
+                            tx,
+                            turn_idx,
+                            &mut results_for_context,
+                        )
+                        .await
                     {
-                        CallAdmission::Blocked => continue,
-                        CallAdmission::Admitted(handle) => handle,
-                    };
+                        continue;
+                    }
 
                     let policy_score = config
                         .policy
@@ -1299,7 +1338,6 @@ async fn run_stream_inner(
                     let started = std::time::Instant::now();
                     let result = toolset.call(name, args_str).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
-                    finish_agent_call(call_handle, &result);
 
                     // A pause is not a tool outcome to relay as ToolResult or reason over — stop
                     // this run immediately, before the LLM ever sees it as a completed call.
@@ -1324,7 +1362,8 @@ async fn run_stream_inner(
                             let completed_names = tool_calls[..results_for_context.len()]
                                 .iter()
                                 .map(|tc| tc.function.name.as_str())
-                                .collect::<Vec<_>>();
+                                .collect::<Vec<_>>()
+                                .join("+");
                             context.push_tool_result(
                                 &completed_names,
                                 &results_for_context.join("\n\n"),
@@ -1359,6 +1398,7 @@ async fn run_stream_inner(
                                 g.after_call(&agent_display, tokens_per_call).await;
                             }
                             let err_str = e.to_string();
+                            *failures.entry(name.clone()).or_default() += 1;
                             let _ = tx
                                 .send(OrchestratorEvent::ToolResult {
                                     agent: agent_display,
@@ -1378,7 +1418,8 @@ async fn run_stream_inner(
                     &tool_calls
                         .iter()
                         .map(|tc| tc.function.name.as_str())
-                        .collect::<Vec<_>>(),
+                        .collect::<Vec<_>>()
+                        .join("+"),
                     &combined,
                 );
             } else {
@@ -1458,6 +1499,117 @@ mod tokens_per_tool_call_tests {
 }
 
 #[cfg(test)]
+mod spend_tests {
+    use super::awaiting_human_tests::{mock_tool_call_completion, test_agent};
+    use super::*;
+    use crate::a2a::A2aClient;
+    use crate::registry::RegistrySource;
+
+    /// Refuses every model call, as an exhausted budget does; agent calls pass.
+    struct RefuseCompletions;
+
+    impl CallGuard for RefuseCompletions {
+        fn before_call(
+            &self,
+            _target_agent: &str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn after_call(
+            &self,
+            _target_agent: &str,
+            _tokens_used: u64,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+            Box::pin(async {})
+        }
+
+        fn before_completion(
+            &self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>>
+        {
+            Box::pin(async { Err("budget used up".to_string()) })
+        }
+    }
+
+    async fn orchestrator(llm: &str, agent: &str, max_turns: usize) -> Orchestrator {
+        let config = OrchestratorConfig {
+            base_url: Some(llm.to_string()),
+            api_key: Some("test-key".into()),
+            max_turns,
+            ..Default::default()
+        };
+        let o = Orchestrator::new(config, RegistrySource::Static(vec![test_agent(agent)]))
+            .with_a2a_client(A2aClient::new());
+        o.init().await.expect("a static registry always initialises");
+        o
+    }
+
+    #[tokio::test]
+    async fn a_refused_model_call_is_never_made() {
+        let mut llm = mockito::Server::new_async().await;
+        let llm_mock = llm
+            .mock("POST", "/chat/completions")
+            .expect(0)
+            .create_async()
+            .await;
+        let agent = mockito::Server::new_async().await;
+
+        let result = orchestrator(&llm.url(), &agent.url(), 4)
+            .await
+            .with_guard(Arc::new(RefuseCompletions))
+            .run("please help")
+            .await;
+
+        llm_mock.assert_async().await;
+        assert!(
+            matches!(&result, Err(OrchestratorError::Refused(r)) if r == "budget used up"),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_agent_is_called_at_most_twice() {
+        let mut llm = mockito::Server::new_async().await;
+        // The model asks for the agent on every turn, as it did live.
+        llm.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_tool_call_completion())
+            .expect(4)
+            .create_async()
+            .await;
+        let mut agent = mockito::Server::new_async().await;
+        let agent_mock = agent
+            .mock("POST", "/")
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": "1",
+                    "error": {"code": -32000, "message": "upstream refused the model call"}
+                })
+                .to_string(),
+            )
+            .expect(MAX_AGENT_FAILURES)
+            .create_async()
+            .await;
+
+        let result = orchestrator(&llm.url(), &agent.url(), 4)
+            .await
+            .run("please help")
+            .await;
+
+        agent_mock.assert_async().await;
+        assert!(
+            matches!(result, Err(OrchestratorError::MaxTurnsExceeded(4))),
+            "{result:?}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod awaiting_human_tests {
     use super::*;
     use crate::a2a::A2aClient;
@@ -1529,68 +1681,17 @@ mod awaiting_human_tests {
         ));
     }
 
-    /// Records the result a call guard's handle is told, and whether it was dropped.
-    struct RecordingHandle(std::sync::Arc<std::sync::Mutex<(Option<bool>, bool)>>);
-
-    impl AgentCallHandle for RecordingHandle {
-        fn set_succeeded(&mut self, succeeded: bool) {
-            self.0.lock().unwrap().0 = Some(succeeded);
-        }
-    }
-
-    impl Drop for RecordingHandle {
-        fn drop(&mut self) {
-            self.0.lock().unwrap().1 = true;
-        }
-    }
-
-    fn finished_with(result: Result<String, ToolSetError>) -> (Option<bool>, bool) {
-        let seen = std::sync::Arc::new(std::sync::Mutex::new((None, false)));
-        finish_agent_call(Some(Box::new(RecordingHandle(seen.clone()))), &result);
-        *seen.lock().unwrap()
-    }
-
-    /// A pause is the agent answering with a question, so it is a successful call; only an
-    /// ordinary error fails it. Either way the handle is dropped, which ends the in-flight span.
-    #[test]
-    fn finishing_a_call_reports_its_result_and_releases_the_handle() {
-        assert_eq!(finished_with(Ok("fine".into())), (Some(true), true));
-        assert_eq!(
-            finished_with(Err(ToolSetError::ToolNotFoundError("x".into()))),
-            (Some(false), true)
-        );
-        let pause: Box<dyn std::error::Error + Send + Sync> =
-            Box::new(A2aToolError::AwaitingHuman {
-                agent: "test-agent".into(),
-                agent_id: "agent-under-test".into(),
-                pause: PauseInfo {
-                    kind: nasiko_types::a2a::AwaitingHumanKind::InputRequired,
-                    message: "Which repository?".into(),
-                    task_id: "task-321".into(),
-                    context_id: "ctx-654".into(),
-                    metadata: serde_json::Value::Null,
-                },
-            });
-        assert_eq!(
-            finished_with(Err(ToolSetError::ToolCallError(ToolError::ToolCallError(
-                pause
-            )))),
-            (Some(true), true)
-        );
-    }
-
-    fn test_agent(endpoint: &str) -> AgentInfo {
+    pub(super) fn test_agent(endpoint: &str) -> AgentInfo {
         AgentInfo {
             id: "agent-under-test".into(),
             name: "test-agent".into(),
             description: "for tests".into(),
             endpoint: endpoint.into(),
             skills: vec![],
-            auth_header: None,
         }
     }
 
-    fn mock_tool_call_completion() -> String {
+    pub(super) fn mock_tool_call_completion() -> String {
         serde_json::json!({
             "id": "chatcmpl-test",
             "object": "chat.completion",

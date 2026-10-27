@@ -26,6 +26,10 @@ pub enum OrchestratorError {
     #[error("context serialization error: {0}")]
     Serialization(String),
 
+    /// The call guard refused the next model call (`CallGuard::before_completion`).
+    #[error("model call refused: {0}")]
+    Refused(String),
+
     /// Not a real failure — a called agent needs a human before this run can continue. Used only
     /// by the non-streaming loop (`Orchestrator::run`); its `Ok` type has no room for "paused"
     /// any more than `rig`'s own erased types did, so this is routed through `Err` for the same

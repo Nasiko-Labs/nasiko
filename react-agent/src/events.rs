@@ -112,4 +112,6 @@ pub enum PolicyRejectionKind {
     Delegation,
     /// The flow guard's cascade limits.
     FlowGuard,
+    /// The loop's own limit on calling an agent that keeps failing.
+    RetryLimit,
 }
