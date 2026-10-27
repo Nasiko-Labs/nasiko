@@ -796,6 +796,21 @@ mod tests {
         observe: O,
         backoff: Backoff,
     ) -> Importer<impl FnMut(Agent, SessionSource) -> Result<Captured>, O> {
+        let capture = capture_once(root, url, captured);
+        delivering_importer_capturing(root, url, capture, observe, backoff)
+    }
+
+    fn delivering_importer_capturing<C, O>(
+        root: &Path,
+        url: &str,
+        capture: C,
+        observe: O,
+        backoff: Backoff,
+    ) -> Importer<C, O>
+    where
+        C: FnMut(Agent, SessionSource) -> Result<Captured>,
+        O: FnMut(&ImportRun),
+    {
         let config = signed_in(url);
         let queue_root = root.to_path_buf();
         Importer {
@@ -804,7 +819,7 @@ mod tests {
             courier: paced_courier(backoff, move |pace, backoff| {
                 sync::deliver_at(&queue_root, || Ok(config.clone()), pace, backoff)
             }),
-            capture: capture_once(root, url, captured),
+            capture,
             observe,
             run: ImportRun::default(),
             last_pass: None,
@@ -820,13 +835,37 @@ mod tests {
         let captured = Rc::new(RefCell::new(HashSet::new()));
         let now = Utc::now();
 
-        // Killed as soon as the newest window is done (the next is being read or sent).
+        // Killed as soon as the newest window is done (the next is being read or sent). Delivery runs
+        // on the courier's thread, so on a slow machine every window could be read before the newest
+        // is done: each capture first waits for the newest turn to leave the queue, which makes the
+        // window's end mark it done before the oldest window is read.
+        let root = dir.path().to_path_buf();
+        let url = server.url();
+        let newest = coding_agent_event_id("claude", "new", "t");
+        let mut capture = capture_once(dir.path(), &url, captured.clone());
+        let after_newest_delivered = move |agent, source| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while queue::queued_ids_at(&root).unwrap().contains(&newest) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the newest turn was never delivered"
+                );
+                std::thread::sleep(FAST_TICK);
+            }
+            capture(agent, source)
+        };
         let killed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            delivering_importer(dir.path(), &server.url(), captured.clone(), |run| {
-                if run.windows[0].status == WindowStatus::Done {
-                    panic!("killed after the first window");
-                }
-            })
+            delivering_importer_capturing(
+                dir.path(),
+                &url,
+                after_newest_delivered,
+                |run| {
+                    if run.windows[0].status == WindowStatus::Done {
+                        panic!("killed after the first window");
+                    }
+                },
+                Backoff::Honour,
+            )
             .run(sessions(now), Drain::UntilEmpty)
         }));
         assert!(killed.is_err());

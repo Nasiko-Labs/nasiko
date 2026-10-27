@@ -346,10 +346,17 @@ export default tseslint.config(
     ],
     rules: { 'no-restricted-syntax': ['error', ...banned, noRawElements[0]] },
   },
-  // The one fetch wrapper. Streams (SSE bodies need the raw Response) go through its `fetchApi`, so they resolve
-  // against the same API base.
+  // The one fetch wrapper, and the streams it doesn't cover (SSE bodies need the raw Response): chat turns, the
+  // agent log tail (`useLogStream`), a build's deploy stream (`useBuildStream`) and EE's Weave generation; API
+  // modules, so still no fetch in components.
   {
-    files: ['common/src/lib/api/client.ts'],
+    files: [
+      'common/src/lib/api/client.ts',
+      'common/src/features/chat/registry.ts',
+      'common/src/features/sessions/api.ts',
+      'common/src/features/deploy/api.ts',
+      'ee/web/src/genui/conversation/api.ts',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',
@@ -383,8 +390,9 @@ export default tseslint.config(
   {
     files: [
       'scripts/**',
-      '*/scripts/**',
       '*/*/scripts/**',
+      // The desktop shell's build script (its .js sources are ignored above; this is .mjs).
+      'desktop/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
       '**/vite.config.ts',
