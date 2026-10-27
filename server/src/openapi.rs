@@ -101,7 +101,7 @@ use crate::state::AppState;
         crate::observability::handler::get_finops_dashboard,
         // The four FinOps read sources the React data layer consumes; they
         // were annotated but never registered, so the snapshot the frontend
-        // generates its client from lacked them (react/docs/phase0 X8).
+        // generates its client from lacked them (ui/docs/phase0 X8).
         crate::observability::handler::get_context_savings,
         crate::observability::handler::get_context_savings_agents,
         crate::observability::handler::get_context_savings_top_requests,
@@ -252,6 +252,21 @@ use crate::state::AppState;
         crate::observability::service::AgentStatsData,
         crate::observability::service::AgentProjectStats,
         crate::observability::service::FinopsDashboardResponse,
+        crate::observability::service::FinopsSpendTimeseriesResponse,
+        crate::observability::service::FinopsSpendTimeseries,
+        crate::observability::service::SpendTimeseriesPoint,
+        crate::observability::service::FinopsSpendCalendarResponse,
+        crate::observability::service::FinopsSpendCalendar,
+        crate::observability::service::SpendCalendarDay,
+        crate::observability::service::FinopsDayDrilldownResponse,
+        crate::observability::service::FinopsDayDrilldown,
+        crate::observability::service::SpendHourPoint,
+        crate::observability::service::AgentSpendSlice,
+        crate::observability::service::SpendPieSlice,
+        crate::observability::service::SpendByAgentBreakdown,
+        crate::observability::service::FinopsAttributionsResponse,
+        crate::observability::service::FinopsAttributions,
+        crate::observability::service::WorkflowFinopsRow,
         crate::observability::service::FinopsDashboardData,
         crate::observability::service::FinopsSummary,
         crate::observability::service::AgentFinopsRow,

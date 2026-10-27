@@ -64,6 +64,14 @@ ui/tests/fixtures/runs/
 # Local git worktrees (superpowers workflow)
 .worktrees/
 
+# Cloud credentials are never committed (incident 2026-10-14: a service-account key was committed on 2026-08-19).
+# Keys live outside the repository (ee/docs/TENANT_PROVISIONING_RUNBOOK.md §2.1); scripts/security/
+# check-committed-credentials.sh enforces it in pre-commit and CI for files these patterns do not name.
+nasiko-tenant-provisioner.json
+gke-key.json
+*-sa-key.json
+*.serviceaccount.json
+
 # Sensitive licensing material — never commit (keys live out-of-band)
 .licensing-keys/
 
