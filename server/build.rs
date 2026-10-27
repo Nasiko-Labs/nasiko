@@ -110,4 +110,10 @@ fn main() {
     // now — the React sources reach the binary only through it.
     println!("cargo:rerun-if-changed={}", bundle.display());
     println!("cargo:rerun-if-changed=build.rs");
+
+    // `sqlx::migrate!` embeds the migration set at compile time, so the directory
+    // itself is a compile-time input. The macro tracks each file it already saw, but
+    // not the directory — so without this an *added* .sql would not rebuild the
+    // server, and booting it to apply the migration would silently apply nothing.
+    println!("cargo:rerun-if-changed=../migrations");
 }
