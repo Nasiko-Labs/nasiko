@@ -3,65 +3,65 @@
 # Build context must be the workspace root (oss/ in the public repo).
 #
 #   docker build -f server/Dockerfile -t nasiko-server .
-#
-# Stage 1 builds the React SPA, stage 2 compiles it into the binary, stage 3 runs it. Node is
-# build tooling only: nothing of it reaches the runtime image, and `docker compose up -d` needs
-# nothing on the host but Docker.
 
-# ── Stage 1: the web UI (OSS edition, release, live API) ────────────────────────────────────
-# The server embeds a BUILT bundle (see server/build.rs), and none is committed: one line changed
-# in a component renames most of the bundle's files, because a content hash cascades through
-# every chunk that imports it.
+# ── Stage 1: the web UI ─────────────────────────────────────────────────────
+# The server embeds a BUILT React bundle (see server/build.rs), so something
+# has to build it. Doing it here rather than committing ui/oss/dist to the repo
+# keeps ~4 MB of generated output out of version control — one line changed in
+# a component renames roughly two thirds of the bundle's files, because a
+# content hash cascades through every chunk that imports it.
 #
-# Two layouts at ui/, detected rather than assumed, because this file is published:
-#   ui/pnpm-workspace.yaml — the React workspace. The private repo, and the public one
-#                            once React publication opens.
-#   ui/common/ (npm)       — the frozen legacy UI the public repo keeps until then
-#                            (docs/UI_SYNC.md §4). Delete this branch when the gate opens.
-# The whole context is copied (not one tree) because COPY cannot name an optional directory;
-# the pnpm store cache keeps the cost to the build itself.
+# It also means `docker compose up -d` needs nothing on the host but Docker:
+# Node lives in this stage, not on the developer's machine.
 FROM node:24-slim AS ui
-WORKDIR /ctx
-# Telemetry off for every tool in the build; the workspace's preinstall check requires it.
-ENV DO_NOT_TRACK=1 OPENUI_TELEMETRY_DISABLED=1 STORYBOOK_DISABLE_TELEMETRY=1 TURBO_TELEMETRY_DISABLED=1 \
-    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1
-RUN corepack enable
-COPY . .
-# React: a release build against the live API — no test build, no harness, no mock worker.
-# build.rs re-checks the result and fails the Rust build on anything else.
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    --mount=type=cache,target=/root/.npm \
-    set -eu; mkdir -p /out; \
-    if [ -f ui/pnpm-workspace.yaml ]; then \
-        cd ui && pnpm install --frozen-lockfile && \
-        NASIKO_TEST_BUILD=0 NASIKO_HARNESS=0 NASIKO_DEPLOYMENT=workspace VITE_NASIKO_API_MODE=live \
-            pnpm --filter @nasiko/web build && \
-        cp -R oss/app/dist/. /out/; \
-    elif [ -d ui/common ]; then \
-        cd ui && npm ci && node scripts/app.ts build oss && cp -R oss/dist/. /out/; \
-    else \
-        echo "no UI in the build context (ui/pnpm-workspace.yaml or ui/common/)" >&2; exit 1; \
-    fi
 
-# ── Stage 2: build ──────────────────────────────────────────────────────────────────────────
-FROM rust:1.95.0 AS builder
+WORKDIR /ui
+# pnpm from Node's corepack, at the version ui/package.json names.
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+
+# The lockfile alone decides what is downloaded, so this layer is cached until
+# a dependency actually changes — editing a component fetches nothing.
+# package.json too: corepack reads the pnpm version from it.
+COPY ui/package.json ui/pnpm-workspace.yaml ui/pnpm-lock.yaml ./
+RUN pnpm fetch
+
+# Then the whole tree, installed offline from what was fetched. All of ui/, not
+# the manifests alone: a frozen install needs every workspace member's
+# package.json, and the members differ between this repo and the public one.
+COPY ui/ ./
+RUN pnpm install --offline --frozen-lockfile
+# `oss` explicitly: in the private repo this tree also holds the enterprise
+# edition, and an unqualified build would produce both. The public repo has
+# only this one, and scripts/editions.ts finds editions by directory shape, so
+# the same command is correct in both.
+RUN node scripts/app.ts build oss
+
+# ── Stage 2: build ──────────────────────────────────────────────────────────
+FROM rust:latest AS builder
+
 WORKDIR /build
 COPY . .
-COPY --from=ui /out /ui-dist
-# A React bundle is selected explicitly (build.rs validates it); a legacy bundle goes where the
-# legacy branch of build.rs looks for it.
+
+# rust-embed resolves this at compile time and hard-errors if it is missing, so
+# it has to land before cargo runs. After `COPY . .`, which would otherwise
+# shadow it with whatever (if anything) the context carried.
+COPY --from=ui /ui/oss/dist ./ui/oss/dist
+
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    if [ -f /ui-dist/nasiko-spa-edition ]; then export NASIKO_REACT_DIST_OSS=/ui-dist; \
-    else mkdir -p ui/oss/dist && cp -R /ui-dist/. ui/oss/dist/; fi && \
-    cargo build --locked --release -p nasiko-server && \
+    cargo build --release -p nasiko-server && \
     cp target/release/nasiko-server /nasiko-server
 
-# ── Stage 3: runtime ────────────────────────────────────────────────────────────────────────
+# ── Stage 3: runtime ────────────────────────────────────────────────────────
 FROM debian:trixie-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /nasiko-server /usr/local/bin/nasiko-server
+
 EXPOSE 8080
 ENTRYPOINT ["nasiko-server"]

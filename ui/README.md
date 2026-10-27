@@ -49,8 +49,9 @@ What's here:
 Needs Node 24 (`.nvmrc`; `engines` allows 22.18+, which `scripts/*.ts` need to run without a build step).
 
 ```sh
-npm install
-npm run dev            # http://localhost:3000/tokenops  — "MOCK DATA" badge in the sidebar footer
+corepack enable        # once: pnpm, at the version package.json names (corepack ships with Node 24)
+pnpm install
+pnpm run dev           # http://localhost:3000/tokenops  — "MOCK DATA" badge in the sidebar footer
 ```
 
 Every API call is answered in the browser from a deterministic seed: 60 days of data, 20 agents, a spike day,

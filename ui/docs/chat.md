@@ -14,8 +14,8 @@ Entry points: the Chat nav link, and **Try it** on a running agent's page.
 
 Needs Node 24 (`.nvmrc`; `engines` allows 22.18+).
 
-1. `npm ci`
-2. `npm run dev` (http://localhost:3000, full mock mode, logged in as admin)
+1. `pnpm install` (`corepack enable` once)
+2. `pnpm run dev` (http://localhost:3000, full mock mode, logged in as admin)
 3. Open http://localhost:3000/chat?auto=1
 4. Type "Summarise last week's incidents" and press Enter.
 5. You see "Working on your request…", then "Asking seed-support-bot…", the reply, "Answered by the Orchestrator, using seed-support-bot", and a collapsed **Activity · 1 agent**.

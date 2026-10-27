@@ -6,9 +6,6 @@
   "engines": {
     "node": ">=22.18"
   },
-  "workspaces": [
-    "common"
-  ],
   "scripts": {
     "dev": "node scripts/app.ts dev",
     "design": "vite --config design/vite.config.ts",
@@ -87,5 +84,6 @@
     "workerDirectory": [
       "public"
     ]
-  }
+  },
+  "packageManager": "pnpm@12.8.1"
 }

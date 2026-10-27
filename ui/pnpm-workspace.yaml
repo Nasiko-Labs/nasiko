@@ -1,37 +1,24 @@
-# Product structure (ADR-0009). shared/ and oss/ are the publication-approved subset; ee/ is private and is
-# never exported. The public workspace file is generated from this one (tooling/editions/public-workspace.mjs).
+# One workspace for the whole UI, one lockfile: the ui/ root (the tooling), common/ (the React core), design/, the
+# desktop packagers and every edition with dependencies of its own. Found by shape, like scripts/editions.ts, so the
+# file names no edition and the published copy finds only what the public tree has.
 packages:
-  - shared/*
-  - oss/app
-  - tooling/*
-  # Private Enterprise: the full product, its feature packages, tenancy and the separately released Registry.
-  - ee/app
-  - ee/features/*
-  - ee/tenancy
-  - ee/registry/app
-  - ee/registry/features/*
-  # The private tooling extension (tooling/extensions.cjs): Enterprise rules, fixtures, ledger, publication tools.
-  - ee/tooling
-minimumReleaseAgeExclude:
-  - "@vitest/mocker@5.0.3"
-  - "@vitest/spy@5.0.3"
-  - dependency-cruiser@18.5.0
-  - ignore@7.0.11
-  - msw@3.0.1
-  - vitest@5.0.3
-# Dependency lifecycle scripts (pnpm 12 `allowBuilds`): every script-bearing
-# package must be decided here explicitly; `false` means the script is never
-# run. Nothing is approved. This is what keeps @openuidev/lang-core's
-# postinstall telemetry from executing (ADR-0002); evidence in
-# docs/phase1/evidence.md.
-#   @openuidev/lang-core  — postinstall telemetry (PostHog)
-#   esbuild               — postinstall only re-validates the optional native binary
-#   unrs-resolver         — postinstall only builds a napi fallback; prebuilt optional dep is used
-allowBuilds:
-  "@openuidev/lang-core": false
-  esbuild: false
-  unrs-resolver: false
-# Advisory overrides (security:check): patched release of a transitive dep.
+  - '*'
+  - '*/*'
+
+# npm's layout: one flat node_modules at ui/. An edition's app dir (oss/ and the ones beside it) is not a package and
+# resolves every dependency from there.
+nodeLinker: hoisted
+
+# Carried over from the npm lockfile: d3-scale (the charts' scales) on d3-format 3.1.2, while @visx/vendor keeps the
+# 3.1.0 it pins exactly. Without it pnpm settles both on 3.1.0, a downgrade for the charts.
 overrides:
-  "handlebars@<4.7.10": "4.7.10"
-  "source-map-js@<1.2.2": "1.2.2"
+  d3-scale>d3-format: 3.1.2
+
+# A dependency's install script runs only if it is decided here (pnpm 12 refuses an install with an undecided one).
+#   electron-winstaller  picks the 7-Zip binary the Windows desktop installer uses; npm ran it too
+#   esbuild              only re-checks its native binary, which its platform package already provides
+#   msw                  copies its worker into ui/public, which nothing serves (the app's copy is common/public)
+allowBuilds:
+  electron-winstaller: true
+  esbuild: false
+  msw: false
