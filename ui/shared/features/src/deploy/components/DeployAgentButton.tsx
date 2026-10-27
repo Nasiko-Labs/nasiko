@@ -4,7 +4,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { Upload } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy } from '../copy'
 
@@ -20,15 +20,16 @@ export function DeployAgentButton({
   className?: string
 }) {
   return (
-    <Button
-      asChild
-      variant={variant}
-      size={size}
-      className={cn('pointer-coarse:min-h-11', className)}
+    <Link
+      to="/deploy"
+      search={name ? { name } : {}}
+      {...asButton({
+        variant: variant,
+        size: size,
+        className: cn('pointer-coarse:min-h-11', className),
+      })}
     >
-      <Link to="/deploy" search={name ? { name } : {}}>
-        <Upload aria-hidden /> {copy.entry.label}
-      </Link>
-    </Button>
+      <Upload aria-hidden /> {copy.entry.label}
+    </Link>
   )
 }

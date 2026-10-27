@@ -11,7 +11,7 @@ import type { ReactNode } from 'react'
 import { SpotlightCard } from '@nasiko/ui/composites/spotlight-card'
 import { PanelError, PanelSkeleton } from '@nasiko/ui/composites/panel'
 import { Reveal, RevealItem } from '@nasiko/ui/composites/reveal'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import type { ResolvedWindow } from '@nasiko/features/tokenops/window'
@@ -286,9 +286,12 @@ function Body({
   if (state.kind === 'no-reports')
     return (
       <div>
-        <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-          <Link to="/chat">{copy.lead.startChat}</Link>
-        </Button>
+        <Link
+          to="/chat"
+          {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+        >
+          {copy.lead.startChat}
+        </Link>
       </div>
     )
   if (state.kind === 'no-agents') return null

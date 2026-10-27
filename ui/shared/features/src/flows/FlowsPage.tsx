@@ -19,7 +19,7 @@ import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
 import { CustomRange, TimePresets } from '@nasiko/ui/composites/time-control'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -283,9 +283,9 @@ export function FlowsPage({
         <EmptyState
           title={copy.list.firstRun}
           action={
-            <Button asChild size="sm">
-              <Link to="/chat">{copy.list.openChat}</Link>
-            </Button>
+            <Link to="/chat" {...asButton({ size: 'sm' })}>
+              {copy.list.openChat}
+            </Link>
           }
         >
           {copy.list.firstRunBody}

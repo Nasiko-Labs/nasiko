@@ -6,7 +6,7 @@ import { Link } from '@tanstack/react-router'
 import { CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
 import { useRef } from 'react'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -151,10 +151,12 @@ export function RecentSessions({
 
 function OpenSessions() {
   return (
-    <Button asChild variant="link" size="sm" className={`h-auto px-0 ${TOUCH}`}>
-      <Link to="/sessions" search={LAST_WEEK as never}>
-        {copy.sessions.open}
-      </Link>
-    </Button>
+    <Link
+      to="/sessions"
+      search={LAST_WEEK as never}
+      {...asButton({ variant: 'link', size: 'sm', className: `h-auto px-0 ${TOUCH}` })}
+    >
+      {copy.sessions.open}
+    </Link>
   )
 }

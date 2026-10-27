@@ -8,7 +8,7 @@ import { Link } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import { Disclosure } from '@nasiko/ui/composites/disclosure'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { Call } from '../calls'
 import { copy, own, reasonFor, stepStatusLabel } from '../copy'
@@ -210,22 +210,31 @@ function StepRow({
         {call.agentId || link ? (
           <div className="flex flex-wrap gap-2">
             {call.agentId ? (
-              <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-                <Link to="/agents/$agentId" params={{ agentId: call.agentId }}>
-                  {copy.steps.openAgent}
-                </Link>
-              </Button>
+              <Link
+                to="/agents/$agentId"
+                params={{ agentId: call.agentId }}
+                {...asButton({
+                  variant: 'outline',
+                  size: 'sm',
+                  className: 'pointer-coarse:min-h-11',
+                })}
+              >
+                {copy.steps.openAgent}
+              </Link>
             ) : null}
             {link ? (
-              <Button asChild size="sm" variant="ghost" className="pointer-coarse:min-h-11">
-                <Link
-                  to="/sessions/$sessionId"
-                  params={{ sessionId: link.sessionId }}
-                  search={{ trace: link.trace, span: link.span }}
-                >
-                  {copy.steps.openInTrace}
-                </Link>
-              </Button>
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId: link.sessionId }}
+                search={{ trace: link.trace, span: link.span }}
+                {...asButton({
+                  variant: 'ghost',
+                  size: 'sm',
+                  className: 'pointer-coarse:min-h-11',
+                })}
+              >
+                {copy.steps.openInTrace}
+              </Link>
             ) : null}
           </div>
         ) : null}

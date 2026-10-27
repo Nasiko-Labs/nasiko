@@ -98,21 +98,21 @@ export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; clas
               return (
                 <Badge
                   key={r}
-                  asChild
                   variant={s.counts[r] ? BADGE[r] : 'outline'}
                   className={cn(
                     'font-normal tabular-nums focus-visible:ring-ring dark:focus-visible:ring-ring',
                     TOUCH,
                     !s.counts[r] && 'text-muted-foreground',
                   )}
+                  render={
+                    <Link
+                      to="/agents"
+                      search={{ health: r } as never}
+                      aria-label={copy.health.countLink(copy.ratingCount[r](s.counts[r]), names)}
+                    />
+                  }
                 >
-                  <Link
-                    to="/agents"
-                    search={{ health: r } as never}
-                    aria-label={copy.health.countLink(copy.ratingCount[r](s.counts[r]), names)}
-                  >
-                    {copy.ratingCount[r](s.counts[r])}
-                  </Link>
+                  {copy.ratingCount[r](s.counts[r])}
                 </Badge>
               )
             })}
@@ -125,9 +125,9 @@ export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; clas
           >
             {squares.map((a) => (
               <Tooltip key={a.id}>
-                <TooltipTrigger asChild>
-                  <span className={cn('h-5 rounded-xs', SEGMENT[a.rating])} />
-                </TooltipTrigger>
+                <TooltipTrigger
+                  render={<span className={cn('h-5 rounded-xs', SEGMENT[a.rating])} />}
+                />
                 <TooltipContent>{`${a.name} · ${copy.rating[a.rating]}`}</TooltipContent>
               </Tooltip>
             ))}

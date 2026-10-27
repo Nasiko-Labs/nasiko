@@ -136,11 +136,13 @@ export function SettingsButton({
   const theme = useThemePrefs().theme
   const row = <K extends 'labels' | 'motion'>(k: K, opts: Record<string, string>) => (
     <ToggleGroup
-      type="single"
       size="sm"
       variant="outline"
-      value={p[k]}
-      onValueChange={(x) => x && p.set({ [k]: x } as never)}
+      value={[p[k]]}
+      onValueChange={(vs) => {
+        const x = vs[0] as string
+        return x && p.set({ [k]: x } as never)
+      }}
       aria-label={k === 'labels' ? copy.settings.labels : copy.settings.motion}
     >
       {Object.entries(opts).map(([v, l]) => (
@@ -152,11 +154,13 @@ export function SettingsButton({
   )
   const onOff = (k: 'flow' | 'grid', label: string) => (
     <ToggleGroup
-      type="single"
       size="sm"
       variant="outline"
-      value={p[k] ? 'on' : 'off'}
-      onValueChange={(x) => x && p.set({ [k]: x === 'on' })}
+      value={[p[k] ? 'on' : 'off']}
+      onValueChange={(vs) => {
+        const x = vs[0] as string
+        return x && p.set({ [k]: x === 'on' })
+      }}
       aria-label={label}
     >
       <ToggleGroupItem value="on" className="px-2.5 text-xs">
@@ -170,10 +174,12 @@ export function SettingsButton({
   return (
     <Popover>
       <div className={HUD_TAB}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon" className="size-8" aria-label={copy.hud.settings}>
-            <Settings2 aria-hidden />
-          </Button>
+        <PopoverTrigger
+          render={
+            <Button variant="ghost" size="icon" className="size-8" aria-label={copy.hud.settings} />
+          }
+        >
+          <Settings2 aria-hidden />
         </PopoverTrigger>
       </div>
       <PopoverContent align="center" className="w-80">
@@ -201,11 +207,13 @@ export function SettingsButton({
           <div className="flex items-center justify-between gap-3">
             <span>{copy.settings.theme}</span>
             <ToggleGroup
-              type="single"
               size="sm"
               variant="outline"
-              value={theme}
-              onValueChange={(x) => x && setTheme(x as Theme)}
+              value={[theme]}
+              onValueChange={(vs) => {
+                const x = vs[0] as string
+                return x && setTheme(x as Theme)
+              }}
               aria-label={copy.settings.theme}
             >
               {Object.entries(copy.settings.themeOpts).map(([v, l]) => (

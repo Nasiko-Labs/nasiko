@@ -20,7 +20,7 @@ import { Panel, PanelError } from '@nasiko/ui/composites/panel'
 import { StateCard } from '@nasiko/ui/composites/state-card'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Toggle } from '@nasiko/ui/primitives/toggle'
 import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
 import { relTime } from '@nasiko/features/agents/format'
@@ -215,21 +215,30 @@ function FlowBody({
             {session ? (
               <>
                 {tempo ? (
-                  <Button asChild variant="outline" size="sm" className="pointer-coarse:min-h-11">
-                    <Link
-                      to="/sessions/$sessionId"
-                      params={{ sessionId: session }}
-                      search={{ trace: flow.flow_id }}
-                    >
-                      {copy.actions.openTrace}
-                    </Link>
-                  </Button>
-                ) : null}
-                <Button asChild variant="ghost" size="sm" className="pointer-coarse:min-h-11">
-                  <Link to="/chat/$sessionId" params={{ sessionId: session }}>
-                    {copy.actions.openChat}
+                  <Link
+                    to="/sessions/$sessionId"
+                    params={{ sessionId: session }}
+                    search={{ trace: flow.flow_id }}
+                    {...asButton({
+                      variant: 'outline',
+                      size: 'sm',
+                      className: 'pointer-coarse:min-h-11',
+                    })}
+                  >
+                    {copy.actions.openTrace}
                   </Link>
-                </Button>
+                ) : null}
+                <Link
+                  to="/chat/$sessionId"
+                  params={{ sessionId: session }}
+                  {...asButton({
+                    variant: 'ghost',
+                    size: 'sm',
+                    className: 'pointer-coarse:min-h-11',
+                  })}
+                >
+                  {copy.actions.openChat}
+                </Link>
               </>
             ) : null}
           </>
@@ -320,12 +329,14 @@ function FlowBody({
             <>
               <ToggleGroup
                 data-tour="flow-view"
-                type="single"
                 variant="outline"
                 size="sm"
                 aria-label={copy.view.label}
-                value={shownView}
-                onValueChange={(v) => v && setView(v as 'timeline' | 'table')}
+                value={[shownView]}
+                onValueChange={(vs) => {
+                  const v = vs[0] as string
+                  return v && setView(v as 'timeline' | 'table')
+                }}
               >
                 <ToggleGroupItem value="timeline" className="pointer-coarse:min-h-11">
                   {copy.view.timeline}

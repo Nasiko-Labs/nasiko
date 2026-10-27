@@ -649,15 +649,17 @@ function RailLine({
         </Badge>
       ) : (
         <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="size-5 p-0 pointer-coarse:size-11"
-              aria-label={copy.rail.otherLater}
-            >
-              <Info className="size-3.5" aria-hidden />
-            </Button>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-5 p-0 pointer-coarse:size-11"
+                aria-label={copy.rail.otherLater}
+              />
+            }
+          >
+            <Info className="size-3.5" aria-hidden />
           </TooltipTrigger>
           <TooltipContent>{copy.rail.otherLater}</TooltipContent>
         </Tooltip>

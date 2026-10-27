@@ -82,20 +82,20 @@ export function FirstRunHero() {
             >
               <div className="flex flex-wrap items-center gap-2">
                 <DeployAgentButton size="lg" className={TOUCH} />
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" className={`text-muted-foreground ${TOUCH}`}>
-                    <ChevronRight
-                      aria-hidden
-                      className={cn(
-                        'transition-transform motion-reduce:transition-none',
-                        cli && 'rotate-90',
-                      )}
-                    />
-                    {copy.firstRun.cli(CLI_STEPS)}
-                  </Button>
+                <CollapsibleTrigger
+                  render={<Button variant="ghost" className={`text-muted-foreground ${TOUCH}`} />}
+                >
+                  <ChevronRight
+                    aria-hidden
+                    className={cn(
+                      'transition-transform motion-reduce:transition-none',
+                      cli && 'rotate-90',
+                    )}
+                  />
+                  {copy.firstRun.cli(CLI_STEPS)}
                 </CollapsibleTrigger>
               </div>
-              <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-collapsible-up data-[state=open]:animate-collapsible-down motion-reduce:animate-none">
+              <CollapsibleContent className="overflow-hidden [--radix-collapsible-content-height:var(--collapsible-panel-height)] motion-reduce:animate-none data-open:animate-collapsible-down data-closed:animate-collapsible-up">
                 <FirstRunSteps />
               </CollapsibleContent>
             </Collapsible>

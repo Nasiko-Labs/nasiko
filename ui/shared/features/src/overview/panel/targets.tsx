@@ -4,7 +4,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { Estate, Target } from '../estate/types'
 import { LAST_WEEK } from '../tuning'
@@ -127,14 +127,9 @@ export function TargetLink({
     }
   })()
   if (!link) return null
-  return (
-    <Button
-      asChild
-      variant={variant}
-      size={size}
-      className={cn('pointer-coarse:min-h-11', className)}
-    >
-      {link}
-    </Button>
-  )
+  return withButtonStyle(link, {
+    variant: variant,
+    size: size,
+    className: cn('pointer-coarse:min-h-11', className),
+  })
 }

@@ -36,7 +36,7 @@ import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { Reveal, RevealItem } from '@nasiko/ui/composites/reveal'
 import { StateCard } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { useChatSessions } from '@nasiko/features/chat/api'
 import { overviewNarrative } from '@nasiko/features/narrative/overview'
 import { usePersona } from '@nasiko/features/onboarding/api'
@@ -142,11 +142,13 @@ function HeaderActions({
       {onView ? (
         <ToggleGroup
           data-tour="overview-views"
-          type="single"
           variant="outline"
           size="sm"
-          value={view}
-          onValueChange={(v) => v && onView(v as HomeView)}
+          value={[view]}
+          onValueChange={(vs) => {
+            const v = vs[0] as string
+            return v && onView(v as HomeView)
+          }}
           aria-label={copy.views.label}
         >
           {HOME_VIEWS.map((v) => (
@@ -165,13 +167,13 @@ function HeaderActions({
       ) : null}
       {admin && view !== 'overview' ? (
         <ToggleGroup
-          type="single"
           variant="outline"
           size="sm"
-          value={search.scope ?? 'org'}
-          onValueChange={(s) =>
-            s && setSearch({ scope: s === 'org' ? undefined : 'mine', sel: undefined })
-          }
+          value={[search.scope ?? 'org']}
+          onValueChange={(vs) => {
+            const s = vs[0] as string
+            return s && setSearch({ scope: s === 'org' ? undefined : 'mine', sel: undefined })
+          }}
           aria-label={estateCopy.scope.label}
         >
           <ToggleGroupItem value="mine" className="px-3 text-xs pointer-coarse:min-h-11">
@@ -184,14 +186,16 @@ function HeaderActions({
       ) : null}
       <ToggleGroup
         data-tour="overview-range"
-        type="single"
         variant="outline"
         size="sm"
-        value={search.range ?? DEFAULT_RANGE}
-        onValueChange={(v) =>
-          v &&
-          setSearch({ range: v === DEFAULT_RANGE ? undefined : (v as OverviewSearch['range']) })
-        }
+        value={[search.range ?? DEFAULT_RANGE]}
+        onValueChange={(vs) => {
+          const v = vs[0] as string
+          return (
+            v &&
+            setSearch({ range: v === DEFAULT_RANGE ? undefined : (v as OverviewSearch['range']) })
+          )
+        }}
         aria-label={copy.range.label}
       >
         {RANGES.map((r) => (
@@ -250,9 +254,9 @@ export function OverviewPage({
             title={copy.meFailed}
             action={
               <div className="flex flex-wrap gap-2">
-                <Button asChild size="sm" variant="outline">
-                  <Link to="/status">{copy.checkStatus}</Link>
-                </Button>
+                <Link to="/status" {...asButton({ variant: 'outline', size: 'sm' })}>
+                  {copy.checkStatus}
+                </Link>
                 <Button size="sm" variant="outline" onClick={() => void meQ.refetch()}>
                   <RotateCw className="size-3.5" aria-hidden /> {copy.retry}
                 </Button>

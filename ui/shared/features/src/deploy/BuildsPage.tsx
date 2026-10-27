@@ -79,11 +79,11 @@ export function BuildsPage({
       className="flex flex-wrap items-center gap-2 border-b border-border p-2"
     >
       <ToggleGroup
-        type="single"
         variant="outline"
         size="sm"
-        value={filter}
-        onValueChange={(v) => {
+        value={[filter]}
+        onValueChange={(vs) => {
+          const v = vs[0] as string
           if (v)
             setSearch(
               { status: v === 'all' ? undefined : (v as BuildsFilter), page: undefined },

@@ -152,22 +152,24 @@ function RowMenu({
   const cli = cliLine(config)
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size="sm"
-          variant="ghost"
-          className="size-8 px-0 pointer-coarse:size-11"
-          aria-label={copy.configActions(config.name)}
-        >
-          <MoreHorizontal className="size-4" aria-hidden />
-        </Button>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            size="sm"
+            variant="ghost"
+            className="size-8 px-0 pointer-coarse:size-11"
+            aria-label={copy.configActions(config.name)}
+          />
+        }
+      >
+        <MoreHorizontal className="size-4" aria-hidden />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-72">
-        <DropdownMenuItem onSelect={() => onEdit(config)}>{copy.edit}</DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onDefault(config, !config.is_default)}>
+        <DropdownMenuItem onClick={() => onEdit(config)}>{copy.edit}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => onDefault(config, !config.is_default)}>
           {config.is_default ? copy.removeDefault : copy.setDefault}
         </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => onDuplicate(config)}>{copy.duplicate}</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => onDuplicate(config)}>{copy.duplicate}</DropdownMenuItem>
         <DropdownMenuSeparator />
         {'line' in cli ? (
           <CopyMenuItem text={cli.line} label={copy.copyCli} />
@@ -177,7 +179,7 @@ function RowMenu({
           </p>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-destructive" onSelect={() => onDelete(config)}>
+        <DropdownMenuItem className="text-destructive" onClick={() => onDelete(config)}>
           {copy.delete}
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -194,14 +196,14 @@ function SetADefault({
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="sm" variant="outline" className="pointer-coarse:min-h-11">
-          {copy.setADefault}
-        </Button>
+      <DropdownMenuTrigger
+        render={<Button size="sm" variant="outline" className="pointer-coarse:min-h-11" />}
+      >
+        {copy.setADefault}
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {configs.map((c) => (
-          <DropdownMenuItem key={c.id} onSelect={() => onDefault(c, true)}>
+          <DropdownMenuItem key={c.id} onClick={() => onDefault(c, true)}>
             {c.name}
           </DropdownMenuItem>
         ))}

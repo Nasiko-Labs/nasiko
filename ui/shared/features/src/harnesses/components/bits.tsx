@@ -29,14 +29,16 @@ export function HarnessLabel({ id, className }: { id: string; className?: string
 export function Term({ children, tip }: { children: ReactNode; tip: string }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the term's tooltip; it has no action, so no button role
-          tabIndex={0}
-          className="cursor-help underline decoration-dotted underline-offset-2"
-        >
-          {children}
-        </span>
+      <TooltipTrigger
+        render={
+          <span
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the term's tooltip; it has no action, so no button role
+            tabIndex={0}
+            className="cursor-help underline decoration-dotted underline-offset-2"
+          />
+        }
+      >
+        {children}
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">{tip}</TooltipContent>
     </Tooltip>

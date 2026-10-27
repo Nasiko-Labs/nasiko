@@ -110,7 +110,7 @@ type Form = z.infer<typeof schema>
 const TIER_FIELDS = ['tier1_model', 'tier2_model', 'tier3_model'] as const
 /** Tier positions, typed so each indexes the tuples above without a check. */
 const TIERS = [0, 1, 2] as const
-/** Radix Select has no empty value: the saved-key picker's "—". */
+/** The saved-key picker's "—", an item: an empty value would show the placeholder. */
 const NO_KEY = '__none__'
 
 function seed(

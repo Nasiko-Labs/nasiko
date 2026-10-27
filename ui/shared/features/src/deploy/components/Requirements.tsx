@@ -125,17 +125,19 @@ export function RequirementsCompact({
   }
   return (
     <Collapsible open={open} onOpenChange={setOpen} className="rounded-lg border px-3">
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          className="min-h-11 w-full justify-start gap-2 px-0 text-left text-xs font-normal text-muted-foreground hover:bg-transparent"
-        >
-          <ChevronRight
-            aria-hidden
-            className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')}
+      <CollapsibleTrigger
+        render={
+          <Button
+            variant="ghost"
+            className="min-h-11 w-full justify-start gap-2 px-0 text-left text-xs font-normal text-muted-foreground hover:bg-transparent"
           />
-          {copy.deploy.needsCompact}
-        </Button>
+        }
+      >
+        <ChevronRight
+          aria-hidden
+          className={cn('size-4 shrink-0 transition-transform', open && 'rotate-90')}
+        />
+        {copy.deploy.needsCompact}
       </CollapsibleTrigger>
       <CollapsibleContent>
         <ul className="divide-y pb-2">

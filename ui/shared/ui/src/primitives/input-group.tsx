@@ -1,3 +1,8 @@
+// Ported from nasiko-ui-lab@1b99bdda common/src/components/ui/input-group.tsx. Local edits:
+// - imports: `@/lib/utils` -> "cn", `@/components/ui/*` -> ./* (the destination's Base UI button, input and textarea);
+// - `InputGroupButton` omits `variant`/`size` from the destination Button's Base UI props the same way the lab omitted
+//   `size` (Base UI's `Button.Props` carries no `asChild`).
+// Class strings, roles, data attributes and the addon's focus handoff are the lab's.
 /**
  * shadcn `input-group` (new-york-v4), with local edits to re-apply after any `shadcn add input-group`:
  * - focus is the one app style: a 2 px `--ring` with a 2 px page-coloured offset (DESIGN.md "Focus"), not the 3 px glow.
@@ -6,11 +11,11 @@
  */
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@nasiko/ui/lib/utils"
+import { cn } from "../lib/utils"
 
-import { Button } from "@nasiko/ui/primitives/button"
-import { Input } from "@nasiko/ui/primitives/input"
-import { Textarea } from "@nasiko/ui/primitives/textarea"
+import { Button } from "./button"
+import { Input } from "./input"
+import { Textarea } from "./textarea"
 
 function InputGroup({ className, ...props }: React.ComponentProps<"div">) {
   return (

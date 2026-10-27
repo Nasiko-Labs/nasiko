@@ -9,7 +9,7 @@ import { Link } from '@tanstack/react-router'
 import { CircleAlert, Hand, TriangleAlert } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { relTime } from '@nasiko/features/agents/format'
@@ -47,11 +47,11 @@ const ICON: Record<
 }
 /** A row's one action: a small outline button that is a link. */
 function Action({ children }: { children: ReactNode }) {
-  return (
-    <Button asChild variant="outline" size="sm" className={cn('shrink-0 text-xs', TOUCH)}>
-      {children}
-    </Button>
-  )
+  return withButtonStyle(children, {
+    variant: 'outline',
+    size: 'sm',
+    className: cn('shrink-0 text-xs', TOUCH),
+  })
 }
 
 export function NeedsYou({

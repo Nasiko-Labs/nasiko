@@ -10,7 +10,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { Hand } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import { rememberRailView } from '@nasiko/features/chat/rememberTarget'
 import type { AnswerTarget } from '../answerTargets'
 import { copy } from '../copy'
@@ -19,17 +19,16 @@ type Size = 'sm' | 'xs'
 
 export function AnswerRequest({ target, size = 'sm' }: { target: AnswerTarget; size?: Size }) {
   const { sessionId, requestId, userId } = target
-  return (
-    <Button asChild size={size} variant="outline" className="w-fit pointer-coarse:min-h-11">
-      {requestId && sessionId ? (
-        <Link to="/chat/$sessionId" params={{ sessionId }} state={{ waitingRequest: requestId }}>
-          <Hand className="size-3.5" aria-hidden /> {copy.answer.request}
-        </Link>
-      ) : (
-        <Link to="/chat" onClick={() => userId && rememberRailView(userId, 'waiting')}>
-          <Hand className="size-3.5" aria-hidden /> {copy.answer.waiting}
-        </Link>
-      )}
-    </Button>
+  return withButtonStyle(
+    requestId && sessionId ? (
+      <Link to="/chat/$sessionId" params={{ sessionId }} state={{ waitingRequest: requestId }}>
+        <Hand className="size-3.5" aria-hidden /> {copy.answer.request}
+      </Link>
+    ) : (
+      <Link to="/chat" onClick={() => userId && rememberRailView(userId, 'waiting')}>
+        <Hand className="size-3.5" aria-hidden /> {copy.answer.waiting}
+      </Link>
+    ),
+    { variant: 'outline', size, className: 'w-fit pointer-coarse:min-h-11' },
   )
 }

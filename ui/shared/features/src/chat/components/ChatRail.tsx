@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, type Ref } from 'react'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Input } from '@nasiko/ui/primitives/input'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
@@ -170,18 +170,17 @@ export function ChatRail({
         >
           <Search aria-hidden />
         </Button>
-        <Button asChild size="icon-sm" variant="ghost" className="pointer-coarse:size-11">
-          <Link
-            ref={newChatRef}
-            to="/chat"
-            search={carry}
-            onClick={onNavigate}
-            aria-label={copy.newChat}
-            title={copy.newChat}
-          >
-            <SquarePen aria-hidden />
-          </Link>
-        </Button>
+        <Link
+          ref={newChatRef}
+          to="/chat"
+          search={carry}
+          onClick={onNavigate}
+          aria-label={copy.newChat}
+          title={copy.newChat}
+          {...asButton({ variant: 'ghost', size: 'icon-sm', className: 'pointer-coarse:size-11' })}
+        >
+          <SquarePen aria-hidden />
+        </Link>
       </div>
       {searchOpen ? (
         <div className="shrink-0 px-3 pb-2">
@@ -459,11 +458,10 @@ function RailViews({
   return (
     <ToggleGroup
       ref={ref}
-      type="single"
-      rovingFocus={false}
       spacing={0.5}
-      value={view}
-      onValueChange={(v) => {
+      value={[view]}
+      onValueChange={(vs) => {
+        const v = vs[0] as string
         if (v) onChange(v as RailView)
       }}
       aria-label={copy.railViews}
@@ -497,7 +495,7 @@ function RailViews({
             onBlur={() => {
               if (focusedCounted.current === o.id) focusedCounted.current = null
             }}
-            className="h-auto min-h-7 min-w-0 flex-auto gap-1 rounded px-1.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-[state=on]:bg-muted data-[state=on]:font-medium data-[state=on]:text-foreground pointer-coarse:min-h-11"
+            className="h-auto min-h-7 min-w-0 flex-auto gap-1 rounded px-1.5 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background data-pressed:bg-muted data-pressed:font-medium data-pressed:text-foreground pointer-coarse:min-h-11"
           >
             {/* Three views fit 240 px: counts are small numbers, the full "(n)" form is the accessible name. */}
             {o.pill ? (

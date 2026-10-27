@@ -22,7 +22,7 @@
  */
 import { ArrowRight, Scissors, TrendingDown } from 'lucide-react'
 import { Link } from '@tanstack/react-router'
-import { Button } from '@nasiko/ui/primitives/button'
+import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
 import { fmtMoney, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -112,8 +112,8 @@ export function Savings({
         </div>
       </div>
 
-      <Button asChild variant={saving ? 'outline' : 'default'} size="sm" className="shrink-0">
-        {saving ? (
+      {withButtonStyle(
+        saving ? (
           // `open=optimise` expands the section and tells TokenOps to scroll to it.
           //
           // `resetScroll={false}` is what makes that stick: the router has `scrollRestoration`
@@ -127,8 +127,9 @@ export function Savings({
           <Link to="/agents">
             {copy.idleCta} <ArrowRight aria-hidden className="size-4" />
           </Link>
-        )}
-      </Button>
+        ),
+        { variant: saving ? 'outline' : 'default', size: 'sm', className: 'shrink-0' },
+      )}
     </section>
   )
 }

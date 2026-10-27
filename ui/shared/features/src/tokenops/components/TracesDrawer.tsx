@@ -7,7 +7,7 @@
  */
 import { ExternalLink, Info } from 'lucide-react'
 import { useRef } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import {
   Sheet,
   SheetContent,
@@ -42,7 +42,7 @@ export function TracesDrawer({
   legacyUiUrl: string | null
 }) {
   const titleRef = useRef<HTMLHeadingElement | null>(null)
-  // The drawer opens from the URL, not a Radix trigger, so Radix has nowhere to return
+  // The drawer opens from the URL, not a dialog trigger, so the dialog has nowhere to return
   // focus on close. Remember what was focused when it opened and go back there.
   const openerRef = useRef<HTMLElement | null>(null)
   // A route-level 404 means this server predates the proposed endpoint. A 404 whose body is
@@ -124,15 +124,22 @@ export function TracesDrawer({
                       ) : null}
                     </div>
                     {href ? (
-                      <Button asChild variant="link" size="sm" className="h-auto w-fit p-0 text-xs">
-                        <a href={href} target="_blank" rel="noopener noreferrer">
-                          Open trace
-                          <span className="sr-only">
-                            : {t.agent_name}, {when}, {fmtMoney(t.cost_usd)} (opens in a new tab)
-                          </span>{' '}
-                          <ExternalLink className="size-3" aria-hidden />
-                        </a>
-                      </Button>
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        {...asButton({
+                          variant: 'link',
+                          size: 'sm',
+                          className: 'h-auto w-fit p-0 text-xs',
+                        })}
+                      >
+                        Open trace
+                        <span className="sr-only">
+                          : {t.agent_name}, {when}, {fmtMoney(t.cost_usd)} (opens in a new tab)
+                        </span>{' '}
+                        <ExternalLink className="size-3" aria-hidden />
+                      </a>
                     ) : null}
                   </li>
                 )

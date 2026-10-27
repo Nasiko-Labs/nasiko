@@ -93,20 +93,22 @@ export function VersionsTab({ agent }: { agent: AgentView }) {
                 </div>
                 {canRoll ? (
                   <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="size-9 p-0"
-                        aria-label={`Actions for version ${v.version}`}
-                      >
-                        <MoreHorizontal className="size-4" aria-hidden />
-                      </Button>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="size-9 p-0"
+                          aria-label={`Actions for version ${v.version}`}
+                        />
+                      }
+                    >
+                      <MoreHorizontal className="size-4" aria-hidden />
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
                       <DropdownMenuItem
                         disabled={w.watching}
-                        onSelect={() => {
+                        onClick={() => {
                           rollback.reset()
                           setTarget(v)
                         }}

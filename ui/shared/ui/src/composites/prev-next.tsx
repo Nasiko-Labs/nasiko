@@ -87,46 +87,50 @@ export function PrevNext({
         </span>
       ) : null}
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            ref={prevButton}
-            variant="ghost"
-            size="icon-sm"
-            className={button}
-            aria-label={`Previous ${noun}`}
-            aria-keyshortcuts="k"
-            aria-disabled={!canPrev}
-            {...(blocked ? { 'aria-describedby': reasonId } : {})}
-            onClick={(e) => {
-              if (!canPrev) return
-              Object.assign(refocus, { which: 'prev', el: e.currentTarget, at: Date.now() })
-              onPrev('click')
-            }}
-          >
-            <ChevronUp className="size-4" aria-hidden />
-          </Button>
+        <TooltipTrigger
+          render={
+            <Button
+              ref={prevButton}
+              variant="ghost"
+              size="icon-sm"
+              className={button}
+              aria-label={`Previous ${noun}`}
+              aria-keyshortcuts="k"
+              aria-disabled={!canPrev}
+              {...(blocked ? { 'aria-describedby': reasonId } : {})}
+              onClick={(e) => {
+                if (!canPrev) return
+                Object.assign(refocus, { which: 'prev', el: e.currentTarget, at: Date.now() })
+                onPrev('click')
+              }}
+            />
+          }
+        >
+          <ChevronUp className="size-4" aria-hidden />
         </TooltipTrigger>
         <TooltipContent>{blocked ?? `Previous ${noun} (K)`}</TooltipContent>
       </Tooltip>
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            ref={nextButton}
-            variant="ghost"
-            size="icon-sm"
-            className={button}
-            aria-label={`Next ${noun}`}
-            aria-keyshortcuts="j"
-            aria-disabled={!canNext}
-            {...(blocked ? { 'aria-describedby': reasonId } : {})}
-            onClick={(e) => {
-              if (!canNext) return
-              Object.assign(refocus, { which: 'next', el: e.currentTarget, at: Date.now() })
-              onNext('click')
-            }}
-          >
-            <ChevronDown className="size-4" aria-hidden />
-          </Button>
+        <TooltipTrigger
+          render={
+            <Button
+              ref={nextButton}
+              variant="ghost"
+              size="icon-sm"
+              className={button}
+              aria-label={`Next ${noun}`}
+              aria-keyshortcuts="j"
+              aria-disabled={!canNext}
+              {...(blocked ? { 'aria-describedby': reasonId } : {})}
+              onClick={(e) => {
+                if (!canNext) return
+                Object.assign(refocus, { which: 'next', el: e.currentTarget, at: Date.now() })
+                onNext('click')
+              }}
+            />
+          }
+        >
+          <ChevronDown className="size-4" aria-hidden />
         </TooltipTrigger>
         <TooltipContent>{blocked ?? `Next ${noun} (J)`}</TooltipContent>
       </Tooltip>

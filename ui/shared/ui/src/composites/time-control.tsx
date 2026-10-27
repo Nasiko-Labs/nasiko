@@ -57,11 +57,10 @@ export function TimePresets({ preset, from, to, today, onChange }: TimeControlPr
     <>
       <div className="hidden md:block">
         <ToggleGroup
-          type="single"
           variant="outline"
           size="sm"
-          value={preset}
-          onValueChange={pick}
+          value={[preset]}
+          onValueChange={(vs) => pick(vs[0] as Parameters<typeof pick>[0])}
           aria-label="Time window"
         >
           {PRESETS.map((p) => (

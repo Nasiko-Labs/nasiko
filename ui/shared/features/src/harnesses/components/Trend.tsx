@@ -92,11 +92,13 @@ export function Trend({
       className="h-full"
       actions={
         <ToggleGroup
-          type="single"
           variant="outline"
           size="sm"
-          value={mode}
-          onValueChange={(v) => v && setMode(v as Mode)}
+          value={[mode]}
+          onValueChange={(vs) => {
+            const v = vs[0] as string
+            return v && setMode(v as Mode)
+          }}
           aria-label="Trend metric"
         >
           <ToggleGroupItem value="active" className="px-2.5 text-xs">

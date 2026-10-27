@@ -11,7 +11,7 @@ import { spikeSentence } from '@nasiko/features/narrative/tokenops'
 import { Swatch } from '@nasiko/ui/composites/chart-marks'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { Delta } from '@nasiko/ui/composites/delta'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -100,11 +100,13 @@ export function Spend({
               </p>
               {anySpend ? (
                 <ToggleGroup
-                  type="single"
                   variant="outline"
                   size="sm"
-                  value={mode}
-                  onValueChange={(v) => v && setMode(v as ChartMode)}
+                  value={[mode]}
+                  onValueChange={(vs) => {
+                    const v = vs[0] as string
+                    return v && setMode(v as ChartMode)
+                  }}
                   aria-label={copy.spend.chartMode}
                 >
                   <ToggleGroupItem value="bars" aria-label={copy.spend.bars} className={TOUCH}>
@@ -132,27 +134,29 @@ export function Spend({
                 {/* Sessions searches the trace store from the day to now, which fails past 7 days: older spikes open
                   TokenOps' day panel instead (/ship review). */}
                 {now - Date.parse(`${spend.spike.date}T00:00:00Z`) < TEMPO_MAX_SEARCH_MS ? (
-                  <Button
-                    asChild
-                    variant="link"
-                    size="sm"
-                    className={`h-auto px-0 text-xs ${TOUCH}`}
+                  <Link
+                    to="/sessions"
+                    search={{ day: spend.spike.date, sort: 'cost' } as never}
+                    {...asButton({
+                      variant: 'link',
+                      size: 'sm',
+                      className: `h-auto px-0 text-xs ${TOUCH}`,
+                    })}
                   >
-                    <Link to="/sessions" search={{ day: spend.spike.date, sort: 'cost' } as never}>
-                      {copy.spend.seeSessions} <span aria-hidden>→</span>
-                    </Link>
-                  </Button>
+                    {copy.spend.seeSessions} <span aria-hidden>→</span>
+                  </Link>
                 ) : (
-                  <Button
-                    asChild
-                    variant="link"
-                    size="sm"
-                    className={`h-auto px-0 text-xs ${TOUCH}`}
+                  <Link
+                    to="/tokenops"
+                    search={{ day: spend.spike.date } as never}
+                    {...asButton({
+                      variant: 'link',
+                      size: 'sm',
+                      className: `h-auto px-0 text-xs ${TOUCH}`,
+                    })}
                   >
-                    <Link to="/tokenops" search={{ day: spend.spike.date } as never}>
-                      {copy.spend.seeDay} <span aria-hidden>→</span>
-                    </Link>
-                  </Button>
+                    {copy.spend.seeDay} <span aria-hidden>→</span>
+                  </Link>
                 )}
               </p>
             ) : null}

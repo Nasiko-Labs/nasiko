@@ -1,7 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import { Plus } from 'lucide-react'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { SectionNav as SharedSectionNav } from '@nasiko/app-core/shell/section-nav'
 import { copy } from '../copy'
 import type { Tone } from '../logic'
@@ -41,11 +41,9 @@ const SECTIONS = [
 /** The module's one action, in the top bar on every section. */
 export function CreateWorkflowLink() {
   return (
-    <Button asChild size="sm" className="pointer-coarse:min-h-11">
-      <Link to="/workflows/new">
-        <Plus aria-hidden /> {copy.create}
-      </Link>
-    </Button>
+    <Link to="/workflows/new" {...asButton({ size: 'sm', className: 'pointer-coarse:min-h-11' })}>
+      <Plus aria-hidden /> {copy.create}
+    </Link>
   )
 }
 

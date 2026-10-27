@@ -21,7 +21,7 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from '@nasiko/ui/primitives/empty'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Progress } from '@nasiko/ui/primitives/progress'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy as pageCopy } from '../copy'
@@ -74,9 +74,12 @@ export function ImportNotice() {
         />
         <div className="flex flex-wrap items-center gap-x-3 text-xs">
           <span>{syncLine(sync)}</span>
-          <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs">
-            <Link to="/harnesses">{copy.details}</Link>
-          </Button>
+          <Link
+            to="/harnesses"
+            {...asButton({ variant: 'link', size: 'sm', className: 'h-auto p-0 text-xs' })}
+          >
+            {copy.details}
+          </Link>
         </div>
       </AlertDescription>
     </Alert>
@@ -144,9 +147,9 @@ export function ImportingOr({
           />
           {detail ? <p className="text-xs text-muted-foreground tabular-nums">{detail}</p> : null}
         </div>
-        <Button asChild variant="outline" size="sm">
-          <Link to="/harnesses">{copy.details}</Link>
-        </Button>
+        <Link to="/harnesses" {...asButton({ variant: 'outline', size: 'sm' })}>
+          {copy.details}
+        </Link>
       </EmptyContent>
     </Empty>
   )

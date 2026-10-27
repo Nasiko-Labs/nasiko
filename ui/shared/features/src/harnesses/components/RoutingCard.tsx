@@ -8,7 +8,7 @@ import { Link } from '@tanstack/react-router'
 import { AlertTriangle } from 'lucide-react'
 import { Announcer } from '@nasiko/ui/composites/announcer'
 import { useAnnounce } from '@nasiko/ui/composites/announce'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import {
   Select,
@@ -44,35 +44,36 @@ export function RoutingCard() {
   if (!signedIn) return null
   return (
     <Announcer>
-      <Card asChild className="gap-4 p-5">
-        <section aria-labelledby="harness-routing-title" data-testid="harness-routing">
-          <div className="flex flex-col gap-1">
-            <h2 id="harness-routing-title" className="text-base font-semibold">
-              {copy.title}
-            </h2>
-            <p className="max-w-[70ch] text-sm text-muted-foreground">{copy.body}</p>
+      <Card
+        className="gap-4 p-5"
+        render={<section aria-labelledby="harness-routing-title" data-testid="harness-routing" />}
+      >
+        <div className="flex flex-col gap-1">
+          <h2 id="harness-routing-title" className="text-base font-semibold">
+            {copy.title}
+          </h2>
+          <p className="max-w-[70ch] text-sm text-muted-foreground">{copy.body}</p>
+        </div>
+        {harnesses.isError ? (
+          <Problem text={copy.loadFailed} onRetry={() => void harnesses.refetch()} />
+        ) : configs.isError ? (
+          <Problem text={copy.configsFailed} onRetry={() => void configs.refetch()} />
+        ) : !harnesses.data || !configs.data ? (
+          <Skeleton className="h-24 w-full" />
+        ) : !configs.data.length ? (
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="text-muted-foreground">{copy.noConfigs}</span>
+            <Link to="/router" {...asButton({ variant: 'outline', size: 'sm' })}>
+              {copy.openRouter}
+            </Link>
           </div>
-          {harnesses.isError ? (
-            <Problem text={copy.loadFailed} onRetry={() => void harnesses.refetch()} />
-          ) : configs.isError ? (
-            <Problem text={copy.configsFailed} onRetry={() => void configs.refetch()} />
-          ) : !harnesses.data || !configs.data ? (
-            <Skeleton className="h-24 w-full" />
-          ) : !configs.data.length ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground">{copy.noConfigs}</span>
-              <Button asChild size="sm" variant="outline">
-                <Link to="/router">{copy.openRouter}</Link>
-              </Button>
-            </div>
-          ) : (
-            <ul aria-label={copy.listLabel} className="flex flex-col divide-y divide-border">
-              {harnesses.data.map((h) => (
-                <HarnessRow key={h.id} harness={h} configs={configs.data} />
-              ))}
-            </ul>
-          )}
-        </section>
+        ) : (
+          <ul aria-label={copy.listLabel} className="flex flex-col divide-y divide-border">
+            {harnesses.data.map((h) => (
+              <HarnessRow key={h.id} harness={h} configs={configs.data} />
+            ))}
+          </ul>
+        )}
       </Card>
     </Announcer>
   )

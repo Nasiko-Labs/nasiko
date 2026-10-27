@@ -10,7 +10,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { useId, useState } from 'react'
 import { Controller, useForm } from 'react-hook-form'
 import { z } from 'zod'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Field, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
@@ -291,17 +291,16 @@ export function RequestCard({
             ) : authUrl ? (
               // A real link: the browser opens it inside the click, so popup blockers leave it alone.
               <div className="flex flex-wrap items-center gap-2">
-                <Button asChild size="sm" className="pointer-coarse:min-h-11">
-                  <a
-                    href={authUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => void startAuth()}
-                    onAuxClick={() => void startAuth()}
-                  >
-                    {copy.request.signIn(provider)}
-                  </a>
-                </Button>
+                <a
+                  href={authUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => void startAuth()}
+                  onAuxClick={() => void startAuth()}
+                  {...asButton({ size: 'sm', className: 'pointer-coarse:min-h-11' })}
+                >
+                  {copy.request.signIn(provider)}
+                </a>
                 <span className="text-xs text-muted-foreground">
                   {copy.request.opensHost(new URL(authUrl).host)}
                 </span>

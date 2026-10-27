@@ -10,7 +10,7 @@ import { Bot, ChevronRight, RotateCw, SearchX } from 'lucide-react'
 import { useId, useState, type ReactNode } from 'react'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -152,11 +152,17 @@ export function AgentsSection({
               title={copy.noAgents}
               className="border-0"
               action={
-                <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-                  <Link to="/agents" search={{}}>
-                    {copy.toAgents}
-                  </Link>
-                </Button>
+                <Link
+                  to="/agents"
+                  search={{}}
+                  {...asButton({
+                    variant: 'outline',
+                    size: 'sm',
+                    className: 'pointer-coarse:min-h-11',
+                  })}
+                >
+                  {copy.toAgents}
+                </Link>
               }
             >
               {copy.noAgentsText}
@@ -173,10 +179,12 @@ export function AgentsSection({
                   <TableHead className={HEAD}>{copy.colKey}</TableHead>
                   <TableHead className={cn(HEAD, 'w-34 text-right')}>
                     <Tooltip>
-                      <TooltipTrigger asChild>
-                        <LinkButton className="font-medium text-inherit underline decoration-dotted">
-                          {copy.colSpend}
-                        </LinkButton>
+                      <TooltipTrigger
+                        render={
+                          <LinkButton className="font-medium text-inherit underline decoration-dotted" />
+                        }
+                      >
+                        {copy.colSpend}
                       </TooltipTrigger>
                       <TooltipContent className="max-w-xs">{copy.spendTip}</TooltipContent>
                     </Tooltip>

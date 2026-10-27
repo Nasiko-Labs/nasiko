@@ -18,10 +18,12 @@ export function WorldPicker({ className }: { className?: string }) {
         {copy.world.title}
       </span>
       <ToggleGroup
-        type="single"
         size="sm"
-        value={current}
-        onValueChange={(id) => id && set({ world: id as WorldId })}
+        value={[current]}
+        onValueChange={(vs) => {
+          const id = vs[0] as string
+          return id && set({ world: id as WorldId })
+        }}
         aria-label={copy.world.label}
       >
         {WORLD_IDS.map((id) => {

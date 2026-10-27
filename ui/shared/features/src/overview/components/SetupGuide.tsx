@@ -26,10 +26,8 @@ export function SetupGuide() {
   if (!absent) return <SetupGuideButton className={TOUCH} />
   return (
     <Sheet>
-      <SheetTrigger asChild>
-        <Button variant="outline" size="sm" className={TOUCH}>
-          <BookOpen aria-hidden /> {copy.setup.button}
-        </Button>
+      <SheetTrigger render={<Button variant="outline" size="sm" className={TOUCH} />}>
+        <BookOpen aria-hidden /> {copy.setup.button}
       </SheetTrigger>
       <SheetContent className="gap-0 sm:max-w-md">
         <SheetHeader>

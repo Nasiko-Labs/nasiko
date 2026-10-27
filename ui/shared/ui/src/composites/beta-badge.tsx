@@ -23,16 +23,18 @@ const BETA_EXPLAINER =
 export function BetaBadge({ className }: { className?: string }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Badge
-          variant="outline"
-          className={cn('border-dashed text-muted-foreground', className)}
-          // The tooltip carries the detail; the badge alone must still say what it means to a
-          // screen reader that never sees a hover.
-          aria-label={`Beta. ${BETA_EXPLAINER}`}
-        >
-          Beta
-        </Badge>
+      <TooltipTrigger
+        render={
+          <Badge
+            variant="outline"
+            className={cn('border-dashed text-muted-foreground', className)}
+            // The tooltip carries the detail; the badge alone must still say what it means to a
+            // screen reader that never sees a hover.
+            aria-label={`Beta. ${BETA_EXPLAINER}`}
+          />
+        }
+      >
+        Beta
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">{BETA_EXPLAINER}</TooltipContent>
     </Tooltip>

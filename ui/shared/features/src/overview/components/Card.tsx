@@ -7,7 +7,7 @@ import { Link } from '@tanstack/react-router'
 import { AlertTriangle, RotateCw } from 'lucide-react'
 import type { ReactNode, RefObject } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card as UiCard, CardAction, CardContent, CardHeader } from '@nasiko/ui/primitives/card'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -50,40 +50,48 @@ export function Card({
 }) {
   return (
     // A container per card, so rows can adapt to the card's own width (/ship review).
-    <UiCard asChild className={cn('@container/card min-w-0 gap-3 p-4', className)}>
-      <section aria-labelledby={id} data-testid={id} data-tour={id}>
-        <CardHeader className="flex min-h-6 items-center justify-between gap-2 px-0">
-          {/* The meta wraps under the title in a narrow column rather than squeezing it. */}
-          <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
-            <h2
-              id={id}
-              ref={titleRef}
-              tabIndex={-1}
-              className={cn(
-                'shrink-0 rounded-sm text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
-                titleClassName,
-              )}
+    <UiCard
+      className={cn('@container/card min-w-0 gap-3 p-4', className)}
+      render={<section aria-labelledby={id} data-testid={id} data-tour={id} />}
+    >
+      <CardHeader className="flex min-h-6 items-center justify-between gap-2 px-0">
+        {/* The meta wraps under the title in a narrow column rather than squeezing it. */}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+          <h2
+            id={id}
+            ref={titleRef}
+            tabIndex={-1}
+            className={cn(
+              'shrink-0 rounded-sm text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
+              titleClassName,
+            )}
+          >
+            {title}
+          </h2>
+          {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
+        </div>
+        {to && linkLabel ? (
+          <CardAction className="col-auto row-auto shrink-0 self-center">
+            <Link
+              to={to}
+              search={linkSearch as never}
+              hash={linkHash}
+              {...asButton({
+                variant: 'link',
+                size: 'sm',
+                className: cn('h-auto px-0 text-xs', TOUCH),
+              })}
             >
-              {title}
-            </h2>
-            {meta ? <span className="truncate text-xs text-muted-foreground">{meta}</span> : null}
-          </div>
-          {to && linkLabel ? (
-            <CardAction className="col-auto row-auto shrink-0 self-center">
-              <Button asChild variant="link" size="sm" className={cn('h-auto px-0 text-xs', TOUCH)}>
-                <Link to={to} search={linkSearch as never} hash={linkHash}>
-                  {linkLabel} <span aria-hidden>→</span>
-                </Link>
-              </Button>
-            </CardAction>
-          ) : aside ? (
-            <CardAction className="col-auto row-auto shrink-0 self-center text-xs text-muted-foreground tabular-nums">
-              {aside}
-            </CardAction>
-          ) : null}
-        </CardHeader>
-        <CardContent className="flex min-h-0 flex-1 flex-col px-0">{children}</CardContent>
-      </section>
+              {linkLabel} <span aria-hidden>→</span>
+            </Link>
+          </CardAction>
+        ) : aside ? (
+          <CardAction className="col-auto row-auto shrink-0 self-center text-xs text-muted-foreground tabular-nums">
+            {aside}
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col px-0">{children}</CardContent>
     </UiCard>
   )
 }

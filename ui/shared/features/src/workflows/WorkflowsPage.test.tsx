@@ -93,7 +93,7 @@ describe('Workflow lists (plans/feat-workflows.md §2)', () => {
     const run = (router.state.location.search as { run: string }).run
     await waitFor(() => {
       const el = document.querySelector(`[data-card="${run}"]`)
-      expect(el).toHaveAttribute('data-state', 'open')
+      expect(el).toHaveAttribute('data-open')
     }, T)
     router.history.back()
     await waitFor(() => expect(router.state.location.pathname).toBe('/workflows'))

@@ -8,7 +8,7 @@ import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { fmtMoney, fmtShortDay } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -165,11 +165,14 @@ function Actions({ items }: { items: Action[] }) {
   return (
     <div className="flex flex-wrap gap-2 px-4 pt-4">
       {items.map((a, i) => (
-        <Button key={a.label} asChild size="sm" variant={i ? 'outline' : 'default'}>
-          <Link to={a.to} hash={a.hash}>
-            {a.label}
-          </Link>
-        </Button>
+        <Link
+          key={a.label}
+          to={a.to}
+          hash={a.hash}
+          {...asButton({ variant: i ? 'outline' : 'default', size: 'sm' })}
+        >
+          {a.label}
+        </Link>
       ))}
     </div>
   )

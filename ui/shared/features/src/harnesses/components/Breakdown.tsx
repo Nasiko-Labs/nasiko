@@ -188,11 +188,13 @@ export function Breakdown({
   const header = (
     <div className="flex flex-wrap items-center gap-2">
       <ToggleGroup
-        type="single"
         variant="outline"
         size="sm"
-        value={metric}
-        onValueChange={(v) => v && onMetric(v as Metric)}
+        value={[metric]}
+        onValueChange={(vs) => {
+          const v = vs[0] as string
+          return v && onMetric(v as Metric)
+        }}
         aria-label="Metric"
         className="max-sm:w-full"
       >

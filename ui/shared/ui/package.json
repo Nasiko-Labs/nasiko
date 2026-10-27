@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Primitives, composites, the chart kit, the stylesheet and the small helpers every layer uses.",
   "dependencies": {
+    "@base-ui/react": "1.8.0",
     "@fontsource-variable/hanken-grotesk": "^5.3.0",
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@nasiko/data-access": "workspace:*",
@@ -26,7 +27,6 @@
     "d3-shape": "^3.2.0",
     "lucide-react": "^1.48.0",
     "motion": "^13.4.4",
-    "radix-ui": "^1.6.7",
     "react": "^19.2.8",
     "react-day-picker": "^10.0.2",
     "react-dom": "^19.2.8",

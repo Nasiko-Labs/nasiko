@@ -7,7 +7,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { RotateCw } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
 import { Section } from '@nasiko/features/agents/components/bits'
@@ -46,11 +46,9 @@ export function AgentMcpTab({ agentId, harness = false }: { agentId: string; har
         <EmptyState
           title={copy.noAgentServers}
           action={
-            <Button asChild size="sm" variant="outline">
-              <Link to="/mcp" search={{}}>
-                {copy.openCatalog}
-              </Link>
-            </Button>
+            <Link to="/mcp" search={{}} {...asButton({ variant: 'outline', size: 'sm' })}>
+              {copy.openCatalog}
+            </Link>
           }
         >
           {copy.noAgentServersFix}

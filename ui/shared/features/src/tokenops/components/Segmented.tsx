@@ -1,5 +1,5 @@
 /**
- * A single-choice switch (shadcn `ToggleGroup`, Radix radios) whose selection is one pill that glides to the chosen
+ * A single-choice switch (shadcn `ToggleGroup`, radios) whose selection is one pill that glides to the chosen
  * item through a shared `layoutId` (DESIGN.md `morph`), instead of the background snapping across. Under reduced
  * motion `MotionConfig` makes the glide instant. Selection is never colour alone: the chosen item is also `aria-checked`
  * and in the foreground colour.
@@ -26,11 +26,13 @@ export function Segmented<T extends string>({
   const pill = useId()
   return (
     <ToggleGroup
-      type="single"
       size="sm"
       spacing={1}
-      value={value}
-      onValueChange={(v) => v && onChange(v as T)}
+      value={[value]}
+      onValueChange={(vs) => {
+        const v = vs[0] as string
+        return v && onChange(v as T)
+      }}
       aria-label={label}
       className={cn('rounded-lg border bg-muted/50 p-0.5', className)}
     >
@@ -38,7 +40,7 @@ export function Segmented<T extends string>({
         <ToggleGroupItem
           key={o.value}
           value={o.value}
-          className="relative h-7 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-transparent data-[state=on]:text-foreground"
+          className="relative h-7 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-transparent hover:text-foreground data-pressed:bg-transparent data-pressed:text-foreground"
         >
           {o.value === value ? (
             <m.span

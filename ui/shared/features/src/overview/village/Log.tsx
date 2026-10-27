@@ -6,7 +6,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { ArrowUp, Crosshair, Hand, X } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { Tabs, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -69,15 +69,14 @@ export function ItemAction({
     )
   if (item.request)
     return (
-      <Button asChild size="sm" variant={variant}>
-        <Link
-          to="/chat/$sessionId"
-          params={{ sessionId: item.request.sessionId }}
-          state={{ waitingRequest: item.request.id } as never}
-        >
-          {copy.answer}
-        </Link>
-      </Button>
+      <Link
+        to="/chat/$sessionId"
+        params={{ sessionId: item.request.sessionId }}
+        state={{ waitingRequest: item.request.id } as never}
+        {...asButton({ variant: variant, size: 'sm' })}
+      >
+        {copy.answer}
+      </Link>
     )
   return null
 }

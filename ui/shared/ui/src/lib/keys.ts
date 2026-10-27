@@ -31,7 +31,7 @@ export function stepFromKey(e: KeyboardEvent, control: Element | null): -1 | 0 |
   if (target?.closest(OWN_KEYS)) return 0
   const dialog = target?.closest('[role="dialog"], [role="alertdialog"]')
   if (dialog && !(control && dialog.contains(control))) return 0
-  // Radix marks everything outside an open modal aria-hidden (some set inert), and focus can fall to <body>.
+  // An open modal marks everything outside it aria-hidden (some set inert), and focus can fall to <body>.
   if (control?.closest('[aria-hidden="true"], [inert]')) return 0
   return key === 'j' ? 1 : -1
 }

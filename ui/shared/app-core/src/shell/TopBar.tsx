@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { CircleHelp } from 'lucide-react'
-import { Fragment, use, useLayoutEffect, useState, type ReactNode } from 'react'
+import { Fragment, use, useLayoutEffect, useState, type ReactNode, type ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Breadcrumb,
@@ -102,9 +102,11 @@ function Crumbs({ group, items }: { group?: string | null; items: ReactNode[] })
             {i > 0 ? <BreadcrumbSeparator /> : null}
             {i < last ? (
               <BreadcrumbItem className="shrink-0">
-                <BreadcrumbLink asChild className="underline-offset-2 hover:underline">
-                  {it}
-                </BreadcrumbLink>
+                {/* A non-last level is a link element (its page's Link): BreadcrumbLink renders as it. */}
+                <BreadcrumbLink
+                  render={it as ReactElement}
+                  className="underline-offset-2 hover:underline"
+                />
               </BreadcrumbItem>
             ) : (
               <BreadcrumbItem className="min-w-0">

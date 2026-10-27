@@ -13,7 +13,7 @@ import { PanelError } from '@nasiko/ui/composites/panel'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Field, FieldDescription, FieldLabel } from '@nasiko/ui/primitives/field'
 import { Input } from '@nasiko/ui/primitives/input'
@@ -78,11 +78,13 @@ export function GithubTab({
       <StateCard
         title={copy.github.notConfigured}
         action={
-          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-            <Link to="/deploy" search={{ method: 'upload' }}>
-              {copy.github.useUpload}
-            </Link>
-          </Button>
+          <Link
+            to="/deploy"
+            search={{ method: 'upload' }}
+            {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+          >
+            {copy.github.useUpload}
+          </Link>
         }
       >
         {copy.github.notConfiguredHint}
@@ -254,11 +256,13 @@ function RepoPicker({
         icon={FolderGit2}
         title={copy.github.noRepos(login)}
         action={
-          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-            <Link to="/deploy" search={{ method: 'upload' }}>
-              {copy.github.useUpload}
-            </Link>
-          </Button>
+          <Link
+            to="/deploy"
+            search={{ method: 'upload' }}
+            {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+          >
+            {copy.github.useUpload}
+          </Link>
         }
       >
         {copy.github.noReposHint}
@@ -301,7 +305,7 @@ function RepoPicker({
               <label
                 key={r.id}
                 htmlFor={`${ids}-${r.id}`}
-                className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-accent/50 has-[[data-state=checked]]:bg-accent pointer-coarse:min-h-11"
+                className="flex cursor-pointer items-start gap-3 px-3 py-2.5 hover:bg-accent/50 has-[[data-checked]]:bg-accent pointer-coarse:min-h-11"
                 data-testid="repo-row"
               >
                 <RadioGroupItem id={`${ids}-${r.id}`} value={r.full_name} className="mt-0.5" />

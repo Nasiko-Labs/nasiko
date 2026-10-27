@@ -20,7 +20,7 @@ setupPinnedSeed()
 afterEach(() => clearUploads())
 
 const firstTime = () => configureMocks({ onboarding: { persona: null, completed: false } })
-// The open guide is modal: Radix hides the rest of the page from the accessibility tree.
+// The open guide is modal: Base UI hides the rest of the page from the accessibility tree.
 const nav = () => screen.getByRole('navigation', { name: shellCopy.navLabel, hidden: true })
 const guide = () => screen.findByRole('dialog', { name: /welcome to nasiko/i })
 

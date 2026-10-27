@@ -48,8 +48,10 @@ test('every page looks as it did', async ({ page }, info) => {
     re: new RegExp(`^${r.replace(/\$[^/]+/g, '[^/]+')}$`),
   }))
 
-  // Menus, selects and popovers: the primitives that a swap of the component library redraws.
-  const popup = page.locator('main button[aria-haspopup]:visible').first()
+  // Menus and popovers: the primitives that a swap of the component library redraws. Not a Select's trigger
+  // (`role="combobox"`): Radix's carried no `aria-haspopup`, so the baseline never opened one, and Base UI's says
+  // `listbox`; counting them would change which popup a page is shot with.
+  const popup = page.locator('main button[aria-haspopup]:not([role="combobox"]):visible').first()
 
   // Loaded and shot again until it matches: a page that lands a few frames early or late (a chart drawing in, a panel
   // still opening) matches on a later try, a page that really changed never does.

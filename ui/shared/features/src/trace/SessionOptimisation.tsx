@@ -51,11 +51,9 @@ export function SessionOptimisation({ sessionId }: { sessionId: string }) {
 
       {strategy ? (
         <Tooltip>
-          <TooltipTrigger asChild>
-            <span>
-              History: {off ? 'off' : (STRATEGY_LABEL[strategy] ?? strategy)}
-              {budget && !off ? <> · {budget} budget</> : null}
-            </span>
+          <TooltipTrigger render={<span />}>
+            History: {off ? 'off' : (STRATEGY_LABEL[strategy] ?? strategy)}
+            {budget && !off ? <> · {budget} budget</> : null}
           </TooltipTrigger>
           <TooltipContent className="max-w-xs">
             Each message carries a slice of this conversation rather than all of it. The budget sets

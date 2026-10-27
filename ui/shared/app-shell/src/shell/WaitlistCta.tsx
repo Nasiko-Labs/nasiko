@@ -6,7 +6,7 @@
  */
 import { ExternalLink, Ticket } from 'lucide-react'
 import { useEdition } from '@nasiko/app-core/edition/edition-context'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import {
   SidebarGroup,
   SidebarMenu,
@@ -34,30 +34,33 @@ export function WaitlistCard() {
         <EarlyAccessBadge />
         <p className="text-sm leading-snug font-semibold">{copy.waitlist.title}</p>
         <p className="text-xs leading-normal text-muted-foreground">{copy.waitlist.line}</p>
-        <Button asChild variant="outline" size="sm" className="mt-1.5 w-full">
-          <a href={url} target="_blank" rel="noopener noreferrer">
-            {copy.waitlist.cta}
-            <ExternalLink aria-hidden className="size-3.5" />
-            {/* The space outside the span: an accessible name joins inline children without one. */}{' '}
-            <span className="sr-only">{copy.waitlist.newTab}</span>
-          </a>
-        </Button>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          {...asButton({ variant: 'outline', size: 'sm', className: 'mt-1.5 w-full' })}
+        >
+          {copy.waitlist.cta}
+          <ExternalLink aria-hidden className="size-3.5" />
+          {/* The space outside the span: an accessible name joins inline children without one. */}{' '}
+          <span className="sr-only">{copy.waitlist.newTab}</span>
+        </a>
       </div>
       <SidebarMenu className="hidden group-data-[collapsible=icon]:flex">
         <SidebarMenuItem>
           <SidebarMenuButton
-            asChild
             tooltip={copy.waitlist.title}
             className={cn(ROW, 'border-sidebar-border bg-card')}
+            render={
+              <a
+                href={url}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`${copy.waitlist.title} ${copy.waitlist.newTab}`}
+              />
+            }
           >
-            <a
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`${copy.waitlist.title} ${copy.waitlist.newTab}`}
-            >
-              <Ticket aria-hidden />
-            </a>
+            <Ticket aria-hidden />
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

@@ -83,12 +83,14 @@ export function SentenceText({
     return <span className={className}>{full ? sentence.full : sentence.short}</span>
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <LinkButton
-          className={cn('font-normal text-inherit underline decoration-dotted', className)}
-        >
-          {sentence.short}
-        </LinkButton>
+      <TooltipTrigger
+        render={
+          <LinkButton
+            className={cn('font-normal text-inherit underline decoration-dotted', className)}
+          />
+        }
+      >
+        {sentence.short}
       </TooltipTrigger>
       <TooltipContent>{sentence.full}</TooltipContent>
     </Tooltip>

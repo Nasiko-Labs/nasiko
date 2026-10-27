@@ -7,7 +7,7 @@ import { Link, type HistoryState } from '@tanstack/react-router'
 import { ChevronRight, ExternalLink, MessagesSquare, RotateCw } from 'lucide-react'
 import { useId, useState, type ReactNode } from 'react'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Collapsible,
   CollapsibleContent,
@@ -38,10 +38,10 @@ export function StatusBadge({
   const info = STATUS[display]
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <Badge variant={info.tone} className={className} data-status={display}>
-          {info.label}
-        </Badge>
+      <TooltipTrigger
+        render={<Badge variant={info.tone} className={className} data-status={display} />}
+      >
+        {info.label}
       </TooltipTrigger>
       <TooltipContent>{statusTooltip(display, raw)}</TooltipContent>
     </Tooltip>
@@ -81,21 +81,23 @@ export function ErrorNote({
       ) : null}
       {detail ? (
         <Collapsible className="mt-1 text-xs text-muted-foreground">
-          <CollapsibleTrigger asChild>
-            <Button
-              variant="link"
-              size="sm"
-              className="group h-auto gap-0.5 p-0 text-xs text-muted-foreground"
-            >
-              <ChevronRight
-                className="size-3 transition-transform group-data-[state=open]:rotate-90"
-                aria-hidden
+          <CollapsibleTrigger
+            render={
+              <Button
+                variant="link"
+                size="sm"
+                className="group h-auto gap-0.5 p-0 text-xs text-muted-foreground"
               />
-              {copy.details}
-            </Button>
+            }
+          >
+            <ChevronRight
+              className="size-3 transition-transform group-data-panel-open:rotate-90"
+              aria-hidden
+            />
+            {copy.details}
           </CollapsibleTrigger>
           {/* Mounted while closed (hidden), like the native disclosure it replaced: the server's text stays in the document. */}
-          <CollapsibleContent forceMount className="whitespace-pre-wrap data-[state=closed]:hidden">
+          <CollapsibleContent keepMounted className="whitespace-pre-wrap data-closed:hidden">
             {detail}
           </CollapsibleContent>
         </Collapsible>
@@ -252,11 +254,14 @@ export function TryItLink({
 }) {
   if (harness || display !== 'running') return null
   return (
-    <Button asChild size={size} variant={variant} className="pointer-coarse:min-h-11">
-      <Link to="/chat" search={{ agent: id }} title={copy.tryItTitle(name)}>
-        <MessagesSquare aria-hidden /> {copy.tryIt}
-      </Link>
-    </Button>
+    <Link
+      to="/chat"
+      search={{ agent: id }}
+      title={copy.tryItTitle(name)}
+      {...asButton({ variant: variant, size: size, className: 'pointer-coarse:min-h-11' })}
+    >
+      <MessagesSquare aria-hidden /> {copy.tryIt}
+    </Link>
   )
 }
 

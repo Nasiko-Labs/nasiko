@@ -15,7 +15,7 @@ import {
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { PageHeader } from '@nasiko/ui/composites/page-header'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { CLI_DOCS_URL, cliDocsUrl } from '@nasiko/app-core/links'
 import { copy, TASKS } from './copy'
@@ -54,13 +54,16 @@ export function CliGuidePage() {
         }
         description={copy.sub}
         actions={
-          <Button asChild variant="outline" size="sm">
-            <a href={CLI_DOCS_URL} target="_blank" rel="noopener noreferrer">
-              {copy.reference}
-              <ArrowUpRight aria-hidden className="size-3.5" />{' '}
-              <span className="sr-only">{copy.newTab}</span>
-            </a>
-          </Button>
+          <a
+            href={CLI_DOCS_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            {...asButton({ variant: 'outline', size: 'sm' })}
+          >
+            {copy.reference}
+            <ArrowUpRight aria-hidden className="size-3.5" />{' '}
+            <span className="sr-only">{copy.newTab}</span>
+          </a>
         }
       />
 

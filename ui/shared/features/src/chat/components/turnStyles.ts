@@ -29,7 +29,7 @@ export const STEP_CHIP = cn(
 
 /** A `<details>`-style trigger on `<Button variant="ghost" size="xs">` inside `CollapsibleTrigger`: a chevron that turns when open. */
 export const DISCLOSE =
-  'h-auto justify-start px-0 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground has-[>svg]:px-0 dark:hover:bg-transparent [&>svg]:transition-transform data-[state=open]:[&>svg]:rotate-90 motion-reduce:[&>svg]:transition-none'
+  'h-auto justify-start px-0 text-xs font-normal text-muted-foreground hover:bg-transparent hover:text-foreground has-[>svg]:px-0 dark:hover:bg-transparent [&>svg]:transition-transform data-panel-open:[&>svg]:rotate-90 motion-reduce:[&>svg]:transition-none'
 
 /**
  * A chat rail row (Chats, Waiting): a plain two-line row like the sidebar's own items, no box. Hover is the neutral

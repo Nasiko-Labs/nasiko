@@ -10,7 +10,7 @@
 import { Link } from '@tanstack/react-router'
 import { useReducedMotion } from 'motion/react'
 import { useEffect, useState } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { copy } from '@nasiko/app-core/shell/copy'
 import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 
@@ -73,12 +73,12 @@ export function NotFound() {
         <p className="max-w-sm text-sm text-muted-foreground">{copy.notFound.body}</p>
       </div>
       <div className="flex flex-wrap justify-center gap-2">
-        <Button asChild>
-          <Link to="/">{copy.notFound.home}</Link>
-        </Button>
-        <Button asChild variant="outline">
-          <Link to="/chat">{copy.notFound.toChat}</Link>
-        </Button>
+        <Link to="/" {...asButton({})}>
+          {copy.notFound.home}
+        </Link>
+        <Link to="/chat" {...asButton({ variant: 'outline' })}>
+          {copy.notFound.toChat}
+        </Link>
       </div>
     </main>
   )

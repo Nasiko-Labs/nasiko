@@ -5,7 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { useEffect, useMemo, useState } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Sheet,
   SheetContent,
@@ -88,11 +88,14 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
       })
 
   const fullTrace = (
-    <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-      <Link to="/sessions/$sessionId" params={{ sessionId }} search={{ trace: target.traceId }}>
-        {copy.openFullTrace}
-      </Link>
-    </Button>
+    <Link
+      to="/sessions/$sessionId"
+      params={{ sessionId }}
+      search={{ trace: target.traceId }}
+      {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+    >
+      {copy.openFullTrace}
+    </Link>
   )
 
   let body

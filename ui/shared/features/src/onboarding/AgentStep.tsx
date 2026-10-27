@@ -7,7 +7,7 @@ import { Link } from '@tanstack/react-router'
 import { ChevronRight, CircleCheck } from 'lucide-react'
 import { useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
-import { Button } from '@nasiko/ui/primitives/button'
+import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { GithubTab } from '@nasiko/features/deploy/GithubTab'
@@ -40,8 +40,8 @@ export function AgentStep({
           <CircleCheck aria-hidden />
           <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span>{copy.agent.started}</span>
-            <Button asChild variant="link" size="sm" className="h-auto px-0">
-              {'buildId' in started ? (
+            {withButtonStyle(
+              'buildId' in started ? (
                 <Link to="/builds/$buildId" params={{ buildId: started.buildId }} onClick={onLeave}>
                   {copy.agent.openBuild}
                 </Link>
@@ -54,8 +54,9 @@ export function AgentStep({
                 >
                   {copy.agent.openAgent}
                 </Link>
-              )}
-            </Button>
+              ),
+              { variant: 'link', size: 'sm', className: 'h-auto px-0' },
+            )}
           </AlertDescription>
         </Alert>
       ) : !me ? (

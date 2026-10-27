@@ -241,17 +241,19 @@ function Owner({
             </Button>
           ) : null}
           <Popover open={open} onOpenChange={setOpen}>
-            <PopoverTrigger asChild>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 px-1.5 text-xs pointer-coarse:min-h-11"
-                aria-label={copy.card.assignTo}
-              >
-                <UserPlus aria-hidden className="size-3.5" />
-                {owner ? copy.card.reassign : copy.card.assign}
-                <ChevronDown aria-hidden className="size-3" />
-              </Button>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 text-xs pointer-coarse:min-h-11"
+                  aria-label={copy.card.assignTo}
+                />
+              }
+            >
+              <UserPlus aria-hidden className="size-3.5" />
+              {owner ? copy.card.reassign : copy.card.assign}
+              <ChevronDown aria-hidden className="size-3" />
             </PopoverTrigger>
             <PopoverContent className="w-64 p-0" align="end">
               <Command>

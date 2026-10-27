@@ -26,7 +26,7 @@ import type { AgentView } from '../normalize'
 import { MEMORY_WARN_PCT } from '../tuning'
 
 const LEVELS = ['', 'ERROR', 'WARN', 'INFO'] as const
-/** Radix Select items can't have an empty value: "all levels" travels as this key. */
+/** An empty value would show the placeholder: "all levels" travels as this key. */
 const ALL = 'all'
 
 export function ActivityTab({

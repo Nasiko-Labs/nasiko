@@ -131,7 +131,7 @@ export function RunBlock({
           <Progress
             aria-label={copy.progressLabel(run.device_name)}
             value={value}
-            // The shadcn copy keeps `value` off the Radix root, so the number is given to assistive tech here.
+            // Explicit, so what assistive tech hears doesn't depend on the primitive: the number, then "%".
             aria-valuenow={value ?? undefined}
             aria-valuetext={value === null ? undefined : `${value}%`}
             className={cn(

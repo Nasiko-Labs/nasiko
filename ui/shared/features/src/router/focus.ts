@@ -1,9 +1,9 @@
 import { useCallback, useState } from 'react'
 
 /**
- * Focus back to the opener (plan §4.8). The router's sheets open from plain buttons and menu items, not Radix
- * triggers, so Radix has nothing to return focus to. Remember what had focus when the sheet opened and focus it on
- * close. A menu item is gone by then, so a sheet opened from a row menu returns to that menu's trigger (Radix links it
+ * Focus back to the opener (plan §4.8). The router's sheets open from plain buttons and menu items, not Base UI
+ * triggers, so Base UI has nothing to return focus to. Remember what had focus when the sheet opened and focus it on
+ * close. A menu item is gone by then, so a sheet opened from a row menu returns to that menu's trigger (Base UI links it
  * to the menu with `aria-controls`). An opener that was re-rendered elsewhere meanwhile (a routing change moves its row
  * out of the folded group) is found again by its accessible name.
  */

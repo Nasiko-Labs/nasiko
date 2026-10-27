@@ -240,7 +240,7 @@ function AgentPicker({
     <div className="flex flex-wrap items-end gap-2 pt-2">
       <Field className="w-auto gap-1">
         <FieldLabel htmlFor={fieldId}>{copy.addAgent}</FieldLabel>
-        {/* value "" shows the placeholder (Radix Select); it resets after each Allow. */}
+        {/* value "" shows the placeholder (Base UI's Select reads it as none); it resets after each Allow. */}
         <Select value={id} onValueChange={setId}>
           <SelectTrigger id={fieldId} className="min-w-56">
             <SelectValue placeholder={copy.chooseAgent} />

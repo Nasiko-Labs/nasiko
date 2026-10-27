@@ -280,7 +280,7 @@ function FocusToggle({ row: r }: { row: AttributionRow }) {
       size="sm"
       pressed={on}
       onPressedChange={() => onSelect(on ? '' : r.id)}
-      className="h-7 px-2 data-[state=on]:bg-primary/10 data-[state=on]:text-primary-text"
+      className="h-7 px-2 data-pressed:bg-primary/10 data-pressed:text-primary-text"
       aria-label={on ? `Stop focusing on ${r.name}` : `Focus on ${r.name}`}
       title={on ? 'In focus' : 'Focus'}
     >
@@ -482,43 +482,41 @@ function MobileCards({
     <ul className="flex flex-col gap-2 md:hidden">
       {rows.map((r) => (
         <Card
-          asChild
           key={r.id}
           className={cn('gap-0 rounded-md p-3 shadow-none', r.id === highlightId && HIGHLIGHT)}
+          render={<li ref={r.id === highlightId ? highlightRef : undefined} />}
         >
-          <li ref={r.id === highlightId ? highlightRef : undefined}>
-            <div className="flex items-center justify-between gap-2">
-              <span className="truncate font-medium">{r.name}</span>
-              <span className="tabular-nums">{fmtMoney(r.cost)}</span>
-            </div>
-            <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-              <span>{fmtPct(r.sharePct)} of spend</span>
-              <RowDelta row={r} prevUnavailable={prevUnavailable} />
-            </div>
-            {view === 'agent' ? (
-              <div className="mt-1 flex gap-4">
+          <div className="flex items-center justify-between gap-2">
+            <span className="truncate font-medium">{r.name}</span>
+            <span className="tabular-nums">{fmtMoney(r.cost)}</span>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
+            <span>{fmtPct(r.sharePct)} of spend</span>
+            <RowDelta row={r} prevUnavailable={prevUnavailable} />
+          </div>
+          {view === 'agent' ? (
+            <div className="mt-1 flex gap-4">
+              <Button
+                variant="link"
+                size="sm"
+                className="h-auto min-h-11 w-fit p-0 text-xs"
+                onClick={() => onViewTraces(r.id)}
+              >
+                View traces
+              </Button>
+              {onSelect ? (
                 <Button
                   variant="link"
                   size="sm"
                   className="h-auto min-h-11 w-fit p-0 text-xs"
-                  onClick={() => onViewTraces(r.id)}
+                  aria-pressed={r.id === highlightId}
+                  onClick={() => onSelect(r.id === highlightId ? '' : r.id)}
                 >
-                  View traces
+                  {r.id === highlightId ? 'In focus' : 'Focus'}
                 </Button>
-                {onSelect ? (
-                  <Button
-                    variant="link"
-                    size="sm"
-                    className="h-auto min-h-11 w-fit p-0 text-xs"
-                    aria-pressed={r.id === highlightId}
-                    onClick={() => onSelect(r.id === highlightId ? '' : r.id)}
-                  >
-                    {r.id === highlightId ? 'In focus' : 'Focus'}
-                  </Button>
-                ) : null}
-              </div>
-            ) : null}
-          </li>
+              ) : null}
+            </div>
+          ) : null}
         </Card>
       ))}
     </ul>

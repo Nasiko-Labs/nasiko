@@ -205,15 +205,17 @@ function Header({
               />
             ) : null}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="size-8 p-0 pointer-coarse:size-11"
-                  aria-label={copy.moreActions(label)}
-                >
-                  <MoreHorizontal className="size-4" aria-hidden />
-                </Button>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="size-8 p-0 pointer-coarse:size-11"
+                    aria-label={copy.moreActions(label)}
+                  />
+                }
+              >
+                <MoreHorizontal className="size-4" aria-hidden />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
                 <CopyMenuItem text={c.connector_id} label={copy.copyId} />
@@ -221,10 +223,7 @@ function Header({
                 {manage ? (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      className="text-destructive"
-                      onSelect={() => setDelOpen(true)}
-                    >
+                    <DropdownMenuItem className="text-destructive" onClick={() => setDelOpen(true)}>
                       {copy.delete}
                     </DropdownMenuItem>
                   </>

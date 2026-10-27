@@ -6,7 +6,7 @@
 import { Link } from '@tanstack/react-router'
 import { useRef } from 'react'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { relTime } from '@nasiko/features/agents/format'
 import { displayStatus } from '@nasiko/features/agents/status'
 import type { Agent } from '@nasiko/features/agents/types'
@@ -61,9 +61,9 @@ export function RecentChats({
         <EmptyState
           title={copy.chats.none}
           action={
-            <Button asChild variant="outline" size="sm" className={TOUCH}>
-              <Link to="/chat">{copy.chats.start}</Link>
-            </Button>
+            <Link to="/chat" {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}>
+              {copy.chats.start}
+            </Link>
           }
           className="py-6 md:py-6"
         />

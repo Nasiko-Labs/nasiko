@@ -38,45 +38,43 @@ export function PresenterCard() {
       {/* Room below the page so the fixed card never hides the last rows (it sits over them otherwise). */}
       <div aria-hidden className="h-44" />
       <Card
-        asChild
         className="fixed inset-x-4 bottom-4 z-40 gap-0 rounded-lg p-4 text-sm sm:left-auto sm:w-72"
+        render={<aside aria-label="Demo steps" />}
       >
-        <aside aria-label="Demo steps">
-          <div className="flex items-start justify-between gap-2">
-            <p className="text-xs font-medium text-muted-foreground">
-              Step {step + 1} of {STEPS.length}
-            </p>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="-mt-2 -mr-2 size-8"
-              aria-label="Close demo steps"
-              onClick={() =>
-                void navigate({
-                  to: '.',
-                  search: (prev: Record<string, unknown>) => ({ ...prev, demo: undefined }),
-                  replace: true,
-                })
+        <div className="flex items-start justify-between gap-2">
+          <p className="text-xs font-medium text-muted-foreground">
+            Step {step + 1} of {STEPS.length}
+          </p>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="-mt-2 -mr-2 size-8"
+            aria-label="Close demo steps"
+            onClick={() =>
+              void navigate({
+                to: '.',
+                search: (prev: Record<string, unknown>) => ({ ...prev, demo: undefined }),
+                replace: true,
+              })
+            }
+          >
+            <X className="size-4" aria-hidden />
+          </Button>
+        </div>
+        <p className="font-medium">{s.title}</p>
+        <p className="mt-1 text-muted-foreground">{s.body}</p>
+        <ol className="mt-3 flex gap-1" aria-hidden>
+          {STEPS.map((dot, i) => (
+            <li
+              key={dot.title}
+              className={
+                i <= step
+                  ? 'h-1 flex-1 rounded-full bg-primary'
+                  : 'h-1 flex-1 rounded-full bg-muted'
               }
-            >
-              <X className="size-4" aria-hidden />
-            </Button>
-          </div>
-          <p className="font-medium">{s.title}</p>
-          <p className="mt-1 text-muted-foreground">{s.body}</p>
-          <ol className="mt-3 flex gap-1" aria-hidden>
-            {STEPS.map((dot, i) => (
-              <li
-                key={dot.title}
-                className={
-                  i <= step
-                    ? 'h-1 flex-1 rounded-full bg-primary'
-                    : 'h-1 flex-1 rounded-full bg-muted'
-                }
-              />
-            ))}
-          </ol>
-        </aside>
+            />
+          ))}
+        </ol>
       </Card>
     </>
   )

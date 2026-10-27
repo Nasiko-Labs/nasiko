@@ -11,7 +11,7 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { PrevNext } from '@nasiko/ui/composites/prev-next'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { isUuid } from '@nasiko/features/agents/normalize'
 import { ApiError } from '@nasiko/data-access/client'
 import { useSiblings } from '@nasiko/app-core/siblings'
@@ -41,9 +41,9 @@ function DeadEnd({ id, title, text }: { id?: string; title: string; text: string
         icon={WorkflowIcon}
         title={<h1>{title}</h1>}
         action={
-          <Button asChild variant="outline">
-            <Link to="/workflows">{copy.backToWorkflows}</Link>
-          </Button>
+          <Link to="/workflows" {...asButton({ variant: 'outline' })}>
+            {copy.backToWorkflows}
+          </Link>
         }
       >
         {text}

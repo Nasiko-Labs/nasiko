@@ -11,7 +11,7 @@ import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { SpotlightCard } from '@nasiko/ui/composites/spotlight-card'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Field, FieldError, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
@@ -315,13 +315,16 @@ function LastStep({
       <p className="text-sm text-muted-foreground">
         {saved ? copy.done.saved : copy.done.notSaved} {copy.done.line}
       </p>
-      <Button asChild size="lg" className="self-start">
-        <a href={EXPERT_CALL_URL} target="_blank" rel="noopener noreferrer">
-          {copy.done.book}
-          <ArrowUpRight aria-hidden className="size-4" />{' '}
-          <span className="sr-only">{copy.newTab}</span>
-        </a>
-      </Button>
+      <a
+        href={EXPERT_CALL_URL}
+        target="_blank"
+        rel="noopener noreferrer"
+        {...asButton({ size: 'lg', className: 'self-start' })}
+      >
+        {copy.done.book}
+        <ArrowUpRight aria-hidden className="size-4" />{' '}
+        <span className="sr-only">{copy.newTab}</span>
+      </a>
       <div className="mt-2 flex flex-col gap-2 rounded-lg border bg-muted/40 p-4">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-sm font-semibold">{copy.done.summary}</h3>

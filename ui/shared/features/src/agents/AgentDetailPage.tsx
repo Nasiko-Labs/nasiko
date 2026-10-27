@@ -408,15 +408,17 @@ function Header({
               <LifecycleButtons flow={flow} display={display} name={agent.displayName} collapse />
             ) : null}
             <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="size-8 p-0 pointer-coarse:size-11"
-                  aria-label={copy.moreActionsFor(agent.displayName)}
-                >
-                  <MoreHorizontal className="size-4" aria-hidden />
-                </Button>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="size-8 p-0 pointer-coarse:size-11"
+                    aria-label={copy.moreActionsFor(agent.displayName)}
+                  />
+                }
+              >
+                <MoreHorizontal className="size-4" aria-hidden />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-72">
                 {secondary.map((a) => (
@@ -424,7 +426,7 @@ function Header({
                     key={a}
                     className="sm:hidden"
                     disabled={busy}
-                    onSelect={() => flow.run(a)}
+                    onClick={() => flow.run(a)}
                   >
                     {ACTION_LABEL[a]}
                   </DropdownMenuItem>
@@ -443,10 +445,7 @@ function Header({
                 {agent.canManage ? (
                   <>
                     <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      className="text-destructive"
-                      onSelect={() => setDelOpen(true)}
-                    >
+                    <DropdownMenuItem className="text-destructive" onClick={() => setDelOpen(true)}>
                       {copy.deleteAgent}
                     </DropdownMenuItem>
                   </>

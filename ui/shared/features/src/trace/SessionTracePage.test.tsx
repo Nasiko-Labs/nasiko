@@ -19,7 +19,7 @@ import { server } from '@nasiko/testing/setup'
 setupPinnedSeed()
 afterEach(() => configureMocks({ variant: null }))
 
-// Radix Select needs pointer-capture APIs jsdom doesn't have (same stub as the TokenOps filter tests).
+// A Select may call pointer-capture APIs jsdom doesn't have (same stub as the TokenOps filter tests).
 const proto = Element.prototype as unknown as Record<string, unknown>
 const stubbed = [
   'hasPointerCapture',

@@ -37,7 +37,7 @@ export function DeployPage({
         }
         className="gap-4"
       >
-        {/* The method is the page's first choice, so each is a card that says what it takes. Still Radix tabs: arrow
+        {/* The method is the page's first choice, so each is a card that says what it takes. Still tabs: arrow
             keys move between them, and the method stays in the URL. */}
         <TabsList
           data-tour="deploy-methods"
@@ -52,7 +52,7 @@ export function DeployPage({
                 value={m}
                 aria-label={copy.methods[m]}
                 aria-describedby={`deploy-method-${m}`}
-                className="h-auto min-w-0 flex-col items-start justify-start gap-1 rounded-lg border-border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs hover:border-ring/60 data-[state=active]:border-primary data-[state=active]:bg-card data-[state=active]:ring-1 data-[state=active]:ring-primary @max-[640px]:justify-center @max-[640px]:p-2 dark:data-[state=active]:border-primary dark:data-[state=active]:bg-card pointer-coarse:min-h-11"
+                className="h-auto min-w-0 flex-col items-start justify-start gap-1 rounded-lg border-border bg-card p-3 text-left font-normal whitespace-normal text-foreground shadow-xs hover:border-ring/60 @max-[640px]:justify-center @max-[640px]:p-2 pointer-coarse:min-h-11 data-active:border-primary data-active:bg-card data-active:ring-1 data-active:ring-primary dark:data-active:border-primary dark:data-active:bg-card"
               >
                 <span className="flex items-center gap-2 text-sm font-medium">
                   {/* Phones: words only, so the three cards fit side by side. */}

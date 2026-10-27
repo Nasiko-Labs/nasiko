@@ -5,7 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { ClipboardCheck } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import {
   SidebarGroup,
   SidebarMenu,
@@ -29,22 +29,22 @@ export function AssessmentCard() {
         </span>
         <p className="text-sm leading-snug font-semibold">{copy.assessment.title}</p>
         <p className="text-xs leading-normal text-muted-foreground">{copy.assessment.line}</p>
-        <Button asChild variant="outline" size="sm" className="mt-1.5 w-full">
-          <Link to="/assessment" onClick={close}>
-            {copy.assessment.cta}
-          </Link>
-        </Button>
+        <Link
+          to="/assessment"
+          onClick={close}
+          {...asButton({ variant: 'outline', size: 'sm', className: 'mt-1.5 w-full' })}
+        >
+          {copy.assessment.cta}
+        </Link>
       </div>
       <SidebarMenu className="hidden group-data-[collapsible=icon]:flex">
         <SidebarMenuItem>
           <SidebarMenuButton
-            asChild
             tooltip={copy.assessment.title}
             className={cn(ROW, 'border-sidebar-border bg-card')}
+            render={<Link to="/assessment" aria-label={copy.assessment.title} onClick={close} />}
           >
-            <Link to="/assessment" aria-label={copy.assessment.title} onClick={close}>
-              <ClipboardCheck aria-hidden />
-            </Link>
+            <ClipboardCheck aria-hidden />
           </SidebarMenuButton>
         </SidebarMenuItem>
       </SidebarMenu>

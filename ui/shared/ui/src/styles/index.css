@@ -4,6 +4,10 @@
 @source "../../../";
 /* shadcn's animation utilities (animate-in, slide-in-*, fade-*); without it those classes are inert (eng D8). */
 @import "tw-animate-css";
+/* shadcn's own Tailwind layer, which the Base UI primitives (base-nova) rely on: the `data-horizontal`/`data-vertical`
+   variants (Base UI marks orientation with `data-orientation`), `data-open`/`data-checked`/… that read Base UI's
+   attributes, and the accordion keyframes on Base UI's `--accordion-panel-height`. */
+@import "./shadcn-tailwind.css";
 
 /* Hanken Grotesk (UI) and JetBrains Mono (figures and ids), Latin subset only (@fontsource-variable,
    self-hosted; docs/lab-vs-react-migration-review.md §6.4). The packages' full CSS also pulls other
@@ -457,7 +461,7 @@
 
 /* Reduced motion: every tw-animate-css entrance and exit (sheets, menus, popovers, tooltips) keeps
    its fade and drops the slide and zoom (plans/feat-app-shell.md §5.4). Class-substring selectors:
-   the primitives use variant classes such as `data-[state=open]:animate-in`. */
+   the primitives use variant classes such as `data-open:animate-in`. */
 @media (prefers-reduced-motion: reduce) {
   [class*="animate-in"],
   [class*="animate-out"] {

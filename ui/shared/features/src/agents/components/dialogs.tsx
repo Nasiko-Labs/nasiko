@@ -1,5 +1,5 @@
 /**
- * Confirm dialogs for destructive actions (plan §6.2). Radix restores focus to the trigger on
+ * Confirm dialogs for destructive actions (plan §6.2). Base UI restores focus to the trigger on
  * close. Actions stay disabled while their mutation is pending (no double submit).
  */
 import { useQuery } from '@tanstack/react-query'

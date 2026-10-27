@@ -1,6 +1,6 @@
 /**
  * The open tour (lazy, `index.ts`): a spotlight that glides from target to target over the dimmed, blurred page, and the step's
- * card beside it. The card is a modal Radix Popover, so focus stays in it, the page under it is inert and hidden from
+ * card beside it. The card is a modal Base UI Popover, so focus stays in it, the page under it is inert and hidden from
  * screen readers, and Esc ends the tour; ←/→ step. The card goes on the step's side of the target, else the first side
  * with room for it; a target that leaves room on no side (a long list) docks the card at the bottom of the screen.
  *
@@ -22,7 +22,7 @@ import { createPortal } from 'react-dom'
 import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
 import { TextGenerateEffect } from '@nasiko/ui/composites/text-generate-effect'
 import { Button } from '@nasiko/ui/primitives/button'
-import { Popover, PopoverAnchor, PopoverContent } from '@nasiko/ui/primitives/popover'
+import { Popover, PopoverClose, PopoverContent } from '@nasiko/ui/primitives/popover'
 import { transitions } from '@nasiko/ui/lib/motion'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy } from './copy'
@@ -292,6 +292,8 @@ export function TourOverlay({
   const anchor = !target || (swap && !fresh) ? centre() : side ? spot : dock()
   const glide = reduced ? JUMP : transitions.spotlight
   const card = useRef<HTMLDivElement>(null)
+  // The card hangs off this gliding box: Base UI's Positioner `anchor`, tracked as it moves.
+  const anchorBox = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = card.current
     if (!swap || reduced || !el) return
@@ -324,7 +326,19 @@ export function TourOverlay({
   }
 
   return (
-    <Popover open modal onOpenChange={(open) => (open ? undefined : onEnd())}>
+    <Popover
+      open
+      modal
+      onOpenChange={(open, details) => {
+        if (open) return
+        // A click on the dimmed page doesn't end the tour; Skip and Esc do.
+        if (details.reason === 'outside-press') {
+          details.cancel()
+          return
+        }
+        onEnd()
+      }}
+    >
       {createPortal(
         <>
           {/* Dims and blurs the page everywhere but the spotlight, so only the step's target stays sharp. */}
@@ -363,15 +377,14 @@ export function TourOverlay({
               </>
             ) : null}
           </m.div>
-          <PopoverAnchor asChild>
-            <m.div
-              aria-hidden
-              className="pointer-events-none fixed top-0 left-0"
-              initial={false}
-              animate={{ x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }}
-              transition={swap ? JUMP : glide}
-            />
-          </PopoverAnchor>
+          <m.div
+            ref={anchorBox}
+            aria-hidden
+            className="pointer-events-none fixed top-0 left-0"
+            initial={false}
+            animate={{ x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height }}
+            transition={swap ? JUMP : glide}
+          />
         </>,
         document.body,
       )}
@@ -380,16 +393,13 @@ export function TourOverlay({
         side={side ?? 'top'}
         sideOffset={target && side ? 12 : 0}
         collisionPadding={16}
-        // Re-placed every frame: the anchor glides.
-        updatePositionStrategy="always"
+        anchor={anchorBox}
+        // Fixed, as Radix's popper was: placed absolutely, the card's interim positions past the viewport's foot grow
+        // the document mid-glide and throw it off the gliding anchor (up to ~200 px for a few frames).
+        positionMethod="fixed"
         aria-labelledby={titleId}
         aria-describedby={bodyId}
-        // A click on the dimmed page doesn't end the tour; Skip and Esc do.
-        onInteractOutside={(e) => e.preventDefault()}
-        onOpenAutoFocus={(e) => {
-          e.preventDefault()
-          primary.current?.focus()
-        }}
+        initialFocus={primary}
         onKeyDown={onKeyDown}
         className="flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-0 overflow-hidden p-0"
       >
@@ -433,6 +443,8 @@ export function TourOverlay({
             </Button>
           </div>
         </div>
+        {/* A modal Base UI popover traps focus only while it holds a Close; Skip and Esc are the visible ways out. */}
+        <PopoverClose className="sr-only">{copy.close}</PopoverClose>
       </PopoverContent>
     </Popover>
   )

@@ -7,7 +7,7 @@
 import { Link } from '@tanstack/react-router'
 import { Gauge, MessageSquare, Route as RouteIcon } from 'lucide-react'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Separator } from '@nasiko/ui/primitives/separator'
 import { DEPLOY_CMD } from '@nasiko/features/agents/format'
 import { DeployAgentButton } from '@nasiko/features/deploy/components/DeployAgentButton'
@@ -27,27 +27,29 @@ export function QuickActions({
       <div className="flex flex-col gap-2">
         {/* Stacked beside Recent chats (from 1100 px), side by side when the card spans the row. */}
         <div className="grid grid-cols-[repeat(auto-fit,minmax(12rem,1fr))] gap-2 @[1100px]/overview:grid-cols-1">
-          <Button asChild className={`justify-start ${TOUCH}`}>
-            <Link to="/chat">
-              <MessageSquare aria-hidden /> {copy.actions.newChat}
-            </Link>
-          </Button>
-          <Button asChild variant="outline" className={`justify-start ${TOUCH}`}>
-            <Link to="/chat" search={{ auto: 1 } as never}>
-              <RouteIcon aria-hidden /> {copy.actions.orchestrator}
-            </Link>
-          </Button>
+          <Link to="/chat" {...asButton({ className: `justify-start ${TOUCH}` })}>
+            <MessageSquare aria-hidden /> {copy.actions.newChat}
+          </Link>
+          <Link
+            to="/chat"
+            search={{ auto: 1 } as never}
+            {...asButton({ variant: 'outline', className: `justify-start ${TOUCH}` })}
+          >
+            <RouteIcon aria-hidden /> {copy.actions.orchestrator}
+          </Link>
           <DeployAgentButton
             variant="outline"
             size="default"
             className={`justify-start ${TOUCH}`}
           />
           {budgets ? (
-            <Button asChild variant="outline" className={`justify-start ${TOUCH}`}>
-              <Link to="/router" hash="router-budgets">
-                <Gauge aria-hidden /> {copy.actions.adjustBudget}
-              </Link>
-            </Button>
+            <Link
+              to="/router"
+              hash="router-budgets"
+              {...asButton({ variant: 'outline', className: `justify-start ${TOUCH}` })}
+            >
+              <Gauge aria-hidden /> {copy.actions.adjustBudget}
+            </Link>
           ) : null}
         </div>
         <Separator className="my-1" />

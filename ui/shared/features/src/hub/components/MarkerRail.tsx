@@ -3,7 +3,7 @@
  * recorded changes, at the oldest change's exact time, placed as a percentage of the width (the lanes' equal bucket
  * slots, `lane-band.ts`), so it lines up with the bars at any width. A click or Enter selects the flag's bucket and opens its panel: each record with its
  * link, and that day's Sessions (or TokenOps beyond Sessions' 7 days), so a marker reaches the day's sessions in two
- * interactions. Escape closes the panel and returns focus to the flag (Radix Popover). Hover only previews (title).
+ * interactions. Escape closes the panel and returns focus to the flag (the Popover). Hover only previews (title).
  */
 import { Link } from '@tanstack/react-router'
 import {
@@ -108,30 +108,32 @@ export function MarkerRail({
             open={openIndex === f.index}
             onOpenChange={(open) => onOpen(open ? f.index : null)}
           >
-            <PopoverTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                aria-label={label}
-                title={label}
-                className={cn(
-                  // A 20 px mark; on coarse pointers an invisible 44 px hit area around it (DESIGN.md targets).
-                  "absolute top-0 size-5 -translate-x-1/2 rounded-full p-0 pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']",
-                  f.alert && 'border-destructive text-destructive',
-                  linked && 'ring-2 ring-ring ring-offset-1',
-                )}
-                style={{ left: `${((f.index + f.offset) / Math.max(1, n)) * 100}%` }}
-              >
-                <MarkerIcon sub={f.markers.length > 1 ? null : first.sub} className="size-3" />
-                {f.markers.length > 1 ? (
-                  <Badge
-                    variant="secondary"
-                    className="absolute -top-1.5 -right-2 h-3.5 min-w-3.5 px-1 text-4xs"
-                  >
-                    {f.markers.length}
-                  </Badge>
-                ) : null}
-              </Button>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label={label}
+                  title={label}
+                  className={cn(
+                    // A 20 px mark; on coarse pointers an invisible 44 px hit area around it (DESIGN.md targets).
+                    "absolute top-0 size-5 -translate-x-1/2 rounded-full p-0 pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']",
+                    f.alert && 'border-destructive text-destructive',
+                    linked && 'ring-2 ring-ring ring-offset-1',
+                  )}
+                  style={{ left: `${((f.index + f.offset) / Math.max(1, n)) * 100}%` }}
+                />
+              }
+            >
+              <MarkerIcon sub={f.markers.length > 1 ? null : first.sub} className="size-3" />
+              {f.markers.length > 1 ? (
+                <Badge
+                  variant="secondary"
+                  className="absolute -top-1.5 -right-2 h-3.5 min-w-3.5 px-1 text-4xs"
+                >
+                  {f.markers.length}
+                </Badge>
+              ) : null}
             </PopoverTrigger>
             <PopoverContent align="center" className="w-80 space-y-3 text-sm">
               <ul className="space-y-2">

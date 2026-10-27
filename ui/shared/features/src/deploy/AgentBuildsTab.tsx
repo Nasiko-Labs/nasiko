@@ -7,7 +7,7 @@ import { Hammer } from 'lucide-react'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { PanelError } from '@nasiko/ui/composites/panel'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
   TableBody,
@@ -35,11 +35,13 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
     )
   if (q.data && !q.data.available) return <StateCard title={copy.builds.noRights} />
   const deploy = (
-    <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-      <Link to="/deploy" search={{ name: agentName }}>
-        {copy.agentBuilds.deploy}
-      </Link>
-    </Button>
+    <Link
+      to="/deploy"
+      search={{ name: agentName }}
+      {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+    >
+      {copy.agentBuilds.deploy}
+    </Link>
   )
   if (!rows.length)
     return (

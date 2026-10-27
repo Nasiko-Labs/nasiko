@@ -16,7 +16,7 @@
 import { Link } from '@tanstack/react-router'
 import { X } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { Tabs, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { fmtMoney } from '@nasiko/ui/lib/format'
@@ -164,12 +164,12 @@ function Townhall({ v, village }: { v: EstateView; village: Village }) {
             <p className="mt-2.5 text-xs text-muted-foreground">{copy.panel.policyNote}</p>
           </Section>
           <div className="flex flex-wrap gap-2 px-4 py-3">
-            <Button asChild size="sm">
-              <Link to="/router">{copy.panel.routerPolicy}</Link>
-            </Button>
-            <Button asChild size="sm" variant="outline">
-              <Link to="/settings">{copy.panel.flowLimits}</Link>
-            </Button>
+            <Link to="/router" {...asButton({ size: 'sm' })}>
+              {copy.panel.routerPolicy}
+            </Link>
+            <Link to="/settings" {...asButton({ variant: 'outline', size: 'sm' })}>
+              {copy.panel.flowLimits}
+            </Link>
           </div>
         </>
       ) : null}
@@ -248,14 +248,12 @@ function Tank({ v, village }: { v: EstateView; village: Village }) {
         <p className="mt-2.5 text-xs text-muted-foreground">{copy.panel.tankNote}</p>
       </Section>
       <div className="flex flex-wrap gap-2 px-4 py-3">
-        <Button asChild size="sm">
-          <Link to="/router" hash="router-budgets">
-            {copy.panel.setBudgets}
-          </Link>
-        </Button>
-        <Button asChild size="sm" variant="outline">
-          <Link to="/settings">{copy.panel.flowLimits}</Link>
-        </Button>
+        <Link to="/router" hash="router-budgets" {...asButton({ size: 'sm' })}>
+          {copy.panel.setBudgets}
+        </Link>
+        <Link to="/settings" {...asButton({ variant: 'outline', size: 'sm' })}>
+          {copy.panel.flowLimits}
+        </Link>
       </div>
     </>
   )
@@ -302,12 +300,12 @@ function Orchestrator({ village }: { village: Village }) {
         </p>
       </Section>
       <div className="flex flex-wrap gap-2 px-4 py-3">
-        <Button asChild size="sm">
-          <Link to="/chat">{copy.panel.openOrchestrator}</Link>
-        </Button>
-        <Button asChild size="sm" variant="outline">
-          <Link to="/agents">{copy.panel.openAgents}</Link>
-        </Button>
+        <Link to="/chat" {...asButton({ size: 'sm' })}>
+          {copy.panel.openOrchestrator}
+        </Link>
+        <Link to="/agents" {...asButton({ variant: 'outline', size: 'sm' })}>
+          {copy.panel.openAgents}
+        </Link>
       </div>
     </>
   )
@@ -331,12 +329,12 @@ function Observatory({ village }: { village: Village }) {
         <p className="mt-2.5 text-xs text-muted-foreground">{copy.panel.watchNote}</p>
       </Section>
       <div className="flex flex-wrap gap-2 px-4 py-3">
-        <Button asChild size="sm">
-          <Link to="/sessions">{copy.panel.openSessions}</Link>
-        </Button>
-        <Button asChild size="sm" variant="outline">
-          <Link to="/flows">{copy.panel.openFlows}</Link>
-        </Button>
+        <Link to="/sessions" {...asButton({ size: 'sm' })}>
+          {copy.panel.openSessions}
+        </Link>
+        <Link to="/flows" {...asButton({ variant: 'outline', size: 'sm' })}>
+          {copy.panel.openFlows}
+        </Link>
       </div>
     </>
   )
@@ -373,9 +371,9 @@ function WorkflowsPanel({ village }: { village: Village }) {
         <p className="mt-2.5 text-xs text-muted-foreground">{copy.panel.workflowsNote}</p>
       </Section>
       <div className="px-4 py-3">
-        <Button asChild size="sm">
-          <Link to="/workflows">{copy.panel.openWorkflows}</Link>
-        </Button>
+        <Link to="/workflows" {...asButton({ size: 'sm' })}>
+          {copy.panel.openWorkflows}
+        </Link>
       </div>
     </>
   )
@@ -404,9 +402,9 @@ function Opportunities({ village, saved }: { village: Village; saved: number | n
         </Section>
       ) : null}
       <div className="px-4 py-3">
-        <Button asChild size="sm">
-          <Link to="/optimization">{copy.panel.openOptimization}</Link>
-        </Button>
+        <Link to="/optimization" {...asButton({ size: 'sm' })}>
+          {copy.panel.openOptimization}
+        </Link>
       </div>
     </>
   )
@@ -484,9 +482,9 @@ export function PlacePanel({
               )}
             </Section>
             <div className="px-4 py-3">
-              <Button asChild size="sm">
-                <Link to="/optimization">{copy.panel.openOptimization}</Link>
-              </Button>
+              <Link to="/optimization" {...asButton({ size: 'sm' })}>
+                {copy.panel.openOptimization}
+              </Link>
             </div>
           </>
         )

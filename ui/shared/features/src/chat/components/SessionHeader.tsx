@@ -4,7 +4,7 @@ import { Activity, MoreHorizontal } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { PrevNext, type StepVia } from '@nasiko/ui/composites/prev-next'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -100,27 +100,31 @@ export function SessionHeader({
       ]}
       actions={
         <>
-          <Button
-            asChild
-            size="sm"
-            variant="ghost"
-            className="hidden @min-[560px]:inline-flex pointer-coarse:min-h-11"
+          <Link
+            to="/sessions/$sessionId"
+            params={{ sessionId }}
+            search={{}}
+            {...asButton({
+              variant: 'ghost',
+              size: 'sm',
+              className: 'hidden @min-[560px]:inline-flex pointer-coarse:min-h-11',
+            })}
           >
-            <Link to="/sessions/$sessionId" params={{ sessionId }} search={{}}>
-              <Activity aria-hidden />
-              {copy.viewSession}
-            </Link>
-          </Button>
+            <Activity aria-hidden />
+            {copy.viewSession}
+          </Link>
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                size="icon-sm"
-                variant="ghost"
-                className="pointer-coarse:size-11"
-                aria-label={copy.moreChatActions}
-              >
-                <MoreHorizontal aria-hidden />
-              </Button>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="pointer-coarse:size-11"
+                  aria-label={copy.moreChatActions}
+                />
+              }
+            >
+              <MoreHorizontal aria-hidden />
             </DropdownMenuTrigger>
             <DropdownMenuContent
               align="end"
@@ -142,15 +146,16 @@ export function SessionHeader({
                   <DropdownMenuSeparator />
                 </>
               ) : null}
-              <DropdownMenuItem asChild className="@min-[560px]:hidden pointer-coarse:min-h-11">
-                <Link to="/sessions/$sessionId" params={{ sessionId }} search={{}}>
-                  {copy.viewSession}
-                </Link>
+              <DropdownMenuItem
+                className="@min-[560px]:hidden pointer-coarse:min-h-11"
+                render={<Link to="/sessions/$sessionId" params={{ sessionId }} search={{}} />}
+              >
+                {copy.viewSession}
               </DropdownMenuItem>
               <DropdownMenuItem
                 className="pointer-coarse:min-h-11"
                 disabled={!row || readOnly}
-                onSelect={() => {
+                onClick={() => {
                   renaming.current = true
                   setEditing(true)
                 }}
@@ -160,14 +165,14 @@ export function SessionHeader({
               <DropdownMenuItem
                 className="pointer-coarse:min-h-11"
                 disabled={!canExport}
-                onSelect={onExport}
+                onClick={onExport}
               >
                 {copy.exportMarkdown}
               </DropdownMenuItem>
               <DropdownMenuItem
                 disabled={deleteBlocked}
                 className="text-destructive pointer-coarse:min-h-11"
-                onSelect={onDelete}
+                onClick={onDelete}
               >
                 {deleteBlocked ? (
                   <span className="flex flex-col">
@@ -243,13 +248,15 @@ function HeaderTotals({
   const cost =
     t.cost === null ? (
       <Tooltip>
-        <TooltipTrigger asChild>
-          <span
-            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the cost-unknown tooltip; it has no action, so no button role
-            tabIndex={0}
-          >
-            —
-          </span>
+        <TooltipTrigger
+          render={
+            <span
+              // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the cost-unknown tooltip; it has no action, so no button role
+              tabIndex={0}
+            />
+          }
+        >
+          —
         </TooltipTrigger>
         <TooltipContent>{copy.costUnknown}</TooltipContent>
       </Tooltip>

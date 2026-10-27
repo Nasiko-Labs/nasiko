@@ -6,7 +6,7 @@
 import { ChevronDown, ChevronUp, FileDown, Loader2, Wrench } from 'lucide-react'
 import { memo, useId, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { apiUrl } from '@nasiko/data-access/client'
 import { fmtLatency } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -182,28 +182,27 @@ function errorActions(
         return {
           actions: [],
           links: agentId ? (
-            <Button asChild size="sm" className={TOUCH}>
-              <Link to="/agents/$agentId" params={{ agentId }} search={{}}>
-                {copy.openAgent}
-              </Link>
-            </Button>
+            <Link
+              to="/agents/$agentId"
+              params={{ agentId }}
+              search={{}}
+              {...asButton({ size: 'sm', className: TOUCH })}
+            >
+              {copy.openAgent}
+            </Link>
           ) : (
-            <Button asChild size="sm" className={TOUCH}>
-              <Link to="/agents" search={{}}>
-                {copy.agentsPage}
-              </Link>
-            </Button>
+            <Link to="/agents" search={{}} {...asButton({ size: 'sm', className: TOUCH })}>
+              {copy.agentsPage}
+            </Link>
           ),
         }
       default:
         return {
           actions: [],
           links: (
-            <Button asChild size="sm" className={TOUCH}>
-              <Link to="/agents" search={{}}>
-                {copy.agentsPage}
-              </Link>
-            </Button>
+            <Link to="/agents" search={{}} {...asButton({ size: 'sm', className: TOUCH })}>
+              {copy.agentsPage}
+            </Link>
           ),
         }
     }

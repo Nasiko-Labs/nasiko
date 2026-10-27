@@ -598,7 +598,7 @@ function Lanes({
     title: string,
     srExtra?: string,
   ) => (
-    // No tab panels: every lane narrows the one list (Radix would point at a panel that isn't there).
+    // No tab panels: every lane narrows the one list (the tab would otherwise point at no panel).
     <TabsTrigger value={id} title={title} aria-controls="sessions-list">
       <span className={cn('size-2 rounded-full', tone)} aria-hidden />
       {label} <span className="text-xs text-muted-foreground tabular-nums">{n}</span>

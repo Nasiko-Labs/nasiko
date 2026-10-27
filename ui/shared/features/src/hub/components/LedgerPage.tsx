@@ -20,7 +20,7 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { Panel } from '@nasiko/ui/composites/panel'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { pickShared } from '@nasiko/app-core/shell/context'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { isHarness } from '@nasiko/features/agents/status'
@@ -135,15 +135,18 @@ export function LedgerPage({
         }
         actions={
           <>
-            <Button asChild variant="outline" size="sm" className="pointer-coarse:min-h-11">
-              <Link
-                to="/sessions/$sessionId"
-                params={{ sessionId }}
-                search={{ ...search, view: undefined }}
-              >
-                <ListTree className="size-3.5" aria-hidden /> {c.trace}
-              </Link>
-            </Button>
+            <Link
+              to="/sessions/$sessionId"
+              params={{ sessionId }}
+              search={{ ...search, view: undefined }}
+              {...asButton({
+                variant: 'outline',
+                size: 'sm',
+                className: 'pointer-coarse:min-h-11',
+              })}
+            >
+              <ListTree className="size-3.5" aria-hidden /> {c.trace}
+            </Link>
             {ledger?.turns.length ? (
               <Button
                 variant="outline"

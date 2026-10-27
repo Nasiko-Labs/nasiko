@@ -16,7 +16,7 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { StateCard } from '@nasiko/ui/composites/state-card'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { relTime } from '@nasiko/features/agents/format'
 import { useNow } from '@nasiko/app-core/useNow'
@@ -124,9 +124,16 @@ export function BuildPage({ buildId }: { buildId: string }) {
         <StateCard
           title={copy.build.notFound}
           action={
-            <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-              <Link to="/builds">{copy.build.allBuilds}</Link>
-            </Button>
+            <Link
+              to="/builds"
+              {...asButton({
+                variant: 'outline',
+                size: 'sm',
+                className: 'pointer-coarse:min-h-11',
+              })}
+            >
+              {copy.build.allBuilds}
+            </Link>
           }
         >
           {copy.build.notFoundHint}
@@ -168,11 +175,13 @@ export function BuildPage({ buildId }: { buildId: string }) {
         title={title}
         actions={
           // The outcome card carries its own Open agent once there is one.
-          agentLink && view.outcome !== 'running' && view.outcome !== 'notRunning' ? (
-            <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-              {agentLink}
-            </Button>
-          ) : null
+          agentLink && view.outcome !== 'running' && view.outcome !== 'notRunning'
+            ? withButtonStyle(agentLink, {
+                variant: 'outline',
+                size: 'sm',
+                className: 'pointer-coarse:min-h-11',
+              })
+            : null
         }
       />
       <PageHeader
@@ -216,14 +225,17 @@ export function BuildPage({ buildId }: { buildId: string }) {
           </p>
           {agent ? (
             <div className="flex flex-wrap gap-2 max-sm:w-full max-sm:flex-col">
-              <Button asChild className="pointer-coarse:min-h-11">
-                <Link to="/chat" search={{ agent: agent.id } as never}>
-                  {copy.build.chat}
-                </Link>
-              </Button>
-              <Button asChild variant="outline" className="pointer-coarse:min-h-11">
-                {agentLink}
-              </Button>
+              <Link
+                to="/chat"
+                search={{ agent: agent.id } as never}
+                {...asButton({ className: 'pointer-coarse:min-h-11' })}
+              >
+                {copy.build.chat}
+              </Link>
+              {withButtonStyle(agentLink, {
+                variant: 'outline',
+                className: 'pointer-coarse:min-h-11',
+              })}
             </div>
           ) : null}
         </Card>
@@ -238,11 +250,13 @@ export function BuildPage({ buildId }: { buildId: string }) {
           <AlertTitle className="line-clamp-none">{copy.build.notRunning}</AlertTitle>
           <AlertDescription className="gap-2">
             <p>{copy.build.notRunningHint}</p>
-            {agentLink ? (
-              <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-                {agentLink}
-              </Button>
-            ) : null}
+            {agentLink
+              ? withButtonStyle(agentLink, {
+                  variant: 'outline',
+                  size: 'sm',
+                  className: 'pointer-coarse:min-h-11',
+                })
+              : null}
           </AlertDescription>
         </Alert>
       ) : view.outcome === 'failed' && error ? (
@@ -257,19 +271,18 @@ export function BuildPage({ buildId }: { buildId: string }) {
           <AlertDescription className="gap-2">
             <p>{error.fix}</p>
             {/* The one action (design review 3): Deploy as vX for a version clash, else Deploy again, with the name kept. */}
-            <Button asChild size="sm" className="pointer-coarse:min-h-11">
-              <Link
-                to="/deploy"
-                search={{
-                  ...(repo ? { method: 'github' as const, repo } : {}),
-                  name: agent?.name ?? upload.data?.agent_name,
-                  version: error.suggested,
-                }}
-              >
-                <RotateCw className="size-3.5" aria-hidden />{' '}
-                {error.suggested ? copy.build.deployAs(error.suggested) : copy.build.deployAgain}
-              </Link>
-            </Button>
+            <Link
+              to="/deploy"
+              search={{
+                ...(repo ? { method: 'github' as const, repo } : {}),
+                name: agent?.name ?? upload.data?.agent_name,
+                version: error.suggested,
+              }}
+              {...asButton({ size: 'sm', className: 'pointer-coarse:min-h-11' })}
+            >
+              <RotateCw className="size-3.5" aria-hidden />{' '}
+              {error.suggested ? copy.build.deployAs(error.suggested) : copy.build.deployAgain}
+            </Link>
           </AlertDescription>
         </Alert>
       ) : null}

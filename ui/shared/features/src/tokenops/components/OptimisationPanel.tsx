@@ -20,7 +20,7 @@ import { m } from 'motion/react'
 import { useState, type ReactNode } from 'react'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { BetaBadge } from '@nasiko/ui/composites/beta-badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@nasiko/ui/primitives/table'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
@@ -136,11 +136,9 @@ export function OptimisationPanel({
               </>
             ) : null}
           </p>
-          <Button asChild variant="outline" size="sm">
-            <Link to="/agents">
-              Turn on for an agent <span aria-hidden>→</span>
-            </Link>
-          </Button>
+          <Link to="/agents" {...asButton({ variant: 'outline', size: 'sm' })}>
+            Turn on for an agent <span aria-hidden>→</span>
+          </Link>
         </div>
       ) : null}
     </Panel>
@@ -488,17 +486,21 @@ function BasisMark({ basis, notes }: { basis: SavingsBasis; notes?: string }) {
   if (basis === 'measured') return null
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
+      <TooltipTrigger
+        render={
+          <span
+            role="img"
+
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only to open the tooltip; it has no action
+            tabIndex={0}
+            className="inline-flex text-muted-foreground"
+            aria-label={basis === 'fixture' ? 'Measured by holdout' : 'Estimated'}
+          />
+        }
+      >
         {/* An icon with a name (axe: aria-label needs a role), focusable so keyboard users can open its tooltip. */}
-        <span
-          role="img"
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only to open the tooltip; it has no action
-          tabIndex={0}
-          className="inline-flex text-muted-foreground"
-          aria-label={basis === 'fixture' ? 'Measured by holdout' : 'Estimated'}
-        >
-          <Info className="size-3.5" aria-hidden />
-        </span>
+
+        <Info className="size-3.5" aria-hidden />
       </TooltipTrigger>
       <TooltipContent className="max-w-xs">
         {notes ??
@@ -542,11 +544,9 @@ function EmptyState({ total }: { total: number }) {
         enabled, so there is nothing to measure. Turn it on for one agent and savings appear here as
         soon as it handles traffic.
       </p>
-      <Button asChild variant="outline" size="sm" className="mt-3">
-        <Link to="/agents">
-          Choose an agent <span aria-hidden>→</span>
-        </Link>
-      </Button>
+      <Link to="/agents" {...asButton({ variant: 'outline', size: 'sm', className: 'mt-3' })}>
+        Choose an agent <span aria-hidden>→</span>
+      </Link>
     </div>
   )
 }

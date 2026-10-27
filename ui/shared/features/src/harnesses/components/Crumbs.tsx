@@ -67,14 +67,16 @@ export function Crumbs({
                     <BreadcrumbEllipsis className="size-auto" />
                   </Button>
                 ) : c.onClick ? (
-                  <BreadcrumbLink asChild>
-                    <Button
-                      variant="link"
-                      onClick={c.onClick}
-                      className="h-auto min-h-8 p-0 font-normal text-muted-foreground hover:text-foreground max-sm:min-h-11"
-                    >
-                      {c.label}
-                    </Button>
+                  <BreadcrumbLink
+                    render={
+                      <Button
+                        variant="link"
+                        onClick={c.onClick}
+                        className="h-auto min-h-8 p-0 font-normal text-muted-foreground hover:text-foreground max-sm:min-h-11"
+                      />
+                    }
+                  >
+                    {c.label}
                   </BreadcrumbLink>
                 ) : (
                   <BreadcrumbPage className="font-medium">{c.label}</BreadcrumbPage>

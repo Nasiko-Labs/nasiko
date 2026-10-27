@@ -64,12 +64,18 @@ export function DebugFrames({
     <>
       {signalLine}
       <Collapsible className={cn(CHAT_COLUMN, 'text-xs')}>
-        <CollapsibleTrigger asChild>
-          <Button variant="ghost" size="xs" className={cn(DISCLOSE, 'text-left whitespace-normal')}>
-            <ChevronRight aria-hidden />
-            {copy.debugFrames} · {live.phase} · {live.frames.length}
-            {routedInfo}
-          </Button>
+        <CollapsibleTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="xs"
+              className={cn(DISCLOSE, 'text-left whitespace-normal')}
+            />
+          }
+        >
+          <ChevronRight aria-hidden />
+          {copy.debugFrames} · {live.phase} · {live.frames.length}
+          {routedInfo}
         </CollapsibleTrigger>
         <CollapsibleContent>
           <pre className="max-h-60 overflow-auto rounded bg-muted p-2 whitespace-pre-wrap">

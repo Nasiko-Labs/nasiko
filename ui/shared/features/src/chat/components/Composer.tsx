@@ -91,7 +91,7 @@ export function Composer({
       )
         return
       // An open dialog, sheet or menu (shadcn's, found by role) owns the keyboard.
-      if (document.querySelector('[role=dialog][data-state=open], [role=alertdialog], [role=menu]'))
+      if (document.querySelector('[role=dialog][data-open], [role=alertdialog], [role=menu]'))
         return
       e.preventDefault()
       box.current?.focus()

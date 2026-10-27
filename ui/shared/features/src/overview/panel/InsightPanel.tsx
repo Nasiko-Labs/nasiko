@@ -9,7 +9,7 @@ import { Link } from '@tanstack/react-router'
 import { ArrowLeft, Coins, Hand, Link2, TriangleAlert, X, type LucideIcon } from 'lucide-react'
 import type { HitlKind } from '@nasiko/features/chat/types'
 import type { ReactNode } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { fmtInt, fmtLatency, fmtMoney, fmtShortDay } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -302,9 +302,12 @@ function DefaultView(props: PanelProps) {
           <p className="px-2 py-1 text-xs text-muted-foreground">{copy.insight.noRequests}</p>
         )}
         {reqRows.length > 5 ? (
-          <Button asChild variant="link" size="sm" className="h-auto px-2 pt-1 text-xs">
-            <Link to="/chat">{copy.insight.viewAll(reqRows.length)}</Link>
-          </Button>
+          <Link
+            to="/chat"
+            {...asButton({ variant: 'link', size: 'sm', className: 'h-auto px-2 pt-1 text-xs' })}
+          >
+            {copy.insight.viewAll(reqRows.length)}
+          </Link>
         ) : null}
       </div>
       <Section
@@ -456,28 +459,27 @@ function NodeView(props: PanelProps & { id: string }) {
       {reqs.length ? (
         <div className="px-2">
           {reqs.map((r) => (
-            <Button
+            <Link
               key={r.id}
-              asChild
-              variant="ghost"
-              className="h-auto w-full items-start justify-start gap-2.5 px-2 py-1.5 text-left font-normal whitespace-normal"
+              to="/chat/$sessionId"
+              params={{ sessionId: r.sessionId }}
+              state={{ waitingRequest: r.id } as never}
+              {...asButton({
+                variant: 'ghost',
+                className:
+                  'h-auto w-full items-start justify-start gap-2.5 px-2 py-1.5 text-left font-normal whitespace-normal',
+              })}
             >
-              <Link
-                to="/chat/$sessionId"
-                params={{ sessionId: r.sessionId }}
-                state={{ waitingRequest: r.id } as never}
-              >
-                <Hand aria-hidden className="mt-0.5 size-4 shrink-0 text-info" />
-                <span className="min-w-0 flex-1">
-                  <span className="block text-sm leading-5">
-                    {overviewCopy.needs.request(r.kind as HitlKind, 1)}
-                  </span>
-                  {r.title ? (
-                    <span className="block truncate text-xs text-muted-foreground">{r.title}</span>
-                  ) : null}
+              <Hand aria-hidden className="mt-0.5 size-4 shrink-0 text-info" />
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm leading-5">
+                  {overviewCopy.needs.request(r.kind as HitlKind, 1)}
                 </span>
-              </Link>
-            </Button>
+                {r.title ? (
+                  <span className="block truncate text-xs text-muted-foreground">{r.title}</span>
+                ) : null}
+              </span>
+            </Link>
           ))}
         </div>
       ) : null}

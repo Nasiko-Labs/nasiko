@@ -7,7 +7,7 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Link } from '@tanstack/react-router'
 import { AlertTriangle } from 'lucide-react'
-import { useEffect, useId, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
@@ -96,6 +96,7 @@ export function RoutingSheet({
   onSaved: (agentId: string, at: number) => void
 }) {
   const returnFocus = useReturnFocus(!!target)
+  const sheet = useRef<HTMLDivElement>(null)
   // Stepping is off while the form has unsaved changes or a save runs: the sheet's LeaveGuard only covers routes.
   const [blocked, setBlocked] = useState(false)
   // After stepping, close lands on the last agent's row, not the one the sheet opened from.
@@ -134,13 +135,10 @@ export function RoutingSheet({
             '[&_[data-slot=sheet-header]]:pr-32 sm:[&_[data-slot=sheet-header]]:pr-44 pointer-coarse:[&_[data-slot=sheet-header]]:pr-40 sm:pointer-coarse:[&_[data-slot=sheet-header]]:pr-56',
         )}
         onCloseAutoFocus={onCloseAutoFocus}
-        // Radix would focus the first tabbable, the stepper while the routing reads, and open its tooltip (so Escape
+        // Base UI would focus the first tabbable, the stepper while the routing reads, and open its tooltip (so Escape
         // closes that first). Start on the sheet itself instead.
-        onOpenAutoFocus={(e) => {
-          if (!step) return
-          e.preventDefault()
-          ;(e.currentTarget as HTMLElement | null)?.focus()
-        }}
+        ref={sheet}
+        initialFocus={step ? sheet : undefined}
       >
         {target ? (
           <Fresh

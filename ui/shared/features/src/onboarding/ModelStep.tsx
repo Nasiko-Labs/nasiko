@@ -93,7 +93,7 @@ export function ModelStep({
               <label
                 key={p.provider}
                 htmlFor={`${ids}-${p.provider}`}
-                className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-state=checked]]:border-foreground/50 has-[[data-state=checked]]:bg-accent"
+                className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
               >
                 <RadioGroupItem id={`${ids}-${p.provider}`} value={p.provider} />
                 <span className="min-w-0">

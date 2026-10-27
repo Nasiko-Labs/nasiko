@@ -1,6 +1,6 @@
 import { DialogDescription, DialogTitle } from '@nasiko/ui/primitives/dialog'
 
-/** Each step's h2 is the dialog's title (Radix names the dialog by it), its intro the description. */
+/** Each step's h2 is the dialog's title (Base UI names the dialog by it), its intro the description. */
 export function StepHeading({ title, intro }: { title: string; intro: string }) {
   return (
     <div className="flex flex-col gap-3">

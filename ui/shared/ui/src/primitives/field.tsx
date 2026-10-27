@@ -1,13 +1,14 @@
 /**
  * shadcn `field` (new-york-v4), with one local edit to re-apply after any `shadcn add field`:
  * - accent text uses `text-primary-text`, not the bare primary text class (css.test.ts).
+ * Kept through stage D (Base UI): the file uses no Radix, and base-nova's copy spaces fields differently.
  */
 import { useMemo } from "react"
 import { cva, type VariantProps } from "class-variance-authority"
-import { cn } from "@nasiko/ui/lib/utils"
+import { cn } from "../lib/utils"
 
-import { Label } from "@nasiko/ui/primitives/label"
-import { Separator } from "@nasiko/ui/primitives/separator"
+import { Label } from "./label"
+import { Separator } from "./separator"
 
 function FieldSet({ className, ...props }: React.ComponentProps<"fieldset">) {
   return (

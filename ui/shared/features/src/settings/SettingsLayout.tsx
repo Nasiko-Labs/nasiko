@@ -182,7 +182,7 @@ export function SettingsLayout({
                 </SheetContent>
               </Sheet>
             )}
-            {/* `relative`: the scroll box is the positioning context, so an absolutely placed child (Radix's hidden form
+            {/* `relative`: the scroll box is the positioning context, so an absolutely placed child (the hidden form
               input behind a Switch) scrolls inside it instead of stretching the document and moving the shell. */}
             <div className="@container relative min-h-0 min-w-0 flex-1 overflow-y-auto px-4 py-4">
               <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 @[768px]:pt-6">
@@ -252,13 +252,11 @@ function SectionsNav({ groups, current, linkProps, onNavigate, framed = false, t
             {g.rows.map((r) => (
               <SidebarMenuItem key={r.key}>
                 <SidebarMenuButton
-                  asChild
                   isActive={current === r.key}
                   className={cn(ROW, ACTIVE_ROW)}
+                  render={<Link {...linkProps(r)} onClick={onNavigate} />}
                 >
-                  <Link {...linkProps(r)} onClick={onNavigate}>
-                    {r.label}
-                  </Link>
+                  {r.label}
                 </SidebarMenuButton>
               </SidebarMenuItem>
             ))}

@@ -262,17 +262,19 @@ function PreferencesForm({
           name="level"
           render={({ field }) => (
             <ToggleGroup
-              type="single"
               variant="outline"
               size="sm"
-              value={field.value}
-              onValueChange={(v) => v && field.onChange(v as Level)}
+              value={[field.value]}
+              onValueChange={(vs) => {
+                const v = vs[0] as string
+                return v && field.onChange(v as Level)
+              }}
               aria-label={copy.budgetTitle}
               aria-describedby={`${id}-budget-hint`}
               aria-invalid={!!errorFor('level')}
               disabled={off}
               // 6B: as on the Overview, arrows stop at the ends.
-              loop={false}
+              loopFocus={false}
               className="w-fit"
             >
               {LEVELS.map((l) => (
@@ -415,14 +417,16 @@ function LastChatPreview({
           <TableRow>
             <TableCell className="text-muted-foreground">
               <Tooltip>
-                <TooltipTrigger asChild>
-                  <span
-                    // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
-                    tabIndex={0}
-                    className="underline decoration-dotted underline-offset-4"
-                  >
-                    {copy.preview.without}
-                  </span>
+                <TooltipTrigger
+                  render={
+                    <span
+                      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
+                      tabIndex={0}
+                      className="underline decoration-dotted underline-offset-4"
+                    />
+                  }
+                >
+                  {copy.preview.without}
                 </TooltipTrigger>
                 <TooltipContent className="max-w-xs">{copy.preview.baselineTip}</TooltipContent>
               </Tooltip>

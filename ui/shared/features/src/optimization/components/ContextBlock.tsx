@@ -44,14 +44,16 @@ export function ContextBlock({ report }: { report: ContextReport }) {
               </TableHead>
               <TableHead className="font-normal text-muted-foreground">
                 <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span
-                      // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
-                      tabIndex={0}
-                      className="underline decoration-dotted underline-offset-4"
-                    >
-                      {copy.preview.without}
-                    </span>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the baseline tooltip; it has no action, so no button role
+                        tabIndex={0}
+                        className="underline decoration-dotted underline-offset-4"
+                      />
+                    }
+                  >
+                    {copy.preview.without}
                   </TooltipTrigger>
                   <TooltipContent className="max-w-xs">{copy.preview.baselineTip}</TooltipContent>
                 </Tooltip>

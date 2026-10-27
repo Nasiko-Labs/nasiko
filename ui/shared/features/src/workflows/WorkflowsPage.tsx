@@ -12,7 +12,7 @@ import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import {
   DropdownMenu,
@@ -133,14 +133,15 @@ export function WorkflowsPage({
         title={text.empty}
         action={
           <>
-            <Button asChild variant="ghost">
-              <Link to={mode === 'deployed' ? '/workflows/drafts' : '/workflows'}>
-                {text.other}
-              </Link>
-            </Button>
-            <Button asChild variant="outline">
-              <Link to="/workflows/new">{copy.create}</Link>
-            </Button>
+            <Link
+              to={mode === 'deployed' ? '/workflows/drafts' : '/workflows'}
+              {...asButton({ variant: 'ghost' })}
+            >
+              {text.other}
+            </Link>
+            <Link to="/workflows/new" {...asButton({ variant: 'outline' })}>
+              {copy.create}
+            </Link>
           </>
         }
       >
@@ -293,20 +294,22 @@ const WorkflowCard = memo(function WorkflowCard({
           </Link>
         </h2>
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`${copy.actions}: ${wf.name}`}
-              className="relative z-10 -mt-1 -mr-2"
-            >
-              <EllipsisVertical aria-hidden />
-            </Button>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`${copy.actions}: ${wf.name}`}
+                className="relative z-10 -mt-1 -mr-2"
+              />
+            }
+          >
+            <EllipsisVertical aria-hidden />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={open}>{copy.open}</DropdownMenuItem>
-            {steps > 0 ? <DropdownMenuItem onSelect={onRun}>{copy.runNow}</DropdownMenuItem> : null}
-            <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+            <DropdownMenuItem onClick={open}>{copy.open}</DropdownMenuItem>
+            {steps > 0 ? <DropdownMenuItem onClick={onRun}>{copy.runNow}</DropdownMenuItem> : null}
+            <DropdownMenuItem variant="destructive" onClick={onDelete}>
               {copy.delete}
             </DropdownMenuItem>
           </DropdownMenuContent>

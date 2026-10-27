@@ -13,7 +13,8 @@ import { renderApp } from '@nasiko/testing/renderApp'
 import { server } from '@nasiko/testing/setup'
 
 const liveAgent = seed.agents.find((a) => !a.deleted)!
-const optionNames = () => screen.getAllByRole('option').map((o) => o.textContent)
+// Base UI's Select shows its options a tick after the click.
+const optionNames = async () => (await screen.findAllByRole('option')).map((o) => o.textContent)
 
 setupPinnedSeed()
 
@@ -88,7 +89,7 @@ describe('attribution', () => {
     const attribution = await section('Who is driving cost')
     const sort = within(attribution).getByRole('combobox', { name: 'Sort by' })
     await user.click(sort)
-    expect(optionNames()).toContain('Most container hours')
+    expect(await optionNames()).toContain('Most container hours')
     await user.click(screen.getByRole('option', { name: 'Most tokens' }))
     await waitFor(() => expect(router.state.location.search).toMatchObject({ sort: 'tokens' }))
     expect(sort).toHaveTextContent('Most tokens')
@@ -99,7 +100,7 @@ describe('attribution', () => {
     )
     const wf = await section('Who is driving cost')
     await user.click(within(wf).getByRole('combobox', { name: 'Sort by' }))
-    expect(optionNames()).not.toContain('Most container hours')
+    expect(await optionNames()).not.toContain('Most container hours')
   })
 
   it('workflow view coerces sort=hours to Highest spend and hides the hours option', async () => {

@@ -18,7 +18,7 @@ async function openRunCard(router: ReturnType<typeof renderApp>['router'], title
   const id = (router.state.location.search as { run: string }).run
   const card = await waitFor(() => {
     const el = document.querySelector<HTMLElement>(`[data-card="${id}"]`)
-    expect(el).toHaveAttribute('data-state', 'open')
+    expect(el).toHaveAttribute('data-open')
     return el!
   }, T)
   expect(within(card).getByRole('button', { name: title })).toBeInTheDocument()

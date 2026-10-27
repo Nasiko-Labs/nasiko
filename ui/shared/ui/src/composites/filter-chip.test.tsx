@@ -30,9 +30,9 @@ describe('FilterChip', () => {
   })
 
   it.each([
-    [true, 'true', 'on'],
-    [false, 'false', 'off'],
-  ])('shows active=%s as aria-pressed=%s and data-state=%s', (active, pressed, state) => {
+    [true, 'true'],
+    [false, 'false'],
+  ])('shows active=%s as aria-pressed=%s and data-pressed', (active, pressed) => {
     render(
       <FilterChip active={active} onClick={() => undefined}>
         Ops
@@ -40,7 +40,7 @@ describe('FilterChip', () => {
     )
     const chip = screen.getByRole('button', { name: 'Ops' })
     expect(chip).toHaveAttribute('aria-pressed', pressed)
-    expect(chip).toHaveAttribute('data-state', state)
+    expect(chip.hasAttribute('data-pressed')).toBe(active)
   })
 
   it('calls onClick once per press when switching on', async () => {
@@ -145,6 +145,6 @@ describe('FilterChip', () => {
     const chip = screen.getByRole('button', { name: 'Ops' })
     expect(chip.className).toContain('rounded-full')
     expect(chip.className).toContain('min-h-8')
-    expect(chip.className).toContain('data-[state=on]:text-primary-text')
+    expect(chip.className).toContain('data-pressed:text-primary-text')
   })
 })

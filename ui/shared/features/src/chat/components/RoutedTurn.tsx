@@ -9,7 +9,7 @@ import { OpenFlowLink } from '@nasiko/features/flows/components/OpenFlowLink'
 import { Link } from '@tanstack/react-router'
 import { Check, ChevronDown, ChevronRight, CircleAlert, Loader2, Minus, X } from 'lucide-react'
 import { useId, useRef, useState } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import type { Agent } from '@nasiko/features/agents/types'
 import { fmtLatency } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -476,11 +476,9 @@ function routedActions(
       return {
         actions: [],
         links: (
-          <Button asChild size="sm" className={TOUCH}>
-            <Link to="/agents" search={{}}>
-              {copy.agentsPage}
-            </Link>
-          </Button>
+          <Link to="/agents" search={{}} {...asButton({ size: 'sm', className: TOUCH })}>
+            {copy.agentsPage}
+          </Link>
         ),
       }
     case 'routedMayStillArrive':

@@ -1,12 +1,13 @@
-import * as React from "react"
-import { cn } from "@nasiko/ui/lib/utils"
-import { Progress as ProgressPrimitive } from "radix-ui"
+"use client"
 
-function Progress({
-  className,
-  value,
-  ...props
-}: React.ComponentProps<typeof ProgressPrimitive.Root>) {
+// Local edits (stage D): the pre-D shadcn `progress` on Base UI. The root is the bar and the indicator its direct
+// child, as Radix's were, so callers' classes size the bar and their `[&>[data-slot=progress-indicator]]` selectors
+// reach the fill. Base UI sets the fill's width inline (Radix translated it); with no value the fill is empty, as
+// Radix's was (`translateX(-100%)`), so an indeterminate bar is the track alone.
+import { Progress as ProgressPrimitive } from "@base-ui/react/progress"
+import { cn } from "../lib/utils"
+
+function Progress({ className, ...props }: ProgressPrimitive.Root.Props) {
   return (
     <ProgressPrimitive.Root
       data-slot="progress"
@@ -18,8 +19,7 @@ function Progress({
     >
       <ProgressPrimitive.Indicator
         data-slot="progress-indicator"
-        className="h-full w-full flex-1 bg-primary transition-all"
-        style={{ transform: `translateX(-${100 - (value || 0)}%)` }}
+        className="h-full w-full flex-1 bg-primary transition-all data-indeterminate:w-0"
       />
     </ProgressPrimitive.Root>
   )

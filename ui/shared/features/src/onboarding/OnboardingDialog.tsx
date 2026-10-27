@@ -362,7 +362,7 @@ function Role({
           <label
             key={p}
             htmlFor={`persona-${p}`}
-            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-state=checked]]:border-foreground/50 has-[[data-state=checked]]:bg-accent"
+            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
           >
             <RadioGroupItem id={`persona-${p}`} value={p} className="mt-0.5" />
             <span className="flex min-w-0 flex-col gap-1">

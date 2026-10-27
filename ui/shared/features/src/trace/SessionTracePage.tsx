@@ -16,7 +16,7 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { PrevNext } from '@nasiko/ui/composites/prev-next'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Toggle } from '@nasiko/ui/primitives/toggle'
 import { useChatProbe } from '@nasiko/features/chat/api'
 import { OpenChatLink } from '@nasiko/features/chat/components/OpenChatLink'
@@ -399,33 +399,35 @@ export function SessionTracePage({
         actions={
           <>
             {agentIsHarness && ownChat ? (
-              <Button asChild variant="outline" size="sm" className="pointer-coarse:min-h-11">
-                <Link
-                  to="/sessions/$sessionId"
-                  params={{ sessionId }}
-                  search={{ ...search, view: 'ledger' }}
-                >
-                  <Rows3 className="size-3.5" aria-hidden /> {copy.openLedger}
-                </Link>
-              </Button>
+              <Link
+                to="/sessions/$sessionId"
+                params={{ sessionId }}
+                search={{ ...search, view: 'ledger' }}
+                {...asButton({
+                  variant: 'outline',
+                  size: 'sm',
+                  className: 'pointer-coarse:min-h-11',
+                })}
+              >
+                <Rows3 className="size-3.5" aria-hidden /> {copy.openLedger}
+              </Link>
             ) : null}
             <OpenChatLink sessionId={sessionId} />
             {/* The selected trace's flow: a flow's id is its trace id (plans/feat-flows.md F19). */}
             {traceId ? <OpenFlowLink flowId={traceId} /> : null}
             {firstStart ? (
-              <Button asChild variant="outline" size="sm">
-                <Link
-                  to="/tokenops"
-                  search={{
-                    ...withoutWindow(search),
-                    day: firstStart.slice(0, 10),
-                    agent: agentRaw || undefined,
-                    open: 'spend',
-                  }}
-                >
-                  <Workflow className="size-3.5" aria-hidden /> Open in TokenOps
-                </Link>
-              </Button>
+              <Link
+                to="/tokenops"
+                search={{
+                  ...withoutWindow(search),
+                  day: firstStart.slice(0, 10),
+                  agent: agentRaw || undefined,
+                  open: 'spend',
+                }}
+                {...asButton({ variant: 'outline', size: 'sm' })}
+              >
+                <Workflow className="size-3.5" aria-hidden /> Open in TokenOps
+              </Link>
             ) : null}
             <Button variant="outline" size="sm" onClick={copyLink}>
               <Link2 className="size-3.5" aria-hidden /> Copy link
@@ -737,7 +739,7 @@ function TraceSwitcher({
           variant="outline"
           pressed={t.trace_id === traceId}
           onClick={() => onPick(t.trace_id)}
-          className="h-auto min-h-11 shrink-0 flex-col items-start gap-0 px-3 py-1 text-left text-xs font-normal text-foreground data-[state=on]:border-foreground"
+          className="h-auto min-h-11 shrink-0 flex-col items-start gap-0 px-3 py-1 text-left text-xs font-normal text-foreground data-pressed:border-foreground"
         >
           <span className="font-medium">
             Trace {i + 1}

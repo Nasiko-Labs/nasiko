@@ -67,17 +67,19 @@ export function ConnectorRules({
       className={cn('rounded-lg border border-border', !enabled && 'bg-muted/40')}
     >
       <div className="flex items-center gap-3 p-3">
-        <CollapsibleTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={open ? copy.collapse(target.label) : copy.expand(target.label)}
-          >
-            <ChevronDown
-              className={cn('size-4 transition-transform', open && 'rotate-180')}
-              aria-hidden
+        <CollapsibleTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={open ? copy.collapse(target.label) : copy.expand(target.label)}
             />
-          </Button>
+          }
+        >
+          <ChevronDown
+            className={cn('size-4 transition-transform', open && 'rotate-180')}
+            aria-hidden
+          />
         </CollapsibleTrigger>
         <AgentMark name={target.label} iconUrl={target.logoUrl} size={28} />
         <div className="min-w-0 flex-1">
@@ -165,14 +167,14 @@ function ToolRow({
         ) : null}
       </div>
       <ToggleGroup
-        type="single"
         variant="outline"
         size="sm"
-        value={tool.stance}
+        value={[tool.stance]}
         disabled={disabled}
         aria-label={copy.stanceFor(tool.name)}
-        onValueChange={(v) => {
-          // Radix lets a single group be cleared by clicking the current item: a tool always has a stance.
+        onValueChange={(vs) => {
+          const v = vs[0] as string
+          // A tool always has a stance: an empty or unchanged value is nothing to save.
           if (!v || v === tool.stance) return
           set.mutate(
             { tool: tool.name, stance: v as Stance, tools },

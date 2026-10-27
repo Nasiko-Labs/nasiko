@@ -166,25 +166,27 @@ export function AppSidebar({
                   <Brand />
                 ) : (
                   <SidebarMenuButton
-                    asChild
                     tooltip={copy.brandTooltip}
                     className={cn(ROW, 'h-10')}
+                    render={
+                      // eslint-disable-next-line jsx-a11y/anchor-has-content -- its content is the button's children, rendered into it
+                      <a
+                        href="/"
+                        onClick={(e) => {
+                          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+                          e.preventDefault()
+                          void navigate({ to: '/' })
+                        }}
+                      />
+                    }
                   >
                     {/* A plain link: TanStack's Link would mark it aria-current on /, doubling the nav's Home item
                       (§3 rule 4: one current item). */}
-                    <a
-                      href="/"
-                      onClick={(e) => {
-                        if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
-                        e.preventDefault()
-                        void navigate({ to: '/' })
-                      }}
-                    >
-                      <NasikoMark className="size-4 shrink-0 text-logo" />
-                      <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
-                        <span className="truncate font-semibold">{copy.brand}</span>
-                      </span>
-                    </a>
+
+                    <NasikoMark className="size-4 shrink-0 text-logo" />
+                    <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
+                      <span className="truncate font-semibold">{copy.brand}</span>
+                    </span>
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>
@@ -383,38 +385,38 @@ function NavGroups({
                 .map((n) => (
                   <SidebarMenuItem key={n.to}>
                     <SidebarMenuButton
-                      asChild
                       isActive={active?.to === n.to}
                       tooltip={n.label}
                       className={cn(ROW, ICON_ROW, ACTIVE_ROW)}
+                      render={
+                        <Link
+                          to={n.to}
+                          search={
+                            n.shared
+                              ? (prev: Record<string, unknown>) =>
+                                  // Sessions (7d) and TokenOps (30d) start on their own window, whatever the last page had.
+                                  n.to === '/sessions' || n.to === '/tokenops'
+                                    ? withoutWindow(prev)
+                                    : pickShared(prev)
+                              : undefined
+                          }
+                          // `/` is a prefix of every path: Home is active only on `/` itself.
+                          activeOptions={{ includeSearch: false, exact: n.to === '/' }}
+                          // The Link only knows its own path; Agents is current on Deploy and Builds too (`also`).
+                          aria-current={active?.to === n.to ? 'page' : undefined}
+                          // Same-path links (the current page) don't change the pathname: close the sheet here too.
+                          onClick={() => {
+                            onPick()
+                            setOpenMobile(false)
+                          }}
+                        />
+                      }
                     >
-                      <Link
-                        to={n.to}
-                        search={
-                          n.shared
-                            ? (prev: Record<string, unknown>) =>
-                                // Sessions (7d) and TokenOps (30d) start on their own window, whatever the last page had.
-                                n.to === '/sessions' || n.to === '/tokenops'
-                                  ? withoutWindow(prev)
-                                  : pickShared(prev)
-                            : undefined
-                        }
-                        // `/` is a prefix of every path: Home is active only on `/` itself.
-                        activeOptions={{ includeSearch: false, exact: n.to === '/' }}
-                        // The Link only knows its own path; Agents is current on Deploy and Builds too (`also`).
-                        aria-current={active?.to === n.to ? 'page' : undefined}
-                        // Same-path links (the current page) don't change the pathname: close the sheet here too.
-                        onClick={() => {
-                          onPick()
-                          setOpenMobile(false)
-                        }}
-                      >
-                        <n.icon aria-hidden />
-                        <span className={LABEL}>{n.label}</span>
-                        {badges?.[n.to] ? (
-                          <span className="sr-only">, {badges[n.to]?.label}</span>
-                        ) : null}
-                      </Link>
+                      <n.icon aria-hidden />
+                      <span className={LABEL}>{n.label}</span>
+                      {badges?.[n.to] ? (
+                        <span className="sr-only">, {badges[n.to]?.label}</span>
+                      ) : null}
                     </SidebarMenuButton>
                     {/* e.g. on Agents: builds started this session and still running (plans/feat-deploy.md §5, design review 8). */}
                     {badges?.[n.to] ? (
@@ -437,16 +439,20 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild tooltip={label} className={ROW}>
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={`${label} ${copy.help.newTab}`}
-        >
-          <Icon aria-hidden />
-          <span className={LABEL}>{label}</span>
-        </a>
+      <SidebarMenuButton
+        tooltip={label}
+        className={ROW}
+        render={
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label={`${label} ${copy.help.newTab}`}
+          />
+        }
+      >
+        <Icon aria-hidden />
+        <span className={LABEL}>{label}</span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   )
@@ -455,21 +461,21 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
       {external(DOCS_URL, copy.help.docs, BookOpen)}
       <SidebarMenuItem>
         <SidebarMenuButton
-          asChild
           isActive={pathname === '/cli'}
           tooltip={copy.help.cli}
           className={cn(ROW, ACTIVE_ROW)}
+          render={
+            <Link
+              to="/cli"
+              onClick={() => {
+                onPick()
+                setOpenMobile(false)
+              }}
+            />
+          }
         >
-          <Link
-            to="/cli"
-            onClick={() => {
-              onPick()
-              setOpenMobile(false)
-            }}
-          >
-            <SquareTerminal aria-hidden />
-            <span className={LABEL}>{copy.help.cli}</span>
-          </Link>
+          <SquareTerminal aria-hidden />
+          <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
@@ -513,58 +519,62 @@ function StatusRow() {
     .join(' · ')
   return (
     <SidebarMenuItem>
-      <SidebarMenuButton asChild tooltip={tooltip} className={cn(ROW, ICON_ROW, 'relative')}>
-        <Link
-          to="/status"
-          activeOptions={{ exact: true, includeSearch: false }}
-          data-testid="status-row"
-          data-state={state}
-        >
-          <span className="relative flex size-4 shrink-0 items-center justify-center" aria-hidden>
-            <span
-              className={cn(
-                'size-2 rounded-full',
-                state === 'connected'
-                  ? 'bg-success'
-                  : state === 'unreachable'
-                    ? 'bg-destructive'
-                    : 'bg-muted-foreground/50',
-              )}
-            />
-            {state === 'unreachable' ? (
-              <CircleAlert className="absolute -top-1 -right-1.5 size-2.5! text-destructive" />
-            ) : null}
-          </span>
-          <span className={cn(LABEL, 'flex min-w-0 flex-1 items-center gap-2')}>
-            {state === 'unreachable' ? (
-              <span className="truncate">
-                <span className="sr-only">{copy.status.unreachable}</span>
-                <span aria-hidden>{copy.status.unreachableShort}</span>
-              </span>
-            ) : (
-              <span className="truncate">{text}</span>
-            )}
-            <span
-              title={badgeTitle}
-              className={cn(
-                'ml-auto shrink-0 rounded-sm border px-1 text-3xs leading-4 font-medium',
-                mock ? 'border-warning/50 text-warning' : 'border-border text-muted-foreground',
-              )}
-            >
-              {badge}
-            </span>
-          </span>
-          {/* The rail's one-letter mode badge; the label (with the full badge) is hidden there. */}
+      <SidebarMenuButton
+        tooltip={tooltip}
+        className={cn(ROW, ICON_ROW, 'relative')}
+        render={
+          <Link
+            to="/status"
+            activeOptions={{ exact: true, includeSearch: false }}
+            data-testid="status-row"
+            data-state={state}
+          />
+        }
+      >
+        <span className="relative flex size-4 shrink-0 items-center justify-center" aria-hidden>
           <span
-            aria-hidden
             className={cn(
-              'absolute right-0.5 bottom-0.5 hidden text-4xs leading-none font-semibold group-data-[collapsible=icon]:block',
-              mock ? 'text-warning' : 'text-muted-foreground',
+              'size-2 rounded-full',
+              state === 'connected'
+                ? 'bg-success'
+                : state === 'unreachable'
+                  ? 'bg-destructive'
+                  : 'bg-muted-foreground/50',
+            )}
+          />
+          {state === 'unreachable' ? (
+            <CircleAlert className="absolute -top-1 -right-1.5 size-2.5! text-destructive" />
+          ) : null}
+        </span>
+        <span className={cn(LABEL, 'flex min-w-0 flex-1 items-center gap-2')}>
+          {state === 'unreachable' ? (
+            <span className="truncate">
+              <span className="sr-only">{copy.status.unreachable}</span>
+              <span aria-hidden>{copy.status.unreachableShort}</span>
+            </span>
+          ) : (
+            <span className="truncate">{text}</span>
+          )}
+          <span
+            title={badgeTitle}
+            className={cn(
+              'ml-auto shrink-0 rounded-sm border px-1 text-3xs leading-4 font-medium',
+              mock ? 'border-warning/50 text-warning' : 'border-border text-muted-foreground',
             )}
           >
-            {mock ? copy.status.mockShort : copy.status.liveShort}
+            {badge}
           </span>
-        </Link>
+        </span>
+        {/* The rail's one-letter mode badge; the label (with the full badge) is hidden there. */}
+        <span
+          aria-hidden
+          className={cn(
+            'absolute right-0.5 bottom-0.5 hidden text-4xs leading-none font-semibold group-data-[collapsible=icon]:block',
+            mock ? 'text-warning' : 'text-muted-foreground',
+          )}
+        >
+          {mock ? copy.status.mockShort : copy.status.liveShort}
+        </span>
       </SidebarMenuButton>
     </SidebarMenuItem>
   )
@@ -601,21 +611,23 @@ function AccountMenu({ onPick }: { onPick(): void }) {
   return (
     <SidebarMenuItem>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <SidebarMenuButton
-            tooltip={label}
-            aria-label={name ? copy.account.menu(name) : label}
-            className={cn(ROW, ICON_ROW)}
-          >
-            {name ? (
-              <CircleUser aria-hidden />
-            ) : loading ? (
-              <CircleUser aria-hidden className="text-muted-foreground" />
-            ) : (
-              <CircleAlert aria-hidden className="text-warning" />
-            )}
-            <span className={cn(LABEL, loading && 'text-muted-foreground')}>{label}</span>
-          </SidebarMenuButton>
+        <DropdownMenuTrigger
+          render={
+            <SidebarMenuButton
+              tooltip={label}
+              aria-label={name ? copy.account.menu(name) : label}
+              className={cn(ROW, ICON_ROW)}
+            />
+          }
+        >
+          {name ? (
+            <CircleUser aria-hidden />
+          ) : loading ? (
+            <CircleUser aria-hidden className="text-muted-foreground" />
+          ) : (
+            <CircleAlert aria-hidden className="text-warning" />
+          )}
+          <span className={cn(LABEL, loading && 'text-muted-foreground')}>{label}</span>
         </DropdownMenuTrigger>
         <DropdownMenuContent
           side={isMobile ? 'top' : 'right'}
@@ -638,7 +650,7 @@ function AccountMenu({ onPick }: { onPick(): void }) {
           ) : null}
           {me.isError && !name ? (
             <DropdownMenuItem
-              onSelect={() =>
+              onClick={() =>
                 void me.refetch().then((r) => {
                   // The guard ignores a first-load 401 on `me`; here it means the session is gone.
                   if (r.error instanceof ApiError && r.error.status === 401) {
@@ -659,19 +671,21 @@ function AccountMenu({ onPick }: { onPick(): void }) {
           <ThemeSubmenu />
           <DropdownMenuSeparator />
           {/* Appearance and Change password live in account settings (/account). */}
-          <DropdownMenuItem asChild>
-            <Link
-              to="/account/appearance"
-              onClick={() => {
-                navigated.current = true
-                setOpenMobile(false)
-              }}
-            >
-              <Settings aria-hidden /> {copy.account.settings}
-            </Link>
+          <DropdownMenuItem
+            render={
+              <Link
+                to="/account/appearance"
+                onClick={() => {
+                  navigated.current = true
+                  setOpenMobile(false)
+                }}
+              />
+            }
+          >
+            <Settings aria-hidden /> {copy.account.settings}
           </DropdownMenuItem>
           <DropdownMenuItem
-            onSelect={() => {
+            onClick={() => {
               setOpenMobile(false)
               // A frame later: the menu has closed and returned focus, so the tour's card keeps it.
               requestAnimationFrame(() => askForTour('app'))
@@ -681,11 +695,9 @@ function AccountMenu({ onPick }: { onPick(): void }) {
           </DropdownMenuItem>
           <DropdownMenuItem
             disabled={busy || loading}
-            onSelect={(e) => {
-              // Keep the menu open so "Signing out…" is visible until the page changes.
-              e.preventDefault()
-              void run()
-            }}
+            // Keep the menu open so "Signing out…" is visible until the page changes.
+            closeOnClick={false}
+            onClick={() => void run()}
           >
             <LogOut aria-hidden /> {busy ? copy.account.signingOut : copy.account.signOut}
           </DropdownMenuItem>
@@ -714,7 +726,7 @@ function ThemeSubmenu() {
           onValueChange={(v) => setTheme(v as Theme)}
         >
           {THEMES.map((t) => (
-            <DropdownMenuRadioItem key={t.id} value={t.id} onSelect={(e) => e.preventDefault()}>
+            <DropdownMenuRadioItem key={t.id} value={t.id}>
               {t.label}
             </DropdownMenuRadioItem>
           ))}
@@ -729,7 +741,7 @@ function ThemeSubmenu() {
           onValueChange={(v) => setAccent(v as Accent)}
         >
           {ACCENTS.map((a) => (
-            <DropdownMenuRadioItem key={a.id} value={a.id} onSelect={(e) => e.preventDefault()}>
+            <DropdownMenuRadioItem key={a.id} value={a.id}>
               <span
                 aria-hidden
                 className="size-3 shrink-0 rounded-full border border-border"

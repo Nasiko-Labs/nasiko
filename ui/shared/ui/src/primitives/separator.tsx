@@ -1,17 +1,18 @@
-import * as React from "react"
-import { cn } from "@nasiko/ui/lib/utils"
-import { Separator as SeparatorPrimitive } from "radix-ui"
+"use client"
+
+// Local edit (stage D): the pre-D sizing (`data-[orientation=…]`; a vertical rule is `h-full`, not base-nova's
+// `self-stretch`), so nothing on screen changes.
+import { Separator as SeparatorPrimitive } from "@base-ui/react/separator"
+import { cn } from "../lib/utils"
 
 function Separator({
   className,
   orientation = "horizontal",
-  decorative = true,
   ...props
-}: React.ComponentProps<typeof SeparatorPrimitive.Root>) {
+}: SeparatorPrimitive.Props) {
   return (
-    <SeparatorPrimitive.Root
+    <SeparatorPrimitive
       data-slot="separator"
-      decorative={decorative}
       orientation={orientation}
       className={cn(
         "shrink-0 bg-border data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px",

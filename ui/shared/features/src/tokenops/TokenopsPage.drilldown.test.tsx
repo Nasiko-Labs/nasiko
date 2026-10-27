@@ -314,7 +314,7 @@ describe('traces drawer focus', () => {
     await screen.findByRole('dialog')
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    // Nothing opened it, so there is nothing to return to: Radix's default. Asserted
+    // Nothing opened it, so there is nothing to return to: the dialog's default. Asserted
     // explicitly so any change to this outcome is deliberate.
     expect(document.activeElement).toBe(document.body)
   })

@@ -29,17 +29,17 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
     expect(enter).toMatchObject({ rise: 6, drop: -8, stagger: 0.03 })
     expect(transitions.morph).toEqual({})
     // The shared Disclosure animates in CSS: tw-animate-css's collapsible keyframes default to 0.2 s ease-out.
-    expect(read('ui/src/composites/disclosure.tsx')).toMatch(
-      /animate-collapsible-down.*motion-reduce:animate-none/,
-    )
+    const disclosure = read('ui/src/composites/disclosure.tsx')
+    expect(disclosure).toMatch(/data-open:animate-collapsible-down/)
+    expect(disclosure).toMatch(/motion-reduce:animate-none/)
     expect(read('features/src/harnesses/components/HarnessPanels.tsx')).toMatch(/y: 6/)
     expect(read('features/src/sessions/SessionRow.tsx')).toMatch(/y: -8/)
   })
 
   it('times the sheets from panelIn / panelOut, with a fade-only reduced-motion variant on every side', () => {
     const sheet = read('ui/src/primitives/sheet.tsx')
-    expect(sheet).toContain(`data-[state=open]:duration-[${durations.panelIn}ms]`)
-    expect(sheet).toContain(`data-[state=closed]:duration-[${durations.panelOut}ms]`)
+    expect(sheet).toContain(`data-open:duration-[${durations.panelIn}ms]`)
+    expect(sheet).toContain(`data-closed:duration-[${durations.panelOut}ms]`)
     for (const v of [
       'enter-translate-x',
       'enter-translate-y',
@@ -48,7 +48,7 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
     ]) {
       expect(sheet).toContain(`motion-reduce:[--tw-${v}:0]!`)
     }
-    expect(sheet).toContain('motion-reduce:data-[state=open]:fade-in-0')
+    expect(sheet).toContain('motion-reduce:data-open:fade-in-0')
     expect(sheet).not.toMatch(/duration-(300|500)\b/)
   })
 
@@ -70,7 +70,7 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
 
   it('keeps menus, popovers and tooltips fade-only under reduced motion', () => {
     const css = read('ui/src/styles/index.css')
-    // Substring selectors, because the primitives carry `data-[state=open]:animate-in`, never `.animate-in`.
+    // Substring selectors, because the primitives carry `data-open:animate-in`, never `.animate-in`.
     const rule =
       /@media \(prefers-reduced-motion: reduce\) \{\s*\[class\*="animate-in"\],\s*\[class\*="animate-out"\] \{([^}]*)\}/.exec(
         css,
@@ -89,7 +89,7 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
     // Every primitive that animates carries a class the selector matches (plain or variant form).
     for (const f of ['dropdown-menu', 'popover', 'tooltip', 'dialog'])
       expect(read(`ui/src/primitives/${f}.tsx`), f).toMatch(
-        /(?:^|[\s"])(?:data-\[state=open\]:)?animate-in\b/,
+        /(?:^|[\s"])(?:data-open:)?animate-in\b/,
       )
   })
 })

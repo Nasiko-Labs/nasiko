@@ -6,7 +6,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { MessagesSquare, RotateCw } from 'lucide-react'
-import { Button, buttonVariants } from '@nasiko/ui/primitives/button'
+import { Button, buttonVariants, asButton } from '@nasiko/ui/primitives/button'
 import { copy } from '@nasiko/features/observability/copy'
 import { ApiError } from '@nasiko/data-access/client'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -74,15 +74,17 @@ export function OpenChatLink({
     )
   }
   return (
-    <Button
-      asChild
-      variant="outline"
-      size="sm"
-      className={cn('pointer-coarse:min-h-11', className)}
+    <Link
+      to="/chat/$sessionId"
+      params={{ sessionId }}
+      search={{}}
+      {...asButton({
+        variant: 'outline',
+        size: 'sm',
+        className: cn('pointer-coarse:min-h-11', className),
+      })}
     >
-      <Link to="/chat/$sessionId" params={{ sessionId }} search={{}}>
-        <MessagesSquare className="size-3.5" aria-hidden /> {copy.openChat}
-      </Link>
-    </Button>
+      <MessagesSquare className="size-3.5" aria-hidden /> {copy.openChat}
+    </Link>
   )
 }

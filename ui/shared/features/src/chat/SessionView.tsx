@@ -8,7 +8,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { StateCard } from '@nasiko/features/observability/StateCard'
@@ -454,11 +454,14 @@ function SessionView({
             title={missing ? copy.historyMissing : copy.historyFailed}
             action={
               missing ? (
-                <Button asChild size="sm" className="pointer-coarse:min-h-11">
-                  <Link to="/chat" search={{}} ref={focusIfIdle}>
-                    {copy.newChat}
-                  </Link>
-                </Button>
+                <Link
+                  to="/chat"
+                  search={{}}
+                  ref={focusIfIdle}
+                  {...asButton({ size: 'sm', className: 'pointer-coarse:min-h-11' })}
+                >
+                  {copy.newChat}
+                </Link>
               ) : (
                 <Button
                   size="sm"

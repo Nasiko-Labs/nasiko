@@ -131,11 +131,13 @@ export function SystemCard({
           onChange={(e) => setQuery(e.target.value)}
         />
         <ToggleGroup
-          type="single"
           variant="outline"
           size="sm"
-          value={filter}
-          onValueChange={(x) => x && setFilter(x as SystemFilter)}
+          value={[filter]}
+          onValueChange={(vs) => {
+            const x = vs[0] as string
+            return x && setFilter(x as SystemFilter)
+          }}
           aria-label={copy.show}
           className="w-full"
         >
@@ -193,20 +195,22 @@ function Group({
 }) {
   return (
     <Collapsible open={open} onOpenChange={onOpen}>
-      <CollapsibleTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 w-full justify-start gap-1.5 px-1.5 font-normal text-muted-foreground"
-        >
-          <ChevronDown
-            aria-hidden
-            className={cn('size-3.5 transition-transform', !open && '-rotate-90')}
+      <CollapsibleTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 w-full justify-start gap-1.5 px-1.5 font-normal text-muted-foreground"
           />
-          {group.label}
-          <Dot tone={worst(group.rows)} />
-          <span className="ml-auto text-xs tabular-nums">{group.rows.length}</span>
-        </Button>
+        }
+      >
+        <ChevronDown
+          aria-hidden
+          className={cn('size-3.5 transition-transform', !open && '-rotate-90')}
+        />
+        {group.label}
+        <Dot tone={worst(group.rows)} />
+        <span className="ml-auto text-xs tabular-nums">{group.rows.length}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
         <ul className="flex flex-col">

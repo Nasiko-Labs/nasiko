@@ -1,5 +1,7 @@
 /** The tour card's own words; each tour's steps are in `tours.ts`. */
 export const copy = {
+  /** The hidden Close a modal Base UI popover needs to trap focus. */
+  close: 'Close tour',
   step: (n: number, of: number) => `Step ${n} of ${of}`,
   next: 'Next',
   back: 'Back',

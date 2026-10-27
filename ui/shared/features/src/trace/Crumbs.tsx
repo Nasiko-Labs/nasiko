@@ -23,23 +23,27 @@ export function Crumbs({
     <Breadcrumb aria-label="Breadcrumb">
       <BreadcrumbList className="gap-1 sm:gap-1">
         <BreadcrumbItem>
-          <BreadcrumbLink asChild className="underline-offset-2 hover:underline">
-            <Link
-              to="/sessions"
-              search={{ ...back, day: undefined, sort: undefined, lane: undefined }}
-            >
-              Sessions
-            </Link>
+          <BreadcrumbLink
+            className="underline-offset-2 hover:underline"
+            render={
+              <Link
+                to="/sessions"
+                search={{ ...back, day: undefined, sort: undefined, lane: undefined }}
+              />
+            }
+          >
+            Sessions
           </BreadcrumbLink>
         </BreadcrumbItem>
         {day ? (
           <>
             <BreadcrumbSeparator />
             <BreadcrumbItem>
-              <BreadcrumbLink asChild className="underline-offset-2 hover:underline">
-                <Link to="/sessions" search={back}>
-                  {fmtShortDay(day)}
-                </Link>
+              <BreadcrumbLink
+                className="underline-offset-2 hover:underline"
+                render={<Link to="/sessions" search={back} />}
+              >
+                {fmtShortDay(day)}
               </BreadcrumbLink>
             </BreadcrumbItem>
           </>

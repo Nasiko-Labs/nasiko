@@ -1,45 +1,74 @@
-import * as React from "react"
-import { cn } from "@nasiko/ui/lib/utils"
-import { Popover as PopoverPrimitive } from "radix-ui"
+// fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `popover` (`data-[state=…]` → `data-open:`/`data-closed:`, Radix origin var → `--transform-origin`); Base UI internals kept.
+// Local edits: `PopoverContent` also takes the Positioner's `anchor` and `collisionPadding` (Radix's `PopoverAnchor`
+// and `collisionPadding`, for the product tour's card on a gliding anchor; legacy ui/ on development, dd9fe0f64), and
+// `PopoverClose` is exported (a modal popover traps focus only while it renders one).
+"use client"
 
-function Popover({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Root>) {
+import * as React from "react"
+import { Popover as PopoverPrimitive } from "@base-ui/react/popover"
+import { cn } from "../lib/utils"
+import { usePortalContainer } from "../motion/portal"
+import { focusProp, type AutoFocusHandler } from "./radix-compat"
+
+function Popover({ ...props }: PopoverPrimitive.Root.Props) {
   return <PopoverPrimitive.Root data-slot="popover" {...props} />
 }
 
-function PopoverTrigger({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Trigger>) {
+function PopoverTrigger({ ...props }: PopoverPrimitive.Trigger.Props) {
   return <PopoverPrimitive.Trigger data-slot="popover-trigger" {...props} />
 }
 
 function PopoverContent({
+  onOpenAutoFocus,
+  onCloseAutoFocus,
   className,
   align = "center",
+  alignOffset = 0,
+  side = "bottom",
   sideOffset = 4,
+  anchor,
+  collisionPadding,
+  positionMethod,
   ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Content>) {
+}: (PopoverPrimitive.Popup.Props &
+  Pick<
+    PopoverPrimitive.Positioner.Props,
+    | "align"
+    | "alignOffset"
+    | "side"
+    | "sideOffset"
+    | "anchor"
+    | "collisionPadding"
+    | "positionMethod"
+  >) & {
+  onOpenAutoFocus?: AutoFocusHandler
+  onCloseAutoFocus?: AutoFocusHandler
+}) {
   return (
-    <PopoverPrimitive.Portal>
-      <PopoverPrimitive.Content
-        data-slot="popover-content"
+    <PopoverPrimitive.Portal container={usePortalContainer()}>
+      <PopoverPrimitive.Positioner
         align={align}
+        alignOffset={alignOffset}
+        side={side}
         sideOffset={sideOffset}
-        className={cn(
-          "z-50 w-72 origin-(--radix-popover-content-transform-origin) rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-hidden data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
-          className
-        )}
-        {...props}
-      />
+        anchor={anchor}
+        collisionPadding={collisionPadding}
+        positionMethod={positionMethod}
+        className="isolate z-50"
+      >
+        <PopoverPrimitive.Popup
+          data-slot="popover-content"
+          className={cn(
+            "z-50 w-72 origin-(--transform-origin) rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-hidden data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95 data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2",
+            className
+          )}
+          {...props}
+          initialFocus={focusProp(onOpenAutoFocus) ?? props.initialFocus}
+          finalFocus={focusProp(onCloseAutoFocus) ?? props.finalFocus}
+        />
+      </PopoverPrimitive.Positioner>
     </PopoverPrimitive.Portal>
   )
-}
-
-function PopoverAnchor({
-  ...props
-}: React.ComponentProps<typeof PopoverPrimitive.Anchor>) {
-  return <PopoverPrimitive.Anchor data-slot="popover-anchor" {...props} />
 }
 
 function PopoverHeader({ className, ...props }: React.ComponentProps<"div">) {
@@ -52,9 +81,9 @@ function PopoverHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
-function PopoverTitle({ className, ...props }: React.ComponentProps<"h2">) {
+function PopoverTitle({ className, ...props }: PopoverPrimitive.Title.Props) {
   return (
-    <div
+    <PopoverPrimitive.Title
       data-slot="popover-title"
       className={cn("font-medium", className)}
       {...props}
@@ -65,9 +94,9 @@ function PopoverTitle({ className, ...props }: React.ComponentProps<"h2">) {
 function PopoverDescription({
   className,
   ...props
-}: React.ComponentProps<"p">) {
+}: PopoverPrimitive.Description.Props) {
   return (
-    <p
+    <PopoverPrimitive.Description
       data-slot="popover-description"
       className={cn("text-muted-foreground", className)}
       {...props}
@@ -75,12 +104,16 @@ function PopoverDescription({
   )
 }
 
+function PopoverClose({ ...props }: PopoverPrimitive.Close.Props) {
+  return <PopoverPrimitive.Close data-slot="popover-close" {...props} />
+}
+
 export {
+  PopoverClose,
   Popover,
-  PopoverTrigger,
   PopoverContent,
-  PopoverAnchor,
+  PopoverDescription,
   PopoverHeader,
   PopoverTitle,
-  PopoverDescription,
+  PopoverTrigger,
 }

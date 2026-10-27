@@ -37,29 +37,30 @@ export function Panel({
   titleRef?: Ref<HTMLHeadingElement>
 }) {
   return (
-    <Card asChild className={cn('min-w-0 gap-3 p-4', className)}>
-      <section ref={ref} aria-labelledby={labelledBy}>
-        <CardHeader className="flex flex-wrap items-start justify-between gap-2 px-0">
-          {/* A small basis, so a long subtitle wraps beside the actions instead of pushing them to their own row. */}
-          <div className="min-w-0 flex-[1_1_15rem]">
-            <h2
-              ref={titleRef}
-              id={labelledBy}
-              tabIndex={focusableTitle ? -1 : undefined}
-              className="text-sm font-semibold outline-none"
-            >
-              {title}
-            </h2>
-            {subtitle ? <CardDescription className="text-xs">{subtitle}</CardDescription> : null}
-          </div>
-          {actions ? (
-            <CardAction className="col-auto row-auto flex flex-wrap items-center gap-2">
-              {actions}
-            </CardAction>
-          ) : null}
-        </CardHeader>
-        {children}
-      </section>
+    <Card
+      className={cn('min-w-0 gap-3 p-4', className)}
+      render={<section ref={ref} aria-labelledby={labelledBy} />}
+    >
+      <CardHeader className="flex flex-wrap items-start justify-between gap-2 px-0">
+        {/* A small basis, so a long subtitle wraps beside the actions instead of pushing them to their own row. */}
+        <div className="min-w-0 flex-[1_1_15rem]">
+          <h2
+            ref={titleRef}
+            id={labelledBy}
+            tabIndex={focusableTitle ? -1 : undefined}
+            className="text-sm font-semibold outline-none"
+          >
+            {title}
+          </h2>
+          {subtitle ? <CardDescription className="text-xs">{subtitle}</CardDescription> : null}
+        </div>
+        {actions ? (
+          <CardAction className="col-auto row-auto flex flex-wrap items-center gap-2">
+            {actions}
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      {children}
     </Card>
   )
 }

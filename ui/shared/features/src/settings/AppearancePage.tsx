@@ -117,7 +117,7 @@ export function AppearancePage() {
 
 function Caption({ children }: { children: ReactNode }) {
   return (
-    <span className="px-0.5 text-muted-foreground group-has-[[data-state=checked]]:font-medium group-has-[[data-state=checked]]:text-foreground">
+    <span className="px-0.5 text-muted-foreground group-has-[[data-checked]]:font-medium group-has-[[data-checked]]:text-foreground">
       {children}
     </span>
   )

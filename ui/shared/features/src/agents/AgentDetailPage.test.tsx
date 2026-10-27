@@ -246,7 +246,7 @@ describe('access', () => {
     const section = await screen.findByRole('region', { name: copy.agentAcl })
     expect(await within(section).findByText(copy.aclNotEnforced)).toBeInTheDocument()
     const select = await within(section).findByRole('combobox', { name: 'Allow an agent' })
-    // Radix Select: open it, wait for the directory's options, pick one.
+    // The Select: open it, wait for the directory's options, pick one.
     await userEvent.click(select)
     await waitFor(() => expect(screen.getAllByRole('option').length).toBeGreaterThan(0))
     await userEvent.click(

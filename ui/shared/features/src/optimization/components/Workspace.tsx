@@ -20,31 +20,29 @@ export function Workspace() {
   if (me.data?.is_superuser !== true) return null
   const values = tiers.data ?? SERVER_DEFAULT_TIERS
   return (
-    <Card asChild className="gap-3 p-4">
-      <section aria-labelledby="optimization-workspace-h">
-        <h2 id="optimization-workspace-h" className="text-sm font-semibold">
-          {copy.workspace.title}
-        </h2>
-        <ul className="m-0 flex list-none flex-col p-0">
-          <WorkspaceRow
-            label={tiers.data === null ? copy.workspace.defaults : copy.workspace.tiers}
-            value={
-              tiers.isPending
-                ? undefined
-                : copy.workspace.tierValues(
-                    values.pacms_budget.low,
-                    values.pacms_budget.medium,
-                    values.pacms_budget.high,
-                  )
-            }
-            failed={tiers.isError && !tiers.data ? copy.workspace.tiersFailed : undefined}
-            onRetry={() => void tiers.refetch()}
-            to="/settings/optimization-tiers"
-            action={copy.workspace.editTiers}
-          />
-          {Extra ? <Extra /> : null}
-        </ul>
-      </section>
+    <Card className="gap-3 p-4" render={<section aria-labelledby="optimization-workspace-h" />}>
+      <h2 id="optimization-workspace-h" className="text-sm font-semibold">
+        {copy.workspace.title}
+      </h2>
+      <ul className="m-0 flex list-none flex-col p-0">
+        <WorkspaceRow
+          label={tiers.data === null ? copy.workspace.defaults : copy.workspace.tiers}
+          value={
+            tiers.isPending
+              ? undefined
+              : copy.workspace.tierValues(
+                  values.pacms_budget.low,
+                  values.pacms_budget.medium,
+                  values.pacms_budget.high,
+                )
+          }
+          failed={tiers.isError && !tiers.data ? copy.workspace.tiersFailed : undefined}
+          onRetry={() => void tiers.refetch()}
+          to="/settings/optimization-tiers"
+          action={copy.workspace.editTiers}
+        />
+        {Extra ? <Extra /> : null}
+      </ul>
     </Card>
   )
 }

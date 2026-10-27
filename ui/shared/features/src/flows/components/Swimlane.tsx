@@ -519,59 +519,65 @@ function Bar({
         </div>
       ) : null}
       <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            ref={ref}
-            type="button"
-            variant="ghost"
-            tabIndex={tabbable ? 0 : -1}
-            aria-label={name}
-            aria-pressed={selected}
-            data-call={call.key}
-            onClick={onSelect}
-            onKeyDown={onKeyDown}
-            className={cn(
-              // A narrow bar keeps its drawn width; on coarse pointers its hit area grows (F25).
-              'absolute z-2 flex h-5 min-w-0.5 justify-start gap-1 overflow-hidden rounded-sm border-l-2 px-1 py-0 text-2xs leading-none font-normal whitespace-nowrap shadow-none hover:brightness-95',
-              "pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']",
-              pending && 'border border-dashed',
-              call.maybeSame && 'outline-1 outline-muted-foreground outline-dashed',
-              // Selection is its own mark (a thick edge and bold text), never the focus ring or the path's outline.
-              selected && 'border-l-4 font-semibold',
-            )}
-            style={{
-              top,
-              ...span(axis, pausedAt ?? call.startMs, end),
-              // Opaque (a tint over the card) so the curves under it never cross its text.
-              backgroundColor: 'var(--card)',
-              backgroundImage: waiting
-                ? 'repeating-linear-gradient(45deg, color-mix(in oklab, var(--warning) 35%, transparent) 0 2px, transparent 2px 6px)'
-                : // Off the critical path only the fill dims: the 11 px label keeps its contrast.
-                  `linear-gradient(${fill}, ${fill})`,
-              borderLeftColor: failed ? 'var(--destructive)' : waiting ? 'var(--warning)' : s.edge,
-            }}
-          >
-            {/* Text on a tinted bar stays foreground (4.5:1 at 11 px); the X and the red edge carry the colour. */}
-            {failed ? <X className="size-3 shrink-0 text-destructive" aria-hidden /> : null}
-            {failed ? <span className="font-medium">{copy.stepStatus.failed}</span> : null}
-            {waiting && pausedAt !== null ? (
-              <Hand className="size-3 shrink-0 text-foreground" aria-hidden />
-            ) : waiting ? (
-              <span className="font-medium">{copy.panel.waitingOnYou}</span>
-            ) : null}
-            {/* A paused call's hatch is just the wait: its task stays in the tooltip and the accessible name. */}
-            {task && pausedAt === null ? <span className="truncate">{task}</span> : null}
-            {from && pausedAt === null ? <span>· {copy.panel.from(from)}</span> : null}
-            {!open && !waiting ? (
-              <span className="tabular-nums">{fmtDuration(end - call.startMs, call.exactEnd)}</span>
-            ) : null}
-            {open ? (
-              <span
-                aria-hidden
-                className="absolute inset-y-0 right-0 w-1 animate-pulse bg-info motion-reduce:animate-none motion-reduce:bg-info/60"
-              />
-            ) : null}
-          </Button>
+        <TooltipTrigger
+          render={
+            <Button
+              ref={ref}
+              type="button"
+              variant="ghost"
+              tabIndex={tabbable ? 0 : -1}
+              aria-label={name}
+              aria-pressed={selected}
+              data-call={call.key}
+              onClick={onSelect}
+              onKeyDown={onKeyDown}
+              className={cn(
+                // A narrow bar keeps its drawn width; on coarse pointers its hit area grows (F25).
+                'absolute z-2 flex h-5 min-w-0.5 justify-start gap-1 overflow-hidden rounded-sm border-l-2 px-1 py-0 text-2xs leading-none font-normal whitespace-nowrap shadow-none hover:brightness-95',
+                "pointer-coarse:after:absolute pointer-coarse:after:inset-x-0 pointer-coarse:after:-inset-y-3 pointer-coarse:after:content-['']",
+                pending && 'border border-dashed',
+                call.maybeSame && 'outline-1 outline-muted-foreground outline-dashed',
+                // Selection is its own mark (a thick edge and bold text), never the focus ring or the path's outline.
+                selected && 'border-l-4 font-semibold',
+              )}
+              style={{
+                top,
+                ...span(axis, pausedAt ?? call.startMs, end),
+                // Opaque (a tint over the card) so the curves under it never cross its text.
+                backgroundColor: 'var(--card)',
+                backgroundImage: waiting
+                  ? 'repeating-linear-gradient(45deg, color-mix(in oklab, var(--warning) 35%, transparent) 0 2px, transparent 2px 6px)'
+                  : // Off the critical path only the fill dims: the 11 px label keeps its contrast.
+                    `linear-gradient(${fill}, ${fill})`,
+                borderLeftColor: failed
+                  ? 'var(--destructive)'
+                  : waiting
+                    ? 'var(--warning)'
+                    : s.edge,
+              }}
+            />
+          }
+        >
+          {/* Text on a tinted bar stays foreground (4.5:1 at 11 px); the X and the red edge carry the colour. */}
+          {failed ? <X className="size-3 shrink-0 text-destructive" aria-hidden /> : null}
+          {failed ? <span className="font-medium">{copy.stepStatus.failed}</span> : null}
+          {waiting && pausedAt !== null ? (
+            <Hand className="size-3 shrink-0 text-foreground" aria-hidden />
+          ) : waiting ? (
+            <span className="font-medium">{copy.panel.waitingOnYou}</span>
+          ) : null}
+          {/* A paused call's hatch is just the wait: its task stays in the tooltip and the accessible name. */}
+          {task && pausedAt === null ? <span className="truncate">{task}</span> : null}
+          {from && pausedAt === null ? <span>· {copy.panel.from(from)}</span> : null}
+          {!open && !waiting ? (
+            <span className="tabular-nums">{fmtDuration(end - call.startMs, call.exactEnd)}</span>
+          ) : null}
+          {open ? (
+            <span
+              aria-hidden
+              className="absolute inset-y-0 right-0 w-1 animate-pulse bg-info motion-reduce:animate-none motion-reduce:bg-info/60"
+            />
+          ) : null}
         </TooltipTrigger>
         <TooltipContent>{name}</TooltipContent>
       </Tooltip>

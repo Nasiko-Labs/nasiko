@@ -64,10 +64,8 @@ export function CopyMenuItem({ text, label }: { text: string; label?: string }) 
   return (
     <DropdownMenuItem
       className="flex-col items-start gap-1"
-      onSelect={(e) => {
-        e.preventDefault()
-        void run()
-      }}
+      closeOnClick={false}
+      onClick={() => void run()}
     >
       <span className="flex w-full items-center justify-between gap-2">
         <code className="truncate font-mono text-xs" title={text}>

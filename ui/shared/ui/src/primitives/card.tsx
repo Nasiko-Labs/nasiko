@@ -1,24 +1,33 @@
-/**
- * shadcn `card` (new-york-v4), with local edits to re-apply after any `shadcn add card`:
- * - `Card` takes `asChild` (Radix Slot), so a panel can be a named `<section>`;
- * - hairline cards (§6.4): `rounded-lg` (the app radius) and no shadow.
- */
+// fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `card` (the `size` prop stays as `data-size` only); Base UI internals kept.
+// Local edits (ported from nasiko-ui-lab@1b99bdda common/src/components/ui/card.tsx, re-apply after any re-vendor):
+// - `Card` takes `render` (Base UI useRender; the lab's `asChild`), so a panel can be a named `<section>`;
+// - hairline cards (§6.4): `rounded-lg` (the app radius) and no shadow (base-nova has none; its hairline is the ring),
+//   the header/footer/image corners following the same radius.
 import * as React from "react"
-import { Slot } from "radix-ui"
-import { cn } from "@nasiko/ui/lib/utils"
+import { mergeProps } from "@base-ui/react/merge-props"
+import { useRender } from "@base-ui/react/use-render"
+import { cn } from "../lib/utils"
 
-function Card({ className, asChild = false, ...props }: React.ComponentProps<"div"> & { asChild?: boolean }) {
-  const Comp = asChild ? Slot.Root : "div"
-  return (
-    <Comp
-      data-slot="card"
-      className={cn(
-        "flex flex-col gap-6 rounded-lg border bg-card py-6 text-card-foreground",
-        className
-      )}
-      {...props}
-    />
-  )
+function Card({
+  className,
+  size = "default",
+  render,
+  ...props
+}: useRender.ComponentProps<"div"> & { size?: "default" | "sm" }) {
+  return useRender({
+    defaultTagName: "div",
+    render,
+    props: mergeProps<"div">(
+      {
+        className: cn(
+          "flex flex-col gap-6 rounded-lg border bg-card py-6 text-card-foreground",
+          className
+        ),
+      },
+      props
+    ),
+    state: { slot: "card", size },
+  })
 }
 
 function CardHeader({ className, ...props }: React.ComponentProps<"div">) {

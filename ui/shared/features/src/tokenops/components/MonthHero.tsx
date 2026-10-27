@@ -62,101 +62,102 @@ export function MonthHero({
   const [showCalendar, setShowCalendar] = useState(false)
   const floor = (unpricedCalls ?? 0) > 0
   return (
-    <Card asChild className="grid gap-4 p-4 lg:grid-cols-12">
-      <section aria-labelledby="month-hero-title">
-        <div className="flex flex-col gap-3 lg:col-span-5">
-          <div className="flex items-center justify-between gap-2">
-            <h2 id="month-hero-title" className="text-sm font-semibold">
-              This month{' '}
-              <span className="font-normal text-muted-foreground">
-                · {fmtMonthYear(monthStart)} (UTC)
-              </span>
-            </h2>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="lg:hidden"
-              onClick={() => setShowCalendar((v) => !v)}
-              aria-expanded={showCalendar}
-              aria-controls="month-calendar"
-            >
-              <CalendarDays className="size-4" aria-hidden /> Calendar
-            </Button>
-          </div>
-          {loading && !summary ? (
-            <PanelSkeleton height={96} />
-          ) : error && !summary ? (
-            <PanelError error={error} onRetry={onRetry} what="this month's spend" />
-          ) : summary ? (
-            <>
-              <div>
-                <div className="text-xs text-muted-foreground">Spend so far</div>
-                <div className="text-3xl font-semibold tabular-nums" data-testid="mtd-spend">
-                  {fmtMoneyFloor(summary.mtd, floor)}
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                  {summary.vsLastMonthPct !== null ? (
-                    <span className="inline-flex items-center gap-1">
-                      <Delta changePct={summary.vsLastMonthPct} polarity={POLARITY.spend} /> vs same
-                      days last month ({fmtMoney(summary.lastMonthSameDays)})
-                    </span>
-                  ) : (
-                    <span>No spend in the same days last month</span>
-                  )}
-                  <span>Last month total {fmtMoney(summary.lastMonthTotal)}</span>
-                </div>
+    <Card
+      className="grid gap-4 p-4 lg:grid-cols-12"
+      render={<section aria-labelledby="month-hero-title" />}
+    >
+      <div className="flex flex-col gap-3 lg:col-span-5">
+        <div className="flex items-center justify-between gap-2">
+          <h2 id="month-hero-title" className="text-sm font-semibold">
+            This month{' '}
+            <span className="font-normal text-muted-foreground">
+              · {fmtMonthYear(monthStart)} (UTC)
+            </span>
+          </h2>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="lg:hidden"
+            onClick={() => setShowCalendar((v) => !v)}
+            aria-expanded={showCalendar}
+            aria-controls="month-calendar"
+          >
+            <CalendarDays className="size-4" aria-hidden /> Calendar
+          </Button>
+        </div>
+        {loading && !summary ? (
+          <PanelSkeleton height={96} />
+        ) : error && !summary ? (
+          <PanelError error={error} onRetry={onRetry} what="this month's spend" />
+        ) : summary ? (
+          <>
+            <div>
+              <div className="text-xs text-muted-foreground">Spend so far</div>
+              <div className="text-3xl font-semibold tabular-nums" data-testid="mtd-spend">
+                {fmtMoneyFloor(summary.mtd, floor)}
               </div>
-              <div className="rounded-md bg-muted/60 p-3">
-                <div className="text-xs text-muted-foreground">Month-end at current pace</div>
-                {summary.show && summary.low !== null && summary.high !== null ? (
-                  <div className="text-lg font-semibold tabular-nums" data-testid="forecast">
-                    {fmtMoney(summary.low)} – {fmtMoney(summary.high)}
-                  </div>
+              <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                {summary.vsLastMonthPct !== null ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Delta changePct={summary.vsLastMonthPct} polarity={POLARITY.spend} /> vs same
+                    days last month ({fmtMoney(summary.lastMonthSameDays)})
+                  </span>
                 ) : (
-                  <div className="text-sm text-muted-foreground" data-testid="forecast">
-                    Not enough data yet (available from day {FORECAST_MIN_DAYS} with spend)
-                  </div>
+                  <span>No spend in the same days last month</span>
                 )}
-                <p className="mt-1 text-sm text-muted-foreground">
-                  The range uses the lower and higher of the median and mean daily spend, over{' '}
-                  {Math.floor(summary.elapsedDays)} completed days (
-                  {fmtPct((summary.elapsedDays / summary.daysInMonth) * 100)} of the month).
-                </p>
+                <span>Last month total {fmtMoney(summary.lastMonthTotal)}</span>
               </div>
-              {floor ? (
-                <Badge
-                  variant="warning"
-                  title="These calls used tokens but their model has no price, so totals are a floor."
-                >
-                  <AlertTriangle className="size-3" aria-hidden /> {unpricedCalls?.toLocaleString()}{' '}
-                  calls unpriced this month — totals are a floor
-                </Badge>
-              ) : null}
-              <p className="text-xs text-muted-foreground">
-                Source: spend calendar (all trace spend, UTC)
+            </div>
+            <div className="rounded-md bg-muted/60 p-3">
+              <div className="text-xs text-muted-foreground">Month-end at current pace</div>
+              {summary.show && summary.low !== null && summary.high !== null ? (
+                <div className="text-lg font-semibold tabular-nums" data-testid="forecast">
+                  {fmtMoney(summary.low)} – {fmtMoney(summary.high)}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground" data-testid="forecast">
+                  Not enough data yet (available from day {FORECAST_MIN_DAYS} with spend)
+                </div>
+              )}
+              <p className="mt-1 text-sm text-muted-foreground">
+                The range uses the lower and higher of the median and mean daily spend, over{' '}
+                {Math.floor(summary.elapsedDays)} completed days (
+                {fmtPct((summary.elapsedDays / summary.daysInMonth) * 100)} of the month).
               </p>
-            </>
-          ) : null}
-        </div>
-        <div
-          id="month-calendar"
-          className={cn('lg:col-span-7', showCalendar ? 'block' : 'hidden lg:block')}
-        >
-          {loading && !days ? (
-            <PanelSkeleton height={220} />
-          ) : error && !days ? (
-            <PanelError error={error} onRetry={onRetry} what="the spend calendar" />
-          ) : (
-            <MonthCalendar
-              days={days ?? []}
-              monthStart={monthStart}
-              today={today}
-              selectedDay={selectedDay}
-              onSelectDay={onSelectDay}
-            />
-          )}
-        </div>
-      </section>
+            </div>
+            {floor ? (
+              <Badge
+                variant="warning"
+                title="These calls used tokens but their model has no price, so totals are a floor."
+              >
+                <AlertTriangle className="size-3" aria-hidden /> {unpricedCalls?.toLocaleString()}{' '}
+                calls unpriced this month — totals are a floor
+              </Badge>
+            ) : null}
+            <p className="text-xs text-muted-foreground">
+              Source: spend calendar (all trace spend, UTC)
+            </p>
+          </>
+        ) : null}
+      </div>
+      <div
+        id="month-calendar"
+        className={cn('lg:col-span-7', showCalendar ? 'block' : 'hidden lg:block')}
+      >
+        {loading && !days ? (
+          <PanelSkeleton height={220} />
+        ) : error && !days ? (
+          <PanelError error={error} onRetry={onRetry} what="the spend calendar" />
+        ) : (
+          <MonthCalendar
+            days={days ?? []}
+            monthStart={monthStart}
+            today={today}
+            selectedDay={selectedDay}
+            onSelectDay={onSelectDay}
+          />
+        )}
+      </div>
     </Card>
   )
 }

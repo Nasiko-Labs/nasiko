@@ -157,17 +157,19 @@ function AgentPicker({
   const [open, setOpen] = useState(false)
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          aria-label={copy.agentLabel}
-          className="w-72 justify-between font-normal"
-        >
-          <span className="truncate">
-            {value ? value.display_name || value.name : copy.chooseAgent}
-          </span>
-          <ChevronsUpDown className="size-4 opacity-50" aria-hidden />
-        </Button>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="outline"
+            aria-label={copy.agentLabel}
+            className="w-72 justify-between font-normal"
+          />
+        }
+      >
+        <span className="truncate">
+          {value ? value.display_name || value.name : copy.chooseAgent}
+        </span>
+        <ChevronsUpDown className="size-4 opacity-50" aria-hidden />
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72 p-0">
         <Command label={copy.agentLabel}>

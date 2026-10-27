@@ -5,7 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { copy } from '../copy'
 
@@ -50,15 +50,16 @@ export function WorkspaceRow({
       ) : (
         <span className="font-medium">{value}</span>
       )}
-      <Button asChild variant="outline" size="sm" className="pointer-coarse:min-h-11">
-        {to === '/settings' ? (
+      {withButtonStyle(
+        to === '/settings' ? (
           <Link to="/settings" search={{ section }}>
             {action}
           </Link>
         ) : (
           <Link to={to}>{action}</Link>
-        )}
-      </Button>
+        ),
+        { variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' },
+      )}
     </li>
   )
 }

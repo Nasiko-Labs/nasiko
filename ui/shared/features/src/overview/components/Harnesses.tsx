@@ -8,7 +8,7 @@ import { Link } from '@tanstack/react-router'
 import { SquareTerminal } from 'lucide-react'
 import type { CSSProperties } from 'react'
 import { KpiTile } from '@nasiko/ui/composites/kpi-tile'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { HARNESSES } from '@nasiko/features/harnesses/constants'
@@ -50,61 +50,60 @@ export function HarnessesLine({
   const { total } = pricedOf(data)
   const link = (label: string) => (
     // Underlined: inside a sentence a link can't be told from the text by colour (WCAG 1.4.1).
-    <Button
-      asChild
-      variant="link"
-      size="sm"
-      className={`h-6 px-0 text-sm underline underline-offset-4 ${TOUCH}`}
+    <Link
+      to="/harnesses"
+      search={{} as never}
+      {...asButton({
+        variant: 'link',
+        size: 'sm',
+        className: `h-6 px-0 text-sm underline underline-offset-4 ${TOUCH}`,
+      })}
     >
-      <Link to="/harnesses" search={{} as never}>
-        {label}
-      </Link>
-    </Button>
+      {label}
+    </Link>
   )
   return (
     <Card
-      asChild
       className={cn(
         'flex-row flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-sm',
         className,
       )}
+      render={<section aria-label={copy.harnesses.title} data-testid="overview-harnesses" />}
     >
-      <section aria-label={copy.harnesses.title} data-testid="overview-harnesses">
-        {/* A failed read brings its own warning icon. */}
-        {data.error ? null : (
-          <SquareTerminal aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        )}
-        {data.isPending ? (
-          <Skeleton className="h-4 w-56 motion-reduce:animate-none" />
-        ) : data.error ? (
-          <SourceFailed what={copy.harnesses.what} onRetry={data.retry} />
-        ) : data.notVisible ? (
-          <span className="text-muted-foreground">{copy.harnesses.notVisible}</span>
-        ) : !data.connected ? (
-          <>
-            <span>{copy.harnesses.noneYet}</span>
-            <Dot />
-            <span>{link(copy.harnesses.connect)}.</span>
-          </>
-        ) : (
-          <>
-            <span className="tabular-nums">{copy.harnesses.connected(data.connected)}</span>
-            {data.ownOnly ? (
-              <span className="text-muted-foreground">({copy.kpi.yourUsage})</span>
-            ) : null}
-            {total > 0 ? (
-              <>
-                <Dot />
-                <span className="text-muted-foreground tabular-nums">
-                  {copy.harnesses.lineCost(fmtMoney(total), days)}
-                </span>
-              </>
-            ) : null}
-            <Dot />
-            {link(copy.harnesses.open)}
-          </>
-        )}
-      </section>
+      {/* A failed read brings its own warning icon. */}
+      {data.error ? null : (
+        <SquareTerminal aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+      )}
+      {data.isPending ? (
+        <Skeleton className="h-4 w-56 motion-reduce:animate-none" />
+      ) : data.error ? (
+        <SourceFailed what={copy.harnesses.what} onRetry={data.retry} />
+      ) : data.notVisible ? (
+        <span className="text-muted-foreground">{copy.harnesses.notVisible}</span>
+      ) : !data.connected ? (
+        <>
+          <span>{copy.harnesses.noneYet}</span>
+          <Dot />
+          <span>{link(copy.harnesses.connect)}.</span>
+        </>
+      ) : (
+        <>
+          <span className="tabular-nums">{copy.harnesses.connected(data.connected)}</span>
+          {data.ownOnly ? (
+            <span className="text-muted-foreground">({copy.kpi.yourUsage})</span>
+          ) : null}
+          {total > 0 ? (
+            <>
+              <Dot />
+              <span className="text-muted-foreground tabular-nums">
+                {copy.harnesses.lineCost(fmtMoney(total), days)}
+              </span>
+            </>
+          ) : null}
+          <Dot />
+          {link(copy.harnesses.open)}
+        </>
+      )}
     </Card>
   )
 }
@@ -159,11 +158,17 @@ export function Harnesses({ data, days }: { data: HarnessSummary; days: number }
       ) : !data.connected ? (
         <p className="text-xs">
           {copy.harnesses.none}{' '}
-          <Button asChild variant="link" size="sm" className={`h-auto px-0 text-xs ${TOUCH}`}>
-            <Link to="/harnesses" search={{} as never}>
-              {copy.harnesses.connect}
-            </Link>
-          </Button>
+          <Link
+            to="/harnesses"
+            search={{} as never}
+            {...asButton({
+              variant: 'link',
+              size: 'sm',
+              className: `h-auto px-0 text-xs ${TOUCH}`,
+            })}
+          >
+            {copy.harnesses.connect}
+          </Link>
         </p>
       ) : (
         <>

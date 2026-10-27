@@ -103,19 +103,18 @@ export function SummaryCard({
         </SpotlightCard>
       </RevealItem>
       <RevealItem className="lg:col-span-5">
-        <Card asChild className="h-full gap-3 p-5">
-          <section aria-labelledby="activity-title" className="min-w-0">
-            <div>
-              <h2 id="activity-title" className="text-sm font-semibold">
-                Daily activity
-              </h2>
-              <p className="text-xs text-muted-foreground">
-                Active days (UTC), shaded by est. cost
-              </p>
-            </div>
-            <ActivityStrip series={res.series} days={days} />
-            <TopModels byHarness={res.by_harness} />
-          </section>
+        <Card
+          className="h-full gap-3 p-5"
+          render={<section aria-labelledby="activity-title" className="min-w-0" />}
+        >
+          <div>
+            <h2 id="activity-title" className="text-sm font-semibold">
+              Daily activity
+            </h2>
+            <p className="text-xs text-muted-foreground">Active days (UTC), shaded by est. cost</p>
+          </div>
+          <ActivityStrip series={res.series} days={days} />
+          <TopModels byHarness={res.by_harness} />
         </Card>
       </RevealItem>
     </Reveal>

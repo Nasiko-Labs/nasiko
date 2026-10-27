@@ -39,15 +39,17 @@ export function UsageChip({ usage }: { usage: TurnUsage }) {
     .join(' · ')
   return (
     <Tooltip>
-      <TooltipTrigger asChild>
-        <span
-          // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the detail tooltip; it has no action, so no button role
-          tabIndex={detail ? 0 : undefined}
-          className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground tabular-nums"
-          data-testid="usage-chip"
-        >
-          {parts.join(' · ')}
-        </span>
+      <TooltipTrigger
+        render={
+          <span
+            // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only so keyboard users can open the detail tooltip; it has no action, so no button role
+            tabIndex={detail ? 0 : undefined}
+            className="rounded-md border border-border px-1.5 py-0.5 text-xs text-muted-foreground tabular-nums"
+            data-testid="usage-chip"
+          />
+        }
+      >
+        {parts.join(' · ')}
       </TooltipTrigger>
       {detail ? <TooltipContent>{detail}</TooltipContent> : null}
     </Tooltip>
@@ -113,14 +115,14 @@ export function ErrorNotice({
       {details ? <p className="text-xs text-muted-foreground">{docAnchor(error.key)}</p> : null}
       {detail ? (
         <Collapsible className="text-xs text-muted-foreground">
-          <CollapsibleTrigger asChild>
-            <Button variant="ghost" size="xs" className={cn(DISCLOSE, TOUCH)}>
-              <ChevronRight aria-hidden />
-              {copy.details}
-            </Button>
+          <CollapsibleTrigger
+            render={<Button variant="ghost" size="xs" className={cn(DISCLOSE, TOUCH)} />}
+          >
+            <ChevronRight aria-hidden />
+            {copy.details}
           </CollapsibleTrigger>
           {/* Mounted while closed (hidden), as the native details element it replaces was: the text is findable once opened, never refetched. */}
-          <CollapsibleContent forceMount className="mt-1 flex items-center gap-2">
+          <CollapsibleContent keepMounted className="mt-1 flex items-center gap-2">
             <span className="break-all">{detail}</span>
             <CopyReply text={detail} />
           </CollapsibleContent>

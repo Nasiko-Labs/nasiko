@@ -9,7 +9,7 @@ import { AlertTriangle, Dot } from 'lucide-react'
 import { useEffect, useId, useState, useSyncExternalStore } from 'react'
 import { StateCard } from '@nasiko/ui/composites/state-card'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Field, FieldDescription, FieldLabel } from '@nasiko/ui/primitives/field'
 import { Input } from '@nasiko/ui/primitives/input'
@@ -63,11 +63,13 @@ export function RegistryTab({
         tone="warning"
         title={copy.registry.disabled}
         action={
-          <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-            <Link to="/deploy" search={{ method: 'upload' }}>
-              {copy.github.useUpload}
-            </Link>
-          </Button>
+          <Link
+            to="/deploy"
+            search={{ method: 'upload' }}
+            {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+          >
+            {copy.github.useUpload}
+          </Link>
         }
       >
         {copy.registry.disabledHint}
@@ -167,11 +169,18 @@ export function RegistryTab({
                 <AlertTriangle aria-hidden />
                 <AlertTitle className="line-clamp-none">{copy.registry.notRunning}</AlertTitle>
                 <AlertDescription>
-                  <Button asChild size="sm" variant="outline" className="pointer-coarse:min-h-11">
-                    <Link to="/agents/$agentId" params={{ agentId: state.agentId }} search={{}}>
-                      {copy.registry.openAgent}
-                    </Link>
-                  </Button>
+                  <Link
+                    to="/agents/$agentId"
+                    params={{ agentId: state.agentId }}
+                    search={{}}
+                    {...asButton({
+                      variant: 'outline',
+                      size: 'sm',
+                      className: 'pointer-coarse:min-h-11',
+                    })}
+                  >
+                    {copy.registry.openAgent}
+                  </Link>
                 </AlertDescription>
               </Alert>
             ) : null}

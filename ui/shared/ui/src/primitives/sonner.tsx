@@ -15,13 +15,19 @@ import {
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
 const Toaster = ({ ...props }: ToasterProps) => {
-  const theme = document.documentElement.classList.contains("dark") ? "dark" : "light"
+  const theme = document.documentElement.classList.contains("dark")
+    ? "dark"
+    : "light"
 
   return (
     <Sonner
       theme={theme}
       className="toaster group"
-      toastOptions={{ classNames: { actionButton: "pointer-coarse:min-h-11 pointer-coarse:px-3" } }}
+      toastOptions={{
+        classNames: {
+          actionButton: "pointer-coarse:min-h-11 pointer-coarse:px-3",
+        },
+      }}
       icons={{
         success: <CircleCheckIcon className="size-4" />,
         info: <InfoIcon className="size-4" />,

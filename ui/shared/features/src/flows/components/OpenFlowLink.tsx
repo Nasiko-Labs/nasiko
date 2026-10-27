@@ -6,7 +6,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { Network } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy } from '../copy'
 
@@ -25,15 +25,16 @@ export function OpenFlowLink({
   className?: string
 }) {
   return (
-    <Button
-      asChild
-      size={size}
-      variant={variant}
-      className={cn('pointer-coarse:min-h-11', className)}
+    <Link
+      to="/flows/$flowId"
+      params={{ flowId }}
+      {...asButton({
+        variant: variant,
+        size: size,
+        className: cn('pointer-coarse:min-h-11', className),
+      })}
     >
-      <Link to="/flows/$flowId" params={{ flowId }}>
-        <Network className="size-3.5" aria-hidden /> {latest ? copy.openLatestFlow : copy.openFlow}
-      </Link>
-    </Button>
+      <Network className="size-3.5" aria-hidden /> {latest ? copy.openLatestFlow : copy.openFlow}
+    </Link>
   )
 }

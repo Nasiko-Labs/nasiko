@@ -45,6 +45,7 @@ export function TargetPicker({
 }) {
   const [query, setQuery] = useState('')
   const chose = useRef(false)
+  const chip = useRef<HTMLButtonElement>(null)
   const { running, stopped } = pickerAgents(agents)
   const choose = (c: TargetChoice) => {
     chose.current = true
@@ -61,31 +62,36 @@ export function TargetPicker({
         onOpenChange(o)
       }}
     >
-      <PopoverTrigger asChild>
-        <Button
-          data-tour="chat-target"
-          type="button"
-          size="sm"
-          variant="outline"
-          aria-label={`${copy.sendTo}: ${label}`}
-          title={label}
-          className="h-8 max-w-[min(20rem,75%)] min-w-0 gap-1.5 rounded-full px-2.5 font-normal pointer-coarse:min-h-11"
-          data-testid="target-chip"
-        >
-          {current?.kind === 'orchestrator' ? (
-            <Route aria-hidden className="size-3.5 text-primary-text" />
-          ) : current?.kind === 'agent' && current.status ? (
-            <StatusDot running={current.status === 'running'} />
-          ) : null}
-          <span className="truncate">{label}</span>
-          <ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-        </Button>
+      <PopoverTrigger
+        render={
+          <Button
+            ref={chip}
+            data-tour="chat-target"
+            type="button"
+            size="sm"
+            variant="outline"
+            aria-label={`${copy.sendTo}: ${label}`}
+            title={label}
+            className="h-8 max-w-[min(20rem,75%)] min-w-0 gap-1.5 rounded-full px-2.5 font-normal pointer-coarse:min-h-11"
+            data-testid="target-chip"
+          />
+        }
+      >
+        {current?.kind === 'orchestrator' ? (
+          <Route aria-hidden className="size-3.5 text-primary-text" />
+        ) : current?.kind === 'agent' && current.status ? (
+          <StatusDot running={current.status === 'running'} />
+        ) : null}
+        <span className="truncate">{label}</span>
+        <ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
       </PopoverTrigger>
       <PopoverContent
         align="start"
         className="w-80 p-0"
         onCloseAutoFocus={(e) => {
-          if (chose.current) e.preventDefault()
+          // Back to the chip, even when the composer opened the picker (Base UI would return to the composer).
+          e.preventDefault()
+          if (!chose.current) chip.current?.focus()
         }}
       >
         <Command label={copy.sendTo}>

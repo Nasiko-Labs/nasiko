@@ -14,7 +14,7 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Collapsible,
   CollapsibleContent,
@@ -109,9 +109,9 @@ export function RunsPage({
         icon={Workflow}
         title={copy.noRuns}
         action={
-          <Button asChild variant="outline">
-            <Link to="/workflows">{copy.viewWorkflows}</Link>
-          </Button>
+          <Link to="/workflows" {...asButton({ variant: 'outline' })}>
+            {copy.viewWorkflows}
+          </Link>
         }
       >
         {copy.noRunsText}
@@ -272,7 +272,7 @@ function RunCard({
               <CollapsibleTrigger className="group flex max-w-full items-center gap-2 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring">
                 <ChevronDown
                   aria-hidden
-                  className="size-4 shrink-0 transition-transform group-data-[state=closed]:-rotate-90 motion-reduce:transition-none"
+                  className="size-4 shrink-0 -rotate-90 transition-transform group-data-panel-open:rotate-0 motion-reduce:transition-none"
                 />
                 <span className="truncate">{runTitle(run)}</span>
               </CollapsibleTrigger>
@@ -292,27 +292,30 @@ function RunCard({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {!orphan && run.maf_id ? (
-            <Button asChild variant="outline" size="sm">
-              <Link
-                to="/workflows/$workflowId"
-                params={{ workflowId: run.maf_id }}
-                search={{ run: run.id }}
-              >
-                {run.workflow_status === 'draft' ? copy.openDraft : copy.open}
-              </Link>
-            </Button>
+            <Link
+              to="/workflows/$workflowId"
+              params={{ workflowId: run.maf_id }}
+              search={{ run: run.id }}
+              {...asButton({ variant: 'outline', size: 'sm' })}
+            >
+              {run.workflow_status === 'draft' ? copy.openDraft : copy.open}
+            </Link>
           ) : null}
           {!orphan && run.maf_id && (run.status === 'failed' || run.status === 'stopped') ? (
             <Button variant="outline" size="sm" disabled={rerunning} onClick={onRerun}>
               <RotateCw className={cn(rerunning && 'animate-spin')} aria-hidden /> {copy.rerun}
             </Button>
           ) : null}
-          <Button asChild variant="ghost" size="sm">
+          <Link
+            to="/sessions/$sessionId"
+            params={{ sessionId: run.id }}
+            search={{}}
+            {...asButton({ variant: 'ghost', size: 'sm' })}
+          >
             {/* The execution id is the run's session id. */}
-            <Link to="/sessions/$sessionId" params={{ sessionId: run.id }} search={{}}>
-              {copy.viewTrace}
-            </Link>
-          </Button>
+
+            {copy.viewTrace}
+          </Link>
         </div>
       </div>
       <CollapsibleContent className="flex flex-col gap-3 border-t px-4 pt-4 pb-2">

@@ -89,7 +89,7 @@ export function HarnessPanels({
                   pressed={pressed}
                   aria-label={`Filter by ${s.known ? s.name : `${s.name} (${it.harness})`}`}
                   onPressedChange={() => onToggle(it.harness)}
-                  className="-mr-2 size-8 min-w-8 shrink-0 p-0 text-foreground hover:bg-muted/60 hover:text-foreground data-[state=on]:bg-transparent data-[state=on]:text-foreground max-sm:size-11"
+                  className="-mr-2 size-8 min-w-8 shrink-0 p-0 text-foreground hover:bg-muted/60 hover:text-foreground data-pressed:bg-transparent data-pressed:text-foreground max-sm:size-11"
                 >
                   {pressed ? (
                     <Check className="size-4 text-foreground" aria-hidden />

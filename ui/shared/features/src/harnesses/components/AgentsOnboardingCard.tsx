@@ -23,11 +23,14 @@ export function AgentsOnboardingCard({ onboarding }: { onboarding: AgentsOnboard
   if (!view) return null
   return (
     <Announcer>
-      <Card asChild className="gap-5 p-5 md:p-6">
-        <section aria-labelledby="agents-onboarding-title" data-testid="agents-onboarding">
-          <CardBody view={view} onboarding={onboarding} />
-          <PhaseAnnouncer view={view} />
-        </section>
+      <Card
+        className="gap-5 p-5 md:p-6"
+        render={
+          <section aria-labelledby="agents-onboarding-title" data-testid="agents-onboarding" />
+        }
+      >
+        <CardBody view={view} onboarding={onboarding} />
+        <PhaseAnnouncer view={view} />
       </Card>
     </Announcer>
   )

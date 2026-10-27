@@ -219,7 +219,7 @@ export function MyAgentsPage({
             className="rounded-lg border border-border"
           >
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border p-2">
-              {/* Radix tabs: arrow keys, Home/End and roving focus. The table below is the one panel. */}
+              {/* Tabs: arrow keys, Home/End and roving focus. The table below is the one panel. */}
               <Tabs
                 value={tab}
                 onValueChange={(t) => setSearch({ tab: t === 'all' ? undefined : (t as Tab) })}
@@ -380,15 +380,17 @@ function CrashReason({ agent }: { agent: Agent }) {
   const d = dep.data
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-auto rounded-md p-0 hover:bg-transparent"
-          aria-label={copy.whyAttention(agent.display_name || agent.name)}
-        >
-          <StatusBadge display="attention" raw={agent.status} className="cursor-pointer" />
-        </Button>
+      <PopoverTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-auto rounded-md p-0 hover:bg-transparent"
+            aria-label={copy.whyAttention(agent.display_name || agent.name)}
+          />
+        }
+      >
+        <StatusBadge display="attention" raw={agent.status} className="cursor-pointer" />
       </PopoverTrigger>
       <PopoverContent className="w-80 text-sm">
         {dep.isPending ? (
@@ -479,39 +481,43 @@ function AgentRow({
       <TableCell className={cn(WIDE, 'text-right tabular-nums')}>{cost}</TableCell>
       <TableCell className="pr-4 text-right">
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="size-9 p-0 pointer-coarse:size-11"
-              aria-label={copy.actionsFor(name)}
-            >
-              <MoreHorizontal className="size-4" aria-hidden />
-            </Button>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="sm"
+                className="size-9 p-0 pointer-coarse:size-11"
+                aria-label={copy.actionsFor(name)}
+              />
+            }
+          >
+            <MoreHorizontal className="size-4" aria-hidden />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-64">
             {actions.map((a) => (
               <DropdownMenuItem
                 key={a}
                 disabled={flow.m.isPending || flow.w.watching}
-                onSelect={() => flow.run(a)}
+                onClick={() => flow.run(a)}
               >
                 {ACTION_LABEL[a]}
               </DropdownMenuItem>
             ))}
             {actions.length ? <DropdownMenuSeparator /> : null}
             {display !== 'harness' ? (
-              <DropdownMenuItem onSelect={onLogs}>{copy.viewLogs}</DropdownMenuItem>
+              <DropdownMenuItem onClick={onLogs}>{copy.viewLogs}</DropdownMenuItem>
             ) : null}
-            <DropdownMenuItem asChild>
-              <Link
-                to="/agents/$agentId"
-                params={{ agentId: agent.id }}
-                search={{}}
-                state={linkState}
-              >
-                {copy.openAgent}
-              </Link>
+            <DropdownMenuItem
+              render={
+                <Link
+                  to="/agents/$agentId"
+                  params={{ agentId: agent.id }}
+                  search={{}}
+                  state={linkState}
+                />
+              }
+            >
+              {copy.openAgent}
             </DropdownMenuItem>
             {display !== 'harness' ? (
               <>

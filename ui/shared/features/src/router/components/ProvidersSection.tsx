@@ -243,21 +243,23 @@ function CustomMenu({ p, onEdit }: { p: CustomProvider; onEdit: (p: CustomProvid
   return (
     <div className="space-y-1">
       <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            size="sm"
-            variant="ghost"
-            className="size-8 px-0 pointer-coarse:size-11"
-            aria-label={copy.configActions(p.display_name)}
-          >
-            <MoreHorizontal className="size-4" aria-hidden />
-          </Button>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              size="sm"
+              variant="ghost"
+              className="size-8 px-0 pointer-coarse:size-11"
+              aria-label={copy.configActions(p.display_name)}
+            />
+          }
+        >
+          <MoreHorizontal className="size-4" aria-hidden />
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem onSelect={() => onEdit(p)}>{copy.edit}</DropdownMenuItem>
+          <DropdownMenuItem onClick={() => onEdit(p)}>{copy.edit}</DropdownMenuItem>
           <DropdownMenuItem
             disabled={sync.isPending}
-            onSelect={() =>
+            onClick={() =>
               sync.mutate(p.id, {
                 onSuccess: (r) => announce(copy.syncDone(p.display_name, r.discovered_models)),
                 onError: (e) => announce(routerError(e).problem),
@@ -269,7 +271,7 @@ function CustomMenu({ p, onEdit }: { p: CustomProvider; onEdit: (p: CustomProvid
           <DropdownMenuSeparator />
           <DropdownMenuItem
             className="text-destructive"
-            onSelect={() => {
+            onClick={() => {
               del.reset()
               setConfirming(true)
             }}

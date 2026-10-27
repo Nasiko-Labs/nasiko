@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@nasiko/ui/primitives/alert-dialog'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Input } from '@nasiko/ui/primitives/input'
 import { Label } from '@nasiko/ui/primitives/label'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
@@ -173,11 +173,13 @@ export function NewWorkflowPage() {
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 [&>*]:min-w-0">
       <div className="flex items-start gap-2">
-        <Button asChild variant="ghost" size="icon-sm" className="mt-0.5">
-          <Link to="/workflows" aria-label={copy.back}>
-            <ChevronLeft aria-hidden />
-          </Link>
-        </Button>
+        <Link
+          to="/workflows"
+          aria-label={copy.back}
+          {...asButton({ variant: 'ghost', size: 'icon-sm', className: 'mt-0.5' })}
+        >
+          <ChevronLeft aria-hidden />
+        </Link>
         <TopBar trail={[copy.newTitle]} />
         <PageHeader title={copy.newTitle} description={copy.newText} />
       </div>

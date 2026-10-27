@@ -173,7 +173,7 @@ export function SpanPanel({
         <SpanIdRow key={span.node.span_id} id={span.node.span_id} />
       </header>
 
-      {/* Radix Tabs: arrows, Home and End move and select (automatic activation); only the
+      {/* Tabs: arrows, Home and End move and select (`activateOnFocus`); only the
           selected panel is mounted. The selected tab lives in the page. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-3">
         <TabsList
@@ -185,7 +185,7 @@ export function SpanPanel({
             <TabsTrigger
               key={t}
               value={t}
-              className="min-h-10 flex-none px-1.5 font-normal data-[state=active]:font-medium"
+              className="min-h-10 flex-none px-1.5 font-normal data-active:font-medium"
             >
               {TAB_LABEL[t]}
               {t === 'attributes' && d ? (
@@ -351,17 +351,17 @@ function ContentSection({ label, field }: { label: string; field: ContentField }
       className="border-b border-border pb-2 last:border-b-0"
     >
       <div className="flex items-center justify-between gap-2">
-        <CollapsibleTrigger asChild>
-          <Button variant="ghost" size="sm" className="-ml-1 h-auto min-h-8 gap-1 px-1">
-            <ChevronRight
-              className={cn(
-                'size-3.5 text-muted-foreground transition-transform',
-                open && 'rotate-90',
-              )}
-              aria-hidden
-            />
-            {label}
-          </Button>
+        <CollapsibleTrigger
+          render={<Button variant="ghost" size="sm" className="-ml-1 h-auto min-h-8 gap-1 px-1" />}
+        >
+          <ChevronRight
+            className={cn(
+              'size-3.5 text-muted-foreground transition-transform',
+              open && 'rotate-90',
+            )}
+            aria-hidden
+          />
+          {label}
         </CollapsibleTrigger>
         {open && value && json ? (
           <div
@@ -375,7 +375,7 @@ function ContentSection({ label, field }: { label: string; field: ContentField }
                 size="sm"
                 pressed={view === v}
                 onClick={() => setView(v)}
-                className="h-6 min-w-0 rounded px-2 text-xs font-normal text-muted-foreground data-[state=on]:font-medium"
+                className="h-6 min-w-0 rounded px-2 text-xs font-normal text-muted-foreground data-pressed:font-medium"
               >
                 {v === 'text' ? 'Text' : 'JSON'}
               </Toggle>
@@ -463,59 +463,61 @@ function Attributes({ attrs }: { attrs: Record<string, unknown> }) {
           return (
             <Collapsible key={ns} open={open} onOpenChange={() => toggle(ns)} disabled={!!needle}>
               {/* While filtering every group is open, so the toggle is disabled rather than silent. */}
-              <CollapsibleTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="-ml-1 h-auto min-h-8 gap-1 px-1 font-mono text-xs disabled:opacity-100"
-                >
-                  <ChevronRight
-                    className={cn(
-                      'size-3.5 text-muted-foreground transition-transform',
-                      open && 'rotate-90',
-                    )}
-                    aria-hidden
+              <CollapsibleTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="-ml-1 h-auto min-h-8 gap-1 px-1 font-mono text-xs disabled:opacity-100"
                   />
-                  {ns}{' '}
-                  <span className="font-sans font-normal text-muted-foreground">
-                    {entries.length}
-                  </span>
-                </Button>
+                }
+              >
+                <ChevronRight
+                  className={cn(
+                    'size-3.5 text-muted-foreground transition-transform',
+                    open && 'rotate-90',
+                  )}
+                  aria-hidden
+                />
+                {ns}{' '}
+                <span className="font-sans font-normal text-muted-foreground">
+                  {entries.length}
+                </span>
               </CollapsibleTrigger>
-              <CollapsibleContent asChild>
-                <dl className="flex flex-col divide-y divide-border text-sm">
-                  {entries.map(([k, v]) => (
-                    <div key={k} className="flex items-start gap-2 py-1.5">
-                      {/* The group heading carries the namespace; the full key is in the tooltip. */}
-                      <dt
-                        className="w-2/5 shrink-0 font-mono text-xs break-words text-muted-foreground"
-                        title={k}
-                      >
-                        {shortKey(k, ns)}
-                      </dt>
-                      <dd className="min-w-0 flex-1 font-mono text-xs break-all">
-                        {typeof v === 'string' ? v : JSON.stringify(v)}
-                      </dd>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        onClick={() => {
-                          setCopiedKey(k)
-                          void copyValue(typeof v === 'string' ? v : JSON.stringify(v))
-                        }}
-                        aria-label={`Copy ${k}`}
-                        className="-m-2 text-muted-foreground hover:text-foreground"
-                      >
-                        <Copy className="size-3.5" aria-hidden />
-                      </Button>
-                      {copied === k ? (
-                        <span aria-hidden className="text-xs text-success">
-                          {copy.copied}
-                        </span>
-                      ) : null}
-                    </div>
-                  ))}
-                </dl>
+              <CollapsibleContent
+                render={<dl className="flex flex-col divide-y divide-border text-sm" />}
+              >
+                {entries.map(([k, v]) => (
+                  <div key={k} className="flex items-start gap-2 py-1.5">
+                    {/* The group heading carries the namespace; the full key is in the tooltip. */}
+                    <dt
+                      className="w-2/5 shrink-0 font-mono text-xs break-words text-muted-foreground"
+                      title={k}
+                    >
+                      {shortKey(k, ns)}
+                    </dt>
+                    <dd className="min-w-0 flex-1 font-mono text-xs break-all">
+                      {typeof v === 'string' ? v : JSON.stringify(v)}
+                    </dd>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => {
+                        setCopiedKey(k)
+                        void copyValue(typeof v === 'string' ? v : JSON.stringify(v))
+                      }}
+                      aria-label={`Copy ${k}`}
+                      className="-m-2 text-muted-foreground hover:text-foreground"
+                    >
+                      <Copy className="size-3.5" aria-hidden />
+                    </Button>
+                    {copied === k ? (
+                      <span aria-hidden className="text-xs text-success">
+                        {copy.copied}
+                      </span>
+                    ) : null}
+                  </div>
+                ))}
               </CollapsibleContent>
             </Collapsible>
           )

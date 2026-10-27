@@ -24,13 +24,16 @@ function memoryStorage(): Storage {
     setItem: (k, v) => void m.set(k, String(v)),
   }
 }
-// jsdom has no pointer-capture API; Radix Select calls it when it opens. Node-environment test
+// jsdom has no pointer-capture API; a Select may call it when it opens. Node-environment test
 // files (`@vitest-environment node`) have no Element.
 if (typeof Element !== 'undefined') {
   const proto = Element.prototype as unknown as Record<string, unknown>
   for (const k of ['hasPointerCapture', 'releasePointerCapture', 'setPointerCapture']) {
     if (!(k in proto)) proto[k] = k === 'hasPointerCapture' ? () => false : () => {}
   }
+  // jsdom has no Web Animations API: Base UI's ScrollArea viewport asks for its subtree's animations on a timer after
+  // mount, which throws as an unhandled error in any test whose page has a scroll area.
+  if (!('getAnimations' in proto)) proto.getAnimations = () => []
 }
 
 beforeEach(() => {
@@ -45,7 +48,7 @@ beforeEach(() => {
 // Animations finish instantly in tests: assertions never wait on a spring.
 MotionGlobalConfig.skipAnimations = true
 
-// jsdom has no layout: visx's ParentSize and Radix need ResizeObserver to exist.
+// jsdom has no layout: visx's ParentSize and Base UI need ResizeObserver to exist.
 class ResizeObserverStub {
   observe() {}
   unobserve() {}

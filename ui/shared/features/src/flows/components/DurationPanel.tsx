@@ -33,12 +33,14 @@ export function DurationPanel({ stats }: { stats: Percentiles | null }) {
         <span className="text-xs text-muted-foreground">{copy.list.count(stats.count)}</span>
         {/* The same Chart / Table switch as the flow page's timeline panel: a state, not a label that flips. */}
         <ToggleGroup
-          type="single"
           variant="outline"
           size="sm"
           aria-label={copy.list.durationView}
-          value={asTable ? 'table' : 'chart'}
-          onValueChange={(v) => v && setAsTable(v === 'table')}
+          value={[asTable ? 'table' : 'chart']}
+          onValueChange={(vs) => {
+            const v = vs[0] as string
+            return v && setAsTable(v === 'table')
+          }}
         >
           <ToggleGroupItem value="chart" className="pointer-coarse:min-h-11">
             {copy.list.chart}

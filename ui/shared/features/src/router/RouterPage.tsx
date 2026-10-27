@@ -280,7 +280,7 @@ function Page({
                 </TabsTrigger>
               ))}
             </TabsList>
-            <TabsContent value="agents" forceMount hidden={tab !== 'agents'} className="pt-4">
+            <TabsContent value="agents" keepMounted hidden={tab !== 'agents'} className="pt-4">
               <AgentsSection
                 filters={
                   <SourceTabs
@@ -330,7 +330,7 @@ function Page({
                 filterLabel={filterLabel}
               />
             </TabsContent>
-            <TabsContent value="configs" forceMount hidden={tab !== 'configs'} className="pt-4">
+            <TabsContent value="configs" keepMounted hidden={tab !== 'configs'} className="pt-4">
               <ConfigsSection
                 configs={configs}
                 reads={reads}
@@ -343,7 +343,7 @@ function Page({
               />
             </TabsContent>
             {hasBudgets && BudgetsTab ? (
-              <TabsContent value="budgets" forceMount hidden={tab !== 'budgets'} className="pt-4">
+              <TabsContent value="budgets" keepMounted hidden={tab !== 'budgets'} className="pt-4">
                 <BudgetsTab
                   agents={agents.map((a) => ({ id: a.id, name: a.display_name || a.name }))}
                   agentName={agentLabel}
@@ -352,7 +352,12 @@ function Page({
                 />
               </TabsContent>
             ) : null}
-            <TabsContent value="providers" forceMount hidden={tab !== 'providers'} className="pt-4">
+            <TabsContent
+              value="providers"
+              keepMounted
+              hidden={tab !== 'providers'}
+              className="pt-4"
+            >
               <ProvidersSection
                 catalog={catalog}
                 custom={custom}
@@ -453,7 +458,7 @@ function SourceTabs({
             value={t.value}
             aria-label={t.name}
             title={t.title}
-            // No tab panels: every tab narrows the one agents table (Radix would point at a panel that isn't there).
+            // No tab panels: every tab narrows the one agents table (the tab would otherwise point at no panel).
             aria-controls="router-agents"
           >
             {t.label} <span className="text-xs text-muted-foreground tabular-nums">{t.count}</span>

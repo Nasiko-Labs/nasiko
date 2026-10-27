@@ -218,16 +218,19 @@ function MethodCard({
   onPick: () => void
 }) {
   return (
-    <Card asChild className="gap-2 p-4 text-left transition-colors hover:border-primary/40">
-      <Button
-        variant="ghost"
-        className="h-auto flex-col items-start whitespace-normal"
-        onClick={onPick}
-      >
-        <span className="text-primary-text">{icon}</span>
-        <span className="font-medium">{title}</span>
-        <span className="text-sm font-normal text-muted-foreground">{desc}</span>
-      </Button>
+    <Card
+      className="gap-2 p-4 text-left transition-colors hover:border-primary/40"
+      render={
+        <Button
+          variant="ghost"
+          className="h-auto flex-col items-start whitespace-normal"
+          onClick={onPick}
+        />
+      }
+    >
+      <span className="text-primary-text">{icon}</span>
+      <span className="font-medium">{title}</span>
+      <span className="text-sm font-normal text-muted-foreground">{desc}</span>
     </Card>
   )
 }

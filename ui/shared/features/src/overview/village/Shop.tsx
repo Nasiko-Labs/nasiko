@@ -7,7 +7,7 @@
 import { Link } from '@tanstack/react-router'
 import { Gauge, Milestone, ShieldCheck } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
   Dialog,
   DialogContent,
@@ -261,11 +261,13 @@ export function Shop({
                       {body}
                     </Button>
                   ) : it.dest ? (
-                    <Button asChild variant="outline" className={card}>
-                      <Link {...it.dest} onClick={() => onOpenChange(false)}>
-                        {body}
-                      </Link>
-                    </Button>
+                    <Link
+                      {...it.dest}
+                      onClick={() => onOpenChange(false)}
+                      {...asButton({ variant: 'outline', className: card })}
+                    >
+                      {body}
+                    </Link>
                   ) : (
                     <div className="flex h-full flex-col rounded-lg border opacity-70">{body}</div>
                   )}
