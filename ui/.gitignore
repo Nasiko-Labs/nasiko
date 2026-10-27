@@ -52,6 +52,8 @@ coverage/
 test-results/
 genui-eval/
 playwright-report/
+# The visual sweep's baseline (e2e/sweep.config.ts): taken on the base of a change, never committed.
+e2e/.sweep/
 # Storybook
 storybook-static/
 

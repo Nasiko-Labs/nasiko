@@ -34,6 +34,7 @@
     "knip": "knip",
     "budgets": "node scripts/check-budgets.ts",
     "e2e": "playwright test --config e2e/playwright.config.ts",
+    "sweep": "playwright test --config e2e/sweep.config.ts",
     "storybook": "storybook dev -p 6006 --no-open",
     "build-storybook": "storybook build -o storybook-static",
     "test:stories": "vitest run --config vitest.storybook.config.ts"
