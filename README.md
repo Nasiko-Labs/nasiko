@@ -591,7 +591,7 @@ Python, Rust, Go, or TypeScript. At runtime they must speak
 [A2A](https://github.com/a2aproject/a2a-spec) v1.0 exactly; source deployments also include an
 `AgentCard.json` and `Dockerfile` for metadata and packaging. Nasiko hardcodes the
 `A2A-Version: 1.0` header on every outbound A2A request, so the target agent must accept the v1.0
-wire format. See `[docs/A2A_PROTOCOL.md](docs/A2A_PROTOCOL.md)` for the detail. There is no
+wire format. See [docs/A2A_PROTOCOL.md](docs/A2A_PROTOCOL.md) for the detail. There is no
 proprietary agent format and no SDK to adopt.
 
 This path needs **Rust** to build the CLI from source (it is a separate `cli/` crate).
@@ -990,7 +990,7 @@ docs/           Design docs (architecture, protocol, conventions)
 ## Documentation & Links
 
 - **Official docs**: **[docs.nasiko.com](https://docs.nasiko.com)** — guides, API reference, and concepts
-- **Design docs**: `[docs/](docs/)`: architecture, the A2A protocol, agent lifecycle, MCP Gateway internals, CLI design, networking
+- **Design docs**: [docs/](docs/): the A2A protocol and registry, agent lifecycle, routing, the MCP Gateway, CLI design, API conventions
 - **A2A protocol**: [https://github.com/a2aproject/a2a-spec](https://github.com/a2aproject/a2a-spec)
 - **Rust toolchain**: [https://rustup.rs](https://rustup.rs)
 - **Docker**: [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/)
@@ -1006,10 +1006,10 @@ Questions, ideas, or stuck on setup? Join the community on Discord:
 
 ## Contributing
 
-See `[CONTRIBUTING.md](CONTRIBUTING.md)` for local setup, code conventions, and the PR flow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, code conventions, and the PR flow.
 
 ## License
 
-**Apache-2.0**. See `[LICENSE](LICENSE)`.
+**Apache-2.0**. See [LICENSE](LICENSE).
 
 Built with love by the Nasiko team. Stars, issues, and PRs are always welcome.

@@ -15,7 +15,7 @@ The spec is pull-based: clients fetch cards from well-known URLs or query regist
 1. **All inter-agent communication goes through control plane proxy** (no direct agent-to-agent)
 2. **Agent skills are immutable per deployment** (new skills = new deploy)
 3. **Discovery is by capability/tags** (agents don't need to know other agents by name)
-4. **Agents never learn private IPs of other agents** (only proxy URLs)
+4. **Agents call other agents through the control plane proxy.** Discovery answers include each agent's runtime endpoint, which is reachable only inside the deployment's network
 5. **The registry IS an A2A agent** — agents discover other agents using the same A2A protocol they use for everything else
 
 ## Agent Contract (What We Enforce)
@@ -400,25 +400,23 @@ CREATE TABLE agent_acl (
 
 ## Health & Liveness
 
-Control plane polls every active agent every 30s:
-- `GET {private_url}/.well-known/agent-card.json`
-- If 3 consecutive failures → mark `unhealthy`, exclude from discovery results
-- If VM is terminated → mark `removed`
-- Card content is NOT re-read for skill changes (immutable per deploy)
+Discovery lists only agents whose status is `running` and that are not deleted or platform-internal
+(`server/src/registry_a2a.rs`). Card content is not re-read for skill changes (skills are immutable
+per deploy).
 
 ## Admin/UI Access (Non-A2A, Internal)
 
 The web UI and CLI use standard REST for management operations (not A2A):
 
 ```
-GET    /api/agents                     ← list all agents (with status)
-GET    /api/agents/{id}                ← full agent details
-POST   /api/agents                     ← register/deploy new agent
-PUT    /api/agents/{id}                ← update agent
-DELETE /api/agents/{id}                ← stop and remove agent
+GET    /api/agents                     ← list agents (with status)
+GET    /api/agents/{id}                ← agent details
 POST   /api/agents/upload              ← upload source for a server-side build
-       /api/containers/*               ← container ops (stop, start, restart, scale, logs)
+       /api/agents/{id}/...            ← update, rollback, ownership and lifecycle operations
+       /api/containers/*               ← container operations
 ```
+
+The routes are defined in `server/src/agents/` and `server/src/catalog/`.
 
 These are control plane internal APIs. They don't need to be A2A because they're for platform operators, not agents.
 

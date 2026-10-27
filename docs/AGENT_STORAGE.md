@@ -8,6 +8,10 @@ handles the rest.
 
 ## Three Levels of Persistence
 
+> **Status:** level 1 (context replay) is built. Levels 2 and 3, and the Vector Store and Platform
+> Services sections below, are design proposals and are not implemented yet. For durable per-agent
+> state that exists today, see [Durable state](AGENT_LIFECYCLE.md#durable-state).
+
 ### 1. Context Replay (automatic, zero agent effort)
 
 The control plane proxies all A2A interactions and stores every message

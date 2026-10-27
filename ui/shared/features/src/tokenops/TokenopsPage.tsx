@@ -875,11 +875,8 @@ function FirstRun() {
                 </li>
               </ol>
               <p className="border-t pt-3 text-xs text-pretty">
-                Setup details:{' '}
-                <code className="font-mono">oss/docs/BOOTSTRAP_AND_NETWORKING.md</code> in the
-                nasiko repository (collector, Tempo and Loki wiring). Developing locally? Run{' '}
-                <code className="font-mono">npm run seed:live</code> against your OSS stack, or use
-                mock mode.
+                Developing locally? Run <code className="font-mono">npm run seed:live</code> against
+                your OSS stack, or use mock mode.
               </p>
             </div>
           }

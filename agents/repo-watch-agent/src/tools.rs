@@ -42,7 +42,7 @@ pub fn build_tools() -> (ToolSet, Vec<ToolDefinition>) {
     first, in one section per repo."
 )]
 pub async fn list_commits(
-    /// One or more repos in "owner/name" format, e.g. ["Nasiko-Labs/nasiko-cloud-rs"]. Pass
+    /// One or more repos in "owner/name" format, e.g. ["your-org/service-a"]. Pass
     /// several entries to cover multiple repos in a single call.
     repos: Vec<String>,
     /// ISO-8601 timestamp; only commits after this time are returned.
@@ -87,7 +87,7 @@ pub async fn search_prs(
     the returned parent_hash with read_file to fetch the BEFORE version of a changed file."
 )]
 pub async fn get_commit(
-    /// A single repo in "owner/name" format, e.g. "Nasiko-Labs/nasiko-cloud-rs".
+    /// A single repo in "owner/name" format, e.g. "your-org/service-a".
     repo: String,
     /// Commit hash to inspect. Omit or leave empty for the latest commit on the default branch.
     commit_hash: Option<String>,

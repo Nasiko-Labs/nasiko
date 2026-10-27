@@ -33,7 +33,7 @@ call errors, the pipeline degrades gracefully instead of failing the request.
 
 ## Request Entry Point
 
-**File:** `oss/server/src/router/a2a_dispatch.rs`
+**File:** `server/src/router/a2a_dispatch.rs`
 
 The dispatch handler inspects `metadata.agent_id` in the incoming JSON-RPC request:
 
@@ -58,19 +58,19 @@ of these hold:
 
 - The caller owns the agent (`agents.owner_id`).
 - The agent is public (`agents.is_public`).
-- An `agent_grants` row exists for the caller (user, org_unit, or organization grant).
+- An `agent_grants` row exists for the caller (a user grant).
 - The caller is a superuser (skips all checks).
-- **(EE)** Team/department grants via the org-unit hierarchy.
+- **(Enterprise edition)** Organization and team grants.
 
 Soft-deleted agents are always excluded. The `agent_acl` allowlist table additionally restricts
 which agents can call which other agents during inter-agent routing.
 
-**File:** `oss/server/src/acl.rs` (the enterprise edition layers its grant matrix on top of this
+**File:** `server/src/acl.rs` (the enterprise edition layers its grant matrix on top of this
 through the `AuthService` trait).
 
 ## Stage 1: Vector Semantic Shortlist
 
-**File:** `oss/orchestrator/src/vector_store.rs`
+**File:** `orchestrator/src/vector_store.rs`
 
 **Purpose:** Quickly narrow a large catalog (tens or hundreds of agents) to a small candidate set
 using embedding similarity.
@@ -108,7 +108,7 @@ using embedding similarity.
 
 ## Stage 2: Conversation-Aware Reranking
 
-**File:** `oss/orchestrator/src/reranker.rs`
+**File:** `orchestrator/src/reranker.rs`
 
 **Purpose:** Re-score the shortlist using conversation context so that an ongoing conversation
 biases routing toward the agent that has been handling it.
@@ -140,7 +140,7 @@ shortlist passes through unchanged.
 
 ## Stage 3: LLM Final Selection
 
-**File:** `oss/orchestrator/src/selector.rs`
+**File:** `orchestrator/src/selector.rs`
 
 **Purpose:** Make a definitive, explainable agent selection using an LLM with structured output.
 
@@ -268,7 +268,7 @@ Stage 3 token usage is also written to the `token_usage` table (operation type
 ## Configuration Reference
 
 All values are set via environment variables and read through the `Config` struct in
-`oss/config/src/lib.rs`.
+`config/src/lib.rs`.
 
 | Env Var | Default | Description |
 |---|---|---|
@@ -284,10 +284,8 @@ Session history depth is controlled by `max_router_history_messages` in the conf
 
 ## EE Additions
 
-The enterprise edition supplies its own `RoutingEngine` implementation that wraps
-`OssRoutingEngine`. Currently it delegates directly; a planned enhancement
-(BACKEND-16) will pre-filter candidates via RBAC `can_access_agent()` checks before Stage 3 so
-that the LLM never sees agents the caller cannot reach.
+The enterprise edition can supply its own `RoutingEngine` implementation that wraps
+`OssRoutingEngine`.
 
 ## Direct Agent Path (Bypass Routing)
 
@@ -301,7 +299,7 @@ When `agent_id` is specified in request metadata, routing is skipped entirely:
 
 ## Multi-Agent Flow (MAF) -- Alternative Orchestration
 
-MAF is a separate orchestration mode (`oss/orchestrator/src/maf/`) for pre-planned multi-step
+MAF is a separate orchestration mode (`orchestrator/src/maf/`) for pre-planned multi-step
 workflows. Unlike the routing engine which selects **one** agent per query, MAF executes a
 **sequence** of steps, each assigned to a specific agent:
 

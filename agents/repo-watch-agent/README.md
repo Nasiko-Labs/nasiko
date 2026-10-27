@@ -11,8 +11,8 @@ likely impacted — each backed by evidence (a code-search reference to a change
 structural rule of the repo). Non-risky commits get the lighter window summary.
 
 > What changed in the last 12 hours?
-> What changed in Nasiko-Labs/nasiko-cloud-rs and Nasiko-Labs/nasiko-rs since 2026-07-13T10:00:00Z?
-> Analyze the latest commit in Nasiko-Labs/nasiko-cloud-rs, file by file, and what it impacts.
+> What changed in your-org/service-a and your-org/service-b since 2026-07-13T10:00:00Z?
+> Analyze the latest commit in your-org/service-a, file by file, and what it impacts.
 
 When no repo is named, it falls back to the space-separated watch list in `GITHUB_REPO`.
 
@@ -60,7 +60,7 @@ just release
 nasiko deploy <user>/repo-watch-agent --name repo-watch-agent --port 8000
 nasiko secrets set OPENAI_API_KEY <key> --agent repo-watch-agent
 nasiko secrets set GITHUB_TOKEN <token> --agent repo-watch-agent
-nasiko secrets set GITHUB_REPO Nasiko-Labs/nasiko-cloud-rs --agent repo-watch-agent
+nasiko secrets set GITHUB_REPO your-org/service-a --agent repo-watch-agent
 nasiko secrets set SLACK_BOT_TOKEN <token> --agent repo-watch-agent
 nasiko secrets set SLACK_CHANNEL_ID <channel-id> --agent repo-watch-agent
 nasiko restart repo-watch-agent

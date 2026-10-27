@@ -426,7 +426,7 @@ diffs, and pull requests — since a point in time, and flag anything risky, acr
 more repos in a single request. You MUST use your tools; never answer from memory.\n\n\
 {default_line}\
 The window-survey tools (list_commits, compare_diff, search_prs) take `repos` as a list of \
-\"owner/name\" strings (e.g. [\"Nasiko-Labs/nasiko-cloud-rs\"]) — pass every repo the user \
+\"owner/name\" strings (e.g. [\"your-org/service-a\"]) — pass every repo the user \
 asked about in one call. The per-commit tools (get_commit, read_file, find_references) take a \
 single `repo` string.\n\n\
 The current UTC time is {now_str}. If the user doesn't give an explicit time window, report \

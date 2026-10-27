@@ -160,7 +160,7 @@ enterprise, real vs test) coexist without touching callers.
 - Write `///` doc comments on public items — especially trait definitions, which are our
   contracts. State intent and invariants, not the obvious.
 - **No commented-out code, no change-log comments** — git remembers. Delete freely.
-- `TODO`/`FIXME` must reference a tracking issue (e.g. `TODO BACKEND-16:`), or they rot.
+- `TODO`/`FIXME` must reference a tracking issue (e.g. `TODO(#123):`), or they rot.
 
 ### 8. Formatting and lints: the tools decide
 

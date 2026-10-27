@@ -33,7 +33,7 @@ user ──► /api/orchestrator/a2a ──► agent_proxy writes flows row (use
                                    token_usage row (user_id, session_id, attribution source)
 ```
 
-## Attribution resolution (`oss/llm-router/src/routing/attribution.rs`)
+## Attribution resolution (`llm-router/src/routing/attribution.rs`)
 
 There is exactly one path — **`traceparent`, resolved, or rejected**:
 
