@@ -13,9 +13,11 @@ use std::time::{Duration, Instant};
 
 use super::super::catalog::{self, AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn, subagent_parent};
+use super::super::sanitize::{cache_ttl_within, tool_link};
+use super::{PastSession, SessionSource};
 
-pub const INSTALL_VERSION: u32 = 3;
+pub const INSTALL_VERSION: u32 = 4;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "claude",
     display_name: "Claude Code",
@@ -24,17 +26,133 @@ pub const SPEC: AgentSpec = AgentSpec {
     support: Support::Instrumented,
 };
 
-const HOOK_EVENT: &str = "Stop";
+/// `Stop` ends a session's turn; `SubagentStop` ends a subagent's, which Claude Code keeps in a
+/// transcript of its own (`<session>/subagents/agent-<id>.jsonl`).
+const HOOK_EVENTS: [&str; 2] = ["Stop", SUBAGENT_STOP];
+const SUBAGENT_STOP: &str = "SubagentStop";
 const HOOK_TIMEOUT_SECS: u32 = 10;
+/// Ends the instructions Claude Code puts before a forked subagent's directive.
+const FORK_BOILERPLATE_END: &str = "</fork-boilerplate>";
+/// How long a live capture rereads a transcript whose last turn isn't written completely yet.
+const COMPLETION_WAIT: Duration = Duration::from_secs(3);
 
+/// What a Claude Code hook sends. `session_id` and `transcript_path` are always the main session's;
+/// `SubagentStop` adds the finished subagent's own transcript. An import of a subagent's transcript
+/// replays that same shape.
 #[derive(Debug, Deserialize)]
 struct HookPayload {
     session_id: String,
     transcript_path: PathBuf,
+    #[serde(default)]
+    hook_event_name: Option<String>,
+    #[serde(default)]
+    agent_transcript_path: Option<PathBuf>,
+}
+
+/// What Claude Code records beside a subagent's transcript (`agent-<id>.meta.json`).
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubagentMeta {
+    agent_type: Option<String>,
+    description: Option<String>,
+    tool_use_id: Option<String>,
+    /// The subagent that spawned this one, for a subagent of a subagent.
+    parent_agent_id: Option<String>,
 }
 
 pub fn config_path() -> PathBuf {
     catalog::home().join(".claude")
+}
+
+/// Every session Claude Code kept (`projects/<project>/<session>.jsonl`) and every subagent's
+/// (`projects/<project>/<session>/subagents/agent-<id>.jsonl`), oldest first, as the payload its Stop or
+/// SubagentStop hook would carry, so an import replays them through the hook's own capture.
+pub fn past_sessions() -> Vec<PastSession> {
+    past_sessions_in(&config_path().join("projects"))
+}
+
+fn past_sessions_in(projects: &Path) -> Vec<PastSession> {
+    let Ok(dirs) = std::fs::read_dir(projects) else {
+        return Vec::new();
+    };
+    let mut sessions: Vec<(std::time::SystemTime, PathBuf)> = dirs
+        .flatten()
+        .filter_map(|project| std::fs::read_dir(project.path()).ok())
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .flat_map(|path| {
+            let subagents = subagent_transcripts(&path.join("subagents"));
+            std::iter::once(path).chain(subagents)
+        })
+        .filter(|path| is_transcript(path))
+        .filter_map(|path| Some((path.metadata().ok()?.modified().ok()?, path)))
+        .collect();
+    sessions.sort();
+    sessions
+        .into_iter()
+        .filter_map(|(modified, path)| {
+            Some(PastSession {
+                key: path.to_string_lossy().into_owned(),
+                last_active: modified.into(),
+                source: SessionSource::Payload(past_payload(&path)?.to_string()),
+            })
+        })
+        .collect()
+}
+
+fn is_transcript(path: &Path) -> bool {
+    path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl")
+}
+
+/// The hook payload that would report the transcript at `path`: its session's Stop, or for a
+/// subagent's transcript, the SubagentStop of the session it belongs to.
+fn past_payload(path: &Path) -> Option<Value> {
+    let in_subagents = path
+        .parent()
+        .is_some_and(|dir| dir.file_name().is_some_and(|name| name == "subagents"));
+    if !in_subagents {
+        return Some(json!({
+            "session_id": path.file_stem()?.to_str()?,
+            "transcript_path": path,
+            "hook_event_name": "Stop",
+        }));
+    }
+    let session_dir = path.parent()?.parent()?;
+    let session_id = session_dir.file_name()?.to_str()?;
+    Some(json!({
+        "session_id": session_id,
+        "transcript_path": session_dir.with_extension("jsonl"),
+        "hook_event_name": SUBAGENT_STOP,
+        "agent_transcript_path": path,
+    }))
+}
+
+/// The subagent transcripts (`agent-*.jsonl`) in a session's `subagents/` folder; none when it has
+/// no such folder.
+fn subagent_transcripts(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            is_transcript(path)
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("agent-"))
+        })
+        .collect();
+    paths.sort();
+    paths
+}
+
+/// A subagent's own session id: its transcript's name (`agent-<id>`) within the session that ran it.
+/// Stable across reads, and never the parent's.
+fn subagent_session_id(parent_session_id: &str, transcript_stem: &str) -> String {
+    format!("{parent_session_id}:{transcript_stem}")
 }
 
 pub fn install() -> Result<(PathBuf, PathBuf)> {
@@ -56,12 +174,19 @@ pub fn installed_version() -> Option<u32> {
     let version = launcher::installed_version(&config_path())?;
     let expected_command = hook_command(&launcher::script_path(&config_path()));
     let settings = read_settings(&settings_path()).ok()?;
-    settings["hooks"][HOOK_EVENT]
-        .as_array()?
+    HOOK_EVENTS
         .iter()
-        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
-        .any(|hook| is_current_hook(hook, &expected_command))
+        .all(|event| has_current_hook(&settings, event, &expected_command))
         .then_some(version)
+}
+
+fn has_current_hook(settings: &Value, event: &str, expected_command: &str) -> bool {
+    settings["hooks"][event]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+        .any(|hook| is_current_hook(hook, expected_command))
 }
 
 fn settings_path() -> PathBuf {
@@ -70,16 +195,18 @@ fn settings_path() -> PathBuf {
 
 fn register_settings(path: &Path, script: &Path) -> Result<()> {
     let mut settings = read_settings(path)?;
-    let mut groups = hook_groups_without_nasiko(&settings);
-    groups.push(json!({
-        "matcher": "*",
-        "hooks": [{
-            "type": "command",
-            "command": hook_command(script),
-            "timeout": HOOK_TIMEOUT_SECS,
-        }],
-    }));
-    set_hook_groups(&mut settings, groups);
+    for event in HOOK_EVENTS {
+        let mut groups = hook_groups_without_nasiko(&settings, event);
+        groups.push(json!({
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "command": hook_command(script),
+                "timeout": HOOK_TIMEOUT_SECS,
+            }],
+        }));
+        set_hook_groups(&mut settings, event, groups);
+    }
     write_settings(path, &settings)
 }
 
@@ -88,13 +215,15 @@ fn deregister_settings(path: &Path) -> Result<()> {
         return Ok(());
     }
     let mut settings = read_settings(path)?;
-    let groups = hook_groups_without_nasiko(&settings);
-    set_hook_groups(&mut settings, groups);
+    for event in HOOK_EVENTS {
+        let groups = hook_groups_without_nasiko(&settings, event);
+        set_hook_groups(&mut settings, event, groups);
+    }
     write_settings(path, &settings)
 }
 
-fn hook_groups_without_nasiko(settings: &Value) -> Vec<Value> {
-    let Some(groups) = settings["hooks"][HOOK_EVENT].as_array() else {
+fn hook_groups_without_nasiko(settings: &Value, event: &str) -> Vec<Value> {
+    let Some(groups) = settings["hooks"][event].as_array() else {
         return Vec::new();
     };
     groups
@@ -133,7 +262,7 @@ fn is_current_hook(hook: &Value, expected_command: &str) -> bool {
     hook["type"] == "command" && hook["command"].as_str() == Some(expected_command)
 }
 
-fn set_hook_groups(settings: &mut Value, groups: Vec<Value>) {
+fn set_hook_groups(settings: &mut Value, event: &str, groups: Vec<Value>) {
     if !settings.is_object() {
         *settings = json!({});
     }
@@ -141,12 +270,11 @@ fn set_hook_groups(settings: &mut Value, groups: Vec<Value>) {
         settings["hooks"] = json!({});
     }
     if groups.is_empty() {
-        settings["hooks"]
-            .as_object_mut()
-            .unwrap()
-            .remove(HOOK_EVENT);
+        if let Some(hooks) = settings["hooks"].as_object_mut() {
+            hooks.remove(event);
+        }
     } else {
-        settings["hooks"][HOOK_EVENT] = Value::Array(groups);
+        settings["hooks"][event] = Value::Array(groups);
     }
 }
 
@@ -176,34 +304,131 @@ fn write_settings(path: &Path, settings: &Value) -> Result<()> {
         .with_context(|| format!("failed to write {}", path.display()))
 }
 
+/// The transcript the payload names: the session's, or on `SubagentStop` the finished subagent's.
 pub fn snapshot(raw: &str, report_deadline: Instant) -> Result<SessionSnapshot> {
-    let payload: HookPayload = serde_json::from_str(raw).with_context(|| {
-        format!(
-            "Claude hook payload is not expected JSON; got: {}",
-            preview(raw)
-        )
-    })?;
-    let wait_deadline = (Instant::now() + Duration::from_secs(3)).min(report_deadline);
+    let payload = hook_payload(raw)?;
+    match &payload.agent_transcript_path {
+        Some(path) => until_complete(report_deadline, || read_subagent(&payload.session_id, path)),
+        None => until_complete(report_deadline, || read_transcript(&payload)),
+    }
+}
+
+/// Every session a live hook has finished turns in. `Stop`: the session, then each of its subagents
+/// (a subagent that finished earlier is re-read, and the watermarks keep its turns from being queued
+/// twice). `SubagentStop`: the subagent that finished, or every subagent when the payload doesn't say
+/// which; the session's own turn is still running then, so it isn't read. A subagent that can't be
+/// read is an error of its own and doesn't cost the others.
+pub fn hook_snapshots(raw: &str, report_deadline: Instant) -> Result<Vec<Result<SessionSnapshot>>> {
+    let payload = hook_payload(raw)?;
+    let is_subagent_stop = payload.hook_event_name.as_deref() == Some(SUBAGENT_STOP);
+    if is_subagent_stop && payload.agent_transcript_path.is_some() {
+        return Ok(vec![snapshot(raw, report_deadline)]);
+    }
+    let session =
+        (!is_subagent_stop).then(|| until_complete(report_deadline, || read_transcript(&payload)));
+    let subagents = subagent_transcripts(&subagents_dir(&payload))
+        .into_iter()
+        .map(|path| read_subagent(&payload.session_id, &path));
+    Ok(session.into_iter().chain(subagents).collect())
+}
+
+/// [`snapshot`] without the wait: one read, for a session imported long after it was written.
+pub fn snapshot_once(raw: &str) -> Result<SessionSnapshot> {
+    let payload = hook_payload(raw)?;
+    match &payload.agent_transcript_path {
+        Some(path) => read_subagent(&payload.session_id, path),
+        None => read_transcript(&payload),
+    }
+}
+
+/// `read` until the transcript's last turn is complete or the wait is over: a hook can fire before
+/// Claude Code has written the turn's last record.
+fn until_complete(
+    report_deadline: Instant,
+    read: impl Fn() -> Result<SessionSnapshot>,
+) -> Result<SessionSnapshot> {
+    let wait_deadline = (Instant::now() + COMPLETION_WAIT).min(report_deadline);
     loop {
-        let content = std::fs::read_to_string(&payload.transcript_path).with_context(|| {
-            format!(
-                "failed to read transcript {}",
-                payload.transcript_path.display()
-            )
-        })?;
-        let turns = turns_from_lines(&content);
-        if turns
+        let snapshot = read()?;
+        if snapshot
+            .turns
             .last()
             .is_some_and(|turn| !turn.is_empty() && turn.response.is_some())
             || Instant::now() >= wait_deadline
         {
-            return Ok(SessionSnapshot {
-                title: session_title(&content, &payload.session_id),
-                session_id: payload.session_id,
-                turns,
-            });
+            return Ok(snapshot);
         }
         std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `<project>/<session>/subagents`, beside the session's `<project>/<session>.jsonl`.
+fn subagents_dir(payload: &HookPayload) -> PathBuf {
+    payload
+        .transcript_path
+        .with_file_name(&payload.session_id)
+        .join("subagents")
+}
+
+fn hook_payload(raw: &str) -> Result<HookPayload> {
+    serde_json::from_str(raw).with_context(|| {
+        format!(
+            "Claude hook payload is not expected JSON; got: {}",
+            preview(raw)
+        )
+    })
+}
+
+fn read_transcript(payload: &HookPayload) -> Result<SessionSnapshot> {
+    let content = std::fs::read_to_string(&payload.transcript_path).with_context(|| {
+        format!(
+            "failed to read transcript {}",
+            payload.transcript_path.display()
+        )
+    })?;
+    Ok(SessionSnapshot {
+        title: session_title(&content, &payload.session_id),
+        session_id: payload.session_id.clone(),
+        turns: turns_from_lines(&content),
+        parent: None,
+    })
+}
+
+/// A subagent's transcript as a session of its own, linked to the session (or, for a subagent a
+/// subagent spawned, the subagent) that ran it. Its records are all sidechain records, and are its turns.
+fn read_subagent(parent_session_id: &str, path: &Path) -> Result<SessionSnapshot> {
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .with_context(|| format!("subagent transcript {} has no name", path.display()))?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read transcript {}", path.display()))?;
+    let meta = subagent_meta(&path.with_extension("meta.json"))?;
+    let session_id = subagent_session_id(parent_session_id, stem);
+    let parent_id = meta.parent_agent_id.as_deref().map_or_else(
+        || parent_session_id.to_string(),
+        |agent| subagent_session_id(parent_session_id, &format!("agent-{agent}")),
+    );
+    Ok(SessionSnapshot {
+        parent: subagent_parent(
+            &session_id,
+            &parent_id,
+            meta.tool_use_id.as_deref(),
+            meta.agent_type.as_deref(),
+        ),
+        title: meta.description.as_deref().and_then(nonempty),
+        turns: subagent_turns_from_lines(&content),
+        session_id,
+    })
+}
+
+/// A subagent's `agent-<id>.meta.json`; none written yet is no metadata, one that isn't JSON an error.
+fn subagent_meta(path: &Path) -> Result<SubagentMeta> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .with_context(|| format!("{} is not the expected JSON", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SubagentMeta::default()),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
 }
 
@@ -233,7 +458,45 @@ fn session_title(content: &str, session_id: &str) -> Option<String> {
     custom.or(generated)
 }
 
+/// The turns in a transcript, each tool linked exactly only to an LLM call its turn has: a tool whose
+/// call made no LLM call of its own (no usage, say) is linked to the turn instead.
 fn turns_from_lines(content: &str) -> Vec<Turn> {
+    parse_turns(content, false)
+        .into_iter()
+        .map(with_known_tool_links)
+        .collect()
+}
+
+/// [`turns_from_lines`] for a subagent's own transcript, where every record is a sidechain record and
+/// the sidechain is the conversation.
+fn subagent_turns_from_lines(content: &str) -> Vec<Turn> {
+    parse_turns(content, true)
+        .into_iter()
+        .map(with_known_tool_links)
+        .collect()
+}
+
+fn with_known_tool_links(turn: Turn) -> Turn {
+    let calls: HashSet<String> = turn.calls.iter().map(|call| call.uuid.clone()).collect();
+    let tool_calls = turn
+        .tool_calls
+        .into_iter()
+        .map(|tool| {
+            let (association, model_call_id) =
+                tool_link(tool.association, tool.model_call_id.clone(), &calls);
+            ToolCall {
+                association,
+                model_call_id,
+                ..tool
+            }
+        })
+        .collect();
+    Turn { tool_calls, ..turn }
+}
+
+/// `sidechain_is_own`: the transcript is a subagent's, so its sidechain records answer its prompts. In a
+/// session's transcript they are a subagent's, and never answer the session's turn.
+fn parse_turns(content: &str, sidechain_is_own: bool) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
     let mut owners: HashMap<String, usize> = HashMap::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -246,9 +509,18 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
     let mut pending_assistants: Vec<PendingAssistant> = Vec::new();
 
     for (line_index, line) in content.lines().enumerate() {
-        let Some(entry) = parse_entry(line) else {
+        let Some(mut entry) = parse_entry(line) else {
             continue;
         };
+        if sidechain_is_own {
+            entry.is_sidechain = false;
+            // A forked subagent's transcript opens with what it inherited from its parent, the
+            // parent's own LLM call included: that is the parent's, so nothing before its own prompt
+            // counts.
+            if turns.is_empty() && entry.kind == "assistant" {
+                continue;
+            }
+        }
         if matches!(entry.kind.as_str(), "ai-title" | "custom-title") {
             continue;
         }
@@ -335,7 +607,9 @@ fn turns_from_lines(content: &str) -> Vec<Turn> {
             continue;
         }
 
-        if entry.kind == "user" {
+        // A forked subagent's prompt arrives beside the result of the parent's call that forked it.
+        let is_fork_prompt = sidechain_is_own && turns.is_empty() && entry.user_prompt().is_some();
+        if entry.kind == "user" && !is_fork_prompt {
             let results = entry.tool_results();
             if !results.is_empty() {
                 if let Some(owner) = parent_owner {
@@ -690,7 +964,11 @@ impl Entry {
             }
             parts.join("\n")
         };
-        let text = text.trim();
+        // A fork's prompt is its directive; the boilerplate before it is the same for every fork.
+        let text = text
+            .split_once(FORK_BOILERPLATE_END)
+            .map_or(text.as_str(), |(_, directive)| directive)
+            .trim();
         let internal = text.starts_with("<command-") || text.starts_with("<local-command-");
         (!text.is_empty() && !internal).then(|| text.to_string())
     }
@@ -705,6 +983,17 @@ impl Entry {
         {
             return None;
         }
+        let (cache_creation_5m_tokens, cache_creation_1h_tokens) = cache_ttl_within(
+            usage.cache_creation_input_tokens,
+            usage
+                .cache_creation
+                .as_ref()
+                .and_then(|c| c.ephemeral_5m_input_tokens),
+            usage
+                .cache_creation
+                .as_ref()
+                .and_then(|c| c.ephemeral_1h_input_tokens),
+        );
         Some(LlmCall {
             uuid: self.call_identity()?,
             provider: message
@@ -721,14 +1010,8 @@ impl Entry {
                 version: 2,
                 request_id: self.request_id.clone(),
                 message_id: message.id.clone(),
-                cache_creation_5m_tokens: usage
-                    .cache_creation
-                    .as_ref()
-                    .and_then(|c| c.ephemeral_5m_input_tokens),
-                cache_creation_1h_tokens: usage
-                    .cache_creation
-                    .as_ref()
-                    .and_then(|c| c.ephemeral_1h_input_tokens),
+                cache_creation_5m_tokens,
+                cache_creation_1h_tokens,
                 speed: usage.speed.clone(),
                 service_tier: usage.service_tier.clone(),
                 inference_geo: usage.inference_geo.clone(),
@@ -864,6 +1147,266 @@ fn nonempty(text: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn past_sessions_are_each_projects_transcripts_as_hook_payloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let projects = dir.path();
+        for path in [
+            "p1/a.jsonl",
+            "p1/notes.txt",
+            "p2/b.jsonl",
+            "p1/a/subagents/agent-c.jsonl",
+            "p1/a/subagents/agent-c.meta.json",
+            "p1/a/subagents/notes.jsonl",
+        ] {
+            let path = projects.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}\n").unwrap();
+        }
+        let sessions = past_sessions_in(projects);
+        let payloads: Vec<Value> = sessions
+            .iter()
+            .map(|session| match &session.source {
+                SessionSource::Payload(raw) => serde_json::from_str(raw).unwrap(),
+                SessionSource::Load(_) => panic!("Claude sessions replay the hook payload"),
+            })
+            .collect();
+        let mut keys: Vec<(String, &str)> = sessions
+            .iter()
+            .zip(&payloads)
+            .map(|(session, p)| {
+                let relative = Path::new(&session.key).strip_prefix(projects).unwrap();
+                (
+                    relative.to_string_lossy().into_owned(),
+                    p["session_id"].as_str().unwrap(),
+                )
+            })
+            .collect();
+        keys.sort();
+        // Each session's transcript, and each subagent's transcript as a session of its own.
+        assert_eq!(
+            keys,
+            [
+                ("p1/a.jsonl".to_string(), "a"),
+                ("p1/a/subagents/agent-c.jsonl".to_string(), "a"),
+                ("p2/b.jsonl".to_string(), "b"),
+            ]
+        );
+        for (session, p) in sessions.iter().zip(&payloads) {
+            let parsed: HookPayload = serde_json::from_value(p.clone()).unwrap();
+            let read = parsed
+                .agent_transcript_path
+                .as_ref()
+                .unwrap_or(&parsed.transcript_path);
+            assert!(read.is_file());
+            assert_eq!(session.key, read.to_string_lossy());
+            assert!(session.last_active > DateTime::UNIX_EPOCH);
+            if parsed.agent_transcript_path.is_some() {
+                assert_eq!(parsed.hook_event_name.as_deref(), Some(SUBAGENT_STOP));
+                assert_eq!(parsed.transcript_path, projects.join("p1/a.jsonl"));
+            }
+        }
+        assert!(past_sessions_in(&projects.join("missing")).is_empty());
+    }
+
+    /// A session with one subagent that spawned another, as Claude Code writes them: the subagents'
+    /// records are all sidechain records.
+    fn session_with_subagents(projects: &Path) -> PathBuf {
+        let main = projects.join("p/s.jsonl");
+        let subagents = projects.join("p/s/subagents");
+        std::fs::create_dir_all(&subagents).unwrap();
+        std::fs::write(
+            &main,
+            concat!(
+                "{\"type\":\"user\",\"uuid\":\"u\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:00Z\",\"message\":{\"content\":\"explore\"}}\n",
+                "{\"type\":\"assistant\",\"uuid\":\"a\",\"parentUuid\":\"u\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:09Z\",\"message\":{\"model\":\"m\",\"stop_reason\":\"end_turn\",\"content\":\"done\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2}}}\n",
+            ),
+        )
+        .unwrap();
+        for (agent, prompt) in [("a1", "look around"), ("a2", "look deeper")] {
+            std::fs::write(
+                subagents.join(format!("agent-{agent}.jsonl")),
+                format!(
+                    concat!(
+                        "{{\"type\":\"user\",\"uuid\":\"{a}-u\",\"isSidechain\":true,\"agentId\":\"{a}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{{\"role\":\"user\",\"content\":\"{p}\"}}}}\n",
+                        "{{\"type\":\"assistant\",\"uuid\":\"{a}-t\",\"parentUuid\":\"{a}-u\",\"isSidechain\":true,\"agentId\":\"{a}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:02Z\",\"message\":{{\"model\":\"m\",\"stop_reason\":\"tool_use\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"{a}-tool\",\"name\":\"Read\",\"input\":{{}}}}],\"usage\":{{\"input_tokens\":5,\"output_tokens\":1}}}}}}\n",
+                        "{{\"type\":\"user\",\"uuid\":\"{a}-r\",\"parentUuid\":\"{a}-t\",\"isSidechain\":true,\"agentId\":\"{a}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:03Z\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"{a}-tool\",\"content\":\"ok\"}}]}}}}\n",
+                        "{{\"type\":\"assistant\",\"uuid\":\"{a}-f\",\"parentUuid\":\"{a}-r\",\"isSidechain\":true,\"agentId\":\"{a}\",\"sessionId\":\"s\",\"timestamp\":\"2026-01-01T00:00:04Z\",\"message\":{{\"model\":\"m\",\"stop_reason\":\"end_turn\",\"content\":\"found it\",\"usage\":{{\"input_tokens\":7,\"output_tokens\":3}}}}}}\n",
+                    ),
+                    a = agent,
+                    p = prompt,
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            subagents.join("agent-a1.meta.json"),
+            r#"{"agentType":"Explore","description":"Look around","toolUseId":"toolu_1","spawnDepth":1}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            subagents.join("agent-a2.meta.json"),
+            r#"{"agentType":"Explore","description":"Look deeper","toolUseId":"toolu_2","parentAgentId":"a1","spawnDepth":2}"#,
+        )
+        .unwrap();
+        main
+    }
+
+    #[test]
+    fn a_subagent_transcript_is_its_own_session_linked_to_the_one_that_spawned_it() {
+        let dir = tempfile::tempdir().unwrap();
+        session_with_subagents(dir.path());
+        let mut snapshots: Vec<SessionSnapshot> = past_sessions_in(dir.path())
+            .into_iter()
+            .map(|session| match session.source {
+                SessionSource::Payload(raw) => snapshot_once(&raw).unwrap(),
+                SessionSource::Load(_) => panic!("Claude sessions replay the hook payload"),
+            })
+            .collect();
+        snapshots.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+
+        let ids: Vec<&str> = snapshots.iter().map(|s| s.session_id.as_str()).collect();
+        assert_eq!(ids, ["s", "s:agent-a1", "s:agent-a2"]);
+        let (session, first, nested) = (&snapshots[0], &snapshots[1], &snapshots[2]);
+        assert!(session.parent.is_none());
+        // The session's own turn holds only its own call: the subagents' usage is theirs.
+        assert_eq!(session.turns[0].calls.len(), 1);
+
+        let parent = first.parent.as_ref().unwrap();
+        assert_eq!(parent.source_id, "s");
+        assert_eq!(parent.tool_call_id.as_deref(), Some("toolu_1"));
+        assert_eq!(parent.agent_type.as_deref(), Some("Explore"));
+        assert_eq!(first.title.as_deref(), Some("Look around"));
+        // Sidechain records are the subagent's conversation: its turn is complete and answered.
+        let turn = &first.turns[0];
+        assert_eq!(turn.uuid, "a1-u");
+        assert_eq!(turn.prompt, "look around");
+        assert_eq!(turn.response.as_deref(), Some("found it"));
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(
+            turn.tool_calls[0].status,
+            CodingAgentToolCallStatus::Succeeded
+        );
+
+        let parent = nested.parent.as_ref().unwrap();
+        assert_eq!(parent.source_id, "s:agent-a1");
+        assert_eq!(parent.tool_call_id.as_deref(), Some("toolu_2"));
+
+        for snapshot in &snapshots {
+            let event =
+                super::super::super::report::canonical_event_for_test(snapshot, &snapshot.turns[0]);
+            assert_eq!(event.validate(), Ok(()));
+            assert_eq!(event.session.parent, snapshot.parent);
+        }
+    }
+
+    #[test]
+    fn a_forked_subagent_counts_from_its_own_directive_not_the_parents_inherited_call() {
+        let input = r#"
+{"type":"fork-context-ref","parentSessionId":"s","parentLastUuid":"p9","contextLength":3}
+{"type":"assistant","uuid":"inherited","isSidechain":true,"requestId":"parent-request","timestamp":"2026-01-01T00:00:00Z","message":{"id":"parent-message","model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_fork","name":"Agent","input":{}}],"usage":{"input_tokens":900,"output_tokens":90}}}
+{"type":"user","uuid":"u","parentUuid":"inherited","isSidechain":true,"timestamp":"2026-01-01T00:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_fork","content":[{"type":"text","text":"Fork started"}]},{"type":"text","text":"<fork-boilerplate>\nYou are a worker fork.\n</fork-boilerplate>\n\nYour directive: check the limits"}]}}
+{"type":"assistant","uuid":"a","parentUuid":"u","isSidechain":true,"requestId":"own","timestamp":"2026-01-01T00:00:02Z","message":{"id":"own-message","model":"m","stop_reason":"end_turn","content":"limits checked","usage":{"input_tokens":5,"output_tokens":2}}}
+"#;
+        let turns = subagent_turns_from_lines(input);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].prompt, "Your directive: check the limits");
+        assert_eq!(turns[0].response.as_deref(), Some("limits checked"));
+        assert_eq!(turns[0].calls.len(), 1);
+        assert_eq!(turns[0].calls[0].input_tokens, 5);
+    }
+
+    #[test]
+    fn sidechain_records_in_a_sessions_own_transcript_never_answer_its_turn() {
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":true,"timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"end_turn","content":"sidechain","usage":{"input_tokens":1,"output_tokens":2}}}
+"#;
+        assert_eq!(turns_from_lines(input)[0].response, None);
+        assert_eq!(
+            subagent_turns_from_lines(input)[0].response.as_deref(),
+            Some("sidechain")
+        );
+    }
+
+    #[test]
+    fn stop_reports_the_session_and_every_subagent_and_subagent_stop_only_subagents() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = session_with_subagents(dir.path());
+        let ids = |raw: Value| -> Vec<String> {
+            let mut ids: Vec<String> = hook_snapshots(&raw.to_string(), Instant::now())
+                .unwrap()
+                .into_iter()
+                .map(|snapshot| snapshot.unwrap().session_id)
+                .collect();
+            ids.sort();
+            ids
+        };
+
+        let stop = json!({"session_id": "s", "transcript_path": main, "hook_event_name": "Stop"});
+        assert_eq!(ids(stop), ["s", "s:agent-a1", "s:agent-a2"]);
+
+        // The session's turn is still running at SubagentStop: only subagents are read.
+        let any_subagent =
+            json!({"session_id": "s", "transcript_path": main, "hook_event_name": SUBAGENT_STOP});
+        assert_eq!(ids(any_subagent), ["s:agent-a1", "s:agent-a2"]);
+
+        let one_subagent = json!({
+            "session_id": "s",
+            "transcript_path": main,
+            "hook_event_name": SUBAGENT_STOP,
+            "agent_id": "a2",
+            "agent_transcript_path": dir.path().join("p/s/subagents/agent-a2.jsonl"),
+        });
+        let snapshots = hook_snapshots(&one_subagent.to_string(), Instant::now()).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        let snapshot = snapshots.into_iter().next().unwrap().unwrap();
+        assert_eq!(snapshot.session_id, "s:agent-a2");
+        assert_eq!(snapshot.parent.unwrap().source_id, "s:agent-a1");
+    }
+
+    #[test]
+    fn a_session_without_subagents_reports_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        std::fs::write(&path, "").unwrap();
+        let raw = json!({"session_id": "s", "transcript_path": path, "hook_event_name": "Stop"});
+        let snapshots = hook_snapshots(&raw.to_string(), Instant::now()).unwrap();
+        assert_eq!(snapshots.len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_subagent_metadata_file_is_an_error_for_that_subagent_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let main = session_with_subagents(dir.path());
+        std::fs::write(dir.path().join("p/s/subagents/agent-a2.meta.json"), "{oops").unwrap();
+        let raw = json!({"session_id": "s", "transcript_path": main, "hook_event_name": "Stop"});
+        let snapshots = hook_snapshots(&raw.to_string(), Instant::now()).unwrap();
+        assert_eq!(snapshots.len(), 3);
+        assert_eq!(snapshots.iter().filter(|s| s.is_err()).count(), 1);
+    }
+
+    #[test]
+    fn a_past_session_is_read_once_without_waiting_for_an_unfinished_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.jsonl");
+        // A prompt with no answer: a live hook would wait for one.
+        std::fs::write(
+            &path,
+            r#"{"type":"user","uuid":"u1","sessionId":"s","timestamp":"2026-10-01T10:00:00Z","message":{"role":"user","content":"Hi"}}"#,
+        )
+        .unwrap();
+        let raw = serde_json::json!({"session_id": "s", "transcript_path": path}).to_string();
+
+        let started = Instant::now();
+        let snapshot = snapshot_once(&raw).unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert_eq!(snapshot.session_id, "s");
+        assert!(snapshot.turns.iter().all(|turn| turn.response.is_none()));
+    }
+
     const USAGE: &str = r#""usage":{"input_tokens":1,"output_tokens":2}"#;
 
     #[test]
@@ -963,8 +1506,8 @@ mod tests {
     }
 
     #[test]
-    fn v3_hook_registration_is_idempotent_and_preserves_foreign_hooks() {
-        assert_eq!(INSTALL_VERSION, 3);
+    fn v4_hook_registration_is_idempotent_and_preserves_foreign_hooks() {
+        assert_eq!(INSTALL_VERSION, 4);
         let foreign = json!({
             "matcher": "*",
             "hooks": [{"type": "command", "command": "echo other"}]
@@ -973,10 +1516,47 @@ mod tests {
             "matcher": "*",
             "hooks": [{"type": "command", "command": "bash '/tmp/nasiko-session-report.sh'"}]
         });
-        let settings = json!({"hooks": {HOOK_EVENT: [foreign, nasiko]}});
-        let groups = hook_groups_without_nasiko(&settings);
+        let settings = json!({"hooks": {"Stop": [foreign, nasiko]}});
+        let groups = hook_groups_without_nasiko(&settings, "Stop");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0]["hooks"][0]["command"], "echo other");
+    }
+
+    #[test]
+    fn registration_hooks_stop_and_subagent_stop_and_removal_clears_both() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = dir.path().join("settings.json");
+        let script = dir.path().join("hooks").join(launcher::SCRIPT_NAME);
+        std::fs::write(
+            &settings,
+            r#"{"hooks":{"SubagentStop":[{"matcher":"*","hooks":[{"type":"command","command":"echo other"}]}]}}"#,
+        )
+        .unwrap();
+
+        register_settings(&settings, &script).unwrap();
+        register_settings(&settings, &script).unwrap();
+
+        let registered = read_settings(&settings).unwrap();
+        let command = hook_command(&script);
+        for event in HOOK_EVENTS {
+            assert!(has_current_hook(&registered, event, &command), "{event}");
+            let ours = registered["hooks"][event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|group| group["hooks"].as_array().unwrap())
+                .filter(|hook| is_nasiko_hook(hook))
+                .count();
+            assert_eq!(ours, 1, "{event} is registered once");
+        }
+
+        deregister_settings(&settings).unwrap();
+        let removed = read_settings(&settings).unwrap();
+        assert!(removed["hooks"].get("Stop").is_none());
+        assert_eq!(
+            removed["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
+            "echo other"
+        );
     }
 
     #[test]
@@ -1180,5 +1760,50 @@ mod tests {
         let turn = &turns_from_lines(input)[0];
 
         assert_eq!(turn.calls[0].started_at, turn.calls[0].ended_at);
+    }
+
+    #[test]
+    fn cache_ttl_counts_above_the_aggregate_are_clamped_into_it() {
+        // Seen in a real transcript: a TTL split that adds up to more than the cache write billed.
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","requestId":"r","timestamp":"2026-01-01T00:00:01Z","message":{"id":"m","model":"claude-test","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":100,"cache_creation":{"ephemeral_5m_input_tokens":80,"ephemeral_1h_input_tokens":70}}}}
+"#;
+        let call = &turns_from_lines(input)[0].calls[0];
+        let accounting = call.accounting.as_ref().unwrap();
+
+        assert_eq!(call.cache_creation_tokens, 100);
+        assert_eq!(
+            (
+                accounting.cache_creation_5m_tokens,
+                accounting.cache_creation_1h_tokens
+            ),
+            (Some(30), Some(70))
+        );
+    }
+
+    #[test]
+    fn a_tool_whose_llm_call_has_no_usage_is_linked_to_the_turn() {
+        // The tool_use record carries no usage, so it makes no LLM call for the tool to point at.
+        let input = r#"
+{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{"content":"inspect"}}
+{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{"model":"m","stop_reason":"tool_use","content":[{"type":"tool_use","id":"tool-1","name":"Read","input":{}}]}}
+{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}]}}
+{"type":"assistant","uuid":"a2","parentUuid":"r1","timestamp":"2026-01-01T00:00:03Z","message":{"model":"m","stop_reason":"end_turn","content":"done","usage":{"input_tokens":1,"output_tokens":1}}}
+"#;
+        let turn = &turns_from_lines(input)[0];
+        let tool = &turn.tool_calls[0];
+
+        assert_eq!(turn.calls.len(), 1);
+        assert_eq!(tool.association, CodingAgentToolAssociation::Turn);
+        assert_eq!(tool.model_call_id, None);
+        let snapshot = SessionSnapshot {
+            session_id: "s".into(),
+            title: None,
+            turns: vec![turn.clone()],
+            parent: None,
+        };
+        let event = super::super::super::report::canonical_event_for_test(&snapshot, turn);
+        assert_eq!(event.validate(), Ok(()));
     }
 }

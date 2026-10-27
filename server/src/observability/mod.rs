@@ -10,6 +10,7 @@ pub mod savings_factors;
 pub mod service;
 pub mod session_resolver;
 pub mod sessions_sql;
+pub mod subagents_sql;
 pub mod trace_materializer;
 
 pub use routes::{protected_router, router};

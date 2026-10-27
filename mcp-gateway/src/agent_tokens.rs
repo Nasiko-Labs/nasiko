@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn each_scope_lives_in_its_own_table() {
-        // Must match oss/migrations/0008_mcp_agent_auth.sql and 0062_agent_state_tokens.sql.
+        // Must match oss/migrations/0008_mcp_agent_auth.sql and 0072_agent_state_tokens.sql.
         // The gateway table is the one servers from before the state API use, unchanged.
         assert_eq!(TokenScope::Gateway.table(), "agent_gateway_tokens");
         assert_eq!(TokenScope::State.table(), "agent_state_tokens");

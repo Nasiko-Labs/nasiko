@@ -100,7 +100,7 @@ pub struct SessionProgress {
 
 impl SessionLock {
     #[cfg(test)]
-    fn acquire(lock_path: &Path, watermark_path: PathBuf) -> Result<Self> {
+    pub(super) fn acquire(lock_path: &Path, watermark_path: PathBuf) -> Result<Self> {
         create_parent_dir(lock_path)?;
         let file = OpenOptions::new()
             .create(true)

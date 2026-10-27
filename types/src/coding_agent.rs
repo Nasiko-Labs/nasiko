@@ -77,6 +77,22 @@ pub struct CodingAgentSession {
     /// External session title; only allowed with content capture and preserved verbatim.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// Set when this session is a subagent another session of the same agent spawned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<CodingAgentSessionParent>,
+}
+
+/// The session that spawned a subagent session, as the coding agent identifies it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingAgentSessionParent {
+    /// The parent's agent-supplied session id; scoped by the server like `CodingAgentSession::id`.
+    pub source_id: String,
+    /// The parent's tool call that spawned this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// The subagent's kind as the coding agent names it (e.g. "Explore").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -197,6 +213,39 @@ pub struct CodingAgentEventV1 {
     pub capture_policy: CapturePolicy,
 }
 
+fn validate_parent(parent: &CodingAgentSessionParent, child_source_id: &str) -> Result<(), String> {
+    if parent.source_id.trim().is_empty() {
+        return Err("session.parent.source_id must not be empty".into());
+    }
+    if parent.source_id.len() > CODING_AGENT_ID_MAX_BYTES {
+        return Err(format!(
+            "session.parent.source_id must be at most {CODING_AGENT_ID_MAX_BYTES} bytes"
+        ));
+    }
+    if parent.source_id == child_source_id {
+        return Err("session.parent.source_id must differ from session.source_id".into());
+    }
+    if parent
+        .tool_call_id
+        .as_deref()
+        .is_some_and(|id| id.trim().is_empty() || id.len() > CODING_AGENT_ID_MAX_BYTES)
+    {
+        return Err(format!(
+            "session.parent.tool_call_id must be 1 to {CODING_AGENT_ID_MAX_BYTES} bytes"
+        ));
+    }
+    if parent
+        .agent_type
+        .as_deref()
+        .is_some_and(|kind| kind.trim().is_empty() || kind.len() > CODING_AGENT_NAME_MAX_BYTES)
+    {
+        return Err(format!(
+            "session.parent.agent_type must be 1 to {CODING_AGENT_NAME_MAX_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
 impl CodingAgentEventV1 {
     pub fn validate(&self) -> Result<(), String> {
         if self.version != CODING_AGENT_EVENT_VERSION {
@@ -226,6 +275,9 @@ impl CodingAgentEventV1 {
             return Err(format!(
                 "source.agent_name must be at most {CODING_AGENT_NAME_MAX_BYTES} bytes"
             ));
+        }
+        if let Some(parent) = &self.session.parent {
+            validate_parent(parent, &self.session.source_id)?;
         }
         if let Some(title) = &self.session.title {
             if title.trim().is_empty() {
@@ -487,6 +539,7 @@ mod tests {
                 id: coding_agent_session_id("claude", "session"),
                 source_id: "session".into(),
                 title: None,
+                parent: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -740,6 +793,101 @@ mod tests {
         value.turn.tool_calls[0].association = CodingAgentToolAssociation::Turn;
         assert!(value.validate().unwrap_err().contains("non-exact"));
         value.turn.tool_calls[0].model_call_id = None;
+        assert!(value.validate().is_ok());
+    }
+
+    fn subagent_event() -> CodingAgentEventV1 {
+        let mut value = event();
+        value.session.parent = Some(CodingAgentSessionParent {
+            source_id: "parent-session".into(),
+            tool_call_id: Some("toolu_1".into()),
+            agent_type: Some("Explore".into()),
+        });
+        value
+    }
+
+    #[test]
+    fn session_parent_round_trips_through_json() {
+        let value = subagent_event();
+        let json = serde_json::to_value(&value).unwrap();
+        assert_eq!(
+            json["session"]["parent"],
+            serde_json::json!({
+                "source_id": "parent-session",
+                "tool_call_id": "toolu_1",
+                "agent_type": "Explore"
+            })
+        );
+        let back: CodingAgentEventV1 = serde_json::from_value(json).unwrap();
+        assert_eq!(back, value);
+        assert!(back.validate().is_ok());
+    }
+
+    #[test]
+    fn session_without_parent_omits_it_and_old_payloads_still_parse() {
+        let json = serde_json::to_value(event()).unwrap();
+        assert!(json["session"].get("parent").is_none());
+        let old = serde_json::json!({"id": "claude:s", "source_id": "s"});
+        let session: CodingAgentSession = serde_json::from_value(old).unwrap();
+        assert_eq!(session.parent, None);
+        let bare: CodingAgentSessionParent =
+            serde_json::from_value(serde_json::json!({"source_id": "p"})).unwrap();
+        assert_eq!(bare.tool_call_id, None);
+        assert_eq!(bare.agent_type, None);
+    }
+
+    #[test]
+    fn session_parent_rejects_empty_oversized_and_self_parent() {
+        type Mutation = fn(&mut CodingAgentSessionParent);
+        let cases: [(Mutation, &str); 7] = [
+            (
+                |p| p.source_id = " ".into(),
+                "parent.source_id must not be empty",
+            ),
+            (
+                |p| p.source_id = "x".repeat(CODING_AGENT_ID_MAX_BYTES + 1),
+                "parent.source_id must be at most",
+            ),
+            (
+                |p| p.source_id = "session".into(),
+                "parent.source_id must differ from session.source_id",
+            ),
+            (
+                |p| p.tool_call_id = Some(String::new()),
+                "parent.tool_call_id",
+            ),
+            (
+                |p| p.tool_call_id = Some("x".repeat(CODING_AGENT_ID_MAX_BYTES + 1)),
+                "parent.tool_call_id",
+            ),
+            (|p| p.agent_type = Some(" ".into()), "parent.agent_type"),
+            (
+                |p| p.agent_type = Some("x".repeat(CODING_AGENT_NAME_MAX_BYTES + 1)),
+                "parent.agent_type",
+            ),
+        ];
+        for (mutate, expected) in cases {
+            let mut value = subagent_event();
+            mutate(value.session.parent.as_mut().unwrap());
+            let error = value.validate().expect_err(expected);
+            assert!(
+                error.contains(expected),
+                "{error} should mention {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_parent_accepts_exact_limits_and_bare_source_id() {
+        let mut value = subagent_event();
+        let parent = value.session.parent.as_mut().unwrap();
+        parent.source_id = "x".repeat(CODING_AGENT_ID_MAX_BYTES);
+        parent.tool_call_id = Some("y".repeat(CODING_AGENT_ID_MAX_BYTES));
+        parent.agent_type = Some("z".repeat(CODING_AGENT_NAME_MAX_BYTES));
+        assert!(value.validate().is_ok());
+        let parent = value.session.parent.as_mut().unwrap();
+        parent.tool_call_id = None;
+        parent.agent_type = None;
         assert!(value.validate().is_ok());
     }
 }

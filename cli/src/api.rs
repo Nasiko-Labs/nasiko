@@ -34,6 +34,8 @@ pub struct ApiFailure {
     pub body: Option<serde_json::Value>,
     detail: String,
     url: String,
+    /// The `Retry-After` header, as sent: delay-seconds or an HTTP-date.
+    retry_after: Option<String>,
 }
 
 impl ApiFailure {
@@ -43,7 +45,13 @@ impl ApiFailure {
             body: serde_json::from_str(&raw).ok(),
             detail: extract_error_detail(&raw),
             url: url.to_string(),
+            retry_after: None,
         }
+    }
+
+    /// The `Retry-After` header the server sent with this failure (a `429` or `503`), as sent.
+    pub fn retry_after(&self) -> Option<&str> {
+        self.retry_after.as_deref()
     }
 
     /// The machine-readable `code` slug (`API_CONVENTIONS` §2), when the body carries one.
@@ -345,6 +353,22 @@ impl Client {
         Ok(resp.body_mut().read_json()?)
     }
 
+    /// Authenticated JSON PUT without terminal status output, for calls made while a progress line
+    /// owns the terminal.
+    pub(crate) fn put_json_quiet<T: for<'de> Deserialize<'de>, B: Serialize>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let url = self.api_url(path);
+        let mut resp = self
+            .auth_put(&url)
+            .send_json(body)
+            .context("cannot reach control plane")?;
+        check_status(&mut resp, &url)?;
+        Ok(resp.body_mut().read_json()?)
+    }
+
     pub fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
         &self,
         path: &str,
@@ -397,8 +421,16 @@ impl Client {
     ) -> Result<Attempt<T>> {
         let status = resp.status().as_u16();
         if status >= 400 {
+            let retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             let raw = resp.body_mut().read_to_string().unwrap_or_default();
-            return Ok(Attempt::Rejected(ApiFailure::new(status, url, raw)));
+            return Ok(Attempt::Rejected(ApiFailure {
+                retry_after,
+                ..ApiFailure::new(status, url, raw)
+            }));
         }
         Ok(Attempt::Ok(resp.body_mut().read_json()?))
     }
@@ -427,22 +459,27 @@ impl Client {
         Ok(())
     }
 
+    /// Delivers a batch of coding-agent events. A non-2xx comes back as [`Attempt::Rejected`], so
+    /// delivery can tell a refusal it should give up on from one worth retrying; a transport fault or a
+    /// response it can't read is an error.
     pub(crate) fn post_coding_agent_batch(
         &self,
         body: &CodingAgentEventBatchRequest,
-    ) -> Result<CodingAgentEventBatchResponse> {
+    ) -> Result<Attempt<CodingAgentEventBatchResponse>> {
         let path = "/telemetry/coding-agent/events/batch";
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
             .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        let envelope: serde_json::Value = resp
-            .body_mut()
-            .read_json()
-            .with_context(|| format!("invalid coding-agent batch response from {url}"))?;
+        let envelope = match Self::into_attempt::<serde_json::Value>(&mut resp, &url)
+            .with_context(|| format!("invalid coding-agent batch response from {url}"))?
+        {
+            Attempt::Ok(envelope) => envelope,
+            Attempt::Rejected(failure) => return Ok(Attempt::Rejected(failure)),
+        };
         unwrap_data(envelope)
+            .map(Attempt::Ok)
             .with_context(|| format!("invalid coding-agent batch response from {url}"))
     }
 

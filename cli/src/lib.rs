@@ -805,7 +805,30 @@ pub enum AgentsCommands {
         agent: String,
     },
     /// Deliver queued coding-agent session events now
-    Sync,
+    Sync {
+        /// Queue the turns that were set aside again, then deliver them
+        #[arg(long)]
+        retry_rejected: bool,
+    },
+    /// Connect every coding agent on this computer and import its past sessions, newest first
+    Setup {
+        /// No longer needed (setup doesn't ask); accepted for older scripts
+        #[arg(long, short = 'y', hide = true)]
+        yes: bool,
+        /// Connect the agents but don't import their past sessions
+        #[arg(long)]
+        no_import: bool,
+        /// Import in this terminal and return when done, instead of in the background
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Import the past sessions of the coding agents already connected
+    Import,
+    /// Show how the coding-agent import is going and what is still waiting to send
+    Status,
+    /// Run the import `agents setup` starts in the background.
+    #[command(hide = true)]
+    ImportWorker,
     /// Export one session's new turns. Invoked by installed hooks.
     #[command(hide = true)]
     Report {
@@ -1376,7 +1399,19 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 install_reporting_renamed("agents", &agent, no_content)
             }
             AgentsCommands::Uninstall { agent } => uninstall_reporting_renamed("agents", &agent),
-            AgentsCommands::Sync => commands::integration::sync(),
+            AgentsCommands::Sync { retry_rejected } => commands::integration::sync(retry_rejected),
+            AgentsCommands::Setup {
+                yes,
+                no_import,
+                wait,
+            } => commands::integration::setup(commands::integration::SetupOptions {
+                yes,
+                no_import,
+                wait,
+            }),
+            AgentsCommands::Import => commands::integration::import(),
+            AgentsCommands::Status => commands::integration::import_status(),
+            AgentsCommands::ImportWorker => commands::integration::import_worker(),
             AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),
             AgentsCommands::Get {
@@ -1731,7 +1766,7 @@ pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
             uninstall_reporting_renamed("integration", &agent)
         }
         IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
-        IntegrationSubCommands::Sync => commands::integration::sync(),
+        IntegrationSubCommands::Sync => commands::integration::sync(false),
     }
 }
 

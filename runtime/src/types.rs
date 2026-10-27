@@ -527,7 +527,7 @@ impl WorkloadKind {
 
     /// The token stored in `agents.workload_kind`. These strings are the single
     /// source of truth for the column and MUST match its `CHECK` constraint
-    /// (migration `0063_acp_coding_agent.sql`); [`WorkloadKind::from_db_str`] is
+    /// (migration `0073_acp_coding_agent.sql`); [`WorkloadKind::from_db_str`] is
     /// the inverse.
     pub fn as_db_str(&self) -> &'static str {
         match self {

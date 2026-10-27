@@ -93,6 +93,9 @@ pub struct SessionListParams {
     /// Sort order. Only `created_at` (the default) is supported; see the
     /// handler for why `cost` is rejected rather than approximated.
     pub sort: Option<String>,
+    /// A session id: list that session's subagent sessions instead of the top
+    /// level. The window does not apply; ownership does, as for any list.
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -289,6 +292,7 @@ pub async fn get_all_sessions(
             params.end_time.as_deref(),
             params.status.as_deref(),
             params.cursor.as_deref(),
+            params.parent.as_deref(),
         )
         .await
     {

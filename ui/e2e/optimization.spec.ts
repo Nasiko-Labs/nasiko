@@ -84,12 +84,8 @@ test('the bulk turn-on confirm keeps focus, passes axe and announces the end', a
     ).toBe(true)
   }
   await dialog.getByRole('button', { name: /^Turn on for \d+$/ }).click()
-  await expect(
-    page.getByText(/^Turned on Token optimization \(Caveman\) for \d+ agents\.$/),
-  ).toBeAttached()
-  await expect(
-    page.getByText(/of your agents have Token optimization \(Caveman\) off/),
-  ).toHaveCount(0)
+  await expect(page.getByText(/^Turned on Token optimization for \d+ agents\.$/)).toBeAttached()
+  await expect(page.getByText(/of your agents have Token optimization off/)).toHaveCount(0)
 })
 
 test('the header jump focuses Your settings', async ({ page }) => {

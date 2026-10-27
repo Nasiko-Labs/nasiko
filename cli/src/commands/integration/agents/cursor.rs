@@ -63,8 +63,9 @@ struct HookPayload {
     output: Option<Value>,
     error: Option<Value>,
     error_message: Option<Value>,
-    duration: Option<u64>,
-    duration_ms: Option<u64>,
+    /// Milliseconds; Cursor sends fractions (`372.906`).
+    duration: Option<f64>,
+    duration_ms: Option<f64>,
     failure_type: Option<String>,
     is_interrupt: Option<bool>,
 }
@@ -157,10 +158,28 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
     })?;
     let session_id = payload.conversation_id.clone();
     let turns = assemble_spooled(payload)?;
+    // Only a completed turn is sent, so only then is it worth asking whether this chat is a subagent's.
+    let parent = if turns.is_empty() {
+        None
+    } else {
+        subagent_link(&session_id)
+    };
     Ok(SessionSnapshot {
         session_id,
         title: None,
         turns,
+        parent,
+    })
+}
+
+/// The chat that spawned this one, when it is a subagent's. The hook's payload doesn't say, so it is
+/// looked up where Cursor keeps it. A lookup that fails costs the link, not the turn.
+fn subagent_link(
+    conversation_id: &str,
+) -> Option<nasiko_types::coding_agent::CodingAgentSessionParent> {
+    super::cursor_history::subagent_parent_of(conversation_id).unwrap_or_else(|error| {
+        eprintln!("chat {conversation_id}: could not tell whether it is a subagent's: {error:#}");
+        None
     })
 }
 
@@ -478,7 +497,11 @@ fn upsert_tool_end(
         .or_else(|| payload.error.as_ref().map(value_text))
         .or_else(|| payload.failure_type.clone());
     tool.ended_at = Some(now);
-    tool.duration_ms = payload.duration_ms.or(payload.duration);
+    tool.duration_ms = payload
+        .duration_ms
+        .or(payload.duration)
+        .filter(|millis| millis.is_finite())
+        .map(|millis| millis.max(0.0).round() as u64);
     let failure_type = payload
         .failure_type
         .as_deref()
@@ -504,7 +527,7 @@ fn value_text(value: &Value) -> String {
         .unwrap_or_else(|| value.to_string())
 }
 
-fn provider_for_model(model: &str) -> &'static str {
+pub(super) fn provider_for_model(model: &str) -> &'static str {
     let model = model.to_ascii_lowercase();
     let o_series = model
         .strip_prefix('o')
@@ -823,7 +846,7 @@ mod tests {
             tool_use_id: Some("native-1".into()),
             name: Some("read_file".into()),
             error: Some(json!("denied")),
-            duration_ms: Some(12),
+            duration_ms: Some(12.0),
             ..payload("postToolUseFailure")
         };
         assert!(apply_event(&mut pending, &pre, at).is_empty());
@@ -875,6 +898,41 @@ mod tests {
             turns[0].tool_calls[0].status,
             CodingAgentToolCallStatus::Unknown
         );
+    }
+
+    #[test]
+    fn a_tool_hook_with_a_fractional_duration_is_accepted() {
+        // The shape Cursor sends for a tool hook, durations in fractional milliseconds.
+        let raw = json!({
+            "conversation_id": "conversation",
+            "generation_id": "generation",
+            "model": "cursor-grok-4.5-high",
+            "tool_name": "Read",
+            "tool_input": {"file_path": "/tmp/a.rs"},
+            "tool_output": "{\"contents\":\"fn main() {}\"}",
+            "tool_use_id": "tool-1",
+            "duration": 372.906,
+            "hook_event_name": "postToolUse",
+            "cursor_version": "2.0",
+            "workspace_roots": ["/tmp"],
+        })
+        .to_string();
+        let payload: HookPayload = serde_json::from_str(&raw).unwrap();
+        let mut pending = PendingTurn::default();
+
+        apply_event(&mut pending, &payload, Utc::now());
+
+        let tool = &pending.tool_calls[0];
+        assert_eq!(tool.name, "Read");
+        assert_eq!(tool.duration_ms, Some(373));
+        assert_eq!(tool.status, CodingAgentToolCallStatus::Succeeded);
+        let negative: HookPayload = serde_json::from_value(json!({
+            "conversation_id": "c", "generation_id": "g", "hook_event_name": "postToolUse",
+            "tool_use_id": "t", "duration_ms": -1.5,
+        }))
+        .unwrap();
+        apply_event(&mut pending, &negative, Utc::now());
+        assert_eq!(pending.tool_calls[1].duration_ms, Some(0));
     }
 
     #[test]

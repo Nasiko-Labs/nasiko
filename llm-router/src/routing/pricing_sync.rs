@@ -42,6 +42,13 @@ const MIN_INTERVAL: Duration = Duration::from_secs(60);
 /// Default Portkey pricing API base (no auth required).
 const DEFAULT_PRICING_BASE: &str = "https://configs.portkey.ai";
 
+/// Providers whose Portkey price book is fetched on every pass whether or not a
+/// platform key is configured for them: `(label, canonical base URL)`.
+const PUBLIC_PRICE_BOOKS: &[(&str, &str)] = &[
+    ("anthropic", "https://api.anthropic.com"),
+    ("openai", "https://api.openai.com"),
+];
+
 /// OpenRouter's own model catalog (public, no auth) — it publishes live per-token
 /// pricing directly, so unlike the other spokes this needs no Portkey slug lookup.
 const DEFAULT_OPENROUTER_MODELS_URL: &str = "https://openrouter.ai/api/v1/models";
@@ -499,8 +506,16 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
     // relative to a pass: install it a minute after boot and every Claude call was
     // priced from the offline seed until the next tick, 24h later. Unconditional
     // matches how OpenRouter's book is already fetched below.
-    if !providers.iter().any(|(label, _)| label == "anthropic") {
-        providers.push(("anthropic".into(), "https://api.anthropic.com".into()));
+    //
+    // OpenAI's book is ungated for the same reason, and its absence was more visible:
+    // the model picker lists every priced model, so a server with no platform OpenAI
+    // key (every desktop install — users add keys as LLM configs, which this pass
+    // never reads) offered only the dozen migration-seeded OpenAI models, none newer
+    // than o3. A label already configured keeps its own base URL and slug.
+    for (label, api_base) in PUBLIC_PRICE_BOOKS {
+        if !providers.iter().any(|(configured, _)| configured == label) {
+            providers.push((label.to_string(), api_base.to_string()));
+        }
     }
     for (label, api_base) in providers {
         let slug = portkey_slug(&label, &api_base);

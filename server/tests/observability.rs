@@ -1072,6 +1072,34 @@ async fn session_list_derives_status_from_flow_outcomes() {
 
 #[tokio::test]
 #[serial]
+async fn session_list_rejects_an_unparseable_time_bound() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    for query in ["?start_time=yesterday", "?end_time=2026-13-45"] {
+        let res = server
+            .client
+            .get(server.url(&format!("/api/observability/session/list{query}")))
+            .bearer_auth(common::sign_token(uid, "admin", true, "admin"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            400,
+            "{query} must not widen to the default window"
+        );
+    }
+    // Absent or empty still means "the default window".
+    list_sessions(&server, uid, "").await;
+    list_sessions(&server, uid, "?start_time=").await;
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn session_list_status_filter_is_applied_in_sql_with_an_exact_count() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

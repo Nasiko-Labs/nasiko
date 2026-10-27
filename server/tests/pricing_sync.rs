@@ -98,17 +98,20 @@ async fn sync_is_provider_scoped_duration_aware_and_idempotent() {
     server.cleanup().await;
 }
 
-/// A full pass must fetch the Anthropic book whatever the agent table holds.
+/// A full pass must fetch the Anthropic and OpenAI books whatever the agent table
+/// holds and whatever keys are configured.
 ///
-/// Coverage used to be conditional on a `coding_agent_integration_id = 'claude'`
-/// row existing at the instant a pass ran. A pass runs at boot + 10s and then
-/// once a day, so installing the integration a minute after boot left every
+/// Anthropic coverage used to be conditional on a `coding_agent_integration_id =
+/// 'claude'` row existing at the instant a pass ran. A pass runs at boot + 10s and
+/// then once a day, so installing the integration a minute after boot left every
 /// Claude call priced from the offline seed for the next 24 hours — which is how
-/// Opus 5 was billed at the Opus 4 rate. The book is public and needs no key, so
-/// nothing about it should depend on what is deployed.
+/// Opus 5 was billed at the Opus 4 rate. OpenAI coverage was conditional on a
+/// platform key, so a keyless server (every desktop install) offered only the
+/// migration-seeded OpenAI models. Both books are public and need no key, so
+/// nothing about them should depend on what is deployed.
 #[tokio::test]
 #[serial]
-async fn anthropic_book_is_fetched_with_no_claude_agent_and_no_keys() {
+async fn public_books_are_fetched_with_no_claude_agent_and_no_keys() {
     let server = common::TestServer::start().await;
     let claude_agents: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM agents WHERE coding_agent_integration_id = 'claude' AND deleted_at IS NULL",
@@ -127,6 +130,19 @@ async fn anthropic_book_is_fetched_with_no_claude_agent_and_no_keys() {
         .with_body(
             json!({"claude-opus-5": {"pricing_config": {"pay_as_you_go": {
                 "request_token": {"price": 0.0007}, "response_token": {"price": 0.0031}
+            }}}})
+            .to_string(),
+        )
+        .expect_at_least(1)
+        .create_async()
+        .await;
+    // A model no seed carries: the only way it reaches `model_pricing` is the sync.
+    let openai = upstream
+        .mock("GET", "/pricing/openai.json")
+        .with_status(200)
+        .with_body(
+            json!({"gpt-6-sol": {"pricing_config": {"pay_as_you_go": {
+                "request_token": {"price": 0.0003}, "response_token": {"price": 0.0012}
             }}}})
             .to_string(),
         )
@@ -168,5 +184,15 @@ async fn anthropic_book_is_fetched_with_no_claude_agent_and_no_keys() {
     .await
     .unwrap();
     assert_eq!(input, 7.0, "the synced book must replace the seeded rate");
+
+    openai.assert_async().await;
+    let input: f64 = sqlx::query_scalar(
+        "SELECT input_price_per_1m::float8 FROM model_pricing \
+         WHERE provider = 'openai' AND model = 'gpt-6-sol' AND effective_until IS NULL",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(input, 3.0, "a keyless pass must still price OpenAI models");
     server.cleanup().await;
 }

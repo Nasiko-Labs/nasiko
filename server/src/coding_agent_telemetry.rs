@@ -1,13 +1,16 @@
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, State},
+    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
     http::StatusCode,
+    middleware,
     response::IntoResponse,
     routing::post,
 };
+use chrono::{DateTime, Utc};
 use nasiko_types::{
-    CapturePolicy, CodingAgentEventBatchRequest, CodingAgentEventBatchResponse,
-    CodingAgentEventResult, CodingAgentEventStatus, CodingAgentEventV1, coding_agent_session_id,
+    CODING_AGENT_BATCH_MAX_EVENTS, CapturePolicy, CodingAgentEventBatchRequest,
+    CodingAgentEventBatchResponse, CodingAgentEventResult, CodingAgentEventStatus,
+    CodingAgentEventV1, CodingAgentToolCallStatus, CodingAgentTurn, coding_agent_session_id,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -15,22 +18,61 @@ use uuid::Uuid;
 use crate::auth::Claims;
 use crate::chat::external_turn::{PersistExternalTurnError, persist_external_turn};
 use crate::chat::models::{ExternalTurn, MessageUsage};
+use crate::coding_agent_subagents::{link_parent, same_turn_but_parent};
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
 
-pub fn router() -> Router<AppState> {
+/// Largest request body the batch route reads. A full batch of content turns
+/// fits; a client that hits it splits the batch.
+const MAX_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+/// A turn that ended longer than this before the server received it is history
+/// (an import, or a laptop catching up), not a live session: background work
+/// takes it after every live turn. Stored per receipt as `otlp_historical`.
+pub(crate) const HISTORICAL_AFTER: &str = "1 hour";
+
+/// The body limit applies to the route; the concurrency cap is a route layer,
+/// so it runs before the body is read and an overloaded server turns a batch
+/// away without buffering it first.
+pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/telemetry/coding-agent/events/batch", post(ingest_batch))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .route_layer(middleware::from_fn_with_state(
+            state,
+            crate::coding_agent_ingest_guard::limit_concurrency,
+        ))
+        .layer(DefaultBodyLimit::max(MAX_BATCH_BYTES))
 }
 
+/// Acknowledges a batch only once every accepted turn in it is committed: each
+/// turn commits its own transaction before the next starts, and any failure to
+/// persist one answers `500` before a response is sent, so a client that sees
+/// `200` has nothing to resend and a client that sees anything else resends
+/// the whole batch — turns already committed come back `duplicate`.
 async fn ingest_batch(
     State(state): State<AppState>,
     claims: Claims,
-    Json(batch): Json<CodingAgentEventBatchRequest>,
+    batch: Result<Json<CodingAgentEventBatchRequest>, JsonRejection>,
 ) -> axum::response::Response {
+    let guard = &state.coding_agent_ingest;
+    let batch = match batch {
+        Ok(Json(batch)) => batch,
+        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return guard.too_large(&format!(
+                "request body exceeds the {} MiB batch limit",
+                MAX_BATCH_BYTES / (1024 * 1024)
+            ));
+        }
+        Err(rejection) => return rejection.into_response(),
+    };
+    if batch.events.len() > CODING_AGENT_BATCH_MAX_EVENTS {
+        return guard.too_large(&format!(
+            "batch has {} events; at most {CODING_AGENT_BATCH_MAX_EVENTS} are accepted per request",
+            batch.events.len()
+        ));
+    }
     if let Err(error) = batch.validate() {
         return (
             StatusCode::BAD_REQUEST,
@@ -42,10 +84,14 @@ async fn ingest_batch(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
+    if let Err(response) = guard.admit_events(&claims.sub, batch.events.len()) {
+        return response;
+    }
+    let tempo_cutoff = tempo_cutoff(state.config.coding_agent_ingest.tempo_max_age_secs);
     let mut results = Vec::with_capacity(batch.events.len());
     for event in batch.events {
         let event_id = event.event_id.clone();
-        match process_event(&state, user_id, &event).await {
+        match process_event(&state, user_id, &event, tempo_cutoff).await {
             Ok(status) => results.push(CodingAgentEventResult {
                 event_id,
                 status,
@@ -57,6 +103,7 @@ async fn ingest_batch(
                 error: Some(error),
             }),
             Err(ProcessError::Internal(error)) => {
+                record_outcomes(guard, &results);
                 tracing::error!(%error, %user_id, %event_id, "coding-agent event ingestion failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -70,12 +117,34 @@ async fn ingest_batch(
             }
         }
     }
+    record_outcomes(guard, &results);
     ApiResponse::ok(
         serde_json::to_value(CodingAgentEventBatchResponse { results })
             .expect("batch response serializes"),
         "coding-agent telemetry processed",
     )
     .into_response()
+}
+
+/// Turns that started before this are older than Tempo will ingest. `None`
+/// when the configured age reaches past the representable range: nothing is.
+fn tempo_cutoff(max_age_secs: u64) -> Option<DateTime<Utc>> {
+    let max_age = chrono::Duration::try_seconds(i64::try_from(max_age_secs).ok()?)?;
+    Utc::now().checked_sub_signed(max_age)
+}
+
+fn record_outcomes(
+    guard: &crate::coding_agent_ingest_guard::IngestGuard,
+    results: &[CodingAgentEventResult],
+) {
+    let count = |status: CodingAgentEventStatus| {
+        results.iter().filter(|r| r.status == status).count() as u64
+    };
+    guard.metrics.record_events(
+        count(CodingAgentEventStatus::Accepted),
+        count(CodingAgentEventStatus::Duplicate),
+        count(CodingAgentEventStatus::Rejected),
+    );
 }
 
 enum ProcessError {
@@ -132,6 +201,7 @@ async fn process_event(
     state: &AppState,
     user_id: Uuid,
     event: &CodingAgentEventV1,
+    tempo_cutoff: Option<DateTime<Utc>>,
 ) -> Result<CodingAgentEventStatus, ProcessError> {
     event.validate().map_err(ProcessError::Rejected)?;
     let expected_session_id =
@@ -142,32 +212,29 @@ async fn process_event(
         ));
     }
 
-    // Pricing acquires its own database connection. Do not hold the write
-    // transaction while looking up rates: a saturated pool would deadlock.
+    // Pricing and the router relabel acquire their own database connections. Do
+    // not hold the write transaction while running them: a saturated pool would
+    // deadlock. The agent is looked up here for the relabel, and again inside the
+    // transaction, which is what authorizes the write.
+    let agent_id = owned_agent_id(&state.db, user_id, event).await?;
+    let server_session_id = scoped_session_id(agent_id, &event.session.source_id);
     let cost = if event.capture_policy == CapturePolicy::Content {
         price_turn(&state.pricing, event).await
     } else {
         None
     };
-    let mut tx = state.db.begin().await?;
-    let agent_id: Option<Uuid> = sqlx::query_scalar(
-        r#"SELECT id FROM agents
-           WHERE owner_id = $1 AND name = $2
-             AND coding_agent_integration_id = $3
-             AND deleted_at IS NULL"#,
-    )
-    .bind(user_id)
-    .bind(&event.source.agent_name)
-    .bind(&event.source.agent_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some(agent_id) = agent_id else {
-        return Err(ProcessError::Rejected(format!(
-            "active owned {} coding-agent integration '{}' not found",
-            event.source.agent_id, event.source.agent_name
-        )));
+    let usage = {
+        let mut exported = event.clone();
+        exported.session.id = server_session_id.clone();
+        crate::coding_agent_otlp::relabel_from_router(&state.db, agent_id, &mut exported).await;
+        crate::coding_agent_usage::turn_usage_row(&state.pricing, &exported).await
     };
-    let server_session_id = scoped_session_id(agent_id, &event.session.source_id);
+    let mut tx = state.db.begin().await?;
+    if owned_agent_id(&mut *tx, user_id, event).await? != agent_id {
+        return Err(ProcessError::Internal(anyhow::anyhow!(
+            "coding-agent integration was replaced while the turn was being ingested"
+        )));
+    }
 
     sqlx::query(
         r#"INSERT INTO chat_sessions
@@ -205,14 +272,30 @@ async fn process_event(
             "session already belongs to a different user or agent".into(),
         ));
     }
+    // Before the receipt, so a replay that only adds the link (below) records it.
+    // The parent's id is scoped exactly as the child's: same agent, same rule.
+    if let Some(parent) = &event.session.parent {
+        let parent_session_id = scoped_session_id(agent_id, &parent.source_id);
+        link_parent(&mut tx, &server_session_id, &parent_session_id, parent).await?;
+    }
 
     let payload =
         serde_json::to_value(event).map_err(|error| ProcessError::Internal(error.into()))?;
+    let summary = TurnSummary::of(&event.turn);
+    // The receipt is born materialized: its `trace_usage` row is written below,
+    // in this transaction, so the Tempo read-back never processes it. A turn
+    // older than Tempo's ingestion window is born `skipped`: exporting it would
+    // be dropped by Tempo, and nothing needs it there.
     let inserted = sqlx::query(
         r#"INSERT INTO coding_agent_telemetry_events
              (user_id, event_id, payload, agent_id, agent_name, source_agent_id,
-              session_id, source_session_id, turn_id, captured_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+              session_id, source_session_id, turn_id, captured_at,
+              turn_started_at, turn_ended_at, turn_tokens, turn_tool_errors,
+              otlp_state, otlp_historical, materialized_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                   CASE WHEN $11 < $15 THEN 'skipped' ELSE 'pending' END,
+                   $10 < now() - $16::interval,
+                   now())
            ON CONFLICT (user_id, event_id) DO NOTHING"#,
     )
     .bind(user_id)
@@ -225,6 +308,12 @@ async fn process_event(
     .bind(&event.session.source_id)
     .bind(&event.turn.id)
     .bind(event.captured_at)
+    .bind(event.turn.started_at)
+    .bind(event.turn.ended_at)
+    .bind(summary.tokens)
+    .bind(summary.tool_errors)
+    .bind(tempo_cutoff)
+    .bind(HISTORICAL_AFTER)
     .execute(&mut *tx)
     .await?
     .rows_affected()
@@ -237,7 +326,7 @@ async fn process_event(
         .bind(&event.event_id)
         .fetch_one(&mut *tx)
         .await?;
-        if stored != payload {
+        if stored != payload && !same_turn_but_parent(&stored, &payload) {
             return Err(ProcessError::Rejected(
                 "event_id already exists with a different payload".into(),
             ));
@@ -290,8 +379,85 @@ async fn process_event(
     .bind(event.turn.started_at)
     .execute(&mut *tx)
     .await?;
+    if let Some(usage) = &usage {
+        crate::observability::trace_materializer::write_usage_row(
+            &mut tx,
+            usage,
+            Some(&server_session_id),
+            Some(agent_id),
+            Some(user_id),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(CodingAgentEventStatus::Accepted)
+}
+
+/// The caller's live registration of the turn's coding agent, or the rejection
+/// for a turn reported against one they do not have.
+async fn owned_agent_id<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    user_id: Uuid,
+    event: &CodingAgentEventV1,
+) -> Result<Uuid, ProcessError> {
+    let agent_id: Option<Uuid> = sqlx::query_scalar(
+        r#"SELECT id FROM agents
+           WHERE owner_id = $1 AND name = $2
+             AND coding_agent_integration_id = $3
+             AND deleted_at IS NULL"#,
+    )
+    .bind(user_id)
+    .bind(&event.source.agent_name)
+    .bind(&event.source.agent_id)
+    .fetch_optional(db)
+    .await?;
+    agent_id.ok_or_else(|| {
+        ProcessError::Rejected(format!(
+            "active owned {} coding-agent integration '{}' not found",
+            event.source.agent_id, event.source.agent_name
+        ))
+    })
+}
+
+/// The typed columns `session/list` totals a coding session from, so it never has to read the
+/// payload (prompt, response and tool outputs). Same rules as `coding_agent_turn_summary_backfill`.
+#[derive(Debug, PartialEq, Eq)]
+struct TurnSummary {
+    /// Every token class over every LLM call, saturating at `i64::MAX`.
+    tokens: i64,
+    /// Tool calls that ended in an error. Denied and cancelled calls are the user's decision.
+    tool_errors: i32,
+}
+
+impl TurnSummary {
+    fn of(turn: &CodingAgentTurn) -> Self {
+        let tokens = turn
+            .llm_calls
+            .iter()
+            .flat_map(|call| {
+                [
+                    call.input_tokens,
+                    call.output_tokens,
+                    call.cache_read_tokens,
+                    call.cache_creation_tokens,
+                ]
+            })
+            .fold(0_u64, u64::saturating_add);
+        let tool_errors = turn
+            .tool_calls
+            .iter()
+            .filter(|call| {
+                matches!(
+                    call.status,
+                    CodingAgentToolCallStatus::Failed | CodingAgentToolCallStatus::TimedOut
+                )
+            })
+            .count();
+        Self {
+            tokens: i64::try_from(tokens).unwrap_or(i64::MAX),
+            tool_errors: i32::try_from(tool_errors).unwrap_or(i32::MAX),
+        }
+    }
 }
 
 fn scoped_session_id(agent_id: Uuid, source_session_id: &str) -> String {
@@ -438,6 +604,7 @@ mod tests {
     use super::*;
     use nasiko_types::{
         CODING_AGENT_EVENT_VERSION, CodingAgentLlmCall, CodingAgentSession, CodingAgentSource,
+        CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCall,
         CodingAgentTurn,
     };
 
@@ -455,6 +622,7 @@ mod tests {
                 id: "session".into(),
                 source_id: "source-session".into(),
                 title: None,
+                parent: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -540,6 +708,52 @@ mod tests {
         );
         event.turn.llm_calls.clear();
         assert_eq!(price_turn(&pricing, &event).await, None);
+    }
+
+    fn tool_call(status: CodingAgentToolCallStatus) -> CodingAgentToolCall {
+        CodingAgentToolCall {
+            id: format!("{status:?}"),
+            name: "bash".into(),
+            kind: "shell".into(),
+            model_call_id: None,
+            status,
+            arguments: None,
+            output: None,
+            raw: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            association: CodingAgentToolAssociation::Turn,
+            timestamp_quality: CodingAgentTimestampQuality::Unknown,
+        }
+    }
+
+    #[test]
+    fn turn_summary_sums_every_token_class_and_counts_only_erroring_tools() {
+        use CodingAgentToolCallStatus::*;
+        let mut event = event();
+        event.turn.tool_calls = [Succeeded, Failed, TimedOut, Denied, Cancelled, Running]
+            .into_iter()
+            .map(tool_call)
+            .collect();
+        // Two calls of 1000 + 500 + 2000 + 100.
+        assert_eq!(
+            TurnSummary::of(&event.turn),
+            TurnSummary {
+                tokens: 7200,
+                tool_errors: 2
+            }
+        );
+    }
+
+    #[test]
+    fn turn_summary_saturates_oversized_token_counts() {
+        let mut event = event();
+        for call in &mut event.turn.llm_calls {
+            call.input_tokens = u64::MAX;
+        }
+        assert_eq!(TurnSummary::of(&event.turn).tokens, i64::MAX);
     }
 
     #[test]

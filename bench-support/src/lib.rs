@@ -11,6 +11,7 @@
 //!   ships as a standalone binary (`src/bin/mock_llm.rs`) a developer points
 //!   `OPENAI_BASE_URL` at when starting the server with `AGENT_RUNTIME=simulated`.
 
+pub mod coding_agent_import;
 pub mod config;
 pub mod mock_llm;
 pub mod seed;

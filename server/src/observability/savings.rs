@@ -310,7 +310,7 @@ struct LayerRow {
 ///
 /// Input-side only. All three unpriced layers shrink what the model *reads*; none can shorten what
 /// it writes, so their `saved_output_tokens` is 0 and an output rate would multiply by nothing.
-const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
+pub(crate) const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
          SELECT (mp.input_price_per_1m / 1000000.0)::FLOAT8 AS rate \
            FROM token_usage tu \
            JOIN model_pricing mp \
@@ -326,7 +326,7 @@ const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
 /// at the flow's resolved rate. `COALESCE(price.rate, 0)` leaves an unpriceable row at zero rather
 /// than dropping it — it still contributes its *tokens*, and [`LayerRow::unpriced`] is what reports
 /// that its money is missing.
-const PRICED_COST: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL \
+pub(crate) const PRICED_COST: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL \
          THEN ts.saved_input_tokens * COALESCE(price.rate, 0) \
          ELSE ts.saved_cost_usd END), 0)::FLOAT8";
 

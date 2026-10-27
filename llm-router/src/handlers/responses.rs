@@ -120,7 +120,7 @@ async fn responses_core(
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
     };
-    let routed = resolve_routed_request(
+    let mut routed = resolve_routed_request(
         ctx,
         store,
         headers,
@@ -134,6 +134,7 @@ async fn responses_core(
         session,
     )
     .await?;
+    routed.compression = compress_input(ctx, &routed, &mut body).await;
     let attempts = fallback::build_attempts(&routed.resolved, &ctx.cfg);
     let native_primary = routed.resolved.provider == "openai";
     let mut translated = if native_primary {
@@ -227,6 +228,66 @@ async fn responses_core(
     last_response.map(Ok).unwrap_or_else(|| {
         Err(last_error.unwrap_or_else(|| GatewayError::Upstream("no Responses attempts".into())))
     })
+}
+
+/// The compression seam for this surface, as `chat_core`'s: after routing (the signals that pick
+/// the model were read from the uncompressed input), per agent (`compress_enabled`), on tool
+/// results only. Once, before any attempt, so the passthrough and the translated path (which
+/// parses this same body) send the same bytes. Originals are stored before the request carrying
+/// their markers goes out; only a flow-scoped request can be recovered.
+async fn compress_input(
+    ctx: &LlmRouterCtx,
+    routed: &RoutedRequest,
+    body: &mut Value,
+) -> crate::compress::Ledger {
+    let policy = crate::compress::policy_for(&ctx.cfg, &routed.resolved);
+    let recovery = ctx
+        .cfg
+        .compress_recovery_enabled
+        .then_some(crate::compress::Recovery {
+            min_bytes: ctx.cfg.compress_recovery_min_bytes,
+        });
+    let Some(input) = body.get_mut("input") else {
+        return crate::compress::Ledger::default();
+    };
+    let stats = crate::compress::apply_responses_input(input, &policy, recovery);
+    if stats.messages_touched > 0 {
+        tracing::debug!(
+            target: "nasiko::llm_router::compress",
+            agent_id = %routed.agent_id,
+            applied = stats.applied,
+            dry_run = stats.dry_run,
+            bytes_in = stats.bytes_in,
+            bytes_out = stats.bytes_out,
+            messages_touched = stats.messages_touched,
+            elapsed_us = stats.elapsed_us,
+            "compress: Responses tool outputs reduced"
+        );
+    }
+    if !stats.originals.is_empty() {
+        match (
+            routed.flow_id.as_deref(),
+            routed.owner_id.parse::<uuid::Uuid>(),
+        ) {
+            (Some(flow), Ok(owner)) => {
+                crate::recovery::persist(
+                    &ctx.db,
+                    &stats.originals,
+                    flow,
+                    owner,
+                    routed.agent_id.parse().ok(),
+                )
+                .await
+            }
+            _ => tracing::debug!(
+                target: "nasiko::llm_router::recovery",
+                agent_id = %routed.agent_id,
+                count = stats.originals.len(),
+                "recovery: request is not flow-scoped; originals not stored"
+            ),
+        }
+    }
+    stats.ledger()
 }
 
 fn is_retryable_transport_error(error: &reqwest::Error) -> bool {
@@ -797,12 +858,12 @@ impl AttemptGuard {
                 flow_id: routed.flow_id.clone(),
                 attribution_source: routed.attribution_source,
                 platform_paid: attempt.platform_paid,
-                // Never compressed: this surface does not go through `chat_core`.
-                compress_metadata: None,
-                // /v1/responses does not share chat_core, so IP-1/IP-2 never run here (PRD §9).
+                // Compressed once before any attempt (`compress_input`).
+                compress_metadata: routed.compression.metadata.clone(),
+                // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
-                // Nothing was compressed, so there is nothing to credit to a savings layer.
-                compress_bytes: None,
+                compress_bytes: routed.compression.bytes,
+                // Unmeasured here: savings fall back to their fixed chars-per-token divisor.
                 request_bytes: None,
             }),
         }
@@ -871,10 +932,9 @@ fn log_response_usage(
             flow_id: routed.flow_id,
             attribution_source: routed.attribution_source,
             platform_paid: attempt.platform_paid,
-            // Never compressed: this surface does not go through `chat_core`.
-            compress_metadata: None,
+            compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
-            compress_bytes: None,
+            compress_bytes: routed.compression.bytes,
             request_bytes: None,
         },
     );
@@ -1523,6 +1583,7 @@ mod tests {
             resolved: attempt.clone(),
             flow_id: None,
             attribution_source: None,
+            compression: crate::compress::Ledger::default(),
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1907,6 +1968,7 @@ mod tests {
             },
             flow_id: None,
             attribution_source: None,
+            compression: crate::compress::Ledger::default(),
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);

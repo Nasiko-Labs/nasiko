@@ -252,7 +252,7 @@ pub(crate) async fn register_coding_agent(
 /// resolves them per edition and hands back plain ids instead, which is what
 /// closes the gap this comment used to describe. OSS returns an empty list, so
 /// the extra disjunct never matches there.
-fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
+pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
     format!(
         r#"({user_bind}::uuid IS NULL
              OR {table_ref}.owner_id = {user_bind}
@@ -274,7 +274,10 @@ fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> S
 /// every call site passed `Some(user_id)` unconditionally, so an admin saw
 /// exactly what a `member` saw.
 #[allow(clippy::result_large_err)]
-async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope, Response> {
+pub(crate) async fn listing_scope(
+    state: &AppState,
+    claims: &Claims,
+) -> Result<ListingScope, Response> {
     if claims.is_superuser {
         return Ok(ListingScope {
             user: None,
@@ -292,9 +295,9 @@ async fn listing_scope(state: &AppState, claims: &Claims) -> Result<ListingScope
     })
 }
 
-struct ListingScope {
-    user: Option<Uuid>,
-    org_granted: Vec<String>,
+pub(crate) struct ListingScope {
+    pub(crate) user: Option<Uuid>,
+    pub(crate) org_granted: Vec<String>,
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -625,20 +628,30 @@ pub(crate) async fn list(
 /// harmless where a stale write would linger.
 async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
     for agent in agents.iter_mut() {
-        if agent.status != "running" {
-            continue;
-        }
-        let container_id = ContainerId::from_uuid(agent.id);
-        if let Ok(live) = state.runtime.status(&container_id).await {
-            use nasiko_runtime::RuntimeState;
-            if matches!(
-                live.state,
-                RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
-            ) {
-                agent.status = live.state.to_string();
-            }
+        if let Some(live) = live_status(state, agent.id, &agent.status).await {
+            agent.status = live;
         }
     }
+}
+
+/// The runtime's own word on a row that reads `running`, when it disagrees: `crashed`, `failed`
+/// or `stopped`. `None` keeps the stored status (not running, agreed, or the runtime didn't
+/// answer). The Overview's estate reads it too, so the map and the catalog never disagree.
+pub(crate) async fn live_status(state: &AppState, agent_id: Uuid, status: &str) -> Option<String> {
+    if status != "running" {
+        return None;
+    }
+    let live = state
+        .runtime
+        .status(&ContainerId::from_uuid(agent_id))
+        .await
+        .ok()?;
+    use nasiko_runtime::RuntimeState;
+    matches!(
+        live.state,
+        RuntimeState::Crashed | RuntimeState::Failed | RuntimeState::Stopped
+    )
+    .then(|| live.state.to_string())
 }
 
 #[derive(Serialize, ToSchema)]

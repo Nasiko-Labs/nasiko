@@ -474,6 +474,17 @@ pub struct SessionSummary {
     /// `null` while none of them has been materialized yet -- "not yet known",
     /// never "zero".
     pub error_count: Option<u32>,
+    /// The session that spawned this one, when it is a subagent; `null` at the top level.
+    pub parent_session_id: Option<String>,
+    /// The parent's tool call that spawned this session.
+    pub spawn_tool_call_id: Option<String>,
+    /// The subagent's kind as the coding agent names it (e.g. "Explore").
+    pub subagent_type: Option<String>,
+    /// Sessions this one spawned.
+    pub subagent_count: u32,
+    /// Those sessions' own totals. Never included in this row's own
+    /// `num_traces`, `token_usage` or `cost_summary`.
+    pub subagents: super::subagents_sql::SubagentTotals,
     #[schema(value_type = Vec<Object>)]
     pub session_annotations: Vec<Value>,
     #[schema(value_type = Vec<Object>)]
@@ -534,6 +545,15 @@ pub struct SessionDetail {
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
     pub metrics_complete: bool,
+    /// The session that spawned this one, when it is a subagent.
+    pub parent_session_id: Option<String>,
+    /// The parent's tool call that spawned this session.
+    pub spawn_tool_call_id: Option<String>,
+    /// The subagent's kind as the coding agent names it (e.g. "Explore").
+    pub subagent_type: Option<String>,
+    /// Sessions this one spawned, oldest first, each with its own totals —
+    /// never included in this session's own figures.
+    pub subagents: Vec<super::subagents_sql::SubagentRun>,
     pub traces: Vec<TraceEntry>,
     pub pagination: Pagination,
 }
@@ -1467,6 +1487,7 @@ impl ObservabilityService {
         end_time: Option<&str>,
         status: Option<&str>,
         cursor: Option<&str>,
+        parent: Option<&str>,
     ) -> Result<SessionListResponse, ObservabilityError> {
         let caller =
             if is_superuser {
@@ -1480,7 +1501,20 @@ impl ObservabilityService {
         let status = status
             .map(super::sessions_sql::StatusFilter::parse)
             .transpose()?;
-        let start = parse_iso_or_default(start_time, 7);
+        // A present-but-unparseable bound is a 400: silently widening it to the
+        // default window would answer a different question than the one asked.
+        let start = parse_iso_param("start_time", start_time)?
+            .unwrap_or_else(|| Utc::now() - Duration::days(7));
+        let end = parse_iso_param("end_time", end_time)?;
+        let level = match parent {
+            Some(parent) if parent.trim().is_empty() => {
+                return Err(ObservabilityError::BadRequest(
+                    "parent must be a session id".into(),
+                ));
+            }
+            Some(parent) => super::sessions_sql::ListLevel::ChildrenOf(parent.to_owned()),
+            None => super::sessions_sql::ListLevel::TopLevel,
+        };
 
         // `cursor` is the paging contract going forward; `offset` is still
         // accepted because the Sessions page pages on it. An offset is turned
@@ -1490,17 +1524,19 @@ impl ObservabilityService {
             (Some(raw), _) => Some(super::sessions_sql::decode_cursor(raw).ok_or_else(|| {
                 ObservabilityError::BadRequest("cursor is not a valid page cursor".into())
             })?),
-            (None, Some(offset)) => match self.cursor_at_offset(caller, start, offset).await? {
-                Some(anchor) => Some(anchor),
-                // The offset is past the end. An absent anchor would otherwise
-                // read as "no cursor" and hand back the *first* page. Anchoring
-                // at `(start, "")` excludes every row -- the page requires
-                // `created_at >= start`, so nothing can also sort before
-                // `(start, "")` -- while still running the count, so
-                // `matching_count` stays right. `DateTime::MIN_UTC` would be
-                // the obvious sentinel and is outside `timestamptz`'s range.
-                None => Some((start, String::new())),
-            },
+            (None, Some(offset)) => {
+                match self.cursor_at_offset(caller, start, &level, offset).await? {
+                    Some(anchor) => Some(anchor),
+                    // The offset is past the end. An absent anchor would otherwise
+                    // read as "no cursor" and hand back the *first* page. Anchoring
+                    // at `(start, "")` excludes every row -- the page requires
+                    // `created_at >= start`, so nothing can also sort before
+                    // `(start, "")` -- while still running the count, so
+                    // `matching_count` stays right. `DateTime::MIN_UTC` would be
+                    // the obvious sentinel and is outside `timestamptz`'s range.
+                    None => Some((start, String::new())),
+                }
+            }
             (None, None) => None,
         };
 
@@ -1509,8 +1545,9 @@ impl ObservabilityService {
             &super::sessions_sql::SessionListQuery {
                 caller,
                 start,
-                end: parse_iso(end_time),
+                end,
                 status,
+                level,
                 limit,
                 cursor,
             },
@@ -1519,25 +1556,35 @@ impl ObservabilityService {
     }
 
     /// The keyset anchor an `offset` would land on, for the legacy paging path.
-    /// One indexed scan of `offset` keys — no aggregates, no joins.
+    /// One indexed scan of `offset` keys — no aggregates, no joins. Same level
+    /// as the page (`$4` is the parent), so the offset counts the rows it lists.
     async fn cursor_at_offset(
         &self,
         caller: Option<uuid::Uuid>,
         start: chrono::DateTime<Utc>,
+        level: &super::sessions_sql::ListLevel,
         offset: i64,
     ) -> Result<Option<(chrono::DateTime<Utc>, String)>, ObservabilityError> {
-        sqlx::query_as::<_, (chrono::DateTime<Utc>, String)>(
-            "SELECT created_at, session_id FROM chat_sessions \
-             WHERE deleted_at IS NULL AND ($1::uuid IS NULL OR user_id = $1) AND created_at >= $2 \
-             ORDER BY created_at DESC, session_id DESC \
+        let window = match level {
+            super::sessions_sql::ListLevel::TopLevel => "AND s.created_at >= $2",
+            super::sessions_sql::ListLevel::ChildrenOf(_) => "",
+        };
+        let sql = format!(
+            "SELECT s.created_at, s.session_id FROM chat_sessions s \
+             WHERE s.deleted_at IS NULL AND ($1::uuid IS NULL OR s.user_id = $1) {window} \
+               AND {} \
+             ORDER BY s.created_at DESC, s.session_id DESC \
              LIMIT 1 OFFSET $3",
-        )
-        .bind(caller)
-        .bind(start)
-        .bind(offset - 1)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))
+            level.predicate()
+        );
+        sqlx::query_as::<_, (chrono::DateTime<Utc>, String)>(&sql)
+            .bind(caller)
+            .bind(start)
+            .bind(offset - 1)
+            .bind(level.parent())
+            .fetch_optional(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))
     }
 
     // ── 2. session/{session_id} ──────────────────────────────────────────────
@@ -1629,6 +1676,7 @@ impl ObservabilityService {
         // Postgres can never find its historical traces.
         let (title, start, end) = self.session_window(session_id).await;
         let details = self.provider.get_session(session_id, start, end).await?;
+        let lineage = super::subagents_sql::session_lineage(&self.db, session_id).await?;
 
         let trace_entries: Vec<TraceEntry> = details
             .traces
@@ -1734,6 +1782,10 @@ impl ObservabilityService {
                     cache_read_tokens: details.cache_read_tokens,
                     cache_creation_tokens: details.cache_creation_tokens,
                     metrics_complete: details.metrics_complete,
+                    parent_session_id: lineage.parent_session_id,
+                    spawn_tool_call_id: lineage.spawn_tool_call_id,
+                    subagent_type: lineage.subagent_type,
+                    subagents: lineage.subagents,
                     traces: trace_entries,
                     pagination: Pagination {
                         end_cursor,
@@ -2248,6 +2300,13 @@ impl ObservabilityService {
             .filter(|ids| !ids.is_empty())
             .map(|ids| ids.to_vec())
             .unwrap_or_default();
+        // A caller who sees only some agents aggregates only their rows, in SQL.
+        // Narrowing afterwards made every member's dashboard cost as much as the
+        // whole organization's history, and the summary figures summed straight
+        // from the rows (unpriced, estimated, unknown-confidence) counted other
+        // users' spend. `None`: the caller sees every agent.
+        let scoped_names: Option<Vec<String>> = (accessible.is_some() || parsed_owner_id.is_some())
+            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
 
         // Shared WHERE fragment: agent, model, provider, user_id filters.
         // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
@@ -2271,6 +2330,7 @@ impl ObservabilityService {
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
                GROUP BY agent_name"#;
 
         // 1. Current window
@@ -2282,6 +2342,7 @@ impl ObservabilityService {
             .bind(provider_filter)
             .bind(has_user_filter)
             .bind(&user_id_list)
+            .bind(&scoped_names)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2295,6 +2356,7 @@ impl ObservabilityService {
             .bind(provider_filter)
             .bind(has_user_filter)
             .bind(&user_id_list)
+            .bind(&scoped_names)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2313,6 +2375,7 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR model = $3)
                  AND ($4::TEXT IS NULL OR provider = $4)
                  AND (NOT $5::BOOL OR user_id = ANY($6::UUID[]))
+                 AND ($7::TEXT[] IS NULL OR agent_name = ANY($7))
                GROUP BY agent_name"#,
         )
         .bind(last_24h)
@@ -2321,6 +2384,7 @@ impl ObservabilityService {
         .bind(provider_filter)
         .bind(has_user_filter)
         .bind(&user_id_list)
+        .bind(&scoped_names)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2337,7 +2401,8 @@ impl ObservabilityService {
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
                  AND COALESCE(cost_usd, 0) = 0
-                 AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0"#,
+                 AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0
+                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))"#,
         )
         .bind(start)
         .bind(now)
@@ -2346,6 +2411,7 @@ impl ObservabilityService {
         .bind(provider_filter)
         .bind(has_user_filter)
         .bind(&user_id_list)
+        .bind(&scoped_names)
         .fetch_one(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;

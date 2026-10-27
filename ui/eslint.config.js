@@ -14,6 +14,8 @@ import tseslint from 'typescript-eslint'
 const PUBLIC = {
   agents: [
     'api',
+    // The Harnesses page's Token optimization switch names itself as the agent's does.
+    'copy',
     'types',
     'format',
     'normalize',
@@ -29,6 +31,8 @@ const PUBLIC = {
     'components/Markdown',
     'components/RequestCard',
     'api',
+    // The Overview's canvas chat box hands its question to a new routed chat as that chat's draft.
+    'drafts',
     'identity',
     'rememberTarget',
     'types',
@@ -56,7 +60,16 @@ const PUBLIC = {
   // Flows (plans/feat-flows.md): the call model and its duration format (the flow narrative), and "Open flow" (F19).
   // The agent hub's Flows list reads the list query (plans/feat-agent-centric.md eng PUBLIC adds).
   flows: ['calls', 'precision', 'components/OpenFlowLink', 'paused', 'api'],
-  harnesses: ['types', 'rollup', 'copy', 'api', 'constants', 'liveIndividual'],
+  // Monitor's note while the desktop imports coding agents.
+  harnesses: [
+    'types',
+    'rollup',
+    'copy',
+    'api',
+    'constants',
+    'liveIndividual',
+    'components/ImportNotice',
+  ],
   // The agent hub (plans/feat-agent-centric.md PR1a): the agent detail's Overview hosts its timeline.
   // The home's last change links a marker on the hub inside the hub's default window (PR2b).
   hub: ['components/HubTimeline', 'events', 'search'],

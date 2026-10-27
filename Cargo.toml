@@ -129,6 +129,11 @@ tabled = { version = "0.21", features = ["ansi"] }
 # directly here only for `oss/cli`'s own scoped SIGINT no-op guard (hitl.rs) — see its doc
 # comment for why dialoguer/console's own Ctrl+C handling can't be used for this instead.
 libc = "0.2"
+# Read-only access to coding agents' local history stores (OpenCode's opencode.db, Cursor's
+# state.vscdb) for `nasiko agents setup/import`. Pinned to 0.32 because it links the same
+# libsqlite3-sys (0.30) that sqlx's optional sqlite driver already puts in the lockfile — two
+# crates may not both link `sqlite3`.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"

@@ -14,7 +14,7 @@
     "design": "vite --config design/vite.config.ts",
     "build": "node scripts/app.ts typecheck && node scripts/app.ts build",
     "typecheck": "node scripts/app.ts typecheck",
-    "lint": "eslint . --max-warnings 0 && prettier --check .",
+    "lint": "eslint . --max-warnings 0 && prettier --check . && node scripts/check-spelling.ts",
     "test": "node scripts/app.ts typecheck && eslint . --max-warnings 0 && vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",

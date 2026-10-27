@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 
 use super::super::catalog::{AgentSpec, Support};
 use super::super::launcher;
-use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn};
+use super::super::model::{LlmCall, SessionSnapshot, ToolCall, Turn, subagent_parent};
 
-pub const INSTALL_VERSION: u32 = 7;
+pub const INSTALL_VERSION: u32 = 8;
 pub const SPEC: AgentSpec = AgentSpec {
     id: "opencode",
     display_name: "OpenCode",
@@ -25,10 +25,21 @@ pub const SPEC: AgentSpec = AgentSpec {
 
 const PLUGIN_NAME: &str = "nasiko-session-report.js";
 
+/// What the plugin sends (and an import rebuilds): a session's messages, and for a subagent's session
+/// the session that spawned it.
 #[derive(Debug, Deserialize)]
 struct HookPayload {
     session_id: String,
     messages: Vec<Value>,
+    /// The spawning session, for a subagent's (OpenCode's `parentID`).
+    #[serde(default)]
+    parent_id: Option<String>,
+    /// The agent the session runs: a name, or an object naming it.
+    #[serde(default)]
+    agent: Option<Value>,
+    /// The parent's `task` tool call that spawned this session, when known.
+    #[serde(default)]
+    tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,12 +153,26 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
             raw.chars().take(200).collect::<String>()
         )
     })?;
+    let parent = payload.parent_id.as_deref().and_then(|parent_id| {
+        subagent_parent(
+            &payload.session_id,
+            parent_id,
+            payload.tool_call_id.as_deref(),
+            payload.agent.as_ref().and_then(agent_name),
+        )
+    });
     let messages = normalize_messages(payload.messages)?;
     Ok(SessionSnapshot {
         session_id: payload.session_id,
         title: None,
         turns: turns_from_messages(&messages),
+        parent,
     })
+}
+
+/// An agent as OpenCode names it: the string itself, or an object's `name`.
+fn agent_name(agent: &Value) -> Option<&str> {
+    agent.as_str().or_else(|| agent.get("name")?.as_str())
 }
 
 fn plugin_path() -> PathBuf {
@@ -170,6 +195,27 @@ fn plugin_body(script: &Path) -> String {
 export default {{
   id: "nasiko.session-report",
   async server({{ client }}) {{
+    // A session's parent and agent never change, so each is looked up once. A subagent's session
+    // carries its parent, which links it to the session that spawned it. A failed lookup isn't
+    // kept, so the next turn asks again.
+    const sessions = new Map()
+    const sessionInfo = (sessionID) => {{
+      if (typeof client.session.get !== "function") return Promise.resolve({{}})
+      if (!sessions.has(sessionID)) {{
+        sessions.set(sessionID, client.session.get({{ path: {{ id: sessionID }} }}).then(
+          (response) => {{
+            const info = response?.data
+            if (!info) sessions.delete(sessionID)
+            return {{ parent_id: info?.parentID || undefined, agent: info?.agent || undefined }}
+          }},
+          () => {{
+            sessions.delete(sessionID)
+            return {{}}
+          }},
+        ))
+      }}
+      return sessions.get(sessionID)
+    }}
     return {{
       event: async ({{ event }}) => {{
         if (event.type !== "session.idle") return
@@ -179,7 +225,8 @@ export default {{
           const response = await client.session.messages({{ path: {{ id: sessionID }} }})
           const messages = response?.data
           if (!Array.isArray(messages)) return
-          const payload = JSON.stringify({{ session_id: sessionID, messages }})
+          const session = await sessionInfo(sessionID)
+          const payload = JSON.stringify({{ session_id: sessionID, ...session, messages }})
           const process = Bun.spawn([{script}], {{
             stdin: new TextEncoder().encode(payload), stdout: "ignore", stderr: "ignore",
           }})
@@ -565,6 +612,8 @@ mod tests {
         assert!(body.contains("async server({ client })"));
         assert!(body.contains("event.properties?.sessionID"));
         assert!(body.contains("client.session.messages({ path: { id: sessionID } })"));
+        assert!(body.contains("client.session.get({ path: { id: sessionID } })"));
+        assert!(body.contains("parent_id: info?.parentID"));
         assert!(!body.contains("setup(ctx)"));
         assert!(body.contains("process.exited.then"));
         assert_eq!(launcher::version_marker(&body), Some(INSTALL_VERSION));
@@ -599,10 +648,14 @@ globalThis.Bun = {
 }
 const plugin = (await import(pathToFileURL(process.argv[1]).href)).default
 if (typeof plugin?.server !== "function") throw new Error("default export lacks server()")
-const client = { session: { messages: async ({ path }) => ({ data: [{ info: { id: path.id } }] }) } }
+const client = { session: {
+  messages: async ({ path }) => ({ data: [{ info: { id: path.id } }] }),
+  get: async ({ path }) => ({ data: { id: path.id, parentID: path.id === "ses_child" ? "ses_1" : undefined } }),
+} }
 const hooks = await plugin.server({ client })
 await hooks.event({ event: { type: "message.updated", properties: { sessionID: "ignored" } } })
 await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_1" } } })
+await hooks.event({ event: { type: "session.idle", properties: { sessionID: "ses_child" } } })
 console.log(JSON.stringify({ id: plugin.id, spawned }))
 "#;
         let output = std::process::Command::new(node)
@@ -618,11 +671,39 @@ console.log(JSON.stringify({ id: plugin.id, spawned }))
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["id"], "nasiko.session-report");
         let spawned = result["spawned"].as_array().unwrap();
-        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned.len(), 2);
         assert_eq!(spawned[0]["argv"][0], "/tmp/report script");
         let payload: Value = serde_json::from_str(spawned[0]["stdin"].as_str().unwrap()).unwrap();
         assert_eq!(payload["session_id"], "ses_1");
         assert_eq!(payload["messages"][0]["info"]["id"], "ses_1");
+        assert!(payload.get("parent_id").is_none());
+        let child: Value = serde_json::from_str(spawned[1]["stdin"].as_str().unwrap()).unwrap();
+        assert_eq!(child["session_id"], "ses_child");
+        assert_eq!(child["parent_id"], "ses_1");
+    }
+
+    #[test]
+    fn a_subagent_session_is_linked_to_the_session_that_spawned_it() {
+        let payload = r#"{"session_id":"ses_child","parent_id":"ses_root","agent":"explore","tool_call_id":"call-1","messages":[
+          {"info":{"id":"u","role":"user","time":{"created":1000}},"parts":[{"type":"text","text":"Look"}]},
+          {"info":{"id":"a","role":"assistant","parentID":"u","finish":"stop","time":{"created":1100,"completed":1200},"tokens":{"input":1,"output":1}},"parts":[{"type":"text","text":"Found"}]}
+        ]}"#;
+
+        let snapshot = snapshot(payload).unwrap();
+
+        let parent = snapshot.parent.unwrap();
+        assert_eq!(parent.source_id, "ses_root");
+        assert_eq!(parent.tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(parent.agent_type.as_deref(), Some("explore"));
+        let named =
+            r#"{"session_id":"c","parent_id":"p","agent":{"name":"general"},"messages":[]}"#;
+        assert_eq!(snapshot_agent_type(named).as_deref(), Some("general"));
+        let root = r#"{"session_id":"s","messages":[]}"#;
+        assert!(super::snapshot(root).unwrap().parent.is_none());
+    }
+
+    fn snapshot_agent_type(raw: &str) -> Option<String> {
+        snapshot(raw).unwrap().parent?.agent_type
     }
 
     #[test]

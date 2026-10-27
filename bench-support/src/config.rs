@@ -109,6 +109,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         s3_access_key: "nasiko".into(),
         s3_secret_key: "nasiko123".into(),
         s3_region: "us-east-1".into(),
+        assessment_intake_url: None,
         secrets_encryption_key: "12345678901234567890123456789012".into(),
         oci_storage_bucket: "nasiko-bench-artifacts".into(),
         agent_image_registry: String::new(),
@@ -143,6 +144,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         otel_collector_endpoint: "http://localhost:4318".into(),
         otel_capture_content: false,
         coding_agent_otlp_endpoint: None,
+        coding_agent_ingest: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         // Off for benches so they never reach out to a provider or to Portkey.

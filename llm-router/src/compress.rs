@@ -131,6 +131,82 @@ pub(crate) fn apply(
     stats
 }
 
+/// What a compression pass leaves for the usage row: its metadata block and, when it really reduced
+/// the payload, the `(bytes_in, bytes_out)` the savings ledger credits.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Ledger {
+    pub metadata: Option<Value>,
+    pub bytes: Option<(usize, usize)>,
+}
+
+impl CompressionStats {
+    pub(crate) fn ledger(&self) -> Ledger {
+        Ledger {
+            metadata: self.to_metadata(),
+            bytes: self.applied.then_some((self.bytes_in, self.bytes_out)),
+        }
+    }
+}
+
+/// The Responses item types that carry a tool's result: Codex's function tools, and its freeform
+/// (`apply_patch`-style) custom tools.
+const RESPONSES_TOOL_OUTPUTS: [&str; 2] = ["function_call_output", "custom_tool_call_output"];
+
+/// [`apply`] for the Responses surface (`/v1/responses`, Codex), on the raw `input` array: its
+/// tool results are items, not `role: "tool"` messages. The same rule as [`apply`] holds — an item
+/// is picked by its type alone and compressed as a pure function of its own content — so the
+/// stable prefix providers cache on stays stable. `output` is a string, or an array of text parts.
+pub(crate) fn apply_responses_input(
+    input: &mut Value,
+    policy: &Policy<'_>,
+    recovery: Option<Recovery>,
+) -> CompressionStats {
+    let mut stats = CompressionStats {
+        level: policy.level.as_label(),
+        dry_run: policy.dry_run,
+        ..Default::default()
+    };
+    if !policy.enabled {
+        return stats;
+    }
+    let Some(items) = input.as_array_mut() else {
+        return stats;
+    };
+
+    let started = Instant::now();
+    for item in items.iter_mut() {
+        let is_output = item
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| RESPONSES_TOOL_OUTPUTS.contains(&kind));
+        if !is_output {
+            continue;
+        }
+        match item.get_mut("output") {
+            Some(Value::String(text)) => compress_str(text, policy, recovery, &mut stats),
+            Some(Value::Array(parts)) => {
+                for part in parts.iter_mut() {
+                    // `input_text`/`output_text`; images and files pass untouched.
+                    let is_text = part
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| kind.ends_with("text"));
+                    if !is_text {
+                        continue;
+                    }
+                    if let Some(Value::String(text)) = part.get_mut("text") {
+                        compress_str(text, policy, recovery, &mut stats);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    stats.applied = !policy.dry_run && stats.bytes_out < stats.bytes_in;
+    stats.elapsed_us = started.elapsed().as_micros() as u64;
+    stats
+}
+
 fn compress_content(
     content: &mut Value,
     policy: &Policy<'_>,
@@ -258,6 +334,59 @@ mod tests {
 
     fn recovery() -> Option<Recovery> {
         Some(Recovery { min_bytes: 0 })
+    }
+
+    // ── the Responses surface (Codex) ───────────────────────────────────────
+
+    #[test]
+    fn responses_tool_outputs_are_compressed_and_everything_else_is_left_alone() {
+        let log = noisy_log();
+        let mut input = json!([
+            {"role": "user", "content": [{"type": "input_text", "text": log}]},
+            {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": log},
+            {"type": "custom_tool_call_output", "call_id": "c2",
+             "output": [{"type": "input_text", "text": log}, {"type": "input_image", "image_url": "x"}]},
+        ]);
+
+        let stats = apply_responses_input(&mut input, &on(), None);
+
+        assert_eq!(stats.messages_touched, 2);
+        assert!(stats.applied && stats.bytes_out < stats.bytes_in);
+        assert!(input[2]["output"].as_str().unwrap().len() < log.len());
+        assert!(input[3]["output"][0]["text"].as_str().unwrap().len() < log.len());
+        assert_eq!(input[3]["output"][1]["image_url"], "x");
+        // The user's own words are never compressed, whatever they contain.
+        assert_eq!(input[0]["content"][0]["text"], log.as_str());
+        let ledger = stats.ledger();
+        assert_eq!(ledger.bytes, Some((stats.bytes_in, stats.bytes_out)));
+        assert!(ledger.metadata.is_some());
+    }
+
+    #[test]
+    fn responses_compression_is_off_unless_the_agent_opted_in() {
+        let mut input =
+            json!([{"type": "function_call_output", "call_id": "c1", "output": noisy_log()}]);
+        let before = input.clone();
+
+        let stats = apply_responses_input(&mut input, &Policy::default(), None);
+
+        assert_eq!(input, before);
+        assert_eq!(stats.messages_touched, 0);
+        assert_eq!(stats.ledger().bytes, None);
+    }
+
+    #[test]
+    fn responses_compression_is_the_same_bytes_every_turn() {
+        // The stable prefix: the same output item renders identically however much follows it.
+        let item = json!({"type": "function_call_output", "call_id": "c1", "output": noisy_log()});
+        let mut one = json!([item.clone()]);
+        let mut two = json!([item, {"role": "user", "content": "next"}]);
+
+        apply_responses_input(&mut one, &on(), None);
+        apply_responses_input(&mut two, &on(), None);
+
+        assert_eq!(one[0], two[0]);
     }
 
     #[test]

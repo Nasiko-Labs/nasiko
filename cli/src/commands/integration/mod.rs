@@ -4,16 +4,28 @@
 //! drives setup. [`install`] registers an agent in the control plane (or reuses the one LLM
 //! routing already uses) and installs a hook that durably queues completed turns for delivery
 //! to the cluster and account reporting was installed for — not whichever is active later.
+//! `nasiko agents setup` installs every detected agent and imports the sessions they kept from
+//! before (`import`), newest first, reporting its progress to the server (`onboarding`).
 
 mod agents;
+mod background;
+mod backlog;
 mod catalog;
 mod control_plane;
+mod courier;
+mod import;
 mod launcher;
+mod ledger;
 mod model;
+mod onboarding;
+mod pace;
 mod queue;
 mod report;
+mod sanitize;
+mod setup;
 mod state;
 mod sync;
+mod windows;
 
 use anyhow::{Context, Result, bail};
 use nasiko_utils::term;
@@ -21,7 +33,10 @@ use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
+use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
+
+pub use setup::SetupOptions;
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
@@ -240,8 +255,100 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-pub fn sync() -> Result<()> {
-    sync::run()
+/// `nasiko agents sync` — see [`setup::sync`].
+pub fn sync(retry_rejected: bool) -> Result<()> {
+    setup::sync(retry_rejected)
+}
+
+/// `nasiko agents setup` — see [`setup`].
+pub fn setup(options: SetupOptions) -> Result<()> {
+    setup::setup(options)
+}
+
+/// `nasiko agents import` — see [`setup`].
+pub fn import() -> Result<()> {
+    setup::import()
+}
+
+/// `nasiko agents status` — see [`setup::status`].
+pub fn import_status() -> Result<()> {
+    setup::status()
+}
+
+/// `nasiko agents import-worker`, which `nasiko agents setup` starts in the background — see
+/// [`setup::import_worker`].
+pub fn import_worker() -> Result<()> {
+    setup::import_worker()
+}
+
+/// Every catalogued agent as a sync-report row: on this computer, and connected, as they stand now.
+fn agent_rows() -> Vec<AgentReport> {
+    let settings = IntegrationState::load().unwrap_or_default();
+    Agent::ALL
+        .iter()
+        .copied()
+        .map(|agent| {
+            onboarding::agent_row(
+                agent,
+                detect(agent).is_present(),
+                agent.is_instrumented() && settings.get(agent.spec().id).is_some(),
+            )
+        })
+        .collect()
+}
+
+/// `nasiko agents setup`'s connect step: brings every installed hook up to date, then installs
+/// reporting for each detected agent that has none. Running setup is the user's OK, so an agent
+/// declined at login is installed too. One broken adapter must not block the others.
+fn auto_install_detected() -> Result<()> {
+    if let Err(error) = refresh_outdated_hooks() {
+        term::print_warning(&format!("Reporting hooks were not refreshed ({error:#})."));
+    }
+    let settings = IntegrationState::load()?;
+    let agents: Vec<_> = Agent::ALL
+        .iter()
+        .copied()
+        .filter(|agent| agent.spec().support == Support::Instrumented)
+        .filter(|agent| detect(*agent).is_present())
+        .collect();
+    if agents.is_empty() {
+        println!("No supported local coding agents detected.");
+        return Ok(());
+    }
+
+    println!("\nConfiguring detected coding agents for this account...");
+    let mut installed = 0usize;
+    for agent in agents {
+        let spec = agent.spec();
+        let connect_hint = format!(
+            "{} connect {} --no-routing --reporting",
+            crate::commands::local_agents::cli_name(),
+            spec.id
+        );
+        if settings.get(spec.id).is_some() {
+            term::print_info(&format!(
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {}",
+                spec.display_name,
+                term::cyan(&connect_hint)
+            ));
+            installed += 1;
+            continue;
+        }
+        match install(InstallOptions {
+            agent_id: spec.id,
+            no_content: false,
+            agent_name: None,
+        }) {
+            Ok(()) => installed += 1,
+            Err(error) => term::print_warning(&format!(
+                "Setting up {} failed ({error:#}). Retry with: {}",
+                spec.display_name,
+                term::cyan_stderr(&connect_hint)
+            )),
+        }
+    }
+    println!("Coding-agent setup completed for {installed} agent(s).");
+    Ok(())
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
@@ -371,6 +478,7 @@ pub fn auto_install_if_authenticated() {
     if let Err(error) = refresh_outdated_hooks() {
         term::print_warning(&format!("Reporting hooks were not refreshed ({error:#})."));
     }
+    // Asks first; nothing new is installed without a yes.
     if let Err(error) = crate::commands::local_agents::offer_reporting() {
         term::print_warning(&format!(
             "Session reporting was not set up ({error:#}). Turn it on with: {}",
@@ -380,6 +488,8 @@ pub fn auto_install_if_authenticated() {
             ))
         ));
     }
+    // Importing past sessions is only ever started by the user.
+    setup::print_setup_hint();
 }
 
 // ─── Detection ───────────────────────────────────────────────────────────────

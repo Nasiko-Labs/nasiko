@@ -13,21 +13,53 @@ const BATCH: i64 = 8;
 const RETRY_AFTER: &str = "30 seconds";
 
 /// Materialize a bounded batch, acknowledging only verified, successfully written usage.
+///
+/// Since ingest writes a turn's `trace_usage` row itself (`coding_agent_usage`)
+/// and marks the receipt materialized in the same transaction, only receipts
+/// accepted before that change reach this path; a receipt with
+/// `materialized_at` set is never read back, so it can never gain a second row.
+///
+/// Live turns before historical ones, round-robin across users, newest first
+/// within each user: after a history import the backlog can be thousands of one
+/// user's receipts, and neither another user's live turn nor this user's recent
+/// sessions should wait behind it. A turn is historical when it ended more than
+/// `HISTORICAL_AFTER` before the server received it — the rule ingest stores
+/// as `otlp_historical`, computed here because these receipts predate the
+/// column.
+///
+/// Stateless between passes: a receipt stays claimable until a pass records its
+/// outcome, so one a crashed or restarted server left mid-flight is simply read
+/// back again by the next pass, and the idempotent upsert keeps it one row.
 pub async fn materialize_once(
     db: &PgPool,
     provider: &dyn ObservabilityProvider,
     sessions: &dyn SessionIdResolver,
 ) -> anyhow::Result<usize> {
     let pending: Vec<(Uuid, String, String, Value)> = sqlx::query_as(
-        "SELECT user_id, event_id, session_id, payload
-           FROM coding_agent_telemetry_events
-          WHERE otlp_trace_delivered_at IS NOT NULL
-            AND materialized_at IS NULL
-            AND materialize_next_attempt_at <= now()
-          ORDER BY materialize_next_attempt_at
-          LIMIT $1",
+        "WITH ready AS (
+             SELECT user_id, event_id, captured_at,
+                    received_at - captured_at > $2::interval AS historical
+               FROM coding_agent_telemetry_events
+              WHERE otlp_trace_delivered_at IS NOT NULL
+                AND materialized_at IS NULL
+                AND materialize_next_attempt_at <= now()
+         ),
+         chosen AS (
+             SELECT user_id, event_id, captured_at, historical,
+                    row_number() OVER (PARTITION BY user_id
+                                       ORDER BY historical, captured_at DESC) AS user_turn
+               FROM ready
+              ORDER BY historical, user_turn, captured_at DESC
+              LIMIT $1
+         )
+         SELECT e.user_id, e.event_id, e.session_id, e.payload
+           FROM chosen
+           JOIN coding_agent_telemetry_events e
+             ON e.user_id = chosen.user_id AND e.event_id = chosen.event_id
+          ORDER BY chosen.historical, chosen.user_turn, chosen.captured_at DESC",
     )
     .bind(BATCH)
+    .bind(crate::coding_agent_telemetry::HISTORICAL_AFTER)
     .fetch_all(db)
     .await?;
 

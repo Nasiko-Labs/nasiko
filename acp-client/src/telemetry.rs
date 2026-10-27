@@ -275,6 +275,8 @@ impl TurnTelemetry {
                 id: coding_agent_session_id(&self.agent_id, &self.source_session_id),
                 source_id: self.source_session_id.clone(),
                 title: None,
+                // The server opens every ACP session itself; none is another session's subagent.
+                parent: None,
             },
             turn,
             capture_policy: effective_policy,
