@@ -5,12 +5,16 @@
 
 use nasiko_compress::{ContentType, Level, Policy, TypeMask, compress, contains_marker, detect};
 
+/// Every type, the most aggressive level, and a recovery handle — the handle is what licenses
+/// irreversible cuts (JSON item and string elision), so without it these invariants would only
+/// ever see the lossless rewrite.
 fn everything_on() -> Policy<'static> {
     Policy {
         enabled: true,
         min_bytes: 0,
         types: TypeMask::ALL,
         level: Level::Aggressive,
+        recovery_ref: Some("h-invariants"),
         ..Default::default()
     }
 }
@@ -176,6 +180,31 @@ fn i7_every_elision_leaves_a_counted_marker() {
             out.text().chars().any(|c| c.is_ascii_digit()),
             "{name} marker carries no count"
         );
+    }
+}
+
+/// Without a recovery handle nothing JSON-shaped may be lost: whatever comes back must parse to
+/// exactly the input value, at every level.
+#[test]
+fn json_without_a_recovery_handle_never_loses_data() {
+    for level in [Level::Conservative, Level::Balanced, Level::Aggressive] {
+        let policy = Policy {
+            recovery_ref: None,
+            level,
+            ..everything_on()
+        };
+        for (name, input) in corpus() {
+            if detect(&input) != ContentType::Json {
+                continue;
+            }
+            let out = compress(&input, &policy);
+            let before: serde_json::Value = serde_json::from_str(&input).unwrap();
+            let after: serde_json::Value = serde_json::from_str(out.text()).unwrap();
+            assert_eq!(
+                before, after,
+                "{name} lost data at {level:?} without a handle"
+            );
+        }
     }
 }
 
