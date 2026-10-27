@@ -54,6 +54,17 @@ impl LocalEndpoint {
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
     }
+
+    /// What makes two endpoints the same socket: the port, and the address
+    /// unless it is a loopback one. A wildcard bind is probed on its family's
+    /// loopback, and a server listening on both families (`0.0.0.0` and `::`)
+    /// is one process, so `127.0.0.1` and `[::1]` count as one address and it
+    /// is asked once. Processes bound to different specific addresses (a LAN
+    /// IP and loopback) on one port are different servers, probed apart.
+    fn address(&self) -> (u16, Option<&str>) {
+        let loopback = matches!(self.host.as_str(), "127.0.0.1" | "[::1]");
+        (self.port, (!loopback).then_some(self.host.as_str()))
+    }
 }
 
 /// What owns an endpoint.
@@ -89,7 +100,7 @@ pub fn default_sources() -> Vec<Box<dyn EndpointSource>> {
 }
 
 /// Run every source in parallel and merge the results; the first source wins
-/// for a port. Dropped: `excluded_ports`, ports published by platform-deployed
+/// for an [address](LocalEndpoint::address). Dropped: `excluded_ports`, ports published by platform-deployed
 /// containers, and endpoints of known non-HTTP services.
 pub fn collect(sources: &[Box<dyn EndpointSource>], excluded_ports: &[u16]) -> EndpointScan {
     let results: Vec<Result<Vec<LocalEndpoint>, String>> = std::thread::scope(|scope| {
@@ -124,7 +135,7 @@ pub fn collect(sources: &[Box<dyn EndpointSource>], excluded_ports: &[u16]) -> E
         .into_iter()
         .filter(|endpoint| !skipped.contains(&endpoint.port))
         .filter(|endpoint| !is_non_http_service(endpoint))
-        .filter(|endpoint| seen.insert(endpoint.port))
+        .filter(|endpoint| seen.insert(owned(endpoint.address())))
         .collect();
     EndpointScan {
         endpoints,
@@ -293,13 +304,20 @@ impl EndpointSource for ListeningSockets {
 }
 
 /// `named` (from `lsof`, with process names) plus every socket in `all` (from
-/// `/proc`) on a port `named` does not cover.
+/// `/proc`) at an [address](LocalEndpoint::address) `named` does not cover.
 fn with_names(named: Vec<LocalEndpoint>, all: Vec<LocalEndpoint>) -> Vec<LocalEndpoint> {
-    let covered: HashSet<u16> = named.iter().map(|endpoint| endpoint.port).collect();
+    let covered: HashSet<_> = named
+        .iter()
+        .map(|endpoint| owned(endpoint.address()))
+        .collect();
     let unnamed = all
         .into_iter()
-        .filter(|endpoint| !covered.contains(&endpoint.port));
+        .filter(|endpoint| !covered.contains(&owned(endpoint.address())));
     named.into_iter().chain(unnamed).collect()
+}
+
+fn owned((port, host): (u16, Option<&str>)) -> (u16, Option<String>) {
+    (port, host.map(str::to_string))
 }
 
 /// Listening sockets from `/proc/net/tcp{,6}`; `None` where those files do
@@ -316,7 +334,6 @@ fn proc_net_listening() -> Option<Vec<LocalEndpoint>> {
     let endpoints = tables
         .iter()
         .flat_map(|table| parse_proc_net_tcp(table))
-        .filter(|(_, port)| seen.insert(*port))
         .map(|(host, port)| LocalEndpoint {
             host,
             port,
@@ -324,6 +341,7 @@ fn proc_net_listening() -> Option<Vec<LocalEndpoint>> {
                 command: "-".into(),
             },
         })
+        .filter(|endpoint| seen.insert(owned(endpoint.address())))
         .collect();
     Some(endpoints)
 }
@@ -617,6 +635,40 @@ mod tests {
         );
     }
 
+    fn process_at(host: &str, port: u16, command: &str) -> LocalEndpoint {
+        LocalEndpoint {
+            host: host.into(),
+            ..process(port, command)
+        }
+    }
+
+    #[test]
+    fn two_processes_on_one_port_at_different_addresses_are_both_kept() {
+        let sources: Vec<Box<dyn EndpointSource>> = vec![Box::new(Fixed(vec![
+            process(8000, "python3"),
+            process_at("192.168.1.20", 8000, "node"),
+        ]))];
+        assert_eq!(
+            collect(&sources, &[]).endpoints,
+            vec![
+                process(8000, "python3"),
+                process_at("192.168.1.20", 8000, "node")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_server_on_both_loopbacks_is_probed_once() {
+        let sources: Vec<Box<dyn EndpointSource>> = vec![Box::new(Fixed(vec![
+            process(3000, "node"),
+            process_at("[::1]", 3000, "node"),
+        ]))];
+        assert_eq!(
+            collect(&sources, &[]).endpoints,
+            vec![process(3000, "node")]
+        );
+    }
+
     #[test]
     fn collect_skips_excluded_platform_and_non_http_endpoints() {
         let sources: Vec<Box<dyn EndpointSource>> = vec![
@@ -794,11 +846,19 @@ mod tests {
         // `lsof` named this user's agent; `/proc` also lists root's Docker
         // forwarder and the agent again.
         let named = vec![process(8000, "python3")];
-        let all = vec![process(8000, "-"), process(8090, "-")];
+        let all = vec![
+            process(8000, "-"),
+            process(8090, "-"),
+            process_at("10.0.0.5", 8000, "-"),
+        ];
 
         assert_eq!(
             with_names(named, all),
-            vec![process(8000, "python3"), process(8090, "-")]
+            vec![
+                process(8000, "python3"),
+                process(8090, "-"),
+                process_at("10.0.0.5", 8000, "-")
+            ]
         );
     }
 
