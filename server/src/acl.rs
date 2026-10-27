@@ -6,11 +6,10 @@ use tokio::sync::Mutex;
 use tracing::warn;
 use uuid::Uuid;
 
-use nasiko_react_agent::CallGuard;
+use nasiko_react_agent::{BeforeCallFuture, CallGuard};
+use nasiko_types::agent_call::{AgentCallMeter, UnmeteredCall};
 
 use nasiko_flow::{FlowContext, FlowGuard};
-
-use crate::spend_gate::SpendGate;
 
 /// Edition-aware per-agent access check — the single entry point handlers should use.
 ///
@@ -159,16 +158,14 @@ pub async fn allowed_targets(db: &PgPool, caller_agent_id: Uuid) -> Result<Vec<U
 }
 
 /// CallGuard implementation for the CP orchestrator.
-/// Enforces ACL, flow depth/fan-out/cycle/token limits before each agent call.
+/// Enforces ACL, flow depth/fan-out/cycle/token limits before each agent call, and counts each
+/// call that goes ahead as in flight to its target until the orchestrator drops the handle.
 pub struct CpCallGuard {
     pub db: PgPool,
     pub flow_guard: FlowGuard,
     pub flow_ctx: Mutex<FlowContext>,
     pub caller_agent_id: Option<Uuid>,
-    /// Asked before each of the orchestrator's own model calls, for this user and chat.
-    pub spend_gate: Arc<dyn SpendGate>,
-    pub user_id: Uuid,
-    pub chat_session_id: String,
+    pub agent_calls: Arc<dyn AgentCallMeter>,
 }
 
 impl CpCallGuard {
@@ -177,27 +174,20 @@ impl CpCallGuard {
         flow_guard: FlowGuard,
         flow_ctx: FlowContext,
         caller_agent_id: Option<Uuid>,
-        spend_gate: Arc<dyn SpendGate>,
-        user_id: Uuid,
-        chat_session_id: String,
+        agent_calls: Arc<dyn AgentCallMeter>,
     ) -> Arc<Self> {
         Arc::new(Self {
             db,
             flow_guard,
             flow_ctx: Mutex::new(flow_ctx),
             caller_agent_id,
-            spend_gate,
-            user_id,
-            chat_session_id,
+            agent_calls,
         })
     }
 }
 
 impl CallGuard for CpCallGuard {
-    fn before_call(
-        &self,
-        target_agent: &str,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+    fn before_call(&self, target_agent: &str) -> BeforeCallFuture<'_> {
         let target = target_agent.to_string();
         Box::pin(async move {
             let ctx = self.flow_ctx.lock().await;
@@ -236,14 +226,19 @@ impl CallGuard for CpCallGuard {
             // unresolvable target only skips the record (its own gateway calls
             // will then be denied), it never blocks the A2A call itself.
             match target_id {
-                Ok(id) => crate::flows::record_participant(&self.db, &ctx.flow_id, id).await,
-                Err(e) => warn!(
-                    %e, target = %target, flow_id = %ctx.flow_id,
-                    "flow participant not recorded: target agent unresolved"
-                ),
+                Ok(id) => {
+                    crate::flows::record_participant(&self.db, &ctx.flow_id, id).await;
+                    Ok(self.agent_calls.begin(id))
+                }
+                Err(e) => {
+                    warn!(
+                        %e, target = %target, flow_id = %ctx.flow_id,
+                        "flow participant not recorded: target agent unresolved"
+                    );
+                    // Per-agent load is keyed by agent id; with none there is nothing to count.
+                    Ok(Box::new(UnmeteredCall))
+                }
             }
-
-            Ok(())
         })
     }
 
@@ -260,21 +255,6 @@ impl CallGuard for CpCallGuard {
                 && let Err(e) = self.flow_guard.record_tokens(&ctx, tokens_used).await
             {
                 warn!(%e, "flow token budget exceeded after call");
-            }
-        })
-    }
-
-    fn before_completion(
-        &self,
-    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
-        Box::pin(async move {
-            match self
-                .spend_gate
-                .refuse(self.user_id, &self.chat_session_id)
-                .await
-            {
-                Some(reason) => Err(reason),
-                None => Ok(()),
             }
         })
     }

@@ -55,13 +55,6 @@ pub struct GatewayConfig {
     /// unset too; `LLM_ATTRIBUTION_WINDOW_SECS` still overrides both.
     pub attribution_window_secs: u64,
 
-    /// Longest a provider connection may go without receiving a byte before the call
-    /// fails. A read timeout, not a total one: it restarts on every chunk, so a stream
-    /// that keeps arriving is never cut, while a non-streaming call (silent until its
-    /// reply is ready) is bounded by it. Default 300. Keep it below the calling
-    /// agent's own LLM-client timeout, or the agent retries while the router still waits.
-    pub provider_timeout_secs: u64,
-
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
     pub model_catalog_sync_interval_secs: u64,
@@ -218,7 +211,6 @@ impl Default for GatewayConfig {
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
-            provider_timeout_secs: 300,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -300,16 +292,6 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
-            // Zero would fail every provider call on its first read.
-            provider_timeout_secs: parse_or_warn(
-                "LLM_PROVIDER_TIMEOUT_SECS",
-                |raw| match raw.trim().parse::<u64>() {
-                    Ok(0) => Err("must be at least 1".to_string()),
-                    Ok(secs) => Ok(secs),
-                    Err(e) => Err(e.to_string()),
-                },
-                d.provider_timeout_secs,
-            ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -519,18 +501,5 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn provider_timeout_defaults_to_300_and_rejects_zero() {
-        const KEY: &str = "LLM_PROVIDER_TIMEOUT_SECS";
-        unsafe { std::env::remove_var(KEY) };
-        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
-        unsafe { std::env::set_var(KEY, "45") };
-        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 45);
-        unsafe { std::env::set_var(KEY, "0") };
-        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
-        unsafe { std::env::remove_var(KEY) };
     }
 }

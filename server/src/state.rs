@@ -10,6 +10,7 @@ use sqlx::PgPool;
 use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
+use crate::agent_scaling::{AgentScaling, SingleReplica};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -24,6 +25,9 @@ pub struct AppState {
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
+    /// The client every server-to-agent call goes through (see `agent_client`): no idle
+    /// connections, so requests spread across an agent's replicas.
+    pub agent_client: reqwest::Client,
     pub auth: Arc<dyn AuthService>,
     pub mcp: nasiko_mcp_gateway::McpState,
     pub flow_guard: FlowGuard,
@@ -36,10 +40,15 @@ pub struct AppState {
     /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
     /// replaces it, the same way it replaces `routing_engine`.
     pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
-    /// Asked before each of the chat orchestrator's own model calls. OSS wires
-    /// `NoSpendGate`, which never refuses; the EE composition root replaces it
-    /// with its budget check.
-    pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// What the MAF worker runs each queued workflow through. OSS wires
+    /// `LinearMafExecutor` (steps in array order); the EE composition root
+    /// replaces it before the app is built, the same way it replaces
+    /// `routing_engine`, so the worker started by the app sees the swap.
+    pub maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor>,
+    /// What the MAF workflow routes consult beyond their own checks when a
+    /// workflow is saved or run. OSS wires `NoMafWorkflowPolicy`, which changes
+    /// nothing; the EE composition root replaces it.
+    pub maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy>,
     /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
     /// agent runs. OSS default is a no-op; the EE composition root installs the real
     /// implementation through this cell (`SwappablePromptContext::install`, not a plain
@@ -53,6 +62,11 @@ pub struct AppState {
     /// cell (`SwappableAgentDeletionHook::install`, not a plain reassignment) for the same reason
     /// `prompt_context` does — see that field's doc comment and `agent_lifecycle` module docs.
     pub agent_deletion_hook: Arc<SwappableAgentDeletionHook>,
+    /// Decides the replica bounds of every agent deploy and whether an autoscaler owns the
+    /// count. A constructor argument (`from_config_with_scaling`), not a swappable cell: the
+    /// build worker and HITL dispatcher copy `AppState` while it is built. OSS wires
+    /// `SingleReplica`.
+    pub agent_scaling: Arc<dyn AgentScaling>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -147,6 +161,20 @@ impl AppState {
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
         db: PgPool,
     ) -> Self {
+        let agent_scaling = Arc::new(SingleReplica::new(runtime.clone()));
+        Self::from_config_with_scaling(config, auth, runtime, oci_storage, db, agent_scaling).await
+    }
+
+    /// [`from_config_with_db`](Self::from_config_with_db) with the edition's replica policy
+    /// instead of the single-replica default.
+    pub async fn from_config_with_scaling(
+        config: Config,
+        auth: Arc<dyn AuthService>,
+        runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
+        db: PgPool,
+        agent_scaling: Arc<dyn AgentScaling>,
+    ) -> Self {
         let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
 
         // Fail fast, exactly as the Postgres connect above does. This was
@@ -168,23 +196,28 @@ impl AppState {
         let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         // Shared client for short, bounded calls: embeddings, registry probes,
-        // OAuth, provider requests. Agent hops are *not* short — every call site
-        // that forwards to an agent container overrides this per-request with
-        // `config.agent_call_timeout_secs` rather than raising the default here
-        // and handing every other caller a ten-minute hang.
+        // OAuth, provider requests. Agent hops are *not* short, and go through
+        // `agent_client` instead.
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("failed to build http client");
+        // Agent calls set their own per-request timeout where they need one other
+        // than the agent-call budget.
+        let agent_client = crate::agent_client::build(std::time::Duration::from_secs(
+            config.agent_call_timeout_secs,
+        ));
 
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
         );
         let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
-        let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
-            Arc::new(crate::spend_gate::NoSpendGate);
+        let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
+            Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
+        let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
+            Arc::new(crate::maf_policy::NoMafWorkflowPolicy);
         let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
             crate::prompt_context::NoopPromptContextProvider,
         )));
@@ -254,9 +287,14 @@ impl AppState {
         let (build_tx, build_rx) = mpsc::channel(64);
         let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
         let continuation_events = crate::hitl::continuation::ContinuationRegistry::new();
-        let hitl_store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(
+        // Pauses and resume outcomes are written from several places (the store, the MCP
+        // gateway's inserts, both resume dispatchers); each reports through this one observer. A
+        // second AppState in the same process (tests) keeps the first one's: the instruments sit
+        // on the process-wide meter either way.
+        nasiko_hitl::install_observer(Arc::new(genai_metrics.clone()));
+        let hitl_store = agent_scaling.observe_hitl_store(Arc::new(
             nasiko_hitl::PgHitlStore::with_ttl_days(db.clone(), config.hitl_request_ttl_days),
-        );
+        ));
 
         // MCP gateway state: reuses the same pool, redis client, and pooled
         // HTTP client — no duplicated infrastructure.
@@ -288,6 +326,7 @@ impl AppState {
             usage_tracker,
             resource_stats,
             http_client,
+            agent_client,
             auth,
             mcp,
             flow_guard,
@@ -296,9 +335,11 @@ impl AppState {
             config: Arc::new(config),
             routing_engine,
             orchestrator_policy,
-            spend_gate,
+            maf_executor,
+            maf_policy,
             prompt_context,
             agent_deletion_hook,
+            agent_scaling,
             history_embedding_cache,
             observability,
             github_svc,
@@ -321,6 +362,13 @@ impl AppState {
         let hitl_state = state.clone();
         tokio::spawn(crate::hitl::run(hitl_state, hitl_resume_rx));
 
+        // Keeps the ready-replica count of recently called agents current, so the per-agent
+        // in-flight band describes one replica's load (telemetry/agent_replicas.rs).
+        tokio::spawn(crate::telemetry::agent_replicas::run(
+            state.genai_metrics.agent_ready_replicas(),
+            state.runtime.clone(),
+        ));
+
         // Periodic eviction for finished continuation buffers — same shape as every other
         // periodic sweep in this file.
         tokio::spawn(crate::hitl::continuation::sweep_loop(
@@ -336,7 +384,7 @@ impl AppState {
             Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
                 state.db.clone(),
                 state.runtime.clone(),
-                state.http_client.clone(),
+                state.agent_client.clone(),
                 // Same bound `gateway.rs`'s `flow_user` enforces on the agent's retry, so the
                 // nudge never registers a window the gateway will reject.
                 i64::from(state.config.flow_timeout_secs),
@@ -398,6 +446,15 @@ impl AppState {
                 state.config.trace_usage_batch_size,
             ));
         }
+
+        // Reclaims the storage of agent state no one can read any more: empties expired rows into
+        // tombstones, forgets old tombstones, and removes the rows of deleted agents. Each process
+        // runs one and `SKIP LOCKED` keeps several from colliding.
+        crate::agent_state::warn_if_state_expires_before_hitl_requests(&state.config);
+        tokio::spawn(crate::agent_state::sweeper::run(
+            state.db.clone(),
+            state.config.agent_state_ttl_days,
+        ));
 
         // Retires the seeded brevity factor once the holdout has enough samples. Cheap (one
         // grouped scan) and idempotent, so it rides the same process as the other workers rather

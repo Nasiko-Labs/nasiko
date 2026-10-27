@@ -126,6 +126,61 @@ impl Dialect {
             Dialect::Proto => serde_json::json!({"text": text}),
         }
     }
+
+    /// Render a caller-supplied part (always handed to us in the proto/`a2a-lf` field-presence
+    /// shape, since that's what `nasiko_types::a2a::Part` serializes to) into this dialect.
+    ///
+    /// Text already went through [`Self::text_part`]; without this, attachments were the one
+    /// part kind that skipped dialect handling entirely and went out proto-shaped on both
+    /// dialects. Verified against both SDK generations rather than inferred from the spec:
+    /// `a2a-sdk` 1.1.0 is protobuf-backed (`lf.a2a.v1.Part`) and accepts exactly these
+    /// `{raw,url,mediaType,filename}` fields while rejecting anything carrying `kind`;
+    /// `a2a-sdk` 0.3.0 is pydantic-backed and does the mirror image, rejecting `raw` and
+    /// requiring a nested `file` object. So a proto-shaped file part reaching a 0.x agent
+    /// failed that agent's own request validation — the user's attachment took the whole turn
+    /// down with it, rather than merely going unseen.
+    ///
+    /// Anything we don't recognize is passed through untouched: a part shape this function
+    /// has no rule for is better forwarded verbatim (the destination may well understand it)
+    /// than mangled into a guess.
+    fn convert_part(self, part: &serde_json::Value) -> serde_json::Value {
+        let Dialect::JsonRpc = self else {
+            return part.clone();
+        };
+        let Some(obj) = part.as_object() else {
+            return part.clone();
+        };
+
+        // `mediaType`/`filename` are siblings of the content field in the proto shape; in the
+        // JSON-RPC shape they move *inside* the `file` object under different names. Both are
+        // optional on both sides, so an absent one is omitted rather than sent as null.
+        let mut file = serde_json::Map::new();
+        if let Some(media_type) = obj.get("mediaType") {
+            file.insert("mimeType".into(), media_type.clone());
+        }
+        if let Some(filename) = obj.get("filename") {
+            file.insert("name".into(), filename.clone());
+        }
+
+        match (
+            obj.get("raw"),
+            obj.get("url"),
+            obj.get("text"),
+            obj.get("data"),
+        ) {
+            (Some(raw), ..) => {
+                file.insert("bytes".into(), raw.clone());
+                serde_json::json!({"kind": "file", "file": file})
+            }
+            (_, Some(url), ..) => {
+                file.insert("uri".into(), url.clone());
+                serde_json::json!({"kind": "file", "file": file})
+            }
+            (_, _, Some(text), _) => serde_json::json!({"kind": "text", "text": text}),
+            (_, _, _, Some(data)) => serde_json::json!({"kind": "data", "data": data}),
+            _ => part.clone(),
+        }
+    }
 }
 
 impl Default for A2aClient {
@@ -185,6 +240,15 @@ impl A2aClient {
     /// Build the JSON-RPC request body for `message/send`/`message/stream` (or
     /// their proto-named equivalents), injecting `request_metadata` into
     /// `params.metadata`.
+    ///
+    /// `extra_parts` are pre-built proto-shaped `Value`s (file parts), rendered into this dialect
+    /// by [`Dialect::convert_part`]. `extra_text_parts` are raw strings this function tags
+    /// itself, via the SAME `dialect.text_part()` the primary message part uses — needed because a
+    /// caller building a text part ahead of time (as `context_part::append_context_part`'s callers
+    /// do for an already-serialized body) can't know here which dialect this specific attempt will
+    /// end up using: `send_message_with_headers`/`send_message_streaming` retry the same extra
+    /// content under BOTH dialects (JSON-RPC first, proto on `-32601`), so a part tagged once,
+    /// outside this function, would be wrong on whichever attempt didn't match it.
     fn build_message_body(
         &self,
         dialect: Dialect,
@@ -192,9 +256,11 @@ impl A2aClient {
         message: &str,
         ctx: &str,
         extra_parts: &[serde_json::Value],
+        extra_text_parts: &[String],
     ) -> serde_json::Value {
         let mut parts = vec![dialect.text_part(message)];
-        parts.extend(extra_parts.iter().cloned());
+        parts.extend(extra_parts.iter().map(|p| dialect.convert_part(p)));
+        parts.extend(extra_text_parts.iter().map(|t| dialect.text_part(t)));
 
         let mut body = serde_json::json!({
             "jsonrpc": "2.0",
@@ -234,7 +300,7 @@ impl A2aClient {
         message: &str,
         context_id: Option<&str>,
     ) -> Result<A2aResponse, A2aClientError> {
-        self.send_message_with_headers(endpoint, message, context_id, &[], &[])
+        self.send_message_with_headers(endpoint, message, context_id, &[], &[], &[])
             .await
             .map(|(_, response)| response)
     }
@@ -255,6 +321,7 @@ impl A2aClient {
         context_id: Option<&str>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
+        extra_text_parts: &[String],
     ) -> Result<(String, A2aResponse), A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
@@ -276,6 +343,7 @@ impl A2aClient {
                 per_call_headers,
                 Dialect::JsonRpc,
                 extra_parts,
+                extra_text_parts,
             )
             .await
         {
@@ -291,6 +359,7 @@ impl A2aClient {
                     per_call_headers,
                     Dialect::Proto,
                     extra_parts,
+                    extra_text_parts,
                 )
                 .await
             }
@@ -299,6 +368,7 @@ impl A2aClient {
         result.map(|response| (ctx, response))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_message_dialect(
         &self,
         endpoint: &str,
@@ -307,8 +377,10 @@ impl A2aClient {
         per_call_headers: &[(String, String)],
         dialect: Dialect,
         extra_parts: &[serde_json::Value],
+        extra_text_parts: &[String],
     ) -> Result<A2aResponse, A2aClientError> {
-        let mut body = self.build_message_body(dialect, false, message, ctx, extra_parts);
+        let mut body =
+            self.build_message_body(dialect, false, message, ctx, extra_parts, extra_text_parts);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -366,6 +438,7 @@ impl A2aClient {
     /// tool result. Agents that answer with plain JSON instead of an event
     /// stream are handled transparently, so callers don't need a capability
     /// check first.
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_message_streaming(
         &self,
         endpoint: &str,
@@ -374,6 +447,7 @@ impl A2aClient {
         progress: Option<tokio::sync::mpsc::Sender<AgentStreamEvent>>,
         per_call_headers: &[(String, String)],
         extra_parts: &[serde_json::Value],
+        extra_text_parts: &[String],
     ) -> Result<SendOutcome, A2aClientError> {
         let ctx = context_id
             .map(|s| s.to_string())
@@ -400,6 +474,7 @@ impl A2aClient {
                 per_call_headers,
                 Dialect::JsonRpc,
                 extra_parts,
+                extra_text_parts,
             )
             .await
         {
@@ -416,6 +491,7 @@ impl A2aClient {
                     per_call_headers,
                     Dialect::Proto,
                     extra_parts,
+                    extra_text_parts,
                 )
                 .await
             }
@@ -433,10 +509,12 @@ impl A2aClient {
         per_call_headers: &[(String, String)],
         dialect: Dialect,
         extra_parts: &[serde_json::Value],
+        extra_text_parts: &[String],
     ) -> Result<SendOutcome, A2aClientError> {
         use futures::StreamExt as _;
 
-        let mut body = self.build_message_body(dialect, true, message, ctx, extra_parts);
+        let mut body =
+            self.build_message_body(dialect, true, message, ctx, extra_parts, extra_text_parts);
 
         if let Some(ref metadata) = self.request_metadata
             && let Some(params) = body.get_mut("params")
@@ -493,13 +571,6 @@ impl A2aClient {
             // streamed statusUpdate, not just the streaming branch below.
             let value = a2a.result.clone().unwrap_or(serde_json::Value::Null);
             for sse in nasiko_types::a2a::classify_sse_event(&value) {
-                // As the SSE branch below: a failed task is a failure, not empty text.
-                if let nasiko_types::a2a::SseEvent::Failed { reason } = &sse {
-                    return Err(A2aClientError::A2aProtocol {
-                        code: -1,
-                        message: reason.clone(),
-                    });
-                }
                 if let nasiko_types::a2a::SseEvent::AwaitingHuman {
                     kind,
                     message,
@@ -559,12 +630,6 @@ impl A2aClient {
                 let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
                     continue;
                 };
-
-                // How the a2a SDKs end a stream whose task raised (`event: error`).
-                // Skipped, it leaves no text and the call reads as an empty success.
-                if let Some(err) = event.get("error") {
-                    return Err(protocol_error(err));
-                }
 
                 for sse in nasiko_types::a2a::classify_sse_event(&event) {
                     use nasiko_types::a2a::SseEvent;
@@ -683,11 +748,10 @@ impl A2aClient {
             .map(|s| s.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
 
-        let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[]);
-        // On `params.message.metadata`, not `params.metadata` — this method's
-        // only real caller (weave_surface.rs) sets `request_metadata` to carry
-        // `{skill: "generate-ui", ...}`, and the receiving agent's A2A server
-        // reads the skill id off the MESSAGE object it dispatches
+        let mut body = self.build_message_body(Dialect::JsonRpc, true, message, &ctx, &[], &[]);
+        // On `params.message.metadata`, not `params.metadata` — a caller sets
+        // `request_metadata` to carry e.g. `{skill: ...}`, and the receiving
+        // agent's A2A server reads the skill id off the MESSAGE object it dispatches
         // (`params.message.metadata.skill`), not off `params` itself.
         // `build_message_body`'s own `params.metadata` insertion above is a
         // separate, unrelated convention (e.g. traceparent forwarding for
@@ -771,7 +835,18 @@ impl A2aClient {
                 };
 
                 if let Some(err) = event.get("error") {
-                    let _ = tx.send(RawAgentFrame::Error(protocol_error(err))).await;
+                    let code = err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32;
+                    let message = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("error")
+                        .to_string();
+                    let _ = tx
+                        .send(RawAgentFrame::Error(A2aClientError::A2aProtocol {
+                            code,
+                            message,
+                        }))
+                        .await;
                     continue;
                 }
                 if let Some(result) = event.get("result") {
@@ -861,39 +936,42 @@ fn collect_text_parts<'a>(parts_arrays: impl Iterator<Item = &'a serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn jsonrpc_dialect_uses_standard_method_role_and_typed_parts() {
         let client = A2aClient::new();
-        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[]);
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[], &[]);
         assert_eq!(body["method"], "message/send");
         assert_eq!(body["params"]["message"]["role"], "user");
         assert_eq!(body["params"]["message"]["parts"][0]["kind"], "text");
         assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
         assert_eq!(body["params"]["message"]["contextId"], "ctx-1");
 
-        let stream = client.build_message_body(Dialect::JsonRpc, true, "hi", "ctx-1", &[]);
+        let stream = client.build_message_body(Dialect::JsonRpc, true, "hi", "ctx-1", &[], &[]);
         assert_eq!(stream["method"], "message/stream");
     }
 
     #[test]
     fn proto_dialect_uses_grpc_method_role_and_untyped_parts() {
         let client = A2aClient::new();
-        let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1", &[]);
+        let body = client.build_message_body(Dialect::Proto, false, "hi", "ctx-1", &[], &[]);
         assert_eq!(body["method"], "SendMessage");
         assert_eq!(body["params"]["message"]["role"], "ROLE_USER");
-        // Proto parts carry no `kind` discriminator.
+        // Proto parts carry no `kind` discriminator — this platform's real `a2a-lf` `Part` type
+        // has no such field at all, and a real agent's strict parser rejects one it doesn't
+        // expect (confirmed live against a real deployed agent).
         assert!(body["params"]["message"]["parts"][0].get("kind").is_none());
         assert_eq!(body["params"]["message"]["parts"][0]["text"], "hi");
 
-        let stream = client.build_message_body(Dialect::Proto, true, "hi", "ctx-1", &[]);
+        let stream = client.build_message_body(Dialect::Proto, true, "hi", "ctx-1", &[], &[]);
         assert_eq!(stream["method"], "SendStreamingMessage");
     }
 
     #[test]
     fn request_metadata_is_injected_into_params() {
         let client = A2aClient::new().with_metadata(serde_json::json!({"traceparent": "abc"}));
-        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[]);
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[], &[]);
         assert_eq!(body["params"]["metadata"]["traceparent"], "abc");
     }
 
@@ -902,17 +980,187 @@ mod tests {
         let client = A2aClient::new();
         let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt", "mediaType": "text/plain"});
         let body = client.build_message_body(
-            Dialect::JsonRpc,
+            Dialect::Proto,
             false,
             "analyze this",
             "ctx-1",
             &[file_part],
+            &[],
         );
         let parts = body["params"]["message"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0]["text"], "analyze this");
         assert_eq!(parts[1]["raw"], "aGVsbG8=");
         assert_eq!(parts[1]["filename"], "test.txt");
+    }
+
+    /// The whole point of `convert_part`: a 0.x (`kind`-tagged, pydantic) agent rejects the
+    /// proto shape outright, so forwarding it unconverted failed the agent's own request
+    /// validation and took the user's turn down with the attachment.
+    #[test]
+    fn inline_file_part_is_converted_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "q3.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "summarize this",
+            "ctx-1",
+            &[file_part],
+            &[],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"kind": "text", "text": "summarize this"}));
+        assert_eq!(
+            parts[1],
+            json!({"kind": "file", "file": {
+                "mimeType": "application/pdf", "name": "q3.pdf", "bytes": "aGVsbG8="
+            }})
+        );
+        // No proto-shaped field survives — the 0.x model rejects unknown keys outright.
+        assert!(parts[1].get("raw").is_none());
+        assert!(parts[1].get("mediaType").is_none());
+    }
+
+    #[test]
+    fn url_file_part_becomes_a_uri_source_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let part = json!({"url": "https://example.com/a.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[part], &[]);
+        assert_eq!(
+            body["params"]["message"]["parts"][1],
+            json!({"kind": "file", "file": {
+                "mimeType": "application/pdf", "uri": "https://example.com/a.pdf"
+            }})
+        );
+    }
+
+    /// `filename`/`mediaType` are optional on both sides; an absent one is omitted, never
+    /// sent as an explicit null (which 0.x validates as a type error, not as "unset").
+    #[test]
+    fn absent_file_metadata_is_omitted_not_nulled() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[json!({"raw": "aGk="})],
+            &[],
+        );
+        assert_eq!(
+            body["params"]["message"]["parts"][1],
+            json!({"kind": "file", "file": {"bytes": "aGk="}})
+        );
+    }
+
+    /// `a2a-sdk` 1.1.0 is protobuf-backed and rejects any part carrying `kind`, so the proto
+    /// dialect must stay a verbatim passthrough — converting both dialects would have swapped
+    /// one broken generation for the other.
+    #[test]
+    fn proto_dialect_forwards_file_parts_verbatim() {
+        let client = A2aClient::new();
+        let part = json!({"raw": "aGk=", "filename": "q3.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            std::slice::from_ref(&part),
+            &[],
+        );
+        assert_eq!(body["params"]["message"]["parts"][1], part);
+    }
+
+    #[test]
+    fn unrecognized_part_shapes_are_forwarded_untouched() {
+        let client = A2aClient::new();
+        let part = json!({"somethingNew": {"v": 1}});
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            std::slice::from_ref(&part),
+            &[],
+        );
+        assert_eq!(body["params"]["message"]["parts"][1], part);
+    }
+
+    #[test]
+    fn non_file_parts_are_converted_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[json!({"text": "extra"}), json!({"data": {"a": 1}})],
+            &[],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts[1], json!({"kind": "text", "text": "extra"}));
+        assert_eq!(parts[2], json!({"kind": "data", "data": {"a": 1}}));
+    }
+
+    /// The whole reason `extra_text_parts` is a separate parameter from `extra_parts`: the same
+    /// call is retried under BOTH dialects when an agent rejects the first one, and injected text
+    /// content has to be re-tagged for whichever dialect is actually being tried — a part tagged
+    /// once outside this function would be wrong on one of the two attempts.
+    #[test]
+    fn extra_text_parts_are_tagged_per_dialect_not_fixed() {
+        let client = A2aClient::new();
+        let jsonrpc = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[],
+            &["## Organization Policy\nrule".to_string()],
+        );
+        let jsonrpc_parts = jsonrpc["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(jsonrpc_parts.len(), 2);
+        assert_eq!(jsonrpc_parts[1]["kind"], "text");
+        assert_eq!(jsonrpc_parts[1]["text"], "## Organization Policy\nrule");
+
+        let proto = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            &[],
+            &["## Organization Policy\nrule".to_string()],
+        );
+        let proto_parts = proto["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(proto_parts.len(), 2);
+        assert!(
+            proto_parts[1].get("kind").is_none(),
+            "proto dialect must never carry a kind field: {proto_parts:?}"
+        );
+        assert_eq!(proto_parts[1]["text"], "## Organization Policy\nrule");
+    }
+
+    /// File parts (`extra_parts`) and text parts (`extra_text_parts`) coexist without either
+    /// clobbering the other, in a stable order: primary message, then files, then text.
+    #[test]
+    fn file_parts_and_extra_text_parts_coexist() {
+        let client = A2aClient::new();
+        let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt"});
+        let body = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            &[file_part],
+            &["POLICY".to_string()],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "hi");
+        assert_eq!(parts[1]["filename"], "test.txt");
+        assert_eq!(parts[2]["text"], "POLICY");
+        assert!(parts[2].get("kind").is_none());
     }
 
     #[test]
@@ -1162,7 +1410,7 @@ mod tests {
 
         let client = A2aClient::new();
         let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
+            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[], &[])
             .await;
 
         mock.assert_async().await;
@@ -1175,39 +1423,6 @@ mod tests {
                 context_id: "ctx-456".into(),
                 metadata: serde_json::json!({"expected_input": "free_text"}),
             })
-        );
-    }
-
-    #[tokio::test]
-    async fn a_failed_task_in_a_plain_json_reply_is_an_error_not_empty_text() {
-        let mut server = mockito::Server::new_async().await;
-        let body = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": "1",
-            "result": {"task": {
-                "id": "task-1",
-                "contextId": "ctx-1",
-                "status": {
-                    "state": "TASK_STATE_FAILED",
-                    "message": {"parts": [{"text": "upstream refused the model call"}]}
-                }
-            }}
-        });
-        server
-            .mock("POST", "/")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(body.to_string())
-            .create_async()
-            .await;
-
-        let result = A2aClient::new()
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
-            .await;
-
-        assert!(
-            matches!(result, Err(A2aClientError::A2aProtocol { .. })),
-            "{result:?}"
         );
     }
 
@@ -1238,7 +1453,7 @@ mod tests {
 
         let client = A2aClient::new();
         let result = client
-            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[])
+            .send_message_streaming(&server.url(), "hi", Some("sent-ctx"), None, &[], &[], &[])
             .await;
 
         mock.assert_async().await;
@@ -1252,18 +1467,6 @@ mod tests {
                 metadata: serde_json::Value::Null,
             })
         );
-    }
-}
-
-/// A JSON-RPC `error` object received mid-stream, as the client's error.
-fn protocol_error(err: &serde_json::Value) -> A2aClientError {
-    A2aClientError::A2aProtocol {
-        code: err.get("code").and_then(|c| c.as_i64()).unwrap_or(-1) as i32,
-        message: err
-            .get("message")
-            .and_then(|m| m.as_str())
-            .unwrap_or("error")
-            .to_string(),
     }
 }
 
