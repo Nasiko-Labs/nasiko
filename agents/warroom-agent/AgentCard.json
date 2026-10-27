@@ -1,0 +1,54 @@
+{
+  "name": "warroom-agent",
+  "description": "Evidence-grounded competitive intelligence agent powered by Anakin search and DronaHQ strategic reasoning.",
+  "url": "http://localhost:8000",
+  "version": "1.0.0",
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false
+  },
+  "skills": [
+    {
+      "id": "competitive-scan",
+      "name": "Competitive Scan",
+      "description": "Runs live multi-competitor research and extracts evidence-grounded competitive signals.",
+      "tags": [
+        "competitive-intelligence",
+        "research",
+        "signals"
+      ],
+      "examples": [
+        "Scan Cashfree, Razorpay, and PayU for recent competitive signals."
+      ]
+    },
+    {
+      "id": "response-simulate",
+      "name": "Response Simulator",
+      "description": "Generates evidence-grounded response options for product, sales, marketing, and strategy teams.",
+      "tags": [
+        "strategy",
+        "sales",
+        "product",
+        "marketing"
+      ],
+      "examples": [
+        "How should PayFlow respond to Cashfree RiskShield?"
+      ]
+    },
+    {
+      "id": "ask-warroom",
+      "name": "Ask WARROOM",
+      "description": "Answers competitive intelligence questions using supplied WARROOM signals and evidence.",
+      "tags": [
+        "competitive-intelligence",
+        "analysis",
+        "qa"
+      ],
+      "examples": [
+        "Why does Cashfree RiskShield matter to PayFlow?"
+      ]
+    }
+  ],
+  "protocolVersion": "1.0",
+  "preferredTransport": "JSONRPC"
+}
