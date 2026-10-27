@@ -20,6 +20,7 @@ import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { loadEnv, type Plugin, type UserConfig } from 'vite'
 import { BOOT_GUARD_SCRIPT } from './common/src/lib/staleBuildBoot.ts'
+import { ZOD_JITLESS_SCRIPT } from './common/src/lib/zodJitless.ts'
 
 export const ROOT = dirname(fileURLToPath(import.meta.url))
 export const COMMON_SRC = join(ROOT, 'common/src')
@@ -215,6 +216,15 @@ function cspHashes(): Plugin {
   }
 }
 
+/** zod's `jitless` switch (common/src/lib/zodJitless.ts), inline after `<title>` so it runs before any module does. */
+function zodJitless(): Plugin {
+  return {
+    name: 'nasiko:zod-jitless',
+    transformIndexHtml: (html) =>
+      html.replace('</title>', `</title>\n    <script>${ZOD_JITLESS_SCRIPT}</script>`),
+  }
+}
+
 /**
  * The stale-build boot guard (common/src/lib/staleBuildBoot.ts), inline right after `<title>`: after `<meta charset>`
  * (the shell is served without a charset, so it must stay in the first 1024 bytes) and before the entry module and the
@@ -295,6 +305,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       tailwindcss(),
       routesManifest(routes),
       apiMode(),
+      zodJitless(),
       bootGuard(),
       cspHashes(),
     ],
