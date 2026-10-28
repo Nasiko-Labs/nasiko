@@ -1,6 +1,6 @@
 //! Serving a built single-page app out of a `rust-embed` bundle.
 //!
-//! The UI is a Vite build (`ui/oss/app/dist`, `ui/ee/web/dist`). Beside `index.html`
+//! The UI is a Vite build (`ui/oss/app/dist`, `ui/ee/app/dist`, …). Beside `index.html`
 //! it writes two sidecar files that this module reads once at startup:
 //!
 //! - `routes.json` — `{"routes": ["/", "/agents/$agentId", …]}`, the paths the
@@ -13,6 +13,10 @@
 //! the point. The previous handler served `index.html` only for paths with no
 //! `.` in them, so any id containing a dot — `/agents/my.agent` — fell through
 //! to the 404 page even though the app owns that route.
+//!
+//! The build also writes `<file>.br` and `<file>.gz` beside each text asset
+//! (`ui/scripts/precompress.ts`). Nothing is compressed at run time: a request
+//! gets the variant its `Accept-Encoding` allows, else the original.
 //!
 //! Every binary that embeds a UI bundle serves it the same way, so the logic
 //! lives here once and each binary supplies its own embed type and CSP extras.
@@ -32,6 +36,22 @@ const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// The shell and its sidecars are the one unhashed pair: they must be
 /// revalidated on every navigation or a deploy stays invisible.
 const REVALIDATE: &str = "no-cache";
+
+/// Precompressed variants the build writes beside a text asset
+/// (`ui/scripts/precompress.ts`), in order of preference: the
+/// `Content-Encoding` token and the file suffix. Only this handler serves them,
+/// so API and SSE responses are never touched. A bundle without variants
+/// (build.rs's placeholder) is served as before.
+const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
+
+/// Marks a response from a bundle that carries precompressed variants, so a
+/// runtime compression layer in front of the handler leaves it alone: one owner
+/// of `Content-Encoding`, no second pass over formats that are compressed
+/// already, and each representation keeps its own validator. EE's static layer
+/// checks for it (`ee/server/src/main.rs`); a bundle with no variants is not
+/// marked and keeps that layer's compression.
+#[derive(Clone, Copy, Debug)]
+pub struct Precompressed;
 
 /// A 404 must never be cacheable — demo.nasiko.dev sits behind Cloudflare,
 /// which edge-cached an uncached 404 for an observed 20 minutes, outliving its
@@ -79,6 +99,8 @@ enum Segment {
 pub struct Spa {
     routes: Vec<Vec<Segment>>,
     csp: String,
+    /// The bundle carries `.br`/`.gz` variants.
+    precompressed: bool,
 }
 
 /// Per-edition additions to the Content-Security-Policy.
@@ -107,8 +129,15 @@ impl Spa {
             .collect();
 
         let csp = Self::build_csp(&Self::read::<E, CspFile>("csp.json").script_src, extras);
+        let precompressed = ENCODINGS
+            .iter()
+            .any(|(_, suffix)| E::get(&format!("index.html{suffix}")).is_some());
 
-        Self { routes, csp }
+        Self {
+            routes,
+            csp,
+            precompressed,
+        }
     }
 
     fn read<E: RustEmbed, T: Default + serde::de::DeserializeOwned>(name: &str) -> T {
@@ -284,6 +313,9 @@ pub fn serve<E: RustEmbed>(
     let spa = cache.get_or_init(|| Spa::load::<E>(extras));
 
     let mut response = serve_from::<E>(req, spa);
+    if spa.precompressed {
+        response.extensions_mut().insert(Precompressed);
+    }
     let headers = response.headers_mut();
     for (name, value) in HARDENING {
         headers.insert(name, HeaderValue::from_static(value));
@@ -299,10 +331,20 @@ fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
     let decoded = percent_decode_str(req.uri().path()).decode_utf8_lossy();
     let path = decoded.trim_start_matches('/');
 
+    // A variant is only ever served as its original's representation, never by
+    // its own name (which would carry the wrong type and no Content-Encoding).
+    if let Some(original) = ENCODINGS
+        .iter()
+        .find_map(|(_, suffix)| path.strip_suffix(suffix))
+        && E::get(original).is_some()
+    {
+        return (StatusCode::NOT_FOUND, [(header::CACHE_CONTROL, NO_STORE)]).into_response();
+    }
+
     if !path.is_empty()
         && let Some(file) = E::get(path)
     {
-        return asset(req, path, &file, spa);
+        return asset::<E>(req, path, &file, spa);
     }
 
     if looks_like_an_asset(path) && !spa.owns(&decoded) {
@@ -317,7 +359,7 @@ fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
     }
 
     match E::get("index.html") {
-        Some(file) => shell(&file, spa),
+        Some(file) => shell::<E>(req, &file, spa),
         None => (
             StatusCode::INTERNAL_SERVER_ERROR,
             [(header::CACHE_CONTROL, NO_STORE)],
@@ -327,24 +369,38 @@ fn serve_from<E: RustEmbed>(req: &Request<Body>, spa: &Spa) -> Response {
     }
 }
 
-fn shell(file: &rust_embed::EmbeddedFile, spa: &Spa) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/html".to_owned()),
-            (header::CACHE_CONTROL, REVALIDATE.to_owned()),
-            (header::CONTENT_SECURITY_POLICY, spa.csp().to_owned()),
-            (
-                header::ETAG,
-                format!("\"{}\"", hex::encode(file.metadata.sha256_hash())),
-            ),
-        ],
-        file.data.clone(),
-    )
-        .into_response()
+fn shell<E: RustEmbed>(
+    req: &Request<Body>,
+    file: &rust_embed::EmbeddedFile,
+    spa: &Spa,
+) -> Response {
+    let (encoding, body) = negotiate::<E>(req.headers(), "index.html", file);
+    let etag = etag(file, encoding);
+    // `no-cache` means "revalidate", so answer the revalidation: the shell is fetched on every navigation.
+    if if_none_match(req.headers(), &etag) {
+        return not_modified(REVALIDATE, &etag);
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(REVALIDATE));
+    if let Ok(v) = HeaderValue::from_str(spa.csp()) {
+        headers.insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, v);
+    }
+    representation_headers(&mut headers, encoding);
+    (headers, body).into_response()
 }
 
-fn asset(req: &Request<Body>, path: &str, file: &rust_embed::EmbeddedFile, spa: &Spa) -> Response {
-    let etag = format!("\"{}\"", hex::encode(file.metadata.sha256_hash()));
+fn asset<E: RustEmbed>(
+    req: &Request<Body>,
+    path: &str,
+    file: &rust_embed::EmbeddedFile,
+    spa: &Spa,
+) -> Response {
+    let (encoding, body) = negotiate::<E>(req.headers(), path, file);
+    let etag = etag(file, encoding);
 
     // Only `assets/` is content-hashed by Vite. The shell, the two sidecars and
     // anything copied verbatim from `public/` keep their names across builds,
@@ -355,20 +411,8 @@ fn asset(req: &Request<Body>, path: &str, file: &rust_embed::EmbeddedFile, spa: 
         REVALIDATE
     };
 
-    if req
-        .headers()
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-        == Some(etag.as_str())
-    {
-        return (
-            StatusCode::NOT_MODIFIED,
-            [
-                (header::CACHE_CONTROL, cache.to_owned()),
-                (header::ETAG, etag),
-            ],
-        )
-            .into_response();
+    if if_none_match(req.headers(), &etag) {
+        return not_modified(cache, &etag);
     }
 
     let mime = mime_guess::from_path(path).first_or_octet_stream();
@@ -388,8 +432,88 @@ fn asset(req: &Request<Body>, path: &str, file: &rust_embed::EmbeddedFile, spa: 
     {
         headers.insert(header::CONTENT_SECURITY_POLICY, v);
     }
+    representation_headers(&mut headers, encoding);
 
-    (headers, file.data.clone()).into_response()
+    (headers, body).into_response()
+}
+
+/// The representation to send: a precompressed variant the client accepts,
+/// else the original. Returns the `Content-Encoding` token (if any) and bytes.
+fn negotiate<E: RustEmbed>(
+    request: &HeaderMap,
+    path: &str,
+    original: &rust_embed::EmbeddedFile,
+) -> (Option<&'static str>, std::borrow::Cow<'static, [u8]>) {
+    for (coding, suffix) in ENCODINGS {
+        if accepts(request, coding)
+            && let Some(variant) = E::get(&format!("{path}{suffix}"))
+        {
+            return (Some(coding), variant.data);
+        }
+    }
+    (None, original.data.clone())
+}
+
+/// Does `Accept-Encoding` allow `coding`? An explicit `q=0` refuses it; a `*`
+/// entry stands in for codings the header does not name.
+fn accepts(request: &HeaderMap, coding: &str) -> bool {
+    let Some(value) = request
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return false;
+    };
+    let mut wildcard = None;
+    for item in value.split(',') {
+        let mut parts = item.split(';');
+        let name = parts.next().unwrap_or("").trim();
+        let q = parts
+            .find_map(|p| p.trim().strip_prefix("q="))
+            .map_or(1.0, |q| q.trim().parse::<f32>().unwrap_or(0.0));
+        if name.eq_ignore_ascii_case(coding) {
+            return q > 0.0;
+        }
+        if name == "*" {
+            wildcard = Some(q > 0.0);
+        }
+    }
+    wildcard.unwrap_or(false)
+}
+
+/// Each representation has its own validator: a cached Brotli body must never
+/// be revalidated as the identity one.
+fn etag(file: &rust_embed::EmbeddedFile, encoding: Option<&str>) -> String {
+    let hash = hex::encode(file.metadata.sha256_hash());
+    match encoding {
+        Some(coding) => format!("\"{hash}-{coding}\""),
+        None => format!("\"{hash}\""),
+    }
+}
+
+/// The response varies by `Accept-Encoding` whenever a variant could have been
+/// chosen, so a shared cache keeps the representations apart.
+fn representation_headers(headers: &mut HeaderMap, encoding: Option<&'static str>) {
+    headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    if let Some(coding) = encoding {
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static(coding));
+    }
+}
+
+fn if_none_match(request: &HeaderMap, etag: &str) -> bool {
+    request
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|candidate| candidate.trim() == etag))
+}
+
+fn not_modified(cache: &'static str, etag: &str) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    if let Ok(v) = HeaderValue::from_str(etag) {
+        headers.insert(header::ETAG, v);
+    }
+    headers.insert(header::VARY, HeaderValue::from_static("accept-encoding"));
+    (StatusCode::NOT_MODIFIED, headers).into_response()
 }
 
 #[cfg(test)]
@@ -400,6 +524,146 @@ mod tests {
         Spa {
             routes: patterns.iter().map(|p| Spa::parse_pattern(p)).collect(),
             csp: String::new(),
+            precompressed: false,
+        }
+    }
+
+    /// A built bundle in miniature: a hashed asset with both variants, a shell with only a Brotli one.
+    #[derive(RustEmbed)]
+    #[folder = "tests/fixtures/spa/"]
+    struct Fixture;
+
+    fn get(path: &str, accept_encoding: Option<&str>, if_none_match: Option<&str>) -> Response {
+        static CACHE: OnceLock<Spa> = OnceLock::new();
+        let mut req = Request::builder().uri(path);
+        if let Some(v) = accept_encoding {
+            req = req.header(header::ACCEPT_ENCODING, v);
+        }
+        if let Some(v) = if_none_match {
+            req = req.header(header::IF_NONE_MATCH, v);
+        }
+        serve::<Fixture>(
+            &req.body(Body::empty()).unwrap(),
+            &CACHE,
+            &CspExtras::default(),
+        )
+    }
+
+    fn encoding(response: &Response) -> Option<&str> {
+        response
+            .headers()
+            .get(header::CONTENT_ENCODING)
+            .map(|v| v.to_str().unwrap())
+    }
+
+    const ASSET: &str = "/assets/app-abc123.js";
+
+    #[test]
+    fn a_hashed_asset_is_served_in_the_best_encoding_the_client_accepts() {
+        let cases = [
+            (Some("gzip, deflate, br, zstd"), Some("br")),
+            (Some("gzip, deflate"), Some("gzip")),
+            (Some("br;q=0, gzip"), Some("gzip")),
+            (Some("identity"), None),
+            (Some("*"), Some("br")),
+            (Some("*;q=0, identity"), None),
+            (None, None),
+        ];
+        for (accept, expected) in cases {
+            let response = get(ASSET, accept, None);
+            assert_eq!(response.status(), StatusCode::OK, "{accept:?}");
+            assert_eq!(encoding(&response), expected, "{accept:?}");
+            let headers = response.headers();
+            // The type is the original's, whatever the encoding.
+            assert!(
+                headers[header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .contains("javascript"),
+                "{accept:?}"
+            );
+            assert_eq!(headers[header::CACHE_CONTROL], IMMUTABLE);
+            assert_eq!(headers[header::VARY], "accept-encoding");
+        }
+    }
+
+    #[test]
+    fn each_encoding_has_its_own_validator() {
+        let br = get(ASSET, Some("br"), None);
+        let identity = get(ASSET, None, None);
+        let br_tag = br.headers()[header::ETAG].to_str().unwrap().to_owned();
+        let identity_tag = identity.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(br_tag, identity_tag);
+        assert!(br_tag.ends_with("-br\""));
+
+        let revalidated = get(ASSET, Some("br"), Some(&br_tag));
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(revalidated.headers()[header::VARY], "accept-encoding");
+        // A Brotli validator never revalidates the identity representation.
+        assert_eq!(get(ASSET, None, Some(&br_tag)).status(), StatusCode::OK);
+        assert_eq!(
+            get(ASSET, Some("gzip"), Some(&format!("\"x\", {identity_tag}"))).status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            get(ASSET, None, Some(&format!("\"x\", {identity_tag}"))).status(),
+            StatusCode::NOT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn the_shell_is_negotiated_and_still_revalidates() {
+        let response = get("/agents/a1", Some("br, gzip"), None);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(encoding(&response), Some("br"));
+        assert_eq!(response.headers()[header::CACHE_CONTROL], REVALIDATE);
+        assert!(
+            response
+                .headers()
+                .contains_key(header::CONTENT_SECURITY_POLICY)
+        );
+        // index.html has no gzip variant in the fixture: identity, not a 404.
+        assert_eq!(encoding(&get("/agents/a1", Some("gzip"), None)), None);
+        // The same representation's validator gives a 304, another one a full body.
+        let tag = response.headers()[header::ETAG]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let revalidated = get("/agents/a1", Some("br"), Some(&tag));
+        assert_eq!(revalidated.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(revalidated.headers()[header::CACHE_CONTROL], REVALIDATE);
+        assert_eq!(get("/agents/a1", None, Some(&tag)).status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn responses_from_a_precompressed_bundle_are_marked_for_outer_layers() {
+        for (path, accept) in [
+            (ASSET, Some("br")),
+            (ASSET, None),
+            ("/agents/a1", Some("gzip")),
+            ("/assets/missing.js", None),
+        ] {
+            let response = get(path, accept, None);
+            assert!(
+                response.extensions().get::<Precompressed>().is_some(),
+                "{path} {accept:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_variant_is_never_served_under_its_own_name() {
+        for path in [
+            "/assets/app-abc123.js.br",
+            "/assets/app-abc123.js.gz",
+            "/index.html.br",
+        ] {
+            let response = get(path, Some("br, gzip"), None);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert_eq!(response.headers()[header::CACHE_CONTROL], NO_STORE);
         }
     }
 
