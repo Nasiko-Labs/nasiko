@@ -245,10 +245,10 @@ How to forward it, per language — all driven by the injected `OTEL_*` env vars
 
 | Language | How |
 |---|---|
-| Python | `opentelemetry-instrument python main.py`, or initialize the SDK yourself (see `oss/agents/common/telemetry.py`) |
+| Python | `opentelemetry-instrument python main.py`, or initialize the SDK yourself (see `agents/common/telemetry.py`) |
 | Node.js | Set `NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register"` in your Dockerfile, with the package in your image |
 | Java | OTel javaagent: `JAVA_TOOL_OPTIONS="-javaagent:/path/to/opentelemetry-javaagent.jar"` |
-| Go | loongsuite `otel go build` in the Dockerfile (compile-time `net/http` instrumentation), or copy the manual-forwarding fallback in `oss/agents/weather` |
+| Go | loongsuite `otel go build` in the Dockerfile (compile-time `net/http` instrumentation), or copy the manual-forwarding fallback in `agents/weather` |
 | Rust | No auto-instrumentation exists — initialize the OTel SDK in code and inject the header explicitly (see the Rust agents' `telemetry.rs`) |
 
 Minimum: extract `traceparent` from your **inbound HTTP server** and inject it on your
@@ -275,7 +275,7 @@ mcp = McpClient(
 `tools/call` is authorized per flow: the gateway resolves the calling user from your
 forwarded `traceparent` and requires that the flow was actually dispatched to your
 agent, so the same OTel propagation above is all you need. The Go reference
-implementation is `oss/agents/weather` (`mcp.go`).
+implementation is `agents/weather` (`mcp.go`).
 
 ### Durable state
 
@@ -283,7 +283,7 @@ Any A2A agent runs on the platform, whatever it does with its state. An agent th
 in process memory, as the SDK's `InMemoryTaskStore` does, loses paused work on every restart and
 has to stay at one replica. Keeping tasks in the platform's state store is necessary for
 surviving restarts and running more than one replica, but not sufficient: every other piece of
-state the agent keeps between requests must be durable too. For example `oss/agents/crewai` keeps
+state the agent keeps between requests must be durable too. For example `agents/crewai` keeps
 data in its own `InMemoryCache`, so it is not replica-safe even though it uses the durable task
 store. Google ADK sessions and JavaScript task stores are covered below.
 
@@ -295,7 +295,7 @@ The platform injects the store's address and your credential into every deployme
 | `NASIKO_AGENT_TOKEN` | Your agent's state credential, sent as a `Bearer` token. Required when `NASIKO_STATE_URL` is set; the MCP gateway token is a different credential and is not accepted. |
 
 **Python (`a2a-sdk` 0.3.x and 1.x).** An image is built from your agent's directory only, so copy
-`oss/agents/common/nasiko_state.py` next to your `main.py`, change one constructor argument and
+`agents/common/nasiko_state.py` next to your `main.py`, change one constructor argument and
 hook the store into the server's shutdown:
 
 ```python
@@ -313,10 +313,10 @@ install_shutdown_hooks(app)  # flushes pending writes when the server stops
 `make_task_store()` returns the SDK's in-memory store when `NASIKO_STATE_URL` is unset, so the
 same code runs unchanged on your laptop; otherwise it registers your agent as durable at startup,
 in the background. A LangGraph agent swaps `MemorySaver()` for `make_checkpointer()` the same
-way. `oss/agents/common/check_vendored.py` fails CI when a copy drifts from the original. Each
+way. `agents/common/check_vendored.py` fails CI when a copy drifts from the original. Each
 agent may make 1200 state calls a minute per ready replica by default
 (`AGENT_STATE_RATE_LIMIT_PER_MINUTE`, so the budget grows as the agent scales); a rate-limited call
-waits out `Retry-After` (30 s at most), then raises. A turn of `oss/agents/langgraph` (its graph
+waits out `Retry-After` (30 s at most), then raises. A turn of `agents/langgraph` (its graph
 runs with `durability="exit"`: one checkpoint per run) costs 7 calls, 8 on a2a-sdk 1.x.
 
 **What is written, and when.** The store never pretends a write happened:
@@ -334,13 +334,13 @@ memory once `NASIKO_STATE_URL` is set. Every task write is conditional on the ve
 last saw, so a replica never overwrites a newer write: a state change that loses raises
 `NasikoStateConflict`, and a coalesced update that loses (or waited over 60 s) is dropped. Design
 around two limits: a task, or one LangGraph channel value, above the platform's body limit (1 MiB
-by default) raises `NasikoStateTooLarge`, which is why `oss/agents/doc-reader` keeps its
+by default) raises `NasikoStateTooLarge`, which is why `agents/doc-reader` keeps its
 document-carrying tasks in memory; and stored state expires after the platform's retention
 window (7 days by default) counted from its last write.
 ### Platform environment
 
 Every deploy path (upload, update, rollback, restart, import, seed, startup recovery) assembles
-the same platform-injected keys, in one place (`oss/server/src/agents/deploy_env.rs`). They are
+the same platform-injected keys, in one place (`server/src/agents/deploy_env.rs`). They are
 set after your own secrets and `env` field, so a value you supply under one of these names is
 replaced, never used.
 
@@ -359,7 +359,7 @@ as in-memory again until your task store registers at startup; a restart or star
 same image leaves the recorded mode as it was.
 
 **Google ADK sessions.** ADK keeps conversations in a session service, and the stock
-`InMemorySessionService` loses them on restart. Copy `oss/agents/common/nasiko_adk_sessions.py`
+`InMemorySessionService` loses them on restart. Copy `agents/common/nasiko_adk_sessions.py`
 (it imports `nasiko_state.py`, so copy that too) and swap the service:
 
 ```python
@@ -376,10 +376,10 @@ Sessions, and the `user:` and `app:` state they share, are stored as key-value r
 `adk/...` keys; an append that loses a race with another replica is re-read and re-applied, and
 fails with `NasikoStateError` after a few attempts instead of dropping the event. Because a
 durable session outlives the process, create it only when `get_session` finds none (ADK refuses
-to create one that exists), as `oss/agents/google-adk` does. This registers key-value state only:
+to create one that exists), as `agents/google-adk` does. This registers key-value state only:
 it does not make the agent's tasks durable, so pair it with `make_task_store()`.
 
-**JavaScript (`@a2a-js/sdk` 1.x).** `oss/agents/common/js/nasiko-state` is a dependency-free ESM
+**JavaScript (`@a2a-js/sdk` 1.x).** `agents/common/js/nasiko-state` is a dependency-free ESM
 package (plain JavaScript with JSDoc types, so it needs no build step and can be copied into an
 image like the Python modules). It provides `NasikoTaskStore`, the same write rules and
 version-conditional writes as the Python store, and stores tasks in a format the Python store
@@ -491,7 +491,7 @@ Test the full deploy flow locally before pushing to production:
 
     # Build and push (CI job)
     nasiko connect $CLUSTER_URL
-    nasiko auth login               # uses NASIKO_TOKEN env var
+    nasiko auth login               # interactive: prompts for username and password
     nasiko push . --name my-agent
 
     # Deploy (CD job or manual gate)

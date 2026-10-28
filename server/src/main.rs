@@ -15,7 +15,7 @@ use rust_embed::Embed;
 // `index.html`, the hashed `assets/`, and the `routes.json` / `csp.json`
 // sidecars that `nasiko_server::spa` reads at startup.
 #[derive(Embed)]
-#[folder = "$NASIKO_UI/oss/dist/"]
+#[folder = "$NASIKO_UI/oss/app/dist/"]
 struct OssAssets;
 
 /// `depends_on: condition: service_healthy` guarantees Postgres itself is

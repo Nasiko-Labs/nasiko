@@ -18,12 +18,12 @@ node_modules/
 .claude/
 **/dist/
 coverage/
-common/public/
+shared/ui/public/
 **/routeTree.gen.ts
-common/src/lib/api/schema.gen.ts
-common/src/test/__live__/
+shared/data-access/src/schema.gen.ts
+shared/testing/src/__live__/
 # Stock shadcn output stays close to the registry so `shadcn diff` stays readable (local edits are listed per file).
-common/src/components/ui/
-ee/web/src/genui/lang/
+shared/ui/src/primitives/
+ee/features/enterprise/src/genui/lang/
 # Written by msw on install (package.json "msw.workerDirectory"); CI's npm ci regenerates it unformatted.
 public/mockServiceWorker.js

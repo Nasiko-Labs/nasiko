@@ -32,7 +32,7 @@ dist-ssr
 .gstack/deploy-reports/
 
 # MSW writes its worker here on install (package.json `msw.workerDirectory`).
-# The served copy is common/public/mockServiceWorker.js, which Vite picks up as
+# The served copy is shared/ui/public/mockServiceWorker.js, which Vite picks up as
 # publicDir; this one is a build-time artifact of the install, not source.
 /public/
 
@@ -52,9 +52,13 @@ coverage/
 test-results/
 genui-eval/
 playwright-report/
+# The visual sweep's baseline (e2e/sweep.config.ts): taken on the base of a change, never committed.
+e2e/.sweep/
 # Storybook
 storybook-static/
 
 # Desktop app (desktop/README.md): the copied web build and electron-builder output.
 desktop/web/
 desktop/release/
+# Turbo's local cache (turbo.json).
+.turbo/

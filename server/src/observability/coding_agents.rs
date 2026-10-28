@@ -3,7 +3,7 @@
 //! Replaces a 404 plus a client-side rebuild. Without this route the Harnesses
 //! page detects the bare 404 and reconstructs the viewer's own usage from
 //! `/finops/dashboard?my_agent=true`, `/api/agents` and `/api/chat/sessions`
-//! (`ui/common/src/features/harnesses/liveIndividual.ts`) — several requests
+//! (`ui/shared/features/src/harnesses/liveIndividual.ts`) — several requests
 //! that still cannot produce a trend, a daily strip, top models, or a correct
 //! per-harness "unpriced".
 //!

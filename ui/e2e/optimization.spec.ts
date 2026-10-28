@@ -132,6 +132,8 @@ test('a tap on a weekly bar picks its week @phone', async ({ page }) => {
   await page.goto('/optimization')
   const chart = page.locator('figure div[role="presentation"]').first()
   await expect(chart).toBeVisible()
+  // Below the fold on a phone, and a tap lands where it is told without scrolling there first.
+  await chart.scrollIntoViewIfNeeded()
   const box = await chart.boundingBox()
   if (!box) throw new Error('the chart has no box')
   // The last bar (the latest week) sits just inside the right margin.

@@ -4,11 +4,9 @@
   "version": "0.21.0",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22.18",
+    "npm": "please-use-pnpm"
   },
-  "workspaces": [
-    "common"
-  ],
   "scripts": {
     "dev": "node scripts/app.ts dev",
     "design": "vite --config design/vite.config.ts",
@@ -34,6 +32,7 @@
     "knip": "knip",
     "budgets": "node scripts/check-budgets.ts",
     "e2e": "playwright test --config e2e/playwright.config.ts",
+    "sweep": "playwright test --config e2e/sweep.config.ts",
     "storybook": "storybook dev -p 6006 --no-open",
     "build-storybook": "storybook build -o storybook-static",
     "test:stories": "vitest run --config vitest.storybook.config.ts"
@@ -76,6 +75,7 @@
     "prettier": "3.9.9",
     "prettier-plugin-tailwindcss": "0.8.1",
     "storybook": "10.6.0",
+    "turbo": "2.11.3",
     "typescript": "~6.0.2",
     "typescript-eslint": "8.71.0",
     "vite": "^8.3.0",
@@ -86,5 +86,6 @@
     "workerDirectory": [
       "public"
     ]
-  }
+  },
+  "packageManager": "pnpm@12.8.1"
 }

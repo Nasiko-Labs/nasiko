@@ -14,8 +14,11 @@ type Chunk = { file: string; src?: string; isEntry?: boolean; imports?: string[]
 const KB = 1024
 // Shared 200 KB for every edition (EE's 205 KB override went with the zod/mini route schemas, 2026-10-06).
 export const BUDGET = { shellJs: 200 * KB, shellCss: 40 * KB, lazy: 120 * KB }
-/** Chunks that never load in a live build (mock mode only). */
-const MOCK_ONLY = /src\/mocks\/|node_modules\/msw\//
+/**
+ * Chunks that never load in a live build (mock mode only). Manifest keys are relative to the app's own `src/`, so an
+ * app's own `mocks/` has no `src/` prefix.
+ */
+const MOCK_ONLY = /(^|\/)mocks\/|node_modules\/msw\//
 const SINGLETONS = [
   ['react', '__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE='],
   ['react-dom', '__DOM_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE='],

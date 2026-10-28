@@ -3,17 +3,17 @@
 //! The UI lives in a single top-level `ui/` tree shared by both editions, but
 //! this crate sits at a different depth in the private repo than in the public
 //! one: `oss/server/` here, `server/` after `scripts/sync-oss.sh` strips the
-//! `oss/` prefix. A literal `#[folder = "../../ui/oss/dist/"]` is therefore
+//! `oss/` prefix. A literal `#[folder = "../../ui/oss/app/dist/"]` is therefore
 //! correct in exactly one of the two layouts — it silently broke the public
 //! repo once already, when the UI was consolidated under `ui/`.
 //!
 //! rust-embed hard-errors at compile time on a missing `folder`, so the public
 //! build failed rather than shipping an empty binary. Resolving the root here
-//! and interpolating it (`#[folder = "$NASIKO_UI/oss/dist/"]`, which needs
+//! and interpolating it (`#[folder = "$NASIKO_UI/oss/app/dist/"]`, which needs
 //! rust-embed's `interpolate-folder-path` feature) makes both layouts work off
 //! one source of truth, and keeps working if the crate ever moves again.
 //!
-//! The same hard-error is why this file writes a placeholder: `ui/oss/dist` is
+//! The same hard-error is why this file writes a placeholder: `ui/oss/app/dist` is
 //! a Vite build output and is not committed, so a fresh clone does not have it.
 //! A Rust-only contributor must still be able to `cargo check` without
 //! installing Node, and `server/Dockerfile` builds the real bundle in a node
@@ -22,12 +22,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// Marker that identifies the real UI root: `ui/common/` is the shared React
-/// core, present in every layout and in both editions.
-const MARKER: &str = "common";
+/// Marker that identifies the real UI root: `ui/shared/` holds the React core's
+/// packages, present in every layout and in both editions.
+const MARKER: &str = "shared";
 
 /// The edition bundle this binary serves, relative to the UI root.
-const BUNDLE: &str = "oss/dist";
+const BUNDLE: &str = "oss/app/dist";
 
 const PLACEHOLDER: &str = r#"<!doctype html>
 <title>Nasiko UI — not built</title>
@@ -47,6 +47,26 @@ fn find_ui_root(start: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// A release binary must not answer from fabricated data: refuse a mock-data
+/// bundle (`nasiko-spa.json`, written by `ui/vite.shared.ts`) unless
+/// `NASIKO_ALLOW_MOCK_UI=1` ships it on purpose. A missing bundle is not
+/// refused here: crates that depend on this one compile it too, without its
+/// UI.
+fn refuse_mock_bundle_in_release(bundle: &Path) {
+    println!("cargo:rerun-if-env-changed=NASIKO_ALLOW_MOCK_UI");
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        return;
+    }
+    let mock = std::fs::read_to_string(bundle.join("nasiko-spa.json"))
+        .is_ok_and(|s| s.contains(r#""apiMode":"mock""#));
+    assert!(
+        !mock || std::env::var("NASIKO_ALLOW_MOCK_UI").is_ok_and(|v| v == "1"),
+        "{} is a mock-data build (VITE_NASIKO_ALLOW_MOCK_BUILD=true), and a release binary must serve \
+         the live UI. Rebuild it with `just build-ui`, or set NASIKO_ALLOW_MOCK_UI=1 to ship it on purpose.",
+        bundle.display()
+    );
 }
 
 fn main() {
@@ -79,6 +99,8 @@ fn main() {
             "cargo:warning=ui/{BUNDLE} was empty; embedded a placeholder. Run `just build-ui` for the real UI."
         );
     }
+
+    refuse_mock_bundle_in_release(&bundle);
 
     // Absolute, so it does not inherit this crate's depth.
     println!("cargo:rustc-env=NASIKO_UI={}", ui_root.display());

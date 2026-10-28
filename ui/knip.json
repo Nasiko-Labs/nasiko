@@ -14,22 +14,24 @@
         "*/*/scripts/*.ts",
         "e2e/**/*.ts",
         ".storybook/*.{ts,tsx}",
-        "*/src/main.tsx",
         "*/*/src/main.tsx",
-        "*/src/mocks.ts",
-        "*/*/src/mocks/index.ts",
-        "*/*/src/genui/frame/runtime.tsx",
-        "*/*/src/routes/**/*.tsx",
-        "*/vite.config.ts",
+        "*/*/*/src/main.tsx",
+        "*/*/src/edition.ts",
+        "*/*/*/src/edition.ts",
+        "*/*/src/mocks.ts",
+        "*/*/*/src/mocks/index.ts",
+        "*/*/*/src/genui/frame/runtime.tsx",
+        "*/*/*/src/routes/**/*.tsx",
         "*/*/vite.config.ts",
+        "*/*/*/vite.config.ts",
         "vite.shared.ts"
       ],
       "project": [
         "scripts/**/*.ts",
         "*/*/scripts/**/*.ts",
         "e2e/**/*.ts",
-        "*/src/**/*.{ts,tsx}",
-        "*/*/src/**/*.{ts,tsx}"
+        "*/*/src/**/*.{ts,tsx}",
+        "*/*/*/src/**/*.{ts,tsx}"
       ],
       "ignore": [
         "**/routeTree.gen.ts"
@@ -49,30 +51,31 @@
         "tailwindcss"
       ]
     },
-    "common": {
+    "shared/*": {
       "entry": [
         "src/routes/**/*.tsx",
         "src/**/*.test.{ts,tsx}",
-        "src/test/**/*.ts",
+        "src/setup.ts",
+        "src/*.globalSetup.ts",
         "src/**/*.stories.tsx",
-        "src/features/budgets/components/Budget*.tsx"
+        "src/budgets/components/Budget*.tsx"
       ],
       "project": [
         "src/**/*.{ts,tsx}"
       ],
       "ignore": [
-        "src/components/ui/**",
+        "src/primitives/**",
         "src/**/*.gen.ts"
       ]
     }
   },
   "ignoreIssues": {
-    "common/src/components/charts/**": [
+    "shared/ui/src/charts/**": [
       "duplicates",
       "exports",
       "types"
     ],
-    "ee/web/src/genui/lang/**": [
+    "ee/features/enterprise/src/genui/lang/**": [
       "exports",
       "types"
     ]
