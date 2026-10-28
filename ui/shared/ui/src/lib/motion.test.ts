@@ -31,7 +31,10 @@ describe('motion presets (plans/feat-app-shell.md §5.4)', () => {
     // The shared Disclosure animates in CSS: tw-animate-css's collapsible keyframes default to 0.2 s ease-out.
     const disclosure = read('ui/src/composites/disclosure.tsx')
     expect(disclosure).toMatch(/data-open:animate-collapsible-down/)
-    expect(disclosure).toMatch(/motion-reduce:animate-none/)
+    // Off under reduced motion through index.css: the class's own `motion-reduce:animate-none` loses to it.
+    expect(read('ui/src/styles/index.css')).toMatch(
+      /prefers-reduced-motion: reduce\)[^@]*\[class\*="animate-collapsible-"\][^}]*animation: none !important/,
+    )
     expect(read('features/src/harnesses/components/HarnessPanels.tsx')).toMatch(/y: 6/)
     expect(read('features/src/sessions/SessionRow.tsx')).toMatch(/y: -8/)
   })

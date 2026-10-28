@@ -472,6 +472,12 @@
     --tw-enter-scale: 1 !important;
     --tw-exit-scale: 1 !important;
   }
+  /* Disclosures and accordions open at once: a component's own `motion-reduce:animate-none` loses to its
+     `data-open:animate-collapsible-down` (same specificity, emitted later), so the rule lives here. */
+  [class*="animate-collapsible-"],
+  [class*="animate-accordion-"] {
+    animation: none !important;
+  }
 }
 
 @theme inline {
