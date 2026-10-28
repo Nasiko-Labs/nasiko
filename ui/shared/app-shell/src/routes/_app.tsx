@@ -9,6 +9,7 @@ import { followedCount, subscribeFollower } from '@nasiko/features/deploy/follow
 import { useGuideHiddenNav } from '@nasiko/features/onboarding/api'
 import { TourHost } from '@nasiko/features/tour/TourHost'
 import { meQuery } from '@nasiko/data-access/auth'
+import { TooltipProvider } from '@nasiko/ui/primitives/tooltip'
 import { ApiError } from '@nasiko/data-access/client'
 import { isSignedOutLocally } from '@nasiko/app-core/session'
 
@@ -55,22 +56,25 @@ function AppLayout() {
   // Budgets are Enterprise only: an OSS build has no item to hide, and EE hides its own while the probe is out.
   const budgetsHidden = slots.budgets.useNavHidden()
   return (
-    <AppShell
-      split={shellSplit}
-      end={
-        <>
-          <BuildToasts />
-          <TourHost />
-          {/* A layer's chrome beside every page (EE: the Weave dock). */}
-          {ShellEnd ? <ShellEnd path={path} /> : null}
-        </>
-      }
-      hidden={[...guideHidden, ...layerHidden, ...budgetsHidden]}
-      badges={
-        building
-          ? { '/agents': { count: building, label: deployCopy.toast.agentsBadge(building) } }
-          : undefined
-      }
-    />
+    // Here, not in mount.tsx: this layout is its own chunk, so the tooltip code stays out of the shell.
+    <TooltipProvider>
+      <AppShell
+        split={shellSplit}
+        end={
+          <>
+            <BuildToasts />
+            <TourHost />
+            {/* A layer's chrome beside every page (EE: the Weave dock). */}
+            {ShellEnd ? <ShellEnd path={path} /> : null}
+          </>
+        }
+        hidden={[...guideHidden, ...layerHidden, ...budgetsHidden]}
+        badges={
+          building
+            ? { '/agents': { count: building, label: deployCopy.toast.agentsBadge(building) } }
+            : undefined
+        }
+      />
+    </TooltipProvider>
   )
 }

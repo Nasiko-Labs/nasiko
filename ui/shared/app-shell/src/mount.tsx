@@ -3,7 +3,6 @@ import { QueryClientProvider } from '@tanstack/react-query'
 import { LayoutGroup, LazyMotion, MotionConfig } from 'motion/react'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TooltipProvider } from '@nasiko/ui/primitives/tooltip'
 import { EditionProvider } from '@nasiko/app-core/edition/EditionProvider'
 import type { Edition } from '@nasiko/app-core/edition/edition'
 import { createAppRouter } from '@nasiko/app-shell/router'
@@ -61,17 +60,17 @@ export async function mount(edition: Edition) {
     <StrictMode>
       <EditionProvider edition={edition}>
         <QueryClientProvider client={queryClient}>
-          <TooltipProvider>
-            <MotionConfig reducedMotion="user">
-              {/* domMax: shared-layout (layoutId) morphs between pages need the layout features. It loads after
-                first paint (its own chunk, off the shell budget); `m` components render at rest until then. */}
-              <LazyMotion features={loadMotionFeatures}>
-                <LayoutGroup>
-                  <RouterProvider router={router} />
-                </LayoutGroup>
-              </LazyMotion>
-            </MotionConfig>
-          </TooltipProvider>
+          {/* No TooltipProvider here: it pulls Base UI's tooltip and floating-ui code into the shell, so the app layout
+              (routes/_app.tsx, its own chunk) provides it around every page that has tooltips. */}
+          <MotionConfig reducedMotion="user">
+            {/* domMax: shared-layout (layoutId) morphs between pages need the layout features. It loads after
+              first paint (its own chunk, off the shell budget); `m` components render at rest until then. */}
+            <LazyMotion features={loadMotionFeatures}>
+              <LayoutGroup>
+                <RouterProvider router={router} />
+              </LayoutGroup>
+            </LazyMotion>
+          </MotionConfig>
         </QueryClientProvider>
       </EditionProvider>
     </StrictMode>,
