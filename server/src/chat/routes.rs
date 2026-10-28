@@ -168,7 +168,7 @@ const SESSION_LIST_SELECT: &str = r#"
     LEFT JOIN users u ON u.id = cs.user_id
     LEFT JOIN LATERAL (
         SELECT content FROM chat_messages
-        WHERE session_id = cs.session_id
+        WHERE session_id = cs.session_id AND (metadata->'turn_error') IS NULL
         ORDER BY timestamp DESC LIMIT 1
     ) lm ON true
     LEFT JOIN LATERAL (
@@ -917,6 +917,20 @@ async fn send_message(
             .into_response();
     }
 
+    // A failed turn is the agent's, so only an assistant row can carry one.
+    let metadata = match &body.error {
+        Some(_) if body.role != CHAT_MESSAGE_ROLE_ASSISTANT => {
+            return (
+                StatusCode::BAD_REQUEST,
+                "error is only for assistant messages",
+            )
+                .into_response();
+        }
+        Some(e) => Some(sqlx::types::Json(turn_error_metadata(&e.message, "agent"))),
+        None => None,
+    };
+    let is_failure = metadata.is_some();
+
     // Dedupe: a client sending the same file_id twice would otherwise cause
     // `claimed != file_ids.len()` to false-positive (the UPDATE affects each
     // distinct row once, but `ANY($2)` with a duplicate doesn't double-count
@@ -953,8 +967,8 @@ async fn send_message(
         r#"INSERT INTO chat_messages
                (session_id, role, content, file_parts, has_file_parts,
                 input_tokens, output_tokens, model, duration_ms, cost_usd,
-                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                usage_estimated, trace_id, cache_read_tokens, cache_creation_tokens, metadata)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
            RETURNING *"#,
     )
     .bind(&session_id)
@@ -971,6 +985,7 @@ async fn send_message(
     .bind(usage.and_then(|u| u.trace_id.as_deref()))
     .bind(usage.and_then(|u| u.cache_read_tokens))
     .bind(usage.and_then(|u| u.cache_creation_tokens))
+    .bind(&metadata)
     .fetch_one(&mut *tx)
     .await
     {
@@ -1026,7 +1041,7 @@ async fn send_message(
     // reader (the first turn after install can wait on a pod pull) must never
     // stall the user seeing their completed answer. On timeout the message is
     // returned without chips; the files are still on disk for a later turn.
-    if msg.role == "assistant" {
+    if msg.role == "assistant" && !is_failure {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
             capture_turn_files(&state, &session_id, msg.id, &msg.content),

@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
+use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -73,6 +74,15 @@ pub struct AppState {
     /// build worker and HITL dispatcher copy `AppState` while it is built. OSS wires
     /// `SingleReplica`.
     pub agent_scaling: Arc<dyn AgentScaling>,
+    /// Where a completed chat turn's files may also come from — files a turn
+    /// produced outside this crate's own chat store. OSS default is a no-op
+    /// ([`NoTurnArtifacts`]): no chips are added and no download scheme beyond
+    /// the ones the chat routes own is claimed. The EE composition root installs
+    /// the real implementation through this cell
+    /// (`SwappableTurnArtifactSource::install`, not a plain reassignment) for the
+    /// same reason `prompt_context` does — see that field's doc comment and the
+    /// `chat::turn_artifacts` module docs.
+    pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -233,6 +243,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -351,6 +362,7 @@ impl AppState {
             prompt_context,
             agent_deletion_hook,
             agent_scaling,
+            turn_artifacts,
             history_embedding_cache,
             observability,
             github_svc,
