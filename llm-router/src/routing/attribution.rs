@@ -196,6 +196,9 @@ mod tests {
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             unreachable!("attribution never touches llm_config")
         }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Some(Uuid::nil()))
+        }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             unreachable!("attribution never touches secrets")
         }

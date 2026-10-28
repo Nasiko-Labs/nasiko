@@ -92,7 +92,7 @@ async fn responses_core(
     headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
@@ -1104,6 +1104,10 @@ mod tests {
             _: i64,
         ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
             Ok(None)
+        }
+
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
 
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {

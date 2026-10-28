@@ -274,6 +274,11 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error>;
 
+    /// The current owner of a live (not deleted) agent, or `None` when there is
+    /// no such agent. Read per request, never cached: it decides whose keys pay,
+    /// and an ownership transfer must take effect at once.
+    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error>;
+
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -428,6 +433,13 @@ impl RegistryStore for PgRegistry {
             is_coding_agent,
             compress_enabled,
         }))
+    }
+
+    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&self.db)
+            .await
     }
 
     async fn fetch_user_secret(
@@ -1148,6 +1160,9 @@ mod tests {
                 is_coding_agent: false,
                 compress_enabled: false,
             }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(self.secret.clone())

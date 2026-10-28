@@ -11,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::execute_embeddings_once;
@@ -36,7 +35,7 @@ async fn embeddings_core(
     body: Value,
 ) -> Result<Response, GatewayError> {
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    let (agent_id, owner_id) = super::chat::verify_agent_identity(ctx, store, authz).await?;
 
     // Strict flow attribution — same rule as chat (previously embeddings
     // attempted none at all): the traceparent must name a live flow this agent
@@ -180,6 +179,9 @@ mod tests {
                 is_coding_agent: false,
                 compress_enabled: false,
             }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)

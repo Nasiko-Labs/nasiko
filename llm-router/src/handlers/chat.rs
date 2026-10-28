@@ -121,6 +121,7 @@ pub(crate) enum AuthedCaller {
 /// unaffected. Expiry and revocation are hard failures (fail closed).
 pub(crate) async fn authenticate_caller(
     ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
     let authz = headers
@@ -156,8 +157,46 @@ pub(crate) async fn authenticate_caller(
         }
     }
 
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    let (agent_id, owner_id) = verify_agent_identity(ctx, store, authz).await?;
     Ok(AuthedCaller::Agent { agent_id, owner_id })
+}
+
+/// Verify an agent-identity token and check its `owner_id` claim is still the
+/// agent's owner.
+///
+/// The token is minted at deploy time and lives in the container until the
+/// next deploy. Ownership can change in between (`PUT /api/agents/{id}/owner`),
+/// and the owner decides whose provider keys pay for the call. Trusting the
+/// claim let the new owner's agent spend the previous owner's keys; switching
+/// silently to the new owner would let anyone still holding the old token
+/// spend the new owner's. So a stale token is refused until a redeploy mints a
+/// fresh one. A deleted agent is refused too. A token with no owner claim
+/// already takes the platform-key path and is left as it is.
+pub(crate) async fn verify_agent_identity(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    authorization: Option<&str>,
+) -> Result<(String, String), GatewayError> {
+    let (agent_id, owner_id) = verify_agent_jwt(authorization, &ctx.cfg)?;
+    let id = uuid::Uuid::parse_str(&agent_id)
+        .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
+    let current_owner = store
+        .fetch_agent_owner(id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "llm-router: agent owner lookup failed — failing closed");
+            GatewayError::Forbidden("identity store unavailable".into())
+        })?
+        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))?
+        .to_string();
+    if !owner_id.is_empty() && owner_id != current_owner {
+        tracing::warn!(%agent_id, token_owner = %owner_id, %current_owner, "llm-router: agent token predates an ownership change");
+        return Err(GatewayError::Forbidden(
+            "the agent's owner changed since it was deployed; redeploy it to refresh its credentials"
+                .into(),
+        ));
+    }
+    Ok((agent_id, owner_id))
 }
 
 /// True if this session token's `jti` has been revoked. Fails closed (a store
@@ -183,7 +222,7 @@ pub(crate) async fn lookup_agent_owner(
     agent_id: &str,
 ) -> Result<String, GatewayError> {
     let id = uuid::Uuid::parse_str(agent_id)
-        .map_err(|_| GatewayError::Forbidden("session token agent_id is not a UUID".into()))?;
+        .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
     let owner: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -196,7 +235,7 @@ pub(crate) async fn lookup_agent_owner(
     })?;
     owner
         .map(|u| u.to_string())
-        .ok_or_else(|| GatewayError::Forbidden("agent not found for session token".into()))
+        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))
 }
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
@@ -260,7 +299,7 @@ async fn chat_core(
 ) -> Result<Response, GatewayError> {
     // A coding-agent session token carries the user + flow in signed claims; the
     // agent-identity token does not, and still relies on the request traceparent.
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             // Config/secrets resolve on the agent owner, which the token doesn't
@@ -1114,6 +1153,9 @@ mod tests {
                 is_coding_agent: self.is_coding_agent,
                 compress_enabled: self.compress_enabled,
             }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
