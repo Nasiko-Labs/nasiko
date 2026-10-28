@@ -1,4 +1,4 @@
-// Flows in a real browser (plans/feat-flows.md, eng review test plan): the list (axe, Kind filter, into a flow), the
+// Flows in a real browser (plans/feat-flows.md, eng review test plan): the list (axe, the Kind select, into a flow), the
 // flow page's swimlane by keyboard (one tab stop, arrows, Enter selects, Esc clears) with axe, "← Flows" back to the
 // list as it was left, and no sideways scroll on a phone.
 import { expect, test } from '@playwright/test'
@@ -11,7 +11,8 @@ test('Flows: filter by kind, open a flow, come back as it was', async ({ page })
   await expect(page.getByRole('heading', { level: 1, name: 'Flows' })).toBeVisible()
   await expect(page.getByRole('table', { name: 'Flows' })).toBeVisible()
   await expectAccessible(page)
-  await page.getByRole('radio', { name: 'Orchestrated' }).click()
+  await page.getByRole('combobox', { name: 'Kind' }).click()
+  await page.getByRole('option', { name: 'Orchestrated' }).click()
   await expect(page).toHaveURL(/kind=orchestrated/)
   await page
     .getByRole('link', { name: 'Compare 2026 pricing for three vendors and draft a summary' })
@@ -19,10 +20,7 @@ test('Flows: filter by kind, open a flow, come back as it was', async ({ page })
   await expect(page.getByRole('heading', { level: 1, name: /Compare 2026 pricing/ })).toBeVisible()
   await page.getByRole('link', { name: 'Back to Flows' }).click()
   await expect(page).toHaveURL(/\/flows\?.*kind=orchestrated/)
-  await expect(page.getByRole('radio', { name: 'Orchestrated' })).toHaveAttribute(
-    'aria-checked',
-    'true',
-  )
+  await expect(page.getByRole('combobox', { name: 'Kind' })).toContainText('Orchestrated')
 })
 
 test('the swimlane by keyboard: one tab stop, arrows, Enter selects, Esc clears', async ({

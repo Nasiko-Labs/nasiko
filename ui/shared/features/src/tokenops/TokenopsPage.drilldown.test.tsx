@@ -222,7 +222,8 @@ describe('closing panels', () => {
     await screen.findByRole('dialog')
     await user.keyboard('{Escape}')
     await waitFor(() => expect(router.state.location.href).toBe(before))
-    expect(screen.queryByRole('dialog')).toBeNull()
+    // Base UI unmounts a closed sheet a frame after its exit.
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
   })
 
   it('closing a day panel this page opened goes back too', async () => {
