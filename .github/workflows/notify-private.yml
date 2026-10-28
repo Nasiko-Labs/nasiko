@@ -7,12 +7,6 @@ name: Notify private repo
 #
 # This is safe because the workflow does NOT check out or execute any code from
 # the fork — it only reads PR metadata and sends a dispatch.
-#
-# That metadata (title, branch name) is written by whoever opens the PR, so it
-# reaches the script only through env, never through ${{ }} in `run:`. Actions
-# pastes ${{ }} into the script text before the shell parses it: a title with a
-# `'` would end the quoting and the rest would run as shell, with the PAT in
-# scope. jq builds the JSON so any quote in a title is escaped, not fatal.
 on:
   pull_request_target:
     types: [opened, synchronize]
@@ -23,30 +17,36 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
+      # Only the PR number and its head SHA cross: the private import fetches the
+      # title, author and base from the API itself and verifies the SHA. The JSON
+      # is built by jq from environment variables, never by pasting PR fields into
+      # the shell: a PR title is attacker-controlled, and this job holds a secret.
+      # The production public repository notifies the production private one with its own secret. Any other
+      # repository (a sync rehearsal) needs OSS_REHEARSAL_PRIVATE_SLUG naming a *sync-rehearsal* repository and its
+      # own OSS_REHEARSAL_DISPATCH_TOKEN; it can never dispatch to production.
       - name: Trigger PR import in private repo
         env:
-          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
-          EVENT_TYPE: oss-pr-${{ github.event.action == 'opened' && 'opened' || 'synchronized' }}
+          PAT: ${{ github.repository == 'Nasiko-Labs/nasiko' && secrets.PRIVATE_REPO_PAT || secrets.OSS_REHEARSAL_DISPATCH_TOKEN }}
+          PRIVATE_SLUG: ${{ github.repository == 'Nasiko-Labs/nasiko' && 'Nasiko-Labs/nasiko-cloud-rs' || vars.OSS_REHEARSAL_PRIVATE_SLUG }}
+          PRODUCTION: ${{ github.repository == 'Nasiko-Labs/nasiko' }}
+          ACTION: ${{ github.event.action }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
-          jq -n \
-            --arg event_type "$EVENT_TYPE" \
-            --argjson pr_number "$PR_NUMBER" \
-            --arg head_ref "$HEAD_REF" \
-            --arg head_sha "$HEAD_SHA" \
-            --arg title "$PR_TITLE" \
-            --arg author "$PR_AUTHOR" \
-            --arg pr_url "$PR_URL" \
-            '{event_type: $event_type,
-              client_payload: {pr_number: $pr_number, head_ref: $head_ref,
-                head_sha: $head_sha, title: $title, author: $author, pr_url: $pr_url}}' \
-          | curl -fsSL -X POST \
-              -H "Authorization: token $PRIVATE_REPO_PAT" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/Nasiko-Labs/nasiko-cloud-rs/dispatches" \
-              --data @-
+          set -euo pipefail
+          if [ "$PRODUCTION" != "true" ]; then
+            lower=$(printf '%s' "$PRIVATE_SLUG" | tr '[:upper:]' '[:lower:]')
+            case "$lower" in
+              nasiko-labs/nasiko-cloud-rs|nasiko-labs/nasiko|"") echo "::error::not a rehearsal target: '$PRIVATE_SLUG'"; exit 1 ;;
+              *sync-rehearsal*) ;;
+              *) echo "::error::a rehearsal may only dispatch to a *sync-rehearsal* repository"; exit 1 ;;
+            esac
+          fi
+          if [ "$ACTION" = "opened" ]; then TYPE=oss-pr-opened; else TYPE=oss-pr-synchronized; fi
+          jq -n --arg type "$TYPE" --argjson pr "$PR_NUMBER" --arg sha "$HEAD_SHA" \
+            '{event_type: $type, client_payload: {pr_number: $pr, head_sha: $sha}}' \
+            | curl -fsSL -X POST \
+                -H "Authorization: token ${PAT}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${PRIVATE_SLUG}/dispatches" \
+                --data-binary @-
