@@ -59,6 +59,62 @@ async fn check_last_admin(state: &AppState, target_id: Uuid) -> Option<axum::res
     None
 }
 
+/// The superuser ceiling: a caller who is not a superuser may not grant
+/// superuser, and may not act on an account that already is one.
+///
+/// User management is open to `role = 'admin'` callers (and in OSS, whose
+/// `can_manage_users` is allow-all, to every authenticated caller). Without
+/// this check such a caller could create a superuser, or reset a superuser's
+/// credentials and sign in as them.
+///
+/// Returns `None` when the request may go ahead. A target that does not exist
+/// passes, so the handler still answers 404 itself. A database error fails
+/// closed (500).
+async fn superuser_ceiling(
+    state: &AppState,
+    claims: &Claims,
+    grants_superuser: bool,
+    target_id: Option<Uuid>,
+) -> Option<axum::response::Response> {
+    if claims.is_superuser {
+        return None;
+    }
+    let forbidden = || {
+        Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(
+                    serde_json::json!({"error": "only a superuser can manage superuser accounts"}),
+                ),
+            )
+                .into_response(),
+        )
+    };
+    if grants_superuser {
+        return forbidden();
+    }
+    let target_id = target_id?;
+    let target_is_superuser: Result<Option<bool>, sqlx::Error> =
+        sqlx::query_scalar("SELECT is_superuser FROM users WHERE id = $1")
+            .bind(target_id)
+            .fetch_optional(&state.db)
+            .await;
+    match target_is_superuser {
+        Ok(Some(true)) => forbidden(),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::error!(%e, %target_id, "superuser_ceiling: target lookup failed");
+            Some(
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": "internal error"})),
+                )
+                    .into_response(),
+            )
+        }
+    }
+}
+
 /// Revoke every live session for `user_id`.
 ///
 /// Called wherever a credential is replaced: a password that no longer exists
@@ -318,13 +374,18 @@ pub(crate) struct CreateUserResponse {
     request_body = CreateUser,
     responses(
         (status = 201, description = "User created", body = CreateUserResponse),
+        (status = 403, description = "Only a superuser can create a superuser"),
         (status = 409, description = "Username or email already exists"),
     ),
 )]
 pub(crate) async fn create_user(
     State(state): State<AppState>,
+    claims: Claims,
     Json(body): Json<CreateUser>,
 ) -> impl IntoResponse {
+    if let Some(err) = superuser_ceiling(&state, &claims, body.is_superuser, None).await {
+        return err;
+    }
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
     let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
@@ -423,7 +484,7 @@ pub struct ChangeRoleRequest {
     responses(
         (status = 200, description = "Updated user", body = UserRow),
         (status = 400, description = "Empty username/email or password too short"),
-        (status = 403, description = "Cannot deactivate your own account"),
+        (status = 403, description = "Cannot deactivate your own account, or the target is a superuser and the caller is not"),
         (status = 404, description = "No such user"),
         (status = 409, description = "Username/email already taken, cannot deactivate the last admin, or user has no local credentials to set a password for"),
     ),
@@ -448,6 +509,10 @@ pub async fn update_user(
         && let Err(policy) = nasiko_auth::validate_password(p)
     {
         return (StatusCode::BAD_REQUEST, policy.message()).into_response();
+    }
+
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
     }
 
     // AUTH-2: an `is_active: false` transition through this generic PUT must go
@@ -586,7 +651,7 @@ pub async fn update_user(
     ),
     responses(
         (status = 204, description = "Deleted"),
-        (status = 403, description = "Cannot delete your own account"),
+        (status = 403, description = "Cannot delete your own account, or the target is a superuser and the caller is not"),
         (status = 409, description = "Cannot delete the last admin"),
         (status = 404, description = "No such user"),
         (status = 409, description = "User still owns agents"),
@@ -604,6 +669,10 @@ pub(crate) async fn delete_user(
             Json(serde_json::json!({"error": "cannot delete your own account"})),
         )
             .into_response();
+    }
+
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
     }
 
     // Prevent deleting the last admin (covers both role='admin' and is_superuser).
@@ -666,7 +735,7 @@ pub(crate) async fn delete_user(
     ),
     responses(
         (status = 204, description = "Deactivated"),
-        (status = 403, description = "Cannot deactivate your own account"),
+        (status = 403, description = "Cannot deactivate your own account, or the target is a superuser and the caller is not"),
         (status = 404, description = "No such user"),
         (status = 409, description = "Cannot deactivate the last admin"),
     ),
@@ -683,6 +752,10 @@ pub(crate) async fn deactivate(
             Json(serde_json::json!({"error": "cannot deactivate your own account"})),
         )
             .into_response();
+    }
+
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
     }
 
     // Prevent deactivating the last admin.
@@ -724,13 +797,18 @@ pub(crate) async fn deactivate(
     ),
     responses(
         (status = 204, description = "Reinstated"),
+        (status = 403, description = "The target is a superuser and the caller is not"),
         (status = 404, description = "No such user"),
     ),
 )]
 pub(crate) async fn reinstate(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
+    }
     match sqlx::query("UPDATE users SET is_active = true WHERE id = $1 AND deleted_at IS NULL")
         .bind(id)
         .execute(&state.db)
@@ -771,12 +849,17 @@ pub(crate) struct RegenerateCredentialsResponse {
     ),
     responses(
         (status = 200, description = "New credentials", body = RegenerateCredentialsResponse),
+        (status = 403, description = "The target is a superuser and the caller is not"),
     ),
 )]
 pub(crate) async fn regenerate_credentials(
     State(state): State<AppState>,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
+    }
     let access_key = nasiko_auth::generate_access_key();
     let access_secret = nasiko_auth::generate_access_secret();
     let access_secret_hash = match nasiko_auth::hash_password_async(&access_secret).await {
@@ -864,7 +947,7 @@ async fn valid_user_roles(state: &AppState) -> Result<Vec<String>, sqlx::Error> 
     responses(
         (status = 204, description = "Role changed (or unchanged, a no-op)"),
         (status = 400, description = "Invalid role"),
-        (status = 403, description = "Cannot change your own role"),
+        (status = 403, description = "Cannot change your own role, or the target is a superuser and the caller is not"),
         (status = 404, description = "No such user"),
         (status = 409, description = "Cannot demote the last admin"),
     ),
@@ -882,6 +965,10 @@ pub async fn change_role(
             Json(serde_json::json!({"error": "cannot change your own role"})),
         )
             .into_response();
+    }
+
+    if let Some(err) = superuser_ceiling(&state, &claims, false, Some(id)).await {
+        return err;
     }
 
     let new_role = req.role.trim().to_lowercase();
