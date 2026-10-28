@@ -1016,7 +1016,24 @@ impl ObservabilityProvider for TempoLokiProvider {
             resolver_sourced = false;
             let query = session_query(session_id);
             let (found, more) = self.search_session_traces(&query, start, end).await?;
-            trace_results = found;
+            // The search matches `session.id`, which agents write. A trace the
+            // resolver already filed under a session cannot belong to this one
+            // (this one has nothing filed), so an agent claiming otherwise is
+            // trying to show another session's trace here. Drop it.
+            let mut unclaimed = Vec::with_capacity(found.len());
+            for hit in found {
+                if self
+                    .session_resolver
+                    .session_for_trace(&hit.0)
+                    .await
+                    .is_none()
+                {
+                    unclaimed.push(hit);
+                } else {
+                    tracing::warn!(trace_id = %hit.0, session_id, "dropped a trace filed under another session");
+                }
+            }
+            trace_results = unclaimed;
             has_more_traces = more;
         }
 

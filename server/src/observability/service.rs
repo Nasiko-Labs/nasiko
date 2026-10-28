@@ -1441,26 +1441,62 @@ impl ObservabilityService {
             .map(|_| ())
     }
 
+    /// The session a trace belongs to, for authorizing the trace view.
+    ///
+    /// The server's own `session_traces` record is the authority: every server
+    /// path that starts or forwards a turn writes it after checking the caller
+    /// owns the session. Span attributes are written by agents, and any agent
+    /// in a flow can set `session.id` to a session its own owner controls, so
+    /// a span's claim is used only when the server recorded nothing. Even then
+    /// it is refused when the trace is a flow the server knows belongs to
+    /// someone other than that session's owner.
     async fn trace_session_id(
         &self,
         trace_id: &str,
         trace: &nasiko_observability::TraceDetails,
     ) -> Result<String, ObservabilityError> {
-        if let Some(session_id) = trace.spans.iter().find_map(|span| {
-            span.attributes
-                .get("session.id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        }) {
+        let internal = |e: sqlx::Error| ObservabilityError::Internal(e.to_string());
+        let not_found = || ObservabilityError::NotFound("trace not found".into());
+
+        let recorded: Option<String> =
+            sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1 LIMIT 1")
+                .bind(trace_id)
+                .fetch_optional(&self.db)
+                .await
+                .map_err(internal)?;
+        if let Some(session_id) = recorded {
             return Ok(session_id);
         }
 
-        sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1")
-            .bind(trace_id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?
-            .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))
+        let claimed = trace
+            .spans
+            .iter()
+            .find_map(|span| {
+                span.attributes
+                    .get("session.id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .ok_or_else(not_found)?;
+
+        // A known flow must belong to the claimed session's owner.
+        let consistent: bool = sqlx::query_scalar(
+            r#"SELECT NOT EXISTS (
+                   SELECT 1 FROM flows f
+                    WHERE f.flow_id = $1
+                      AND NOT EXISTS (SELECT 1 FROM chat_sessions c
+                                       WHERE c.session_id = $2 AND c.user_id = f.user_id))"#,
+        )
+        .bind(trace_id)
+        .bind(&claimed)
+        .fetch_one(&self.db)
+        .await
+        .map_err(internal)?;
+        if !consistent {
+            tracing::warn!(%trace_id, session_id = %claimed, "trace's session.id conflicts with its flow owner");
+            return Err(not_found());
+        }
+        Ok(claimed)
     }
 
     // ── 1. session/list ──────────────────────────────────────────────────────
