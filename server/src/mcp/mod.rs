@@ -61,12 +61,41 @@ pub fn agent_gateway_router(max_body_bytes: usize) -> Router<AppState> {
 /// agent credential.
 const CREDENTIAL_URI_PREFIX: &str = "/api/mcp/s/";
 
-/// Redact the agent credential carried by `/api/mcp/s/{token}` so it never
-/// reaches a tracing span, a log line, or the OTLP exporter fed by them.
+/// Fragments of query-parameter names whose values are treated as credentials.
+/// Matched case-insensitively anywhere in the (percent-decoded) name, so
+/// `token`, `access_token`, `id_token`, OAuth `code` and `state`, `api_key`,
+/// `client_secret`, `X-Amz-Signature` and the like are all caught. Erring
+/// towards redaction is deliberate: a hidden harmless value costs a little
+/// debugging, a logged credential is an incident.
+const SENSITIVE_QUERY_KEY_PARTS: &[&str] = &[
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "key",
+    "code",
+    "state",
+    "sig",
+    "auth",
+    "session",
+    "credential",
+    "jwt",
+];
+
+/// Redact credentials from a request URI before it reaches a tracing span, a
+/// log line, or the OTLP exporter fed by them.
+///
+/// Two forms are covered:
+/// - `/api/mcp/s/{token}` carries an agent credential in the path; the whole
+///   URI is replaced.
+/// - Any route can carry one in the query string, for example the SSO
+///   `/api/auth/sso/session?token=<session JWT>` or an OAuth callback's
+///   `code`/`state`. Values of parameters whose name looks sensitive are
+///   replaced with `[REDACTED]`; the path, the parameter names and every other
+///   value are kept, so request logs stay useful.
 ///
 /// Applied to the server's `TraceLayer` in `lib.rs`, which otherwise records the
-/// full request URI. Returns the URI unchanged for every other route, so normal
-/// request logging (query strings included) is untouched.
+/// full request URI.
 ///
 /// This covers the server side only. An agent's *own* HTTP client span still
 /// records `url.full`, which is why the URL form is documented as secret-bearing
@@ -75,7 +104,37 @@ pub(crate) fn redact_credential_uri(uri: &axum::http::Uri) -> String {
     if uri.path().starts_with(CREDENTIAL_URI_PREFIX) {
         return format!("{CREDENTIAL_URI_PREFIX}{{token}}");
     }
-    uri.to_string()
+    match uri.query() {
+        Some(query) => format!("{}?{}", uri.path(), redact_query(query)),
+        None => uri.path().to_owned(),
+    }
+}
+
+fn redact_query(query: &str) -> String {
+    query
+        .split('&')
+        .map(|pair| {
+            let (name, has_value) = match pair.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (pair, false),
+            };
+            if has_value && is_sensitive_query_key(name) {
+                format!("{name}=[REDACTED]")
+            } else {
+                pair.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn is_sensitive_query_key(raw_name: &str) -> bool {
+    let name = percent_encoding::percent_decode_str(&raw_name.replace('+', " "))
+        .decode_utf8_lossy()
+        .to_ascii_lowercase();
+    SENSITIVE_QUERY_KEY_PARTS
+        .iter()
+        .any(|part| name.contains(part))
 }
 
 /// MCP-server-upload MUTATION routes (build a container from user-supplied
@@ -485,6 +544,30 @@ mod redaction_tests {
             redact_credential_uri(&uri("/api/agents?page=2")),
             "/api/agents?page=2"
         );
+    }
+
+    #[test]
+    fn redacts_the_sso_session_token_in_the_query() {
+        let redacted =
+            redact_credential_uri(&uri("/api/auth/sso/session?token=eyJhbGciOi.payload.sig"));
+        assert_eq!(redacted, "/api/auth/sso/session?token=[REDACTED]");
+    }
+
+    #[test]
+    fn redacts_oauth_and_signed_url_parameters_but_keeps_the_rest() {
+        let redacted = redact_credential_uri(&uri(
+            "/api/auth/oidc/callback?code=c0de&state=s7ate&page=2&access_token=at&X-Amz-Signature=abc&flag",
+        ));
+        assert_eq!(
+            redacted,
+            "/api/auth/oidc/callback?code=[REDACTED]&state=[REDACTED]&page=2&access_token=[REDACTED]&X-Amz-Signature=[REDACTED]&flag"
+        );
+    }
+
+    #[test]
+    fn redacts_a_percent_encoded_or_uppercase_key() {
+        let redacted = redact_credential_uri(&uri("/x?ACCESS%5FTOKEN=secret-value"));
+        assert!(!redacted.contains("secret-value"), "leaked: {redacted}");
     }
 
     #[test]
