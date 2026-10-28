@@ -481,39 +481,33 @@ pub async fn agent_proxy(
     // Best-effort: record the session ↔ trace correlation so observability
     // can map Tempo traces back to chat sessions for agents that don't set
     // session.id on their spans (anything not running the Python patch).
-    // Fire-and-forget so it never delays the proxy; ensure_chat_session above
-    // already guaranteed the chat_sessions row, so the FK holds.
-    if !body_bytes.is_empty()
-        && let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes)
-        && !(agent.is_internal && is_ephemeral(&body_json))
-    {
-        let context_id = body_json
-            .pointer("/params/message/contextId")
-            .or_else(|| body_json.pointer("/params/contextId"))
-            .and_then(|v| v.as_str())
-            .map(String::from);
-
-        if let Some(ctx_id) = context_id {
-            let trace_id = flow_ctx.flow_id.clone();
-            let agent_name = agent.name.clone();
-            let db = state.db.clone();
-            tokio::spawn(async move {
-                if let Err(e) = sqlx::query(
-                    "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-                     VALUES ($1, $2, $3, $4)
-                     ON CONFLICT (session_id, trace_id) DO NOTHING",
-                )
-                .bind(&ctx_id)
-                .bind(&trace_id)
-                .bind(agent_id)
-                .bind(&agent_name)
-                .execute(&db)
-                .await
-                {
-                    tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
-                }
-            });
-        }
+    // Fire-and-forget so it never delays the proxy.
+    //
+    // Only the session `ensure_chat_session` verified belongs to the caller.
+    // The raw `contextId` of other methods (`tasks/get`, `tasks/cancel`, …) is
+    // unchecked caller input: recording it let anyone who knew another user's
+    // session id attach traces to that user's session view.
+    if let Some(info) = persist_info.as_ref() {
+        let ctx_id = info.session_id.clone();
+        let trace_id = flow_ctx.flow_id.clone();
+        let agent_name = agent.name.clone();
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sqlx::query(
+                "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (session_id, trace_id) DO NOTHING",
+            )
+            .bind(&ctx_id)
+            .bind(&trace_id)
+            .bind(agent_id)
+            .bind(&agent_name)
+            .execute(&db)
+            .await
+            {
+                tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
+            }
+        });
     }
 
     if !body_bytes.is_empty() {
