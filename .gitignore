@@ -42,6 +42,7 @@ values.json
 /docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md
 /docs/MCP_SERVER_UPLOAD_EE_IMPLEMENTATION_PLAN.md
 /docs/MCP_UPLOAD_PLAN_OSS.md
+/docs/MCP_PLATFORM_CONTROL_PLAN.md
 .preview-shots/
 /_to_delete/
 # The same holder, anywhere. The Cowork device mount cannot unlink, so a file
@@ -81,6 +82,3 @@ gke-key.json
 /codex-agent/
 /opencode-agent/
 /*-agent.zip
-
-# lakehouse local cold data
-/data/
