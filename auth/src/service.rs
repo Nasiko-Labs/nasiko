@@ -119,6 +119,29 @@ impl AuthService for AuthServiceImpl {
         crate::jwt::decode_jwt(&self.jwt_secret, token)
     }
 
+    /// A superuser, or an active, non-deleted user with `role = 'admin'`. The
+    /// role is read from the database rather than the token, so a demotion
+    /// takes effect at once. A failed lookup denies.
+    async fn can_manage_users(&self, identity: &Identity) -> bool {
+        if identity.is_superuser {
+            return true;
+        }
+        let Ok(user_id) = identity.user_id.parse::<uuid::Uuid>() else {
+            return false;
+        };
+        // A lookup error denies (`unwrap_or(None)`); this crate has no logger,
+        // and the caller answers 403 either way.
+        let is_admin: Option<bool> = sqlx::query_scalar(
+            "SELECT role = 'admin' FROM users \
+             WHERE id = $1 AND is_active AND deleted_at IS NULL",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await
+        .unwrap_or(None);
+        is_admin == Some(true)
+    }
+
     async fn issue_delegated_token(
         &self,
         identity: &Identity,

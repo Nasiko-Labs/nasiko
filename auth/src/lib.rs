@@ -155,10 +155,14 @@ pub trait AuthService: Send + Sync + 'static {
     // wider than either. One existed here for a while, called by nothing, which
     // is worse than absent: it reads as protection while protecting nothing.
 
-    /// May the identity manage users? (EE: ≥ admin)
+    /// May the identity manage users (create, reset credentials, deactivate,
+    /// delete, change roles)? Implementations with a database also admit
+    /// `role = 'admin'` (OSS: [`AuthServiceImpl`](crate::AuthServiceImpl);
+    /// EE: ≥ admin). This default has no database, so it admits superusers
+    /// only: allow-all here would let any signed-in user take over any
+    /// non-superuser account.
     async fn can_manage_users(&self, identity: &Identity) -> bool {
-        let _ = identity;
-        true
+        identity.is_superuser
     }
     /// May the identity manage the VM pool / scaling? (EE: ≥ admin)
     async fn can_manage_pool(&self, identity: &Identity) -> bool {

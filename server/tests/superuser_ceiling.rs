@@ -1,8 +1,8 @@
 //! NAS-1133: a caller who is not a superuser must not be able to create a
 //! superuser, or act on one (reset credentials, update, deactivate, reinstate,
-//! delete, change role). User management is open to callers below superuser —
-//! in OSS `can_manage_users` is allow-all — so without this ceiling any of them
-//! could mint a superuser or take one over.
+//! delete, change role). User management is also open to `role = 'admin'`
+//! users who are not superusers, so without this ceiling they could mint a
+//! superuser or take one over.
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test superuser_ceiling -- --test-threads=1
@@ -13,14 +13,24 @@ use serde_json::json;
 use serial_test::serial;
 use uuid::Uuid;
 
+/// The non-superuser caller in these tests: an admin by role, so it passes
+/// `require_user_manager` and only the ceiling can stop it.
+const MANAGER: &str = "dummy-manager";
+
 async fn seed_user(server: &common::TestServer, username: &str, superuser: bool) -> Uuid {
+    let role = if username == MANAGER {
+        "admin"
+    } else {
+        "member"
+    };
     let id: Uuid = sqlx::query_scalar(
-        "INSERT INTO users (username, email, is_superuser, is_active) \
-         VALUES ($1, $2, $3, true) RETURNING id",
+        "INSERT INTO users (username, email, is_superuser, is_active, role) \
+         VALUES ($1, $2, $3, true, $4::user_role) RETURNING id",
     )
     .bind(username)
     .bind(format!("{username}@local.test"))
     .bind(superuser)
+    .bind(role)
     .fetch_one(&server.db)
     .await
     .expect("seed user");
@@ -48,12 +58,12 @@ async fn secret_hash(server: &common::TestServer, id: Uuid) -> String {
 #[serial]
 async fn a_non_superuser_cannot_create_a_superuser() {
     let server = common::TestServer::start().await;
-    let member = seed_user(&server, "dummy-manager", false).await;
+    let member = seed_user(&server, MANAGER, false).await;
 
     let resp = common::as_member(
         server.client.post(server.url("/api/users")),
         &member.to_string(),
-        "dummy-manager",
+        MANAGER,
     )
     .json(&json!({"username": "dummy-escalated", "email": "esc@local.test", "is_superuser": true}))
     .send()
@@ -72,7 +82,7 @@ async fn a_non_superuser_cannot_create_a_superuser() {
     let resp = common::as_member(
         server.client.post(server.url("/api/users")),
         &member.to_string(),
-        "dummy-manager",
+        MANAGER,
     )
     .json(&json!({"username": "dummy-plain", "email": "plain@local.test"}))
     .send()
@@ -87,7 +97,7 @@ async fn a_non_superuser_cannot_create_a_superuser() {
 #[serial]
 async fn a_non_superuser_cannot_act_on_a_superuser() {
     let server = common::TestServer::start().await;
-    let member = seed_user(&server, "dummy-manager", false).await;
+    let member = seed_user(&server, MANAGER, false).await;
     let root = seed_user(&server, "dummy-root", true).await;
     // A second superuser so the last-admin guard can never be what answers.
     seed_user(&server, "dummy-root-2", true).await;
@@ -130,7 +140,7 @@ async fn a_non_superuser_cannot_act_on_a_superuser() {
         ),
     ];
     for (rb, body) in attempts {
-        let rb = common::as_member(rb, &caller, "dummy-manager");
+        let rb = common::as_member(rb, &caller, MANAGER);
         let rb = match body {
             Some(b) => rb.json(&b),
             None => rb,
@@ -161,18 +171,18 @@ async fn a_non_superuser_cannot_act_on_a_superuser() {
 #[serial]
 async fn the_ceiling_does_not_block_normal_management() {
     let server = common::TestServer::start().await;
-    let member = seed_user(&server, "dummy-manager", false).await;
+    let member = seed_user(&server, MANAGER, false).await;
     let other = seed_user(&server, "dummy-dev", false).await;
     let root = seed_user(&server, "dummy-root", true).await;
     let target = seed_user(&server, "dummy-root-2", true).await;
 
-    // A non-superuser can still manage a non-superuser.
+    // A non-superuser admin can still manage a non-superuser.
     let resp = common::as_member(
         server
             .client
             .post(server.url(&format!("/api/users/{other}/regenerate-credentials"))),
         &member.to_string(),
-        "dummy-manager",
+        MANAGER,
     )
     .send()
     .await
