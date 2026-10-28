@@ -162,6 +162,8 @@ export interface HitlFrame {
 export interface SaveMessageBody {
   role: 'user' | 'assistant'
   content: string
+  /** The agent ended the turn as failed: the server keeps it so a reload shows the failure. */
+  error?: { message: string }
   usage?: {
     input_tokens?: number
     output_tokens?: number

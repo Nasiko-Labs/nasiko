@@ -13,6 +13,7 @@ import { Button, asButton } from '@nasiko/ui/primitives/button'
 import type { Agent } from '@nasiko/features/agents/types'
 import { fmtLatency } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { notesFor, routedReplyText, type Step, type TurnState } from '../a2aReducer'
 import {
   agentActivity,
@@ -26,7 +27,7 @@ import { useFlowAgents } from '../api'
 import { useNow } from '../hooks'
 import { copy, policyCopy } from '../copy'
 import { copyDetails } from '../copyDetails'
-import { ChatError } from '../errors'
+import { ChatError, refusalOf } from '../errors'
 import { usageFromMessage, usageFromMeta } from '../format'
 import type { answeredResume } from '../turnModel'
 import { splitStopped } from '../normalize'
@@ -517,6 +518,7 @@ export function RoutedLive({
   handlers: RoutedHandlers
   tryAgain(): void
 }) {
+  const { chatRefusal } = useSlots()
   const liveNow = isLivePhase(live.phase)
   const resume = live.operation === 'resume'
   const text = routedReplyText(live.state, resume)
@@ -601,15 +603,19 @@ export function RoutedLive({
         break
       }
       const create = e.key === 'createFailed' || e.key === 'saveUserFailed'
-      const { actions, links } = create
-        ? {
-            actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
-            links: undefined,
-          }
-        : routedActions(e, live.userText, handlers, resume)
+      const refusal = refusalOf(e, chatRefusal)
+      const { actions, links } = refusal
+        ? { actions: [], links: undefined }
+        : create
+          ? {
+              actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
+              links: undefined,
+            }
+          : routedActions(e, live.userText, handlers, resume)
       end = (
         <ErrorNotice
           error={e}
+          refusal={refusal}
           actions={actions}
           links={
             <>

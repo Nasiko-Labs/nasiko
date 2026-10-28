@@ -116,7 +116,7 @@ export interface LoginMethodsProps {
 }
 
 /** The org-unit filter a layer can add to TokenOps (planned in EE). */
-interface OrgUnitFilterProps {
+export interface OrgUnitFilterProps {
   value?: string
   onChange: (orgUnit: string | undefined) => void
 }
@@ -330,6 +330,15 @@ export const NO_BUDGETS: BudgetsSurface = {
 }
 
 /** Every slot has an OSS fallback in the core; a slot is added in the PR whose layer first fills it. */
+/** What a chat turn's failure card says when a layer recognises the failure as a refusal. */
+export interface ChatRefusal {
+  problem: string
+  cause: string
+  action: string
+  /** The server's own words, shown under Details in place of the raw failure text. */
+  detail: string
+}
+
 export interface Slots {
   harnessOrgScope: HarnessOrgScope | null
   homeOrgScope: HomeOrgScope | null
@@ -371,6 +380,11 @@ export interface Slots {
   budgetsOrgRole: BudgetsOrgRole | null
   /** Budgets (Enterprise only). `NO_BUDGETS` in an OSS build: every surface off, nothing read. */
   budgets: BudgetsSurface
+  /**
+   * Reads a failed chat turn's text for a refusal that running again won't fix (EE: a budget stop). Recognised, the
+   * card shows these words with no Run again and no agent logs. OSS: none, every failure is the generic one.
+   */
+  chatRefusal: ((detail: string) => ChatRefusal | null) | null
 }
 
 export interface BudgetsOrgRoleOf {
@@ -426,6 +440,7 @@ export const OSS_SLOTS: Slots = {
   tours: [],
   budgetsOrgRole: null,
   budgets: NO_BUDGETS,
+  chatRefusal: null,
 }
 
 /** A layer's own sidebar item: any path its routes serve. */
@@ -482,6 +497,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.navHidden !== undefined) out.navHidden = s.navHidden
     if (s.budgetsOrgRole !== undefined) out.budgetsOrgRole = s.budgetsOrgRole
     if (s.budgets !== undefined) out.budgets = s.budgets
+    if (s.chatRefusal !== undefined) out.chatRefusal = s.chatRefusal
   }
   return out
 }

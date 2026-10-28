@@ -15,10 +15,12 @@ import { Group } from '@visx/group'
 import { ParentSize } from '@visx/responsive'
 import { scaleLinear, scaleUtc } from '@visx/scale'
 import { Area, LinePath } from '@visx/shape'
+import { Info } from 'lucide-react'
 import { motion, useReducedMotion } from 'motion/react'
 import { useId, useState } from 'react'
 import { Swatch } from '@nasiko/ui/composites/chart-marks'
 import { OTHER_SERIES, seriesAt } from '@nasiko/ui/lib/chart'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
 import { HatchPattern } from './hatch-pattern'
 
 export interface BurnChartPoint {
@@ -57,17 +59,26 @@ export interface BurnChartData {
 
 export interface BurnChartLabels {
   actual: string
+  /** A plain-words explanation of `actual`, next to it in the legend as an info icon (bug found 2026-10-26: the
+   * legend named every line but explained none of them). Every other `*Hint` below is the same idea. */
+  actualHint?: string
   pace: string
+  paceHint?: string
   band: string
+  bandHint?: string
   limit: string
+  limitHint?: string
   threshold: (percent: number) => string
   /** The legend's key for the threshold lines. */
   thresholds: string
+  thresholdsHint?: string
   stop: string
+  stopHint?: string
   /** "−$41 over", drawn at the line's end when it is below $0 (burndown). */
   over: string | null
   runOut: string | null
   preview: string
+  previewHint?: string
   /** Lab: the "expected" line's legend key (F13), when one is drawn. */
   expected?: string
   bars: string
@@ -131,26 +142,36 @@ export function BurnChart(props: BurnChartProps) {
         </ParentSize>
       </div>
       <figcaption className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <Key color={ACTUAL.edge}>{labels.actual}</Key>
+        <Key color={ACTUAL.edge} hint={labels.actualHint}>
+          {labels.actual}
+        </Key>
         {data.pace.length ? (
-          <Key dashed color="var(--muted-foreground)">
+          <Key dashed color="var(--muted-foreground)" hint={labels.paceHint}>
             {labels.pace}
           </Key>
         ) : null}
-        {data.band.length ? <Key band>{labels.band}</Key> : null}
+        {data.band.length ? (
+          <Key band hint={labels.bandHint}>
+            {labels.band}
+          </Key>
+        ) : null}
         {data.mode === 'up' && data.limits.some((l) => !l.stops) ? (
-          <Key color="var(--foreground)">{labels.limit}</Key>
+          <Key color="var(--foreground)" hint={labels.limitHint}>
+            {labels.limit}
+          </Key>
         ) : null}
         {data.thresholds.length ? (
-          <Key dashed color="var(--warning)">
+          <Key dashed color="var(--warning)" hint={labels.thresholdsHint}>
             {labels.thresholds}
           </Key>
         ) : null}
         {data.limits.some((l) => l.stops) ? (
-          <Key color="var(--destructive)">{labels.stop}</Key>
+          <Key color="var(--destructive)" hint={labels.stopHint}>
+            {labels.stop}
+          </Key>
         ) : null}
         {preview?.length ? (
-          <Key dashed color={PREVIEW.edge}>
+          <Key dashed color={PREVIEW.edge} hint={labels.previewHint}>
             {labels.preview}
           </Key>
         ) : null}
@@ -176,17 +197,23 @@ export function BurnChart(props: BurnChartProps) {
   )
 }
 
-/** A legend key: a solid or dashed rule in the mark's colour, or the band's swatch. */
+/**
+ * A legend key: a solid or dashed rule in the mark's colour, or the band's swatch, with an optional
+ * info icon explaining what the line actually means (bug found 2026-10-26: the legend named every
+ * line — "Even pace", "Projection from recent spending rates" — but explained none of them).
+ */
 function Key({
   children,
   color,
   dashed,
   band,
+  hint,
 }: {
   children: string
   color?: string
   dashed?: boolean
   band?: boolean
+  hint?: string
 }) {
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -204,6 +231,25 @@ function Key({
         />
       )}
       {children}
+      {hint ? (
+        <Tooltip>
+          {/* Focusable so a keyboard user can open the tooltip; it has no action of its own. */}
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                // eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- focusable only to open the tooltip
+                tabIndex={0}
+                className="inline-flex text-muted-foreground"
+                aria-label={`What “${children}” means`}
+              />
+            }
+          >
+            <Info className="size-3" aria-hidden />
+          </TooltipTrigger>
+          <TooltipContent className="max-w-xs">{hint}</TooltipContent>
+        </Tooltip>
+      ) : null}
     </span>
   )
 }
@@ -243,7 +289,9 @@ function Plot({
   const extra = [...(preview ?? []), ...(expected ?? []), ...(data.share ?? [])].map((p) => p.v)
   const lowY = Math.min(0, data.minY, ...extra)
   const highY = Math.max(data.maxY, ...extra) * 1.06 || 1
-  const y = scaleLinear({ domain: [lowY, highY], range: [burnH, 0], nice: true })
+  // `clamp: true`: a point outside [lowY, highY] (an anomalous day the axis deliberately excludes,
+  // `burn.ts` `chartModel`) still draws, pinned to the nearest edge, instead of past the plot area.
+  const y = scaleLinear({ domain: [lowY, highY], range: [burnH, 0], nice: true, clamp: true })
   const barMax = Math.max(1e-9, ...data.bars.map((b) => b.v))
   const yb = scaleLinear({ domain: [0, barMax], range: [barsH, 0], nice: true })
   const X = (t: number) => (turns ? xTurn(t) : x(new Date(t)))

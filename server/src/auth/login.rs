@@ -40,6 +40,14 @@ pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) ->
 pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
     Router::new()
         .route("/api/auth/login", post(login))
+        // Central-dashboard delegation: a BFF-signed assertion is exchanged
+        // for a delegated token (ui/docs/adr/0001a §2.2). Unauthenticated
+        // by nature (the assertion IS the credential) and therefore under the
+        // same global limiter as login.
+        .route(
+            "/api/auth/delegate/assertion",
+            post(super::assertion::exchange_assertion),
+        )
         .layer(axum::middleware::from_fn_with_state(
             login_limiter,
             crate::rate_limit::limit_globally,
@@ -65,6 +73,9 @@ pub fn protected_router(
 
     Router::new()
         .merge(credential_routes)
+        // Short-lived, scoped, audience-bound token for a server-side renderer
+        // (ui/docs/adr/0001a). Session callers only; see auth/delegate.rs.
+        .route("/auth/delegate", post(super::delegate::delegate))
         .route("/auth/logout", post(logout))
         .route("/auth/system/users-for-search", get(users_for_search))
         .route("/auth/users/{id}", get(get_user_profile))

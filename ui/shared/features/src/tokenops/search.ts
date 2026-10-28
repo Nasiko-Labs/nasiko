@@ -38,6 +38,9 @@ export function openSet(open: string | undefined): Set<Disclosure> {
 export const tokenopsSearchSchema = z.extend(sharedSearchSchema, {
   view: fallback(z.enum(['agent', 'workflow']), 'agent'),
   sort: fallback(z.enum(SORTS), 'cost'),
+  /** EE `tokenopsOrgUnitFilter` slot: a unit lead or admin's chosen unit, "My usage" when absent.
+   * Ignored by OSS and by anyone the unit doesn't belong to — the server is the real gate. */
+  org_unit: opt(z.string()),
   /** Truncated, never discarded: a long query must not clear the box while typing. */
   q: opt(
     z.pipe(

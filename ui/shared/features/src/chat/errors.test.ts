@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { ApiError } from '@nasiko/data-access/client'
 import { copy, errorCopy } from './copy'
 import { copyDetails } from './copyDetails'
-import { ChatError, dispatchError, needsRunAgainConfirm, restError } from './errors'
+import {
+  ChatError,
+  dispatchError,
+  failedTurnError,
+  needsRunAgainConfirm,
+  refusalOf,
+  savedTurnError,
+  restError,
+} from './errors'
 
 describe('error copy', () => {
   it('every key has a problem, a cause and an action', () => {
@@ -23,6 +31,51 @@ describe('error copy', () => {
       'loaded turns',
     ])
       expect(all).not.toContain(banned)
+  })
+})
+
+describe('refusals a layer recognises', () => {
+  const read = (detail: string) =>
+    detail.includes('quota_hit')
+      ? { problem: 'Quota hit.', cause: 'Refused.', action: 'Wait.', detail: 'Try tomorrow.' }
+      : null
+
+  it('asks the layer about a failed turn, and only a failed turn', () => {
+    for (const key of ['agentFailed', 'routedFailed'] as const) {
+      expect(refusalOf(failedTurnError(key, 'E: quota_hit'), read)?.detail).toBe('Try tomorrow.')
+    }
+    expect(refusalOf(failedTurnError('agentFailed', 'upstream timeout'), read)).toBeNull()
+    const cut = new ChatError({
+      phase: 'stream',
+      key: 'cutOff',
+      certainty: 'unknown',
+      serverDetail: 'quota_hit',
+    })
+    expect(refusalOf(cut, read)).toBeNull()
+  })
+
+  it('an OSS build has no reader, so every failure is the generic one', () => {
+    expect(refusalOf(failedTurnError('agentFailed', 'E: quota_hit'), null)).toBeNull()
+    expect(failedTurnError('agentFailed', 'upstream timeout')).toMatchObject({
+      key: 'agentFailed',
+      certainty: 'unknown',
+      serverDetail: 'upstream timeout',
+    })
+  })
+})
+
+describe('saved failures', () => {
+  it('reads a saved failed turn back as the error the live turn showed', () => {
+    const agent = savedTurnError({ turn_error: { message: 'upstream timeout', source: 'agent' } })
+    expect(agent).toMatchObject({ key: 'agentFailed', serverDetail: 'upstream timeout' })
+    const routed = savedTurnError({ turn_error: { message: 'model down', source: 'orchestrator' } })
+    expect(routed?.key).toBe('routedFailed')
+  })
+
+  it('an ordinary reply is not a failure', () => {
+    expect(savedTurnError(null)).toBeNull()
+    expect(savedTurnError({ stopped: true })).toBeNull()
+    expect(savedTurnError({ turn_error: 'nope' })).toBeNull()
   })
 })
 

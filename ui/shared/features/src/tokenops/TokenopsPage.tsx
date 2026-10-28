@@ -47,6 +47,7 @@ import {
 import { compareOn, withoutWindow } from '@nasiko/app-core/shell/context'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { tokenopsNarrative } from '@nasiko/features/narrative/tokenops'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { buildAttribution } from './attribution'
 import { summarizeMonth } from './forecast'
 import { openSet, type Disclosure as DisclosureId, type TokenopsSearch } from './search'
@@ -99,6 +100,9 @@ export function TokenopsPage({
   const returnTick = useReturnTick()
   const queryClient = useQueryClient()
   const router = useRouter()
+  // EE slot: null for OSS, or for a viewer with no units to pick (a plain member) — the component
+  // decides that itself from its own org-units read, same as the login page's SSO button does.
+  const { tokenopsOrgUnitFilter: OrgUnitFilter } = useSlots()
   // Window-keyed queries get new keys when "now" moves and fetch on their own; month- and
   // date-keyed ones (calendar, day) keep theirs, so refresh just those on a return.
   useEffect(() => {
@@ -121,8 +125,13 @@ export function TokenopsPage({
     [search.day, now, win],
   )
   const filters: Filters = useMemo(
-    () => ({ agent: search.agent, provider: search.provider, model: search.model }),
-    [search.agent, search.provider, search.model],
+    () => ({
+      agent: search.agent,
+      provider: search.provider,
+      model: search.model,
+      orgUnit: search.org_unit,
+    }),
+    [search.agent, search.provider, search.model, search.org_unit],
   )
 
   const dash = useDashboard(win, filters, search.view, 'current', ready)
@@ -369,6 +378,9 @@ export function TokenopsPage({
 
   const filterControls = (
     <>
+      {OrgUnitFilter ? (
+        <OrgUnitFilter value={search.org_unit} onChange={(v) => setSearch({ org_unit: v })} />
+      ) : null}
       <FilterSelect
         label="Agent"
         value={search.agent}
@@ -456,11 +468,15 @@ export function TokenopsPage({
           </Button>
         </Notice>
       ) : null}
-      {!showLoader && me.data && !me.data.is_superuser ? (
+      {/* Fixed 2026-10-22: KPIs, the agent attribution table, the calendar, the timeline and the day
+          breakdown all now scope to your own calls on agents you can access (oss/server/src/observability,
+          ee/server/src/finops_scope.rs). Only the workflow attribution table is still fleet-wide — its
+          runs are matched by agent *name* inside a JSON column, with no caller column to scope by yet. */}
+      {!showLoader && me.data && !me.data.is_superuser && search.view === 'workflow' ? (
         <Notice tone="info">
-          KPIs and the attribution table only include agents you can access. The calendar, timeline
-          and day breakdown are fleet-wide because those server endpoints don't check agent access
-          yet (a known server gap), so their totals can differ and may name agents you can't open.
+          The workflow table is fleet-wide (a known server gap): it may show totals from runs and
+          name agents you don't have access to. KPIs, the agent table, the calendar and the timeline
+          reflect only your own calls to agents you can access.
         </Notice>
       ) : null}
 

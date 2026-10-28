@@ -10,9 +10,10 @@ import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { apiUrl } from '@nasiko/data-access/client'
 import { fmtLatency } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { replyText, type Step } from '../a2aReducer'
 import { copy } from '../copy'
-import type { ChatError } from '../errors'
+import { refusalOf, savedTurnError, type ChatError } from '../errors'
 import { agentLabel, usageFromMessage, usageFromMeta } from '../format'
 import { splitStopped } from '../normalize'
 import type { DisplayTurn, ReplyStatus } from '../turnModel'
@@ -322,6 +323,7 @@ function TurnViewBody({
   /** A request a Waiting row opened this chat for (v1c E5). */
   focusRequestId?: string
 }) {
+  const { chatRefusal } = useSlots()
   const live = turn.live
   const liveNow = live ? isLivePhase(live.phase) : false
   const userText = turn.user?.content ?? live?.userText ?? ''
@@ -372,6 +374,59 @@ function TurnViewBody({
   const ownSaved =
     !!live && !!live.state.traceId && saved.some((m) => m.trace_id === live.state.traceId)
 
+  // One card for a failed turn, live or saved, so settling the live turn into history changes nothing.
+  const failureNotice = (
+    error: ChatError,
+    text: string,
+    /** `at` is a saved row's time, read on click (a live trace is always fresh). */
+    trace: { id: string; at?: string } | null,
+    key?: string,
+  ) => {
+    const refusal = refusalOf(error, chatRefusal)
+    // Run again would be refused the same way and the agent did nothing wrong: there is only the why to read.
+    const { actions, links } = refusal
+      ? { actions: [], links: undefined }
+      : errorActions(error, text, agentId, handlers)
+    return (
+      <ErrorNotice
+        key={key}
+        error={error}
+        refusal={refusal}
+        actions={actions}
+        links={
+          <>
+            {links}
+            {trace ? (
+              <Button
+                type="button"
+                variant="link"
+                className={LINK_BUTTON}
+                onClick={() =>
+                  handlers.viewTrace(
+                    trace.id,
+                    !trace.at || (now ?? Date.now()) - Date.parse(trace.at) < tuning.TRACE_FRESH_MS,
+                  )
+                }
+              >
+                {copy.viewTrace}
+              </Button>
+            ) : null}
+            {agentId && error.certainty !== 'not-dispatched' && !refusal ? (
+              <Link
+                to="/agents/$agentId"
+                params={{ agentId }}
+                search={{ tab: 'activity' }}
+                className={LINK}
+              >
+                {copy.agentLogs}
+              </Link>
+            ) : null}
+          </>
+        }
+      />
+    )
+  }
+
   return (
     <div className="space-y-3" data-testid="turn">
       {turn.boundary ? (
@@ -421,6 +476,18 @@ function TurnViewBody({
             />
           )
         const m = item.m
+        // A turn that ended as failed is saved as such, so a reload shows the same card. While
+        // this tab still shows the live error, that card already says it.
+        const failure = savedTurnError(m.metadata)
+        if (failure)
+          return live?.phase === 'error'
+            ? null
+            : failureNotice(
+                failure,
+                userText,
+                m.trace_id ? { id: m.trace_id, at: m.timestamp } : null,
+                m.id,
+              )
         if (routed)
           return (
             <RoutedSavedReply
@@ -512,45 +579,7 @@ function TurnViewBody({
             />
           ) : null}
           {live.phase === 'error' && live.error
-            ? (() => {
-                const { actions, links } = errorActions(
-                  live.error,
-                  live.userText,
-                  agentId,
-                  handlers,
-                )
-                return (
-                  <ErrorNotice
-                    error={live.error}
-                    actions={actions}
-                    links={
-                      <>
-                        {links}
-                        {traceId ? (
-                          <Button
-                            type="button"
-                            variant="link"
-                            className={LINK_BUTTON}
-                            onClick={() => handlers.viewTrace(traceId, true)}
-                          >
-                            {copy.viewTrace}
-                          </Button>
-                        ) : null}
-                        {agentId && live.error.certainty !== 'not-dispatched' ? (
-                          <Link
-                            to="/agents/$agentId"
-                            params={{ agentId }}
-                            search={{ tab: 'activity' }}
-                            className={LINK}
-                          >
-                            {copy.agentLogs}
-                          </Link>
-                        ) : null}
-                      </>
-                    }
-                  />
-                )
-              })()
+            ? failureNotice(live.error, live.userText, traceId ? { id: traceId } : null)
             : null}
           {live.phase === 'no_reply' ? (
             <ErrorNotice

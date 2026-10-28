@@ -649,7 +649,7 @@ fn is_error(span: &Span) -> bool {
 /// sibling (same parent) that started after it *ended* and succeeded.
 ///
 /// This is the SE-3 rule, and it is deliberately identical to the UI's
-/// `unrecoveredErrors` (`ui/common/src/features/observability/spans.ts`), which
+/// `unrecoveredErrors` (`ui/shared/features/src/observability/spans.ts`), which
 /// is what `/sessions` has always shown. A retry that eventually worked is not a
 /// failure; an overlapping parallel call with the same name is not a retry, so
 /// the comparison is against the failed span's *end*, not its start.

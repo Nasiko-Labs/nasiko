@@ -18,6 +18,7 @@ import {
   AGENT_2,
   artifact,
   CHAT_SCENARIOS,
+  failedWith,
   ROUTED_TRACE,
   chainedQuestion,
   routedChainedContinuation,
@@ -81,6 +82,8 @@ let chats = new Map<string, StoredChat>()
 let seeded = false
 let fixedScenario: ChatScenario | null = null
 let saveFails = false
+/** The `failed` scenario's failure text, when a test sets its own. */
+let failureText: string | null = null
 let counter = 0
 let createDelayMs: number | null = null
 /** `GET /api/flows/{trace_id}` steps, per routed turn (flows.rs). */
@@ -106,6 +109,7 @@ export function resetChatMock() {
   seeded = false
   fixedScenario = null
   saveFails = false
+  failureText = null
   counter = 0
   createDelayMs = null
   flows = new Map()
@@ -127,7 +131,10 @@ export function configureChatMock(opts: {
   manyChats?: boolean
   manyRecorded?: boolean
   waiting?: boolean
+  /** The agent's own words when the `failed` scenario ends (e.g. an error a layer recognises). */
+  failureText?: string | null
 }) {
+  if (opts.failureText !== undefined) failureText = opts.failureText
   if (opts.waiting !== undefined) waiting = opts.waiting
   if (opts.manyChats !== undefined) manyChats = opts.manyChats
   if (opts.manyRecorded !== undefined) manyRecorded = opts.manyRecorded
@@ -1224,10 +1231,13 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         role?: string
         content?: string
         usage?: Record<string, unknown>
+        error?: { message?: string }
         file_parts?: unknown
       }
       if (body.role !== 'user' && body.role !== 'assistant')
         return text('role must be "user" or "assistant"', 400)
+      if (body.error && body.role !== 'assistant')
+        return text('error is only for assistant messages', 400)
       if (body.role === 'assistant' && saveFails) return text('internal error', 500)
       const m = msg(c.row.session_id, body.role, String(body.content ?? ''), ctx.now())
       const u = body.usage ?? {}
@@ -1241,6 +1251,15 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         cost_usd: typeof u.cost_usd === 'number' ? u.cost_usd.toFixed(8) : null,
         usage_estimated: typeof u.estimated === 'boolean' ? u.estimated : null,
         trace_id: typeof u.trace_id === 'string' ? u.trace_id : null,
+        // As the server stores a failed turn (chat/models.rs turn_error_metadata).
+        metadata: body.error
+          ? {
+              turn_error: {
+                message: String(body.error.message ?? '').slice(0, 4000),
+                source: 'agent',
+              },
+            }
+          : null,
         // Stored as sent (routes.rs `file_parts_json`): the Weave dock keeps its view on the message here.
         ...(body.file_parts != null
           ? { file_parts: body.file_parts as ChatMessage['file_parts'], has_file_parts: true }
@@ -1556,12 +1575,12 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         )
         return sseResponse(withTrace(ctx, frames))
       }
+      const script =
+        picked === 'failed' && failureText ? failedWith(failureText) : CHAT_SCENARIOS[scenario]
       return sseResponse(
         withTrace(
           ctx,
-          CHAT_SCENARIOS[scenario].map((f, i) =>
-            i === 0 ? f : { ...f, delayMs: f.delayMs ?? 15 },
-          ),
+          script.map((f, i) => (i === 0 ? f : { ...f, delayMs: f.delayMs ?? 15 })),
         ),
       )
     }),

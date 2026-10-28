@@ -237,6 +237,12 @@ const usage = {
 }
 
 /** A direct turn as the server relays it: working, trace, chunks, agent terminal, usage, terminal. */
+/** The `failed` script ending with the agent's own failure text (`configureChatMock({ failureText })`). */
+export const failedWith = (text: string): MockFrame[] => [
+  { data: status('TASK_STATE_WORKING') },
+  { data: status('TASK_STATE_FAILED', [{ text }]) },
+]
+
 export const CHAT_SCENARIOS: Record<ChatScenario, MockFrame[]> = {
   'direct-plain': [
     { data: status('TASK_STATE_WORKING') },
@@ -359,10 +365,7 @@ export const CHAT_SCENARIOS: Record<ChatScenario, MockFrame[]> = {
     { data: artifact('still here', { lastChunk: true }) },
     { data: status('TASK_STATE_COMPLETED') },
   ],
-  failed: [
-    { data: status('TASK_STATE_WORKING') },
-    { data: status('TASK_STATE_FAILED', [{ text: 'upstream timeout' }]) },
-  ],
+  failed: failedWith('upstream timeout'),
   'empty-reply': [{ data: status('TASK_STATE_WORKING') }, { data: status('TASK_STATE_COMPLETED') }],
 
   // ── Routed (v1b §2.4): trace, calls as tools, the orchestrator's own artifact text, usage, terminal.

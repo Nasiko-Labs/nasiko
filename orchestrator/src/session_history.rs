@@ -556,11 +556,11 @@ impl SessionHistory {
         // documents.
         let mut messages: Vec<(String, String)> =
             sqlx::query_as::<_, (String, String)>(FETCH_PAIRS_SQL)
-        .bind(session_id)
-        .bind(pool_size as i64)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+                .bind(session_id)
+                .bind(pool_size as i64)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
         messages.reverse();
 
         // The baseline is the whole window read, not only the rows that paired up: an unpaired

@@ -55,7 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "{} real traces in trace_usage; mode = {}",
         trace_ids.len(),
-        if apply { "APPLY" } else { "dry run (pass --apply to write)" }
+        if apply {
+            "APPLY"
+        } else {
+            "dry run (pass --apply to write)"
+        }
     );
 
     let mut unreadable = 0usize;

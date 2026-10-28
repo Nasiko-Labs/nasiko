@@ -19,14 +19,28 @@ const optionNames = async () => (await screen.findAllByRole('option')).map((o) =
 setupPinnedSeed()
 
 describe('attribution', () => {
-  it('a non-superuser sees the access-scope notice', async () => {
+  // Fixed 2026-10-22: KPIs, the agent table, the calendar and the timeline all scope to the caller's own
+  // calls on agents they can access now (oss/server/src/observability, ee/server/src/finops_scope.rs) —
+  // the agent view (the default) no longer needs this notice. Only the workflow table is still fleet-wide.
+  it('a non-superuser sees no access-scope notice on the now-scoped agent view', async () => {
     server.use(
       http.get('/api/me', () =>
         HttpResponse.json({ sub: 'u1', username: 'viewer', is_superuser: false }),
       ),
     )
     renderApp('/tokenops?open=all')
-    expect(await screen.findByText(/only include agents you can access/)).toBeInTheDocument()
+    await screen.findAllByRole('row')
+    expect(screen.queryByText(/fleet-wide/)).toBeNull()
+  })
+
+  it('a non-superuser still sees the access-scope notice on the workflow view', async () => {
+    server.use(
+      http.get('/api/me', () =>
+        HttpResponse.json({ sub: 'u1', username: 'viewer', is_superuser: false }),
+      ),
+    )
+    renderApp('/tokenops?open=all&view=workflow')
+    expect(await screen.findByText(/workflow table is fleet-wide/)).toBeInTheDocument()
   })
 
   it('search with no match, CSV export of visible rows, row "View traces" scopes the drawer', async () => {

@@ -1,11 +1,21 @@
 // One Vitest project per edition this checkout has (scripts/editions.ts), each built from that edition's own Vite
-// config: the core's tests run against the OSS route tree, a layer's tests against its edition.
-import { dirname } from 'node:path'
+// config: the shared packages' tests run against the OSS route tree, an edition's against its own. An edition's tests
+// are its app's and its feature packages' (`<edition>/features/*`, beside `<edition>/app`), so this names none.
+import { existsSync, readdirSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 import { findEditions } from './scripts/editions.ts'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
+// An edition's feature packages may bring their own test setup: `<edition>/features/<package>/src/test/setup.ts`.
+const featureSetups = (dir: string) => {
+  const features = join(ROOT, dirname(dir), 'features')
+  if (!existsSync(features)) return []
+  return readdirSync(features)
+    .map((pkg) => `./${dirname(dir)}/features/${pkg}/src/test/setup.ts`)
+    .filter((file) => existsSync(join(ROOT, file)))
+}
 
 export default defineConfig({
   test: {
@@ -15,14 +25,14 @@ export default defineConfig({
       test: {
         name: id,
         environment: 'jsdom',
-        setupFiles:
-          id === 'ee'
-            ? ['./common/src/test/setup.ts', `./${dir}/src/test/setup.ts`]
-            : ['./common/src/test/setup.ts'],
+        setupFiles: ['./shared/testing/src/setup.ts', ...featureSetups(dir)],
         // Prints once when nasiko-cloud-rs has server changes since the live fixtures were recorded (never fails).
-        globalSetup: ['./common/src/test/liveStaleness.globalSetup.ts'],
-        include:
-          id === 'oss' ? ['common/src/**/*.test.{ts,tsx}'] : [`${dir}/src/**/*.test.{ts,tsx}`],
+        globalSetup: ['./shared/testing/src/liveStaleness.globalSetup.ts'],
+        include: [
+          ...(id === 'oss' ? ['shared/*/src/**/*.test.{ts,tsx}'] : []),
+          `${dir}/src/**/*.test.{ts,tsx}`,
+          `${dirname(dir)}/features/*/src/**/*.test.{ts,tsx}`,
+        ],
         // A file's first page render waits for the React Compiler's Babel pass over the app (single-threaded, in the
         // main process), so the first tests of a parallel run need longer than Vitest's 5 s default.
         testTimeout: 20_000,
@@ -33,11 +43,11 @@ export default defineConfig({
     })),
     // `npm run coverage` fails below CLAUDE.md's minimum (60%); the target is 80%.
     coverage: {
-      include: ['common/src/**/*.{ts,tsx}', '*/src/**/*.{ts,tsx}', '*/*/src/**/*.{ts,tsx}'],
+      include: ['*/*/src/**/*.{ts,tsx}', '*/*/*/src/**/*.{ts,tsx}'],
       exclude: [
         '**/*.test.{ts,tsx}',
         '**/*.stories.tsx',
-        'common/src/test/**',
+        'shared/testing/src/**',
         '**/mocks/**',
         '**/*.gen.ts',
         // Vendored, framework-free, and not ours to cover. Matched by shape

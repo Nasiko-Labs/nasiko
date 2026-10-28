@@ -26,10 +26,15 @@ export interface Filters {
   agent?: string
   provider?: string
   model?: string
+  /** EE `tokenopsOrgUnitFilter` slot: a unit lead or admin's "my team" switch — resolved to user ids
+   * server-side (`ee/server/src/finops_scope.rs`), ignored by OSS. Absent on the core's own `Filters`
+   * value, which is why every query key below already includes the whole `Filters` object: adding
+   * this needed no new key, just a new field callers may or may not set. */
+  orgUnit?: string
 }
 
 function filterParams(f: Filters) {
-  return { agent_id: f.agent, provider: f.provider, model: f.model }
+  return { agent_id: f.agent, provider: f.provider, model: f.model, org_unit: f.orgUnit }
 }
 
 const tokenopsKeys = {

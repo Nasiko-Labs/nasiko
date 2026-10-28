@@ -221,7 +221,11 @@ fn an_unmatched_router_span_is_dropped_rather_than_double_counted() {
     ]);
 
     let (input, output, _) = trace.token_totals();
-    assert_eq!((input, output), (300, 50), "the router's unmatched copy is dropped");
+    assert_eq!(
+        (input, output),
+        (300, 50),
+        "the router's unmatched copy is dropped"
+    );
 }
 
 #[test]

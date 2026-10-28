@@ -5,7 +5,7 @@
  */
 import { emptyTurn, reduceSseEvent, routedReplyText } from './a2aReducer'
 import { readSse, SseOverflowError } from '@nasiko/data-access/sse'
-import { ChatError, dispatchError } from './errors'
+import { ChatError, dispatchError, failedTurnError } from './errors'
 import { dispatchBody, resumeBody } from './send'
 import { tuning } from './tuning'
 import type { Core } from './turnCore'
@@ -324,12 +324,7 @@ export function createRouted(core: Core) {
         sessionId,
         { type: 'task_failed' },
         {
-          error: new ChatError({
-            phase: 'stream',
-            key: 'routedFailed',
-            certainty: 'unknown',
-            serverDetail: st.error?.message,
-          }),
+          error: failedTurnError('routedFailed', st.error?.message),
         },
       )
     } else

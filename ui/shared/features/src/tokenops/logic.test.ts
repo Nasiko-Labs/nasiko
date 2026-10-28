@@ -21,6 +21,7 @@ import {
   fmtLongDay,
   fmtMoney,
   fmtMoneyAxis,
+  fmtMoneyFine,
   fmtMoneyFloor,
   fmtMoneyShort,
   fmtMonthYear,
@@ -702,6 +703,33 @@ describe('formatters: missing values and boundaries', () => {
       expect(f(undefined)).toBe('—')
       expect(f(Number.NaN)).toBe('—')
     }
+  })
+
+  it('fine money keeps what a sub-cent budget needs, and axis ticks under $1 stay distinct', () => {
+    expect(fmtMoneyFine(0.002676)).toBe('$0.0027')
+    expect(fmtMoneyFine(0.012244)).toBe('$0.012')
+    expect(fmtMoneyFine(0.05)).toBe('$0.05')
+    expect(fmtMoneyFine(0.5)).toBe('$0.50')
+    expect(fmtMoneyFine(0.005)).toBe('$0.005')
+    expect(fmtMoneyFine(0.000046)).toBe('$0.000046')
+    expect(fmtMoneyFine(-0.0027)).toBe('-$0.0027')
+    expect(fmtMoneyFine(0)).toBe('$0.00')
+    expect(fmtMoneyFine(0.01)).toBe('$0.01')
+    expect(fmtMoneyFine(1234.56)).toBe('$1,234.56')
+    expect(fmtMoneyFine(null)).toBe('—')
+    // A $0.01 budget's ticks: before, all of these read "$0" or "$0.01".
+    expect([0.002, 0.004, 0.006, 0.008, 0.01].map(fmtMoneyAxis)).toEqual([
+      '$0.002',
+      '$0.004',
+      '$0.006',
+      '$0.008',
+      '$0.01',
+    ])
+    expect(fmtMoneyAxis(0.0025)).toBe('$0.0025')
+    expect(fmtMoneyAxis(0.015)).toBe('$0.015')
+    expect(fmtMoneyAxis(0.5)).toBe('$0.5')
+    expect(fmtMoneyAxis(0)).toBe('$0')
+    expect(fmtMoneyFloor(0.0027, true, fmtMoneyFine)).toBe('≥ $0.0027')
   })
 
   it('axis, short and per-op money pick the right shape at each threshold', () => {

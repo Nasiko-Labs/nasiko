@@ -55,7 +55,8 @@ pub mod seed;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
 pub mod settings;
-pub mod spa;
+/// The SPA serving shared by every binary that embeds a UI bundle.
+pub use nasiko_spa as spa;
 pub mod spend_gate;
 pub mod state;
 pub mod telemetry;

@@ -15,6 +15,7 @@ import { useCopy } from '@nasiko/ui/lib/useCopy'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy, errorCopy } from '../copy'
 import { docAnchor } from '../copyDetails'
+import type { ChatRefusal } from '@nasiko/app-core/edition/edition'
 import type { ChatError } from '../errors'
 import type { TurnUsage } from '../format'
 import { DISCLOSE, TOUCH } from './turnStyles'
@@ -69,15 +70,19 @@ export function ErrorNotice({
   actions,
   links,
   details,
+  refusal,
 }: {
   error: ChatError
   actions: NoticeAction[]
   links?: React.ReactNode
   details?: string
+  /** A layer's words for a failure it recognises (the `chatRefusal` slot), in place of the key's. */
+  refusal?: ChatRefusal | null
 }) {
-  const c = errorCopy[error.key]
+  const c = refusal ?? errorCopy[error.key]
+  const said = refusal ? refusal.detail : error.serverDetail
   const detail = [
-    error.serverDetail ? copy.serverSaid(error.serverDetail) : null,
+    said ? copy.serverSaid(said) : null,
     error.status ? `HTTP ${error.status}` : null,
     error.rpcCode ? `code ${error.rpcCode}` : null,
   ]

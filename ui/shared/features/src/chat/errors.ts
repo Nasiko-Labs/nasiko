@@ -6,6 +6,7 @@
  * Only `unknown` asks before "Run again" (DS13).
  */
 import { ApiError } from '@nasiko/data-access/client'
+import type { ChatRefusal, Slots } from '@nasiko/app-core/edition/edition'
 import { errorCopy, type ErrorKey } from './copy'
 
 export type ChatErrorPhase = 'create' | 'save-user' | 'dispatch' | 'stream' | 'save-assistant'
@@ -144,6 +145,36 @@ export function restError(phase: ChatErrorPhase, err: unknown): ChatError {
     })
   }
   return new ChatError({ phase, key: 'cutOff', certainty: 'unknown', status, serverDetail: detail })
+}
+
+/** A turn the agent or the orchestrator ended as failed, with its failure text exactly as sent. */
+export const failedTurnError = (
+  key: 'agentFailed' | 'routedFailed',
+  detail: string | undefined,
+): ChatError => new ChatError({ phase: 'stream', key, certainty: 'unknown', serverDetail: detail })
+
+/** The layer's words for a failed turn it recognises as a refusal (the `chatRefusal` slot), else null. */
+export function refusalOf(error: ChatError, read: Slots['chatRefusal']): ChatRefusal | null {
+  if (!read || !error.serverDetail) return null
+  if (error.key !== 'agentFailed' && error.key !== 'routedFailed') return null
+  return read(error.serverDetail)
+}
+
+/**
+ * A saved row's failure (`metadata.turn_error`, written when a turn ended as failed), as the same
+ * error the live turn showed, or null for an ordinary reply.
+ */
+export function savedTurnError(metadata: unknown): ChatError | null {
+  const e =
+    metadata && typeof metadata === 'object'
+      ? (metadata as { turn_error?: unknown }).turn_error
+      : undefined
+  if (!e || typeof e !== 'object') return null
+  const { message, source } = e as { message?: unknown; source?: unknown }
+  return failedTurnError(
+    source === 'orchestrator' ? 'routedFailed' : 'agentFailed',
+    typeof message === 'string' ? message : undefined,
+  )
 }
 
 /** Whether "Run again" must ask first. */

@@ -128,7 +128,7 @@ export function OptimisationPanel({
             {fmtInt(data.unoptimisedCount)}{' '}
             {data.unoptimisedCount === 1 ? "agent doesn't" : "agents don't"} have optimization on.
             They made <strong>{fmtMoney(data.unoptimisedSpend)}</strong> (
-            {Math.round(data.unoptimisedSharePct)}%) of fleet spend.
+            {Math.round(data.unoptimisedSharePct)}%) of this spend.
             {data.topUnoptimised ? (
               <>
                 {' '}

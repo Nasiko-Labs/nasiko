@@ -4,7 +4,7 @@
  */
 import { emptyTurn, reduceSseEvent } from './a2aReducer'
 import { readSse, SseOverflowError } from '@nasiko/data-access/sse'
-import { ChatError, dispatchError, restError } from './errors'
+import { ChatError, dispatchError, failedTurnError, restError } from './errors'
 import { clientWrites, dispatchBody, outcomeOf, resumeBody } from './send'
 import { tuning } from './tuning'
 import type { SaveMessageBody } from './types'
@@ -52,18 +52,17 @@ export function createSend(core: Core, routed: ReturnType<typeof createRouted>) 
         unknown.add(sessionId)
         update(sessionId, { phase: 'no_reply' })
         return
-      case 'agent-failed':
+      case 'agent-failed': {
         unknown.add(sessionId)
-        update(sessionId, {
-          phase: 'error',
-          error: new ChatError({
-            phase: 'stream',
-            key: 'agentFailed',
-            certainty: 'unknown',
-            serverDetail: t.state.error?.message,
-          }),
-        })
+        const message = t.state.error?.message
+        update(sessionId, { phase: 'error', error: failedTurnError('agentFailed', message) })
+        // Kept so a reload shows the failure, not "no reply". Best effort: the card already says it.
+        if (message && clientWrites(transcripts.get(sessionId), 'assistant'))
+          void deps
+            .saveMessage(sessionId, { role: 'assistant', content: '', error: { message } })
+            .catch(() => undefined)
         return
+      }
       case 'save': {
         if (!clientWrites(transcripts.get(sessionId), 'assistant')) {
           update(sessionId, { phase: 'done' })

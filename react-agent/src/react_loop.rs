@@ -1105,15 +1105,15 @@ async fn run_stream_inner(
                     }
 
                     let call_handle = match admit_call(
-                            tc,
-                            &agent_display,
-                            config,
-                            guard,
-                            tx,
-                            turn_idx,
-                            &mut results_for_context,
-                        )
-                        .await
+                        tc,
+                        &agent_display,
+                        config,
+                        guard,
+                        tx,
+                        turn_idx,
+                        &mut results_for_context,
+                    )
+                    .await
                     {
                         CallAdmission::Blocked => continue,
                         CallAdmission::Admitted(handle) => handle,
@@ -1364,15 +1364,15 @@ async fn run_stream_inner(
                         continue;
                     }
                     let call_handle = match admit_call(
-                            tc,
-                            &agent_display,
-                            config,
-                            guard,
-                            tx,
-                            turn_idx,
-                            &mut results_for_context,
-                        )
-                        .await
+                        tc,
+                        &agent_display,
+                        config,
+                        guard,
+                        tx,
+                        turn_idx,
+                        &mut results_for_context,
+                    )
+                    .await
                     {
                         CallAdmission::Blocked => continue,
                         CallAdmission::Admitted(handle) => handle,
@@ -1602,7 +1602,9 @@ mod spend_tests {
         };
         let o = Orchestrator::new(config, RegistrySource::Static(vec![test_agent(agent)]))
             .with_a2a_client(A2aClient::new());
-        o.init().await.expect("a static registry always initialises");
+        o.init()
+            .await
+            .expect("a static registry always initialises");
         o
     }
 

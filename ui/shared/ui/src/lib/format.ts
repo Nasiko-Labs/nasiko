@@ -25,8 +25,29 @@ export function fmtMoney(v: number | null | undefined): string {
   return money2.format(v)
 }
 
-/** Axis labels: `$1.2K`. */
+/** `0.0027`, `0.5`, `0.015`: a positive value under 1 to two significant digits, trailing zeros dropped. */
+const twoSignificant = (v: number): string => {
+  const digits = Math.min(8, Math.max(2, 1 - Math.floor(Math.log10(v))))
+  return v
+    .toFixed(digits)
+    .replace(/(\.\d*?)0+$/, '$1')
+    .replace(/\.$/, '')
+}
+
+/**
+ * Budgets, where a limit can be a cent: like `fmtMoney`, but a non-zero value under ten cents keeps
+ * two significant digits (`$0.0027`, `$0.012`) rather than `<$0.01` or `$0.01`, so used and limit stay
+ * comparable.
+ */
+export function fmtMoneyFine(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  if (v !== 0 && Math.abs(v) < 0.1) return `${v < 0 ? '-' : ''}$${twoSignificant(Math.abs(v))}`
+  return money2.format(v)
+}
+
+/** Axis labels: `$1.2K`; under $1, two significant digits so close ticks stay distinct (`$0.0025`). */
 export function fmtMoneyAxis(v: number): string {
+  if (v !== 0 && Math.abs(v) < 1) return `$${v < 0 ? '-' : ''}${twoSignificant(Math.abs(v))}`
   if (Math.abs(v) < 1000) return `$${Math.round(v * 100) / 100}`
   return moneyCompact.format(v)
 }
@@ -142,8 +163,12 @@ export function fmtHours(v: number | null | undefined): string {
 }
 
 /** "≥ $1,234.56" when unpriced calls mean the total is a floor, not the truth (A3). */
-export function fmtMoneyFloor(v: number, isFloor: boolean): string {
-  return isFloor ? `≥ ${fmtMoney(v)}` : fmtMoney(v)
+export function fmtMoneyFloor(
+  v: number,
+  isFloor: boolean,
+  fmt: (v: number) => string = fmtMoney,
+): string {
+  return isFloor ? `≥ ${fmt(v)}` : fmt(v)
 }
 
 /** Session-scale durations: `850 ms`, `38 s`, `12 m 04 s`, `20 h 13 m`. */

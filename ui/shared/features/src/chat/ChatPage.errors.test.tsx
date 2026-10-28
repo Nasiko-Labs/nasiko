@@ -3,7 +3,7 @@
  * 503), an agent failure, a definite save failure, an empty reply, a send while the last reply is
  * unconfirmed, and a history load failure.
  */
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -142,6 +142,48 @@ describe('turn outcomes', () => {
           .getAttribute('href'),
       ).toContain('tab=activity'),
     )
+  })
+
+  /** Resolves once the failed turn's own save (the one carrying `error`) reaches the server. */
+  function failureSaved(): Promise<void> {
+    return new Promise((resolve) => {
+      const onStart = ({ request }: { request: Request }) => {
+        if (request.method !== 'POST' || !request.url.includes('/messages')) return
+        void request
+          .clone()
+          .json()
+          .then((b: { error?: unknown }) => {
+            if (!b.error) return
+            server.events.removeListener('request:start', onStart)
+            resolve()
+          })
+      }
+      server.events.on('request:start', onStart)
+    })
+  }
+
+  /** A reload: this tab's live turn is gone, so only history is left to draw from. */
+  function reload() {
+    cleanup()
+    clearChatRegistry()
+    renderApp(`/chat/${DONE}`)
+  }
+
+  it('a failed turn is still there after a reload, not "no reply"', async () => {
+    configureChatMock({ scenario: 'failed' })
+    const saved = failureSaved()
+    await sendInDone('do it')
+    await saved
+    reload()
+    const notice = () => within(screen.getByTestId('error-notice'))
+    await waitFor(() =>
+      expect(notice().getByText('The agent reported an error.')).toBeInTheDocument(),
+    )
+    expect(notice().getByText(/upstream timeout/)).toBeInTheDocument()
+    expect(notice().getByRole('button', { name: 'Run again' })).toBeInTheDocument()
+    expect(
+      screen.queryByText('No reply has been saved for this message yet.'),
+    ).not.toBeInTheDocument()
   })
 
   it('a definite (4xx) save failure offers Save again first; Discard drops the reply', async () => {
