@@ -4,7 +4,8 @@
   "version": "0.21.0",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": ">=22.18",
+    "npm": "please-use-pnpm"
   },
   "scripts": {
     "dev": "node scripts/app.ts dev",
