@@ -76,11 +76,17 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     for source_image in images.split_whitespace() {
         let agent_name = extract_name(source_image);
 
-        let existing = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
-            .bind(&agent_name)
-            .fetch_optional(&state.db)
-            .await
-            .unwrap_or(None);
+        // The seed's own row only: names are unique per owner, so a name-only
+        // lookup could pick up (and redeploy, with platform credentials) another
+        // user's agent that happens to share the name.
+        let existing = sqlx::query_as::<_, Agent>(
+            "SELECT * FROM agents WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&agent_name)
+        .bind(owner_id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
 
         let Some((mirrored, repointed)) = resolve_seed_image(
             state,
@@ -426,11 +432,17 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
     };
 
-    let existing = sqlx::query_as::<_, Agent>("SELECT * FROM agents WHERE name = $1")
-        .bind(&agent_name)
-        .fetch_optional(&state.db)
-        .await
-        .unwrap_or(None);
+    // Only a live internal row is ours. Agent names are unique per owner, not
+    // globally, so a name-only lookup adopted any user's agent with this name
+    // (and a soft-deleted one): the seed then rewrote its image and settings and
+    // redeployed it under that user's ownership. `is_internal` is set only here.
+    let existing = sqlx::query_as::<_, Agent>(
+        "SELECT * FROM agents WHERE name = $1 AND is_internal AND deleted_at IS NULL",
+    )
+    .bind(&agent_name)
+    .fetch_optional(&state.db)
+    .await
+    .unwrap_or(None);
 
     let needs_deploy = match &existing {
         None => true,
