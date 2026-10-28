@@ -542,6 +542,26 @@ async fn initialize_admin(
     }
 }
 
+/// Serializes concurrent `initialize-admin` calls, so two requests racing on an
+/// empty database cannot both pass the "no admin yet" check.
+const BOOTSTRAP_LOCK_KEY: i64 = 0x6e61_7369_6b6f_0001;
+
+fn init_admin_internal_error() -> axum::response::Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(serde_json::json!({"error": "internal error"})),
+    )
+        .into_response()
+}
+
+/// Bootstrap the first administrator. Unauthenticated by design, so the gate
+/// must only ever open on a database that has never had one.
+///
+/// Any `role = 'admin'` or superuser row closes it, deleted or not, active or
+/// not: counting only `role = 'admin'` reopened it on a database whose
+/// administrators are superusers with another role. A failed check fails
+/// closed. The check and both inserts run in one transaction under an advisory
+/// lock, so concurrent callers cannot both create an admin.
 #[allow(clippy::result_large_err)]
 async fn initialize_admin_inner(
     state: &AppState,
@@ -549,15 +569,28 @@ async fn initialize_admin_inner(
     email: &str,
     https: bool,
 ) -> Result<axum::response::Response, axum::response::Response> {
-    // Check if admin exists
-    let admin_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND deleted_at IS NULL",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let internal = |stage: &'static str| {
+        move |e: sqlx::Error| {
+            tracing::error!(%e, stage, "initialize_admin failed");
+            init_admin_internal_error()
+        }
+    };
 
-    if admin_count > 0 {
+    let mut tx = state.db.begin().await.map_err(internal("begin"))?;
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(BOOTSTRAP_LOCK_KEY)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal("lock"))?;
+
+    let admin_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM users WHERE role = 'admin' OR is_superuser)",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(internal("admin check"))?;
+
+    if admin_exists {
         // 409: initializing an admin when one already exists is a conflict, not an
         // authorization failure.
         return Err((
@@ -573,11 +606,7 @@ async fn initialize_admin_inner(
         .await
         .map_err(|e| {
             tracing::error!(%e, "initialize_admin: password hash failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "internal error"})),
-            )
-                .into_response()
+            init_admin_internal_error()
         })?;
 
     let result: Result<(uuid::Uuid,), _> = sqlx::query_as(
@@ -587,7 +616,7 @@ async fn initialize_admin_inner(
     )
     .bind(username)
     .bind(email)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await;
 
     let user_id = match result {
@@ -616,16 +645,11 @@ async fn initialize_admin_inner(
     .bind(user_id)
     .bind(&access_key)
     .bind(&access_secret_hash)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await
-    .map_err(|e| {
-        tracing::error!(%e, %user_id, "initialize_admin: insert credentials failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal error"})),
-        )
-            .into_response()
-    })?;
+    .map_err(internal("insert credentials"))?;
+
+    tx.commit().await.map_err(internal("commit"))?;
 
     // `issue_token` records the JWT's JTI in auth_tokens, so the admin token minted
     // here is revocable (previously init-admin tokens were unrevocable).
@@ -637,11 +661,7 @@ async fn initialize_admin_inner(
 
     let token = state.auth.issue_token(&identity).await.map_err(|e| {
         tracing::error!(%e, %user_id, "initialize_admin: issue token failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": "internal error"})),
-        )
-            .into_response()
+        init_admin_internal_error()
     })?;
 
     // Belt-and-suspenders record (ON CONFLICT DO NOTHING) so counting/revocation work.
