@@ -77,7 +77,7 @@ const PUBLIC = {
   mcp: ['components/AgentMcpTab', 'api'],
   narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
   onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
-  // The product tour (shared/features/src/tour): the shell's `_app` route mounts its host.
+  // The product tour (common/src/features/tour): the shell's `_app` route mounts its host.
   tour: ['TourHost'],
   // Context optimization (plans/feat-context-optimization.md eng D1): its rules, copy, the trace's Optimization block
   // (M2) and the /optimization Workspace row (T7). TokenOps' own savings panel is main's (PR #28, /finops/savings).
@@ -183,20 +183,13 @@ const noRawElements = [
 ]
 
 const banned = [
-  // Codex's `testing-only-in-tests` and `mocks-stay-dev-only`: the test kit and the mock world reach no shipped module
-  // except through the mock boot's dynamic import (app-shell's mount). Tests, mocks and fixtures turn this rule off.
-  {
-    selector: 'ImportDeclaration[source.value=/^@nasiko\\/(testing|mocks)(\\/|$)/]',
-    message:
-      'Only tests and mock code import @nasiko/testing or @nasiko/mocks (the mock boot loads mocks dynamically).',
-  },
   {
     selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
     message: 'No raw HTML: render React nodes (agent markdown goes through components/Markdown).',
   },
   {
     selector: "CallExpression[callee.name='fetch']",
-    message: 'Use apiFetch/apiData (shared/data-access/src/client.ts), not bare fetch.',
+    message: 'Use apiFetch/apiData (common/src/lib/api/client.ts), not bare fetch.',
   },
   {
     selector: "MemberExpression[object.name=/^(window|globalThis)$/][property.name='history']",
@@ -217,16 +210,9 @@ const banned = [
 
 /** The core (and the OSS app) never imports an edition layer: EE code must not reach an OSS build (plan §10.1). */
 const NO_LAYERS = {
-  group: ['@nasiko-ee/*', '@mt/*'],
+  group: ['@ee/*', '@mt/*'],
   message:
-    'The core never imports an edition layer; add a slot (shared/app-core/src/edition/edition.ts) instead.',
-}
-
-/** Codex's `features-below-shell`: a feature renders inside the shell and never imports it. */
-const BELOW_SHELL = {
-  group: ['@nasiko/app-shell', '@nasiko/app-shell/*'],
-  message:
-    'A feature never imports the shell (shared/app-shell); what pages share with it lives in app-core/shell.',
+    'The core never imports an edition layer; add a slot (common/src/app/edition.ts) instead.',
 }
 
 const restrictedImports = (...patterns) => [
@@ -240,7 +226,7 @@ const restrictedImports = (...patterns) => [
     ],
   },
 ]
-/** A layer's own code may import itself (`@nasiko-ee/*`) and any core module; the core still never imports it. */
+/** A layer's own code may import itself (`@ee/*`) and any core module; the core still never imports it. */
 const layerImports = [
   'error',
   {
@@ -255,14 +241,13 @@ const layerImports = [
 const featureRule = (name) => {
   const others = Object.keys(PUBLIC).filter((f) => f !== name)
   return {
-    files: [`shared/features/src/${name}/**/*.{ts,tsx}`],
+    files: [`common/src/features/${name}/**/*.{ts,tsx}`],
     ignores: ['**/*.test.{ts,tsx}'],
     rules: {
       'no-restricted-imports': restrictedImports(
-        BELOW_SHELL,
         ...others.map((f) => ({
-          regex: `^@nasiko/features/${f}/(?!(${PUBLIC[f].join('|')})$)`,
-          message: `Internal to ${f}. Import one of its public modules (eslint.config.js PUBLIC.${f}) or move the code to a foundation package (shared/ui, shared/app-core).`,
+          regex: `^@/features/${f}/(?!(${PUBLIC[f].join('|')})$)`,
+          message: `Internal to ${f}. Import one of its public modules (eslint.config.js PUBLIC.${f}) or move the code to src/lib or src/components.`,
         })),
       ),
     },
@@ -279,9 +264,9 @@ export default tseslint.config(
       // The design playground (plans/feat-design-playground.md §5): dev-only tooling, never shipped, and its
       // shell is raw elements by design.
       'design/',
-      'ee/features/enterprise/src/genui/lang/',
+      'ee/web/src/genui/lang/',
       '**/routeTree.gen.ts',
-      'shared/data-access/src/schema.gen.ts',
+      'common/src/lib/api/schema.gen.ts',
       '**/*.js',
     ],
   },
@@ -324,48 +309,24 @@ export default tseslint.config(
       'no-restricted-syntax': ['error', ...banned, ...noRawElements],
     },
   },
-  // Layers (codex's): the foundations never reach into a feature, the shell or the mocks; a feature never imports the
-  // shell and only uses another feature's public modules.
+  // Layers: shared code never reaches into a feature; a feature only uses another feature's public modules.
   {
-    files: ['shared/ui/src/**', 'shared/app-core/src/**', 'shared/data-access/src/**'],
+    files: ['common/src/lib/**', 'common/src/components/**', 'common/src/app/**'],
     ignores: ['**/*.test.{ts,tsx}'],
     rules: {
       'no-restricted-imports': restrictedImports({
-        group: [
-          '@nasiko/features/*',
-          '@nasiko/app-shell',
-          '@nasiko/app-shell/*',
-          '@nasiko/mocks/*',
-        ],
+        group: ['@/features/*', '@/routes/*', '@/mocks/*'],
         message:
-          'A foundation (ui, app-core, data-access) never imports a feature, the shell or the mocks.',
+          'Shared code (lib, components, app) never imports a feature, a route or the mocks.',
       }),
     },
   },
   ...Object.keys(PUBLIC).map(featureRule),
-  // The EE layer builds on the core: any core module (a feature's internals included) and its own `@nasiko-ee/*`.
+  // The EE layer builds on the core: any core module (a feature's internals included) and its own `@ee/*`.
   { files: ['ee/**/*.{ts,tsx}'], rules: { 'no-restricted-imports': layerImports } },
-  // Codex's `registry-is-independent`: the registry is its own product on the shared foundations, so it never imports
-  // the workspace's features, shell or mocks, nor the EE layer.
-  {
-    files: ['ee/registry/**/*.{ts,tsx}'],
-    ignores: ['**/*.test.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': restrictedImports({
-        group: [
-          '@nasiko/features/*',
-          '@nasiko/app-shell',
-          '@nasiko/app-shell/*',
-          '@nasiko/mocks/*',
-          '@nasiko-ee/*',
-        ],
-        message: 'The registry composes the shared foundations only (ui, app-core, data-access).',
-      }),
-    },
-  },
   // shadcn primitives: the raw elements live here, and upstream owns their compiler-rule findings.
   {
-    files: ['shared/ui/src/primitives/**'],
+    files: ['common/src/components/ui/**'],
     rules: {
       'no-restricted-syntax': ['error', ...banned],
       'react-refresh/only-export-components': 'off',
@@ -380,15 +341,22 @@ export default tseslint.config(
   // The two ARIA widgets shadcn has no equivalent for (plan §8 Phase 1 exceptions).
   {
     files: [
-      'shared/features/src/tokenops/components/MonthHero.tsx',
-      'shared/features/src/trace/Waterfall.tsx',
+      'common/src/features/tokenops/components/MonthHero.tsx',
+      'common/src/features/trace/Waterfall.tsx',
     ],
     rules: { 'no-restricted-syntax': ['error', ...banned, noRawElements[0]] },
   },
-  // The one fetch wrapper. Streams (SSE bodies need the raw Response) go through its `fetchApi`, so they resolve
-  // against the same API base.
+  // The one fetch wrapper, and the streams it doesn't cover (SSE bodies need the raw Response): chat turns, the
+  // agent log tail (`useLogStream`), a build's deploy stream (`useBuildStream`) and EE's Weave generation; API
+  // modules, so still no fetch in components.
   {
-    files: ['shared/data-access/src/client.ts'],
+    files: [
+      'common/src/lib/api/client.ts',
+      'common/src/features/chat/registry.ts',
+      'common/src/features/sessions/api.ts',
+      'common/src/features/deploy/api.ts',
+      'ee/web/src/genui/conversation/api.ts',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',
@@ -397,22 +365,14 @@ export default tseslint.config(
       ],
     },
   },
-  { files: ['shared/app-core/src/env.ts'], rules: { 'no-restricted-syntax': 'off' } },
+  { files: ['common/src/lib/env.ts'], rules: { 'no-restricted-syntax': 'off' } },
   {
-    files: ['shared/app-shell/src/routes/**', '*/*/src/routes/**', '*/*/*/src/routes/**'],
+    files: ['common/src/routes/**', '*/*/src/routes/**'],
     rules: { 'react-refresh/only-export-components': 'off' },
   },
   // Tests, mocks and Node scripts: assertions and fixtures may use what app code may not.
   {
-    files: [
-      '**/*.test.{ts,tsx}',
-      'shared/testing/src/**',
-      'shared/mocks/src/**',
-      '**/src/test/**',
-      '**/src/mocks/**',
-      '**/src/mocks.ts',
-      '**/testKit.ts',
-    ],
+    files: ['**/*.test.{ts,tsx}', '*/src/test/**', '*/src/mocks/**', '*/*/src/mocks/**'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       'no-restricted-syntax': 'off',
@@ -430,14 +390,13 @@ export default tseslint.config(
   {
     files: [
       'scripts/**',
-      '*/scripts/**',
       '*/*/scripts/**',
       // The desktop shell's build script (its .js sources are ignored above; this is .mjs).
       'desktop/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
       '**/vite.config.ts',
-      'shared/testing/src/live/**',
+      'common/src/test/live/**',
     ],
     languageOptions: { globals: globals.node },
     rules: { 'no-console': 'off', 'no-restricted-syntax': 'off' },

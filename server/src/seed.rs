@@ -385,11 +385,6 @@ pub struct InternalAgentSeed {
     /// redeploy (restart, reconcile) gives the container the same environment.
     pub env: HashMap<String, String>,
     pub public: bool,
-    /// Where the agent's persistent writable volume is mounted — the internal
-    /// agent's `--writable-path`. `None` deploys without one, which leaves no
-    /// writable path at all where the runtime makes the root filesystem
-    /// read-only (`KubeRuntime`).
-    pub writable_path: Option<String>,
 }
 
 /// Deploys one internal agent the same way `seed_agents_if_configured` deploys
@@ -404,14 +399,7 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         force_pull,
         env: extra_env,
         public,
-        writable_path,
     } = seed;
-    if let Some(path) = writable_path.as_deref()
-        && let Err(e) = nasiko_runtime::validate_writable_path(path)
-    {
-        warn!(agent = %agent_name, error = %e, "invalid internal agent writable path, not seeding");
-        return;
-    }
 
     let owner_id: Uuid = match sqlx::query_scalar(
         "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
@@ -438,9 +426,7 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
             let image_changed = agent.image.as_deref() != Some(image.as_str());
             let settings_changed =
                 crate::catalog::agent_secrets::resolve_agent_env(&state.db, agent.id).await
-                    != extra_env
-                    || stored_writable(&state.db, agent.id).await.ok()
-                        != Some((writable_path.is_some(), writable_path.clone()));
+                    != extra_env;
             let _ = sqlx::query(
                 "UPDATE agents SET is_public = $2 WHERE id = $1 AND is_public IS DISTINCT FROM $2",
             )
@@ -469,30 +455,25 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
     let agent = match &existing {
         Some(a) => {
             let _ = sqlx::query(
-                "UPDATE agents SET image = $2, is_public = $3, writable = $4, writable_path = $5, \
-                 status = 'deploying', updated_at = now() WHERE id = $1",
+                "UPDATE agents SET image = $2, is_public = $3, status = 'deploying', updated_at = now() WHERE id = $1",
             )
             .bind(a.id)
             .bind(&image)
             .bind(public)
-            .bind(writable_path.is_some())
-            .bind(&writable_path)
             .execute(&state.db)
             .await;
             a.clone()
         }
         None => {
             let inserted = sqlx::query_as::<_, Agent>(
-                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, writable, writable_path, metadata)
-                   VALUES ($1, $2, $3, 'deploying', $4, true, $5, $6, '{"seed": true}')
+                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, metadata)
+                   VALUES ($1, $2, $3, 'deploying', $4, true, '{"seed": true}')
                    RETURNING *"#,
             )
             .bind(&agent_name)
             .bind(owner_id)
             .bind(&image)
             .bind(public)
-            .bind(writable_path.is_some())
-            .bind(&writable_path)
             .fetch_one(&state.db)
             .await;
             match inserted {
@@ -550,11 +531,6 @@ async fn deploy_internal_agent(
     )
     .await;
 
-    // Read from the row, not passed in, so the watch's redeploy below mounts
-    // the same volume the seed asked for.
-    let (writable, writable_path) = stored_writable(&state.db, agent_id)
-        .await
-        .map_err(|e| format!("failed to read the writable storage settings: {e}"))?;
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
         agent_name,
@@ -563,8 +539,8 @@ async fn deploy_internal_agent(
         env,
         &state.config.agent_default_memory,
         replica_bounds,
-        writable,
-        writable_path,
+        false,
+        None,
         owner_id,
     );
     spec.force_pull = force_pull;
@@ -597,17 +573,6 @@ async fn deploy_internal_agent(
         agent_url,
     ));
     Ok(())
-}
-
-/// The `(writable, writable_path)` an agent's row records, as `build_agent_spec` takes them.
-async fn stored_writable(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-) -> Result<(bool, Option<String>), sqlx::Error> {
-    sqlx::query_as("SELECT writable, writable_path FROM agents WHERE id = $1")
-        .bind(agent_id)
-        .fetch_one(db)
-        .await
 }
 
 const INTERNAL_AGENT_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);

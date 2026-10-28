@@ -274,6 +274,12 @@ pub struct SavingsQuery<'a> {
     /// Restricts every aggregate to agents the caller may see. `None` means unrestricted (OSS
     /// superuser); an empty slice means the caller can see nothing and every figure is zero.
     pub accessible_agent_ids: Option<&'a [uuid::Uuid]>,
+    /// Restricts every aggregate to these callers' own calls (bug found 2026-10-22: this panel
+    /// never had this filter at all, only `accessible_agent_ids` — a public agent's savings looked
+    /// the same for every viewer who could see it, not just the person who actually made the calls).
+    /// `None` means unrestricted (an admin, or a request scoped to an agent the caller owns); `Some`
+    /// mirrors `accessible_agent_ids`'s shape exactly, same handler-level resolution.
+    pub user_ids: Option<&'a [uuid::Uuid]>,
 }
 
 /// One row of the measured-savings aggregate.
@@ -399,6 +405,17 @@ fn push_filters<'a>(
         // keeps the intent visible: a caller who can see no agents sees no savings, not all of them.
         qb.push(" AND ")
             .push(agent_column)
+            .push(" = ANY(")
+            .push_bind(ids)
+            .push(")");
+    }
+    if let Some(ids) = q.user_ids {
+        // Every `agent_column` passed here is `<table>.agent_id` or a bare `agent_id`: the same
+        // table always carries `user_id` alongside it (`token_usage`, `token_savings`), so deriving
+        // the column from `agent_column` needs no separate parameter threaded through every call site.
+        let user_column = agent_column.replace("agent_id", "user_id");
+        qb.push(" AND ")
+            .push(user_column)
             .push(" = ANY(")
             .push_bind(ids)
             .push(")");
@@ -811,7 +828,11 @@ async fn coverage(
         optimized: i64,
     }
 
-    let flags: Flags = sqlx::query_as(
+    // Bug found 2026-10-22: this counted every agent in the whole deployment, no access check at
+    // all — a non-superuser's "X of Y agents optimised" named a Y that was the fleet's real agent
+    // count, not theirs. `accessible_agent_ids` restricts it the same way every other figure here
+    // (and everywhere else in finops) already is: `None` unrestricted, `Some(ids)` to exactly those.
+    let mut qb = QueryBuilder::new(
         "SELECT COUNT(*)::BIGINT AS agents_total,
                 COUNT(*) FILTER (WHERE compress_enabled)::BIGINT AS compress,
                 COUNT(*) FILTER (WHERE minimal_code_enabled)::BIGINT AS minimal,
@@ -819,9 +840,11 @@ async fn coverage(
                 COUNT(*) FILTER (WHERE compress_enabled OR minimal_code_enabled
                        OR COALESCE(metadata->'features'->>'prompt_comments','') = 'enabled')::BIGINT AS optimized
          FROM agents WHERE deleted_at IS NULL",
-    )
-    .fetch_one(db)
-    .await?;
+    );
+    if let Some(ids) = q.accessible_agent_ids {
+        qb.push(" AND id = ANY(").push_bind(ids).push(")");
+    }
+    let flags: Flags = qb.build_query_as().fetch_one(db).await?;
 
     #[derive(sqlx::FromRow)]
     struct SpendSplit {

@@ -93,6 +93,30 @@ impl<'a> Recovery<'a> {
         }
         flow_id.map(|flow_id| Recovery { min_bytes, flow_id })
     }
+
+    /// [`Self::for_request`] for a Responses body, whose tools name themselves at the top level.
+    pub(crate) fn for_responses(
+        enabled: bool,
+        min_bytes: usize,
+        flow_id: Option<&'a str>,
+        body: &Value,
+    ) -> Option<Self> {
+        let offered = body
+            .get("tools")
+            .and_then(Value::as_array)
+            .is_some_and(|tools| {
+                tools.iter().any(|t| {
+                    t.get("name")
+                        .or_else(|| t.pointer("/function/name"))
+                        .and_then(Value::as_str)
+                        .is_some_and(|n| n.ends_with(RECOVER_TOOL))
+                })
+            });
+        if !enabled || !offered {
+            return None;
+        }
+        flow_id.map(|flow_id| Recovery { min_bytes, flow_id })
+    }
 }
 
 /// Whether the request lists the recovery tool. A suffix match, because MCP clients commonly
@@ -607,6 +631,21 @@ mod tests {
         assert!(Recovery::for_request(true, 0, Some("f"), &bash_only).is_none());
         assert!(Recovery::for_request(true, 0, None, &with_tool).is_none());
         assert!(Recovery::for_request(false, 0, Some("f"), &with_tool).is_none());
+    }
+
+    #[test]
+    fn a_responses_body_needs_the_recovery_tool_and_a_flow_too() {
+        let with_tool = json!({"tools": [
+            {"type": "function", "name": "bash"},
+            {"type": "function", "name": "nasiko__recover_compressed"},
+        ]});
+        let bash_only = json!({"tools": [{"type": "function", "name": "bash"}]});
+
+        assert!(Recovery::for_responses(true, 0, Some("f"), &with_tool).is_some());
+        assert!(Recovery::for_responses(true, 0, Some("f"), &bash_only).is_none());
+        assert!(Recovery::for_responses(true, 0, Some("f"), &json!({})).is_none());
+        assert!(Recovery::for_responses(true, 0, None, &with_tool).is_none());
+        assert!(Recovery::for_responses(false, 0, Some("f"), &with_tool).is_none());
     }
 
     fn call(id: &str, command: &str) -> ToolCall {

@@ -106,6 +106,58 @@ pub(super) async fn agent_name_fully_accessible(
     true
 }
 
+/// Does this caller own the named agent (or, if several agents share the
+/// name across editions/soft-deletes, own every live one of them)?
+///
+/// Used to exempt an owner's own-agent read — Home's row for it, its Hub
+/// page, a `/tokenops` read filtered to it — from the default "your own
+/// calls only" scope ([`FinopsUserScope`](super::handler::FinopsUserScope)):
+/// owning the agent is its own reason to see its full usage, same as being
+/// an admin is for everything else (bug found 2026-10-22 — a public agent's
+/// owner couldn't see how it was actually used, only their own calls to it).
+pub(super) async fn agent_name_owned_by_caller(
+    state: &AppState,
+    claims: &Claims,
+    agent_name: &str,
+) -> bool {
+    let Ok(caller_id) = claims.user_uuid() else {
+        return false;
+    };
+    let Ok(owner_ids) = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT owner_id FROM agents WHERE name = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_name)
+    .fetch_all(&state.db)
+    .await
+    else {
+        return false;
+    };
+    !owner_ids.is_empty() && owner_ids.iter().all(|o| *o == Some(caller_id))
+}
+
+/// Same as [`agent_name_owned_by_caller`], for a caller that already resolved the agent's UUID
+/// (`/finops/savings`'s own `resolve_agent_uuid`, never a name).
+pub(super) async fn agent_id_owned_by_caller(
+    state: &AppState,
+    claims: &Claims,
+    agent_id: Uuid,
+) -> bool {
+    let Ok(caller_id) = claims.user_uuid() else {
+        return false;
+    };
+    let owner_id: Option<Uuid> = match sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(o)) => o,
+        _ => None,
+    };
+    owner_id == Some(caller_id)
+}
+
 // ---------------------------------------------------------------------------
 // Public orchestrator factories
 // ---------------------------------------------------------------------------

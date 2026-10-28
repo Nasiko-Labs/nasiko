@@ -239,7 +239,10 @@ pub async fn insert_turn_error(db: &PgPool, session_id: &str, message: &str, tra
     )
     .bind(session_id)
     .bind(trace_id)
-    .bind(crate::chat::models::turn_error_metadata(message, "orchestrator"))
+    .bind(crate::chat::models::turn_error_metadata(
+        message,
+        "orchestrator",
+    ))
     .execute(db)
     .await;
     if let Err(e) = result {

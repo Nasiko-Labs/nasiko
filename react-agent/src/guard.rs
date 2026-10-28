@@ -23,4 +23,10 @@ pub trait CallGuard: Send + Sync {
         target_agent: &str,
         tokens_used: u64,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+
+    /// Called before each model call the orchestrator itself makes. Return
+    /// Err(reason) to end the run: the reason is the failure the turn reports.
+    fn before_completion(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async { Ok(()) })
+    }
 }

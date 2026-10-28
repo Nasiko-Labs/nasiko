@@ -37,11 +37,22 @@ pub struct MessagePair {
 /// pins the SQL against this constant.
 pub const REFUSAL_METADATA_KEY: &str = "orchestrator_refusal";
 
+/// A turn that ended as failed. Kept in the transcript so a reload still shows
+/// the failure, but never read back as something the assistant said. Written by
+/// `nasiko_server` (`chat::models::turn_error_metadata`), filtered here.
+pub const TURN_ERROR_METADATA_KEY: &str = "turn_error";
+
 /// The history query. A `const` rather than an inline literal so the test below
 /// can assert it actually mentions [`REFUSAL_METADATA_KEY`].
 const FETCH_HISTORY_SQL: &str = "SELECT role, content FROM chat_messages \
      WHERE session_id = $1 \
        AND NOT COALESCE((metadata->>'orchestrator_refusal')::boolean, false) \
+       AND (metadata->'turn_error') IS NULL \
+     ORDER BY timestamp DESC LIMIT $2";
+
+/// The pair pool's query, with the same failed-turn filter.
+const FETCH_PAIRS_SQL: &str = "SELECT role, content FROM chat_messages \
+     WHERE session_id = $1 AND (metadata->'turn_error') IS NULL \
      ORDER BY timestamp DESC LIMIT $2";
 
 /// Chars per token when no provider usage is available to calibrate against. The same divisor the
@@ -543,10 +554,8 @@ impl SessionHistory {
         // adjacency — `ORDER BY timestamp ASC LIMIT n` would pin the window to
         // the oldest messages and never advance, the same trap `fetch_raw`
         // documents.
-        let mut messages: Vec<(String, String)> = sqlx::query_as::<_, (String, String)>(
-            "SELECT role, content FROM chat_messages \
-             WHERE session_id = $1 ORDER BY timestamp DESC LIMIT $2",
-        )
+        let mut messages: Vec<(String, String)> =
+            sqlx::query_as::<_, (String, String)>(FETCH_PAIRS_SQL)
         .bind(session_id)
         .bind(pool_size as i64)
         .fetch_all(pool)
@@ -667,6 +676,10 @@ mod refusal_tag_tests {
             FETCH_HISTORY_SQL.contains(REFUSAL_METADATA_KEY),
             "the history query must filter on `{REFUSAL_METADATA_KEY}`: {FETCH_HISTORY_SQL}"
         );
+        // A failed turn is never something the assistant said, to either reader.
+        for sql in [FETCH_HISTORY_SQL, FETCH_PAIRS_SQL] {
+            assert!(sql.contains(TURN_ERROR_METADATA_KEY), "{sql}");
+        }
     }
 }
 

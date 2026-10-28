@@ -244,7 +244,7 @@ An agent is **untrusted, user-authored code**. It is deployed once but serves re
 
 ### 7.2 Two factors: agent credential + flow-bound user identity
 
-The server solves this with two independent factors that each travel for free:
+The server solves this with two independent factors that each travel for free (design rationale and security analysis: the "MCP Gateway Agent Auth" design doc):
 
 - **Agent identity** — a per-agent gateway credential minted at deploy time and injected into the container env as `MCP_GATEWAY_TOKEN` (alongside `MCP_GATEWAY_URL`). Only its SHA-256 hash is stored (`agent_gateway_tokens`); the plaintext exists solely in the container env. Every redeploy rotates it; destroying the agent tombstones it. The agent configures its MCP client **once at startup** with `Authorization: Bearer $MCP_GATEWAY_TOKEN` — no per-request plumbing.
 - **User identity** — resolved server-side from the request's `traceparent`: its trace id names the `flows` row (carrying `user_id`) the platform wrote synchronously when it dispatched the flow, and the `flow_participants` record proves the flow was actually dispatched *to this agent*. The caller's real session credential (`Authorization`, `Cookie`) is still stripped before any request reaches an agent container — an agent can never replay a user's platform credentials.

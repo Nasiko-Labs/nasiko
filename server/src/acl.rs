@@ -11,6 +11,8 @@ use nasiko_types::agent_call::{AgentCallMeter, UnmeteredCall};
 
 use nasiko_flow::{FlowContext, FlowGuard};
 
+use crate::spend_gate::SpendGate;
+
 /// Edition-aware per-agent access check — the single entry point handlers should use.
 ///
 /// Delegates to `state.auth.can_access_agent`, so it honors exactly the rules of the
@@ -165,15 +167,23 @@ pub struct CpCallGuard {
     pub flow_guard: FlowGuard,
     pub flow_ctx: Mutex<FlowContext>,
     pub caller_agent_id: Option<Uuid>,
+    /// Asked before each of the orchestrator's own model calls, for this user and chat.
+    pub spend_gate: Arc<dyn SpendGate>,
+    pub user_id: Uuid,
+    pub chat_session_id: String,
     pub agent_calls: Arc<dyn AgentCallMeter>,
 }
 
 impl CpCallGuard {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         db: PgPool,
         flow_guard: FlowGuard,
         flow_ctx: FlowContext,
         caller_agent_id: Option<Uuid>,
+        spend_gate: Arc<dyn SpendGate>,
+        user_id: Uuid,
+        chat_session_id: String,
         agent_calls: Arc<dyn AgentCallMeter>,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -181,6 +191,9 @@ impl CpCallGuard {
             flow_guard,
             flow_ctx: Mutex::new(flow_ctx),
             caller_agent_id,
+            spend_gate,
+            user_id,
+            chat_session_id,
             agent_calls,
         })
     }
@@ -255,6 +268,21 @@ impl CallGuard for CpCallGuard {
                 && let Err(e) = self.flow_guard.record_tokens(&ctx, tokens_used).await
             {
                 warn!(%e, "flow token budget exceeded after call");
+            }
+        })
+    }
+
+    fn before_completion(
+        &self,
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + '_>> {
+        Box::pin(async move {
+            match self
+                .spend_gate
+                .refuse(self.user_id, &self.chat_session_id)
+                .await
+            {
+                Some(reason) => Err(reason),
+                None => Ok(()),
             }
         })
     }

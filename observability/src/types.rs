@@ -328,17 +328,29 @@ pub struct RouterSpanLinks<'a> {
 /// detectable downstream, which is why this pairing has to happen before any
 /// aggregation rather than being patched afterwards.
 ///
-/// The router's span sits under the HTTP span for the agent's request, whose
-/// parent is the agent's own LLM span, so the nearest ancestor from a different
-/// service is the calling agent, and that ancestor's usage is the duplicate.
+/// The router's span usually sits under the HTTP span for the agent's request,
+/// whose parent is the agent's own LLM span, so the nearest ancestor from a
+/// different service is the calling agent, and that ancestor's usage is the
+/// duplicate.
 ///
-/// A router span with no such ancestor is dropped instead. It reaches a trace at
+/// Some instrumentation doesn't nest that way: an agent's own legacy
+/// instrumentation (pre-GenAI-semconv spans such as `ChatCompletion`) can
+/// record the same call as a **sibling** of the router's span — both rooted
+/// under the agent's own request handling rather than one inside the other.
+/// Ancestry can't see a sibling, so [`find_sibling_duplicate`] is the fallback:
+/// it matches on the one signal that survives both instrumentation styles
+/// unchanged — the output token count — inside the same wall-clock window, so
+/// two unrelated calls of the same length elsewhere in the trace are not
+/// mistaken for one. Found this way, a span is still booked once, against the
+/// agent, exactly as the nested case is: trusting the router's count (it is
+/// cache-aware; legacy spans routinely are not) and dropping the duplicate.
+///
+/// A router span matched neither way is dropped instead. It reaches a trace at
 /// all only because some caller propagated span context, and in this platform
-/// that caller is an agent recording the same call on a span of its own — just a
-/// sibling rather than an ancestor, because it propagated the context it was
-/// called with instead of its own. Keeping it would double the tokens and book
-/// them against the control plane, which is not an agent; dropping it costs only
-/// the model correction, which is where things stood before any of this.
+/// that caller is an agent recording the same call on a span of its own.
+/// Keeping it would double the tokens and book them against the control plane,
+/// which is not an agent; dropping it costs only the model correction, which is
+/// where things stood before any of this.
 pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
     let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
     let mut attributed = HashMap::new();
@@ -356,6 +368,9 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
                 break;
             }
             parent = ancestor.parent_span_id.as_deref();
+        }
+        if agent.is_none() {
+            agent = find_sibling_duplicate(span, spans);
         }
         match agent {
             Some(agent) => {
@@ -392,6 +407,36 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         attributed,
         excluded,
     }
+}
+
+/// The sibling case `link_router_spans` can't reach by walking ancestry: a
+/// same-trace, different-service span reporting the identical output token
+/// count, whose time window overlaps the router span's. Output is the match
+/// key because it is unaffected by prompt caching, so it reads the same from
+/// both an instrumentation that reports cache-aware input and one that
+/// doesn't; input is checked too, but only to confirm an exact (uncached)
+/// match, never to rule one out, since a legacy span's larger, cache-blind
+/// input is exactly the discrepancy this function exists to find.
+fn find_sibling_duplicate<'a>(router_span: &Span, spans: &'a [Span]) -> Option<&'a Span> {
+    let usage = extract_usage_attrs(&router_span.attributes);
+    if usage.is_empty() {
+        return None;
+    }
+    spans.iter().find(|candidate| {
+        candidate.span_id != router_span.span_id
+            && !candidate.service_name.is_empty()
+            && candidate.service_name != router_span.service_name
+            && spans_overlap(router_span, candidate)
+            && extract_usage_attrs(&candidate.attributes).output == usage.output
+    })
+}
+
+/// Whether two spans' wall-clock windows overlap at all. A span with no
+/// recorded end is treated as a point in time at its start.
+fn spans_overlap(a: &Span, b: &Span) -> bool {
+    let a_end = a.ended_at.unwrap_or(a.started_at);
+    let b_end = b.ended_at.unwrap_or(b.started_at);
+    a.started_at <= b_end && b.started_at <= a_end
 }
 
 impl TraceDetails {
@@ -604,7 +649,7 @@ fn is_error(span: &Span) -> bool {
 /// sibling (same parent) that started after it *ended* and succeeded.
 ///
 /// This is the SE-3 rule, and it is deliberately identical to the UI's
-/// `unrecoveredErrors` (`ui/shared/features/src/observability/spans.ts`), which
+/// `unrecoveredErrors` (`ui/common/src/features/observability/spans.ts`), which
 /// is what `/sessions` has always shown. A retry that eventually worked is not a
 /// failure; an overlapping parallel call with the same name is not a retry, so
 /// the comparison is against the failed span's *end*, not its start.

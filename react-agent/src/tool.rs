@@ -307,6 +307,13 @@ impl Tool for A2aTool {
                 // classification the streaming path uses, on the response's raw result value.
                 let result_value = response.result.clone().unwrap_or(serde_json::Value::Null);
                 for sse in nasiko_types::a2a::classify_sse_event(&result_value) {
+                    // A failed task is a failure, as on the streaming path, never empty text.
+                    if let nasiko_types::a2a::SseEvent::Failed { reason } = &sse {
+                        return Err(A2aToolError::Failed {
+                            agent: self.agent.name.clone(),
+                            reason: reason.clone(),
+                        });
+                    }
                     if let nasiko_types::a2a::SseEvent::AwaitingHuman {
                         kind,
                         message,
@@ -796,6 +803,97 @@ mod tests {
     /// even starts. Without relaying `OrchestratorEvent::AwaitingHuman` here too,
     /// `react_loop.rs`'s callers (which assume the forwarder already did this) would never learn
     /// the run paused: no `hitl_requests` row, no SSE frame, the turn would silently complete.
+    /// What a Python a2a SDK agent streamed live (2026-10-26) when its model
+    /// call was refused: submitted, working, then a JSON-RPC error frame.
+    const REFUSED_STREAM: &str = concat!(
+        "data: {\"result\": {\"task\": {\"id\": \"t1\", \"contextId\": \"c1\", ",
+        "\"status\": {\"state\": \"TASK_STATE_SUBMITTED\"}}}, \"id\": \"1\", \"jsonrpc\": \"2.0\"}\n\n",
+        "data: {\"result\": {\"statusUpdate\": {\"taskId\": \"t1\", \"contextId\": \"c1\", ",
+        "\"status\": {\"state\": \"TASK_STATE_WORKING\", \"message\": {\"role\": \"ROLE_AGENT\", ",
+        "\"parts\": [{\"text\": \"Translating...\"}]}}}}, \"id\": \"1\", \"jsonrpc\": \"2.0\"}\n\n",
+        "event: error\n",
+        "data: {\"error\": {\"code\": -32603, \"message\": \"Error code: 402 - {'code': ",
+        "'budget_exceeded', 'error': 'Your monthly LLM budget is used up.'}\"}, ",
+        "\"id\": \"1\", \"jsonrpc\": \"2.0\"}\n\n",
+    );
+
+    #[tokio::test]
+    async fn a_stream_ending_in_an_error_frame_is_a_failed_call_not_an_empty_reply() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(REFUSED_STREAM)
+            .create_async()
+            .await;
+
+        let (orch_tx, _orch_rx) = tokio::sync::mpsc::channel::<OrchestratorEvent>(8);
+        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
+            .with_progress(orch_tx);
+        let result = tool
+            .call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: None,
+            })
+            .await;
+
+        match result {
+            Err(A2aToolError::Failed { reason, .. }) => {
+                assert!(reason.contains("budget_exceeded"), "{reason}");
+            }
+            other => panic!("expected Err(Failed), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn non_streaming_fallback_reports_a_failed_task_as_failed() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("message/stream".to_string()))
+            .with_status(500)
+            .with_body("agent unavailable")
+            .create_async()
+            .await;
+        server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::Regex("message/send".to_string()))
+            .with_status(200)
+            .with_body(
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": "1",
+                    "result": {"task": {
+                        "id": "t1",
+                        "contextId": "c1",
+                        "status": {
+                            "state": "TASK_STATE_FAILED",
+                            "message": {"parts": [{"text": "Error code: 402"}]}
+                        }
+                    }}
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let (orch_tx, _orch_rx) = tokio::sync::mpsc::channel::<OrchestratorEvent>(8);
+        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
+            .with_progress(orch_tx);
+        let result = tool
+            .call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: None,
+            })
+            .await;
+
+        assert!(
+            matches!(result, Err(A2aToolError::Failed { .. })),
+            "{result:?}"
+        );
+    }
+
     #[tokio::test]
     async fn non_streaming_fallback_awaiting_human_also_relays_orchestrator_event() {
         let mut server = mockito::Server::new_async().await;

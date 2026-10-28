@@ -3,15 +3,7 @@
  * core: it never names a private edition. Each edition's own vite.config.ts passes its layers in.
  */
 import { createHash } from 'node:crypto'
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import babel from '@rolldown/plugin-babel'
@@ -19,24 +11,9 @@ import tailwindcss from '@tailwindcss/vite'
 import { tanstackRouter } from '@tanstack/router-plugin/vite'
 import react, { reactCompilerPreset } from '@vitejs/plugin-react'
 import { loadEnv, type Plugin, type UserConfig } from 'vite'
-import { BOOT_GUARD_SCRIPT } from './shared/app-core/src/staleBuildBoot.ts'
-import { ZOD_JITLESS_SCRIPT } from './shared/app-core/src/zodJitless.ts'
 
 export const ROOT = dirname(fileURLToPath(import.meta.url))
-/** The shared packages, `shared/<name>/src`, each imported as `@nasiko/<name>/…`. */
-export const SHARED = join(ROOT, 'shared')
-/** The core's routes, which every control-plane edition serves. */
-export const CORE_ROUTES = join(SHARED, 'app-shell/src/routes')
-/**
- * One alias per shared package, to its source: a package is never built on its own, the app's build compiles it. An
- * alias rather than package.json `exports`: TypeScript resolves an extensionless specifier through `paths`
- * (tsconfig.base.json lists the same), not through an `exports` pattern.
- */
-export const PACKAGE_ALIASES: Record<string, string> = Object.fromEntries(
-  readdirSync(SHARED)
-    .filter((d) => existsSync(join(SHARED, d, 'src')))
-    .map((d) => [`@nasiko/${d}`, join(SHARED, d, 'src')]),
-)
+export const COMMON_SRC = join(ROOT, 'common/src')
 
 export interface AppOptions {
   /** 'oss', 'ee', …: the cache dir and the id the app's `src/edition.ts` declares. */
@@ -45,31 +22,14 @@ export interface AppOptions {
   appDir: string
   /** Layer `src/` dirs stacked on the core, lowest first (EE: its own src). */
   layers?: string[]
-  /** One alias per layer package (an edition's feature packages, beside its app). */
+  /** One alias per layer (EE: `@ee`). */
   alias?: Record<string, string>
   mode: string
-  /**
-   * false: the app serves only its own `src/routes` (with its own `__root.tsx`), none of the core's. For an app that
-   * uses the core's components but is not the control plane. Default true.
-   */
-  commonRoutes?: boolean
-  /** The dev server's API paths and the server they go to. Default: the control plane's (`PROXIED`, NASIKO_API_URL). */
-  proxy?: { paths: readonly string[]; target: string }
-  /** Dev and preview port. Default 3000. */
-  port?: number
 }
 
 // The OSS nasiko-server. Proxying makes the browser see one origin, which is what the server expects: CORS is
 // deny-by-default (empty CORS_ALLOWED_ORIGINS) and the login cookie is `HttpOnly; SameSite=Strict`.
-const PROXIED = ['/api', '/health', '/a2a', '/.well-known'] as const
-
-/**
- * The dev proxy key for an API path: a whole path segment, as a regex (Vite reads a key starting with `^` as one). A
- * plain key is a string prefix, so `/api` would also take `/api.ts`, the URL Vite serves an app's own `src/api.ts` at.
- */
-export function proxyKey(path: string): string {
-  return `^${path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?=[/?#]|$)`
-}
+const PROXIED = ['/api', '/health', '/a2a', '/.well-known']
 
 /** URL path of a file-based route file under a routes dir (`_app/agents.$agentId.tsx` → `/agents/$agentId`). */
 export function routePath(file: string): string {
@@ -123,7 +83,7 @@ export function shippedRoutes(routeDirs: string[]): string[] {
 /** Fails any import that resolves outside this edition's allowed roots: EE code can never reach an OSS build. */
 function leakGuard(o: AppOptions): Plugin {
   const allowed = [
-    SHARED,
+    join(ROOT, 'common'),
     o.appDir,
     ...(o.layers ?? []),
     // The live-contract tests drive the recorder and seed scripts; nothing in an app bundle may.
@@ -168,35 +128,6 @@ function routesManifest(routes: string[]): Plugin {
   }
 }
 
-/**
- * `dist/nasiko-spa.json`: whether this build can answer API calls from the mock seed. A production build honours mock
- * mode or partial mocks only under VITE_NASIKO_ALLOW_MOCK_BUILD (shared/app-core/src/env.ts `readEnv`, which this can't
- * import: it reads `import.meta.env` as it loads). Each server's build.rs refuses such a bundle in a release binary. A
- * live build also drops MSW's worker, which nothing in it registers.
- */
-function apiMode(): Plugin {
-  let out = ''
-  let mocks = false
-  return {
-    name: 'nasiko:api-mode',
-    apply: 'build',
-    configResolved(c) {
-      out = c.build.outDir
-      const env = c.env as Record<string, string | undefined>
-      mocks =
-        env.VITE_NASIKO_ALLOW_MOCK_BUILD === 'true' &&
-        (env.VITE_NASIKO_API_MODE?.trim() === 'mock' || !!env.VITE_NASIKO_MOCK?.trim())
-    },
-    closeBundle() {
-      writeFileSync(
-        join(out, 'nasiko-spa.json'),
-        `${JSON.stringify({ apiMode: mocks ? 'mock' : 'live' })}\n`,
-      )
-      if (!mocks) rmSync(join(out, 'mockServiceWorker.js'), { force: true })
-    },
-  }
-}
-
 /** The sha256 source list of an HTML page's inline scripts, for a CSP `script-src` without 'unsafe-inline'. */
 export function inlineScriptHashes(html: string): string[] {
   return [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map(
@@ -229,78 +160,36 @@ function cspHashes(): Plugin {
   }
 }
 
-/**
- * Reo (product analytics) reports from built bundles only: the dev server, and with it every e2e and sweep run, drops
- * the loader between index.html's "Start/End of Reo Javascript" comments, so no local session counts as a visit.
- */
-function analyticsInBuildsOnly(): Plugin {
-  return {
-    name: 'nasiko:analytics-in-builds-only',
-    apply: 'serve',
-    transformIndexHtml: (html) =>
-      html.replace(/\s*<!-- Start of Reo Javascript -->[\s\S]*?<!-- End of Reo Javascript -->/, ''),
-  }
-}
-
-/** zod's `jitless` switch (shared/app-core/src/zodJitless.ts), inline after `<title>` so it runs before any module does. */
-function zodJitless(): Plugin {
-  return {
-    name: 'nasiko:zod-jitless',
-    transformIndexHtml: (html) =>
-      html.replace('</title>', `</title>\n    <script>${ZOD_JITLESS_SCRIPT}</script>`),
-  }
-}
-
-/**
- * The stale-build boot guard (shared/app-core/src/staleBuildBoot.ts), inline right after `<title>`: after `<meta charset>`
- * (the shell is served without a charset, so it must stay in the first 1024 bytes) and before the entry module and the
- * stylesheets, whose load errors it catches. `cspHashes` hashes it with the page's other inline scripts.
- */
-function bootGuard(): Plugin {
-  return {
-    name: 'nasiko:boot-guard',
-    apply: 'build',
-    transformIndexHtml(html) {
-      if (!html.includes('</title>'))
-        throw new Error('index.html needs a <title> for the boot guard to follow')
-      return html.replace('</title>', `</title>\n    <script>${BOOT_GUARD_SCRIPT}</script>`)
-    },
-  }
-}
-
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
-  const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
-  const port = o.port ?? 3000
+  const target = env.NASIKO_API_URL || 'http://localhost:8080'
   const src = join(o.appDir, 'src')
-  const ownRoutes = o.commonRoutes === false
-  const routes = shippedRoutes(
-    ownRoutes
-      ? [join(src, 'routes')]
-      : [CORE_ROUTES, ...(o.layers ?? []).map((l) => join(l, 'routes'))],
-  )
+  const routes = shippedRoutes([
+    join(COMMON_SRC, 'routes'),
+    ...(o.layers ?? []).map((l) => join(l, 'routes')),
+  ])
   return {
     root: src,
     envDir: ROOT,
-    publicDir: join(SHARED, 'ui/public'),
+    publicDir: join(ROOT, 'common/public'),
     cacheDir: join(ROOT, 'node_modules/.vite', o.id),
     plugins: [
       leakGuard(o),
       // Must run before react(): it generates the edition's src/routeTree.gen.ts from the core's routes.
       tanstackRouter({
         target: 'react',
-        routesDirectory: ownRoutes ? join(src, 'routes') : CORE_ROUTES,
+        routesDirectory: join(COMMON_SRC, 'routes'),
         // A layer's own `routes/` (EE: `/weave`) mount beside the core's; `shippedRoutes` above already failed a
-        // path served twice. Without layers the core's directory (or the app's own) is read as is.
-        ...(o.layers?.length && !ownRoutes
+        // path served twice. Without layers the core's directory is read as is.
+        ...(o.layers?.length
           ? {
               virtualRouteConfig: {
                 type: 'root' as const,
                 file: '__root.tsx',
-                children: [CORE_ROUTES, ...o.layers.map((l) => join(l, 'routes'))].map((dir) => ({
+                children: [COMMON_SRC, ...o.layers].map((dir) => ({
                   type: 'physical' as const,
                   pathPrefix: '',
-                  directory: relative(CORE_ROUTES, dir) || '.',
+                  directory: relative(join(COMMON_SRC, 'routes'), join(dir, 'routes')) || '.',
                 })),
               },
             }
@@ -326,32 +215,26 @@ export function nasikoApp(o: AppOptions): UserConfig {
       babel({
         presets: [reactCompilerPreset()],
         exclude:
-          /[\\/]node_modules[\\/]|[\\/]shared[\\/](mocks|testing)[\\/]|[\\/]src[\\/](genui[\\/]lang|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
+          /[\\/]node_modules[\\/]|[\\/]src[\\/](genui[\\/]lang|mocks|test)[\\/]|\.test\.tsx?$|\.gen\.ts$/,
       }),
       tailwindcss(),
       routesManifest(routes),
-      apiMode(),
-      analyticsInBuildsOnly(),
-      zodJitless(),
-      bootGuard(),
       cspHashes(),
     ],
     resolve: {
       alias: {
-        ...PACKAGE_ALIASES,
         ...o.alias,
         '@edition': src,
+        '@': COMMON_SRC,
       },
     },
     // Port 3000 is deliberate: gstack /qa only probes 3000, 4000 and 8080.
     server: {
-      port,
+      port: 3000,
       strictPort: true,
-      proxy: Object.fromEntries(
-        proxy.paths.map((p) => [proxyKey(p), { target: proxy.target, changeOrigin: false }]),
-      ),
+      proxy: Object.fromEntries(PROXIED.map((p) => [p, { target, changeOrigin: false }])),
     },
-    preview: { port, strictPort: true },
+    preview: { port: 3000, strictPort: true },
     build: {
       outDir: join(o.appDir, 'dist'),
       emptyOutDir: true,
@@ -370,7 +253,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
             groups: [
               {
                 name: 'charts',
-                test: /node_modules[\\/](@visx|d3-|reduce-css-calc|reduce-function-call|math-expression-evaluator|balanced-match)|shared[\\/]ui[\\/]src[\\/]charts[\\/]/,
+                test: /node_modules[\\/](@visx|d3-|reduce-css-calc|reduce-function-call|math-expression-evaluator|balanced-match)|common[\\/]src[\\/]components[\\/]charts[\\/]/,
               },
             ],
           },

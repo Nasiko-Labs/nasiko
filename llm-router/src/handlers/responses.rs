@@ -241,14 +241,12 @@ async fn compress_input(
     body: &mut Value,
 ) -> crate::compress::Ledger {
     let policy = crate::compress::policy_for(&ctx.cfg, &routed.resolved);
-    let recovery = routed
-        .flow_id
-        .as_deref()
-        .filter(|_| ctx.cfg.compress_recovery_enabled)
-        .map(|flow_id| crate::compress::Recovery {
-            min_bytes: ctx.cfg.compress_recovery_min_bytes,
-            flow_id,
-        });
+    let recovery = crate::compress::Recovery::for_responses(
+        ctx.cfg.compress_recovery_enabled,
+        ctx.cfg.compress_recovery_min_bytes,
+        routed.flow_id.as_deref(),
+        body,
+    );
     let Some(input) = body.get_mut("input") else {
         return crate::compress::Ledger::default();
     };
