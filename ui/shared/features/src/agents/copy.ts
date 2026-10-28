@@ -25,6 +25,12 @@ export const copy = {
   tagLabel: 'Tag',
   tagFilter: 'Filter by tag',
   allTags: 'All',
+  /** The catalog's view switch: the cards, or one table row per agent. */
+  viewLabel: 'View',
+  viewGrid: 'Grid',
+  viewList: 'List',
+  colDescription: 'Description',
+  colSkills: 'Skills',
   harnessUsage: 'See usage on Coding harnesses',
   excludesHarnesses: (n: number) => `Excludes ${n} coding harness${n === 1 ? '' : 'es'}`,
   noResults: 'No agents match this search',
