@@ -2216,20 +2216,6 @@ fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
 }
 
-/// Upsert a `chat_sessions` row and persist the user's message for an
-/// orchestrator-routed chat, mirroring what `agent_proxy.rs`'s
-/// `ensure_chat_session` already does for direct agent chat. `agent_id` is
-/// left `NULL` (unlike agent_proxy's fixed target) since the orchestrator
-/// can route to a different agent on every turn of the same session.
-/// Fire-and-forget: session bookkeeping here is a nice-to-have for
-/// `sessions`/`history`/resume, not a security boundary like agent_proxy's
-/// version (which also authorizes access to an existing session).
-/// `client_owns_transcript` suppresses the message insert for callers that
-/// persist their own turns via `/api/chat/sessions/{id}/messages` (the web UI,
-/// identified by an explicit `metadata.session_id`). It used to be harmless
-/// only because the UI sent a throwaway random `contextId`, so the two writes
-/// landed in different sessions; now that contextId *is* the session id, doing
-/// both would store every user message twice.
 /// Whether `session_id` names an existing chat session that belongs to a user other than
 /// `user_id`. Superusers own every session for this purpose.
 async fn session_owned_by_other(
@@ -2250,6 +2236,21 @@ async fn session_owned_by_other(
     Ok(owner.is_some_and(|owner| owner != user_id))
 }
 
+/// Upsert a `chat_sessions` row and persist the user's message for an
+/// orchestrator-routed chat, mirroring what `agent_proxy.rs`'s
+/// `ensure_chat_session` already does for direct agent chat. `agent_id` is
+/// left `NULL` (unlike agent_proxy's fixed target) since the orchestrator
+/// can route to a different agent on every turn of the same session.
+/// Fire-and-forget: session bookkeeping here is a nice-to-have for
+/// `sessions`/`history`/resume. It does not decide access: callers do (the
+/// chat entry point, `a2a_dispatch_handler`, refuses another user's session
+/// with `session_owned_by_other` before it gets here).
+/// `client_owns_transcript` suppresses the message insert for callers that
+/// persist their own turns via `/api/chat/sessions/{id}/messages` (the web UI,
+/// identified by an explicit `metadata.session_id`). It used to be harmless
+/// only because the UI sent a throwaway random `contextId`, so the two writes
+/// landed in different sessions; now that contextId *is* the session id, doing
+/// both would store every user message twice.
 async fn ensure_orchestrator_chat_session(
     state: &AppState,
     context_id: &str,
