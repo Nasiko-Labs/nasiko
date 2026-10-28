@@ -142,7 +142,7 @@ impl FlowGuard {
 
     pub async fn init_flow(&self, ctx: &FlowContext, root_agent: &str) {
         let key = ctx.redis_key();
-        let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
+        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
             return;
         };
 
@@ -177,7 +177,7 @@ impl FlowGuard {
         target_agent_id: &str,
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
+        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -243,7 +243,7 @@ impl FlowGuard {
         target_agent_id: &str,
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
+        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -302,7 +302,7 @@ impl FlowGuard {
         tokens_used: u64,
     ) -> Result<u64, FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
+        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -326,7 +326,7 @@ impl FlowGuard {
 
     pub async fn record_return(&self, ctx: &FlowContext) {
         let key = ctx.redis_key();
-        let Some(mut conn) = self.redis.get_multiplexed_async_connection().await.ok() else {
+        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
             return;
         };
 

@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 /// Fetch and deserialize a JSON value. Returns `None` on miss, deserialize
 /// failure, or any Redis error (logged) — callers treat all three as "recompute".
 pub async fn get_json<T: DeserializeOwned>(client: &redis::Client, key: &str) -> Option<T> {
-    let mut conn = match client.get_multiplexed_async_connection().await {
+    let mut conn = match nasiko_redis_conn::connection(client).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache get) — treating as miss");
@@ -56,7 +56,7 @@ pub async fn set_json_ex<T: Serialize>(
             return;
         }
     };
-    let mut conn = match client.get_multiplexed_async_connection().await {
+    let mut conn = match nasiko_redis_conn::connection(client).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache set) — skipping write");
@@ -70,7 +70,7 @@ pub async fn set_json_ex<T: Serialize>(
 
 /// Delete a key. Errors are logged and swallowed.
 pub async fn delete(client: &redis::Client, key: &str) {
-    let mut conn = match client.get_multiplexed_async_connection().await {
+    let mut conn = match nasiko_redis_conn::connection(client).await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache delete) — skipping");

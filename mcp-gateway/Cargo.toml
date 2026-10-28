@@ -17,6 +17,7 @@ tokio.workspace = true
 # `json` for JSONB columns (mcp_servers.headers, composio session snapshots).
 sqlx = { workspace = true, features = ["json"] }
 redis.workspace = true
+nasiko-redis-conn = { workspace = true }
 reqwest.workspace = true
 
 # Serialization

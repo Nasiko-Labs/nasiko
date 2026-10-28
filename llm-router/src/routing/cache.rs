@@ -93,7 +93,7 @@ impl RedisCache {
 impl DecisionCache for RedisCache {
     async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
         let key = Self::key(conv_id, agent_id);
-        let mut conn = match self.client.get_multiplexed_async_connection().await {
+        let mut conn = match nasiko_redis_conn::connection(&self.client).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
@@ -143,7 +143,7 @@ impl DecisionCache for RedisCache {
 
     async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
         let key = Self::key(conv_id, agent_id);
-        let Ok(mut conn) = self.client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = nasiko_redis_conn::connection(&self.client).await else {
             tracing::warn!(
                 target: "nasiko::llm_router::decision_cache",
                 %key, "redis decision cache PUT — connection failed; decision not cached (fail-open)"

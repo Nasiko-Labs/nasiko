@@ -365,7 +365,7 @@ impl SemanticSearchIndex {
         let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
 
         // Check Redis cache.
-        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await
+        if let Ok(mut conn) = nasiko_redis_conn::connection(&self.redis).await
             && let Ok(bytes) = redis::AsyncCommands::get::<_, Vec<u8>>(&mut conn, &cache_key).await
             && !bytes.is_empty()
         {
@@ -375,7 +375,7 @@ impl SemanticSearchIndex {
         let embedding = self.client.embed_one(query).await?;
 
         // Cache for 10 minutes (covers a full multi-turn conversation).
-        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
+        if let Ok(mut conn) = nasiko_redis_conn::connection(&self.redis).await {
             let _: std::result::Result<(), _> = redis::AsyncCommands::set_ex(
                 &mut conn,
                 &cache_key,

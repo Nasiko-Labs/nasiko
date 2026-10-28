@@ -1,0 +1,8 @@
+[package]
+name = "nasiko-redis-conn"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+redis = { workspace = true }
+tokio = { workspace = true }
