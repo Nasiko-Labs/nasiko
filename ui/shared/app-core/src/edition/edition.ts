@@ -70,6 +70,27 @@ export interface GranteeKind {
   Section: ComponentType<{ agentId: string }>
 }
 
+/**
+ * A tab a layer adds to an agent's detail page. It shows once `query` answers and `shown` agrees with the answer; a
+ * read that fails shows it too, and the tab reports the failure itself. Build it with `agentTab()`, which pairs the
+ * query's data type with `shown`.
+ */
+export interface AgentTab<T = unknown> {
+  /** Its `?tab=` value: unique among the core's tabs and every layer's. */
+  key: string
+  label: string
+  /** The core tab it follows (e.g. `mcp`); the end of the list when absent or that tab isn't shown. */
+  after?: string
+  /** Whether this viewer may see it at all (the core's manage-only tabs go by `canManage`). */
+  visible: (agent: { canManage: boolean; isHarness: boolean }) => boolean
+  /** Its probe; it gets the agent too, for a layer whose own rule goes beyond `canManage`. */
+  query: (agentId: string, agent: { canManage: boolean; isHarness: boolean }) => SlotQuery<T>
+  shown: (data: T) => boolean
+  Tab: ComponentType<{ agentId: string }>
+}
+
+export const agentTab = <T>(t: AgentTab<T>) => t as unknown as AgentTab
+
 /** Who else an MCP server can be shared with, besides users (EE: org units). */
 interface ConnectorGranteeKind {
   key: string
@@ -102,6 +123,8 @@ export interface PersonalSettingsLink {
   label: string
   /** The layer's own route, e.g. `/settings/memory` — not `/settings?section=`. */
   to: string
+  /** The layer's own check that the page exists on this server; the link is listed once it answers true. */
+  available?: (userId: string) => SlotQuery<boolean>
 }
 
 /**
@@ -116,7 +139,7 @@ export interface LoginMethodsProps {
 }
 
 /** The org-unit filter a layer can add to TokenOps (planned in EE). */
-export interface OrgUnitFilterProps {
+interface OrgUnitFilterProps {
   value?: string
   onChange: (orgUnit: string | undefined) => void
 }
@@ -330,19 +353,12 @@ export const NO_BUDGETS: BudgetsSurface = {
 }
 
 /** Every slot has an OSS fallback in the core; a slot is added in the PR whose layer first fills it. */
-/** What a chat turn's failure card says when a layer recognises the failure as a refusal. */
-export interface ChatRefusal {
-  problem: string
-  cause: string
-  action: string
-  /** The server's own words, shown under Details in place of the raw failure text. */
-  detail: string
-}
-
 export interface Slots {
   harnessOrgScope: HarnessOrgScope | null
   homeOrgScope: HomeOrgScope | null
   granteeKinds: GranteeKind[]
+  /** Tabs a layer adds to an agent's detail page. */
+  agentTabs: AgentTab[]
   connectorGranteeKinds: ConnectorGranteeKind[]
   settingsSections: SettingsSection[]
   personalSettingsLinks: PersonalSettingsLink[]
@@ -380,11 +396,6 @@ export interface Slots {
   budgetsOrgRole: BudgetsOrgRole | null
   /** Budgets (Enterprise only). `NO_BUDGETS` in an OSS build: every surface off, nothing read. */
   budgets: BudgetsSurface
-  /**
-   * Reads a failed chat turn's text for a refusal that running again won't fix (EE: a budget stop). Recognised, the
-   * card shows these words with no Run again and no agent logs. OSS: none, every failure is the generic one.
-   */
-  chatRefusal: ((detail: string) => ChatRefusal | null) | null
 }
 
 export interface BudgetsOrgRoleOf {
@@ -425,6 +436,7 @@ export const OSS_SLOTS: Slots = {
   harnessOrgScope: null,
   homeOrgScope: null,
   granteeKinds: [],
+  agentTabs: [],
   connectorGranteeKinds: [],
   settingsSections: [],
   personalSettingsLinks: [],
@@ -440,7 +452,6 @@ export const OSS_SLOTS: Slots = {
   tours: [],
   budgetsOrgRole: null,
   budgets: NO_BUDGETS,
-  chatRefusal: null,
 }
 
 /** A layer's own sidebar item: any path its routes serve. */
@@ -470,6 +481,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
   const out: Slots = {
     ...OSS_SLOTS,
     granteeKinds: [],
+    agentTabs: [],
     connectorGranteeKinds: [],
     settingsSections: [],
     personalSettingsLinks: [],
@@ -478,6 +490,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
   for (const layer of layers) {
     const s = layer.slots ?? {}
     if (s.granteeKinds) out.granteeKinds = [...out.granteeKinds, ...s.granteeKinds]
+    if (s.agentTabs) out.agentTabs = [...out.agentTabs, ...s.agentTabs]
     if (s.connectorGranteeKinds)
       out.connectorGranteeKinds = [...out.connectorGranteeKinds, ...s.connectorGranteeKinds]
     if (s.settingsSections) out.settingsSections = [...out.settingsSections, ...s.settingsSections]
@@ -497,7 +510,6 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.navHidden !== undefined) out.navHidden = s.navHidden
     if (s.budgetsOrgRole !== undefined) out.budgetsOrgRole = s.budgetsOrgRole
     if (s.budgets !== undefined) out.budgets = s.budgets
-    if (s.chatRefusal !== undefined) out.chatRefusal = s.chatRefusal
   }
   return out
 }

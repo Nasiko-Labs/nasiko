@@ -7,15 +7,15 @@
  * the EE layer's `nav-ext-ee.js`:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Optimization tiers (`/settings/optimization-tiers`), Registry.
  *   `/settings?section=` for the sections of the one form.
- * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks` (EE: Memory
- *   recall, `/settings/memory`).
+ * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks` (its own
+ *   routes), each listed once its own `available` check, when it has one, answers true.
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees Secrets only:
  * the workspace sections are superuser-gated on the API. This is the sidebar's Organization → Settings.
  * With `account`, the same layout holds the account's own settings (the account menu's Settings): Appearance
  * (`/account/appearance`; the lab's, this browser's mode and theme) and Password (`/account/password`; Change
  * password). Optimization moved to /optimization (plans/feat-optimization-page.md P2).
  */
-import { useQuery } from '@tanstack/react-query'
+import { skipToken, useQueries, useQuery, type UseQueryOptions } from '@tanstack/react-query'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { PanelLeft, Settings } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
@@ -74,6 +74,15 @@ export function SettingsLayout({
   const { settingsSections, personalSettingsLinks } = useSlots()
   const location = useRouterState({ select: (s) => s.location })
   const admin = me.data?.is_superuser === true
+  const userId = me.data?.sub
+  const linkChecks = useQueries({
+    queries: personalSettingsLinks.map((l): UseQueryOptions<boolean> =>
+      l.available && userId
+        ? l.available(userId)
+        : { queryKey: ['settings-link', l.key], queryFn: skipToken },
+    ),
+  })
+  const links = personalSettingsLinks.filter((l, i) => !l.available || linkChecks[i]?.data === true)
   const inGroup = (g: 'workspace' | 'security') => settingsSections.filter((s) => s.group === g)
   const groups: { key: string; label: string; rows: Row[] }[] = account
     ? [
@@ -126,7 +135,7 @@ export function SettingsLayout({
             { key: 'secrets', label: copy.secrets.title, to: '/settings/secrets' },
             // Every user's own, like Secrets above — never gated by `admin` (personalSettingsLinks is a plain nav
             // link to the layer's own route, not a `/settings?section=` page).
-            ...personalSettingsLinks.map((l): Row => ({ key: l.key, label: l.label, to: l.to })),
+            ...links.map((l): Row => ({ key: l.key, label: l.label, to: l.to })),
           ],
         },
       ]

@@ -2765,6 +2765,8 @@ export const mockCtx = {
   variant,
   superuser,
   viewer,
+  /** Who /api/me says is signed in (an edition may pin it): the `sub` a self-only route compares against. */
+  sessionUser,
   harnessSeed: getHarnessSeed,
   /** The harness seed as the current variant changes it (`all-unpriced`, `no-activity`). */
   harnessData,
