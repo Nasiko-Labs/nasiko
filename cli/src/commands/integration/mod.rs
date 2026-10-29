@@ -151,7 +151,7 @@ pub fn pending_event_count() -> Result<usize> {
 
 pub use a2a::DiscoveredAgent as A2aAgent;
 pub use a2a::env_file::EnvTarget;
-pub use control_plane::RegisteredA2aAgent;
+pub use control_plane::{ListedA2aAgent, RegisteredA2aAgent};
 
 /// The A2A agents running on this machine, and what discovery could not look at.
 pub struct RunningA2aAgents {
@@ -260,6 +260,69 @@ impl LlmRouting {
             Self::On => "yes",
         }
     }
+
+    /// As `status`'s LLM ROUTING column shows it, beside the coding agents' `on`/`off`.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Waiting => "waiting",
+            Self::On => "on",
+        }
+    }
+}
+
+// ─── status: what the last discovery registered ─────────────────────────────
+
+/// `status`'s A2A section: the agents the last `agents discover` found running on this machine,
+/// read back from the cluster, so `status` itself probes nothing. Prints nothing when not
+/// logged in, when the cluster cannot be reached (its section already says so), or when no
+/// agent from this machine is registered.
+pub fn print_discovered_a2a_agents() {
+    let Some(machine) = a2a::machine_name() else {
+        return;
+    };
+    let Ok(Some(listed)) = control_plane::list_discovered(&machine) else {
+        return;
+    };
+    let connections = a2a::connections::Connections::load().unwrap_or_default();
+    if let Some(section) = discovered_section(&listed, &connections) {
+        print!("{section}");
+    }
+}
+
+#[derive(tabled::Tabled)]
+struct DiscoveredRow {
+    #[tabled(rename = "AGENT")]
+    agent: String,
+    #[tabled(rename = "LLM ROUTING")]
+    routing: String,
+}
+
+/// The section's text, or `None` when the last discovery found nothing running. Agents it
+/// found gone (`stopped`) are left out: `status` lists what is there.
+fn discovered_section(
+    listed: &[ListedA2aAgent],
+    connections: &a2a::connections::Connections,
+) -> Option<String> {
+    let running: Vec<&ListedA2aAgent> = listed
+        .iter()
+        .filter(|agent| agent.status == "registered")
+        .collect();
+    if running.is_empty() {
+        return None;
+    }
+    let value = crate::commands::coding_agent_router::status_value;
+    let rows = running.iter().map(|agent| DiscoveredRow {
+        agent: a2a::printable(&agent.card_name),
+        routing: value(
+            llm_routing_of(agent.id, agent.last_llm_call_at.is_some(), connections).label(),
+        ),
+    });
+    let mut table = tabled::Table::new(rows);
+    table
+        .with(tabled::settings::Style::blank())
+        .with(tabled::settings::Alignment::left());
+    Some(format!("\nA2A agents:\n{table}\n"))
 }
 
 fn llm_routing_state(
@@ -271,15 +334,22 @@ fn llm_routing_state(
         .iter()
         .find(|entry| entry.card_name == agent.name)
     {
-        // Only `connect` points an agent at Nasiko; after `disconnect` its past calls no longer count.
-        Some(entry) if connections.agents.contains_key(&entry.id) => {
-            if entry.last_llm_call_at.is_some() {
-                LlmRouting::On
-            } else {
-                LlmRouting::Waiting
-            }
-        }
-        _ => LlmRouting::Off,
+        Some(entry) => llm_routing_of(entry.id, entry.last_llm_call_at.is_some(), connections),
+        None => LlmRouting::Off,
+    }
+}
+
+/// Only `connect` points an agent at Nasiko, so only a connected agent is `waiting` or `on`;
+/// after `disconnect` its past calls no longer count.
+fn llm_routing_of(
+    id: uuid::Uuid,
+    has_routed_call: bool,
+    connections: &a2a::connections::Connections,
+) -> LlmRouting {
+    match (connections.agents.contains_key(&id), has_routed_call) {
+        (false, _) => LlmRouting::Off,
+        (true, false) => LlmRouting::Waiting,
+        (true, true) => LlmRouting::On,
     }
 }
 
@@ -1076,6 +1146,59 @@ mod tests {
             );
             assert_eq!(llm_routing_state(&agent, &[entry], &connected), state);
         }
+    }
+
+    fn listed(card_name: &str, status: &str, called: bool) -> ListedA2aAgent {
+        ListedA2aAgent {
+            card_name: card_name.into(),
+            id: uuid::Uuid::new_v4(),
+            status: status.into(),
+            last_llm_call_at: called.then(chrono::Utc::now),
+        }
+    }
+
+    fn words(text: &str) -> Vec<Vec<String>> {
+        text.lines()
+            .map(|line| line.split_whitespace().map(str::to_string).collect())
+            .filter(|words: &Vec<String>| !words.is_empty())
+            .collect()
+    }
+
+    #[test]
+    fn status_lists_what_the_last_discovery_found_with_its_llm_routing() {
+        let planner = listed("planner", "registered", true);
+        let writer = listed("writer", "registered", false);
+        let gone = listed("old-crew", "stopped", false);
+        let mut connections = a2a::connections::Connections::default();
+        connections.agents.insert(
+            planner.id,
+            a2a::connections::Connection {
+                card_name: "planner".into(),
+                name: "planner".into(),
+                file: None,
+            },
+        );
+
+        let section =
+            discovered_section(&[planner, writer, gone], &connections).expect("a section");
+
+        assert_eq!(
+            words(&section),
+            [
+                vec!["A2A", "agents:"],
+                vec!["AGENT", "LLM", "ROUTING"],
+                vec!["planner", "on"],
+                vec!["writer", "off"],
+            ]
+        );
+    }
+
+    #[test]
+    fn status_shows_no_a2a_section_when_nothing_was_found_running() {
+        let none = a2a::connections::Connections::default();
+        assert!(discovered_section(&[], &none).is_none());
+        let only_gone = [listed("old-crew", "stopped", false)];
+        assert!(discovered_section(&only_gone, &none).is_none());
     }
 
     #[test]

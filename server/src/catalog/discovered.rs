@@ -1,12 +1,19 @@
 //! Registration of A2A agents the CLI found running on a user's machine.
 //!
-//! `nasiko status` reports every agent it discovers, with its card, and this endpoint makes
-//! the catalog match: new agents are added, known ones get their card refreshed, and agents
-//! the machine no longer reports are marked `stopped`. Nasiko never deploys or calls these
-//! agents (their status is never `running`); they appear in the catalog and may route their
-//! LLM calls through the router, which reports when each last did.
+//! `nasiko agents discover` reports every agent it finds, with its card, and `POST` makes the
+//! catalog match: new agents are added, known ones get their card refreshed, and agents the
+//! machine no longer reports are marked `stopped`. `GET` reads that back for `nasiko status`,
+//! which shows what the last discovery found without probing anything itself. Nasiko never
+//! deploys or calls these agents (their status is never `running`); they appear in the
+//! catalog and may route their LLM calls through the router, which reports when each last did.
 
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
+use axum::{
+    Json, Router,
+    extract::{Query, State},
+    http::StatusCode,
+    response::IntoResponse,
+    routing::get,
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -20,7 +27,10 @@ use crate::state::AppState;
 const MAX_NAME_CHARS: usize = 255;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/agents/discovered", post(register_discovered_agents))
+    Router::new().route(
+        "/agents/discovered",
+        get(list_discovered_agents).post(register_discovered_agents),
+    )
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -103,6 +113,76 @@ pub(crate) async fn register_discovered_agents(
             .into_response(),
         Err(error) => {
             tracing::error!(%error, %owner_id, %machine, "discovered-agent registration failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub(crate) struct ListDiscoveredQuery {
+    /// The machine whose agents to list, as the CLI names it (its hostname).
+    machine: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct ListDiscoveredResponse {
+    agents: Vec<DiscoveredAgentEntry>,
+}
+
+#[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
+pub(crate) struct DiscoveredAgentEntry {
+    /// The card's `name`, as last reported.
+    card_name: String,
+    id: Uuid,
+    /// The catalog name.
+    name: String,
+    /// `registered` while the machine's last report included it, `stopped` once one did not.
+    status: String,
+    /// When a report last changed it: its last registration, or when it was marked stopped.
+    updated_at: DateTime<Utc>,
+    /// When the router last handled an LLM call made with this agent's key; `null` if never.
+    last_llm_call_at: Option<DateTime<Utc>>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/agents/discovered",
+    tag = "catalog",
+    params(ListDiscoveredQuery),
+    responses(
+        (status = 200, description = "The caller's agents last reported from this machine", body = ListDiscoveredResponse),
+        (status = 400, description = "Missing machine"),
+    ),
+)]
+pub(crate) async fn list_discovered_agents(
+    State(state): State<AppState>,
+    claims: Claims,
+    Query(query): Query<ListDiscoveredQuery>,
+) -> impl IntoResponse {
+    let owner_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let machine = query.machine.trim();
+    if machine.is_empty() || machine.chars().count() > MAX_NAME_CHARS {
+        return (StatusCode::BAD_REQUEST, "machine must be 1-255 characters").into_response();
+    }
+    let agents = sqlx::query_as::<_, DiscoveredAgentEntry>(
+        "SELECT a.metadata->>'card_name' AS card_name, a.id, a.name, a.status, a.updated_at, \
+                (SELECT max(t.created_at) FROM token_usage t WHERE t.agent_id = a.id) \
+                    AS last_llm_call_at \
+         FROM agents a \
+         WHERE a.owner_id = $1 AND a.discovered_on = $2 AND a.deleted_at IS NULL \
+         ORDER BY a.name",
+    )
+    .bind(owner_id)
+    .bind(machine)
+    .fetch_all(&state.db)
+    .await;
+    match agents {
+        Ok(agents) => (StatusCode::OK, Json(ListDiscoveredResponse { agents })).into_response(),
+        Err(error) => {
+            tracing::error!(%error, %owner_id, %machine, "discovered-agent listing failed");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }

@@ -5,7 +5,8 @@
 # 2. Registration + LLM routing: against a real nasiko-server (needs `just infra`), discovery
 #    registers the agents; `nasiko connect planner` writes the LangGraph `.env`; after a restart
 #    the agent's model call goes through Nasiko and discovery shows it CONNECTED `yes`;
-#    `nasiko disconnect planner` restores the `.env` exactly.
+#    `nasiko disconnect planner` restores the `.env` exactly. Throughout, `nasiko status` shows
+#    what discovery registered, read back from the server, without probing anything itself.
 #
 # Pass --discovery-only to skip step 2. The first run installs both frameworks into
 # virtualenvs under .work/ (needs network); later runs reuse them. Everything runs on free
@@ -147,8 +148,20 @@ expect_connected() { # expect_connected <agent> <yes|waiting|no> <when>
   [ "$actual" = "$2" ] || fail "$1 CONNECTED is '$actual' $3, expected '$2'"
   echo "ok: $1 CONNECTED $2 $3"
 }
+status_routing_of() { # status_routing_of <agent>: its LLM ROUTING in `nasiko status`'s A2A section
+  { nasiko status 2>&1 || true; } |
+    awk -v agent="$1" '/^A2A agents:/ { section = 1; next } section && $1 == agent { print $2; exit }'
+}
+expect_status() { # expect_status <agent> <on|waiting|off> <when>
+  local actual
+  actual=$(status_routing_of "$1")
+  [ "$actual" = "$2" ] || fail "status shows $1 LLM ROUTING '$actual' $3, expected '$2'"
+  echo "ok: status shows $1 LLM ROUTING $2 $3"
+}
 
 expect_connected planner no "once registered"
+expect_status planner off "once registered"
+expect_status writer off "once registered"
 
 connected=$(nasiko connect planner --yes 2>&1)
 echo "$connected"
@@ -159,6 +172,7 @@ grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$app/.env" ||
   fail "connect did not set the agent's own OPENAI_API_KEY aside"
 grep -q "^OPENAI_BASE_URL=$server/v1$" "$app/.env" || fail "connect wrote the wrong OPENAI_BASE_URL"
 expect_connected planner waiting "after connect"
+expect_status planner waiting "after connect"
 
 echo "Restarting LangGraph so it reads the new .env ..."
 kill "$langgraph_pid"
@@ -174,10 +188,12 @@ grep -qx 'Bearer sk-nasiko-platform' "$work/upstream.log" ||
   fail "the model call did not come through Nasiko (upstream saw: $(cat "$work/upstream.log"))"
 echo "ok: planner's model call went through Nasiko"
 expect_connected planner yes "after a routed call"
+expect_status planner on "after a routed call"
 
 nasiko disconnect planner
 cmp -s "$app/.env" "$work/env.before" || fail "disconnect did not restore $app/.env"
 echo "ok: disconnect restored .env"
 expect_connected planner no "after disconnect"
+expect_status planner off "after disconnect"
 
 echo "PASS: agents registered, LLM routing connected and disconnected"

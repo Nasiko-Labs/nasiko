@@ -2374,6 +2374,7 @@ pub fn print_overview() -> Result<()> {
     println!("Coding agents:");
     print_agent_table(&views);
     let cli = cli_name();
+    integration::print_discovered_a2a_agents();
     let pending = integration::pending_event_count()?;
     if pending > 0 {
         println!(

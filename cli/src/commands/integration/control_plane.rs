@@ -54,7 +54,8 @@ pub fn installation_binding() -> Result<InstallationBinding> {
     })
 }
 
-/// Seconds a registration call from `status` may take; `status` never waits on a slow server.
+/// Seconds a discovered-agent call may take, so neither `agents discover` nor `status` waits on
+/// a slow server.
 const DISCOVERY_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// One A2A agent as the control plane registered it.
@@ -92,6 +93,39 @@ pub fn register_discovered(
         "/agents/discovered",
         &json!({"machine": machine, "agents": agents}),
     )?;
+    Ok(Some(response.agents))
+}
+
+/// One A2A agent the cluster has registered from this machine, as `status` shows it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct ListedA2aAgent {
+    /// The card's `name`, as last reported.
+    pub card_name: String,
+    pub id: uuid::Uuid,
+    /// `registered` while the machine's last report included it, `stopped` once one did not.
+    pub status: String,
+    /// When the router last handled an LLM call made with this agent's key.
+    pub last_llm_call_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ListedA2aAgents {
+    agents: Vec<ListedA2aAgent>,
+}
+
+/// The A2A agents the active cluster has registered from `machine`, as the last discovery left
+/// them. `None` when not logged in.
+pub fn list_discovered(machine: &str) -> Result<Option<Vec<ListedA2aAgent>>> {
+    let (_, entry) = crate::config::active_cluster()?;
+    if entry.token.is_none() {
+        return Ok(None);
+    }
+    let client =
+        crate::api::Client::from_cluster_entry_with_timeout(&entry, Some(DISCOVERY_SYNC_TIMEOUT));
+    let response: ListedA2aAgents = client.get_json(&format!(
+        "/agents/discovered?machine={}",
+        crate::api::urlencode(machine)
+    ))?;
     Ok(Some(response.agents))
 }
 

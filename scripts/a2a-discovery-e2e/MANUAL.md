@@ -7,7 +7,7 @@ your dev database are not touched.
 
 To run it all unattended instead: `just infra && just test-discovery`.
 
-## 0. Once: infra, binaries, scratch folder
+## 0. Once: infra, UI, binaries, scratch folder
 
 Run from the repo's `oss/` folder.
 
@@ -16,6 +16,7 @@ export PYTHON=${PYTHON:-python3}
 "$PYTHON" -c 'import sys; assert sys.version_info >= (3, 10), "need Python 3.10+, got " + sys.version'
 
 just infra
+(cd .. && just build-ui)
 cargo build -p nasiko -p nasiko-server
 
 export OSS=$PWD
@@ -30,8 +31,10 @@ LangGraph needs Python 3.10 or newer, and macOS's own `python3` is 3.9: if the c
 `brew install python@3.12` and `export PYTHON=$(brew --prefix python@3.12)/bin/python3.12`
 first (`just test-discovery` reads `PYTHON` too).
 
-`just infra` starts Postgres, Redis and S3 in containers. `$T` is the scratch folder (agent,
-virtualenv, logs, CLI home). `nasiko` is now a shell function that runs the freshly built CLI
+`just infra` starts Postgres, Redis and S3 in containers, plus the trace collector, Tempo and
+Loki the control plane reads calls from. `just build-ui` (from the repo root; it needs Node)
+builds the web UI the server embeds; without it the control plane shows "UI not built". `$T` is
+the scratch folder (agent, virtualenv, logs, CLI home). `nasiko` is now a shell function that runs the freshly built CLI
 with the scratch `HOME`. Keep this terminal open for every step below.
 
 ## 1. A LangGraph agent that calls a model
@@ -42,8 +45,6 @@ with the scratch `HOME`. Keep this terminal open for every step below.
 
 cp -R "$OSS/scripts/a2a-discovery-e2e/langgraph" "$T/app"
 cd "$T/app"
-git init -q
-printf '.env\n.langgraph_api/\n__pycache__/\n' > .gitignore
 printf 'OPENAI_API_KEY=sk-agent-own-key\nKEEP_ME=1\n' > .env
 cp .env "$T/env.before"
 
@@ -85,12 +86,17 @@ DATABASE_URL=postgres://nasiko:nasiko@localhost:5432/nasiko_manual REDIS_URL=red
   JWT_SECRET=manual-jwt-secret-0123456789abcdef AGENT_JWT_SECRET=manual-agent-secret-0123456789 \
   ADMIN_USERNAME=admin ADMIN_PASSWORD=manual-admin CP_BIND=127.0.0.1:18080 \
   AGENT_RUNTIME=simulated OPENAI_API_BASE=http://127.0.0.1:9911 PLATFORM_OPENAI_API_KEY=sk-nasiko-platform \
+  OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 TEMPO_URL=http://localhost:3200 LOKI_URL=http://localhost:3100 \
+  TRACE_USAGE_SYNC_SECS=10 \
   "$TARGET/debug/nasiko-server" > "$T/server.log" 2>&1 &
 echo $! > "$T/server.pid"
 sleep 10 && curl -s localhost:18080/health; echo
 ```
 
-With podman, use `podman compose` in the `psql` line. Port 9911 and 18080 must be free.
+With podman, use `podman compose` in the `psql` line. Port 9911 and 18080 must be free. The
+`OTEL_*`, `TEMPO_URL` and `LOKI_URL` lines point the server at the collector, Tempo and Loki that
+`just infra` runs, which turns on observability; `TRACE_USAGE_SYNC_SECS=10` makes the control
+plane pick up calls within 10 s instead of 2 minutes.
 
 Log the scratch CLI in, without the password prompt:
 
@@ -108,7 +114,14 @@ nasiko agents discover
 ```
 
 Logged in now, so discovery also registers `planner` and `writer` with the server. CONNECTED
-is still `no`. The server has them:
+is still `no`. `status` now shows them too, read back from the server (it probes nothing):
+
+```sh
+nasiko status
+```
+
+Expect, after the coding agents, an `A2A agents:` section listing `planner` and `writer` with
+LLM ROUTING `off`. The server has them:
 
 ```sh
 docker compose -f "$OSS/docker-compose.infra.yml" exec -T postgres \
@@ -117,33 +130,24 @@ docker compose -f "$OSS/docker-compose.infra.yml" exec -T postgres \
 
 Expect `planner` and `writer`, status `registered`, `discovered_on` your Mac's name.
 
-## 5. A `.env` git would commit is never written
-
-```sh
-printf '.langgraph_api/\n__pycache__/\n' > "$T/app/.gitignore"
-nasiko connect planner --yes
-diff "$T/env.before" "$T/app/.env" && echo "untouched"
-nasiko disconnect planner
-printf '.env\n.langgraph_api/\n__pycache__/\n' > "$T/app/.gitignore"
-```
-
-Expect `Not writing a file for planner: git does not ignore …`, then the variables to set by
-hand, and `untouched`.
-
-## 6. Connect
+## 5. Connect
 
 ```sh
 nasiko connect planner
 cat "$T/app/.env"
 nasiko agents discover
+nasiko status
 ```
 
-`connect` names the file and asks before writing. In `.env`, expect your own `OPENAI_API_KEY`
-line commented out as `# nasiko-off: …`, and a block between `# >>> nasiko` and
-`# <<< nasiko` with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and this agent's key.
-`planner`'s CONNECTED is `waiting`: LangGraph has not reread `.env` yet.
+`connect` names the file it will write (here the agent's existing `.env`) and asks first; after
+writing it says the file now holds this agent's Nasiko key, so keep it out of version control. In
+`.env`, expect your own `OPENAI_API_KEY` line commented out as `# nasiko-off: …`, and a block
+between `# >>> nasiko` and `# <<< nasiko` with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and
+this agent's key.
+`planner`'s CONNECTED is `waiting`, and `status` shows its LLM ROUTING `waiting`: LangGraph has
+not reread `.env` yet.
 
-## 7. Restart the agent; a call goes through Nasiko
+## 6. Restart the agent; a call goes through Nasiko
 
 ```sh
 kill $(cat "$T/langgraph.pid"); sleep 3
@@ -156,11 +160,47 @@ curl -s -X POST localhost:2024/runs/wait -H 'content-type: application/json' \
   -d '{"assistant_id":"planner","input":{"messages":[{"role":"user","content":"hi"}]}}' | grep -o '"routed"'
 cat "$T/upstream.log"
 nasiko agents discover
+nasiko status
 ```
 
 Expect `"routed"` (the stand-in's reply), `Bearer sk-nasiko-platform` in the upstream log (the
-call went through Nasiko, which used its own key, never the agent's), and `planner` CONNECTED
-`yes`.
+call went through Nasiko, which used its own key, never the agent's), `planner` CONNECTED `yes`,
+and LLM ROUTING `on` in `status`.
+
+## 7. See the call in the control plane
+
+Open http://127.0.0.1:18080 and log in as `admin` / `manual-admin`. In the sidebar:
+
+- **TokenOps → Monitor**: within 10 s of the call, the summary reads "planner drove 100% of it",
+  Operations is 1, Tokens is 18 (the stand-in's 11 in + 7 out) and Active agents is 1 of 2.
+  Further down, `planner` is the top agent under Highest spend. Use the **Agent** filter at the
+  top to look at `planner` alone. With no call yet it shows nothing: it only lists agents that
+  spent.
+- **Connect → LLM router**: the Agents tab lists `planner` and `writer`. `planner`'s
+  "Spend (30 d, router)" is `<$0.01 · 1 calls`; `writer` says "No routed calls". This page reads
+  the router's own log, so it updates at once.
+- **Agents**: `planner` and `writer` are in the catalog as "Not deployed": Nasiko knows them
+  but never runs or calls them.
+
+Two places that stay empty for these agents, as expected:
+
+- **Observe → Sessions** lists conversations Nasiko carried (its chat and agent proxy); this
+  agent called the router directly.
+- The **View traces** drill-down on Monitor says "Trace drill-down needs a newer nasiko-server":
+  it calls `/api/observability/finops/top-traces`, which the server does not have yet. That is
+  the same for every agent today.
+
+The router also records each call as a `gen_ai.chat` span (model, provider, tokens, the agent's
+id) and exports it to Tempo. There is no UI for raw spans in this setup; to see one, query
+Tempo's API with the agent's id:
+
+```sh
+ID=$(docker compose -f "$OSS/docker-compose.infra.yml" exec -T postgres \
+  psql -U nasiko -d nasiko_manual -tAc "select id from agents where name = 'planner'")
+curl -sG localhost:3200/api/search --data-urlencode "q={ span.gen_ai.agent.id = \"$ID\" }"
+```
+
+That returns the trace IDs; `curl -s localhost:3200/api/traces/<traceID>` shows one in full.
 
 ## 8. Disconnect
 
@@ -168,9 +208,10 @@ call went through Nasiko, which used its own key, never the agent's), and `plann
 nasiko disconnect planner
 diff "$T/env.before" "$T/app/.env" && echo "restored"
 nasiko agents discover
+nasiko status
 ```
 
-Expect `restored` (byte for byte) and `planner` CONNECTED `no`.
+Expect `restored` (byte for byte), `planner` CONNECTED `no`, and LLM ROUTING `off` in `status`.
 
 ## 9. Clean up
 

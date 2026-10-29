@@ -4,6 +4,7 @@
 //!   - POST /api/agents/discovered — registers a machine's running agents from their cards,
 //!     keeps one row per agent across reports, marks agents no longer reported `stopped`, and
 //!     never makes them `running` (so nothing routes chat to them)
+//!   - GET /api/agents/discovered — reads a machine's agents back, as `nasiko status` shows them
 //!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
 //!     owner, after which registration reports when it last made a call, and FinOps counts it
@@ -152,6 +153,73 @@ async fn a_machines_agents_are_registered_kept_and_marked_stopped() {
     server.cleanup().await;
 }
 
+async fn listed(server: &TestServer, user: Uuid, username: &str, machine: &str) -> Value {
+    let response = common::as_member(
+        server
+            .client
+            .get(server.url("/api/agents/discovered"))
+            .query(&[("machine", machine)]),
+        &user.to_string(),
+        username,
+    )
+    .send()
+    .await
+    .expect("list discovered agents");
+    assert_eq!(response.status(), 200);
+    response.json().await.expect("listing body")
+}
+
+#[tokio::test]
+#[serial]
+async fn a_machines_agents_are_listed_back_with_their_status() {
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "disc-list").await;
+    let other = seed_user(&server, "disc-list-other").await;
+    report_ok(
+        &server,
+        user,
+        "disc-list",
+        "laptop",
+        &[crew_card(), planner_card()],
+    )
+    .await;
+    report_ok(&server, user, "disc-list", "laptop", &[crew_card()]).await;
+    report_ok(&server, user, "disc-list", "desktop", &[planner_card()]).await;
+    report_ok(&server, other, "disc-list-other", "laptop", &[crew_card()]).await;
+
+    let laptop = listed(&server, user, "disc-list", "laptop").await;
+
+    // Only this user's agents on this machine, the one no longer reported marked stopped.
+    let agents = laptop["agents"].as_array().expect("agents");
+    let summary: Vec<(&str, &str)> = agents
+        .iter()
+        .map(|a| {
+            (
+                a["card_name"].as_str().unwrap(),
+                a["status"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [("crew-researcher", "registered"), ("planner", "stopped")]
+    );
+    assert!(agents[0]["last_llm_call_at"].is_null());
+    assert!(agents[0]["updated_at"].is_string());
+
+    let missing = common::as_member(
+        server.client.get(server.url("/api/agents/discovered")),
+        &user.to_string(),
+        "disc-list",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(missing.status(), 400);
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn the_same_agent_on_two_machines_is_two_agents() {
@@ -276,9 +344,11 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
     }
     assert_eq!(billed_to, Some(user));
 
-    // The next report shows the call, which is what `nasiko status` reads as LLM routing: on.
+    // The next report shows the call, which is what the CLI reads as LLM routing: on.
     let after = report_ok(&server, user, "disc-routing", "laptop", &[crew_card()]).await;
     assert!(!entry(&after, "crew-researcher")["last_llm_call_at"].is_null());
+    let listing = listed(&server, user, "disc-routing", "laptop").await;
+    assert!(!listing["agents"][0]["last_llm_call_at"].is_null());
 
     // FinOps reads `trace_usage`; a direct call reaches it through the direct-usage sync.
     nasiko_server::observability::trace_materializer::sync_direct_token_usage(&server.db)
