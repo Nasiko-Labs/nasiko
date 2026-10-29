@@ -150,7 +150,7 @@ pub fn pending_event_count() -> Result<usize> {
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 pub use a2a::DiscoveredAgent as A2aAgent;
-pub use a2a::env_file::EnvTarget;
+pub use a2a::env_file::{AgentFramework, EnvTarget};
 pub use control_plane::{ListedA2aAgent, RegisteredA2aAgent};
 
 /// The A2A agents running on this machine, and what discovery could not look at.
@@ -512,11 +512,11 @@ pub fn select_a2a_agent(target: &str, running: &RunningA2aAgents) -> Result<Opti
                 .iter()
                 .enumerate()
                 .filter(|(other, copy)| *other != index && copy.name == agent.name)
-                .map(|(_, copy)| copy_line(copy, &catalog))
+                .map(|(_, copy)| format!("  {}", copy_line(copy, &catalog)))
                 .collect();
             if !others.is_empty() {
                 term::print_info(&format!(
-                    "Connecting {}. Other agents named {} run here:\n{}",
+                    "Connecting {}\nOther agents named {} run here:\n{}",
                     copy_line(agent, &catalog),
                     agent.name,
                     others.join("\n")
@@ -527,7 +527,7 @@ pub fn select_a2a_agent(target: &str, running: &RunningA2aAgents) -> Result<Opti
         Selection::Ambiguous(copies) => {
             let lines: Vec<String> = copies
                 .iter()
-                .map(|index| copy_line(&agents[*index], &catalog))
+                .map(|index| format!("  {}", copy_line(&agents[*index], &catalog)))
                 .collect();
             bail!(
                 "{} agents are named {target}; name one by its catalog name or card URL:\n{}",
@@ -553,7 +553,7 @@ fn copy_line(agent: &A2aAgent, catalog: &[CatalogEntry]) -> String {
         a2a::EndpointOrigin::Process { pid: None, .. } => None,
     };
     format!(
-        "  {}  {}{}",
+        "{}  {}{}",
         a2a::printable(name),
         agent.card_url,
         folder
@@ -636,24 +636,41 @@ fn select(target: &str, agents: &[A2aAgent], catalog: &[CatalogEntry]) -> Select
 }
 
 /// What `connect` does for one running A2A agent: its catalog identity, the variables that
-/// route its LLM calls through Nasiko, and where they go.
+/// route its LLM calls through Nasiko and give it the MCP gateway, and where they go.
 pub struct A2aConnection {
     pub agent_id: uuid::Uuid,
     pub card_name: String,
     /// Its catalog name.
     pub name: String,
     pub vars: Vec<(&'static str, String)>,
+    /// Whether `vars` include the MCP gateway's.
+    pub mcp: McpSetup,
+    /// The framework it runs on, when known, for showing how its code opens the gateway.
+    pub framework: Option<a2a::env_file::AgentFramework>,
     /// The agent's working folder, when known.
     pub folder: Option<std::path::PathBuf>,
     /// The file to write them to, or why the user must set them.
     pub target: EnvTarget,
 }
 
-/// Register the running agents, then prepare `agent`'s connection: its key and the file
-/// decided from its process (see [`a2a::env_file`]).
+/// Whether `connect` gives an A2A agent the MCP gateway, as a deployed agent has it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpSetup {
+    /// `--no-mcp`.
+    NotRequested,
+    /// The credential could not be minted (an older control plane, say); LLM routing goes on.
+    Unavailable(String),
+    /// Its `MCP_GATEWAY_*` variables are in `vars`.
+    Added,
+}
+
+/// Register the running agents, then prepare `agent`'s connection: its LLM key, its MCP
+/// gateway credential when `with_mcp`, and the file decided from its process (see
+/// [`a2a::env_file`]).
 pub fn prepare_a2a_connection(
     agent: &A2aAgent,
     running: &RunningA2aAgents,
+    with_mcp: bool,
 ) -> Result<A2aConnection> {
     if let Err(issues) = &agent.card {
         let issues: Vec<String> = issues.iter().map(ToString::to_string).collect();
@@ -671,6 +688,21 @@ pub fn prepare_a2a_connection(
             )
         })?;
     let (key, cluster_url) = control_plane::routing_key(entry.id)?;
+    let mut vars = a2a::env_file::routing_vars(&cluster_url, &key);
+    let mcp = if with_mcp {
+        match control_plane::mcp_token(entry.id) {
+            Ok(token) => {
+                vars.extend(a2a::env_file::mcp_vars(&cluster_url, &token));
+                McpSetup::Added
+            }
+            Err(error) => McpSetup::Unavailable(
+                crate::commands::coding_agent_router::one_line_warning(&error),
+            ),
+        }
+    } else {
+        McpSetup::NotRequested
+    };
+    let mut framework = None;
     let (folder, target) = match &agent.origin {
         a2a::EndpointOrigin::Docker { container } => (
             None,
@@ -684,6 +716,7 @@ pub fn prepare_a2a_connection(
         ),
         a2a::EndpointOrigin::Process { pid: Some(pid), .. } => {
             let facts = a2a::process::inspect(*pid);
+            framework = a2a::env_file::framework_of(&facts);
             let target = match a2a::env_file::locate(&facts) {
                 EnvTarget::File(file) => {
                     let folder = facts.cwd.clone().unwrap_or_default();
@@ -701,7 +734,9 @@ pub fn prepare_a2a_connection(
         agent_id: entry.id,
         card_name: agent.name.clone(),
         name: entry.name.clone(),
-        vars: a2a::env_file::routing_vars(&cluster_url, &key),
+        vars,
+        mcp,
+        framework,
         folder,
         target,
     })
@@ -734,6 +769,7 @@ pub fn save_a2a_connection(connection: &A2aConnection, file: Option<(&Path, &str
             card_name: connection.card_name.clone(),
             name: connection.name.clone(),
             file: file.map(|(file, _)| file.to_path_buf()),
+            mcp: connection.mcp == McpSetup::Added,
         },
     );
     connections.save()
@@ -764,8 +800,15 @@ pub fn disconnect_a2a_agent(name: &str) -> Result<Option<String>> {
         },
         None => "Remove the Nasiko variables you set for it".to_string(),
     };
+    let had_mcp = connection.mcp;
     connections.agents.remove(&id);
     connections.save()?;
+    if had_mcp && let Err(error) = control_plane::revoke_mcp_token(id) {
+        term::print_warning(&format!(
+            "failed to revoke its MCP gateway credential: {}",
+            crate::commands::coding_agent_router::one_line_warning(&error)
+        ));
+    }
     Ok(Some(message))
 }
 
@@ -1346,6 +1389,7 @@ mod tests {
                     card_name: "research-crew".into(),
                     name: "research-crew".into(),
                     file: None,
+                    mcp: false,
                 },
             );
             assert_eq!(llm_routing_state(&agent, &[entry], &connected), state);
@@ -1382,6 +1426,7 @@ mod tests {
                 card_name: "planner".into(),
                 name: "planner".into(),
                 file: None,
+                mcp: false,
             },
         );
 

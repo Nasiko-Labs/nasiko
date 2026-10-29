@@ -2,13 +2,15 @@
 # End-to-end check of local A2A agents, against a real CrewAI agent and a real LangGraph server.
 #
 # 1. Discovery: `nasiko agents discover` lists every agent in its table (no server needed).
-# 2. Registration + LLM routing: against a real nasiko-server (needs `just infra`), discovery
-#    registers the agents (two copies of the LangGraph app, in two folders, are two agents);
-#    `nasiko connect` writes one copy's `.env` and leaves the other's alone; after a restart on
-#    another port it is still the same agent, its model call goes through Nasiko, shows up in
-#    Sessions, and discovery shows it CONNECTED `yes`; `nasiko disconnect` restores the `.env`
-#    exactly. Throughout, `nasiko status` shows what discovery registered, read back from the
-#    server, without probing anything itself.
+# 2. Registration, LLM routing and MCP: against a real nasiko-server (needs `just infra`),
+#    discovery registers the agents (two copies of the LangGraph app, in two folders, are two
+#    agents); `nasiko connect` writes one copy's `.env` and leaves the other's alone; the code it
+#    prints for LangGraph and for CrewAI reaches an MCP server's tool through the gateway with
+#    the variables it wrote; restarted on another port it is still the same agent, its model
+#    call goes through Nasiko, shows up in Sessions, and discovery shows it CONNECTED `yes`;
+#    `nasiko disconnect` restores the `.env` exactly and revokes the MCP credential. Throughout,
+#    `nasiko status` shows what discovery registered, read back from the server, without
+#    probing anything itself.
 #
 # Pass --discovery-only to skip step 2. The first run installs both frameworks into
 # virtualenvs under .work/ (needs network); later runs reuse them. Everything runs on free
@@ -34,7 +36,7 @@ venv() { # venv <name> <packages...>; reinstalls when the package list changes
   echo "$wanted" > "$dir/.packages"
 }
 venv crewai 'crewai[a2a]==1.15.28' uvicorn
-venv langgraph 'langgraph-cli[inmem]==0.4.37' 'langchain-openai==1.7.3'
+venv langgraph 'langgraph-cli[inmem]==0.4.37' 'langchain-openai==1.7.3' 'langchain-mcp-adapters==0.3.2'
 
 free_port() {
   "$python" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
@@ -134,7 +136,7 @@ DATABASE_URL="postgres://nasiko:nasiko@localhost:5432/$db" REDIS_URL=redis://loc
   JWT_SECRET=discovery-e2e-jwt-secret-0123456789 AGENT_JWT_SECRET=discovery-e2e-agent-secret-0123 \
   ADMIN_USERNAME=admin ADMIN_PASSWORD=discovery-e2e-admin CP_BIND="127.0.0.1:$server_port" \
   AGENT_RUNTIME=simulated OPENAI_API_BASE="http://127.0.0.1:$upstream_port" \
-  PLATFORM_OPENAI_API_KEY=sk-nasiko-platform NO_PROXY='*' no_proxy='*' \
+  PLATFORM_OPENAI_API_KEY=sk-nasiko-platform MCP_ALLOW_PRIVATE_URLS=true NO_PROXY='*' no_proxy='*' \
   "$target/debug/nasiko-server" > "$work/server.log" 2>&1 &
 pids+=($!)
 wait_for server "$server/health"
@@ -193,6 +195,36 @@ grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$app/.env" ||
   fail "connect did not set the agent's own OPENAI_API_KEY aside"
 grep -q "^OPENAI_BASE_URL=$server/v1$" "$app/.env" || fail "connect wrote the wrong OPENAI_BASE_URL"
 cmp -s "$copy/.env" "$work/env.before" || fail "connect changed the other copy's .env"
+
+# MCP: connect wrote the gateway's variables too. With a connector enabled for the agent, the
+# code connect prints for each framework reaches its tool through the gateway, as the owner.
+grep -q '^MCP_GATEWAY_TOKEN=' "$app/.env" || fail "connect did not write the MCP gateway variables"
+mcp_port=$(free_port)
+"$work/venv-langgraph/bin/python" "$here/mock_mcp.py" "$mcp_port" > "$work/mcp.log" 2>&1 &
+pids+=($!)
+for _ in $(seq 30); do curl -s --noproxy '*' -o /dev/null "http://127.0.0.1:$mcp_port/mcp" && break; sleep 0.5; done
+api() { # api <method> <path> [json]: the control plane's API as the logged-in admin
+  curl -sf --noproxy '*' -X "$1" "$server/api$2" -H "authorization: Bearer $token" \
+    -H 'content-type: application/json' ${3:+-d "$3"}
+}
+token=$("$python" -c 'import json, sys; c = json.load(open(sys.argv[1])); print(c["clusters"][c["active"]]["token"])' \
+  "$HOME_E2E/.nasiko/config.json")
+planner_id=$("$python" -c 'import json, sys; print(next(id for id, c in json.load(open(sys.argv[1]))["agents"].items() if c["name"] == sys.argv[2]))' \
+  "$HOME_E2E/.nasiko/integrations/a2a-connections.json" "$planner")
+connector=$(api POST /mcp/connectors "{\"name\": \"e2e-calc\", \"url\": \"http://127.0.0.1:$mcp_port/mcp\"}" |
+  "$python" -c 'import json, sys; body = json.load(sys.stdin); print((body.get("data") or body)["connector_id"])') ||
+  fail "could not register the e2e MCP server (see $work/server.log)"
+# As its MCP tab does: turn the connector on for the agent, then list its tools.
+api PUT "/mcp/agents/$planner_id/connectors/$connector" '{"enabled": true}' > /dev/null ||
+  fail "could not enable the e2e MCP server for $planner"
+api GET "/mcp/agents/$planner_id/connectors/$connector/tools" | grep -q '"add"' ||
+  fail "the e2e MCP server's tools are not listed for $planner"
+for framework in langgraph crewai; do
+  "$work/venv-$framework/bin/python" "$here/mcp_$framework.py" "$app/.env" > "$work/mcp-$framework.log" 2>&1 || true
+  [ "$(tail -1 "$work/mcp-$framework.log")" = 5 ] ||
+    fail "the $framework MCP snippet did not reach the tool; see $work/mcp-$framework.log"
+  echo "ok: the $framework MCP snippet calls a tool through the gateway"
+done
 expect_connected "$planner" waiting "after connect"
 expect_connected "$planner_copy" no "after connecting the other copy"
 expect_status "$planner" waiting "after connect"
@@ -215,8 +247,6 @@ grep -qx 'Bearer sk-nasiko-platform' "$work/upstream.log" ||
   fail "the model call did not come through Nasiko (upstream saw: $(cat "$work/upstream.log"))"
 echo "ok: planner's model call went through Nasiko"
 # The call is recorded as a turn of planner's session, off the request path, so poll briefly.
-token=$("$python" -c 'import json, sys; c = json.load(open(sys.argv[1])); print(c["clusters"][c["active"]]["token"])' \
-  "$HOME_E2E/.nasiko/config.json")
 sessions_of_planner() {
   curl -sf --noproxy '*' "$server/api/observability/session/list" -H "authorization: Bearer $token" |
     "$python" -c 'import json, sys; print(sum(s.get("agent_id") == sys.argv[1] for s in json.load(sys.stdin)["data"]["sessions"]))' "$planner"
@@ -228,9 +258,15 @@ expect_connected "$planner" yes "after a routed call"
 expect_connected "$planner_copy" no "while the other copy routes"
 expect_status "$planner" on "after a routed call"
 
+mcp_token=$(sed -n 's/^MCP_GATEWAY_TOKEN=//p' "$app/.env")
 nasiko disconnect "$planner"
 cmp -s "$app/.env" "$work/env.before" || fail "disconnect did not restore $app/.env"
 echo "ok: disconnect restored .env"
+status=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST "$server/api/mcp" \
+  -H "authorization: Bearer $mcp_token" -H 'content-type: application/json' \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}')
+[ "$status" = 401 ] || fail "disconnect left the MCP gateway credential working (HTTP $status)"
+echo "ok: disconnect revoked the MCP gateway credential"
 expect_connected "$planner" no "after disconnect"
 expect_status "$planner" off "after disconnect"
 

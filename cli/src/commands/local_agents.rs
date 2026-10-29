@@ -2044,7 +2044,7 @@ pub fn connect_a2a(
 ) -> Result<()> {
     let prompter = prompter(options.yes);
     ensure_logged_in(prompter.as_ref())?;
-    let connection = integration::prepare_a2a_connection(agent, running)?;
+    let connection = integration::prepare_a2a_connection(agent, running, !options.no_mcp)?;
     let cli = cli_name();
     let name = quoted(&connection.card_name);
     let written = match &connection.target {
@@ -2076,6 +2076,7 @@ pub fn connect_a2a(
         print_variables_to_set(&connection);
         integration::save_a2a_connection(&connection, None)?;
     }
+    print_mcp_setup(&connection, written);
     println!(
         "\nRestart {} to apply. {} shows its LLM ROUTING as on after its first call.",
         connection.card_name,
@@ -2120,6 +2121,72 @@ fn print_variables_to_set(connection: &integration::A2aConnection) {
     );
     for (key, value) in &connection.vars {
         println!("  {key}={value}");
+    }
+}
+
+/// How the agent gets its MCP tools. The variables are in place (or were just shown), but
+/// unlike an LLM SDK, no agent framework opens an MCP client from the environment by itself:
+/// its code has to, once, so show how for its framework.
+fn print_mcp_setup(connection: &integration::A2aConnection, written: bool) {
+    match &connection.mcp {
+        integration::McpSetup::NotRequested => println!("\nMCP gateway: not requested"),
+        integration::McpSetup::Unavailable(reason) => term::print_warning(&format!(
+            "MCP gateway unavailable ({reason}); LLM routing is connected, MCP tools are not"
+        )),
+        integration::McpSetup::Added => {
+            let place = if written {
+                "are in its environment file"
+            } else {
+                "are among the variables above"
+            };
+            println!(
+                "\nMCP gateway: MCP_GATEWAY_URL, MCP_GATEWAY_TOKEN and MCP_GATEWAY_CONNECT_URL {place}, \
+                 as a Nasiko-deployed agent has them. Its code opens the MCP client; {}",
+                mcp_snippet(connection.framework)
+            );
+            println!(
+                "Choose its tools in Nasiko: Agents → {} → MCP (connectors are off until enabled).",
+                connection.name
+            );
+        }
+    }
+}
+
+/// How code on `framework` opens Nasiko's MCP gateway from the `MCP_GATEWAY_*` variables.
+fn mcp_snippet(framework: Option<integration::AgentFramework>) -> &'static str {
+    match framework {
+        Some(integration::AgentFramework::LangGraph) => {
+            "with langchain-mcp-adapters:
+
+    import os
+    from langchain_mcp_adapters.client import MultiServerMCPClient
+
+    mcp = MultiServerMCPClient({\"nasiko\": {
+        \"transport\": \"streamable_http\",
+        \"url\": os.environ[\"MCP_GATEWAY_URL\"],
+        \"headers\": {\"Authorization\": f\"Bearer {os.environ['MCP_GATEWAY_TOKEN']}\"},
+    }})
+    tools = await mcp.get_tools()  # pass them to your graph's model or ToolNode
+"
+        }
+        Some(integration::AgentFramework::CrewAi) => {
+            "with CrewAI's own MCP support:
+
+    import os
+    from crewai.mcp import MCPServerHTTP
+
+    nasiko = MCPServerHTTP(
+        url=os.environ[\"MCP_GATEWAY_URL\"],
+        headers={\"Authorization\": f\"Bearer {os.environ['MCP_GATEWAY_TOKEN']}\"},
+    )
+    agent = Agent(..., mcps=[nasiko])
+"
+        }
+        None => {
+            "point any MCP client (streamable HTTP) at MCP_GATEWAY_URL with the header
+`Authorization: Bearer $MCP_GATEWAY_TOKEN`, or at MCP_GATEWAY_CONNECT_URL when it takes only a URL.
+"
+        }
     }
 }
 
@@ -4247,5 +4314,37 @@ mod tests {
         assert_eq!(names(&agents, &[0]), "a");
         assert_eq!(names(&agents, &[0, 1]), "a and b");
         assert_eq!(names(&agents, &[0, 1, 2]), "a, b and c");
+    }
+
+    #[test]
+    fn the_mcp_snippets_are_the_code_the_e2e_runs() {
+        // The e2e (`oss/scripts/a2a-discovery-e2e`) runs each snippet's code against a real
+        // gateway; this keeps what `connect` prints the same code.
+        for (framework, script) in [
+            (
+                integration::AgentFramework::LangGraph,
+                include_str!("../../../scripts/a2a-discovery-e2e/mcp_langgraph.py"),
+            ),
+            (
+                integration::AgentFramework::CrewAi,
+                include_str!("../../../scripts/a2a-discovery-e2e/mcp_crewai.py"),
+            ),
+        ] {
+            let printed: Vec<&str> = mcp_snippet(Some(framework))
+                .lines()
+                .map(str::trim)
+                .collect();
+            let ran = script
+                .split("# ── as printed by `nasiko connect` ──")
+                .nth(1)
+                .and_then(|rest| rest.split("# ──").next())
+                .expect("the e2e script marks the printed code");
+            for line in ran.lines().map(str::trim).filter(|line| !line.is_empty()) {
+                assert!(
+                    printed.contains(&line),
+                    "{framework:?} snippet lacks: {line}"
+                );
+            }
+        }
     }
 }

@@ -159,3 +159,26 @@ pub fn routing_key(agent_id: uuid::Uuid) -> Result<(String, String)> {
         client.post_json_quiet(&format!("/agents/{agent_id}/llm-token"), &json!({}))?;
     Ok((response.data.token, entry.url))
 }
+
+/// A new MCP gateway credential for a registered A2A agent (replacing its previous one), the
+/// same credential a local coding agent gets from `connect`.
+pub fn mcp_token(agent_id: uuid::Uuid) -> Result<String> {
+    let (_, entry) = crate::config::active_cluster()?;
+    let client = crate::api::Client::from_cluster_entry_with_timeout(
+        &entry,
+        Some(crate::commands::coding_agent_router::CP_CALL_TIMEOUT),
+    );
+    let response: KeyEnvelope =
+        client.post_json_quiet(&format!("/agents/{agent_id}/mcp-token"), &json!({}))?;
+    Ok(response.data.token)
+}
+
+/// Revoke a registered A2A agent's MCP gateway credential on the active cluster.
+pub fn revoke_mcp_token(agent_id: uuid::Uuid) -> Result<()> {
+    let (_, entry) = crate::config::active_cluster()?;
+    let client = crate::api::Client::from_cluster_entry_with_timeout(
+        &entry,
+        Some(crate::commands::coding_agent_router::CP_CALL_TIMEOUT),
+    );
+    client.delete(&format!("/agents/{agent_id}/mcp-token"))
+}

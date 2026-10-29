@@ -143,9 +143,41 @@ nasiko status
 writing it says the file now holds this agent's Nasiko key, so keep it out of version control. In
 `.env`, expect your own `OPENAI_API_KEY` line commented out as `# nasiko-off: …`, and a block
 between `# >>> nasiko` and `# <<< nasiko` with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and
-this agent's key.
+this agent's key, plus `MCP_GATEWAY_URL`, `MCP_GATEWAY_TOKEN` and `MCP_GATEWAY_CONNECT_URL`: the
+MCP gateway variables a Nasiko-deployed agent gets (`--no-mcp` leaves them out). Because no
+framework opens an MCP client from the environment on its own, `connect` also prints the few
+lines of LangGraph code that do (CrewAI agents get CrewAI's). Step 5b runs them.
 `planner`'s CONNECTED is `waiting`, and `status` shows its LLM ROUTING `waiting`: LangGraph has
 not reread `.env` yet.
+
+### 5b. MCP tools through Nasiko
+
+Give Nasiko an MCP server with one tool (`add`), let `planner` use it, then run the code
+`connect` printed against the variables it wrote:
+
+```sh
+"$T/venv/bin/pip" install -q 'langchain-mcp-adapters==0.3.2'
+"$T/venv/bin/python" "$OSS/scripts/a2a-discovery-e2e/mock_mcp.py" 9912 > "$T/mcp.log" 2>&1 &
+echo $! > "$T/mcp.pid"
+```
+
+The stand-in server is on your own machine, which Nasiko refuses to call unless the server was
+started with `MCP_ALLOW_PRIVATE_URLS=true`: add it to the server's line in step 3 and restart it
+for this step. Then, in the control plane:
+
+1. **Connect → MCP servers → Register server**: name `calc`, URL `http://127.0.0.1:9912/mcp`, no
+   auth.
+2. **Agents → planner → MCP**: switch `calc` on. Its tools appear (`add`), each `allow` or
+   `block`; there is no `ask` for an agent running outside Nasiko, since nothing could answer it.
+
+```sh
+"$T/venv/bin/python" "$OSS/scripts/a2a-discovery-e2e/mcp_langgraph.py" "$T/app/.env"
+```
+
+Expect `5`. Outside a Nasiko flow the gateway lists only its search and call tools, so the
+script finds `add` with `nasiko_search_tools` and runs it with `nasiko_call_tool`, as the agent's
+model would; the call runs as you, the agent's owner. LLM ROUTING stays `waiting`: a tool call
+is not an LLM call.
 
 Two copies of one app (the same agent names, served from two folders) are two agents. To see
 it, start a second copy on another port and discover again:
@@ -239,11 +271,13 @@ nasiko status
 ```
 
 Expect `restored` (byte for byte), `planner` CONNECTED `no`, and LLM ROUTING `off` in `status`.
+`disconnect` also revoked the agent's MCP gateway credential: the script from step 5b now fails
+with HTTP 401.
 
 ## 9. Clean up
 
 ```sh
-kill $(cat "$T/langgraph.pid" "$T/server.pid" "$T/mock.pid")
+kill $(cat "$T/langgraph.pid" "$T/server.pid" "$T/mock.pid" "$T/mcp.pid" 2>/dev/null)
 docker compose -f "$OSS/docker-compose.infra.yml" exec -T postgres \
   psql -U nasiko -d nasiko_dev -c 'DROP DATABASE nasiko_manual'
 rm -rf "$T"

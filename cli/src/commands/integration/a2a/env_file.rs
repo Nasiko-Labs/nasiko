@@ -67,6 +67,34 @@ pub fn routing_vars(cluster_url: &str, key: &str) -> Vec<(&'static str, String)>
     ]
 }
 
+/// The MCP gateway variables for an agent whose gateway credential is `token`, on the control
+/// plane at `cluster_url`: the names and forms a Nasiko-deployed agent gets
+/// (`nasiko_mcp_gateway::injector`), so code written for one runs unchanged on the other.
+pub fn mcp_vars(cluster_url: &str, token: &str) -> Vec<(&'static str, String)> {
+    let gateway = format!("{}/api/mcp", cluster_url.trim_end_matches('/'));
+    vec![
+        ("MCP_GATEWAY_URL", gateway.clone()),
+        ("MCP_GATEWAY_TOKEN", token.to_string()),
+        ("MCP_GATEWAY_CONNECT_URL", format!("{gateway}/s/{token}")),
+    ]
+}
+
+/// The agent framework the process `facts` describes runs, when it is one `connect` knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentFramework {
+    LangGraph,
+    CrewAi,
+}
+
+/// Which framework the agent run as `facts` uses, by the same signs [`locate`] reads.
+pub fn framework_of(facts: &ProcessFacts) -> Option<AgentFramework> {
+    let folder = facts.cwd.as_deref()?;
+    if langgraph_config(&facts.args, folder).is_some() {
+        return Some(AgentFramework::LangGraph);
+    }
+    crewai_package(&facts.site_packages).map(|_| AgentFramework::CrewAi)
+}
+
 /// The file the agent run as `facts` reads its variables from.
 pub fn locate(facts: &ProcessFacts) -> EnvTarget {
     let Some(folder) = facts.cwd.as_deref() else {
@@ -348,6 +376,42 @@ mod tests {
                 ("ANTHROPIC_API_URL", "https://cp.example".to_string()),
                 ("ANTHROPIC_API_KEY", "jwt".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn mcp_vars_are_the_ones_a_deployed_agent_gets() {
+        assert_eq!(
+            mcp_vars("https://cp.example/", "ngt_abc"),
+            vec![
+                ("MCP_GATEWAY_URL", "https://cp.example/api/mcp".to_string()),
+                ("MCP_GATEWAY_TOKEN", "ngt_abc".to_string()),
+                (
+                    "MCP_GATEWAY_CONNECT_URL",
+                    "https://cp.example/api/mcp/s/ngt_abc".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_framework_is_told_by_the_same_signs_as_the_env_file() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("langgraph.json"), "{}").unwrap();
+        let site_packages = dir.path().join(".venv/lib/python3.12/site-packages");
+        std::fs::create_dir_all(site_packages.join("crewai")).unwrap();
+
+        assert_eq!(
+            framework_of(&facts(dir.path(), &["/v/bin/langgraph", "dev"], &[])),
+            Some(AgentFramework::LangGraph)
+        );
+        assert_eq!(
+            framework_of(&facts(dir.path(), &["python", "main.py"], &[site_packages])),
+            Some(AgentFramework::CrewAi)
+        );
+        assert_eq!(
+            framework_of(&facts(dir.path(), &["python", "main.py"], &[])),
+            None
         );
     }
 

@@ -25,6 +25,9 @@ pub struct Connection {
     /// The file holding Nasiko's block, or `None` when the variables were shown instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<PathBuf>,
+    /// Whether `connect` minted it an MCP gateway credential, which `disconnect` revokes.
+    #[serde(default)]
+    pub mcp: bool,
 }
 
 impl Connections {
@@ -93,6 +96,7 @@ mod tests {
                 card_name: "Crew Researcher".into(),
                 name: "crew-researcher".into(),
                 file: Some(PathBuf::from("/work/crew/.env")),
+                mcp: true,
             },
         );
 
@@ -117,6 +121,7 @@ mod tests {
                     card_name: "Planner".into(),
                     name: name.into(),
                     file: None,
+                    mcp: false,
                 },
             );
         }

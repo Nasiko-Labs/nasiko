@@ -211,8 +211,9 @@ pub(crate) struct McpTokenEnvelope {
 /// The same credential a deployed container receives as `MCP_GATEWAY_TOKEN`
 /// at deploy time (`mcp::wiring::inject_agent_gateway_token`), minted here on
 /// demand for a local coding agent (Claude Code / Codex / OpenCode, bound via
-/// `nasiko connect`), which is never deployed and so never receives one
-/// automatically. Owner-only, and restricted to CLI-bound rows
+/// `nasiko connect`) or an A2A agent the CLI discovered on the user's machine
+/// (`discovered_on` set), neither of which is ever deployed and so never
+/// receives one automatically. Owner-only, and restricted to those rows
 /// (`coding_agent_integration_id` set): minting for a deployed agent would
 /// leave its running container(s) holding a token the row stops recognizing
 /// once the rotation grace window lapses, with no way to hand them the new
@@ -229,7 +230,7 @@ pub(crate) struct McpTokenEnvelope {
         (status = 200, description = "MCP gateway credential (plaintext, shown once)", body = McpTokenEnvelope),
         (status = 403, description = "Caller is not the agent owner"),
         (status = 404, description = "No such agent"),
-        (status = 409, description = "Not a CLI-bound coding-agent row — a deployed agent's credential rotates on redeploy instead"),
+        (status = 409, description = "Neither a CLI-bound coding-agent row nor a discovered A2A agent — a deployed agent's credential rotates on redeploy instead"),
     ),
 )]
 pub(crate) async fn issue_mcp_token(
@@ -245,16 +246,20 @@ pub(crate) async fn issue_mcp_token(
         return resp;
     }
 
-    match is_coding_agent(&state.db, agent_id).await {
-        Ok(true) => {}
-        Ok(false) => {
-            return (
-                StatusCode::CONFLICT,
-                "not a local coding agent: a deployed agent's credential rotates on redeploy",
-            )
-                .into_response();
-        }
+    let local = match is_coding_agent(&state.db, agent_id).await {
+        Ok(true) => true,
+        Ok(false) => match is_discovered_agent(&state.db, agent_id).await {
+            Ok(discovered) => discovered,
+            Err(resp) => return resp,
+        },
         Err(resp) => return resp,
+    };
+    if !local {
+        return (
+            StatusCode::CONFLICT,
+            "not a local coding agent or a discovered A2A agent: a deployed agent's credential rotates on redeploy",
+        )
+            .into_response();
     }
 
     let token = match nasiko_mcp_gateway::agent_tokens::mint(&state.db, agent_id).await {

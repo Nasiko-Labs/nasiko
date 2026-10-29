@@ -8,6 +8,8 @@
 //!   - Copies — two copies of one agent on a machine (one card name, two copy ids) are two
 //!     agents, and a row registered before copy ids is taken over by the first copy
 //!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
+//!   - POST /api/agents/{id}/mcp-token + /api/mcp — it gets an MCP gateway credential, and its
+//!     flow-less `tools/call` acts as its owner, as a local coding agent's does
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
 //!     owner, after which registration reports when it last made a call, and FinOps counts it
 //!   - Sessions — each routed call is a turn of the agent's one chat session
@@ -376,6 +378,51 @@ async fn two_copies_of_an_agent_on_one_machine_are_two_agents() {
     )
     .await;
     assert_eq!(bad.status(), 400);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_discovered_agent_gets_an_mcp_credential_and_calls_tools_as_its_owner() {
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "disc-mcp").await;
+    let registered = report_ok(&server, user, "disc-mcp", "laptop", &[crew_card()]).await;
+    let agent_id = entry(&registered, "crew-researcher")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Its owner mints it a gateway credential, as for a local coding agent.
+    let minted = common::as_member(
+        server
+            .client
+            .post(server.url(&format!("/api/agents/{agent_id}/mcp-token"))),
+        &user.to_string(),
+        "disc-mcp",
+    )
+    .json(&json!({}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(minted.status(), 200);
+    let minted: Value = minted.json().await.unwrap();
+    let token = minted["data"]["token"].as_str().expect("token").to_string();
+
+    // No traceparent: it runs outside Nasiko, so `tools/call` acts as its owner instead of
+    // being refused. The bogus tool is answered by the protocol layer, past the auth gate.
+    let call = server
+        .client
+        .post(server.url("/api/mcp"))
+        .bearer_auth(&token)
+        .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "some__tool", "arguments": {}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(call.status(), 200);
+    let body: Value = call.json().await.unwrap();
+    assert!(body.get("error").is_some(), "unknown tool: {body}");
 
     server.cleanup().await;
 }

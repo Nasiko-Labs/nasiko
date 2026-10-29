@@ -5,10 +5,11 @@
 //! by `mcp::wiring` and stored hashed in `agent_gateway_tokens`), and the user
 //! identity is resolved server-side — from the request's `traceparent` via the
 //! `flows` row + `flow_participants` check, or, for a CLI-bound local
-//! coding-agent row with no flow (or none that resolves), from the row's own
-//! owner instead — see docs/MCP_GATEWAY_AGENT_AUTH.md §2.4 rule 3b. This
-//! handler is thin — identity, usage tracking, flow events — all protocol
-//! logic lives in `nasiko_mcp_gateway::protocol`.
+//! coding-agent row or a discovered A2A agent's row with no flow (or none
+//! that resolves), from the row's own owner instead — see
+//! docs/MCP_GATEWAY_AGENT_AUTH.md §2.4 rule 3b. This handler is thin —
+//! identity, usage tracking, flow events — all protocol logic lives in
+//! `nasiko_mcp_gateway::protocol`.
 
 use axum::{
     Json,
@@ -24,6 +25,7 @@ use nasiko_mcp_gateway::types::codes;
 
 use crate::mcp::identity::deny;
 use crate::state::AppState;
+use crate::usage::TokenUsageBuilder;
 
 /// Agent-facing MCP JSON-RPC gateway. Generic `tools/list` / `tools/call`
 /// JSON-RPC 2.0; request and response bodies are protocol-defined, not
@@ -35,7 +37,8 @@ use crate::state::AppState;
 /// 2. `tools/list` (and initialize/ping) → allowed with agent-only identity
 /// 3. `tools/call` with no/unknown/dead-flow traceparent → 403
 /// 3b. …unless the agent's row is a CLI-bound local coding agent
-///     (`coding_agent_integration_id` set) — such a row is never
+///     (`coding_agent_integration_id` set) or an A2A agent the CLI discovered
+///     on the user's machine (`discovered_on` set) — such a row is never
 ///     dispatched through a flow, so a flow-less `tools/call` resolves to its
 ///     owner instead of 403 (`agent_owner`, below `dispatch`)
 /// 4. `tools/call` where the agent is not a recorded flow participant → 403
@@ -46,7 +49,7 @@ use crate::state::AppState;
     tag = "mcp",
     params(
         ("Authorization" = String, Header, description = "`Bearer <MCP_GATEWAY_TOKEN>` — the per-agent gateway credential injected into the container env at deploy time"),
-        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set) or a discovered A2A agent (`discovered_on` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
         ("MCP-Protocol-Version" = Option<String>, Header, description = "Negotiated MCP protocol version; an unsupported value is rejected with 400 on implemented methods"),
     ),
     request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
@@ -55,7 +58,7 @@ use crate::state::AppState;
         (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
         (status = 400, description = "Unsupported or undecodable `MCP-Protocol-Version` on a method this gateway implements"),
         (status = 401, description = "Missing/unknown/revoked gateway token"),
-        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row, which resolves to its owner instead), or identity store unavailable"),
+        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row or a discovered A2A agent, which resolves to its owner instead), or identity store unavailable"),
         (status = 413, description = "Request body over the configured `MCP_GATEWAY_MAX_BODY_BYTES` limit"),
     ),
 )]
@@ -94,7 +97,8 @@ pub async fn mcp_gateway(
 /// tool.
 ///
 /// That bound does NOT hold for a CLI-bound local coding-agent row
-/// (`coding_agent_integration_id` set): such a row has no
+/// (`coding_agent_integration_id` set) or a discovered A2A agent
+/// (`discovered_on` set, minted by `nasiko connect <agent>`): such a row has no
 /// flow to require, so a leaked connect URL for one CAN call tools —
 /// attributed to, and scoped to, that row's owner: exactly the connectors the
 /// owner can access (their own, plus anything shared to them) that are also
@@ -120,7 +124,7 @@ pub async fn mcp_gateway(
     tag = "mcp",
     params(
         ("token" = String, Path, description = "The per-agent `MCP_GATEWAY_TOKEN`, carried in the path for MCP clients that cannot set headers. Pre-composed as `MCP_GATEWAY_CONNECT_URL` in the container env."),
-        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set) or a discovered A2A agent (`discovered_on` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
         ("MCP-Protocol-Version" = Option<String>, Header, description = "Negotiated MCP protocol version; an unsupported value is rejected with 400 on implemented methods"),
     ),
     request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
@@ -129,7 +133,7 @@ pub async fn mcp_gateway(
         (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
         (status = 400, description = "Unsupported or undecodable `MCP-Protocol-Version` on a method this gateway implements"),
         (status = 401, description = "Unknown/revoked gateway token"),
-        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row, which resolves to its owner instead), or identity store unavailable"),
+        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row or a discovered A2A agent, which resolves to its owner instead), or identity store unavailable"),
         (status = 413, description = "Request body over the configured `MCP_GATEWAY_MAX_BODY_BYTES` limit"),
     ),
 )]
@@ -211,12 +215,10 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         .and_then(|v| v.to_str().ok());
 
     // Two doors onto the same tail:
-    //   - a coding-agent *session token* (NAS-839) carries {agent, user, session,
-    //     flow} in signed claims, so it needs neither the ngt_ lookup nor a
-    //     traceparent — the signature proves the user and agent, and the flow is
-    //     the claim or a later turn's flow that `attributed_flow` verified (owned
-    //     by that user, the agent a participant), so it is the verified flow for
-    //     everything downstream;
+    //   - a coding-agent *session token* (NAS-839) carries {agent, user, flow}
+    //     in signed claims, so it needs neither the ngt_ lookup nor a
+    //     traceparent — the signature is the proof of the binding, so the
+    //     claims' flow id is the verified flow for everything downstream;
     //   - otherwise the deploy-time ngt_ gateway token names the agent and the
     //     user is resolved from the request's traceparent + flow (the A2A path,
     //     docs/MCP_GATEWAY_AGENT_AUTH.md §2.4), with rule 3b for CLI-bound
@@ -224,8 +226,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     //
     // `verified_flow_id` travels alongside `user_id` (rather than being
     // re-derived from `traceparent` further down) because it's the one thing
-    // this function actually proved — by signature plus the ownership and
-    // participant check on the session path, or
+    // this function actually proved — by signature on the session path, or
     // against `flows`/`flow_participants` on the A2A path. The raw
     // `traceparent` a caller sends is not proof of anything on its own. On the
     // owner-fallback branch below, `user_id` did NOT come from a verified flow,
@@ -240,7 +241,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         Uuid,
         Option<String>,
         Option<String>,
-    ) = match try_session_identity(state, token, header_traceparent).await {
+    ) = match try_session_identity(state, token).await {
         SessionResolution::Session {
             agent_id,
             user_id,
@@ -271,8 +272,9 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             // Resolve the user identity. `tools/call` (rules 3+4) requires the
             // traceparent to name a live flow this agent was dispatched into —
             // the flow's user is the authorization subject — except for a
-            // CLI-bound local coding-agent row (rule 3b, `agent_owner` below),
-            // which has no flow to require and resolves to its owner instead.
+            // CLI-bound local coding-agent row or a discovered A2A agent (rule
+            // 3b, `agent_owner` below), which has no flow to require and
+            // resolves to its owner instead.
             // Read-only methods (initialize/ping/tools/list, rule 2) work
             // agent-only: the flow user when one resolves, else the agent's
             // owner (startup-time tool discovery happens outside any flow).
@@ -283,12 +285,14 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
                 Err(denial) => match agent_owner(state, agent_id).await {
                     // Deliberate policy (MCP_GATEWAY_AGENT_AUTH.md §5, rule
                     // 3b): a local coding agent — a row the CLI bound with
-                    // `coding_agent_integration_id` — is never dispatched
+                    // `coding_agent_integration_id` — or an A2A agent the CLI
+                    // discovered (`discovered_on`) is never dispatched
                     // through the proxy, so it never has a flow; it acts as
                     // its owner instead, even for `tools/call`. Same
                     // predicate the LLM router uses for the same rows
                     // (`oss/llm-router/src/resolver/mod.rs`,
-                    // `coding_agent_integration_id IS NOT NULL`), so the
+                    // `coding_agent_integration_id IS NOT NULL` /
+                    // `discovered_on IS NOT NULL`), so the
                     // gateway and the router agree on which rows count as
                     // "personal desks" — though not on how they're billed:
                     // the router always attributes these rows to their
@@ -333,134 +337,24 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     let traceparent: Option<&str> = synthesized_tp.as_deref().or(header_traceparent);
 
     let started = std::time::Instant::now();
-
-    // For a `tools/call`, wrap the execution in an exported `execute_tool` span
-    // so the invocation surfaces in the trace timeline's Tool lane — the
-    // server-side counterpart of the coding-agent path, which synthesises the
-    // same span shape (`gen_ai.operation.name = "execute_tool"` + `tool.name`)
-    // from its ACP turn report (`coding_agent_otlp.rs`). The MCP path never
-    // emitted a span, so a tool call was recorded only as a `token_usage` row,
-    // never in Tempo. Only a real tool invocation gets a span —
-    // `tools/list`/`initialize`/`ping` do not. Model/provider are deliberately
-    // left unset so the read-path classifier buckets it as a tool, not an LLM.
-    // The span joins the caller's trace via the inbound traceparent (the same
-    // one `handle_request` forwards), so it nests under the agent-call subtree
-    // beside the LLM spans; with no traceparent (owner-fallback coding-agent
-    // row) it is a local child instead.
-    // Recording the tool's inputs/outputs on the span is gated by the same
-    // content flag the hop and LLM spans honour, so a deployment that opts out
-    // of content capture gets the Tool lane without the payloads.
-    let capture_content = state.config.otel_capture_content;
-    // One id for the exported span and the stored row, so the Tempo materializer's
-    // `gen_ai.tool.call.id` and `tool_calls.call_id` name the same call.
-    let call_id: String = Uuid::new_v4().to_string();
-    let tool_span = (method == "tools/call").then(|| {
-        let span = tracing::info_span!(
-            "execute_tool",
-            // The *exported* span name is tool-specific (`execute_tool <tool>`),
-            // while `gen_ai.operation.name` stays the generic `execute_tool` the
-            // Tool-lane classifier keys on. Retry/recovery detection
-            // (`unrecovered_error_spans`, and the UI's `unrecoveredErrors`)
-            // pairs an error span with a later success under the same parent by
-            // *name*, so a single shared name would let a failed tool be hidden
-            // by an unrelated tool that happened to succeed next. The
-            // coding-agent OTLP path already names its tool spans this way
-            // (`coding_agent_otlp.rs`).
-            otel.name = %tool_span_name(&tool_name),
-            otel.kind = "client",
-            otel.status_code = tracing::field::Empty,
-            gen_ai.operation.name = "execute_tool",
-            gen_ai.agent.id = %agent_id,
-            tool.name = %tool_name,
-            gen_ai.tool.call.id = %call_id,
-            tool.success = tracing::field::Empty,
-            tool.arguments = tracing::field::Empty,
-            tool.result = tracing::field::Empty,
-            error.message = tracing::field::Empty,
-        );
-        // The arguments are known before the call, so record them now; the
-        // read path reads `tool.arguments` as the span's input. Use the real
-        // tool's arguments, unwrapping a `nasiko_call_tool` wrapper, to match
-        // the `tool.name` recorded above.
-        if capture_content
-            && let Some(args) = body.get("params").map(protocol::invoked_tool_arguments)
-        {
-            span.record(
-                "tool.arguments",
-                crate::coding_agent_otlp::bounded_json(&args).as_str(),
-            );
-        }
-        // Parent the tool span to the inbound trace ONLY when the flow is
-        // proven. `verified_flow_id` is `Some` exactly when this call's trace was
-        // verified — on the A2A path `flow_user` derived the trace id from this
-        // very `traceparent` and checked it against `flows`/`flow_participants`,
-        // and on the session path the signed claims did — so the header's trace
-        // is the caller's own. On the owner-fallback path it is `None` (a coding
-        // agent acting as its owner, or a foreign/dead trace id nobody proved);
-        // the header is unverified, so the span — and the tool arguments/results
-        // it may carry — must never join the trace it names.
-        //
-        // Detaching has to be explicit: the span is created inside the server's
-        // `request` span, which `TraceLayer` already adopted into the raw inbound
-        // `traceparent` (`oss/server/src/lib.rs`), so a contextual span inherits
-        // that remote trace at export unless its parent is overridden. Setting an
-        // empty context roots it in a trace of its own instead of a caller's.
-        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-        span.set_parent(tool_span_parent(verified_flow_id.as_deref(), traceparent));
-        span
-    });
-
-    let request = protocol::handle_request(
+    let Some(result) = protocol::handle_request(
         &state.mcp,
         user_id,
         agent_id,
         &body,
         traceparent,
         verified_flow_id.as_deref(),
-    );
-    let result = match &tool_span {
-        Some(span) => {
-            use tracing::Instrument as _;
-            request.instrument(span.clone()).await
-        }
-        None => request.await,
-    };
-    let Some(result) = result else {
+    )
+    .await
+    else {
         return (StatusCode::ACCEPTED, Json(json!({}))).into_response();
     };
 
     if method == "tools/call" {
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-        let success = tool_call_succeeded(&result);
-        if let Some(span) = &tool_span {
-            span.record("tool.success", success);
-            if !success {
-                span.record("otel.status_code", "ERROR");
-            }
-            // The output (or the error) is known now; the read path reads
-            // `tool.result`/`error.message` as the span's output. Mirrors the
-            // coding-agent tool span's shape.
-            if capture_content {
-                if let Some(output) = result.get("result") {
-                    span.record("tool.result", tool_result_for_span(output).as_str());
-                }
-                if let Some(error) = result.get("error") {
-                    span.record(
-                        "error.message",
-                        crate::coding_agent_otlp::bounded_json(error).as_str(),
-                    );
-                }
-            }
-        }
+        let success = result.get("error").is_none();
         record_tool_usage(
-            state,
-            user_id,
-            agent_id,
-            &tool_name,
-            latency_ms,
-            success,
-            verified_flow_id.as_deref(),
-            &call_id,
+            state, user_id, agent_id, &tool_name, latency_ms, success, None,
         );
 
         if result
@@ -539,16 +433,11 @@ enum SessionResolution {
 
 /// Try to authenticate the credential as a coding-agent session token.
 ///
-/// The signature proves `{agent_id, user_id}`, so — unlike the A2A path — this needs no
-/// live-flow freshness window (a long turn is never rejected for age). The DB touches are the
-/// `jti` revocation check, so a token can still be killed before its `exp`, and the flow
-/// attribution: a later turn's flow (the traceparent's, else the session's newest) is used only
-/// when that user owns it and the agent is a recorded participant, else the claim.
-async fn try_session_identity(
-    state: &AppState,
-    token: &str,
-    traceparent: Option<&str>,
-) -> SessionResolution {
+/// The signature is the proof of `{agent_id, user_id, flow_id}`, so — unlike the
+/// A2A path — this needs no live-flow freshness window (a long turn is never
+/// rejected for age) and no `flow_participants` lookup. The one DB touch is the
+/// `jti` revocation check, so a token can still be killed before its `exp`.
+async fn try_session_identity(state: &AppState, token: &str) -> SessionResolution {
     let secret = &state.config.agent_jwt_secret;
     // Unconfigured secret ⇒ this deployment doesn't issue session tokens; leave
     // the legacy path untouched.
@@ -589,22 +478,11 @@ async fn try_session_identity(
     };
 
     match is_session_token_revoked(&state.db, &claims.jti).await {
-        Ok(false) => {
-            let trace_flow = traceparent
-                .and_then(nasiko_flow::FlowContext::from_traceparent)
-                .map(|ctx| ctx.flow_id);
-            let attributed = nasiko_session_token::attribution::attributed_flow(
-                &state.db,
-                trace_flow.as_deref(),
-                &claims,
-            )
-            .await;
-            SessionResolution::Session {
-                agent_id,
-                user_id,
-                flow_id: attributed.flow_id,
-            }
-        }
+        Ok(false) => SessionResolution::Session {
+            agent_id,
+            user_id,
+            flow_id: claims.flow_id,
+        },
         Ok(true) => SessionResolution::Deny(deny("session token revoked".into())),
         Err(e) => {
             // Rule 5: fail closed on identity-store failure.
@@ -633,16 +511,18 @@ fn synth_traceparent(flow_id: &str) -> String {
     ctx.to_traceparent()
 }
 
-/// `(owner_id, is_coding_agent)` for a live (non-deleted) agent — one query
+/// `(owner_id, is_local)` for a live (non-deleted) agent — one query
 /// where there used to be two (a plain `agent_owner` for the read-only
 /// fallback, a separate `coding_agent_owner` for rule 3b), because the
 /// `Err(denial)` arm above always needs both facts about the very same row at
-/// once. `is_coding_agent` is `coding_agent_integration_id IS NOT NULL`
-/// (`oss/migrations/0019_coding_agent_identity.sql`) — deliberately the
-/// column itself, never agent metadata or name — matching `is_coding_agent`
-/// in `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
+/// once. `is_local` is `coding_agent_integration_id IS NOT NULL`
+/// (`oss/migrations/0019_coding_agent_identity.sql`) or `discovered_on IS NOT
+/// NULL` (`oss/migrations/0065_discovered_agents.sql`) — deliberately the
+/// columns themselves, never agent metadata or name — matching
+/// `is_coding_agent` and `is_discovered_agent` in
+/// `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
 /// agree on which rows this policy covers. Such a row is single-owner by
-/// construction (the CLI only binds rows the login owns;
+/// construction (the CLI only binds or registers rows the login owns;
 /// `agent_owner_or_reject` gates every mint), so "the owner" is unambiguous.
 ///
 /// `Ok(None)` means the agent is genuinely gone (401, stale credential);
@@ -653,7 +533,8 @@ async fn agent_owner(
     agent_id: Uuid,
 ) -> Result<Option<(Uuid, bool)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT owner_id, coding_agent_integration_id IS NOT NULL
+        "SELECT owner_id,
+                coding_agent_integration_id IS NOT NULL OR discovered_on IS NOT NULL
          FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)
@@ -661,110 +542,6 @@ async fn agent_owner(
     .await
 }
 
-/// The largest tool payload recorded onto an `execute_tool` span. Well above the
-/// 2,000-char generic content cap (`coding_agent_otlp::bounded_json`) because the
-/// trace view only offers a JSON view when the *whole* value parses — a payload
-/// truncated mid-structure drops back to raw, unreadable text. Still bounded so
-/// one tool call cannot bloat the trace.
-const MAX_TOOL_CONTENT_CHARS: usize = 16_000;
-
-/// Render an MCP tool result for the span's `tool.result`. MCP wraps a tool's
-/// output in a `{ "content": [{ "type": "text", "text": … }] }` envelope, and
-/// the text is itself usually a JSON document — so recorded verbatim it reaches
-/// the trace view double-escaped (`{\"messages\":…}`) and, once truncated, no
-/// longer parses, which is why the Output pane shows raw text with no JSON view.
-/// Unwrap the text parts and parse them when they are JSON, so the real output
-/// is stored as structured JSON; non-text shapes (image parts, structured
-/// content) fall back to the result as-is. Bounded to `MAX_TOOL_CONTENT_CHARS`.
-fn tool_result_for_span(result: &Value) -> String {
-    let unwrapped = unwrap_tool_text(result);
-    let value = unwrapped.as_ref().unwrap_or(result);
-    crate::coding_agent_otlp::truncate_chars(
-        &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
-        MAX_TOOL_CONTENT_CHARS,
-    )
-}
-
-/// The text payload of a CallToolResult: its `text` content parts concatenated,
-/// parsed as JSON when the whole thing parses, else kept as a plain string.
-/// `None` when the result carries no text parts, so the caller keeps the raw
-/// result.
-fn unwrap_tool_text(result: &Value) -> Option<Value> {
-    let parts = result.get("content")?.as_array()?;
-    let text: String = parts
-        .iter()
-        .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
-        .filter_map(|p| p.get("text").and_then(Value::as_str))
-        .collect();
-    if text.is_empty() {
-        return None;
-    }
-    Some(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
-}
-
-/// The OpenTelemetry parent context for a tool call's `execute_tool` span.
-///
-/// Returns the caller's remote trace context **only** when the flow was proven
-/// (`verified_flow_id` is `Some`); otherwise an empty context, which roots the
-/// span in its own trace. An unverified inbound `traceparent` — the owner-
-/// fallback path, where it may name another user's flow — is never adopted, so
-/// the tool span and its captured payloads cannot be stapled onto a trace the
-/// caller did not prove it belongs to. Returning an empty context (rather than
-/// leaving the span contextual) is what detaches it from the server `request`
-/// span that `TraceLayer` already parented to the raw header.
-fn tool_span_parent(
-    verified_flow_id: Option<&str>,
-    traceparent: Option<&str>,
-) -> opentelemetry::Context {
-    if verified_flow_id.is_some()
-        && let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent)
-    {
-        return cx;
-    }
-    opentelemetry::Context::new()
-}
-
-/// The exported name for a tool call's `execute_tool` span.
-///
-/// Tool-specific (`execute_tool gmail__send_email`) so retry/recovery detection,
-/// which pairs an error span with a later same-named success under the same
-/// parent, cannot treat an unrelated tool that succeeded next as a recovery of a
-/// tool that failed. Mirrors the coding-agent OTLP convention
-/// (`coding_agent_otlp.rs`). Falls back to the bare `execute_tool` when the tool
-/// name is missing, rather than leaving a trailing space.
-fn tool_span_name(tool_name: &str) -> String {
-    if tool_name.is_empty() {
-        "execute_tool".to_string()
-    } else {
-        format!("execute_tool {tool_name}")
-    }
-}
-
-/// Whether a `tools/call` JSON-RPC response reports success.
-///
-/// A tool call can fail in two independent shapes, and both must count as a
-/// failure or a failed call is exported and billed as a success:
-///
-/// - a top-level JSON-RPC `error` object — a transport/protocol failure the
-///   gateway itself produced, and
-/// - a tool-level failure, which MCP returns as a *successful* JSON-RPC
-///   response whose `result.isError` is `true` (the tool ran and reported its
-///   own error — the shape connector tools and the recovery-tool path use).
-///
-/// Checking only `error` silently loses the second kind, so the span records
-/// `tool.success = true` and the usage row `finish_reason = "ok"` for a call
-/// that actually failed.
-fn tool_call_succeeded(response: &Value) -> bool {
-    response.get("error").is_none()
-        && response
-            .get("result")
-            .and_then(|r| r.get("isError"))
-            .and_then(Value::as_bool)
-            != Some(true)
-}
-
-// One value per field of the stored call; a params struct would only repeat them.
-#[allow(clippy::too_many_arguments)]
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -772,8 +549,7 @@ fn record_tool_usage(
     tool_name: &str,
     latency_ms: i32,
     success: bool,
-    flow_id: Option<&str>,
-    call_id: &str,
+    team_id: Option<&str>,
 ) {
     state.genai_metrics.record_tool_call(
         latency_ms as f64 / 1000.0,
@@ -781,161 +557,17 @@ fn record_tool_usage(
         &agent_id.to_string(),
     );
 
-    let call = crate::usage::ToolCallRecord {
-        call_id: call_id.to_string(),
-        user_id,
-        agent_id,
-        tool_name: tool_name.to_string(),
-        success,
-        latency_ms,
-        metadata: json!({ "tool": tool_name, "success": success, "team_id": null, "flow_id": flow_id }),
-        verified_flow_id: flow_id.map(str::to_string),
-    };
+    let usage = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
+        .agent_id(agent_id)
+        .latency_ms(latency_ms)
+        .finish_reason(if success { "ok" } else { "error" })
+        .metadata(json!({ "tool": tool_name, "success": success, "team_id": team_id }))
+        .build();
 
     let tracker = state.usage_tracker.clone();
     tokio::spawn(async move {
-        if let Err(e) = tracker.track_tool_call(call).await {
+        if let Err(e) = tracker.track_tokens(usage).await {
             tracing::warn!(error = %e, "failed to record mcp_tool_call usage");
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn tool_result_unwraps_the_text_envelope_and_parses_inner_json() {
-        // MCP wraps the real JSON payload as a string inside a text content part.
-        let result = json!({
-            "content": [{ "type": "text", "text": "{\"messages\":[{\"id\":\"1\"}]}" }],
-            "isError": false
-        });
-        let rendered = tool_result_for_span(&result);
-        // Stored un-escaped and parseable, so the trace view offers a JSON view.
-        let parsed: Value = serde_json::from_str(&rendered).expect("parses as JSON");
-        assert_eq!(parsed, json!({ "messages": [{ "id": "1" }] }));
-    }
-
-    #[test]
-    fn tool_result_keeps_plain_text_when_the_part_is_not_json() {
-        let result = json!({ "content": [{ "type": "text", "text": "done" }] });
-        let rendered = tool_result_for_span(&result);
-        assert_eq!(
-            serde_json::from_str::<Value>(&rendered).unwrap(),
-            json!("done")
-        );
-    }
-
-    #[test]
-    fn tool_result_falls_back_to_the_raw_result_without_text_parts() {
-        // No text parts (e.g. an image part or structured content) → raw result.
-        let result = json!({ "content": [{ "type": "image", "data": "…" }] });
-        let rendered = tool_result_for_span(&result);
-        assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), result);
-    }
-
-    #[test]
-    fn tool_result_is_bounded() {
-        let big = "x".repeat(MAX_TOOL_CONTENT_CHARS * 2);
-        let result = json!({ "content": [{ "type": "text", "text": big }] });
-        assert!(tool_result_for_span(&result).chars().count() <= MAX_TOOL_CONTENT_CHARS);
-    }
-
-    const SAMPLE_TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-    const SAMPLE_TRACE_ID: &str = "0af7651916cd43dd8448eb211c80319c";
-
-    #[test]
-    fn verified_flow_parents_the_tool_span_to_the_inbound_trace() {
-        use opentelemetry::trace::TraceContextExt as _;
-        let cx = tool_span_parent(Some(SAMPLE_TRACE_ID), Some(SAMPLE_TRACEPARENT));
-        let sc = cx.span().span_context().clone();
-        assert!(sc.is_valid(), "a verified call joins the caller's trace");
-        assert_eq!(sc.trace_id().to_string(), SAMPLE_TRACE_ID);
-    }
-
-    #[test]
-    fn unverified_traceparent_is_not_adopted_as_the_tool_span_parent() {
-        use opentelemetry::trace::TraceContextExt as _;
-        // Owner-fallback: no proven flow, though the header names a (foreign)
-        // trace. The span must detach to its own root, never join that trace.
-        let cx = tool_span_parent(None, Some(SAMPLE_TRACEPARENT));
-        assert!(
-            !cx.span().span_context().is_valid(),
-            "an unverified trace is never adopted as the parent"
-        );
-    }
-
-    #[test]
-    fn verified_flow_with_an_unusable_traceparent_detaches() {
-        use opentelemetry::trace::TraceContextExt as _;
-        // Defensive: proven flow but the header will not parse → own root, not a
-        // panic and not an adopted garbage context.
-        let cx = tool_span_parent(Some("flow-1"), Some("not-a-traceparent"));
-        assert!(!cx.span().span_context().is_valid());
-        // And with no header at all.
-        let cx = tool_span_parent(Some("flow-1"), None);
-        assert!(!cx.span().span_context().is_valid());
-    }
-
-    #[test]
-    fn tool_span_name_is_tool_specific() {
-        // Distinct tools get distinct exported span names, which is what keeps
-        // one tool's failure from being hidden by another's success in
-        // retry/recovery detection.
-        assert_eq!(
-            tool_span_name("gmail__send_email"),
-            "execute_tool gmail__send_email"
-        );
-        assert_ne!(
-            tool_span_name("gmail__send_email"),
-            tool_span_name("calendar__list_events")
-        );
-        // Prefix preserved so the name still reads as a tool execution.
-        assert!(tool_span_name("x").starts_with("execute_tool "));
-        // No trailing space when the tool name is missing.
-        assert_eq!(tool_span_name(""), "execute_tool");
-    }
-
-    #[test]
-    fn tool_level_iserror_is_a_failure_despite_no_jsonrpc_error() {
-        // MCP tool-level failure: a successful JSON-RPC response whose result
-        // carries `isError: true`. Checking only `error` would call this a
-        // success and export/record it as one.
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": { "content": [{ "type": "text", "text": "quota exceeded" }], "isError": true }
-        });
-        assert!(!tool_call_succeeded(&response));
-    }
-
-    #[test]
-    fn top_level_jsonrpc_error_is_a_failure() {
-        let response = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "error": { "code": -32000, "message": "boom" }
-        });
-        assert!(!tool_call_succeeded(&response));
-    }
-
-    #[test]
-    fn clean_result_is_a_success() {
-        // `isError: false` and no error → success.
-        let explicit = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": { "content": [{ "type": "text", "text": "ok" }], "isError": false }
-        });
-        assert!(tool_call_succeeded(&explicit));
-        // A result with no `isError` field at all is also a success.
-        let implicit = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": { "content": [{ "type": "text", "text": "ok" }] }
-        });
-        assert!(tool_call_succeeded(&implicit));
-    }
 }
