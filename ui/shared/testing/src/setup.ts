@@ -2,14 +2,9 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
 import { MotionGlobalConfig } from 'motion/react'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
 import { allHandlers, resetAgentsMock } from '@nasiko/mocks/handlers'
 import { editionHandlers } from '@edition/mocks'
-// Loads react-day-picker's @date-fns/tz before any test fakes Date. Its TZDate extends whatever `Date` is global when
-// it is first evaluated; a lazily loaded page that first evaluates it under `setupPinnedSeed`'s fake Date gets a TZDate
-// whose date math breaks (every `addDays` returns its start), so a UTC calendar reports the grid's first day for every
-// click (NAS-1516).
-import '@nasiko/ui/primitives/calendar'
 import { clearQueryClients } from './queryClients'
 
 /**
@@ -69,10 +64,6 @@ if (typeof Element !== 'undefined') {
 // jsdom defines window.scrollTo only to log "Not implemented" on every call, which buried CI logs under thousands of
 // lines. Overwritten, not `??=`: the stub exists, it just does nothing useful.
 if (typeof window !== 'undefined') window.scrollTo = (() => {}) as typeof window.scrollTo
-// Same for canvas (the login showcase's field, the village's sprites): jsdom has none and logs on every getContext.
-if (typeof HTMLCanvasElement !== 'undefined')
-  HTMLCanvasElement.prototype.getContext = (() =>
-    null) as typeof HTMLCanvasElement.prototype.getContext
 
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's
@@ -172,16 +163,3 @@ afterEach(async () => {
   )
 })
 afterAll(() => server.close())
-
-/**
- * Let a file's trailing timers fire while its jsdom still exists. A test can end mid-navigation or mid-fetch: the
- * router's pending-UI timer (defaultPendingMs 150 plus Router's 500 ms minimum) and Query's notify timer then run
- * after the last test, and if jsdom is already gone React throws "window is not defined", an unhandled error that
- * fails the whole run although every test passed. Hooks run as a stack, so this runs before server.close() above.
- */
-const SETTLE_MS = 1_000
-afterAll(async () => {
-  vi.useRealTimers()
-  await clearQueryClients()
-  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
-})
