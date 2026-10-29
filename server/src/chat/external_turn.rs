@@ -98,7 +98,10 @@ pub(crate) async fn persist_external_turn(
     .bind(session_id)
     .bind(turn_id)
     .bind(&body.assistant_content)
-    .bind(timestamp + chrono::Duration::microseconds(1))
+    // A millisecond after the user's row, not less: readers compare message times to the
+    // millisecond (the UI's `Date.parse`), and a tie falls back to the random row ids, which
+    // put the reply above its question about half the time.
+    .bind(timestamp + chrono::Duration::milliseconds(1))
     .bind(usage.and_then(|u| u.input_tokens))
     .bind(usage.and_then(|u| u.output_tokens))
     .bind(usage.and_then(|u| u.model.as_deref()))
