@@ -120,6 +120,36 @@ impl Bm25SearchIndex {
         }
     }
 
+    /// Replace the index contents with `tools`, so a caller that already holds
+    /// the tool list (the semantic index's fallback) needs no second DB read.
+    fn index(&self, tools: Vec<ToolEntry>) {
+        let tokens: Vec<Vec<String>> = tools
+            .iter()
+            .map(|t| tokenize(&tool_search_text(&t.tool_name, t.description.as_deref())))
+            .collect();
+
+        let mut df: HashMap<String, usize> = HashMap::new();
+        for doc_tokens in &tokens {
+            let unique: HashSet<&str> = doc_tokens.iter().map(|s| s.as_str()).collect();
+            for t in unique {
+                *df.entry(t.to_string()).or_default() += 1;
+            }
+        }
+
+        let total_len: usize = tokens.iter().map(|t| t.len()).sum();
+        let avgdl = if tools.is_empty() {
+            1.0
+        } else {
+            total_len as f64 / tools.len() as f64
+        };
+
+        let mut inner = self.inner.write().unwrap();
+        inner.tools = tools;
+        inner.tokens = tokens;
+        inner.df = df;
+        inner.avgdl = avgdl;
+    }
+
     fn score_query(
         qtokens: &[String],
         doc_tokens: &[String],
@@ -200,34 +230,10 @@ impl ToolSearchIndex for Bm25SearchIndex {
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
         let tools = load_all_tools(db).await?;
+        let tool_count = tools.len();
+        self.index(tools);
 
-        let tokens: Vec<Vec<String>> = tools
-            .iter()
-            .map(|t| tokenize(&tool_search_text(&t.tool_name, t.description.as_deref())))
-            .collect();
-
-        let mut df: HashMap<String, usize> = HashMap::new();
-        for doc_tokens in &tokens {
-            let unique: HashSet<&str> = doc_tokens.iter().map(|s| s.as_str()).collect();
-            for t in unique {
-                *df.entry(t.to_string()).or_default() += 1;
-            }
-        }
-
-        let total_len: usize = tokens.iter().map(|t| t.len()).sum();
-        let avgdl = if tools.is_empty() {
-            1.0
-        } else {
-            total_len as f64 / tools.len() as f64
-        };
-
-        let mut inner = self.inner.write().unwrap();
-        inner.tools = tools;
-        inner.tokens = tokens;
-        inner.df = df;
-        inner.avgdl = avgdl;
-
-        tracing::info!(tools = inner.tools.len(), "BM25 search index rebuilt");
+        tracing::info!(tools = tool_count, "BM25 search index rebuilt");
         Ok(())
     }
 }
@@ -257,9 +263,12 @@ fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
+
 /// OpenAI-compatible embedding API client.
 struct EmbeddingClient {
     http: reqwest::Client,
+    base_url: String,
     api_key: String,
     model: String,
 }
@@ -287,7 +296,7 @@ impl EmbeddingClient {
 
             let resp = self
                 .http
-                .post("https://api.openai.com/v1/embeddings")
+                .post(format!("{}/embeddings", self.base_url))
                 .bearer_auth(&self.api_key)
                 .json(&body)
                 .send()
@@ -325,9 +334,11 @@ struct SemanticInner {
     embeddings: Vec<Vec<f32>>,
 }
 
-/// Flat semantic search using embedding cosine similarity.
+/// Flat semantic search using embedding cosine similarity. Falls back to BM25
+/// over the same tools when the query cannot be embedded.
 pub struct SemanticSearchIndex {
     inner: RwLock<SemanticInner>,
+    bm25: Bm25SearchIndex,
     client: EmbeddingClient,
     redis: redis::Client,
 }
@@ -344,8 +355,10 @@ impl SemanticSearchIndex {
                 tools: Vec::new(),
                 embeddings: Vec::new(),
             }),
+            bm25: Bm25SearchIndex::new(),
             client: EmbeddingClient {
                 http,
+                base_url: DEFAULT_EMBEDDING_BASE_URL.to_string(),
                 api_key,
                 model,
             },
@@ -365,7 +378,7 @@ impl SemanticSearchIndex {
         let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
 
         // Check Redis cache.
-        if let Ok(mut conn) = nasiko_redis_conn::connection(&self.redis).await
+        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await
             && let Ok(bytes) = redis::AsyncCommands::get::<_, Vec<u8>>(&mut conn, &cache_key).await
             && !bytes.is_empty()
         {
@@ -375,7 +388,7 @@ impl SemanticSearchIndex {
         let embedding = self.client.embed_one(query).await?;
 
         // Cache for 10 minutes (covers a full multi-turn conversation).
-        if let Ok(mut conn) = nasiko_redis_conn::connection(&self.redis).await {
+        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
             let _: std::result::Result<(), _> = redis::AsyncCommands::set_ex(
                 &mut conn,
                 &cache_key,
@@ -401,8 +414,11 @@ impl ToolSearchIndex for SemanticSearchIndex {
         let query_emb = match self.embed_query(query).await {
             Ok(emb) => emb,
             Err(e) => {
-                tracing::warn!(error = %e, "semantic search: query embedding failed, returning empty");
-                return Vec::new();
+                tracing::warn!(error = %e, "semantic search: query embedding failed, falling back to BM25");
+                return self
+                    .bm25
+                    .search_tools(query, accessible_connector_ids, perms, limit)
+                    .await;
             }
         };
 
@@ -442,6 +458,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
         let tools = load_all_tools(db).await?;
+        self.bm25.index(tools.clone());
         if tools.is_empty() {
             let mut inner = self.inner.write().unwrap();
             inner.tools = Vec::new();
@@ -875,6 +892,40 @@ mod tests {
             .search_tools("anything", &all_connector_ids(), &permissive_perms(), 10)
             .await;
         assert!(results.is_empty());
+    }
+
+    // ─── Semantic fallback tests ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn semantic_falls_back_to_bm25_when_query_embedding_fails() {
+        // Nothing listens on port 1, so the Redis cache and the embedding call
+        // both fail at once without leaving the machine.
+        let mut index = SemanticSearchIndex::new(
+            reqwest::Client::new(),
+            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            "test-key".to_string(),
+            "test-model".to_string(),
+        );
+        index.client.base_url = "http://127.0.0.1:1".to_string();
+        index.bm25.index(sample_tools());
+
+        let results = index
+            .search_tools(
+                "send an email",
+                &all_connector_ids(),
+                &permissive_perms(),
+                5,
+            )
+            .await;
+
+        assert!(
+            !results.is_empty(),
+            "should fall back to BM25 instead of returning empty"
+        );
+        assert_eq!(
+            results[0].tool_name, "GMAIL_SEND_EMAIL",
+            "top result should match the BM25 ranking"
+        );
     }
 
     // ─── Cosine similarity tests ───────────────────────────────────────────
