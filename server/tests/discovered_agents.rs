@@ -6,7 +6,7 @@
 //!     never makes them `running` (so nothing routes chat to them)
 //!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
-//!     owner, after which registration reports when it last made a call
+//!     owner, after which registration reports when it last made a call, and FinOps counts it
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test discovered_agents -- --test-threads=1
@@ -279,6 +279,19 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
     // The next report shows the call, which is what `nasiko status` reads as LLM routing: on.
     let after = report_ok(&server, user, "disc-routing", "laptop", &[crew_card()]).await;
     assert!(!entry(&after, "crew-researcher")["last_llm_call_at"].is_null());
+
+    // FinOps reads `trace_usage`; a direct call reaches it through the direct-usage sync.
+    nasiko_server::observability::trace_materializer::sync_direct_token_usage(&server.db)
+        .await
+        .expect("direct-usage sync");
+    let in_finops: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM trace_usage \
+         WHERE agent_name = 'crew-researcher' AND trace_id LIKE 'direct:%'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(in_finops, 1);
 
     server.cleanup().await;
 }
