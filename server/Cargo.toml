@@ -38,6 +38,8 @@ nasiko-compress.workspace = true
 nasiko-orchestrator.workspace = true
 nasiko-types.workspace = true
 nasiko-utils.workspace = true
+# Decodes query-string keys before log redaction (src/mcp/mod.rs).
+percent-encoding = { workspace = true }
 nasiko-config.workspace = true
 nasiko-observability.workspace = true
 nasiko-llm-router.workspace = true
@@ -95,7 +97,6 @@ tracing-opentelemetry = "0.29"
 tonic = "0.12"
 
 [dev-dependencies]
-percent-encoding = { workspace = true }
 serial_test = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }
