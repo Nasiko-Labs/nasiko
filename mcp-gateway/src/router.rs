@@ -68,6 +68,27 @@ pub fn route_tool<'a>(
     )))
 }
 
+/// The name a catalog tool is listed under — the forward of [`route_tool`],
+/// matching the aggregator's namespacing: a non-system generic backend's tool
+/// is `{connector_prefix}__{tool}`, everything else (system backends, and
+/// Composio toolkit tools, whose catalog ids are per-toolkit connectors that
+/// no resolved server carries) stays bare. Search results must go through
+/// this, or a generic tool they name can't be called.
+pub fn listed_tool_name(
+    connector_id: Uuid,
+    tool_name: &str,
+    servers: &[MCPServerConfig],
+) -> String {
+    let generic = servers
+        .iter()
+        .any(|s| s.connector_id == connector_id && s.kind == ServerType::Mcp && !s.system);
+    if generic {
+        format!("{}__{tool_name}", connector_prefix(connector_id))
+    } else {
+        tool_name.to_string()
+    }
+}
+
 /// When [`route_tool`] fails for a `{prefix}__tool` name, check whether the
 /// prefix actually matches a connector the caller can reach but that's
 /// unusable right now (M1's `ConnectorUnusable`) — as opposed to a prefix
@@ -126,6 +147,39 @@ mod tests {
         let name = format!("{}__deep__search", connector_prefix(id));
         let (_s, orig) = route_tool(&name, &servers).unwrap();
         assert_eq!(orig, "deep__search");
+    }
+
+    #[test]
+    fn listed_name_of_a_generic_tool_routes_back_to_it() {
+        let id = Uuid::new_v4();
+        let servers = vec![
+            srv(ServerType::Composio, Uuid::nil(), "http://c"),
+            srv(ServerType::Mcp, id, "http://s"),
+        ];
+        let name = listed_tool_name(id, "get_order_details", &servers);
+        assert_eq!(name, format!("{}__get_order_details", connector_prefix(id)));
+        let (s, orig) = route_tool(&name, &servers).unwrap();
+        assert_eq!(s.connector_id, id);
+        assert_eq!(orig, "get_order_details");
+    }
+
+    #[test]
+    fn listed_name_stays_bare_for_system_and_composio_tools() {
+        let sys = system_srv(&["save_file"]);
+        let servers = vec![
+            srv(ServerType::Composio, Uuid::nil(), "http://c"),
+            sys.clone(),
+        ];
+        assert_eq!(
+            listed_tool_name(sys.connector_id, "save_file", &servers),
+            "save_file"
+        );
+        // A Composio toolkit tool's catalog id is its own toolkit connector,
+        // which no resolved server carries.
+        assert_eq!(
+            listed_tool_name(Uuid::new_v4(), "GMAIL_SEND_EMAIL", &servers),
+            "GMAIL_SEND_EMAIL"
+        );
     }
 
     #[test]

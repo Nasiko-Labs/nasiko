@@ -366,7 +366,7 @@ pub async fn handle_tools_list(
             .await;
 
         for m in matches {
-            tools.push(tool_match_to_json(&m));
+            tools.push(tool_match_to_json(&m, servers));
         }
     }
 
@@ -400,10 +400,11 @@ async fn resolve_flow_title(state: &McpState, verified_flow_id: Option<&str>) ->
         .flatten()
 }
 
-/// Convert a `ToolMatch` to the JSON format expected by `tools/list`.
-fn tool_match_to_json(m: &crate::search::ToolMatch) -> Value {
+/// Convert a `ToolMatch` to the JSON format expected by `tools/list`, named
+/// the way `tools/call` routes it (`router::listed_tool_name`).
+fn tool_match_to_json(m: &crate::search::ToolMatch, servers: &[MCPServerConfig]) -> Value {
     let mut obj = json!({
-        "name": m.tool_name,
+        "name": router::listed_tool_name(m.connector_id, &m.tool_name, servers),
     });
     if let Some(ref desc) = m.description {
         obj["description"] = json!(desc);
@@ -659,7 +660,10 @@ pub async fn handle_tools_call(
             .search_tools(query, &accessible_ids, perms, limit)
             .await;
 
-        let tools: Vec<Value> = matches.iter().map(tool_match_to_json).collect();
+        let tools: Vec<Value> = matches
+            .iter()
+            .map(|m| tool_match_to_json(m, &resolved.servers))
+            .collect();
         let payload = json!({
             "tools": tools,
             "search_mode": format!("{:?}", state.config.tool_search_mode),
@@ -2760,6 +2764,26 @@ mod tests {
             !names.iter().any(|n| n == "nasiko_search_tools"),
             "None mode must not advertise the search meta-tool: {names:?}"
         );
+    }
+
+    #[test]
+    fn search_match_is_listed_under_the_name_tools_call_routes() {
+        // The search index stores an uploaded connector's tools by their bare
+        // backend name; listed bare, `tools/call` can't route them back.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let m = crate::search::ToolMatch {
+            connector_id: cid,
+            tool_name: "get_order_details".into(),
+            description: None,
+            input_schema: None,
+            score: 1.0,
+        };
+        let listed = tool_match_to_json(&m, &resolved.servers);
+        let name = listed["name"].as_str().expect("name");
+        let (server, original) = router::route_tool(name, &resolved.servers).expect("routes");
+        assert_eq!(server.connector_id, cid);
+        assert_eq!(original, "get_order_details");
     }
 
     #[tokio::test]
