@@ -67,7 +67,9 @@ if (typeof window !== 'undefined') window.scrollTo = (() => {}) as typeof window
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's
 // Babel pass over the page's modules; 12 s keeps page tests deterministic without masking hangs.
-configure({ asyncUtilTimeout: 12_000 })
+// A CI runner (CI=true) is slower still: a file's first render has taken over 12 s there, so CI
+// waits 30 s. vitest.config.ts raises the test timeout to match.
+configure({ asyncUtilTimeout: process.env.CI === 'true' ? 30_000 : 12_000 })
 
 /** Every test runs against the same seed-derived handlers as the browser (plan A22), the edition's own first. */
 export const server = setupServer(...Object.values(editionHandlers).flat(), ...allHandlers)

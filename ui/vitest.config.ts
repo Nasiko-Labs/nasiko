@@ -34,8 +34,9 @@ export default defineConfig({
           `${dirname(dir)}/features/*/src/**/*.test.{ts,tsx}`,
         ],
         // A file's first page render waits for the React Compiler's Babel pass over the app (single-threaded, in the
-        // main process), so the first tests of a parallel run need longer than Vitest's 5 s default.
-        testTimeout: 20_000,
+        // main process), so the first tests of a parallel run need longer than Vitest's 5 s default. A CI runner
+        // (CI=true) gets more, above setup.ts's 30 s findBy wait there.
+        testTimeout: process.env.CI === 'true' ? 60_000 : 20_000,
         css: false,
         // One time zone for every run (v1c E9): Chat's rail groups by local calendar day.
         env: { TZ: 'UTC' },
