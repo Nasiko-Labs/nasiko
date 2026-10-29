@@ -10,11 +10,20 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-const outDir = mkdtempSync(join(tmpdir(), 'harness-bundle-'))
-afterAll(() => rmSync(outDir, { recursive: true, force: true }))
+// UI_PREBUILT_DIST=1 reads the edition's dist/ that `pnpm run build` already made (CI runs this file after its
+// build step) instead of building again; a production build inside a busy test run is slow, and the result is the
+// same build. Without it the file builds its own, as before.
+const prebuilt = process.env.UI_PREBUILT_DIST === '1'
+const outDir = prebuilt
+  ? fileURLToPath(new URL('../../../oss/app/dist', import.meta.url))
+  : mkdtempSync(join(tmpdir(), 'harness-bundle-'))
+afterAll(() => {
+  if (!prebuilt) rmSync(outDir, { recursive: true, force: true })
+})
 
 // One production build, shared by the checks below.
 beforeAll(async () => {
+  if (prebuilt) return
   const { build } = await import('vite')
   // An empty envDir: a developer's .env.local (e.g. VITE_NASIKO_ALLOW_MOCK_BUILD) can't turn this into a mock build.
   const envDir = mkdtempSync(join(tmpdir(), 'harness-env-'))
@@ -30,7 +39,7 @@ beforeAll(async () => {
   } finally {
     rmSync(envDir, { recursive: true, force: true })
   }
-}, 60_000)
+}, 180_000)
 
 const assets = () => join(outDir, 'assets')
 const js = () => readdirSync(assets()).filter((f) => f.endsWith('.js'))
