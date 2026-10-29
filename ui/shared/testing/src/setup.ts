@@ -60,6 +60,9 @@ if (typeof Element !== 'undefined') {
   Element.prototype.scrollIntoView ??= function scrollIntoView() {}
   Element.prototype.scrollTo ??= function scrollTo() {}
 }
+// jsdom defines window.scrollTo only to log "Not implemented" on every call, which buried CI logs under thousands of
+// lines. Overwritten, not `??=`: the stub exists, it just does nothing useful.
+if (typeof window !== 'undefined') window.scrollTo = (() => {}) as typeof window.scrollTo
 
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's
