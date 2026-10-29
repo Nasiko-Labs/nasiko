@@ -17,20 +17,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use attachments::{
-    ATTACHMENT_CACHE_TTL, AttachmentCache, AttachmentStore, MarkerSigner, NoAttachmentStore,
-};
 use axum::{
     Json, Router,
-    http::{Method, StatusCode, Uri},
-    routing::{any, get, post},
+    routing::{get, post},
 };
-use nasiko_pricing::{NoUsageLedger, PricingEngine, UsageLedger};
+use nasiko_pricing::PricingEngine;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
-pub mod attachments;
 pub mod auth;
 mod brevity;
 mod compact_tools;
@@ -41,15 +36,12 @@ pub mod handlers;
 pub mod inbound;
 pub mod inject;
 pub mod ir;
-pub mod openai_model;
-pub mod payer;
-pub mod platform;
 pub mod providers;
-mod range_view;
 pub mod recovery;
 pub mod resolver;
 pub mod routing;
 mod savings;
+pub mod turns;
 pub mod usage;
 
 pub use config::GatewayConfig;
@@ -64,14 +56,14 @@ pub use routing::{
 
 /// Shared context for the LLM router.
 ///
-/// Holds the resources the router needs. The host supplies the `PgPool`; the router
-/// builds its own provider HTTP client (see [`provider_client`]). Cheap to clone — it is
-/// the Axum router state.
+/// Holds the resources the router needs, supplied by whatever host mounts it (the
+/// server passes its own `PgPool` and HTTP client). Cheap to clone — it is the Axum
+/// router state.
 #[derive(Clone)]
 pub struct LlmRouterCtx {
     /// Postgres pool — reads `agents.llm_config` / `user_secrets`, writes `token_usage`.
     pub db: PgPool,
-    /// Pooled outbound HTTP client for provider calls, built by [`provider_client`].
+    /// Pooled outbound HTTP client for provider calls.
     pub http: reqwest::Client,
     /// Gateway configuration (JWT secret, defaults, provider base URLs).
     pub cfg: Arc<GatewayConfig>,
@@ -100,29 +92,16 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
-    pub body_permits: Arc<tokio::sync::Semaphore>,
-    pub attachment_store: Arc<dyn AttachmentStore>,
-    pub attachment_cache: Arc<AttachmentCache>,
-    pub marker_signer: Option<Arc<MarkerSigner>>,
-
-    /// Receives each priced call on the transaction of its `trace_usage` write.
-    /// [`NoUsageLedger`] unless the host supplies its own.
-    pub ledger: Arc<dyn UsageLedger>,
-    /// Who pays for a call another user makes through an agent. [`payer::CallerPays`] unless the host
-    /// supplies its own.
-    pub payer: Arc<dyn payer::SharedCallPayer>,
+    /// Where a discovered A2A agent's calls go as conversation turns. [`turns::NoTurnRecorder`]
+    /// by default; the server swaps in one that keeps them as a chat session.
+    pub turn_recorder: Arc<dyn turns::TurnRecorder>,
 }
 
 impl LlmRouterCtx {
-    /// Build from the host's `PgPool`. Gateway-specific config is read from the
-    /// environment.
-    ///
-    /// The provider client is the router's own, not the host's: a host client is
-    /// sized for short calls, and its total timeout cut off slow model replies and
-    /// long streams alike.
-    pub fn from_shared(db: PgPool) -> Self {
+    /// Build from resources the host already owns (the server's `PgPool` + HTTP
+    /// client). Gateway-specific config is read from the environment.
+    pub fn from_shared(db: PgPool, http: reqwest::Client) -> Self {
         let cfg = GatewayConfig::from_env();
-        let http = provider_client(Duration::from_secs(cfg.provider_timeout_secs));
         tracing::info!(
             target: "nasiko::llm_router::startup",
             default_provider = %cfg.default_provider,
@@ -133,7 +112,6 @@ impl LlmRouterCtx {
             platform_anthropic_api_key_set = !cfg.platform_anthropic_api_key.is_empty(),
             platform_gemini_api_key_set = !cfg.platform_gemini_api_key.is_empty(),
             llm_config_cache_ttl_secs = cfg.llm_config_cache_ttl_secs,
-            provider_timeout_secs = cfg.provider_timeout_secs,
             redis_url_set = !cfg.redis_url.is_empty(),
             router_decision_ttl_secs = cfg.router_decision_ttl_secs,
             openai_api_base = %cfg.openai_api_base,
@@ -160,12 +138,6 @@ impl LlmRouterCtx {
         let salience_gate = build_salience_gate(&cfg);
         let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
-        let body_permits = handlers::auth_layer::body_permit_pool(cfg.max_inflight_body_bytes);
-        let attachment_cache = Arc::new(AttachmentCache::new(
-            cfg.attachment_cache_bytes,
-            ATTACHMENT_CACHE_TTL,
-        ));
-        let marker_signer = MarkerSigner::from_secret(&cfg.agent_jwt_secret).map(Arc::new);
         Self {
             db,
             http,
@@ -177,47 +149,16 @@ impl LlmRouterCtx {
             salience_gate,
             classifier,
             pricing,
-
-            body_permits,
-            attachment_store: Arc::new(NoAttachmentStore),
-            attachment_cache,
-            marker_signer,
-            ledger: Arc::new(NoUsageLedger),
-            payer: Arc::new(payer::CallerPays),
+            turn_recorder: Arc::new(turns::NoTurnRecorder),
         }
     }
-
-    pub fn with_config_cache(mut self, cache: Arc<ConfigCache>) -> Self {
-        self.cache = cache;
-        self
-    }
-
-    pub fn with_attachment_store(mut self, store: Arc<dyn AttachmentStore>) -> Self {
-        self.attachment_store = store;
-        self
-    }
-}
-
-/// The outbound client for provider calls.
-///
-/// `read_timeout`, not `timeout`: it restarts after every read, so a stream that keeps
-/// sending chunks runs as long as it needs, a non-streaming call (silent until the reply
-/// is ready) still fails after `read_timeout`, and so does a stalled connection.
-pub fn provider_client(read_timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
-        .pool_max_idle_per_host(20)
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(read_timeout)
-        .build()
-        .expect("failed to build provider http client")
 }
 
 /// Build the request classifier from config. The only place backend selection happens, shared by
 /// the router and the `classifier_eval` example so both exercise the same path.
 ///
-/// `local` (the default) and `hosted` are wrapped in a [`routing::GuardedClassifier`] (see
-/// [`build_guarded_classifier`]), which answers with the regex classifier when the model errors or
-/// times out; `regex` or an unknown value is returned bare.
+/// `regex` (default / unknown value) is returned bare so default behaviour is untouched; `local`
+/// and `hosted` are wrapped in a [`routing::GuardedClassifier`] (see [`build_guarded_classifier`]).
 pub fn build_classifier(
     cfg: &GatewayConfig,
     http: reqwest::Client,
@@ -363,10 +304,7 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
                 ttl_secs = cfg.router_decision_ttl_secs,
                 "llm-router: decision cache = RedisCache (conversation-sticky model decisions)"
             );
-            Arc::new(RedisCache::new(
-                nasiko_redis::SharedRedis::new(client),
-                cfg.router_decision_ttl_secs,
-            ))
+            Arc::new(RedisCache::new(client, cfg.router_decision_ttl_secs))
         }
         Err(e) => {
             tracing::warn!(
@@ -385,7 +323,10 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
 /// server: the OpenAI-compatible surface lives under `/v1`, and Gemini under `/v1beta`
 /// (each path mirrors what that provider's stock SDK appends to its base URL).
 pub fn router(ctx: LlmRouterCtx) -> Router {
-    let llm_routes = Router::new()
+    Router::new()
+        // Liveness probe owned by this router. The host server keeps its own
+        // top-level `/health`; a future standalone binary will also map `/health`.
+        .route("/v1/health", get(health))
         .route(
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
@@ -394,10 +335,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
-        .route(
-            "/v1/messages/count_tokens",
-            post(handlers::chat::count_tokens),
-        )
         // Gemini `generateContent` surface — a Gemini-SDK agent (`GOOGLE_GEMINI_BASE_URL`)
         // POSTs to `…/v1beta/models/{model}:generateContent` (or `:streamGenerateContent`);
         // the `{model}:{method}` segment is captured and the method picks (non-)streaming (P2.4).
@@ -405,20 +342,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1beta/models/{model_method}",
             post(handlers::chat::gemini_generate),
         )
-        .route_layer(axum::middleware::from_fn_with_state(
-            ctx.clone(),
-            handlers::auth_layer::authenticate_first,
-        ))
-        .layer(axum::extract::DefaultBodyLimit::max(ctx.cfg.max_body_bytes));
-    Router::new()
-        // Liveness probe owned by this router. The host server keeps its own
-        // top-level `/health`; a future standalone binary will also map `/health`.
-        .route("/v1/health", get(health))
-        .merge(llm_routes)
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
-        .route("/v1/{*rest}", any(unknown_endpoint))
-        .route("/v1beta/{*rest}", any(unknown_endpoint))
         .with_state(ctx)
         .layer(RequestDecompressionLayer::new())
 }
@@ -426,116 +351,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
-}
-
-async fn unknown_endpoint(method: Method, uri: Uri) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_FOUND,
-        crate::error::error_body(
-            StatusCode::NOT_FOUND,
-            &format!("no such router endpoint: {method} {}", uri.path()),
-        ),
-    )
-}
-
-#[cfg(test)]
-mod provider_client_tests {
-    use std::time::Duration;
-
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-
-    use super::provider_client;
-
-    const READ_TIMEOUT: Duration = Duration::from_millis(500);
-
-    /// Accepts one connection, waits for the request head, then hands the socket to
-    /// `respond`. Returns the URL to call.
-    async fn serve_once<F, Fut>(respond: F) -> String
-    where
-        F: FnOnce(TcpStream) -> Fut + Send + 'static,
-        Fut: Future<Output = ()> + Send,
-    {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}/", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut head = Vec::new();
-            let mut buf = [0u8; 1024];
-            while !head.windows(4).any(|w| w == b"\r\n\r\n") {
-                let n = socket.read(&mut buf).await.unwrap();
-                if n == 0 {
-                    return;
-                }
-                head.extend_from_slice(&buf[..n]);
-            }
-            respond(socket).await;
-        });
-        url
-    }
-
-    async fn reply_after(delay: Duration, mut socket: TcpStream) {
-        tokio::time::sleep(delay).await;
-        // The client may already have given up; a failed write is the expected outcome then.
-        let _ = socket
-            .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok")
-            .await;
-    }
-
-    async fn stream_chunks(count: usize, every: Duration, mut socket: TcpStream) {
-        socket
-            .write_all(
-                b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
-            )
-            .await
-            .unwrap();
-        for _ in 0..count {
-            tokio::time::sleep(every).await;
-            socket.write_all(b"1\r\nx\r\n").await.unwrap();
-        }
-        socket.write_all(b"0\r\n\r\n").await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn reply_slower_than_the_read_timeout_fails() {
-        let url = serve_once(|s| reply_after(READ_TIMEOUT * 3, s)).await;
-        let err = provider_client(READ_TIMEOUT)
-            .get(url)
-            .send()
-            .await
-            .unwrap_err();
-        assert!(err.is_timeout(), "expected a timeout, got {err}");
-    }
-
-    #[tokio::test]
-    async fn reply_inside_the_read_timeout_succeeds() {
-        let url = serve_once(|s| reply_after(READ_TIMEOUT / 5, s)).await;
-        let body = provider_client(READ_TIMEOUT)
-            .get(url)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert_eq!(body, "ok");
-    }
-
-    #[tokio::test]
-    async fn steady_stream_longer_than_the_read_timeout_arrives_complete() {
-        // 8 chunks 200 ms apart: 1.6 s in all, more than 3× the read timeout, which a
-        // total `timeout` of the same length would have cut.
-        let url = serve_once(|s| stream_chunks(8, READ_TIMEOUT * 2 / 5, s)).await;
-        let body = provider_client(READ_TIMEOUT)
-            .get(url)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert_eq!(body, "x".repeat(8));
-    }
 }
 
 #[cfg(test)]
@@ -573,43 +388,5 @@ mod transport_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
-    }
-}
-
-#[cfg(test)]
-mod classifier_default_tests {
-    use super::*;
-    use routing::classifier::linear::LinearClassifier;
-
-    #[test]
-    fn the_default_classifier_is_the_local_model() {
-        let classifier = build_classifier(&GatewayConfig::default(), reqwest::Client::new());
-        assert_eq!(classifier.name(), LinearClassifier::NAME);
-    }
-
-    #[test]
-    fn regex_stays_available_and_is_the_answer_for_an_unknown_backend() {
-        for backend in ["regex", "no-such-backend"] {
-            let cfg = GatewayConfig {
-                classifier_backend: backend.into(),
-                ..GatewayConfig::default()
-            };
-            assert_eq!(
-                build_classifier(&cfg, reqwest::Client::new()).name(),
-                "regex"
-            );
-        }
-    }
-
-    #[test]
-    fn a_local_model_that_fails_to_load_falls_back_to_regex() {
-        let cfg = GatewayConfig {
-            classifier_model_path: "/no/such/weights.json".into(),
-            ..GatewayConfig::default()
-        };
-        assert_eq!(
-            build_classifier(&cfg, reqwest::Client::new()).name(),
-            "regex"
-        );
     }
 }

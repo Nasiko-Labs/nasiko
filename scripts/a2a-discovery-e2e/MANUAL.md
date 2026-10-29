@@ -181,11 +181,22 @@ Open http://127.0.0.1:18080 and log in as `admin` / `manual-admin`. In the sideb
   the router's own log, so it updates at once.
 - **Agents**: `planner` and `writer` are in the catalog as "Not deployed": Nasiko knows them
   but never runs or calls them.
+- **Observe → Sessions**: one session for `planner`, holding every call it routed (one session
+  per agent for now). Each call is a turn: the latest user message and the model's reply. With
+  the session id from the row, http://127.0.0.1:18080/sessions/<id>?view=ledger lists the turns
+  with their tokens, and http://127.0.0.1:18080/chat/<id> shows the conversation. Make a second
+  call first to see it grow:
 
-Two places that stay empty for these agents, as expected:
+  ```sh
+  curl -s -X POST localhost:2024/runs/wait -H 'content-type: application/json' \
+    -d '{"assistant_id":"planner","input":{"messages":[{"role":"user","content":"what about tomorrow"}]}}' > /dev/null
+  ```
 
-- **Observe → Sessions** lists conversations Nasiko carried (its chat and agent proxy); this
-  agent called the router directly.
+  The session is written after the reply is sent, never in the call's way, so it can lag the
+  call by a moment. `writer` has none: it made no call.
+
+One place that stays empty, as expected:
+
 - The **View traces** drill-down on Monitor says "Trace drill-down needs a newer nasiko-server":
   it calls `/api/observability/finops/top-traces`, which the server does not have yet. That is
   the same for every agent today.

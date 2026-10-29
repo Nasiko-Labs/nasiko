@@ -8,6 +8,7 @@
 //!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
 //!     owner, after which registration reports when it last made a call, and FinOps counts it
+//!   - Sessions — each routed call is a turn of the agent's one chat session
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test discovered_agents -- --test-threads=1
@@ -362,6 +363,82 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
     .await
     .unwrap();
     assert_eq!(in_finops, 1);
+
+    // Each call is a turn of the agent's one session: a second call adds to the same session.
+    let second = server
+        .client
+        .post(server.url("/v1/chat/completions"))
+        .bearer_auth(&token)
+        .json(&json!({"model": "gpt-4o-mini", "messages": [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "and again"}
+        ]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 200);
+    // Ordered the way the chat UI orders it: by the millisecond, then by id.
+    let mut transcript: Vec<(String, String)> = Vec::new();
+    for _ in 0..50 {
+        transcript = sqlx::query_as(
+            "SELECT m.role, m.content FROM chat_messages m \
+             JOIN chat_sessions s ON s.session_id = m.session_id \
+             WHERE s.agent_id = $1::uuid \
+             ORDER BY date_trunc('milliseconds', m.timestamp), m.id::text",
+        )
+        .bind(&agent_id)
+        .fetch_all(&server.db)
+        .await
+        .unwrap();
+        if transcript.len() == 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let as_pairs: Vec<(&str, &str)> = transcript
+        .iter()
+        .map(|(role, content)| (role.as_str(), content.as_str()))
+        .collect();
+    assert_eq!(
+        as_pairs,
+        [
+            ("user", "hello"),
+            ("assistant", "hi"),
+            ("user", "and again"),
+            ("assistant", "hi")
+        ]
+    );
+    let sessions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE agent_id = $1::uuid")
+            .bind(&agent_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(sessions, 1);
+
+    // The Sessions page lists it for its owner.
+    let listed: Value = common::as_member(
+        server
+            .client
+            .get(server.url("/api/observability/session/list")),
+        &user.to_string(),
+        "disc-routing",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let session_ids: Vec<&str> = listed["data"]["sessions"]
+        .as_array()
+        .expect("sessions")
+        .iter()
+        .filter_map(|session| session["session_id"].as_str())
+        .collect();
+    let expected = nasiko_server::chat::discovered_turns::session_id_for(agent_id.parse().unwrap());
+    assert_eq!(session_ids, [expected.as_str()]);
 
     server.cleanup().await;
 }

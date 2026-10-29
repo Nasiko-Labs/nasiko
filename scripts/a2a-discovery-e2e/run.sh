@@ -4,7 +4,8 @@
 # 1. Discovery: `nasiko agents discover` lists all three agents in its table (no server needed).
 # 2. Registration + LLM routing: against a real nasiko-server (needs `just infra`), discovery
 #    registers the agents; `nasiko connect planner` writes the LangGraph `.env`; after a restart
-#    the agent's model call goes through Nasiko and discovery shows it CONNECTED `yes`;
+#    the agent's model call goes through Nasiko, shows up in Sessions, and discovery shows it
+#    CONNECTED `yes`;
 #    `nasiko disconnect planner` restores the `.env` exactly. Throughout, `nasiko status` shows
 #    what discovery registered, read back from the server, without probing anything itself.
 #
@@ -187,6 +188,16 @@ curl -sf --noproxy '*' -X POST "http://127.0.0.1:$langgraph_port/runs/wait" \
 grep -qx 'Bearer sk-nasiko-platform' "$work/upstream.log" ||
   fail "the model call did not come through Nasiko (upstream saw: $(cat "$work/upstream.log"))"
 echo "ok: planner's model call went through Nasiko"
+# The call is recorded as a turn of planner's session, off the request path, so poll briefly.
+token=$("$python" -c 'import json, sys; c = json.load(open(sys.argv[1])); print(c["clusters"][c["active"]]["token"])' \
+  "$HOME_E2E/.nasiko/config.json")
+sessions_of_planner() {
+  curl -sf --noproxy '*' "$server/api/observability/session/list" -H "authorization: Bearer $token" |
+    "$python" -c 'import json, sys; print(sum(s.get("agent_id") == "planner" for s in json.load(sys.stdin)["data"]["sessions"]))'
+}
+for _ in $(seq 20); do [ "$(sessions_of_planner)" = 1 ] && break; sleep 0.5; done
+[ "$(sessions_of_planner)" = 1 ] || fail "Sessions does not list planner's session after a routed call"
+echo "ok: Sessions lists planner's session"
 expect_connected planner yes "after a routed call"
 expect_status planner on "after a routed call"
 

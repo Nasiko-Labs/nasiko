@@ -1088,6 +1088,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 

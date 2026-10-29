@@ -34,6 +34,7 @@ use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
+use crate::turns::{self, StreamedReply, TurnRecorder, TurnStart};
 use crate::usage::{self, UsageRecord};
 
 #[derive(Clone)]
@@ -314,6 +315,18 @@ async fn chat_core(
         flow_id,
         attribution_source,
     } = routed;
+    // A discovered agent's call is also a turn of its conversation (see `crate::turns`). Read
+    // the user message before compression can rewrite the request.
+    // In a tool loop the latest user message is the question every call of the loop repeats,
+    // so a call answering tool results is recorded as that instead.
+    let turn = resolved.is_discovered_agent.then(|| TurnStart {
+        user_text: if routing::is_tool_continuation(&req.messages) {
+            turns::TOOL_RESULTS.to_string()
+        } else {
+            routing::latest_user_query(&req.messages).unwrap_or_default()
+        },
+        started_at: chrono::Utc::now(),
+    });
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
     // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
@@ -498,6 +511,7 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            turn,
         });
     }
 
@@ -553,6 +567,15 @@ async fn chat_core(
     llm_span.record("gen_ai.response.model", model.as_str());
     record_span_usage(&llm_span, resp.usage.as_ref());
 
+    if let Some(turn) = turn {
+        ctx.turn_recorder.record(turn.finish(
+            (agent_id.clone(), owner_id.clone()),
+            turns::reply_text(&resp),
+            model.clone(),
+            resp.usage.as_ref(),
+            latency_ms,
+        ));
+    }
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
@@ -791,6 +814,9 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Set for a discovered agent: its reply is gathered as it streams and recorded as a turn
+    /// when the stream ends.
+    turn: Option<TurnStart>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -815,8 +841,12 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        turn,
     } = args;
-    let state = Arc::new(Mutex::new(StreamState::default()));
+    let state = Arc::new(Mutex::new(StreamState {
+        reply: turn.is_some().then(StreamedReply::default),
+        ..StreamState::default()
+    }));
     let guard = UsageGuard {
         db: ctx.db.clone(),
         pricing: ctx.pricing.clone(),
@@ -834,6 +864,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        turn: turn.map(|turn| (ctx.turn_recorder.clone(), turn)),
     };
 
     let body_stream = async_stream::stream! {
@@ -855,6 +886,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                         }
                         if let Some(fr) = chunk.choices.first().and_then(|c| c.finish_reason.clone()) {
                             st.finish_reason = Some(fr);
+                        }
+                        if let (Some(reply), Some(choice)) = (st.reply.as_mut(), chunk.choices.first()) {
+                            reply.push(choice.delta.content.as_deref(), choice.delta.tool_calls.as_deref());
                         }
                     }
                     for frame in renderer.render(chunk) {
@@ -884,6 +918,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
 struct StreamState {
     usage: Option<Usage>,
     finish_reason: Option<String>,
+    /// The reply so far, when the call is recorded as a turn.
+    reply: Option<StreamedReply>,
 }
 
 /// Writes the streaming usage row when dropped (stream completion or client disconnect).
@@ -906,6 +942,8 @@ struct UsageGuard {
     /// `Copy`, so unlike the two above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Taken in `drop`: the recorder and start of a discovered agent's turn.
+    turn: Option<(Arc<dyn TurnRecorder>, TurnStart)>,
 }
 
 impl Drop for UsageGuard {
@@ -914,6 +952,15 @@ impl Drop for UsageGuard {
         let brevity_metadata = self.brevity_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
+        if let (Some((recorder, turn)), Some(reply)) = (self.turn.take(), st.reply.as_ref()) {
+            recorder.record(turn.finish(
+                (self.agent_id.clone(), self.owner_id.clone()),
+                reply.text(),
+                self.model.clone(),
+                st.usage.as_ref(),
+                self.started.elapsed().as_millis() as i64,
+            ));
+        }
         usage::spawn_log(
             self.db.clone(),
             self.pricing.clone(),
@@ -1070,8 +1117,10 @@ mod tests {
                         .unwrap(),
                     ),
                     finish_reason: None,
+                    reply: None,
                 })),
                 flow_id: None,
+                turn: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
                 // ran, so there is nothing for the guard to credit.
                 compress_bytes: None,
@@ -1184,6 +1233,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 
@@ -1565,6 +1615,205 @@ mod tests {
         // No config ⇒ the request model is honored; chunks are normalized to that resolved id.
         assert!(body.contains("\"model\":\"gpt-4o\""));
         assert!(body.trim_end().ends_with("data: [DONE]"));
+    }
+
+    /// Keeps every turn it is given, for tests to read back.
+    #[derive(Clone, Default)]
+    struct CapturedTurns(Arc<std::sync::Mutex<Vec<crate::turns::RecordedTurn>>>);
+
+    impl crate::turns::TurnRecorder for CapturedTurns {
+        fn record(&self, turn: crate::turns::RecordedTurn) {
+            self.0.lock().unwrap().push(turn);
+        }
+    }
+
+    fn store_for(is_discovered_agent: bool) -> Store {
+        Store {
+            config: None,
+            is_coding_agent: false,
+            is_discovered_agent,
+            compress_enabled: false,
+        }
+    }
+
+    /// A conversation whose latest user message is the one a turn is recorded under.
+    fn conversation(stream: bool) -> Value {
+        json!({
+            "model": "gpt-4o", "stream": stream,
+            "messages": [
+                { "role": "system", "content": "be brief" },
+                { "role": "user", "content": "earlier question" },
+                { "role": "assistant", "content": "earlier answer" },
+                { "role": "user", "content": "plan my day" }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_call_is_recorded_as_a_turn() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "finish_reason": "stop",
+                                  "message": { "role": "assistant", "content": "start with email" } }],
+                    "usage": { "prompt_tokens": 30, "completion_tokens": 4, "total_tokens": 34 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].agent_id, AGENT);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].model, "gpt-4o");
+        assert_eq!(
+            (recorded[0].input_tokens, recorded[0].output_tokens),
+            (Some(30), Some(4))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_streamed_reply_is_recorded_once_the_stream_ends() {
+        let mut server = mockito::Server::new_async().await;
+        let sse = concat!(
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"start \"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"with email\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":4,\"total_tokens\":34}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        let resp = chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(true),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        // Nothing is recorded while the reply streams; the agent's response is not held for it.
+        assert!(turns.0.lock().unwrap().is_empty());
+        let body = body_string(resp).await;
+        assert!(body.contains("with email"));
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].output_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn a_call_answering_tool_results_is_recorded_as_such() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "done" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [
+                { "role": "user", "content": "plan my day" },
+                { "role": "assistant", "content": null, "tool_calls": [
+                    { "id": "c1", "type": "function", "function": { "name": "calendar", "arguments": "{}" } }
+                ] },
+                { "role": "tool", "tool_call_id": "c1", "content": "3 meetings" }
+            ]
+        });
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded[0].user_text, crate::turns::TOOL_RESULTS);
+        assert_eq!(recorded[0].assistant_text, "done");
+    }
+
+    #[tokio::test]
+    async fn only_discovered_agents_calls_are_recorded() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(false),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(turns.0.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
