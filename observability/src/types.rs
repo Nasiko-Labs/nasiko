@@ -784,7 +784,7 @@ mod link_router_spans_tests {
             ),
         ];
         let links = link_router_spans(&spans);
-        assert!(links.attributed.get("r1").is_none());
+        assert!(!links.attributed.contains_key("r1"));
         assert!(
             links.excluded.contains("r1"),
             "the router's copy is dropped"
