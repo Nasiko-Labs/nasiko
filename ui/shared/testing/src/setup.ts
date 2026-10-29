@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
 import { MotionGlobalConfig } from 'motion/react'
 import { setupServer } from 'msw/node'
-import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { allHandlers, resetAgentsMock } from '@nasiko/mocks/handlers'
 import { editionHandlers } from '@edition/mocks'
 import { clearQueryClients } from './queryClients'
@@ -163,3 +163,16 @@ afterEach(async () => {
   )
 })
 afterAll(() => server.close())
+
+/**
+ * Let a file's trailing timers fire while its jsdom still exists. A test can end mid-navigation or mid-fetch: the
+ * router's pending-UI timer (defaultPendingMs 150 plus Router's 500 ms minimum) and Query's notify timer then run
+ * after the last test, and if jsdom is already gone React throws "window is not defined", an unhandled error that
+ * fails the whole run although every test passed. Hooks run as a stack, so this runs before server.close() above.
+ */
+const SETTLE_MS = 1_000
+afterAll(async () => {
+  vi.useRealTimers()
+  await clearQueryClients()
+  await new Promise((resolve) => setTimeout(resolve, SETTLE_MS))
+})
