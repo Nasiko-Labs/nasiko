@@ -29,9 +29,11 @@ const use = {
 }
 
 export default defineConfig({
-  // A cold dev server compiles each page (React Compiler via Babel) on its first request.
-  timeout: 60_000,
-  expect: { timeout: 20_000 },
+  // A cold dev server compiles each page (React Compiler via Babel) on its first request. On a CI runner (2 vCPUs
+  // for a private repository, one worker) that first compile alone has outlasted the 20 s local expect timeout, so
+  // CI waits longer; a page that never renders still fails.
+  timeout: process.env.CI ? 120_000 : 60_000,
+  expect: { timeout: process.env.CI ? 60_000 : 20_000 },
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
