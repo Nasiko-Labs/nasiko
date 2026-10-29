@@ -785,8 +785,14 @@ mod link_router_spans_tests {
         ];
         let links = link_router_spans(&spans);
         assert!(links.attributed.get("r1").is_none());
-        assert!(links.excluded.contains("r1"), "the router's copy is dropped");
-        assert!(!links.excluded.contains("a1"), "the agent's own span stands");
+        assert!(
+            links.excluded.contains("r1"),
+            "the router's copy is dropped"
+        );
+        assert!(
+            !links.excluded.contains("a1"),
+            "the agent's own span stands"
+        );
     }
 
     #[test]
@@ -819,7 +825,10 @@ mod link_router_spans_tests {
         let links = link_router_spans(&spans);
         assert_eq!(links.attributed.get("r1"), Some(&"agent-uuid"));
         assert!(!links.excluded.contains("r1"), "must not be dropped");
-        assert!(!links.excluded.contains("o1"), "the orchestrator's call stands");
+        assert!(
+            !links.excluded.contains("o1"),
+            "the orchestrator's call stands"
+        );
     }
 
     #[test]
