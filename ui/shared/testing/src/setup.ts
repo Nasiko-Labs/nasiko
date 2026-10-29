@@ -5,6 +5,7 @@ import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach } from 'vitest'
 import { allHandlers, resetAgentsMock } from '@nasiko/mocks/handlers'
 import { editionHandlers } from '@edition/mocks'
+import { clearQueryClients } from './queryClients'
 
 /**
  * A working, per-test localStorage. Node 25's built-in global shadows jsdom's and throws on use
@@ -150,6 +151,8 @@ export function recordRequestBodies() {
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 afterEach(async () => {
   cleanup()
+  // After unmount: a rendered app's queries are cancelled and dropped before the environment can be torn down.
+  await clearQueryClients()
   server.resetHandlers()
   resetAgentsMock()
   // Chat's per-user state (turns, signals, the request index, the poll backoff) never leaks between tests (DX3).

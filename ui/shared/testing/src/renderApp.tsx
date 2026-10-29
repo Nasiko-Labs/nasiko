@@ -11,11 +11,12 @@ import { createAppRouter } from '@nasiko/app-shell/router'
 import { edition } from '@edition/edition'
 import { TooltipProvider } from '@nasiko/ui/primitives/tooltip'
 import { createQueryClient } from '@nasiko/app-core/queryClient'
+import { trackQueryClient } from './queryClients'
 
 export function renderApp(url: string) {
   // A holder, since the query client is built before the router it redirects with.
   const routerRef: { current?: AnyRouter } = {}
-  const queryClient = createQueryClient(() => routerRef.current, { retry: false })
+  const queryClient = trackQueryClient(createQueryClient(() => routerRef.current, { retry: false }))
   const router = createAppRouter({
     queryClient,
     history: createMemoryHistory({ initialEntries: [url] }),
