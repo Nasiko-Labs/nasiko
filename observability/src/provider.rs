@@ -1437,13 +1437,15 @@ impl ObservabilityProvider for TempoLokiProvider {
             let u = extract_usage_attrs(&span.attributes);
             let (inp, out, model) = (u.input, u.output, u.model.clone());
             let (cr, cc) = (u.cache_read, u.cache_creation);
-            // gen_ai.operation.name = "call_tool" (GenAI semconv) or
+            // gen_ai.operation.name = "execute_tool" (what both our tool spans
+            // emit — the MCP gateway's `execute_tool` span and the coding-agent
+            // OTLP tool span) or "call_tool" (older GenAI semconv spelling), or
             // openinference.span.kind = "TOOL" (OpenInference convention).
             let is_tool_call = span
                 .attributes
                 .get("gen_ai.operation.name")
                 .and_then(|v| v.as_str())
-                .is_some_and(|s| s == "call_tool")
+                .is_some_and(|s| s == "execute_tool" || s == "call_tool")
                 || span
                     .attributes
                     .get("openinference.span.kind")

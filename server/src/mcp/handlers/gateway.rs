@@ -345,6 +345,10 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     // one `handle_request` forwards), so it nests under the agent-call subtree
     // beside the LLM spans; with no traceparent (owner-fallback coding-agent
     // row) it is a local child instead.
+    // Recording the tool's inputs/outputs on the span is gated by the same
+    // content flag the hop and LLM spans honour, so a deployment that opts out
+    // of content capture gets the Tool lane without the payloads.
+    let capture_content = state.config.otel_capture_content;
     let tool_span = (method == "tools/call").then(|| {
         let span = tracing::info_span!(
             "execute_tool",
@@ -354,7 +358,22 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             gen_ai.agent.id = %agent_id,
             tool.name = %tool_name,
             tool.success = tracing::field::Empty,
+            tool.arguments = tracing::field::Empty,
+            tool.result = tracing::field::Empty,
+            error.message = tracing::field::Empty,
         );
+        // The arguments are known before the call, so record them now; the
+        // read path reads `tool.arguments` as the span's input. Use the real
+        // tool's arguments, unwrapping a `nasiko_call_tool` wrapper, to match
+        // the `tool.name` recorded above.
+        if capture_content
+            && let Some(args) = body.get("params").map(protocol::invoked_tool_arguments)
+        {
+            span.record(
+                "tool.arguments",
+                crate::coding_agent_otlp::bounded_json(&args).as_str(),
+            );
+        }
         if let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent) {
             use tracing_opentelemetry::OpenTelemetrySpanExt as _;
             span.set_parent(cx);
@@ -389,9 +408,29 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             if !success {
                 span.record("otel.status_code", "ERROR");
             }
+            // The output (or the error) is known now; the read path reads
+            // `tool.result`/`error.message` as the span's output. Mirrors the
+            // coding-agent tool span's shape.
+            if capture_content {
+                if let Some(output) = result.get("result") {
+                    span.record("tool.result", tool_result_for_span(output).as_str());
+                }
+                if let Some(error) = result.get("error") {
+                    span.record(
+                        "error.message",
+                        crate::coding_agent_otlp::bounded_json(error).as_str(),
+                    );
+                }
+            }
         }
         record_tool_usage(
-            state, user_id, agent_id, &tool_name, latency_ms, success, None,
+            state,
+            user_id,
+            agent_id,
+            &tool_name,
+            latency_ms,
+            success,
+            verified_flow_id.as_deref(),
         );
 
         if result
@@ -576,6 +615,47 @@ async fn agent_owner(
     .await
 }
 
+/// The largest tool payload recorded onto an `execute_tool` span. Well above the
+/// 2,000-char generic content cap (`coding_agent_otlp::bounded_json`) because the
+/// trace view only offers a JSON view when the *whole* value parses — a payload
+/// truncated mid-structure drops back to raw, unreadable text. Still bounded so
+/// one tool call cannot bloat the trace.
+const MAX_TOOL_CONTENT_CHARS: usize = 16_000;
+
+/// Render an MCP tool result for the span's `tool.result`. MCP wraps a tool's
+/// output in a `{ "content": [{ "type": "text", "text": … }] }` envelope, and
+/// the text is itself usually a JSON document — so recorded verbatim it reaches
+/// the trace view double-escaped (`{\"messages\":…}`) and, once truncated, no
+/// longer parses, which is why the Output pane shows raw text with no JSON view.
+/// Unwrap the text parts and parse them when they are JSON, so the real output
+/// is stored as structured JSON; non-text shapes (image parts, structured
+/// content) fall back to the result as-is. Bounded to `MAX_TOOL_CONTENT_CHARS`.
+fn tool_result_for_span(result: &Value) -> String {
+    let unwrapped = unwrap_tool_text(result);
+    let value = unwrapped.as_ref().unwrap_or(result);
+    crate::coding_agent_otlp::truncate_chars(
+        &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
+        MAX_TOOL_CONTENT_CHARS,
+    )
+}
+
+/// The text payload of a CallToolResult: its `text` content parts concatenated,
+/// parsed as JSON when the whole thing parses, else kept as a plain string.
+/// `None` when the result carries no text parts, so the caller keeps the raw
+/// result.
+fn unwrap_tool_text(result: &Value) -> Option<Value> {
+    let parts = result.get("content")?.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    Some(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+}
+
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -583,7 +663,7 @@ fn record_tool_usage(
     tool_name: &str,
     latency_ms: i32,
     success: bool,
-    team_id: Option<&str>,
+    flow_id: Option<&str>,
 ) {
     state.genai_metrics.record_tool_call(
         latency_ms as f64 / 1000.0,
@@ -591,12 +671,21 @@ fn record_tool_usage(
         &agent_id.to_string(),
     );
 
-    let usage = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
+    // `session_id` carries the flow id (= trace id), exactly as the LLM rows do
+    // (`router/usage_meta.rs` stamps `.session_id(flow_id)`), so a tool call joins
+    // its turn in SQL the same way — via `token_usage.session_id = <trace_id>`.
+    // Only the server-proven `verified_flow_id` is used, never the raw inbound
+    // `traceparent`: an owner-fallback coding-agent row has no proven flow, so it
+    // stays unstamped rather than naming a turn it can't be shown to belong to.
+    let mut builder = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
         .agent_id(agent_id)
         .latency_ms(latency_ms)
         .finish_reason(if success { "ok" } else { "error" })
-        .metadata(json!({ "tool": tool_name, "success": success, "team_id": team_id }))
-        .build();
+        .metadata(json!({ "tool": tool_name, "success": success, "team_id": null }));
+    if let Some(flow_id) = flow_id {
+        builder = builder.session_id(flow_id);
+    }
+    let usage = builder.build();
 
     let tracker = state.usage_tracker.clone();
     tokio::spawn(async move {
@@ -604,4 +693,48 @@ fn record_tool_usage(
             tracing::warn!(error = %e, "failed to record mcp_tool_call usage");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_result_unwraps_the_text_envelope_and_parses_inner_json() {
+        // MCP wraps the real JSON payload as a string inside a text content part.
+        let result = json!({
+            "content": [{ "type": "text", "text": "{\"messages\":[{\"id\":\"1\"}]}" }],
+            "isError": false
+        });
+        let rendered = tool_result_for_span(&result);
+        // Stored un-escaped and parseable, so the trace view offers a JSON view.
+        let parsed: Value = serde_json::from_str(&rendered).expect("parses as JSON");
+        assert_eq!(parsed, json!({ "messages": [{ "id": "1" }] }));
+    }
+
+    #[test]
+    fn tool_result_keeps_plain_text_when_the_part_is_not_json() {
+        let result = json!({ "content": [{ "type": "text", "text": "done" }] });
+        let rendered = tool_result_for_span(&result);
+        assert_eq!(
+            serde_json::from_str::<Value>(&rendered).unwrap(),
+            json!("done")
+        );
+    }
+
+    #[test]
+    fn tool_result_falls_back_to_the_raw_result_without_text_parts() {
+        // No text parts (e.g. an image part or structured content) → raw result.
+        let result = json!({ "content": [{ "type": "image", "data": "…" }] });
+        let rendered = tool_result_for_span(&result);
+        assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), result);
+    }
+
+    #[test]
+    fn tool_result_is_bounded() {
+        let big = "x".repeat(MAX_TOOL_CONTENT_CHARS * 2);
+        let result = json!({ "content": [{ "type": "text", "text": big }] });
+        assert!(tool_result_for_span(&result).chars().count() <= MAX_TOOL_CONTENT_CHARS);
+    }
 }
