@@ -195,12 +195,13 @@ pub fn discover(cli: &str) -> Result<()> {
         .copied()
         .map(|agent| coding_agent_row(agent, &settings))
         .collect();
-    rows.extend(
-        running
-            .agents
-            .iter()
-            .map(|agent| a2a_agent_row(agent, llm_routing_state(agent, &registered, &connections))),
-    );
+    rows.extend(running.agents.iter().map(|agent| {
+        a2a_agent_row(
+            agent,
+            &shown_name(agent, &running.agents, &registered),
+            llm_routing_state(agent, &registered, &connections),
+        )
+    }));
     print!("{}", format_discover_table(&rows));
 
     println!("\nInstall session reporting:  {cli} connect <agent> --reporting");
@@ -231,11 +232,11 @@ pub fn register_running(running: &RunningA2aAgents) -> Result<Vec<RegisteredA2aA
     let Some(machine) = a2a::machine_name() else {
         return Ok(Vec::new());
     };
-    let cards: Vec<serde_json::Value> = running
+    let cards: Vec<(serde_json::Value, Option<String>)> = running
         .agents
         .iter()
         .filter(|agent| agent.card.is_ok())
-        .map(|agent| agent.raw_card.clone())
+        .map(|agent| (agent.raw_card.clone(), agent.instance.clone()))
         .collect();
     Ok(control_plane::register_discovered(&machine, &cards)?.unwrap_or_default())
 }
@@ -313,7 +314,19 @@ fn discovered_section(
     }
     let value = crate::commands::coding_agent_router::status_value;
     let rows = running.iter().map(|agent| DiscoveredRow {
-        agent: a2a::printable(&agent.card_name),
+        // Copies of one agent are told apart by their catalog names.
+        agent: a2a::printable(
+            if running
+                .iter()
+                .filter(|other| other.card_name == agent.card_name)
+                .count()
+                > 1
+            {
+                &agent.name
+            } else {
+                &agent.card_name
+            },
+        ),
         routing: value(
             llm_routing_of(agent.id, agent.last_llm_call_at.is_some(), connections).label(),
         ),
@@ -330,12 +343,32 @@ fn llm_routing_state(
     registered: &[RegisteredA2aAgent],
     connections: &a2a::connections::Connections,
 ) -> LlmRouting {
-    match registered
-        .iter()
-        .find(|entry| entry.card_name == agent.name)
-    {
+    match registration_of(agent, registered) {
         Some(entry) => llm_routing_of(entry.id, entry.last_llm_call_at.is_some(), connections),
         None => LlmRouting::Off,
+    }
+}
+
+/// How the control plane registered `agent`: the entry for its card name and copy.
+fn registration_of<'a>(
+    agent: &A2aAgent,
+    registered: &'a [RegisteredA2aAgent],
+) -> Option<&'a RegisteredA2aAgent> {
+    registered
+        .iter()
+        .find(|entry| entry.card_name == agent.name && entry.instance == agent.instance)
+}
+
+/// The name an agent is listed under: its card name, or its catalog name when another agent
+/// running here has the same card name (`planner`, `planner-3fa2`), so each copy can be named.
+fn shown_name(agent: &A2aAgent, running: &[A2aAgent], registered: &[RegisteredA2aAgent]) -> String {
+    let namesakes = running
+        .iter()
+        .filter(|other| other.name == agent.name)
+        .count();
+    match registration_of(agent, registered) {
+        Some(entry) if namesakes > 1 => a2a::printable(&entry.name),
+        _ => agent.name.clone(),
     }
 }
 
@@ -379,9 +412,9 @@ fn coding_agent_row(agent: Agent, settings: &IntegrationState) -> DiscoverRow {
 /// A running A2A agent: found by its card, so always detected; connected once its LLM calls
 /// go through Nasiko. A2A CARD is the card URL as fetched from this machine — not the card's
 /// own `url`, which inside a Docker container names the unpublished port.
-fn a2a_agent_row(agent: &A2aAgent, routing: LlmRouting) -> DiscoverRow {
+fn a2a_agent_row(agent: &A2aAgent, name: &str, routing: LlmRouting) -> DiscoverRow {
     DiscoverRow {
-        agent: agent.name.clone(),
+        agent: name.to_string(),
         detected: true,
         connected: routing.connected(),
         version: agent.version().unwrap_or("-").to_string(),
@@ -440,6 +473,168 @@ fn format_discover_table(rows: &[DiscoverRow]) -> String {
 
 // ─── Connecting an A2A agent ─────────────────────────────────────────────────
 
+/// The running A2A agent `target` names, for `connect`: its card URL, its catalog name, or its
+/// card name when no other agent running here has that name. `Ok(None)` when it names none
+/// (it may be a control plane). Fails when it is a card name several copies share and none of
+/// them has it as catalog name, listing how to name each.
+///
+/// Asks the control plane only when the card name alone cannot decide: to read the catalog
+/// names (a name like `planner-3fa2`), or to register copies that share a name.
+pub fn select_a2a_agent(target: &str, running: &RunningA2aAgents) -> Result<Option<A2aAgent>> {
+    let agents = &running.agents;
+    let namesakes = agents.iter().filter(|agent| agent.name == target).count();
+    let maybe_catalog_name = namesakes == 0
+        && agents
+            .iter()
+            .any(|agent| target.starts_with(&format!("{}-", catalog_slug(&agent.name))));
+    let catalog: Vec<CatalogEntry> = if namesakes > 1 {
+        register_running(running)?
+            .into_iter()
+            .map(CatalogEntry::from)
+            .collect()
+    } else if maybe_catalog_name && let Some(machine) = a2a::machine_name() {
+        control_plane::list_discovered(&machine)
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|entry| entry.status == "registered")
+            .map(CatalogEntry::from)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    match select(target, agents, &catalog) {
+        Selection::None => Ok(None),
+        Selection::One(index) => {
+            let agent = &agents[index];
+            let others: Vec<String> = agents
+                .iter()
+                .enumerate()
+                .filter(|(other, copy)| *other != index && copy.name == agent.name)
+                .map(|(_, copy)| copy_line(copy, &catalog))
+                .collect();
+            if !others.is_empty() {
+                term::print_info(&format!(
+                    "Connecting {}. Other agents named {} run here:\n{}",
+                    copy_line(agent, &catalog),
+                    agent.name,
+                    others.join("\n")
+                ));
+            }
+            Ok(Some(agent.clone()))
+        }
+        Selection::Ambiguous(copies) => {
+            let lines: Vec<String> = copies
+                .iter()
+                .map(|index| copy_line(&agents[*index], &catalog))
+                .collect();
+            bail!(
+                "{} agents are named {target}; name one by its catalog name or card URL:\n{}",
+                copies.len(),
+                lines.join("\n")
+            )
+        }
+    }
+}
+
+/// How a copy is listed when several share a name: its catalog name (when registered), card
+/// URL and folder.
+fn copy_line(agent: &A2aAgent, catalog: &[CatalogEntry]) -> String {
+    let name = catalog
+        .iter()
+        .find(|entry| entry.is(agent))
+        .map_or(agent.name.as_str(), |entry| entry.name.as_str());
+    let folder = match &agent.origin {
+        a2a::EndpointOrigin::Process { pid: Some(pid), .. } => {
+            a2a::process::working_folder(*pid).map(|folder| tildify(&folder))
+        }
+        a2a::EndpointOrigin::Docker { container } => Some(format!("container {container}")),
+        a2a::EndpointOrigin::Process { pid: None, .. } => None,
+    };
+    format!(
+        "  {}  {}{}",
+        a2a::printable(name),
+        agent.card_url,
+        folder
+            .map(|f| format!("  {}", a2a::printable(&f)))
+            .unwrap_or_default()
+    )
+}
+
+/// The start the control plane gives catalog names from `card_name` (its slug, roughly), so a
+/// target that cannot be one is never looked up.
+fn catalog_slug(card_name: &str) -> String {
+    card_name.to_lowercase().replace(' ', "-")
+}
+
+/// One registered agent, as `connect` names it.
+struct CatalogEntry {
+    card_name: String,
+    instance: Option<String>,
+    name: String,
+}
+
+impl CatalogEntry {
+    fn is(&self, agent: &A2aAgent) -> bool {
+        self.card_name == agent.name && self.instance == agent.instance
+    }
+}
+
+impl From<RegisteredA2aAgent> for CatalogEntry {
+    fn from(entry: RegisteredA2aAgent) -> Self {
+        Self {
+            card_name: entry.card_name,
+            instance: entry.instance,
+            name: entry.name,
+        }
+    }
+}
+
+impl From<ListedA2aAgent> for CatalogEntry {
+    fn from(entry: ListedA2aAgent) -> Self {
+        Self {
+            card_name: entry.card_name,
+            instance: entry.instance,
+            name: entry.name,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum Selection {
+    None,
+    One(usize),
+    /// Indexes of the copies sharing the card name.
+    Ambiguous(Vec<usize>),
+}
+
+/// Which of `agents` `target` names: a card URL, then a catalog name, then a card name.
+fn select(target: &str, agents: &[A2aAgent], catalog: &[CatalogEntry]) -> Selection {
+    if target.contains("://") {
+        let wanted = target.trim_end_matches('/');
+        return agents
+            .iter()
+            .position(|agent| agent.card_url.trim_end_matches('/') == wanted)
+            .map_or(Selection::None, Selection::One);
+    }
+    if let Some(index) = catalog
+        .iter()
+        .filter(|entry| entry.name == target)
+        .find_map(|entry| agents.iter().position(|agent| entry.is(agent)))
+    {
+        return Selection::One(index);
+    }
+    let namesakes: Vec<usize> = (0..agents.len())
+        .filter(|index| agents[*index].name == target)
+        .collect();
+    match namesakes.as_slice() {
+        [] => Selection::None,
+        [index] => Selection::One(*index),
+        _ => Selection::Ambiguous(namesakes),
+    }
+}
+
 /// What `connect` does for one running A2A agent: its catalog identity, the variables that
 /// route its LLM calls through Nasiko, and where they go.
 pub struct A2aConnection {
@@ -469,10 +664,7 @@ pub fn prepare_a2a_connection(
         );
     }
     let registered = register_running(running)?;
-    let entry = registered
-        .iter()
-        .find(|entry| entry.card_name == agent.name)
-        .with_context(|| {
+    let entry = registration_of(agent, &registered).with_context(|| {
             format!(
                 "{} was not registered (is this machine's hostname readable, and did discovery finish without warnings?)",
                 agent.name
@@ -551,7 +743,14 @@ pub fn save_a2a_connection(connection: &A2aConnection, file: Option<(&Path, &str
 /// wrote and forget the connection. `Ok(None)` when no A2A agent of that name is connected.
 pub fn disconnect_a2a_agent(name: &str) -> Result<Option<String>> {
     let mut connections = a2a::connections::Connections::load()?;
-    let Some((id, connection)) = connections.find(name) else {
+    let found = connections.find(name).map_err(|names| {
+        anyhow::anyhow!(
+            "{} connected agents are named {name}; disconnect one by its catalog name: {}",
+            names.len(),
+            names.join(", ")
+        )
+    })?;
+    let Some((id, connection)) = found else {
         return Ok(None);
     };
     let message = match connection.file.clone() {
@@ -1019,6 +1218,7 @@ mod tests {
                 command: "python".into(),
             },
             raw_card: serde_json::json!({"name": name}),
+            instance: None,
         }
     }
 
@@ -1026,7 +1226,7 @@ mod tests {
     fn a2a_agents_join_the_coding_agent_table_as_detected() {
         let agent = discovered("research-crew", Ok("1.0.0".into()));
 
-        let row = a2a_agent_row(&agent, LlmRouting::Off);
+        let row = a2a_agent_row(&agent, &agent.name, LlmRouting::Off);
 
         assert!(row.detected);
         assert_eq!(row.connected, "no");
@@ -1042,7 +1242,7 @@ mod tests {
     #[test]
     fn an_a2a_agents_connected_column_is_its_llm_routing() {
         let agent = discovered("research-crew", Ok("1.0.0".into()));
-        let connected = |routing| a2a_agent_row(&agent, routing).connected;
+        let connected = |routing| a2a_agent_row(&agent, &agent.name, routing).connected;
 
         assert_eq!(connected(LlmRouting::Off), "no");
         assert_eq!(connected(LlmRouting::Waiting), "waiting");
@@ -1053,7 +1253,10 @@ mod tests {
     fn an_invalid_card_has_no_version() {
         let agent = discovered("half-built", Err(Vec::new()));
 
-        assert_eq!(a2a_agent_row(&agent, LlmRouting::Off).version, "-");
+        assert_eq!(
+            a2a_agent_row(&agent, &agent.name, LlmRouting::Off).version,
+            "-"
+        );
     }
 
     fn coding_row(agent: &str, config: &str) -> DiscoverRow {
@@ -1112,6 +1315,7 @@ mod tests {
     fn registered(card_name: &str, called: bool) -> RegisteredA2aAgent {
         RegisteredA2aAgent {
             card_name: card_name.into(),
+            instance: None,
             id: uuid::Uuid::new_v4(),
             name: card_name.into(),
             last_llm_call_at: called.then(chrono::Utc::now),
@@ -1151,7 +1355,9 @@ mod tests {
     fn listed(card_name: &str, status: &str, called: bool) -> ListedA2aAgent {
         ListedA2aAgent {
             card_name: card_name.into(),
+            instance: None,
             id: uuid::Uuid::new_v4(),
+            name: card_name.into(),
             status: status.into(),
             last_llm_call_at: called.then(chrono::Utc::now),
         }
@@ -1343,5 +1549,106 @@ mod tests {
         };
 
         assert_eq!(auto_setup_action(Some(&state), Some(6), 7), AutoSetup::Keep);
+    }
+
+    fn copy(name: &str, port: u16, instance: &str) -> a2a::DiscoveredAgent {
+        a2a::DiscoveredAgent {
+            card_url: format!("http://127.0.0.1:{port}/assistants/{name}/card"),
+            instance: Some(instance.into()),
+            ..discovered(name, Ok("1.0.0".into()))
+        }
+    }
+
+    fn catalog_entry(card_name: &str, instance: &str, name: &str) -> CatalogEntry {
+        CatalogEntry {
+            card_name: card_name.into(),
+            instance: Some(instance.into()),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn connect_names_a_copy_by_card_url_catalog_name_or_a_card_name_no_other_shares() {
+        let agents = [
+            copy("planner", 2024, "aaaa"),
+            copy("planner", 2025, "bbbb"),
+            copy("writer", 2024, "aaaa"),
+        ];
+        let catalog = [
+            catalog_entry("planner", "aaaa", "planner"),
+            catalog_entry("planner", "bbbb", "planner-bbbb"),
+            catalog_entry("writer", "aaaa", "writer"),
+        ];
+
+        assert_eq!(select("writer", &agents, &[]), Selection::One(2));
+        assert_eq!(
+            select("planner", &agents, &[]),
+            Selection::Ambiguous(vec![0, 1])
+        );
+        assert_eq!(select("planner", &agents, &catalog), Selection::One(0));
+        assert_eq!(select("planner-bbbb", &agents, &catalog), Selection::One(1));
+        assert_eq!(
+            select(
+                "http://127.0.0.1:2025/assistants/planner/card/",
+                &agents,
+                &[]
+            ),
+            Selection::One(1)
+        );
+        assert_eq!(
+            select("http://127.0.0.1:9/card", &agents, &[]),
+            Selection::None
+        );
+        assert_eq!(select("prod", &agents, &catalog), Selection::None);
+        // Neither copy holds the plain name (both registered after a third took it).
+        let suffixed = [
+            catalog_entry("planner", "aaaa", "planner-aaaa"),
+            catalog_entry("planner", "bbbb", "planner-bbbb"),
+        ];
+        assert_eq!(
+            select("planner", &agents, &suffixed),
+            Selection::Ambiguous(vec![0, 1])
+        );
+    }
+
+    #[test]
+    fn copies_sharing_a_card_name_are_listed_by_their_catalog_names() {
+        let agents = [
+            copy("planner", 2024, "aaaa"),
+            copy("planner", 2025, "bbbb"),
+            copy("writer", 2024, "aaaa"),
+        ];
+        let entry = |card_name: &str, instance: &str, name: &str| RegisteredA2aAgent {
+            instance: Some(instance.into()),
+            name: name.into(),
+            ..registered(card_name, false)
+        };
+        let registered = [
+            entry("planner", "aaaa", "planner"),
+            entry("planner", "bbbb", "planner-bbbb"),
+            entry("writer", "aaaa", "writer"),
+        ];
+        let shown: Vec<String> = agents
+            .iter()
+            .map(|agent| shown_name(agent, &agents, &registered))
+            .collect();
+        assert_eq!(shown, ["planner", "planner-bbbb", "writer"]);
+        // Before registration (not logged in) each shows its card name.
+        assert_eq!(shown_name(&agents[1], &agents, &[]), "planner");
+    }
+
+    #[test]
+    fn status_lists_copies_sharing_a_card_name_by_their_catalog_names() {
+        let mut first = listed("planner", "registered", false);
+        let mut second = listed("planner", "registered", false);
+        first.instance = Some("aaaa".into());
+        second.instance = Some("bbbb".into());
+        second.name = "planner-bbbb".into();
+        let section =
+            discovered_section(&[first, second], &a2a::connections::Connections::default())
+                .unwrap();
+        let rows = words(&section);
+        assert_eq!(rows[2][0], "planner");
+        assert_eq!(rows[3][0], "planner-bbbb");
     }
 }

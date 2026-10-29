@@ -63,6 +63,9 @@ const DISCOVERY_SYNC_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 pub struct RegisteredA2aAgent {
     /// The card's `name`, as reported.
     pub card_name: String,
+    /// Which copy it is, as reported.
+    #[serde(default)]
+    pub instance: Option<String>,
     pub id: uuid::Uuid,
     /// Its catalog name.
     pub name: String,
@@ -76,11 +79,11 @@ struct RegisteredA2aAgents {
 }
 
 /// Make the active cluster's catalog match the A2A agents running on `machine`: `cards` are
-/// every agent with a valid card; the machine's others are marked stopped. `None` when not
-/// logged in, so nothing is registered.
+/// every agent with a valid card, with which copy it is; the machine's others are marked
+/// stopped. `None` when not logged in, so nothing is registered.
 pub fn register_discovered(
     machine: &str,
-    cards: &[serde_json::Value],
+    cards: &[(serde_json::Value, Option<String>)],
 ) -> Result<Option<Vec<RegisteredA2aAgent>>> {
     let (_, entry) = crate::config::active_cluster()?;
     if entry.token.is_none() {
@@ -88,7 +91,10 @@ pub fn register_discovered(
     }
     let client =
         crate::api::Client::from_cluster_entry_with_timeout(&entry, Some(DISCOVERY_SYNC_TIMEOUT));
-    let agents: Vec<serde_json::Value> = cards.iter().map(|card| json!({"card": card})).collect();
+    let agents: Vec<serde_json::Value> = cards
+        .iter()
+        .map(|(card, instance)| json!({"card": card, "instance": instance}))
+        .collect();
     let response: RegisteredA2aAgents = client.post_json_quiet(
         "/agents/discovered",
         &json!({"machine": machine, "agents": agents}),
@@ -101,7 +107,12 @@ pub fn register_discovered(
 pub struct ListedA2aAgent {
     /// The card's `name`, as last reported.
     pub card_name: String,
+    /// Which copy it is, as last reported.
+    #[serde(default)]
+    pub instance: Option<String>,
     pub id: uuid::Uuid,
+    /// Its catalog name.
+    pub name: String,
     /// `registered` while the machine's last report included it, `stopped` once one did not.
     pub status: String,
     /// When the router last handled an LLM call made with this agent's key.

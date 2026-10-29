@@ -53,12 +53,23 @@ impl Connections {
             .with_context(|| format!("cannot write {}", path.display()))
     }
 
-    /// The connection whose card or catalog name is `name`.
-    pub fn find(&self, name: &str) -> Option<(Uuid, &Connection)> {
-        self.agents
-            .iter()
-            .find(|(_, connection)| connection.card_name == name || connection.name == name)
-            .map(|(id, connection)| (*id, connection))
+    /// The connection whose catalog name is `name`, else the one whose card name it is. `Err`
+    /// lists the catalog names when several connected copies share that card name.
+    pub fn find(&self, name: &str) -> Result<Option<(Uuid, &Connection)>, Vec<String>> {
+        if let Some((id, connection)) = self.agents.iter().find(|(_, c)| c.name == name) {
+            return Ok(Some((*id, connection)));
+        }
+        let mut copies = self.agents.iter().filter(|(_, c)| c.card_name == name);
+        match (copies.next(), copies.next()) {
+            (None, _) => Ok(None),
+            (Some((id, connection)), None) => Ok(Some((*id, connection))),
+            _ => Err(self
+                .agents
+                .values()
+                .filter(|c| c.card_name == name)
+                .map(|c| c.name.clone())
+                .collect()),
+        }
     }
 }
 
@@ -89,14 +100,32 @@ mod tests {
         let loaded = Connections::load_from(&file).unwrap();
 
         assert_eq!(loaded, connections);
-        assert_eq!(
-            loaded.find("Crew Researcher").map(|(found, _)| found),
-            Some(id)
-        );
-        assert_eq!(
-            loaded.find("crew-researcher").map(|(found, _)| found),
-            Some(id)
-        );
-        assert!(loaded.find("writer").is_none());
+        let found = |name: &str| loaded.find(name).map(|found| found.map(|(id, _)| id));
+        assert_eq!(found("Crew Researcher"), Ok(Some(id)));
+        assert_eq!(found("crew-researcher"), Ok(Some(id)));
+        assert_eq!(found("writer"), Ok(None));
+    }
+
+    #[test]
+    fn copies_sharing_a_card_name_are_found_only_by_their_catalog_names() {
+        let mut connections = Connections::default();
+        let (first, second) = (Uuid::new_v4(), Uuid::new_v4());
+        for (id, name) in [(first, "planner"), (second, "planner-3fa2")] {
+            connections.agents.insert(
+                id,
+                Connection {
+                    card_name: "Planner".into(),
+                    name: name.into(),
+                    file: None,
+                },
+            );
+        }
+        let found = |name: &str| connections.find(name).map(|found| found.map(|(id, _)| id));
+
+        assert_eq!(found("planner"), Ok(Some(first)));
+        assert_eq!(found("planner-3fa2"), Ok(Some(second)));
+        let mut names = found("Planner").unwrap_err();
+        names.sort();
+        assert_eq!(names, ["planner", "planner-3fa2"]);
     }
 }

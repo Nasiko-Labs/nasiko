@@ -24,7 +24,7 @@ pub fn inspect(pid: u32) -> ProcessFacts {
     let proc_dir = PathBuf::from(format!("/proc/{pid}"));
     if proc_dir.exists() {
         return ProcessFacts {
-            cwd: std::fs::read_link(proc_dir.join("cwd")).ok(),
+            cwd: working_folder(pid),
             args: std::fs::read(proc_dir.join("cmdline"))
                 .map(|raw| split_nul(&raw))
                 .unwrap_or_default(),
@@ -38,12 +38,10 @@ pub fn inspect(pid: u32) -> ProcessFacts {
                 .unwrap_or_default(),
         };
     }
+    let cwd = working_folder(pid);
     let pid = pid.to_string();
     ProcessFacts {
-        cwd: lsof_names(&["-a", "-p", &pid, "-d", "cwd", "-Fn"])
-            .into_iter()
-            .next()
-            .map(PathBuf::from),
+        cwd,
         args: match run_command(
             "ps",
             &["-ww", "-o", "command=", "-p", &pid],
@@ -56,6 +54,18 @@ pub fn inspect(pid: u32) -> ProcessFacts {
             lsof_names(&["-p", &pid, "-Fn"]).iter().map(String::as_str),
         ),
     }
+}
+
+/// `pid`'s working folder, when it can be read.
+pub fn working_folder(pid: u32) -> Option<PathBuf> {
+    let proc_cwd = PathBuf::from(format!("/proc/{pid}/cwd"));
+    if proc_cwd.parent().is_some_and(Path::exists) {
+        return std::fs::read_link(proc_cwd).ok();
+    }
+    lsof_names(&["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .into_iter()
+        .next()
+        .map(PathBuf::from)
 }
 
 /// The `n<name>` values of `lsof -F…n` output.

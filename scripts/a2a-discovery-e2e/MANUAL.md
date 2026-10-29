@@ -147,6 +147,22 @@ this agent's key.
 `planner`'s CONNECTED is `waiting`, and `status` shows its LLM ROUTING `waiting`: LangGraph has
 not reread `.env` yet.
 
+Two copies of one app (the same agent names, served from two folders) are two agents. To see
+it, start a second copy on another port and discover again:
+
+```sh
+cp -R "$OSS/scripts/a2a-discovery-e2e/langgraph" "$T/app-copy"
+cp "$T/env.before" "$T/app-copy/.env"
+(cd "$T/app-copy" && LANGSMITH_TRACING=false "$T/venv/bin/langgraph" dev --no-browser --no-reload --port 2025 > "$T/langgraph-copy.log" 2>&1 & echo $! > "$T/langgraph-copy.pid")
+sleep 15 && nasiko agents discover
+```
+
+Each copy has its own row, named by its catalog name: `planner` and `planner-<4 letters>` (the
+A2A CARD column says which is on which port). `nasiko connect` and `nasiko disconnect` take
+either name, or the card URL. Restarting a copy, even on another port, keeps its name, key and
+history: a copy is known by its folder. Stop the copy before going on, so the steps below see
+one `planner`: `kill $(cat "$T/langgraph-copy.pid")`.
+
 ## 6. Restart the agent; a call goes through Nasiko
 
 ```sh

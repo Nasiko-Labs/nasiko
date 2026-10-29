@@ -281,7 +281,7 @@ fn main() -> Result<()> {
                 coding_agent,
             } => match target.as_deref() {
                 Some(url) if !local_agents::is_coding_agent(url) => {
-                    if let Some((agent, running)) = local_agents::running_a2a_agent(url) {
+                    if let Some((agent, running)) = local_agents::running_a2a_agent(url)? {
                         if name.is_some() {
                             anyhow::bail!(
                                 "--name applies only when connecting a control-plane URL"

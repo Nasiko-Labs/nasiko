@@ -2006,22 +2006,32 @@ fn reporting_agent_name(agent: &AgentPlan) -> Result<Option<String>> {
 
 // ─── connecting an A2A agent ─────────────────────────────────────────────────
 
-/// The running A2A agent `target` names, with everything running here (registration reports
-/// the whole machine). `None` when `target` is a URL or no running agent has that name, so
-/// `connect` keeps treating it as a control plane.
+/// The running A2A agent `target` names (see [`integration::select_a2a_agent`]), with
+/// everything running here (registration reports the whole machine). `None` when it names no
+/// running agent, so `connect` keeps treating it as a control plane; a URL is looked up only
+/// when it is on this machine.
 pub fn running_a2a_agent(
     target: &str,
-) -> Option<(integration::A2aAgent, integration::RunningA2aAgents)> {
-    if target.contains("://") || is_coding_agent(target) {
-        return None;
+) -> Result<Option<(integration::A2aAgent, integration::RunningA2aAgents)>> {
+    if is_coding_agent(target) || (target.contains("://") && !is_loopback_url(target)) {
+        return Ok(None);
     }
     let running = integration::running_a2a_agents();
-    let agent = running
-        .agents
-        .iter()
-        .find(|agent| agent.name == target)?
-        .clone();
-    Some((agent, running))
+    Ok(integration::select_a2a_agent(target, &running)?.map(|agent| (agent, running)))
+}
+
+fn is_loopback_url(url: &str) -> bool {
+    let host = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default();
+    let host = match host.rsplit_once(':') {
+        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => host,
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "0.0.0.0")
 }
 
 /// `nasiko connect <a2a agent>`: register it and route its LLM calls through Nasiko. The

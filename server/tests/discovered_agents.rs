@@ -5,6 +5,8 @@
 //!     keeps one row per agent across reports, marks agents no longer reported `stopped`, and
 //!     never makes them `running` (so nothing routes chat to them)
 //!   - GET /api/agents/discovered — reads a machine's agents back, as `nasiko status` shows them
+//!   - Copies — two copies of one agent on a machine (one card name, two copy ids) are two
+//!     agents, and a row registered before copy ids is taken over by the first copy
 //!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
 //!     owner, after which registration reports when it last made a call, and FinOps counts it
@@ -238,6 +240,142 @@ async fn the_same_agent_on_two_machines_is_two_agents() {
     assert_eq!(on_desktop["name"], "crew-researcher-desktop");
     // Each machine's report leaves the other machine's agents alone.
     assert_eq!(desktop["stopped"], 0);
+
+    server.cleanup().await;
+}
+
+/// Report `copies` (card, copy id) from `machine`, as the CLI does.
+async fn report_copies(
+    server: &TestServer,
+    user: Uuid,
+    username: &str,
+    machine: &str,
+    copies: &[(Value, Option<&str>)],
+) -> reqwest::Response {
+    let agents: Vec<Value> = copies
+        .iter()
+        .map(|(card, instance)| json!({"card": card, "instance": instance}))
+        .collect();
+    common::as_member(
+        server.client.post(server.url("/api/agents/discovered")),
+        &user.to_string(),
+        username,
+    )
+    .json(&json!({"machine": machine, "agents": agents}))
+    .send()
+    .await
+    .expect("report discovered agents")
+}
+
+fn copy_entry<'a>(body: &'a Value, instance: &str) -> &'a Value {
+    body["agents"]
+        .as_array()
+        .expect("agents array")
+        .iter()
+        .find(|agent| agent["instance"] == instance)
+        .unwrap_or_else(|| panic!("copy {instance} in {body}"))
+}
+
+#[tokio::test]
+#[serial]
+async fn two_copies_of_an_agent_on_one_machine_are_two_agents() {
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "disc-copies").await;
+    let (a, b) = ("aaaa1111aaaa1111", "bbbb2222bbbb2222");
+    let ok = |response: reqwest::Response| async move {
+        assert_eq!(response.status(), 200);
+        response.json::<Value>().await.expect("registration body")
+    };
+
+    // Registered before copies had ids.
+    let legacy = report_ok(&server, user, "disc-copies", "laptop", &[planner_card()]).await;
+    let legacy_id = entry(&legacy, "planner")["id"].clone();
+
+    let both = ok(report_copies(
+        &server,
+        user,
+        "disc-copies",
+        "laptop",
+        &[(planner_card(), Some(a)), (planner_card(), Some(b))],
+    )
+    .await)
+    .await;
+    // The first copy with an id takes over the row without one: same id, key and name.
+    assert_eq!(copy_entry(&both, a)["id"], legacy_id);
+    assert_eq!(copy_entry(&both, a)["name"], "planner");
+    assert_eq!(copy_entry(&both, b)["created"], true);
+    assert_eq!(copy_entry(&both, b)["name"], "planner-bbbb");
+    assert_eq!(both["stopped"], 0);
+
+    // Restarted in any order (on any ports), each copy is the same agent.
+    let again = ok(report_copies(
+        &server,
+        user,
+        "disc-copies",
+        "laptop",
+        &[(planner_card(), Some(b)), (planner_card(), Some(a))],
+    )
+    .await)
+    .await;
+    assert_eq!(copy_entry(&again, a)["id"], legacy_id);
+    assert_eq!(copy_entry(&again, b)["id"], copy_entry(&both, b)["id"]);
+
+    // One copy stopped: only it is marked stopped.
+    let one = ok(report_copies(
+        &server,
+        user,
+        "disc-copies",
+        "laptop",
+        &[(planner_card(), Some(a))],
+    )
+    .await)
+    .await;
+    assert_eq!(one["stopped"], 1);
+    assert_eq!(
+        status_of(&server, &copy_entry(&both, b)["id"]).await,
+        "stopped"
+    );
+
+    // Listed back with their copy ids and catalog names.
+    let listing = listed(&server, user, "disc-copies", "laptop").await;
+    let mut copies: Vec<(String, String, String)> = listing["agents"]
+        .as_array()
+        .expect("agents")
+        .iter()
+        .map(|agent| {
+            (
+                agent["instance"].as_str().unwrap_or_default().to_string(),
+                agent["name"].as_str().unwrap_or_default().to_string(),
+                agent["status"].as_str().unwrap_or_default().to_string(),
+            )
+        })
+        .collect();
+    copies.sort();
+    assert_eq!(
+        copies,
+        [
+            (
+                a.to_string(),
+                "planner".to_string(),
+                "registered".to_string()
+            ),
+            (
+                b.to_string(),
+                "planner-bbbb".to_string(),
+                "stopped".to_string()
+            ),
+        ]
+    );
+
+    let bad = report_copies(
+        &server,
+        user,
+        "disc-copies",
+        "laptop",
+        &[(planner_card(), Some("../etc"))],
+    )
+    .await;
+    assert_eq!(bad.status(), 400);
 
     server.cleanup().await;
 }

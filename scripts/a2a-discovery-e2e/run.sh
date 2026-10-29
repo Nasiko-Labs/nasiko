@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # End-to-end check of local A2A agents, against a real CrewAI agent and a real LangGraph server.
 #
-# 1. Discovery: `nasiko agents discover` lists all three agents in its table (no server needed).
+# 1. Discovery: `nasiko agents discover` lists every agent in its table (no server needed).
 # 2. Registration + LLM routing: against a real nasiko-server (needs `just infra`), discovery
-#    registers the agents; `nasiko connect planner` writes the LangGraph `.env`; after a restart
-#    the agent's model call goes through Nasiko, shows up in Sessions, and discovery shows it
-#    CONNECTED `yes`;
-#    `nasiko disconnect planner` restores the `.env` exactly. Throughout, `nasiko status` shows
-#    what discovery registered, read back from the server, without probing anything itself.
+#    registers the agents (two copies of the LangGraph app, in two folders, are two agents);
+#    `nasiko connect` writes one copy's `.env` and leaves the other's alone; after a restart on
+#    another port it is still the same agent, its model call goes through Nasiko, shows up in
+#    Sessions, and discovery shows it CONNECTED `yes`; `nasiko disconnect` restores the `.env`
+#    exactly. Throughout, `nasiko status` shows what discovery registered, read back from the
+#    server, without probing anything itself.
 #
 # Pass --discovery-only to skip step 2. The first run installs both frameworks into
 # virtualenvs under .work/ (needs network); later runs reuse them. Everything runs on free
@@ -40,6 +41,7 @@ free_port() {
 }
 crewai_port=$(free_port)
 langgraph_port=$(free_port)
+copy_port=$(free_port)
 
 pids=()
 trap 'kill "${pids[@]}" 2>/dev/null || true' EXIT
@@ -63,23 +65,29 @@ nasiko() { HOME="$HOME_E2E" NO_PROXY='*' no_proxy='*' "$target/debug/nasiko" "$@
 pids+=($!)
 
 # Served from a copy, so the dev server's state and the `.env` stay out of the source tree.
+# A second copy of the same app, in another folder, serves agents with the same names.
 app="$work/app"
-rm -rf "$app" && cp -R "$here/langgraph" "$app"
-printf 'OPENAI_API_KEY=sk-agent-own-key\nKEEP_ME=1\n' > "$app/.env"
+copy="$work/app-copy"
+for dir in "$app" "$copy"; do
+  rm -rf "$dir" && cp -R "$here/langgraph" "$dir"
+  printf 'OPENAI_API_KEY=sk-agent-own-key\nKEEP_ME=1\n' > "$dir/.env"
+done
 cp "$app/.env" "$work/env.before"
 langgraph_pid=
-start_langgraph() {
-  (cd "$app" && LANGSMITH_TRACING=false NO_PROXY='*' no_proxy='*' \
-    exec "$work/venv-langgraph/bin/langgraph" dev --no-browser --no-reload --port "$langgraph_port") \
-    >> "$work/langgraph.log" 2>&1 &
+start_langgraph() { # start_langgraph <folder> <port> <log name>
+  (cd "$1" && LANGSMITH_TRACING=false NO_PROXY='*' no_proxy='*' \
+    exec "$work/venv-langgraph/bin/langgraph" dev --no-browser --no-reload --port "$2") \
+    >> "$work/$3.log" 2>&1 &
   langgraph_pid=$!
   pids+=($langgraph_pid)
-  wait_for langgraph "http://127.0.0.1:$langgraph_port/info"
+  wait_for "$3" "http://127.0.0.1:$2/info"
 }
 : > "$work/langgraph.log"
+: > "$work/langgraph-copy.log"
 
 echo "Waiting for the agents ..."
-start_langgraph
+start_langgraph "$copy" "$copy_port" langgraph-copy
+start_langgraph "$app" "$langgraph_port" langgraph
 wait_for crewai "http://127.0.0.1:$crewai_port/.well-known/agent-card.json"
 
 # ── 1. Discovery ─────────────────────────────────────────────────────────────
@@ -88,6 +96,7 @@ echo "$output"
 for agent in crew-researcher planner writer; do
   grep -qE "^ *$agent " <<< "$output" || fail "$agent was not discovered (logs in $work)"
 done
+[ "$(grep -cE "^ *planner " <<< "$output")" = 2 ] || fail "both copies of planner should be listed"
 echo "PASS: all agents discovered"
 
 # `status` is unchanged: it probes nothing, so it lists no A2A agent. (No cluster yet, so it
@@ -160,11 +169,22 @@ expect_status() { # expect_status <agent> <on|waiting|off> <when>
   echo "ok: status shows $1 LLM ROUTING $2 $3"
 }
 
-expect_connected planner no "once registered"
-expect_status planner off "once registered"
+# The two copies of `planner` are two agents, listed by their catalog names.
+name_on_port() { # name_on_port <port>: the planner row whose A2A CARD is on that port
+  nasiko agents discover 2>&1 | awk -v port=":$1/" '$1 ~ /^planner/ && index($NF, port) { print $1; exit }'
+}
+planner=$(name_on_port "$langgraph_port")
+planner_copy=$(name_on_port "$copy_port")
+[ -n "$planner" ] && [ -n "$planner_copy" ] && [ "$planner" != "$planner_copy" ] ||
+  fail "the two copies of planner are not two agents (got '$planner' and '$planner_copy')"
+echo "ok: the copies of planner are $planner and $planner_copy"
+
+expect_connected "$planner" no "once registered"
+expect_status "$planner" off "once registered"
+expect_status "$planner_copy" off "once registered"
 expect_status writer off "once registered"
 
-connected=$(nasiko connect planner --yes 2>&1)
+connected=$(nasiko connect "$planner" --yes 2>&1)
 echo "$connected"
 grep -q "now holds this agent's Nasiko key" <<< "$connected" ||
   fail "connect did not tell the user the file now holds the agent's key"
@@ -172,14 +192,20 @@ grep -q '^# >>> nasiko' "$app/.env" || fail "connect did not write Nasiko's bloc
 grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$app/.env" ||
   fail "connect did not set the agent's own OPENAI_API_KEY aside"
 grep -q "^OPENAI_BASE_URL=$server/v1$" "$app/.env" || fail "connect wrote the wrong OPENAI_BASE_URL"
-expect_connected planner waiting "after connect"
-expect_status planner waiting "after connect"
+cmp -s "$copy/.env" "$work/env.before" || fail "connect changed the other copy's .env"
+expect_connected "$planner" waiting "after connect"
+expect_connected "$planner_copy" no "after connecting the other copy"
+expect_status "$planner" waiting "after connect"
 
-echo "Restarting LangGraph so it reads the new .env ..."
+# Restarted on another port: still the same agent, since it is known by its folder.
+echo "Restarting LangGraph on another port so it reads the new .env ..."
 kill "$langgraph_pid"
 for _ in $(seq 30); do curl -sf --noproxy '*' -o /dev/null "http://127.0.0.1:$langgraph_port/info" || break; sleep 1; done
 sleep 1
-start_langgraph
+langgraph_port=$(free_port)
+start_langgraph "$app" "$langgraph_port" langgraph
+[ "$(name_on_port "$langgraph_port")" = "$planner" ] ||
+  fail "after a restart on another port the copy is no longer $planner"
 curl -sf --noproxy '*' -X POST "http://127.0.0.1:$langgraph_port/runs/wait" \
   -H 'content-type: application/json' \
   -d '{"assistant_id":"planner","input":{"messages":[{"role":"user","content":"hi"}]}}' |
@@ -193,18 +219,19 @@ token=$("$python" -c 'import json, sys; c = json.load(open(sys.argv[1])); print(
   "$HOME_E2E/.nasiko/config.json")
 sessions_of_planner() {
   curl -sf --noproxy '*' "$server/api/observability/session/list" -H "authorization: Bearer $token" |
-    "$python" -c 'import json, sys; print(sum(s.get("agent_id") == "planner" for s in json.load(sys.stdin)["data"]["sessions"]))'
+    "$python" -c 'import json, sys; print(sum(s.get("agent_id") == sys.argv[1] for s in json.load(sys.stdin)["data"]["sessions"]))' "$planner"
 }
 for _ in $(seq 20); do [ "$(sessions_of_planner)" = 1 ] && break; sleep 0.5; done
 [ "$(sessions_of_planner)" = 1 ] || fail "Sessions does not list planner's session after a routed call"
 echo "ok: Sessions lists planner's session"
-expect_connected planner yes "after a routed call"
-expect_status planner on "after a routed call"
+expect_connected "$planner" yes "after a routed call"
+expect_connected "$planner_copy" no "while the other copy routes"
+expect_status "$planner" on "after a routed call"
 
-nasiko disconnect planner
+nasiko disconnect "$planner"
 cmp -s "$app/.env" "$work/env.before" || fail "disconnect did not restore $app/.env"
 echo "ok: disconnect restored .env"
-expect_connected planner no "after disconnect"
-expect_status planner off "after disconnect"
+expect_connected "$planner" no "after disconnect"
+expect_status "$planner" off "after disconnect"
 
 echo "PASS: agents registered, LLM routing connected and disconnected"

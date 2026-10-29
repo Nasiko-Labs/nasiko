@@ -61,6 +61,10 @@ pub struct DiscoveredAgent {
     pub origin: EndpointOrigin,
     /// The card exactly as served; what registration sends to the control plane.
     pub raw_card: serde_json::Value,
+    /// Which copy of the agent this is, so two copies with one card name are two agents: a
+    /// hash of the folder or container serving it, stable across restarts and port changes
+    /// ([`identify_copies`]). `None` when neither could be read and the name is unique here.
+    pub instance: Option<String>,
 }
 
 impl DiscoveredAgent {
@@ -100,6 +104,7 @@ pub fn discover_local(excluded_ports: &[u16]) -> Discovery {
     let scan = endpoints::collect(&endpoints::default_sources(), excluded_ports);
     let http = http::UreqCardHttp::new();
     let mut discovery = discover_at(&scan.endpoints, Framework::ALL, &http);
+    identify_copies(&mut discovery.agents, process::working_folder);
     // A source's warning can quote a command's stderr.
     let source_warnings = scan.warnings.iter().map(|w| printable_lines(w));
     discovery.warnings.splice(0..0, source_warnings);
@@ -204,7 +209,63 @@ fn to_discovered(found: FoundCard, origin: &EndpointOrigin) -> Option<Discovered
         origin: origin.clone(),
         // Sent to the server as JSON, never printed.
         raw_card: found.card,
+        instance: None,
     })
+}
+
+/// Set each agent's [`DiscoveredAgent::instance`]: a hash of what serves it, its container or
+/// its process's working folder (`folder_of`, asked once per process), which survives restarts
+/// and port changes. An agent this cannot tell apart from another of its name (its folder
+/// unreadable, or one folder serving the name twice) is told apart by its card URL instead,
+/// which a restart on another port changes. A lone agent with nothing to hash has none.
+pub fn identify_copies(
+    agents: &mut [DiscoveredAgent],
+    folder_of: impl Fn(u32) -> Option<std::path::PathBuf>,
+) {
+    let mut folders = std::collections::HashMap::new();
+    let served_from: Vec<Option<String>> = agents
+        .iter()
+        .map(|agent| match &agent.origin {
+            EndpointOrigin::Docker { container } => Some(format!("container:{container}")),
+            EndpointOrigin::Process { pid: Some(pid), .. } => folders
+                .entry(*pid)
+                .or_insert_with(|| folder_of(*pid))
+                .as_ref()
+                .map(|folder| format!("folder:{}", folder.display())),
+            EndpointOrigin::Process { pid: None, .. } => None,
+        })
+        .collect();
+    let keys: Vec<(&str, Option<&str>)> = agents
+        .iter()
+        .zip(&served_from)
+        .map(|(agent, from)| (agent.name.as_str(), from.as_deref()))
+        .collect();
+    let instances: Vec<Option<String>> = agents
+        .iter()
+        .zip(&keys)
+        .map(|(agent, key)| {
+            let twins = keys.iter().filter(|other| *other == key).count();
+            let namesakes = keys.iter().filter(|other| other.0 == key.0).count();
+            match key.1 {
+                Some(from) if twins == 1 => Some(short_hash(from)),
+                None if namesakes == 1 => None,
+                from => Some(short_hash(&format!(
+                    "{}\nurl:{}",
+                    from.unwrap_or_default(),
+                    agent.card_url
+                ))),
+            }
+        })
+        .collect();
+    for (agent, instance) in agents.iter_mut().zip(instances) {
+        agent.instance = instance;
+    }
+}
+
+/// The first 16 hex digits of the SHA-256 of `text`: the folder never leaves the machine.
+fn short_hash(text: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(text.as_bytes()))[..16].to_string()
 }
 
 /// `text` with every character that could act on a terminal replaced by `?`:
@@ -700,6 +761,84 @@ mod tests {
             started.elapsed() < PROBE_TIMEOUT,
             "took {:?}",
             started.elapsed()
+        );
+    }
+
+    fn served(name: &str, port: u16, origin: EndpointOrigin) -> DiscoveredAgent {
+        DiscoveredAgent {
+            name: name.into(),
+            card_url: format!("http://127.0.0.1:{port}/card"),
+            card: Ok("1.0.0".into()),
+            origin,
+            raw_card: serde_json::json!({"name": name}),
+            instance: None,
+        }
+    }
+
+    fn process(pid: u32) -> EndpointOrigin {
+        EndpointOrigin::Process {
+            pid: Some(pid),
+            command: "python".into(),
+        }
+    }
+
+    fn folders(pid: u32) -> Option<std::path::PathBuf> {
+        match pid {
+            1 => Some("/work/app".into()),
+            2 => Some("/work/app-copy".into()),
+            3 => Some("/work/app".into()),
+            _ => None,
+        }
+    }
+
+    fn instances(agents: &mut [DiscoveredAgent]) -> Vec<Option<String>> {
+        identify_copies(agents, folders);
+        agents.iter().map(|agent| agent.instance.clone()).collect()
+    }
+
+    #[test]
+    fn a_copy_is_identified_by_its_folder_whatever_port_it_is_on() {
+        let first = instances(&mut [served("planner", 2024, process(1))]);
+        let restarted = instances(&mut [served("planner", 46303, process(1))]);
+        assert_eq!(first, restarted);
+        assert_eq!(first[0].as_ref().map(String::len), Some(16));
+
+        let mut two = [
+            served("planner", 2024, process(1)),
+            served("writer", 2024, process(1)),
+            served("planner", 2025, process(2)),
+            served(
+                "planner",
+                2026,
+                EndpointOrigin::Docker {
+                    container: "p".into(),
+                },
+            ),
+        ];
+        let ids = instances(&mut two);
+        assert_eq!(ids[0], first[0]);
+        assert_eq!(ids[0], ids[1], "one folder, two agent names");
+        assert_ne!(ids[0], ids[2]);
+        assert_ne!(ids[2], ids[3]);
+    }
+
+    #[test]
+    fn copies_a_folder_cannot_tell_apart_are_told_apart_by_card_url() {
+        // One folder serving the same name twice, and a copy whose folder is unreadable.
+        let mut agents = [
+            served("planner", 2024, process(1)),
+            served("planner", 2025, process(3)),
+            served("planner", 2026, process(9)),
+        ];
+        let ids = instances(&mut agents);
+        assert!(ids.iter().all(Option::is_some));
+        assert_ne!(ids[0], ids[1]);
+        assert_ne!(ids[1], ids[2]);
+
+        // Alone, an agent with nothing to hash has no copy id: its name is enough.
+        assert_eq!(
+            instances(&mut [served("planner", 2026, process(9))]),
+            [None]
         );
     }
 }
