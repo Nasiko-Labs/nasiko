@@ -212,12 +212,6 @@ pub async fn a2a_dispatch_handler(
         Err(e) => return Ok(e.into_response()),
     };
 
-    // What the caller attached to this turn. Both dispatch branches below carry it: a routed
-    // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
-    // message. Resolved before either, because an attachment belongs to the turn, not to the
-    // target that happens to answer it.
-    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
-
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
         None
@@ -239,6 +233,14 @@ pub async fn a2a_dispatch_handler(
         }
         Some(agent)
     };
+    // The caller picks `contextId` and `metadata.session_id`, and both are used to read history
+    // and to append messages. A session that already belongs to someone else is answered exactly
+    // like a missing agent would be, so ids cannot be probed; superusers keep their access.
+    for sid in std::iter::once(context_id.as_str()).chain(session_id.as_deref()) {
+        if session_owned_by_other(&state, sid, user_id, claims.is_superuser).await? {
+            return Err(A2aDispatchError::Forbidden("session not found".into()));
+        }
+    }
     // Whoever reads this history decides whether it is compressed: the addressed agent on a direct
     // chat, nobody on an orchestrator-routed one (the Orchestrator's own model reads it, and what
     // reaches an agent afterwards is what that model wrote). Read off the row already in hand
@@ -311,7 +313,7 @@ pub async fn a2a_dispatch_handler(
             &task_id,
             &context_id,
             user_id,
-            &file_parts,
+            &[],
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -329,7 +331,7 @@ pub async fn a2a_dispatch_handler(
                 is_superuser: claims.is_superuser,
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
-                file_parts,
+                file_parts: vec![],
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -817,6 +819,9 @@ pub(crate) async fn orchestrator_stream(
         state.flow_guard.clone(),
         flow_ctx,
         caller_uuid,
+        state.spend_gate.clone(),
+        user_id,
+        context_id.to_string(),
         state.genai_metrics.agent_call_meter(),
     );
 
@@ -1251,6 +1256,7 @@ pub(crate) async fn orchestrator_stream(
                             break;
                         }
                         OrchestratorEvent::Error { message } => {
+                            super::usage_meta::insert_turn_error(&db, &context_id, &message, &flow_id_cleanup).await;
                             yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &message))));
                             break;
                         }
@@ -1664,19 +1670,10 @@ async fn agent_stream(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        // The agent's own body is logged, never returned: it is whatever that server emits for
-        // an error — an HTML stack trace, in the case this was written for — and may name its
-        // internals. The caller gets `agent_rejection_message` instead.
-        tracing::warn!(
-            agent = %agent.name,
-            %status,
-            body = %body.chars().take(512).collect::<String>(),
-            "agent rejected the dispatch"
-        );
-        return Err(A2aDispatchError::AgentRejected {
-            status,
-            message: agent_rejection_message(status, &agent.name, !file_parts.is_empty()),
-        });
+        return Err(A2aDispatchError::Internal(format!(
+            "agent HTTP {}: {}",
+            status, body
+        )));
     }
 
     let content_type = response
@@ -1875,13 +1872,10 @@ async fn agent_stream(
         let mut reply_status_ok = true;
 
         // The agent rejected `message/stream` (e.g. method not found) —
-        // retry once with plain `message/send`, carrying the same attachments as the first try.
+        // retry once with plain `message/send`.
         if resp_body.get("error").is_some() {
-            let mut retry_body = nasiko_types::a2a::build_send_request_with_parts(
-                &effective_query,
-                Some(&context_id),
-                file_parts,
-            );
+            let mut retry_body =
+                nasiko_types::a2a::build_send_request(&effective_query, Some(&context_id));
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2216,146 +2210,30 @@ pub async fn a2a_upload_handler(
     .await
 }
 
-// ─── Inbound attachments ─────────────────────────────────────────────────────
-
-/// Attachments honoured per turn, matching `chat::routes::MAX_FILES_PER_UPLOAD` — the most one
-/// upload call can produce, so a client that uploads and sends in one go never hits this.
-const MAX_ATTACHED_FILES: usize = 10;
-
-/// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
-/// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
-/// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
-/// the storage limit would be. Over it, the turn is refused with a message the user can act on
-/// rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
-
-/// What the caller attached to this turn, in the two forms this endpoint accepts.
-///
-/// - **Inline `raw` parts** on the message — a CLI or API caller carrying the bytes itself.
-///   Bounded by axum's blanket 2 MiB body limit, which this route doesn't lift.
-/// - **`metadata.file_ids`** naming rows already uploaded through
-///   `POST /api/chat/sessions/{id}/files`. The browser path: the bytes are read from storage
-///   here instead of riding in the JSON-RPC body, which is the only way an attachment larger
-///   than that same 2 MiB limit can be sent at all.
-///
-/// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
-/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
-///
-/// An id that resolves to nothing is skipped rather than failing the turn: the text still
-/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
-/// budget is the opposite — the turn is about the file, so it fails loudly.
-async fn inbound_file_parts(
-    state: &AppState,
-    params: &nasiko_types::a2a::SendMessageRequest,
-    session_id: Option<&str>,
-    user_id: Uuid,
-) -> Result<Vec<a2a::Part>, A2aDispatchError> {
-    let mut parts: Vec<a2a::Part> = params
-        .message
-        .parts
-        .iter()
-        .filter(|p| matches!(p.content, PartContent::Raw(_)))
-        .cloned()
-        .collect();
-
-    let ids: Vec<Uuid> = params
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array())
-        .map(|list| {
-            list.iter()
-                .filter_map(|v| v.as_str())
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .take(MAX_ATTACHED_FILES)
-                .collect()
-        })
-        .unwrap_or_default();
-    if ids.is_empty() {
-        return Ok(parts);
-    }
-
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
-        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
-           FROM chat_message_files cmf \
-           JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
-          WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
-            AND ($3::text IS NULL OR cmf.session_id = $3)",
-    )
-    .bind(&ids)
-    .bind(user_id)
-    .bind(session_id)
-    .fetch_all(&state.db)
-    .await
-    .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
-
-    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
-    if total > MAX_ATTACHED_BYTES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
-        )));
-    }
-
-    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
-        rows.iter().map(|r| (r.0, r)).collect();
-    for id in &ids {
-        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
-            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
-            continue;
-        };
-        if storage_uri.starts_with("workspace://") {
-            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
-            continue;
-        }
-        match state.oci_storage.get_blob(storage_uri).await {
-            Ok(bytes) => parts.push(a2a::file_part(
-                bytes.to_vec(),
-                Some(filename.clone()),
-                Some(mime_type.clone()),
-            )),
-            Err(e) => {
-                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
-            }
-        }
-    }
-
-    Ok(parts)
-}
-
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// What the caller is told when an agent answers a dispatch with an error status. The agent's own
-/// body never reaches them (it is that server's error page, not ours), so this line has to carry
-/// enough on its own to act on.
-///
-/// `413` is named explicitly because it has one overwhelmingly common cause with one obvious
-/// remedy: attachments ride inside the A2A message base64'd (~4/3 of the file), and a Node agent
-/// built on Express caps a JSON body at `body-parser`'s 100 KB default — two orders of magnitude
-/// below [`MAX_ATTACHED_BYTES`], which is what this platform is willing to forward. Nothing on
-/// our side can lift that cap, so the only honest advice is a smaller file or a change in the
-/// agent. Every other status is a generic upstream refusal.
-fn agent_rejection_message(status: StatusCode, agent: &str, had_attachments: bool) -> String {
-    if status == StatusCode::PAYLOAD_TOO_LARGE {
-        return if had_attachments {
-            format!(
-                "agent '{agent}' refused this message as too large — its HTTP server caps the \
-                 request body below the size of the attachment. Send a smaller file, or raise \
-                 that limit in the agent."
-            )
-        } else {
-            format!("agent '{agent}' refused this message as too large")
-        };
-    }
-    format!(
-        "agent '{agent}' rejected this request (HTTP {})",
-        status.as_u16()
-    )
-}
 
 fn to_sse(event: StreamResponse) -> Event {
     Event::default().data(a2a::to_sse_data(&event))
+}
+
+/// Whether `session_id` names an existing chat session that belongs to a user other than
+/// `user_id`. Superusers own every session for this purpose.
+async fn session_owned_by_other(
+    state: &AppState,
+    session_id: &str,
+    user_id: Uuid,
+    is_superuser: bool,
+) -> Result<bool, A2aDispatchError> {
+    if is_superuser {
+        return Ok(false);
+    }
+    let owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| A2aDispatchError::Internal(format!("session lookup failed: {e}")))?;
+    Ok(owner.is_some_and(|owner| owner != user_id))
 }
 
 /// Upsert a `chat_sessions` row and persist the user's message for an
@@ -2364,8 +2242,9 @@ fn to_sse(event: StreamResponse) -> Event {
 /// left `NULL` (unlike agent_proxy's fixed target) since the orchestrator
 /// can route to a different agent on every turn of the same session.
 /// Fire-and-forget: session bookkeeping here is a nice-to-have for
-/// `sessions`/`history`/resume, not a security boundary like agent_proxy's
-/// version (which also authorizes access to an existing session).
+/// `sessions`/`history`/resume. It does not decide access: callers do (the
+/// chat entry point, `a2a_dispatch_handler`, refuses another user's session
+/// with `session_owned_by_other` before it gets here).
 /// `client_owns_transcript` suppresses the message insert for callers that
 /// persist their own turns via `/api/chat/sessions/{id}/messages` (the web UI,
 /// identified by an explicit `metadata.session_id`). It used to be harmless
@@ -3012,14 +2891,6 @@ pub enum A2aDispatchError {
     /// A `reconnect_after_hitl_id` reconnect was for a HITL row that exists but isn't the
     /// caller's — same rule `authorize_hitl_action` enforces for every other `/api/hitl/*` route.
     Forbidden(String),
-    /// The agent answered the dispatch with an error status of its own. Separate from
-    /// [`Self::Internal`] because the caller, not the operator, is usually the one who can act:
-    /// the turn never ran, and the commonest case (`413`) is fixed by sending a smaller
-    /// attachment. `message` is already caller-safe — see [`agent_rejection_message`].
-    AgentRejected {
-        status: StatusCode,
-        message: String,
-    },
 }
 
 impl IntoResponse for A2aDispatchError {
@@ -3037,17 +2908,6 @@ impl IntoResponse for A2aDispatchError {
                 format!("agent '{}' not found or not running", name),
             ),
             Self::Forbidden(e) => (StatusCode::FORBIDDEN, -32605, e),
-            // A client error the agent raised is passed back as itself — a `413` the caller can
-            // act on must not arrive looking like a server fault. An upstream 5xx is this
-            // platform's bad gateway, not the caller's request.
-            Self::AgentRejected { status, message } => {
-                let status = if status.is_client_error() {
-                    status
-                } else {
-                    StatusCode::BAD_GATEWAY
-                };
-                (status, -32606, message)
-            }
             Self::Internal(e) => {
                 // `e` may carry raw DB/IO/upstream error text (see call sites) — log
                 // it server-side and never echo it back to the client (SRV raw-error
@@ -3086,51 +2946,6 @@ mod hitl_pause_tests {
             pause_kind(AUTH_REQUIRED_PAYLOAD),
             nasiko_hitl::HitlKind::AuthRequired
         );
-    }
-}
-
-#[cfg(test)]
-mod agent_rejection_tests {
-    use super::*;
-
-    #[test]
-    fn payload_too_large_with_an_attachment_names_the_remedy() {
-        let message = agent_rejection_message(StatusCode::PAYLOAD_TOO_LARGE, "opencode", true);
-        assert!(message.contains("opencode"));
-        assert!(message.contains("too large"));
-        assert!(message.contains("smaller file"));
-    }
-
-    #[test]
-    fn payload_too_large_without_one_does_not_blame_an_attachment() {
-        let message = agent_rejection_message(StatusCode::PAYLOAD_TOO_LARGE, "opencode", false);
-        assert!(message.contains("too large"));
-        assert!(!message.contains("attachment"));
-    }
-
-    #[test]
-    fn other_statuses_report_the_code_they_came_back_with() {
-        let message = agent_rejection_message(StatusCode::UNAUTHORIZED, "docs", false);
-        assert!(message.contains("401"));
-    }
-
-    /// The point of the variant: a 413 the caller can fix must not reach them as a 500.
-    #[test]
-    fn a_client_error_is_passed_through_and_a_server_error_becomes_a_bad_gateway() {
-        let client = A2aDispatchError::AgentRejected {
-            status: StatusCode::PAYLOAD_TOO_LARGE,
-            message: "too large".into(),
-        };
-        assert_eq!(
-            client.into_response().status(),
-            StatusCode::PAYLOAD_TOO_LARGE
-        );
-
-        let server = A2aDispatchError::AgentRejected {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "upstream blew up".into(),
-        };
-        assert_eq!(server.into_response().status(), StatusCode::BAD_GATEWAY);
     }
 }
 
