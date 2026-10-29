@@ -345,16 +345,31 @@ pub struct RouterSpanLinks<'a> {
 /// agent, exactly as the nested case is: trusting the router's count (it is
 /// cache-aware; legacy spans routinely are not) and dropping the duplicate.
 ///
-/// A router span matched neither way is dropped instead. It reaches a trace at
-/// all only because some caller propagated span context, and in this platform
-/// that caller is an agent recording the same call on a span of its own.
-/// Keeping it would double the tokens and book them against the control plane,
-/// which is not an agent; dropping it costs only the model correction, which is
-/// where things stood before any of this.
+/// A router span matched neither way depends on what else the trace holds:
+///
+/// * **Another span in the trace reports token usage** (a self-instrumenting
+///   agent whose span could not be paired, e.g. it propagated the context it
+///   was *called* with rather than its own LLM span's). The agent has already
+///   recorded the call, so the router's copy is dropped: keeping it would
+///   double the tokens. Dropping it costs only the model correction.
+/// * **The router's spans are the only token-bearing ones** (an ACP coding
+///   agent such as OpenCode, which emits no spans of its own). Nothing else
+///   accounts for the call, so it is attributed to the agent id the router
+///   stamped on it (`gen_ai.agent.id`) instead of being lost.
+///
+/// The check is per trace, not per agent: a coding agent's own legacy spans do
+/// not reliably carry its agent id as their service name, so matching on it
+/// would double-count exactly the agents this dedupe exists for. When the two
+/// cases share a trace, the cost is an undercount, never a double count.
 pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
     let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
     let mut attributed = HashMap::new();
     let mut excluded = HashSet::new();
+    // Whether anything other than the router reports token usage in this trace.
+    // Decides what an unpaired router span means (see the doc comment above).
+    let agent_reports_usage = spans
+        .iter()
+        .any(|s| !is_router_llm_span(s) && !extract_usage_attrs(&s.attributes).is_empty());
     for span in spans {
         if !is_router_llm_span(span) {
             continue;
@@ -380,23 +395,22 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
                 }
             }
             None => {
-                // No agent span to link to — e.g. an ACP coding agent (OpenCode)
-                // that emits no OTel spans of its own, so the router's span is the
-                // only token-bearing one in the trace. Rather than drop the call,
-                // attribute it to the agent id the router stamped on the span
-                // (`gen_ai.agent.id`); downstream resolves that id to the agent.
-                // Self-instrumenting agents still take the `Some(agent)` path above,
-                // so their attribution is unchanged.
-                match span
+                // No agent span to pair with. If an agent span elsewhere in the
+                // trace reports usage, the agent recorded this call itself and the
+                // router's copy would double it: drop it. Otherwise the router's
+                // span is the only record of the call (an ACP coding agent such as
+                // OpenCode emits no spans of its own), so attribute it to the agent
+                // id the router stamped on it; downstream resolves that id.
+                let agent_id = span
                     .attributes
                     .get("gen_ai.agent.id")
                     .and_then(|v| v.as_str())
-                    .filter(|id| !id.is_empty())
-                {
-                    Some(agent_id) => {
+                    .filter(|id| !id.is_empty());
+                match agent_id {
+                    Some(agent_id) if !agent_reports_usage => {
                         attributed.insert(span.span_id.as_str(), agent_id);
                     }
-                    None => {
+                    _ => {
                         excluded.insert(span.span_id.as_str());
                     }
                 }
@@ -729,6 +743,39 @@ mod link_router_spans_tests {
         let links = link_router_spans(&spans);
         assert_eq!(links.attributed.get("r1"), Some(&"agent-uuid"));
         assert!(!links.excluded.contains("r1"), "must not be dropped");
+    }
+
+    #[test]
+    fn unlinkable_router_span_is_dropped_when_an_agent_span_reports_the_usage() {
+        // A self-instrumenting agent recorded the call on its own span, but the
+        // router's span can't be paired with it (no cross-service ancestor, no
+        // overlapping sibling). Attributing the router's copy too would count the
+        // call twice, so it is dropped and the agent's span stands.
+        let spans = vec![
+            span(
+                "a1",
+                None,
+                "devops-agent",
+                &[
+                    ("gen_ai.usage.input_tokens", "300"),
+                    ("gen_ai.usage.output_tokens", "50"),
+                ],
+            ),
+            span(
+                "r1",
+                Some("elsewhere"),
+                "nasiko-cp",
+                &[
+                    ("gen_ai.agent.id", "agent-uuid"),
+                    ("gen_ai.usage.input_tokens", "440"),
+                    ("gen_ai.usage.output_tokens", "67"),
+                ],
+            ),
+        ];
+        let links = link_router_spans(&spans);
+        assert!(links.attributed.get("r1").is_none());
+        assert!(links.excluded.contains("r1"), "the router's copy is dropped");
+        assert!(!links.excluded.contains("a1"), "the agent's own span stands");
     }
 
     #[test]
