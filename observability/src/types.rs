@@ -347,29 +347,37 @@ pub struct RouterSpanLinks<'a> {
 ///
 /// A router span matched neither way depends on what else the trace holds:
 ///
-/// * **Another span in the trace reports token usage** (a self-instrumenting
+/// * **A span from another service reports token usage** (a self-instrumenting
 ///   agent whose span could not be paired, e.g. it propagated the context it
 ///   was *called* with rather than its own LLM span's). The agent has already
 ///   recorded the call, so the router's copy is dropped: keeping it would
 ///   double the tokens. Dropping it costs only the model correction.
-/// * **The router's spans are the only token-bearing ones** (an ACP coding
-///   agent such as OpenCode, which emits no spans of its own). Nothing else
-///   accounts for the call, so it is attributed to the agent id the router
-///   stamped on it (`gen_ai.agent.id`) instead of being lost.
+/// * **No span from another service reports usage** (an ACP coding agent such
+///   as OpenCode, which emits no spans of its own). Nothing else accounts for
+///   the call, so it is attributed to the agent id the router stamped on it
+///   (`gen_ai.agent.id`) instead of being lost.
 ///
-/// The check is per trace, not per agent: a coding agent's own legacy spans do
-/// not reliably carry its agent id as their service name, so matching on it
-/// would double-count exactly the agents this dedupe exists for. When the two
-/// cases share a trace, the cost is an undercount, never a double count.
+/// "Another service" means another service than the router span's own, the
+/// same test the ancestor walk uses to recognise an agent. The control plane's
+/// own LLM spans (the orchestrator's routing and ReAct calls) share the
+/// router's service, so they never make a coding agent's call look already
+/// recorded. The check does not try to match a span to one particular agent:
+/// a coding agent's legacy spans do not reliably carry its agent id as their
+/// service name, so matching on it would double-count exactly the agents this
+/// dedupe exists for. When both kinds of agent share a trace, the cost is an
+/// undercount, never a double count.
 pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
     let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
     let mut attributed = HashMap::new();
     let mut excluded = HashSet::new();
-    // Whether anything other than the router reports token usage in this trace.
-    // Decides what an unpaired router span means (see the doc comment above).
-    let agent_reports_usage = spans
+    // The services (other than the router's) that report token usage in this
+    // trace. Decides what an unpaired router span means (see the doc comment).
+    let usage_services: HashSet<&str> = spans
         .iter()
-        .any(|s| !is_router_llm_span(s) && !extract_usage_attrs(&s.attributes).is_empty());
+        .filter(|s| !is_router_llm_span(s) && !s.service_name.is_empty())
+        .filter(|s| !extract_usage_attrs(&s.attributes).is_empty())
+        .map(|s| s.service_name.as_str())
+        .collect();
     for span in spans {
         if !is_router_llm_span(span) {
             continue;
@@ -395,12 +403,15 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
                 }
             }
             None => {
-                // No agent span to pair with. If an agent span elsewhere in the
-                // trace reports usage, the agent recorded this call itself and the
+                // No agent span to pair with. If a span from another service
+                // reports usage, an agent recorded this call itself and the
                 // router's copy would double it: drop it. Otherwise the router's
                 // span is the only record of the call (an ACP coding agent such as
                 // OpenCode emits no spans of its own), so attribute it to the agent
                 // id the router stamped on it; downstream resolves that id.
+                let agent_reports_usage = usage_services
+                    .iter()
+                    .any(|service| *service != span.service_name);
                 let agent_id = span
                     .attributes
                     .get("gen_ai.agent.id")
@@ -776,6 +787,39 @@ mod link_router_spans_tests {
         assert!(links.attributed.get("r1").is_none());
         assert!(links.excluded.contains("r1"), "the router's copy is dropped");
         assert!(!links.excluded.contains("a1"), "the agent's own span stands");
+    }
+
+    #[test]
+    fn the_control_planes_own_llm_spans_do_not_hide_a_coding_agents_call() {
+        // The orchestrator's own LLM call (routing, ReAct) reports usage on a span
+        // from the control plane's service -- the same service as the router's
+        // span. That is not an agent recording this call, so the coding agent's
+        // only record of it must still be attributed, not dropped.
+        let spans = vec![
+            span(
+                "o1",
+                None,
+                "nasiko-cp",
+                &[
+                    ("gen_ai.usage.input_tokens", "900"),
+                    ("gen_ai.usage.output_tokens", "40"),
+                ],
+            ),
+            span(
+                "r1",
+                Some("o1"),
+                "nasiko-cp",
+                &[
+                    ("gen_ai.agent.id", "agent-uuid"),
+                    ("gen_ai.usage.input_tokens", "440"),
+                    ("gen_ai.usage.output_tokens", "67"),
+                ],
+            ),
+        ];
+        let links = link_router_spans(&spans);
+        assert_eq!(links.attributed.get("r1"), Some(&"agent-uuid"));
+        assert!(!links.excluded.contains("r1"), "must not be dropped");
+        assert!(!links.excluded.contains("o1"), "the orchestrator's call stands");
     }
 
     #[test]
