@@ -3,6 +3,10 @@
 //! Tests that require a live Docker daemon are tagged `#[ignore]`.
 //! Run them explicitly with:
 //!   cargo test --test docker_runtime -- --ignored
+//!
+//! `DockerRuntime` exists only with the `docker` feature (on by default), so
+//! the whole file is compiled out without it.
+#![cfg(feature = "docker")]
 
 use std::collections::HashMap;
 use std::time::Duration;
