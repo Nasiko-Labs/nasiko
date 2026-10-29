@@ -46,6 +46,8 @@ dist-ssr
 # into coverage/ and `tsc -b` leaves *.tsbuildinfo; neither was ignored, so a
 # plain `git add -A` after running the checks swept them into the commit.
 coverage/
+# Blob reports from a sharded vitest run (CI's ui-tests shards), merged by --merge-reports.
+.vitest-reports/
 *.tsbuildinfo
 
 # Playwright

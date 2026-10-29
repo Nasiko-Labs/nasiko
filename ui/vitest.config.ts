@@ -55,7 +55,11 @@ export default defineConfig({
         '**/src/genui/lang/**',
         '**/main.tsx',
       ],
-      thresholds: { lines: 60, statements: 60, functions: 60, branches: 60 },
+      // A CI shard (VITEST_SHARD set) holds a slice of the suite, so its own coverage is meaningless against the
+      // whole-tree minimum; the thresholds apply once, when `vitest --merge-reports --coverage` joins the shards.
+      thresholds: process.env.VITEST_SHARD
+        ? undefined
+        : { lines: 60, statements: 60, functions: 60, branches: 60 },
     },
   },
 })
