@@ -294,6 +294,7 @@ impl<P: ResourceStatsProvider + 'static> ResourceStatsProvider for CachedStatsPr
 /// The prefix is anchored deliberately: a bare `contains` would classify
 /// `old-nasiko-agent-foo` as an agent, the same trap the list filter at
 /// `docker/mod.rs` guards against with `^/nasiko-agent-`.
+#[cfg(any(feature = "docker", test))]
 pub fn classify(name: &str, compose_service: Option<&str>) -> StatsGroup {
     let bare = name.strip_prefix('/').unwrap_or(name);
     if bare.starts_with("nasiko-agent-") {
@@ -308,6 +309,7 @@ pub fn classify(name: &str, compose_service: Option<&str>) -> StatsGroup {
 }
 
 /// Extracts the agent UUID from a container name, if it is an agent container.
+#[cfg(any(feature = "docker", test))]
 pub fn agent_id_from_name(name: &str) -> Option<&str> {
     let bare = name.strip_prefix('/').unwrap_or(name);
     bare.strip_prefix("nasiko-agent-")
@@ -320,6 +322,7 @@ pub fn agent_id_from_name(name: &str) -> Option<&str> {
 /// `precpu_stats` was never populated, which is what `one_shot: true` produces).
 /// Callers must not paper over that with a default: a container pinning a core
 /// and a container doing nothing would look identical.
+#[cfg(any(feature = "docker", test))]
 pub fn cpu_percent(
     cpu_total: u64,
     precpu_total: u64,
