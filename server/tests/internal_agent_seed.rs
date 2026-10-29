@@ -37,6 +37,7 @@ async fn seed(server: &common::TestServer) {
             force_pull: false,
             env: HashMap::from([("DUMMY_SETTING".to_string(), "on".to_string())]),
             public: true,
+            writable_path: None,
         },
     )
     .await;
