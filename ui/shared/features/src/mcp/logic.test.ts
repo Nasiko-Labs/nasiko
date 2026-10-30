@@ -7,6 +7,7 @@ import {
   isBuilding,
   matchesQuery,
   nameFromFile,
+  oauthPatch,
   registerBody,
   rulesWith,
   safePopupUrl,
@@ -142,6 +143,8 @@ describe('MCP logic (plans/feat-mcp.md)', () => {
       basic_password: 'pw',
       oauth_client_id: 'ignored',
       oauth_client_secret: '',
+      oauth_scopes: '',
+      oauth_send_resource: 'auto',
       url_param_name: '',
       description: 'Tools',
     }
@@ -152,6 +155,70 @@ describe('MCP logic (plans/feat-mcp.md)', () => {
       description: 'Tools',
       basic_username: 'bot',
       basic_password: 'pw',
+    })
+  })
+
+  describe('OAuth scope and resource parameter', () => {
+    const oauth: RegisterValues = {
+      name: 'ent',
+      display_name: '',
+      url: 'https://api.example.com/mcp',
+      auth_type: 'oauth2',
+      credential_header_name: '',
+      basic_username: '',
+      basic_password: '',
+      oauth_client_id: 'cid',
+      oauth_client_secret: '',
+      oauth_scopes: '  ',
+      oauth_send_resource: 'auto',
+      url_param_name: '',
+      description: '',
+    }
+
+    it('omits blank scopes and Automatic', () => {
+      expect(registerBody(oauth)).toEqual({
+        name: 'ent',
+        url: 'https://api.example.com/mcp',
+        auth_type: 'oauth2',
+        oauth_client_id: 'cid',
+      })
+    })
+
+    it('sends trimmed scopes and a real boolean for Always and Never', () => {
+      expect(
+        registerBody({
+          ...oauth,
+          oauth_scopes: ' api://x/.default ',
+          oauth_send_resource: 'never',
+        }),
+      ).toMatchObject({ oauth_scopes: 'api://x/.default', oauth_send_resource: false })
+      expect(registerBody({ ...oauth, oauth_send_resource: 'always' })).toMatchObject({
+        oauth_send_resource: true,
+      })
+    })
+
+    it('drops the OAuth fields for other auth types', () => {
+      const body = registerBody({
+        ...oauth,
+        auth_type: 'none',
+        oauth_scopes: 's',
+        oauth_send_resource: 'never',
+      })
+      expect(body).not.toHaveProperty('oauth_scopes')
+      expect(body).not.toHaveProperty('oauth_send_resource')
+    })
+
+    it('patches only what changed on edit, and clears scopes with an empty string', () => {
+      const initial = { oauth_scopes: 'a b', oauth_send_resource: 'auto' as const }
+      expect(oauthPatch(initial, initial)).toEqual({})
+      expect(oauthPatch(initial, { ...initial, oauth_scopes: '  ' })).toEqual({ oauth_scopes: '' })
+      expect(oauthPatch(initial, { oauth_scopes: 'a b', oauth_send_resource: 'never' })).toEqual({
+        oauth_send_resource: false,
+      })
+      const forced = { oauth_scopes: 'a b', oauth_send_resource: 'never' as const }
+      expect(oauthPatch(forced, { ...forced, oauth_send_resource: 'auto' })).toEqual({
+        oauth_send_resource: null,
+      })
     })
   })
 

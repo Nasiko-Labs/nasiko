@@ -35,6 +35,7 @@ import {
 import { Textarea } from '@nasiko/ui/primitives/textarea'
 import { useProbe, useRegister } from '../api'
 import { AUTH_LABEL, AUTH_OPTION, copy, reason } from '../copy'
+import { SendResourceField } from './SendResourceField'
 import { authFields, registerBody, type RegisterValues } from '../logic'
 import { AUTH_TYPES } from '../types'
 
@@ -48,6 +49,8 @@ const EMPTY: RegisterValues = {
   basic_password: '',
   oauth_client_id: '',
   oauth_client_secret: '',
+  oauth_scopes: '',
+  oauth_send_resource: 'auto',
   url_param_name: '',
   description: '',
 }
@@ -91,7 +94,7 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
   }
 
   const text = (
-    name: Exclude<keyof RegisterValues, 'auth_type' | 'description'>,
+    name: Exclude<keyof RegisterValues, 'auth_type' | 'description' | 'oauth_send_resource'>,
     opts: { required?: boolean; url?: boolean } = {},
   ) => {
     const f: { label: string; placeholder?: string; hint?: string } = copy.fields[name]
@@ -187,10 +190,18 @@ export function RegisterDialog({ onClose }: { onClose: () => void }) {
             </Field>
             {authFields(authType).map((name) => (
               <div key={name}>
-                {/* url_param needs its name (`register_connector`: 400 without it). */}
-                {text(name as Exclude<keyof RegisterValues, 'auth_type' | 'description'>, {
-                  required: name === 'url_param_name',
-                })}
+                {name === 'oauth_send_resource' ? (
+                  <SendResourceField control={form.control} id={`${id}-${name}`} />
+                ) : (
+                  /* url_param needs its name (`register_connector`: 400 without it). */
+                  text(
+                    name as Exclude<
+                      keyof RegisterValues,
+                      'auth_type' | 'description' | 'oauth_send_resource'
+                    >,
+                    { required: name === 'url_param_name' },
+                  )
+                )}
               </div>
             ))}
             <Field className="gap-1.5">

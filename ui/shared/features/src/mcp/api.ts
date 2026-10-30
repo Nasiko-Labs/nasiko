@@ -297,7 +297,7 @@ export function useRegister() {
   const qc = useQueryClient()
   return useMutation({
     gcTime: 0,
-    mutationFn: (body: Record<string, string>) =>
+    mutationFn: (body: Record<string, string | boolean>) =>
       apiData<ConnectorDto>('/api/mcp/connectors', {
         ...json('POST', body),
         schema: connectorDtoSchema,
@@ -338,7 +338,7 @@ export function useUpload() {
 export function useUpdateConnector(id: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (patch: Record<string, string | boolean>) =>
+    mutationFn: (patch: Record<string, string | boolean | null>) =>
       apiData<ConnectorDto>(C(id), { ...json('PATCH', patch), schema: connectorDtoSchema }),
     onSuccess: () => refreshAll(qc),
   })

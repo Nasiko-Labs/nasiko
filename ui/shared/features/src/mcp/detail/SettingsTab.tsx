@@ -13,10 +13,19 @@ import { Switch } from '@nasiko/ui/primitives/switch'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
 import { Section } from '@nasiko/features/agents/components/bits'
 import { useUpdateConnector } from '../api'
+import { SendResourceField } from '../components/SendResourceField'
 import { copy, reason } from '../copy'
+import { oauthPatch, sendResourceChoice, type SendResource } from '../logic'
 import type { ConnectorDetail } from '../types'
 
-type Values = { display_name: string; description: string; url: string; is_active: boolean }
+type Values = {
+  display_name: string
+  description: string
+  url: string
+  is_active: boolean
+  oauth_scopes: string
+  oauth_send_resource: SendResource
+}
 
 export function SettingsTab({ connector }: { connector: ConnectorDetail }) {
   const [generation, setGeneration] = useState(0)
@@ -44,15 +53,19 @@ function SettingsForm({
     description: c.description ?? '',
     url: c.url ?? '',
     is_active: c.is_active,
+    oauth_scopes: c.oauth_scopes ?? '',
+    oauth_send_resource: sendResourceChoice(c.oauth_send_resource),
   }
+  const oauth = c.auth_type === 'oauth2'
   const form = useForm<Values>({ defaultValues: initial })
   const [active, setActive] = useState(c.is_active)
 
   const submit = form.handleSubmit((v) => {
-    const patch: Record<string, string | boolean> = {}
+    const patch: Record<string, string | boolean | null> = {}
     for (const k of ['display_name', 'description', 'url'] as const)
       if (v[k].trim() !== initial[k] && !(k === 'url' && uploaded)) patch[k] = v[k].trim()
     if (active !== initial.is_active) patch.is_active = active
+    if (oauth) Object.assign(patch, oauthPatch(initial, v))
     if (!Object.keys(patch).length) {
       toast(copy.nothingChanged)
       return
@@ -83,6 +96,16 @@ function SettingsForm({
               <Input id={`${id}-url`} type="url" autoComplete="off" {...form.register('url')} />
             </Field>
           )}
+          {oauth ? (
+            <>
+              <Field className="gap-1.5">
+                <FieldLabel htmlFor={`${id}-scopes`}>{copy.fields.oauth_scopes.label}</FieldLabel>
+                <Input id={`${id}-scopes`} autoComplete="off" {...form.register('oauth_scopes')} />
+                <FieldDescription>{copy.fields.oauth_scopes.hint}</FieldDescription>
+              </Field>
+              <SendResourceField control={form.control} id={`${id}-resource`} />
+            </>
+          ) : null}
           <Field orientation="horizontal" className="gap-3">
             <Switch id={`${id}-active`} checked={active} onCheckedChange={setActive} />
             <div>

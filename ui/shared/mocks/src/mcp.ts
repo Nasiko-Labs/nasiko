@@ -49,6 +49,8 @@ interface MockConnector {
   auth_type: AuthType | null
   url_param_name: string | null
   credential_header_name: string | null
+  oauth_scopes: string | null
+  oauth_send_resource: boolean | null
   owner_id: string | null
   is_active: boolean
   source_kind: 'external_url' | 'uploaded_build'
@@ -127,6 +129,8 @@ export function buildMcpState(
       url: c.build?.status === 'building' ? null : c.url,
       auth_type: c.auth_type,
       url_param_name: null,
+      oauth_scopes: null,
+      oauth_send_resource: null,
       credential_header_name: c.credential_header_name,
       owner_id: owner,
       is_active: c.build?.status !== 'building',
@@ -298,6 +302,8 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
     url_param_name: c.url_param_name,
     // The column's default (0003_mcp.sql).
     credential_header_name: c.credential_header_name ?? 'Authorization',
+    oauth_scopes: c.oauth_scopes,
+    oauth_send_resource: c.oauth_send_resource,
     description: c.description,
     display_name: c.display_name,
     logo_url: null,
@@ -413,6 +419,7 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
             auth_type: 'oauth2',
             requires: 'oauth_flow',
             supports_dcr: true,
+            public_client: true,
             hint: 'This server supports OAuth 2.1 with automatic client registration — no client credentials needed.',
           })
         if (/key|token|api/.test(url))
@@ -435,6 +442,7 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
     http.post(`${P}/connectors`, async ({ request }) =>
       run(async () => {
         const b = (await request.json().catch(() => ({}))) as Record<string, string | undefined>
+        const sendResource: unknown = b.oauth_send_resource
         const name = (b.name ?? '').trim()
         const auth = b.auth_type ?? 'none'
         if (!name || !b.url) throw bad('invalid request body: missing field `name` or `url`')
@@ -457,6 +465,9 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
           auth_type: auth as AuthType,
           url_param_name: b.url_param_name ?? null,
           credential_header_name: b.credential_header_name ?? null,
+          oauth_scopes: b.oauth_scopes?.trim() || null,
+          // The body carries a real boolean; the loose Record type above only models its strings.
+          oauth_send_resource: typeof sendResource === 'boolean' ? sendResource : null,
           owner_id: me().id,
           is_active: true,
           source_kind: 'external_url',
@@ -541,6 +552,11 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
         for (const k of ['display_name', 'description', 'url'] as const)
           if (typeof b[k] === 'string') c[k] = b[k]
         if (typeof b.is_active === 'boolean') c.is_active = b.is_active
+        // An empty string clears the scope back to automatic selection.
+        if (typeof b.oauth_scopes === 'string') c.oauth_scopes = b.oauth_scopes.trim() || null
+        // Like the server: omitted is unchanged, an explicit null returns to automatic.
+        if (typeof b.oauth_send_resource === 'boolean' || b.oauth_send_resource === null)
+          c.oauth_send_resource = b.oauth_send_resource
         c.updated_at = new Date(ctx.now()).toISOString()
         return ok(dto(c), 'Connector updated successfully')
       }),
@@ -957,6 +973,8 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
       url: null,
       auth_type: 'none',
       url_param_name: null,
+      oauth_scopes: null,
+      oauth_send_resource: null,
       credential_header_name: null,
       owner_id: me().id,
       is_active: false,

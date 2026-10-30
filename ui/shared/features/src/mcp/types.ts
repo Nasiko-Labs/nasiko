@@ -37,6 +37,8 @@ export const connectorDtoSchema = z.looseObject({
   owner_id: nullableString,
   created_at: nullableString,
   updated_at: nullableString,
+  oauth_scopes: nullableString,
+  oauth_send_resource: z.boolean().nullable().optional(),
 })
 export type ConnectorDto = z.infer<typeof connectorDtoSchema>
 
@@ -106,6 +108,7 @@ export const probeSchema = z.looseObject({
   auth_type: z.enum(AUTH_TYPES),
   hint: nullableString,
   supports_dcr: z.boolean().optional(),
+  public_client: z.boolean().nullable().optional(),
 })
 export type Probe = z.infer<typeof probeSchema>
 

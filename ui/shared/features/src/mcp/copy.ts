@@ -3,7 +3,7 @@
  * mcp-detail-page.js and the agent page's MCP section say it, except where the legacy wording didn't fit the new layout.
  */
 import { ApiError, isTimeoutError } from '@nasiko/data-access/client'
-import type { ServerStatus } from './logic'
+import type { SendResource, ServerStatus } from './logic'
 import type { Tab, View } from './search'
 import type { AuthType, Stance } from './types'
 
@@ -22,6 +22,13 @@ export const AUTH_OPTION: Record<AuthType, string> = {
   basic: 'Basic auth',
   oauth2: 'OAuth 2.1',
   url_param: 'URL parameter',
+}
+
+/** The resource-parameter select's options (`oauth_send_resource`: null, true, false). */
+export const SEND_RESOURCE_OPTION: Record<SendResource, string> = {
+  auto: 'Automatic',
+  always: 'Always',
+  never: 'Never',
 }
 
 export const STATUS_LABEL: Record<ServerStatus, string> = {
@@ -139,7 +146,18 @@ export const copy = {
       label: 'OAuth client ID',
       hint: 'Leave blank if the server supports automatic client registration (DCR).',
     },
-    oauth_client_secret: { label: 'OAuth client secret' },
+    oauth_client_secret: {
+      label: 'OAuth client secret',
+      hint: 'Only for confidential clients. Public clients need just the client ID.',
+    },
+    oauth_scopes: {
+      label: 'OAuth scopes',
+      hint: 'Optional. Space separated. Leave blank to use the scopes the server advertises.',
+    },
+    oauth_send_resource: {
+      label: 'Resource parameter',
+      hint: 'RFC 8707 resource indicator. Choose Never for Entra ID behind a proxy.',
+    },
     url_param_name: { label: 'URL parameter name', placeholder: 'api_key' },
     description: { label: 'Description', placeholder: "What this server's tools do" },
   },

@@ -151,6 +151,20 @@ export function nameFromFile(fileName: string): string {
     .slice(0, 128)
 }
 
+/** `oauth_send_resource`: Automatic leaves it to discovery (null), Always and Never force it on or off. */
+export const SEND_RESOURCES = ['auto', 'always', 'never'] as const
+export type SendResource = (typeof SEND_RESOURCES)[number]
+
+export function sendResourceValue(choice: SendResource): boolean | undefined {
+  if (choice === 'auto') return undefined
+  return choice === 'always'
+}
+
+export function sendResourceChoice(value: boolean | null | undefined): SendResource {
+  if (value == null) return 'auto'
+  return value ? 'always' : 'never'
+}
+
 export interface RegisterValues {
   name: string
   display_name: string
@@ -161,6 +175,8 @@ export interface RegisterValues {
   basic_password: string
   oauth_client_id: string
   oauth_client_secret: string
+  oauth_scopes: string
+  oauth_send_resource: SendResource
   url_param_name: string
   description: string
 }
@@ -170,22 +186,44 @@ const AUTH_FIELDS: Record<AuthType, (keyof RegisterValues)[]> = {
   none: [],
   bearer: ['credential_header_name'],
   basic: ['basic_username', 'basic_password'],
-  oauth2: ['oauth_client_id', 'oauth_client_secret'],
+  oauth2: ['oauth_client_id', 'oauth_client_secret', 'oauth_scopes', 'oauth_send_resource'],
   url_param: ['url_param_name'],
 }
 
 /** `CreateConnector`: required fields, then only non-empty optional ones for the chosen auth type (legacy). */
-export function registerBody(v: RegisterValues): Record<string, string> {
-  const body: Record<string, string> = {
+export function registerBody(v: RegisterValues): Record<string, string | boolean> {
+  const body: Record<string, string | boolean> = {
     name: v.name.trim(),
     url: v.url.trim(),
     auth_type: v.auth_type,
   }
   for (const key of ['display_name', 'description', ...AUTH_FIELDS[v.auth_type]] as const) {
+    if (key === 'oauth_send_resource') {
+      const send = sendResourceValue(v[key])
+      if (send !== undefined) body[key] = send
+      continue
+    }
     const value = v[key].trim()
     if (value) body[key] = value
   }
   return body
+}
+
+/**
+ * The OAuth fields of an edit's PATCH: only those that changed. Cleared scopes send `""`, which the server reads as
+ * "back to automatic". Automatic for the resource parameter is an explicit `null` (an omitted field means unchanged).
+ */
+export function oauthPatch(
+  initial: { oauth_scopes: string; oauth_send_resource: SendResource },
+  v: { oauth_scopes: string; oauth_send_resource: SendResource },
+): Record<string, string | boolean | null> {
+  const patch: Record<string, string | boolean | null> = {}
+  const scopes = v.oauth_scopes.trim()
+  if (scopes !== initial.oauth_scopes) patch.oauth_scopes = scopes
+  if (v.oauth_send_resource !== initial.oauth_send_resource) {
+    patch.oauth_send_resource = sendResourceValue(v.oauth_send_resource) ?? null
+  }
+  return patch
 }
 
 export const authFields = (t: AuthType) => AUTH_FIELDS[t]
