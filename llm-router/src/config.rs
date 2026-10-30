@@ -187,7 +187,9 @@ pub struct GatewayConfig {
     pub compact_tools_enabled: bool,
 
     /// Add the router's own prompt-cache markers where the agent left slots free
-    /// (`TOKEN_CACHE_MARKERS`; Anthropic for now, see `providers::anthropic`).
+    /// (`TOKEN_CACHE_MARKERS`): on Anthropic, on Bedrock where the model caches, and on Claude
+    /// models through OpenRouter. Each adapter places its own, since providers differ in where a
+    /// marker may go.
     ///
     /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
     /// call costs, never what the model sees. Off, the router sends only the agent's own markers.

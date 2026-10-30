@@ -7,7 +7,11 @@
 //!
 //! Request: system messages → top-level `system`; user/assistant content → `[{text}]`
 //! blocks; tool calls → `toolUse` blocks; tool results → `toolResult` in a following
-//! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`.
+//! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`. An
+//! agent's `cache_control` markers become `cachePoint` blocks where the model accepts them.
+//! Brevity's directive ends the last user turn rather than joining `system` ([`crate::brevity`]).
+//! With `TOKEN_CACHE_MARKERS` on, the router fills cache points the agent left free
+//! ([`add_cache_points`]).
 //!
 //! Response: `output.message.content[].text` → concatenated content; `toolUse` →
 //! OpenAI `tool_calls[]`; `stopReason` mapped; `usage` fields renamed.
@@ -26,9 +30,9 @@ use serde_json::{Map, Value, json};
 
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, Delta,
-    EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall,
-    ToolCallDelta, ToolDef, UnsupportedPart, Usage,
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest,
+    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef,
+    Usage,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -37,16 +41,43 @@ use super::dialect::{bedrock_region, bedrock_region_prefix};
 /// Bedrock requires `maxTokens` in `inferenceConfig`; used when neither config nor
 /// request sets it.
 const DEFAULT_MAX_TOKENS: i64 = 4096;
+/// Bedrock accepts at most this many cache points in one request, on Claude and Nova alike.
+const MAX_CACHE_POINTS: usize = 4;
 
 pub struct BedrockConverseProvider {
     http: reqwest::Client,
     /// API base, e.g. `https://bedrock-runtime.us-west-2.amazonaws.com`.
     base: String,
+    /// Add the router's own cache points ([`add_cache_points`]).
+    cache_markers: bool,
 }
 
 impl BedrockConverseProvider {
     pub fn new(http: reqwest::Client, base: String) -> Self {
-        Self { http, base }
+        Self {
+            http,
+            base,
+            cache_markers: false,
+        }
+    }
+
+    /// Fill the cache points an agent leaves free (`TOKEN_CACHE_MARKERS`).
+    pub fn with_cache_markers(mut self, enabled: bool) -> Self {
+        self.cache_markers = enabled;
+        self
+    }
+
+    fn request_body(
+        &self,
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+        allow_temperature: bool,
+    ) -> (Value, HashMap<String, String>) {
+        let (mut body, name_map) = to_converse_request_inner(req, cfg, allow_temperature);
+        if self.cache_markers {
+            add_cache_points(&mut body, CacheSupport::of(&cfg.model));
+        }
+        (body, name_map)
     }
 
     fn status_error(status: reqwest::StatusCode, body: String) -> ProviderError {
@@ -100,7 +131,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true);
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -140,7 +171,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true);
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -250,7 +281,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true);
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -285,7 +316,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request_no_temperature(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, false);
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -317,7 +348,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, _name_map) = to_converse_request_no_temperature(req, cfg)?;
+        let (body, _name_map) = self.request_body(req, cfg, false);
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -377,8 +408,8 @@ impl BedrockConverseProvider {
             return Err(Self::status_error(status, text));
         }
 
-        // `_name_map` is empty here because `to_converse_request_no_temperature`
-        // discards it. Rebuild so tool names are properly unsanitized in the response.
+        // `_name_map` was discarded above. Rebuild so tool names are properly unsanitized in
+        // the response.
         let name_map = req
             .tools
             .as_ref()
@@ -399,7 +430,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true);
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -739,231 +770,58 @@ fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
 
 // ── OpenAI → Bedrock Converse (request) ─────────────────────────────────────
 
-/// A part the hub carries but Converse cannot, rendered onto this edge's error type.
-fn unsupported(err: UnsupportedPart) -> ProviderError {
-    ProviderError::Rejected(format!(
-        "Bedrock does not accept this input: {}",
-        err.into_message()
-    ))
-}
-
-/// Converse names media by a **bare format token** (`png`, `pdf`, `mp4`) — never a mime
-/// type. A `split('/')` guess is wrong often enough to matter (`image/jpeg` → `jpg`,
-/// `video/quicktime` → `quicktime`) and the service answers with a validation error, so
-/// every accepted type is listed explicitly.
-fn converse_image_format(media_type: &str) -> Option<&'static str> {
-    match media_type {
-        "image/png" => Some("png"),
-        "image/jpeg" | "image/jpg" => Some("jpeg"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        _ => None,
-    }
-}
-
-/// `video/quicktime` is the one that proves the point: a `split('/')` guess yields
-/// "quicktime", and Converse only knows "mov".
-fn converse_video_format(media_type: &str) -> Option<&'static str> {
-    match media_type {
-        "video/x-matroska" => Some("mkv"),
-        "video/quicktime" => Some("mov"),
-        "video/mp4" => Some("mp4"),
-        "video/webm" => Some("webm"),
-        "video/x-flv" => Some("flv"),
-        "video/mpeg" => Some("mpeg"),
-        "video/x-ms-wmv" => Some("wmv"),
-        "video/3gpp" => Some("three_gp"),
-        _ => None,
-    }
-}
-
-fn converse_document_format(media_type: &str) -> Option<&'static str> {
-    match media_type {
-        "application/pdf" => Some("pdf"),
-        "text/csv" => Some("csv"),
-        "application/msword" => Some("doc"),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
-        "application/vnd.ms-excel" => Some("xls"),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
-        "text/html" => Some("html"),
-        "text/plain" => Some("txt"),
-        "text/markdown" => Some("md"),
-        _ => None,
-    }
-}
-
-/// Converse requires `document.name` and validates it against
-/// `[a-zA-Z0-9\s\-\(\)\[\]]+` — notably **no dots**, so a filename can never be passed
-/// through as-is. Everything outside the class becomes a space, runs collapse, and an
-/// empty result falls back to a constant so the required field is always populated.
-fn sanitize_document_name(filename: Option<&str>) -> String {
-    let swept: String = filename
-        .unwrap_or_default()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '(' | ')' | '[' | ']') {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    let collapsed = swept.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        "document".to_string()
-    } else {
-        collapsed
-    }
-}
-
-/// Converse also requires document names to be **unique within a request**, so a second
-/// `report.pdf` (or a second unnamed document) gets a numeric suffix rather than a 400.
-fn unique_document_name(filename: Option<&str>, used: &mut HashSet<String>) -> String {
-    let base = sanitize_document_name(filename);
-    let mut name = base.clone();
-    let mut n = 2;
-    while !used.insert(name.clone()) {
-        name = format!("{base} {n}");
-        n += 1;
-    }
-    name
-}
-
-/// Canonical part → Converse content block.
-///
-/// Converse takes media as inline bytes only (an S3 location is a different, bucket-
-/// scoped shape we do not mint), so a URL source is refused here rather than sent as an
-/// empty block. Converse has no audio input, so audio is refused by name.
-fn converse_block(
-    part: &ContentPart,
-    doc_names: &mut HashSet<String>,
-) -> Result<Value, UnsupportedPart> {
-    match part {
-        ContentPart::Text(text) => Ok(json!({ "text": text })),
-        ContentPart::Image { source, .. } => {
-            let (media_type, data) = source.inline().ok_or_else(|| {
-                UnsupportedPart::new(
-                    "unsupported content part type: 'image_url' with web URL (Bedrock requires base64 data URL)",
-                )
-            })?;
-            let format = converse_image_format(media_type).ok_or_else(|| {
-                UnsupportedPart::new(format!(
-                    "unsupported image media type for Bedrock: '{media_type}'"
-                ))
-            })?;
-            Ok(json!({
-                "image": { "format": format, "source": { "bytes": data } },
-            }))
-        }
-        ContentPart::File { source, filename } => {
-            let (media_type, data) = source.inline().ok_or_else(|| {
-                UnsupportedPart::new("unsupported file_data format (must be base64 data URL)")
-            })?;
-            let format = converse_document_format(media_type).ok_or_else(|| {
-                UnsupportedPart::new(format!(
-                    "unsupported document media type for Bedrock: '{media_type}'"
-                ))
-            })?;
-            Ok(json!({
-                "document": {
-                    "format": format,
-                    "name": unique_document_name(filename.as_deref(), doc_names),
-                    "source": { "bytes": data },
-                },
-            }))
-        }
-        ContentPart::Audio { .. } => Err(UnsupportedPart::new(
-            "unsupported content part type: 'input_audio'",
-        )),
-        ContentPart::Video { source } => {
-            let (media_type, data) = source.inline().ok_or_else(|| {
-                UnsupportedPart::new(
-                    "unsupported content part type: 'video_url' with web URL (Bedrock requires base64 data URL)",
-                )
-            })?;
-            let format = converse_video_format(media_type).ok_or_else(|| {
-                UnsupportedPart::new(format!(
-                    "unsupported video media type for Bedrock: '{media_type}'"
-                ))
-            })?;
-            Ok(json!({
-                "video": { "format": format, "source": { "bytes": data } },
-            }))
-        }
-    }
-}
-
-/// A message's content → Converse content blocks.
-///
-/// An absent/unmodelled content value becomes a single empty text block, which is what
-/// Converse expects for a turn that carries only tool calls.
-fn converse_content(
-    m: &Message,
-    doc_names: &mut HashSet<String>,
-) -> Result<Vec<Value>, ProviderError> {
-    match m.content_view().map_err(unsupported)? {
-        ContentView::Text(text) => Ok(vec![json!({ "text": text })]),
-        ContentView::Parts(parts) => parts
-            .iter()
-            .map(|p| converse_block(p, doc_names).map_err(unsupported))
-            .collect(),
-        ContentView::Empty => Ok(vec![json!({ "text": "" })]),
-    }
-}
-
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
-fn to_converse_request(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> Result<(Value, HashMap<String, String>), ProviderError> {
-    to_converse_request_inner(req, cfg, true)
-}
-
-fn to_converse_request_no_temperature(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> Result<(Value, HashMap<String, String>), ProviderError> {
-    to_converse_request_inner(req, cfg, false)
-}
-
 fn to_converse_request_inner(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
     allow_temperature: bool,
-) -> Result<(Value, HashMap<String, String>), ProviderError> {
+) -> (Value, HashMap<String, String>) {
+    let caching = CacheSupport::of(&cfg.model);
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
-    // Converse requires document names to be unique across the whole request.
-    let mut doc_names: HashSet<String> = HashSet::new();
 
     for m in &req.messages {
         match m.role.as_str() {
             "system" => {
-                if let Some(t) = m.text() {
-                    system_parts.push(json!({ "text": t }));
+                // Brevity's directive goes after every cache point, so a turn that skips it still
+                // matches this turn's cached prefix; in `system` it would sit ahead of them all.
+                let placed = crate::brevity::is_directive(m)
+                    && pending_tool_results.is_empty()
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                if placed {
+                    continue;
+                }
+                match caching.marked_text_blocks(m) {
+                    Some(blocks) => system_parts.extend(blocks),
+                    None => {
+                        if let Some(t) = m.text() {
+                            system_parts.push(json!({ "text": t }));
+                        }
+                    }
                 }
             }
             "tool" => {
                 pending_tool_results.push(json!({
                     "toolResult": {
                         "toolUseId": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": converse_content(m, &mut doc_names)?,
+                        "content": [{ "text": m.text().unwrap_or_default() }]
                     }
                 }));
+                pending_tool_results.extend(caching.after_tool_block(m.last_cache_marker()));
             }
             "assistant" => {
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(assistant_to_converse(m));
+                messages.push(assistant_to_converse(m, caching));
             }
             _ => {
                 // "user" and any unexpected role → user turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(json!({
-                    "role": "user",
-                    "content": converse_content(m, &mut doc_names)?,
-                }));
+                let content = caching
+                    .marked_text_blocks(m)
+                    .unwrap_or_else(|| vec![json!({ "text": m.text().unwrap_or_default() })]);
+                messages.push(json!({ "role": "user", "content": content }));
             }
         }
     }
@@ -990,7 +848,11 @@ fn to_converse_request_inner(
     let mut name_map = HashMap::new();
     if let Some(tools) = &req.tools {
         name_map = build_tool_name_map(tools);
-        let translated: Vec<Value> = tools.iter().map(tool_to_converse).collect();
+        let mut translated: Vec<Value> = Vec::new();
+        for t in tools {
+            translated.push(tool_to_converse(t));
+            translated.extend(caching.after_tool_block(t.extra.get(CACHE_CONTROL)));
+        }
         if !translated.is_empty() {
             body["toolConfig"] = json!({ "tools": translated });
             if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_converse) {
@@ -998,7 +860,7 @@ fn to_converse_request_inner(
             }
         }
     }
-    Ok((body, name_map))
+    (body, name_map)
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -1007,12 +869,200 @@ fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
     }
 }
 
-fn assistant_to_converse(m: &Message) -> Value {
-    let mut blocks: Vec<Value> = Vec::new();
-    if let Some(t) = m.text()
-        && !t.is_empty()
+/// Add `text` as a block at the end of `turn` when it is a user turn; `false` when it is not,
+/// or there is none.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+    match turn
+        .filter(|t| t["role"] == "user")
+        .and_then(|t| t["content"].as_array_mut())
     {
-        blocks.push(json!({ "text": t }));
+        Some(content) => {
+            content.push(json!({ "text": text }));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Where a model accepts a `cachePoint`, Bedrock's equivalent of `cache_control`: a block that
+/// ends the cached prefix after the content before it. A cache point a model does not accept
+/// fails the whole request, so these follow what Converse accepted live (Oct 2026).
+#[derive(Clone, Copy, PartialEq)]
+enum CacheSupport {
+    /// Claude: after any block and in the tool list; with the agent's TTL when `ttl`.
+    Everywhere {
+        ttl: bool,
+    },
+    /// Nova: only right after a text block; no TTL ("only supported for Anthropic models").
+    AfterText,
+    None,
+}
+
+/// Claude models from before the 1-hour TTL. Opus 4.1 rejects a cache point carrying one
+/// ("ttl: Extra inputs are not permitted"); the rest are past end of life on Bedrock.
+const CLAUDE_WITHOUT_TTL: [&str; 4] = [
+    "claude-3",
+    "claude-opus-4-2025",
+    "claude-sonnet-4-2025",
+    "claude-opus-4-1",
+];
+
+impl CacheSupport {
+    fn of(model: &str) -> Self {
+        if model.contains("anthropic.claude") {
+            Self::Everywhere {
+                ttl: !CLAUDE_WITHOUT_TTL.iter().any(|old| model.contains(old)),
+            }
+        } else if model.contains("amazon.nova") {
+            Self::AfterText
+        } else {
+            Self::None
+        }
+    }
+
+    /// One `{text}` block per text part, with a cache point after each marked one; `None` when
+    /// no part carries a marker or the model caches nothing.
+    fn marked_text_blocks(self, m: &Message) -> Option<Vec<Value>> {
+        if self == Self::None {
+            return None;
+        }
+        let mut blocks = Vec::new();
+        for part in m.marked_text_parts()? {
+            blocks.push(json!({ "text": part["text"] }));
+            if let Some(marker) = part.get(CACHE_CONTROL) {
+                blocks.push(self.cache_point(marker));
+            }
+        }
+        Some(blocks)
+    }
+
+    /// The cache point to follow a tool call, tool result or tool definition carrying `marker`.
+    fn after_tool_block(self, marker: Option<&Value>) -> Option<Value> {
+        marker
+            .filter(|_| matches!(self, Self::Everywhere { .. }))
+            .map(|m| self.cache_point(m))
+    }
+
+    fn cache_point(self, marker: &Value) -> Value {
+        let mut point = json!({ "cachePoint": { "type": "default" } });
+        if self == (Self::Everywhere { ttl: true })
+            && let Some(ttl) = marker.get("ttl")
+        {
+            point["cachePoint"]["ttl"] = ttl.clone();
+        }
+        point
+    }
+}
+
+/// Add the router's own cache points in the slots the agent left free: first after the end of
+/// the conversation, on Nova after the turn the previous request ended with, then after `system`
+/// (tools come before it, so that point covers them too). Each is a 5-minute point. Only where
+/// the model accepts one: after any block on Claude, only after text on Nova, so a Nova turn of
+/// tool results gets none.
+fn add_cache_points(body: &mut Value, caching: CacheSupport) {
+    if caching == CacheSupport::None {
+        return;
+    }
+    let mut free = MAX_CACHE_POINTS.saturating_sub(count_cache_points(body));
+    // A 5-minute point may not come before a 1-hour one, and `system` comes before every turn.
+    let turns_hold_long_point = turn_blocks(body).any(|block| block["cachePoint"]["ttl"] == "1h");
+
+    if free > 0
+        && let Some(content) = body["messages"]
+            .as_array_mut()
+            .and_then(|turns| turns.last_mut())
+            .and_then(|turn| turn["content"].as_array_mut())
+        && let Some(at) = cache_point_slot(content, caching)
+    {
+        content.insert(at, json!({ "cachePoint": { "type": "default" } }));
+        free -= 1;
+    }
+    // Claude finds the previous turn's cached prefix by looking back from this turn's point. Nova
+    // reads only at a point the request repeats, so it gets the previous turn's point again.
+    if free > 0
+        && caching == CacheSupport::AfterText
+        && let Some(content) = previous_turn(body).and_then(|t| t["content"].as_array_mut())
+        && let Some(at) = cache_point_slot(content, caching)
+    {
+        content.insert(at, json!({ "cachePoint": { "type": "default" } }));
+        free -= 1;
+    }
+    if free > 0
+        && !turns_hold_long_point
+        && let Some(system) = body["system"].as_array_mut()
+        && system
+            .last()
+            .and_then(|block| block["text"].as_str())
+            .is_some_and(|t| !t.is_empty() && !t.ends_with(crate::brevity::DIRECTIVE))
+    {
+        system.push(json!({ "cachePoint": { "type": "default" } }));
+    }
+}
+
+/// The user turn the previous request ended with: the one before the last assistant turn.
+fn previous_turn(body: &mut Value) -> Option<&mut Value> {
+    let turns = body["messages"].as_array_mut()?;
+    let answer = turns.iter().rposition(|t| t["role"] == "assistant")?;
+    turns
+        .get_mut(answer.checked_sub(1)?)
+        .filter(|t| t["role"] == "user")
+}
+
+fn count_cache_points(body: &Value) -> usize {
+    [&body["system"], &body["toolConfig"]["tools"]]
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .chain(turn_blocks(body))
+        .filter(|block| block.get("cachePoint").is_some())
+        .count()
+}
+
+/// Every content block of every turn.
+fn turn_blocks(body: &Value) -> impl Iterator<Item = &Value> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn["content"].as_array())
+        .flatten()
+}
+
+/// Where a cache point ending `content` goes: after its last block the model accepts one after,
+/// walking back past brevity's directive. `None` when a point already ends it or no block
+/// qualifies.
+fn cache_point_slot(content: &[Value], caching: CacheSupport) -> Option<usize> {
+    for (i, block) in content.iter().enumerate().rev() {
+        if block.get("cachePoint").is_some() {
+            return None;
+        }
+        let text = block["text"].as_str();
+        if text == Some(crate::brevity::DIRECTIVE) {
+            continue;
+        }
+        let accepted = match caching {
+            CacheSupport::Everywhere { .. } => text.is_none_or(|t| !t.is_empty()),
+            CacheSupport::AfterText => text.is_some_and(|t| !t.is_empty()),
+            CacheSupport::None => false,
+        };
+        if accepted {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+fn assistant_to_converse(m: &Message, caching: CacheSupport) -> Value {
+    let mut blocks: Vec<Value> = Vec::new();
+    match caching.marked_text_blocks(m) {
+        Some(text_blocks) => blocks.extend(text_blocks),
+        None => {
+            if let Some(t) = m.text()
+                && !t.is_empty()
+            {
+                blocks.push(json!({ "text": t }));
+            }
+        }
     }
     if let Some(tool_calls) = &m.tool_calls {
         for tc in tool_calls {
@@ -1025,6 +1075,7 @@ fn assistant_to_converse(m: &Message) -> Value {
                     "input": input,
                 }
             }));
+            blocks.extend(caching.after_tool_block(tc.extra.get(CACHE_CONTROL)));
         }
     }
     if blocks.is_empty() {
@@ -1347,6 +1398,14 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
 mod tests {
     use super::*;
 
+    /// The request as translated, before the router adds any cache point.
+    fn to_converse_request(
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+    ) -> (Value, HashMap<String, String>) {
+        to_converse_request_inner(req, cfg, true)
+    }
+
     fn resolved(model: &str) -> ResolvedConfig {
         ResolvedConfig {
             provider: "bedrock".into(),
@@ -1388,7 +1447,7 @@ mod tests {
             json!({"messages":[{"role":"user","content":"Reply with just OK."}]}),
         )
         .unwrap();
-        let (body, names) = to_converse_request(&request, &config).unwrap();
+        let (body, names) = to_converse_request(&request, &config);
         let http = reqwest::Client::new();
         for surface in ["converse", "converse-stream"] {
             let response = http
@@ -1467,6 +1526,197 @@ mod tests {
         }
     }
 
+    /// An Anthropic-SDK agent's request with a cache marker on a system block, a tool, a tool
+    /// result and a user text block, parsed as the router parses it.
+    fn marked_anthropic_request() -> ChatRequest {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let ephemeral = json!({ "type": "ephemeral" });
+        AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": [
+                    { "type": "text", "text": "You are a coding agent." },
+                    { "type": "text", "text": "Repository map.", "cache_control": ephemeral }
+                ],
+                "tools": [
+                    { "name": "read", "input_schema": { "type": "object" } },
+                    { "name": "edit", "input_schema": { "type": "object" }, "cache_control": ephemeral }
+                ],
+                "messages": [
+                    { "role": "user", "content": "Fix the failing test." },
+                    { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {} }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Also run clippy." },
+                        { "type": "text", "text": "Then stop.", "cache_control": ephemeral }
+                    ]}
+                ]
+            }))
+            .unwrap()
+    }
+
+    fn cache_point() -> Value {
+        json!({ "cachePoint": { "type": "default" } })
+    }
+
+    #[test]
+    fn an_anthropic_agents_cache_markers_become_cache_points_on_claude() {
+        let (body, _) = to_converse_request(
+            &marked_anthropic_request(),
+            &resolved("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        );
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent." }, { "text": "Repository map." }, cache_point()])
+        );
+        let tools = body["toolConfig"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[1]["toolSpec"]["name"], "edit");
+        assert_eq!(tools[2], cache_point());
+        assert_eq!(body["messages"][2]["content"][1], cache_point());
+        assert_eq!(
+            body["messages"][3]["content"],
+            json!([{ "text": "Also run clippy." }, { "text": "Then stop." }, cache_point()])
+        );
+        assert!(!body.to_string().contains("cache_control"));
+    }
+
+    #[test]
+    fn nova_gets_cache_points_only_after_text() {
+        // Nova rejects the whole request for a cache point after a tool call, a tool result or
+        // in the tool list, so the marked tool and tool result go uncached there.
+        let (body, _) = to_converse_request(
+            &marked_anthropic_request(),
+            &resolved("us.amazon.nova-pro-v1:0"),
+        );
+
+        assert_eq!(
+            body["system"].as_array().unwrap().last(),
+            Some(&cache_point())
+        );
+        assert_eq!(
+            body["messages"][3]["content"].as_array().unwrap().last(),
+            Some(&cache_point())
+        );
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 1);
+        let tools = body["toolConfig"]["tools"].as_array().unwrap();
+        assert!(!tools.contains(&cache_point()));
+    }
+
+    #[test]
+    fn a_one_hour_marker_keeps_its_ttl_on_claude_but_not_on_nova() {
+        let mut req = marked_anthropic_request();
+        req.messages[0].content = Some(json!([
+            { "type": "text", "text": "You are a coding agent.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+        ]));
+        let one_hour = json!({ "cachePoint": { "type": "default", "ttl": "1h" } });
+
+        let (claude, _) = to_converse_request(&req, &resolved("us.anthropic.claude-haiku-5-5"));
+        let (nova, _) = to_converse_request(&req, &resolved("us.amazon.nova-pro-v1:0"));
+
+        assert_eq!(claude["system"][1], one_hour);
+        assert_eq!(nova["system"][1], cache_point());
+    }
+
+    #[test]
+    fn claude_from_before_the_one_hour_ttl_gets_a_cache_point_without_it() {
+        // Opus 4.1 rejects the whole request for a TTL, but caches for 5 minutes without one.
+        let mut req = marked_anthropic_request();
+        req.messages[0].content = Some(json!([
+            { "type": "text", "text": "You are a coding agent.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+        ]));
+
+        let (body, _) = to_converse_request(
+            &req,
+            &resolved("us.anthropic.claude-opus-4-1-20250805-v1:0"),
+        );
+
+        assert_eq!(body["system"][1], cache_point());
+    }
+
+    /// Brevity's seam, run as the handler runs it.
+    fn with_brevity(mut req: ChatRequest) -> ChatRequest {
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let resolved = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("unused")
+        };
+        crate::brevity::apply(&mut req, &cfg, &resolved, None).unwrap();
+        req
+    }
+
+    #[test]
+    fn brevitys_directive_follows_the_last_cache_point_on_claude_and_nova() {
+        // In `system` it would change the cached prefix of every turn that applies or skips it.
+        let directive = json!({ "text": crate::brevity::DIRECTIVE });
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let (without, _) = to_converse_request(&marked_anthropic_request(), &resolved(model));
+            let (with, _) =
+                to_converse_request(&with_brevity(marked_anthropic_request()), &resolved(model));
+
+            assert_eq!(with["system"], without["system"], "{model}");
+            assert_eq!(with["toolConfig"], without["toolConfig"], "{model}");
+            let mut last_turn = without["messages"][3]["content"].clone();
+            last_turn.as_array_mut().unwrap().push(directive.clone());
+            assert_eq!(with["messages"][3]["content"], last_turn, "{model}");
+            for turn in 0..3 {
+                assert_eq!(with["messages"][turn], without["messages"][turn], "{model}");
+            }
+        }
+    }
+
+    #[test]
+    fn brevitys_directive_stays_in_system_when_the_last_turn_is_not_the_users() {
+        // No tools, so brevity does not read the trailing tool result as mid tool-loop.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "logs", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
+            ]
+        }))
+        .unwrap();
+
+        let (body, _) = to_converse_request(
+            &with_brevity(req),
+            &resolved("us.anthropic.claude-haiku-5-5"),
+        );
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are helpful." }, { "text": crate::brevity::DIRECTIVE }])
+        );
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_model_without_prompt_caching_gets_no_cache_points() {
+        let (body, _) =
+            to_converse_request(&marked_anthropic_request(), &resolved("deepseek.v3.2"));
+
+        let sent = body.to_string();
+        assert!(!sent.contains("cachePoint"));
+        assert!(!sent.contains("cache_control"));
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent.Repository map." }])
+        );
+    }
+
     #[test]
     fn request_extracts_system_and_translates_tools() {
         let req: ChatRequest = serde_json::from_value(json!({
@@ -1488,7 +1738,7 @@ mod tests {
             "tool_choice": "auto"
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2")).unwrap();
+        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
 
         // System extracted to top level.
         assert_eq!(body["system"][0]["text"], "You are helpful.");
@@ -1512,173 +1762,6 @@ mod tests {
     }
 
     #[test]
-    fn image_part_becomes_a_format_token_and_inline_bytes() {
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "anthropic.claude-3-5-sonnet",
-            "messages": [{ "role": "user", "content": [
-                { "type": "text", "text": "what is this?" },
-                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
-            ]}]
-        }))
-        .unwrap();
-
-        let (body, _map) =
-            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
-        let content = body["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["text"], "what is this?");
-        // A bare token, never the mime type — Converse rejects "image/png" here.
-        assert_eq!(content[1]["image"]["format"], "png");
-        assert_eq!(content[1]["image"]["source"]["bytes"], "iVBORw0KGgo=");
-    }
-
-    #[test]
-    fn jpeg_maps_to_the_jpeg_token_not_a_split_of_the_mime_type() {
-        // The trap this guards: `media_type.split('/').last()` yields "jpeg" here but
-        // "quicktime" for video/quicktime, so the mapping is a table, not a guess.
-        for (mime, token) in [
-            ("image/jpeg", "jpeg"),
-            ("image/jpg", "jpeg"),
-            ("image/gif", "gif"),
-            ("image/webp", "webp"),
-        ] {
-            assert_eq!(converse_image_format(mime), Some(token));
-        }
-        assert_eq!(converse_image_format("image/svg+xml"), None);
-    }
-
-    #[test]
-    fn video_maps_to_converse_format_tokens_not_a_split_of_the_mime_type() {
-        // video/quicktime is the case that proves the table earns its keep: a
-        // split('/') guess yields "quicktime", and Converse only knows "mov".
-        assert_eq!(converse_video_format("video/quicktime"), Some("mov"));
-        assert_eq!(converse_video_format("video/x-matroska"), Some("mkv"));
-        assert_eq!(converse_video_format("video/3gpp"), Some("three_gp"));
-        assert_eq!(converse_video_format("video/mp4"), Some("mp4"));
-        assert_eq!(converse_video_format("video/ogg"), None);
-
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "anthropic.claude-3-5-sonnet",
-            "messages": [{ "role": "user", "content": [
-                { "type": "video_url", "video_url": { "url": "data:video/quicktime;base64,AAAA" } }
-            ]}]
-        }))
-        .unwrap();
-        let (body, _map) =
-            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
-        let video = &body["messages"][0]["content"][0]["video"];
-        assert_eq!(video["format"], "mov");
-        assert_eq!(video["source"]["bytes"], "AAAA");
-    }
-
-    #[test]
-    fn document_names_are_stripped_of_dots_and_made_unique() {
-        // Converse validates `name` against [a-zA-Z0-9\s\-\(\)\[\]]+ — no dots.
-        assert_eq!(sanitize_document_name(Some("q3.pdf")), "q3 pdf");
-        assert_eq!(sanitize_document_name(Some("a/b_c!.pdf")), "a b c pdf");
-        assert_eq!(sanitize_document_name(None), "document");
-        assert_eq!(sanitize_document_name(Some("...")), "document");
-
-        let mut used = HashSet::new();
-        assert_eq!(
-            unique_document_name(Some("report.pdf"), &mut used),
-            "report pdf"
-        );
-        assert_eq!(
-            unique_document_name(Some("report.pdf"), &mut used),
-            "report pdf 2"
-        );
-        assert_eq!(unique_document_name(None, &mut used), "document");
-        assert_eq!(unique_document_name(None, &mut used), "document 2");
-    }
-
-    #[test]
-    fn pdf_part_becomes_a_named_document_block() {
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "anthropic.claude-3-5-sonnet",
-            "messages": [{ "role": "user", "content": [
-                { "type": "file", "file": {
-                    "file_data": "data:application/pdf;base64,JVBERi0=",
-                    "filename": "q3.pdf"
-                }}
-            ]}]
-        }))
-        .unwrap();
-
-        let (body, _map) =
-            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
-        let doc = &body["messages"][0]["content"][0]["document"];
-        assert_eq!(doc["format"], "pdf");
-        assert_eq!(doc["name"], "q3 pdf");
-        assert_eq!(doc["source"]["bytes"], "JVBERi0=");
-    }
-
-    #[test]
-    fn tool_results_carry_media_instead_of_flattening_to_text() {
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "anthropic.claude-3-5-sonnet",
-            "messages": [
-                { "role": "user", "content": "chart it" },
-                { "role": "assistant", "content": null, "tool_calls": [{
-                    "id": "tc_1", "type": "function",
-                    "function": { "name": "chart", "arguments": "{}" }
-                }]},
-                { "role": "tool", "tool_call_id": "tc_1", "content": [
-                    { "type": "text", "text": "here" },
-                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
-                ]}
-            ]
-        }))
-        .unwrap();
-
-        let (body, _map) =
-            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
-        let result = body["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find_map(|m| m["content"][0].get("toolResult"))
-            .expect("tool result turn");
-        let content = result["content"].as_array().unwrap();
-        assert_eq!(content.len(), 2);
-        assert_eq!(content[0]["text"], "here");
-        assert_eq!(content[1]["image"]["format"], "png");
-    }
-
-    #[test]
-    fn unfetchable_and_unsupported_media_are_refused_by_name() {
-        let cases = [
-            (
-                json!({ "type": "image_url", "image_url": { "url": "https://example.com/c.png" } }),
-                "web URL",
-            ),
-            (
-                json!({ "type": "input_audio", "input_audio": { "data": "UklG", "format": "wav" } }),
-                "input_audio",
-            ),
-            (
-                json!({ "type": "image_url", "image_url": { "url": "data:image/svg+xml;base64,PHN2" } }),
-                "image/svg+xml",
-            ),
-        ];
-        for (part, needle) in cases {
-            let req: ChatRequest = serde_json::from_value(json!({
-                "model": "anthropic.claude-3-5-sonnet",
-                "messages": [{ "role": "user", "content": [part] }]
-            }))
-            .unwrap();
-            let err =
-                to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap_err();
-            match err {
-                ProviderError::Rejected(message) => {
-                    assert!(message.contains(needle), "{message} should name {needle}");
-                }
-                other => panic!("expected a 400, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
     fn tool_history_translates_to_converse_shape() {
         let req: ChatRequest = serde_json::from_value(json!({
             "messages": [
@@ -1691,7 +1774,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2")).unwrap();
+        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // Assistant turn with toolUse.
@@ -1903,5 +1986,229 @@ mod tests {
         assert_eq!(unsanitize_tool_name("query_docs", &map), "query-docs");
         // Names that don't need sanitizing have no map entry.
         assert_eq!(unsanitize_tool_name("search", &map), "search");
+    }
+
+    /// The body the provider sends with `TOKEN_CACHE_MARKERS` on.
+    fn with_router_points(req: &ChatRequest, model: &str) -> Value {
+        BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into())
+            .with_cache_markers(true)
+            .request_body(req, &resolved(model), true)
+            .0
+    }
+
+    fn plain_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// An agent that set no markers, mid tool loop: its last turn is a tool result.
+    fn tool_loop_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "toolu_1", "type": "function",
+                    "function": { "name": "read", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_router_ends_the_conversation_then_system_with_a_cache_point() {
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&plain_request(), model);
+
+            assert_eq!(
+                body["system"],
+                json!([{ "text": "You are a coding agent." }, cache_point()]),
+                "{model}"
+            );
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([{ "text": "Fix the failing test." }, cache_point()]),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_of_tool_results_gets_a_cache_point_on_claude_but_not_on_nova() {
+        let claude = with_router_points(&tool_loop_request(), "us.anthropic.claude-haiku-5-5");
+        let nova = with_router_points(&tool_loop_request(), "us.amazon.nova-pro-v1:0");
+
+        assert_eq!(claude["messages"][2]["content"][1], cache_point());
+        // Nova rejects a cache point after a tool result; `system` still gets one.
+        assert_eq!(nova["messages"][2]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(nova["system"][1], cache_point());
+    }
+
+    #[test]
+    fn the_routers_last_cache_point_goes_ahead_of_brevitys_directive() {
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&with_brevity(plain_request()), model);
+
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([
+                    { "text": "Fix the failing test." },
+                    cache_point(),
+                    { "text": crate::brevity::DIRECTIVE }
+                ]),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn nova_gets_the_previous_turns_cache_point_again_and_claude_does_not() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Read the notes." },
+                { "role": "assistant", "content": "Read." },
+                { "role": "user", "content": "Say ok." }
+            ]
+        }))
+        .unwrap();
+
+        let nova = with_router_points(&req, "us.amazon.nova-pro-v1:0");
+        let claude = with_router_points(&req, "us.anthropic.claude-haiku-5-5");
+
+        let previous_turn_marked = json!([{ "text": "Read the notes." }, cache_point()]);
+        assert_eq!(nova["messages"][0]["content"], previous_turn_marked);
+        assert_eq!(nova["messages"][2]["content"][1], cache_point());
+        assert_eq!(
+            claude["messages"][0]["content"],
+            json!([{ "text": "Read the notes." }])
+        );
+    }
+
+    #[test]
+    fn an_agent_holding_all_four_cache_points_gets_none_from_the_router() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let ephemeral = json!({ "type": "ephemeral" });
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "tools": [{ "name": "read", "input_schema": { "type": "object" }, "cache_control": ephemeral }],
+                "messages": [
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                    ]},
+                    { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {}, "cache_control": ephemeral }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral },
+                        { "type": "text", "text": "Then stop." }
+                    ]}
+                ]
+            }))
+            .unwrap();
+        let model = "us.anthropic.claude-haiku-5-5";
+
+        // Neither the end of the conversation nor `system` has one, but a fifth is rejected.
+        let body = with_router_points(&req, model);
+
+        assert_eq!(count_cache_points(&body), MAX_CACHE_POINTS);
+        assert_eq!(body, to_converse_request(&req, &resolved(model)).0);
+    }
+
+    #[test]
+    fn no_five_minute_system_point_goes_ahead_of_an_agents_one_hour_point() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "messages": [
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Read the repository map.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+                    ]},
+                    { "role": "assistant", "content": "Done." },
+                    { "role": "user", "content": "Now fix the failing test." }
+                ]
+            }))
+            .unwrap();
+
+        let body = with_router_points(&req, "us.anthropic.claude-haiku-5-5");
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent." }])
+        );
+        assert_eq!(body["messages"][2]["content"][1], cache_point());
+    }
+
+    #[test]
+    fn the_router_adds_no_cache_point_without_the_flag_or_for_a_model_without_caching() {
+        let off = BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into());
+        let claude = "us.anthropic.claude-haiku-5-5";
+        assert_eq!(
+            off.request_body(&plain_request(), &resolved(claude), true)
+                .0,
+            to_converse_request(&plain_request(), &resolved(claude)).0
+        );
+
+        let gpt = "us.openai.gpt-6-astra";
+        assert_eq!(
+            with_router_points(&plain_request(), gpt),
+            to_converse_request(&plain_request(), &resolved(gpt)).0
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_gateway_config_sends_the_routers_cache_points() {
+        let mut server = mockito::Server::new_async().await;
+        let model = "us.anthropic.claude-haiku-5-5";
+        let m = server
+            .mock("POST", format!("/model/{model}/converse").as_str())
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "system": [{ "text": "You are a coding agent." }, cache_point()],
+                "messages": [{ "role": "user", "content": [
+                    { "text": "Fix the failing test." }, cache_point()
+                ]}]
+            })))
+            .with_status(200)
+            .with_body(
+                json!({
+                    "output": { "message": { "role": "assistant", "content": [{ "text": "On it." }] } },
+                    "stopReason": "end_turn",
+                    "usage": { "inputTokens": 10, "outputTokens": 3, "totalTokens": 13 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let endpoint = crate::resolver::CustomEndpoint {
+            base_url: server.url(),
+            dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+        };
+        let provider = crate::providers::provider_for(
+            "aws-bedrock",
+            Some(&endpoint),
+            &reqwest::Client::new(),
+            &crate::config::GatewayConfig::default(),
+        )
+        .unwrap();
+
+        provider
+            .chat(&plain_request(), &resolved(model))
+            .await
+            .unwrap();
+
+        m.assert_async().await;
     }
 }
