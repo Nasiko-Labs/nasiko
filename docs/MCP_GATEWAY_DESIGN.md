@@ -351,7 +351,9 @@ CREATE TABLE mcp_connectors (
     oauth_authorization_endpoint  TEXT,
     oauth_token_endpoint          TEXT,
     oauth_client_id               TEXT,
-    oauth_client_secret            TEXT,   -- encrypted at rest
+    oauth_client_secret            TEXT,   -- encrypted at rest; only for confidential clients
+    oauth_scopes                  TEXT,   -- explicit space-separated scope; replaces automatic selection when set
+    oauth_send_resource           BOOLEAN, -- RFC 8707 `resource` on authorize: NULL = discovery decides, true/false = forced
 
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -581,17 +583,34 @@ flowchart TD
    URL (path-inserted, then appended to the issuer) before any OpenID Connect Discovery
    URL (inserted, then appended). A server that publishes both is treated as RFC 8414;
    some identity providers publish only OpenID Connect discovery (Entra ID 404s every
-   RFC 8414 URL).
+   RFC 8414 URL). If no resource metadata document is usable (the pointer is unusable
+   and there is no RFC 9728 document), the MCP server's own origin is tried as the
+   authorization server, RFC 8414 URLs then OpenID Connect URLs. Confirmed live: Azure
+   API Management publishes the authorization-server document at the API origin while
+   its resource-metadata URL is itself behind the JWT policy.
 3. **Scope**: the challenge's `scope`, else every scope in the resource's
    `scopes_supported`, else none, plus `offline_access` when the authorization server
    offers it, since some providers (Entra ID) issue a refresh token only on request.
+   On the origin path (step 2) the authorization server's own `scopes_supported` is
+   used, since the resource itself published it. `oauth_scopes` on the connector
+   replaces this selection verbatim.
 4. **Resource** (RFC 8707): the connector URL, omitted when the authorization server
    is known only through OpenID Connect discovery: Entra ID rejects a `resource` that
-   differs from the requested scope's own resource.
-5. **Client**: the user's own client id and secret when supplied (required where the
-   authorization server has no `registration_endpoint`), else RFC 7591 dynamic
-   registration. A user-supplied secret is kept as long as authorization uses the
-   client id it was registered with.
+   differs from the requested scope's own resource. It is also omitted on the origin
+   path, where no resource identifier was published. `oauth_send_resource` forces it on
+   (`true`, the connector URL) or off (`false`); `NULL` leaves it to discovery; on update, an omitted field is unchanged and an explicit
+   `null` returns to automatic. Metadata
+   alone cannot classify some providers behind proxies, such as Entra ID behind Azure
+   API Management, which need a scope and reject `resource`.
+5. **Client**: the user's own client id when supplied (required where the authorization
+   server has no `registration_endpoint`), else RFC 7591 dynamic registration. A client
+   secret is required only for confidential clients. Public clients (PKCE, with
+   `token_endpoint_auth_methods_supported` containing `none`) need only the client id;
+   Entra ID accepts public clients. A user-supplied secret is kept as long as
+   authorization uses the client id it was registered with.
+
+The probe response (`POST /api/mcp/connectors/probe`) reports `public_client`: `true`
+when the authorization server accepts clients without a secret, `null` when unknown.
 
 A discovery failure is a 502 (`authorization error`, or `could not reach MCP server`
 when the server is down), with the cause in the gateway log; for a connector that is
@@ -793,7 +812,7 @@ owner or a superuser via `DELETE`.
 | GET | `/api/mcp/connections` | List the caller's own connections |
 | DELETE | `/api/mcp/connections/{connector_id}` | Disconnect / revoke |
 | GET / POST | `/api/mcp/connectors` | List connectors visible to the caller / register a custom MCP server |
-| POST | `/api/mcp/connectors/probe` | Detect a candidate server's required auth type before registering |
+| POST | `/api/mcp/connectors/probe` | Detect a candidate server's required auth type before registering; for OAuth also `supports_dcr` and `public_client` (the authorization server accepts clients without a secret) |
 | PATCH / DELETE | `/api/mcp/connectors/{id}` | Update / delete an owned connector |
 | GET / POST / DELETE | `/api/mcp/connectors/{id}/share` | List, grant, or revoke a username's (or everyone's) access to an owned connector |
 | POST / DELETE | `/api/mcp/connectors/{id}/credential` | Store / remove a credential (write-only) |
