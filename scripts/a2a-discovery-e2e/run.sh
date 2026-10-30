@@ -8,7 +8,9 @@
 #    prints for LangGraph and for CrewAI reaches an MCP server's tool through the gateway with
 #    the variables it wrote; restarted on another port it is still the same agent, its model
 #    call goes through Nasiko, shows up in Sessions, and discovery shows it CONNECTED `yes`;
-#    `nasiko disconnect` restores the `.env` exactly and revokes the MCP credential. Throughout,
+#    `nasiko disconnect` restores the `.env` exactly and revokes its LLM key and MCP credential.
+#    Then the same for the CrewAI crew, kept in its own folder as `crewai create` lays one out,
+#    which runs a real task once restarted. Throughout,
 #    `nasiko status` shows what discovery registered, read back from the server, without
 #    probing anything itself.
 #
@@ -26,17 +28,20 @@ discovery_only=false
 [ "${1:-}" = "--discovery-only" ] && discovery_only=true
 mkdir -p "$work"
 
-venv() { # venv <name> <packages...>; reinstalls when the package list changes
-  local dir="$work/venv-$1" wanted="${*:2}"
+venv() { # venv <dir> <packages...>; reinstalls when the package list changes
+  local dir="$1" wanted="${*:2}"
   [ -x "$dir/bin/python" ] && [ "$(cat "$dir/.packages" 2>/dev/null)" = "$wanted" ] && return
-  echo "Installing $1 into $dir ..."
+  echo "Installing ${*:2} into $dir ..."
   rm -rf "$dir"
   "$python" -m venv "$dir"
   "$dir/bin/pip" install -q "${@:2}"
   echo "$wanted" > "$dir/.packages"
 }
-venv crewai 'crewai[a2a]==1.15.28' uvicorn
-venv langgraph 'langgraph-cli[inmem]==0.4.37' 'langchain-openai==1.7.3' 'langchain-mcp-adapters==0.3.2'
+# The crew is laid out as `crewai create` makes one: its Python environment inside its folder,
+# which is how `connect` can tell CrewAI loads that folder's `.env`.
+crew="$work/crew"
+venv "$crew/.venv" 'crewai[a2a]==1.15.28' uvicorn
+venv "$work/venv-langgraph" 'langgraph-cli[inmem]==0.4.37' 'langchain-openai==1.7.3' 'langchain-mcp-adapters==0.3.2'
 
 free_port() {
   "$python" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
@@ -63,8 +68,17 @@ export HOME_E2E="$work/home"
 rm -rf "$HOME_E2E" && mkdir -p "$HOME_E2E/.nasiko"
 nasiko() { HOME="$HOME_E2E" NO_PROXY='*' no_proxy='*' "$target/debug/nasiko" "$@"; }
 
-"$work/venv-crewai/bin/python" "$here/crewai_agent.py" "$crewai_port" > "$work/crewai.log" 2>&1 &
-pids+=($!)
+cp "$here/crewai_agent.py" "$crew/crew.py"
+printf 'OPENAI_API_KEY=sk-agent-own-key\nKEEP_ME=1\n' > "$crew/.env"
+cp "$crew/.env" "$work/crew-env.before"
+crew_pid=
+start_crew() {
+  (cd "$crew" && NO_PROXY='*' no_proxy='*' exec .venv/bin/python crew.py "$crewai_port") >> "$work/crewai.log" 2>&1 &
+  crew_pid=$!
+  pids+=($crew_pid)
+}
+: > "$work/crewai.log"
+start_crew
 
 # Served from a copy, so the dev server's state and the `.env` stay out of the source tree.
 # A second copy of the same app, in another folder, serves agents with the same names.
@@ -219,12 +233,13 @@ api PUT "/mcp/agents/$planner_id/connectors/$connector" '{"enabled": true}' > /d
   fail "could not enable the e2e MCP server for $planner"
 api GET "/mcp/agents/$planner_id/connectors/$connector/tools" | grep -q '"add"' ||
   fail "the e2e MCP server's tools are not listed for $planner"
-for framework in langgraph crewai; do
-  "$work/venv-$framework/bin/python" "$here/mcp_$framework.py" "$app/.env" > "$work/mcp-$framework.log" 2>&1 || true
-  [ "$(tail -1 "$work/mcp-$framework.log")" = 5 ] ||
-    fail "the $framework MCP snippet did not reach the tool; see $work/mcp-$framework.log"
-  echo "ok: the $framework MCP snippet calls a tool through the gateway"
-done
+mcp_snippet_reaches_the_tool() { # <framework> <its python> <its env file>
+  "$2" "$here/mcp_$1.py" "$3" > "$work/mcp-$1.log" 2>&1 || true
+  [ "$(tail -1 "$work/mcp-$1.log")" = 5 ] ||
+    fail "the $1 MCP snippet did not reach the tool; see $work/mcp-$1.log"
+  echo "ok: the $1 MCP snippet calls a tool through the gateway"
+}
+mcp_snippet_reaches_the_tool langgraph "$work/venv-langgraph/bin/python" "$app/.env"
 expect_connected "$planner" waiting "after connect"
 expect_connected "$planner_copy" no "after connecting the other copy"
 expect_status "$planner" waiting "after connect"
@@ -247,27 +262,74 @@ grep -qx 'Bearer sk-nasiko-platform' "$work/upstream.log" ||
   fail "the model call did not come through Nasiko (upstream saw: $(cat "$work/upstream.log"))"
 echo "ok: planner's model call went through Nasiko"
 # The call is recorded as a turn of planner's session, off the request path, so poll briefly.
-sessions_of_planner() {
-  curl -sf --noproxy '*' "$server/api/observability/session/list" -H "authorization: Bearer $token" |
-    "$python" -c 'import json, sys; print(sum(s.get("agent_id") == sys.argv[1] for s in json.load(sys.stdin)["data"]["sessions"]))' "$planner"
+expect_session() { # expect_session <agent>: Sessions lists the agent's one session
+  local count
+  for _ in $(seq 20); do
+    count=$(curl -sf --noproxy '*' "$server/api/observability/session/list" -H "authorization: Bearer $token" |
+      "$python" -c 'import json, sys; print(sum(s.get("agent_id") == sys.argv[1] for s in json.load(sys.stdin)["data"]["sessions"]))' "$1")
+    [ "$count" = 1 ] && break
+    sleep 0.5
+  done
+  [ "$count" = 1 ] || fail "Sessions does not list $1's session after a routed call"
+  echo "ok: Sessions lists $1's session"
 }
-for _ in $(seq 20); do [ "$(sessions_of_planner)" = 1 ] && break; sleep 0.5; done
-[ "$(sessions_of_planner)" = 1 ] || fail "Sessions does not list planner's session after a routed call"
-echo "ok: Sessions lists planner's session"
+expect_session "$planner"
 expect_connected "$planner" yes "after a routed call"
 expect_connected "$planner_copy" no "while the other copy routes"
 expect_status "$planner" on "after a routed call"
 
-mcp_token=$(sed -n 's/^MCP_GATEWAY_TOKEN=//p' "$app/.env")
-nasiko disconnect "$planner"
-cmp -s "$app/.env" "$work/env.before" || fail "disconnect did not restore $app/.env"
-echo "ok: disconnect restored .env"
-status=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST "$server/api/mcp" \
-  -H "authorization: Bearer $mcp_token" -H 'content-type: application/json' \
-  -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}')
-[ "$status" = 401 ] || fail "disconnect left the MCP gateway credential working (HTTP $status)"
-echo "ok: disconnect revoked the MCP gateway credential"
-expect_connected "$planner" no "after disconnect"
-expect_status "$planner" off "after disconnect"
+disconnect_and_check() { # disconnect_and_check <agent> <env file> <its env file before connect>
+  local llm_key mcp_key status
+  llm_key=$(sed -n 's/^OPENAI_API_KEY=//p' "$2")
+  mcp_key=$(sed -n 's/^MCP_GATEWAY_TOKEN=//p' "$2")
+  nasiko disconnect "$1"
+  cmp -s "$2" "$3" || fail "disconnect did not restore $2"
+  echo "ok: disconnect restored $1's .env"
+  # The keys may have been copied elsewhere: both stop working.
+  status=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST "$server/v1/chat/completions" \
+    -H "authorization: Bearer $llm_key" -H 'content-type: application/json' \
+    -d '{"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "after"}]}')
+  [ "$status" = 401 ] || fail "disconnect left $1's LLM key working (HTTP $status)"
+  echo "ok: disconnect revoked $1's LLM key"
+  status=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' -X POST "$server/api/mcp" \
+    -H "authorization: Bearer $mcp_key" -H 'content-type: application/json' \
+    -d '{"jsonrpc": "2.0", "id": 1, "method": "tools/list"}')
+  [ "$status" = 401 ] || fail "disconnect left $1's MCP gateway credential working (HTTP $status)"
+  echo "ok: disconnect revoked $1's MCP gateway credential"
+  expect_connected "$1" no "after disconnect"
+  expect_status "$1" off "after disconnect"
+}
+disconnect_and_check "$planner" "$app/.env" "$work/env.before"
 
-echo "PASS: agents registered, LLM routing connected and disconnected"
+# ── CrewAI: the same path ────────────────────────────────────────────────────
+connected=$(nasiko connect crew-researcher --yes 2>&1)
+echo "$connected"
+grep -q '^# >>> nasiko' "$crew/.env" || fail "connect did not write Nasiko's block to $crew/.env"
+grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$crew/.env" ||
+  fail "connect did not set the crew's own OPENAI_API_KEY aside"
+grep -q "CrewAI's own MCP support" <<< "$connected" || fail "connect did not print the CrewAI MCP code"
+expect_connected crew-researcher waiting "after connect"
+crew_id=$("$python" -c 'import json, sys; print(next(id for id, c in json.load(open(sys.argv[1]))["agents"].items() if c["name"] == sys.argv[2]))' \
+  "$HOME_E2E/.nasiko/integrations/a2a-connections.json" crew-researcher)
+api PUT "/mcp/agents/$crew_id/connectors/$connector" '{"enabled": true}' > /dev/null ||
+  fail "could not enable the e2e MCP server for crew-researcher"
+mcp_snippet_reaches_the_tool crewai "$crew/.venv/bin/python" "$crew/.env"
+
+echo "Restarting the crew so CrewAI loads the new .env ..."
+kill "$crew_pid"
+for _ in $(seq 30); do curl -sf --noproxy '*' -o /dev/null "http://127.0.0.1:$crewai_port/.well-known/agent-card.json" || break; sleep 1; done
+start_crew
+wait_for crewai "http://127.0.0.1:$crewai_port/.well-known/agent-card.json"
+routed_before=$(grep -cx 'Bearer sk-nasiko-platform' "$work/upstream.log")
+curl -sf --noproxy '*' -X POST "http://127.0.0.1:$crewai_port/" -H 'content-type: application/json' \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "message/send", "params": {"message": {"role": "user", "messageId": "e2e-1", "parts": [{"kind": "text", "text": "find one fact"}]}}}' |
+  grep -q '"routed"' || fail "the crew's task did not return the routed reply (see $work/crewai.log)"
+[ "$(grep -cx 'Bearer sk-nasiko-platform' "$work/upstream.log")" -gt "$routed_before" ] ||
+  fail "the crew's model call did not come through Nasiko"
+echo "ok: the crew's model call went through Nasiko"
+expect_session crew-researcher
+expect_connected crew-researcher yes "after a routed call"
+expect_status crew-researcher on "after a routed call"
+disconnect_and_check crew-researcher "$crew/.env" "$work/crew-env.before"
+
+echo "PASS: agents registered, LLM routing and MCP connected and disconnected, for LangGraph and CrewAI"
