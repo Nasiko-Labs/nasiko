@@ -2170,6 +2170,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn glm_gets_no_cache_point_from_the_agent_or_the_router() {
+        // Converse fails the whole GLM call with 403 when a request carries one.
+        for model in ["zai.glm-5", "zai.glm-4.7", "us.zai.glm-5.3"] {
+            for req in [marked_anthropic_request(), plain_request()] {
+                let sent = with_router_points(&req, model).to_string();
+
+                assert!(!sent.contains("cachePoint"), "{model}");
+                assert!(!sent.contains("cache_control"), "{model}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn the_default_gateway_config_sends_the_routers_cache_points() {
         let mut server = mockito::Server::new_async().await;

@@ -4,7 +4,8 @@
 //! headers (app ranking on openrouter.ai; harmless to omit) and the model id, which is
 //! a full `vendor/model` string (e.g. `anthropic/claude-sonnet-4.6`) rather than a bare
 //! provider-native id. With `TOKEN_CACHE_MARKERS` on, a Claude model also gets the router's own
-//! cache markers in the slots the agent left free ([`add_cache_markers`]).
+//! cache markers in the slots the agent left free ([`add_cache_markers`]), and every model gets a
+//! `session_id` that pins the agent to one upstream provider ([`add_session_id`]).
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -27,7 +28,8 @@ pub struct OpenRouterProvider {
     http_referer: String,
     /// Optional `X-Title` attribution header. Empty ⇒ omitted.
     x_title: String,
-    /// Add the router's own cache markers ([`add_cache_markers`]).
+    /// Add the router's own cache markers ([`add_cache_markers`]) and session id
+    /// ([`add_session_id`]).
     cache_markers: bool,
 }
 
@@ -52,7 +54,7 @@ impl OpenRouterProvider {
     }
 
     /// The request as OpenRouter receives it: the resolved model and parameters, plus the
-    /// router's own cache markers when they are on.
+    /// router's own cache markers and session id when they are on.
     fn outbound(&self, req: &ChatRequest, cfg: &ResolvedConfig, stream: bool) -> ChatRequest {
         let mut out = req.clone();
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
@@ -63,6 +65,7 @@ impl OpenRouterProvider {
         out.stream = Some(stream);
         if self.cache_markers {
             add_cache_markers(&mut out);
+            add_session_id(&mut out, cfg);
         }
         out
     }
@@ -268,6 +271,27 @@ fn add_cache_markers(out: &mut ChatRequest) {
     {
         mark_last_text(system);
     }
+}
+
+/// The body field OpenRouter keys sticky routing by. It reads `prompt_cache_key` when this is
+/// absent.
+const SESSION_ID: &str = "session_id";
+const PROMPT_CACHE_KEY: &str = "prompt_cache_key";
+
+/// Pin the agent to one upstream provider, so its calls reach the cache the first one wrote.
+/// Without a key OpenRouter pins a conversation only after its first cache hit; with one it pins
+/// from the first call, for 10 minutes after the last. Z.ai's cache affinity also follows it. A
+/// manual `provider.order` would turn sticky routing off, so the router sends none. The agent's own
+/// `session_id` or `prompt_cache_key` wins.
+fn add_session_id(out: &mut ChatRequest, cfg: &ResolvedConfig) {
+    if cfg.agent_id.is_empty()
+        || out.extra.contains_key(SESSION_ID)
+        || out.extra.contains_key(PROMPT_CACHE_KEY)
+    {
+        return;
+    }
+    out.extra
+        .insert(SESSION_ID.to_string(), json!(cfg.agent_id));
 }
 
 /// Mark a message's last text, turning a string content into its one text part; `false` when it
@@ -618,6 +642,7 @@ mod tests {
             "openai/gpt-5.5",
             "google/gemini-2.5-pro",
             "deepseek/deepseek-v3.2",
+            "z-ai/glm-5.3",
         ] {
             let body = with_router_markers(&plain_request(), model);
 
@@ -725,12 +750,70 @@ mod tests {
         );
     }
 
+    const AGENT_ID: &str = "6f1c2a9e-0b7d-4e8a-9c21-7d4e5f6a8b90";
+
+    fn for_agent(model: &str) -> ResolvedConfig {
+        ResolvedConfig {
+            agent_id: AGENT_ID.into(),
+            ..resolved(model, None)
+        }
+    }
+
+    #[test]
+    fn the_router_pins_every_model_to_one_provider_by_the_agent_id() {
+        for model in [
+            "anthropic/claude-haiku-5.5",
+            "z-ai/glm-5.3",
+            "openai/gpt-5.5",
+        ] {
+            let out = provider("http://x".into())
+                .with_cache_markers(true)
+                .outbound(&plain_request(), &for_agent(model), false);
+
+            assert_eq!(out.extra[SESSION_ID], AGENT_ID, "{model}");
+        }
+    }
+
+    #[test]
+    fn an_agents_own_session_id_or_prompt_cache_key_wins() {
+        for (field, value) in [
+            (SESSION_ID, "agent-session"),
+            (PROMPT_CACHE_KEY, "agent-key"),
+        ] {
+            let mut req = plain_request();
+            req.extra.insert(field.into(), json!(value));
+
+            let out = provider("http://x".into())
+                .with_cache_markers(true)
+                .outbound(&req, &for_agent("z-ai/glm-5.3"), false);
+
+            assert_eq!(out.extra[field], value);
+            assert_eq!(out.extra.len(), 1, "{field}");
+        }
+    }
+
+    #[test]
+    fn no_session_id_without_the_flag_or_an_agent() {
+        let flag_off = provider("http://x".into()).outbound(
+            &plain_request(),
+            &for_agent("z-ai/glm-5.3"),
+            false,
+        );
+        let no_agent = provider("http://x".into())
+            .with_cache_markers(true)
+            .outbound(&plain_request(), &resolved("z-ai/glm-5.3", None), false);
+
+        assert!(!flag_off.extra.contains_key(SESSION_ID));
+        assert!(!no_agent.extra.contains_key(SESSION_ID));
+    }
+
     #[tokio::test]
-    async fn the_default_gateway_config_sends_the_routers_markers() {
+    async fn the_default_gateway_config_sends_the_routers_markers_and_session_id() {
         let mut server = mockito::Server::new_async().await;
         let m = server
             .mock("POST", "/chat/completions")
             .match_body(mockito::Matcher::PartialJson(json!({
+                "session_id": AGENT_ID,
                 "messages": [
                     { "role": "system", "content": marked("You are a coding agent.") },
                     { "role": "user", "content": marked("Fix the failing test.") }
@@ -757,10 +840,7 @@ mod tests {
                 .unwrap();
 
         provider
-            .chat(
-                &plain_request(),
-                &resolved("anthropic/claude-haiku-5.5", None),
-            )
+            .chat(&plain_request(), &for_agent("anthropic/claude-haiku-5.5"))
             .await
             .unwrap();
 
