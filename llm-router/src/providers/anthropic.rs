@@ -5,7 +5,8 @@
 //! `tool_use` blocks; `{role:"tool"}` results → a following user turn with
 //! `tool_result` blocks (consecutive results merged into one turn). `max_tokens` is
 //! required by Anthropic, so we always send one. An agent's `cache_control` markers go back
-//! on the system block, message block, tool result or tool they came from.
+//! on the system block, message block, tool result or tool they came from. Brevity's directive
+//! ends the last user turn rather than joining `system` ([`crate::brevity`]).
 //!
 //! Response (C2): `content[].tool_use` → OpenAI `tool_calls[]` (arguments as a JSON
 //! string); text blocks → `message.content`; `stop_reason` → `finish_reason`;
@@ -342,7 +343,16 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
 
     for m in &req.messages {
         match m.role.as_str() {
-            "system" => system_messages.push(m),
+            "system" => {
+                // Brevity's directive goes after every cache marker, so a turn that skips it still
+                // matches this turn's cached prefix; in `system` it would sit ahead of them all.
+                let placed = crate::brevity::is_directive(m)
+                    && pending_tool_results.is_empty()
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                if !placed {
+                    system_messages.push(m);
+                }
+            }
             "tool" => {
                 // Accumulate consecutive tool results into one following user turn.
                 let mut result = json!({
@@ -399,6 +409,25 @@ fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
     if !pending.is_empty() {
         messages.push(json!({ "role": "user", "content": std::mem::take(pending) }));
     }
+}
+
+/// Add `text` as an unmarked block at the end of `turn` when it is a user turn; `false` when it
+/// is not, or there is none. A string content becomes the one text block it stands for.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+    let Some(turn) = turn.filter(|t| t["role"] == "user") else {
+        return false;
+    };
+    let block = json!({ "type": "text", "text": text });
+    turn["content"] = match turn["content"].take() {
+        Value::Array(mut blocks) => {
+            blocks.push(block);
+            Value::Array(blocks)
+        }
+        // Anthropic rejects an empty text block.
+        Value::String(s) if s.is_empty() => json!([block]),
+        content => json!([{ "type": "text", "text": content }, block]),
+    };
+    true
 }
 
 /// Anthropic's top-level `system`: one joined string, unless a system message carries a cache
@@ -972,6 +1001,114 @@ mod tests {
         assert_eq!(sent["system"], "You are a coding agent. Repository map.");
         assert_eq!(sent["messages"][0]["content"], "Fix the test. Then stop.");
         assert!(sent["tools"][0].get("cache_control").is_none());
+    }
+
+    /// Brevity's seam, run as the handler runs it: `Ok` when it added the directive.
+    fn brevity(ir: &mut ChatRequest) -> Result<(), crate::brevity::Skipped> {
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let resolved = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved()
+        };
+        crate::brevity::apply(ir, &cfg, &resolved, None)
+    }
+
+    fn directive_block() -> Value {
+        json!({ "type": "text", "text": crate::brevity::DIRECTIVE })
+    }
+
+    #[test]
+    fn a_turn_that_skips_brevity_still_matches_the_cached_prefix_of_one_that_applied_it() {
+        use crate::inbound::InboundParser;
+        let ephemeral = json!({ "type": "ephemeral" });
+        let mut agent_request = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "system": [{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral }],
+            "tools": [{ "name": "read", "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+            ]}]
+        });
+        let mut first = crate::inbound::AnthropicInbound
+            .parse_chat(agent_request.clone())
+            .unwrap();
+        assert_eq!(brevity(&mut first), Ok(()));
+        let first = to_anthropic_request(&first, &resolved());
+
+        // The next turn is mid tool-loop, where brevity stands down.
+        let history = agent_request["messages"].as_array_mut().unwrap();
+        history.push(json!({ "role": "assistant", "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {} }
+        ]}));
+        history.push(json!({ "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral }
+        ]}));
+        let mut second = crate::inbound::AnthropicInbound
+            .parse_chat(agent_request)
+            .unwrap();
+        assert_eq!(
+            brevity(&mut second),
+            Err(crate::brevity::Skipped::ToolContinuation)
+        );
+        let second = to_anthropic_request(&second, &resolved());
+
+        // Tools, system, then the first user turn up to its marker: the cached prefix, unchanged.
+        assert_eq!(first["tools"], second["tools"]);
+        assert_eq!(first["system"], second["system"]);
+        let mut first_turn = second["messages"][0]["content"].clone();
+        first_turn.as_array_mut().unwrap().push(directive_block());
+        assert_eq!(first["messages"][0]["content"], first_turn);
+    }
+
+    #[test]
+    fn the_directive_follows_a_plain_user_turn_as_its_own_block() {
+        let mut ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" }
+            ]
+        }))
+        .unwrap();
+        brevity(&mut ir).unwrap();
+
+        let body = to_anthropic_request(&ir, &resolved());
+
+        assert_eq!(body["system"], "You are helpful.");
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{ "type": "text", "text": "why did the deploy fail?" }, directive_block()])
+        );
+    }
+
+    #[test]
+    fn the_directive_stays_in_system_when_the_last_turn_is_not_the_users() {
+        // No user turn can end the request after an assistant prefill or bare tool results, so
+        // the directive goes where it went before.
+        let joined = format!("You are helpful.\n{}", crate::brevity::DIRECTIVE);
+        for last in [
+            json!({ "role": "assistant", "content": "The deploy failed because" }),
+            json!({ "role": "tool", "tool_call_id": "toolu_1", "content": "exit 1" }),
+        ] {
+            let mut ir: ChatRequest = serde_json::from_value(json!({
+                "messages": [
+                    { "role": "system", "content": "You are helpful." },
+                    { "role": "user", "content": "why did the deploy fail?" },
+                    last
+                ]
+            }))
+            .unwrap();
+            brevity(&mut ir).unwrap();
+
+            let body = to_anthropic_request(&ir, &resolved());
+
+            assert_eq!(body["system"], joined.as_str());
+            assert_eq!(body["messages"][0]["content"], "why did the deploy fail?");
+        }
     }
 
     #[test]
