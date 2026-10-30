@@ -8,6 +8,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+/// The key a prompt-cache breakpoint travels under: Anthropic's own, and the one OpenRouter reads
+/// on OpenAI-shaped content parts. The IR keeps a marker where the agent put it — on a text
+/// content part, on a tool call or on a tool definition (the last two in their `extra`).
+pub const CACHE_CONTROL: &str = "cache_control";
+
 fn function_kind() -> String {
     "function".to_string()
 }
@@ -45,6 +50,23 @@ impl ChatRequest {
     pub fn is_streaming(&self) -> bool {
         self.stream.unwrap_or(false)
     }
+
+    /// Remove every cache marker, for a provider whose API has no such field.
+    pub fn strip_cache_markers(&mut self) {
+        for message in &mut self.messages {
+            if let Some(Value::Array(parts)) = &mut message.content {
+                for part in parts.iter_mut().filter_map(Value::as_object_mut) {
+                    part.remove(CACHE_CONTROL);
+                }
+            }
+            for call in message.tool_calls.iter_mut().flatten() {
+                call.extra.remove(CACHE_CONTROL);
+            }
+        }
+        for tool in self.tools.iter_mut().flatten() {
+            tool.extra.remove(CACHE_CONTROL);
+        }
+    }
 }
 
 /// An OpenAI chat message (`system` | `user` | `assistant` | `tool`).
@@ -81,6 +103,30 @@ impl Message {
             }
             _ => None,
         }
+    }
+
+    /// The content's text parts when at least one carries a cache marker; `None` otherwise, so
+    /// a provider keeps sending unmarked content exactly as it did before markers were kept.
+    pub fn marked_text_parts(&self) -> Option<Vec<&Value>> {
+        let Some(Value::Array(parts)) = &self.content else {
+            return None;
+        };
+        let text_parts: Vec<&Value> = parts
+            .iter()
+            .filter(|p| p.get("text").and_then(Value::as_str).is_some())
+            .collect();
+        text_parts
+            .iter()
+            .any(|p| p.get(CACHE_CONTROL).is_some())
+            .then_some(text_parts)
+    }
+
+    /// The last cache marker on the content, for a provider that marks a whole tool result.
+    pub fn last_cache_marker(&self) -> Option<&Value> {
+        self.marked_text_parts()?
+            .into_iter()
+            .rev()
+            .find_map(|p| p.get(CACHE_CONTROL))
     }
 }
 
