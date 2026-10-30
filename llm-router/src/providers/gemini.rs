@@ -5,7 +5,8 @@
 //! parts; `{role:"tool"}` results → a `contents[role:user]` with `functionResponse`
 //! parts. Gemini keys `functionResponse` by function **name**, not the OpenAI
 //! `tool_call_id`, so we track id→name across the history. `tools[].function` →
-//! `tools[0].functionDeclarations[]`.
+//! `tools[0].functionDeclarations[]`. Brevity's directive ends the last user turn rather than
+//! joining `systemInstruction` ([`crate::brevity`]).
 //!
 //! Response (C2): `candidates[0].content.parts[].functionCall` → OpenAI `tool_calls[]`
 //! (Gemini supplies no call id, so we synthesize one; arguments as a JSON string);
@@ -334,6 +335,14 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     for m in &req.messages {
         match m.role.as_str() {
             "system" => {
+                // Brevity's directive goes after the conversation, so a turn that skips it still
+                // shares this turn's prefix for implicit caching; `systemInstruction` leads it.
+                let placed = crate::brevity::is_directive(m)
+                    && pending_fn_responses.is_empty()
+                    && end_user_turn_with(contents.last_mut(), crate::brevity::DIRECTIVE);
+                if placed {
+                    continue;
+                }
                 if let Some(t) = m.text() {
                     system_parts.push(t);
                 }
@@ -411,6 +420,21 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
 fn flush_fn_responses(pending: &mut Vec<Value>, contents: &mut Vec<Value>) {
     if !pending.is_empty() {
         contents.push(json!({ "role": "user", "parts": std::mem::take(pending) }));
+    }
+}
+
+/// Add `text` as a part at the end of `turn` when it is a user turn; `false` when it is not, or
+/// there is none.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+    match turn
+        .filter(|t| t["role"] == "user")
+        .and_then(|t| t["parts"].as_array_mut())
+    {
+        Some(parts) => {
+            parts.push(json!({ "text": text }));
+            true
+        }
+        None => false,
     }
 }
 
@@ -615,6 +639,62 @@ mod tests {
         assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
+    }
+
+    #[test]
+    fn a_turn_that_skips_brevity_shares_the_prefix_of_one_that_applied_it() {
+        // Gemini caches implicitly, by prefix. In `systemInstruction` the directive would change
+        // the very start of every turn that applies or skips it.
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let brevity_on = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved()
+        };
+        let tool = json!({ "type": "function", "function": { "name": "logs" } });
+        let mut first: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" }
+            ],
+            "tools": [tool]
+        }))
+        .unwrap();
+        crate::brevity::apply(&mut first, &cfg, &brevity_on, None).unwrap();
+        let mut second: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "logs", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
+            ],
+            "tools": [tool]
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::brevity::apply(&mut second, &cfg, &brevity_on, None),
+            Err(crate::brevity::Skipped::ToolContinuation)
+        );
+
+        let first = to_gemini_request(&first, &resolved());
+        let second = to_gemini_request(&second, &resolved());
+
+        assert_eq!(first["systemInstruction"], second["systemInstruction"]);
+        assert_eq!(first["tools"], second["tools"]);
+        assert_eq!(
+            first["contents"][0]["parts"],
+            json!([{ "text": "why did the deploy fail?" }, { "text": crate::brevity::DIRECTIVE }])
+        );
+        assert_eq!(
+            second["contents"][0]["parts"],
+            json!([{ "text": "why did the deploy fail?" }])
+        );
     }
 
     #[test]

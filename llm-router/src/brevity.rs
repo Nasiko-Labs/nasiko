@@ -7,17 +7,25 @@
 //!
 //! # Why a new trailing `system` message, not an edit to the existing one
 //!
-//! Anthropic and Gemini hoist every `system` message into one top-level field joined with `\n`,
-//! so for them the two forms are identical. OpenAI sends both verbatim. Only the new-message
-//! form leaves author-written text byte-identical and stays trivially removable, so that is the
-//! form both paths get.
+//! Only the new-message form leaves author-written text byte-identical and stays trivially
+//! removable, so that is the form the IR carries.
+//!
+//! # Where it lands, per provider
+//!
+//! It must sit after every cache marker: a turn that skips it (a tool continuation, say) has to
+//! match the cached prefix of a turn that carried it. OpenAI and OpenRouter send the trailing
+//! system message where it is, which already satisfies that. Anthropic, Bedrock and Gemini
+//! hoist `system` messages into one top-level field, ahead of every message, so there the
+//! directive would change the cached prefix on each turn that applies or skips it. Those
+//! adapters put it at the end of the last user turn instead, as its own unmarked block (see
+//! [`is_directive`]), and fall back to the system field when the last turn is not the user's.
 //!
 //! Carve-outs and the size floor follow the token-optimization design's IP-2 section.
 
 use serde_json::Value;
 
 use crate::config::GatewayConfig;
-use crate::ir::ChatRequest;
+use crate::ir::{ChatRequest, Message};
 use crate::resolver::ResolvedConfig;
 
 /// Nasiko-authored. Not copied from Caveman's skill — the concepts are shared, the wording is
@@ -123,7 +131,7 @@ pub(crate) fn apply(
         return Err(Skipped::Holdout);
     }
 
-    req.messages.push(crate::ir::chat::Message {
+    req.messages.push(Message {
         role: "system".into(),
         content: Some(serde_json::Value::String(DIRECTIVE.into())),
         name: None,
@@ -132,6 +140,15 @@ pub(crate) fn apply(
         extra: Default::default(),
     });
     Ok(())
+}
+
+/// Whether `m` is the message [`apply`] added, for an adapter that must place it after the
+/// conversation rather than hoist it with the other system messages (see the module docs).
+///
+/// Matched on its exact text, not its position: a later seam (`compact_tools`) can add another
+/// system message after it.
+pub(crate) fn is_directive(m: &Message) -> bool {
+    m.role == "system" && matches!(&m.content, Some(Value::String(s)) if s == DIRECTIVE)
 }
 
 /// Whether this flow falls in the withheld slice.
@@ -289,6 +306,16 @@ mod tests {
         let last = r.messages.last().unwrap();
         assert_eq!(last.role, "system");
         assert_eq!(last.content.as_ref().unwrap().as_str().unwrap(), DIRECTIVE);
+    }
+
+    #[test]
+    fn adapters_can_tell_the_directive_from_the_agents_own_system_messages() {
+        let mut r = plain();
+        apply(&mut r, &cfg(true), &resolved(false), None).unwrap();
+
+        let found: Vec<bool> = r.messages.iter().map(is_directive).collect();
+        assert_eq!(found, [false, false, true]);
+        assert!(!is_directive(&msg("user", json!(DIRECTIVE))));
     }
 
     #[test]

@@ -2173,7 +2173,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn brevity_lands_after_the_agents_marked_system_prompt() {
+    async fn brevity_lands_after_the_agents_last_marker() {
         let mut server = mockito::Server::new_async().await;
         let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
 
@@ -2202,17 +2202,19 @@ mod tests {
         .await
         .unwrap();
 
+        // In `system` it would precede the user turn's marker, and every turn that skips brevity
+        // would miss the cache from there on.
         let body = sent(&seen);
         assert_eq!(
             body["system"],
-            json!([
-                { "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() },
-                { "type": "text", "text": crate::brevity::DIRECTIVE }
-            ])
+            json!([{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() }])
         );
         assert_eq!(
-            body["messages"][0]["content"][0]["cache_control"],
-            ephemeral()
+            body["messages"][0]["content"],
+            json!([
+                { "type": "text", "text": "Summarise the repository.", "cache_control": ephemeral() },
+                { "type": "text", "text": crate::brevity::DIRECTIVE }
+            ])
         );
     }
 

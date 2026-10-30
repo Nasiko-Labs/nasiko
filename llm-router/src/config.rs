@@ -160,9 +160,11 @@ pub struct GatewayConfig {
     /// timeline" is a small input with a large output — the turn brevity helps most, and exactly
     /// the one an input floor would skip.
     ///
-    /// There is no prefix-cache cost to weigh against it either: the directive is appended as a
-    /// *trailing* system message, so the cached prefix is untouched. That is what separates this
-    /// from the compression layers, where §14 R2 governs.
+    /// There is no prefix-cache cost to weigh against it either: the directive is sent after the
+    /// conversation, so the cached prefix is untouched. On OpenAI and OpenRouter it is a trailing
+    /// system message; Anthropic, Bedrock and Gemini, which hoist system messages ahead of the
+    /// conversation, get it as the last block of the last user turn instead (`brevity.rs`).
+    /// That is what separates this from the compression layers, where §14 R2 governs.
     ///
     /// Raise it only if real traffic turns out to be dominated by very short replies (under
     /// ~250 output tokens), where the fixed cost stops being repaid.

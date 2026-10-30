@@ -9,6 +9,7 @@
 //! blocks; tool calls → `toolUse` blocks; tool results → `toolResult` in a following
 //! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`. An
 //! agent's `cache_control` markers become `cachePoint` blocks where the model accepts them.
+//! Brevity's directive ends the last user turn rather than joining `system` ([`crate::brevity`]).
 //!
 //! Response: `output.message.content[].text` → concatenated content; `toolUse` →
 //! OpenAI `tool_calls[]`; `stopReason` mapped; `usage` fields renamed.
@@ -768,14 +769,24 @@ fn to_converse_request_inner(
 
     for m in &req.messages {
         match m.role.as_str() {
-            "system" => match caching.marked_text_blocks(m) {
-                Some(blocks) => system_parts.extend(blocks),
-                None => {
-                    if let Some(t) = m.text() {
-                        system_parts.push(json!({ "text": t }));
+            "system" => {
+                // Brevity's directive goes after every cache point, so a turn that skips it still
+                // matches this turn's cached prefix; in `system` it would sit ahead of them all.
+                let placed = crate::brevity::is_directive(m)
+                    && pending_tool_results.is_empty()
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                if placed {
+                    continue;
+                }
+                match caching.marked_text_blocks(m) {
+                    Some(blocks) => system_parts.extend(blocks),
+                    None => {
+                        if let Some(t) = m.text() {
+                            system_parts.push(json!({ "text": t }));
+                        }
                     }
                 }
-            },
+            }
             "tool" => {
                 pending_tool_results.push(json!({
                     "toolResult": {
@@ -840,6 +851,21 @@ fn to_converse_request_inner(
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
     if !pending.is_empty() {
         messages.push(json!({ "role": "user", "content": std::mem::take(pending) }));
+    }
+}
+
+/// Add `text` as a block at the end of `turn` when it is a user turn; `false` when it is not,
+/// or there is none.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+    match turn
+        .filter(|t| t["role"] == "user")
+        .and_then(|t| t["content"].as_array_mut())
+    {
+        Some(content) => {
+            content.push(json!({ "text": text }));
+            true
+        }
+        None => false,
     }
 }
 
@@ -1491,6 +1517,69 @@ mod tests {
         );
 
         assert_eq!(body["system"][1], cache_point());
+    }
+
+    /// Brevity's seam, run as the handler runs it.
+    fn with_brevity(mut req: ChatRequest) -> ChatRequest {
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let resolved = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("unused")
+        };
+        crate::brevity::apply(&mut req, &cfg, &resolved, None).unwrap();
+        req
+    }
+
+    #[test]
+    fn brevitys_directive_follows_the_last_cache_point_on_claude_and_nova() {
+        // In `system` it would change the cached prefix of every turn that applies or skips it.
+        let directive = json!({ "text": crate::brevity::DIRECTIVE });
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let (without, _) = to_converse_request(&marked_anthropic_request(), &resolved(model));
+            let (with, _) =
+                to_converse_request(&with_brevity(marked_anthropic_request()), &resolved(model));
+
+            assert_eq!(with["system"], without["system"], "{model}");
+            assert_eq!(with["toolConfig"], without["toolConfig"], "{model}");
+            let mut last_turn = without["messages"][3]["content"].clone();
+            last_turn.as_array_mut().unwrap().push(directive.clone());
+            assert_eq!(with["messages"][3]["content"], last_turn, "{model}");
+            for turn in 0..3 {
+                assert_eq!(with["messages"][turn], without["messages"][turn], "{model}");
+            }
+        }
+    }
+
+    #[test]
+    fn brevitys_directive_stays_in_system_when_the_last_turn_is_not_the_users() {
+        // No tools, so brevity does not read the trailing tool result as mid tool-loop.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "logs", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
+            ]
+        }))
+        .unwrap();
+
+        let (body, _) = to_converse_request(
+            &with_brevity(req),
+            &resolved("us.anthropic.claude-haiku-5-5"),
+        );
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are helpful." }, { "text": crate::brevity::DIRECTIVE }])
+        );
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -234,6 +234,95 @@ mod tests {
         OpenRouterProvider::new(reqwest::Client::new(), base, String::new(), String::new())
     }
 
+    /// The body OpenRouter receives for `req`.
+    async fn sent_body(req: &ChatRequest) -> serde_json::Value {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
+        let capture = std::sync::Arc::clone(&seen);
+        let reply = json!({
+            "id": "gen-1", "object": "chat.completion", "model": "anthropic/claude-haiku-5.5",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string();
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap() = serde_json::from_slice(request.body().unwrap()).unwrap();
+                reply.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+
+        provider(server.url())
+            .chat(req, &resolved("anthropic/claude-haiku-5.5", None))
+            .await
+            .unwrap();
+        seen.lock().unwrap().take()
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_skips_brevity_still_matches_the_cached_prefix_of_one_that_applied_it() {
+        // OpenRouter forwards the trailing system message where it is, after the agent's last
+        // marker, so the next turn's bytes match up to that marker.
+        use crate::inbound::InboundParser;
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let brevity_on = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("anthropic/claude-haiku-5.5", None)
+        };
+        let ephemeral = json!({ "type": "ephemeral" });
+        let mut agent_request = json!({
+            "model": "claude-haiku-5-5",
+            "max_tokens": 1024,
+            "system": [{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral }],
+            "tools": [{ "name": "read", "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+            ]}]
+        });
+        let mut first = crate::inbound::AnthropicInbound
+            .parse_chat(agent_request.clone())
+            .unwrap();
+        crate::brevity::apply(&mut first, &cfg, &brevity_on, None).unwrap();
+
+        // The next turn is mid tool-loop, where brevity stands down.
+        let history = agent_request["messages"].as_array_mut().unwrap();
+        history.push(json!({ "role": "assistant", "content": [
+            { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {} }
+        ]}));
+        history.push(json!({ "role": "user", "content": [
+            { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral }
+        ]}));
+        let mut second = crate::inbound::AnthropicInbound
+            .parse_chat(agent_request)
+            .unwrap();
+        assert_eq!(
+            crate::brevity::apply(&mut second, &cfg, &brevity_on, None),
+            Err(crate::brevity::Skipped::ToolContinuation)
+        );
+
+        let first = sent_body(&first).await;
+        let second = sent_body(&second).await;
+
+        assert_eq!(first["tools"], second["tools"]);
+        let (directive, before) = first["messages"].as_array().unwrap().split_last().unwrap();
+        assert_eq!(directive["content"], crate::brevity::DIRECTIVE);
+        let last_marked = before.last().unwrap();
+        assert_eq!(last_marked["role"], "user");
+        assert!(last_marked.to_string().contains("cache_control"));
+        assert_eq!(
+            before,
+            &second["messages"].as_array().unwrap()[..before.len()]
+        );
+    }
+
     #[tokio::test]
     async fn chat_overrides_model_and_reports_bare_vendor_model_string() {
         let mut server = mockito::Server::new_async().await;

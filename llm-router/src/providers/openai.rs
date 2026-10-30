@@ -1059,6 +1059,81 @@ mod tests {
         m.assert_async().await;
     }
 
+    /// The body OpenAI receives for `req`.
+    async fn sent_body(req: &ChatRequest) -> serde_json::Value {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(serde_json::Value::Null));
+        let capture = std::sync::Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap() = serde_json::from_slice(request.body().unwrap()).unwrap();
+                ok_completion().into_bytes()
+            })
+            .create_async()
+            .await;
+
+        OpenAiProvider::new(reqwest::Client::new(), server.url())
+            .chat(req, &resolved("gpt-5.5", None))
+            .await
+            .unwrap();
+        seen.lock().unwrap().take()
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_skips_brevity_shares_the_prefix_of_one_that_applied_it() {
+        // OpenAI caches by prefix, with no markers: everything before the directive must match.
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let brevity_on = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("gpt-5.5", None)
+        };
+        let tool = json!({ "type": "function", "function": { "name": "logs" } });
+        let mut first: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" }
+            ],
+            "tools": [tool]
+        }))
+        .unwrap();
+        crate::brevity::apply(&mut first, &cfg, &brevity_on, None).unwrap();
+        let mut second: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "logs", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
+            ],
+            "tools": [tool]
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::brevity::apply(&mut second, &cfg, &brevity_on, None),
+            Err(crate::brevity::Skipped::ToolContinuation)
+        );
+
+        let first = sent_body(&first).await;
+        let second = sent_body(&second).await;
+
+        assert_eq!(first["tools"], second["tools"]);
+        let (directive, before) = first["messages"].as_array().unwrap().split_last().unwrap();
+        assert_eq!(directive["content"], crate::brevity::DIRECTIVE);
+        assert_eq!(
+            before,
+            &second["messages"].as_array().unwrap()[..before.len()]
+        );
+    }
+
     #[tokio::test]
     async fn azure_dialect_addresses_the_deployment_with_an_api_key_header() {
         // The whole point of the dialect: same body, different envelope. Azure puts the
