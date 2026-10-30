@@ -22,7 +22,6 @@ import { Input } from '@nasiko/ui/primitives/input'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Switch } from '@nasiko/ui/primitives/switch'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { LeaveGuard } from '@nasiko/app-core/leave-guard'
 import { useSecretMutations, useSecrets, useUpdateAgent } from '../api'
 import { BetaBadge } from '@nasiko/ui/composites/beta-badge'
@@ -34,8 +33,6 @@ import { SAVED_NOTE_MS } from '../tuning'
 import { TokenOptimization } from './TokenOptimization'
 
 export function SettingsTab({ agent }: { agent: AgentView }) {
-  // Sections a layer adds (EE: Memory recall); each decides for itself who sees it.
-  const layerSections = useSlots().agentSettingsSections
   return (
     <div className="space-y-4">
       <DetailsForm agent={agent} />
@@ -45,12 +42,6 @@ export function SettingsTab({ agent }: { agent: AgentView }) {
         <>
           <Features agent={agent} />
           <TokenOptimization agent={agent} />
-          {layerSections.map(({ key, Section: LayerSection }) => (
-            <LayerSection
-              key={key}
-              agent={{ id: agent.id, name: agent.displayName || agent.name }}
-            />
-          ))}
           {agent.codingSkills ? <CodingBehavior agent={agent} /> : null}
           <Secrets id={agent.id} />
         </>

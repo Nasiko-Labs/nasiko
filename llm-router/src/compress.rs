@@ -301,7 +301,7 @@ fn compress_content(
     stats: &mut CompressionStats,
 ) {
     match content {
-        // Anthropic and Gemini inbound flatten to this shape, unless the agent set a cache marker.
+        // Anthropic and Gemini inbound always flatten to this shape.
         Value::String(s) => compress_str(s, policy, recovery, stats),
 
         // OpenAI inbound preserves whatever the caller sent, including multimodal part arrays.
@@ -477,26 +477,6 @@ mod tests {
         apply_responses_input(&mut two, &on(), None);
 
         assert_eq!(one[0], two[0]);
-    }
-
-    #[test]
-    fn a_marked_tool_result_compresses_to_the_same_bytes_as_an_unmarked_one() {
-        // An agent moves its marker to the latest tool result each turn, so the same result
-        // arrives marked (a text part) one turn and unmarked (a string) the next. The cached
-        // prefix holds only if both compress to the same text.
-        let marker = json!({ "type": "ephemeral" });
-        let mut marked = req(vec![msg(
-            "tool",
-            json!([{ "type": "text", "text": noisy_log(), "cache_control": marker }]),
-        )]);
-        let mut unmarked = req(vec![msg("tool", json!(noisy_log()))]);
-
-        apply(&mut marked, &on(), recovery());
-        apply(&mut unmarked, &on(), recovery());
-
-        let part = &marked.messages[0].content.as_ref().unwrap()[0];
-        assert_eq!(part["text"], unmarked.messages[0].content.clone().unwrap());
-        assert_eq!(part["cache_control"], marker);
     }
 
     #[test]

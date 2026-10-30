@@ -7,7 +7,8 @@
  * the EE layer's `nav-ext-ee.js`:
  * - Workspace: General, (EE: Orchestrator), Flow limits, Optimization tiers (`/settings/optimization-tiers`), Registry.
  *   `/settings?section=` for the sections of the one form.
- * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks`.
+ * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks` (EE: Memory
+ *   recall, `/settings/memory`).
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees Secrets only:
  * the workspace sections are superuser-gated on the API. This is the sidebar's Organization → Settings.
  * With `account`, the same layout holds the account's own settings (the account menu's Settings): Appearance
@@ -41,7 +42,7 @@ import { CORE_SECTIONS } from './search'
 interface Row {
   key: string
   label: string
-  // A layer's own `personalSettingsLinks` entry carries its own route (its own `/settings/<name>`), not one of the
+  // A layer's own `personalSettingsLinks` entry carries its own route (e.g. `/settings/memory`), not one of the
   // core's — same widening `LayerNavItem` uses for the app sidebar (edition.ts).
   to: string
   section?: string
