@@ -51,17 +51,15 @@ pub async fn aggregate_tools(
             }
         };
 
-        // Composio tools: filter out meta-tools (COMPOSIO_SEARCH_TOOLS,
-        // COMPOSIO_MULTI_EXECUTE_TOOL, COMPOSIO_MANAGE_CONNECTIONS, etc.)
-        // — agents now discover tools via the search index and call them by
-        // their real names; the gateway wraps in MULTI_EXECUTE transparently.
+        // Composio meta-tools pass through unchanged, unfiltered. The session's
+        // `tools/list` returns ONLY its meta-tools (COMPOSIO_SEARCH_TOOLS,
+        // COMPOSIO_MULTI_EXECUTE_TOOL, …) — never the toolkit tools themselves
+        // (docs/MCP_TOOL_SEARCH_DESIGN.md §4.1) — and this listing is only
+        // served with search off, where nothing else names a Composio tool:
+        // dropping them would leave the agent no way to reach one.
+        // `tools/call` enforces per-toolkit permissions on both.
         if server.kind == ServerType::Composio {
-            merged.extend(tools.into_iter().filter(|t| {
-                t.get("name")
-                    .and_then(|n| n.as_str())
-                    .map(|n| !n.starts_with("COMPOSIO_"))
-                    .unwrap_or(true)
-            }));
+            merged.extend(tools);
             continue;
         }
 
@@ -471,6 +469,66 @@ mod tests {
             merged[0]["name"],
             json!(format!("{}__good_tool", connector_prefix(good_id)))
         );
+    }
+
+    #[tokio::test]
+    async fn composio_meta_tools_are_listed_alongside_generic_tools() {
+        // With search off this listing is the only way an agent learns any
+        // tool name, and a Composio session lists nothing but its meta-tools:
+        // filter those and every Composio toolkit is unreachable.
+        let mut composio = mockito::Server::new_async().await;
+        composio
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[
+                    {"name":"COMPOSIO_SEARCH_TOOLS"},
+                    {"name":"COMPOSIO_MULTI_EXECUTE_TOOL"}]}}"#,
+            )
+            .create_async()
+            .await;
+        let mut generic = mockito::Server::new_async().await;
+        generic
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"get_order"}]}}"#)
+            .create_async()
+            .await;
+
+        let generic_id = Uuid::new_v4();
+        let servers = vec![
+            srv(
+                ServerType::Composio,
+                Uuid::nil(),
+                &format!("{}/mcp", composio.url()),
+            ),
+            srv(
+                ServerType::Mcp,
+                generic_id,
+                &format!("{}/mcp", generic.url()),
+            ),
+        ];
+        let merged = aggregate_tools(
+            &test_state(),
+            Uuid::new_v4(),
+            &servers,
+            &["gmail".to_string()],
+            &perms_enabling(&[generic_id]),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let names: Vec<&str> = merged.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "COMPOSIO_SEARCH_TOOLS",
+            "COMPOSIO_MULTI_EXECUTE_TOOL",
+            &format!("{}__get_order", connector_prefix(generic_id)),
+        ] {
+            assert!(names.contains(&expected), "{expected} missing: {names:?}");
+        }
     }
 
     #[tokio::test]

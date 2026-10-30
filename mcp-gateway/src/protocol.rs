@@ -135,8 +135,7 @@ pub async fn handle_request(
                 state,
                 user_id,
                 &req_id,
-                &resolved.servers,
-                &resolved.connected_toolkits,
+                &resolved,
                 &perms,
                 traceparent,
                 verified_flow_id,
@@ -286,18 +285,11 @@ fn inject_identity(servers: &mut [MCPServerConfig], signed: &str) {
 ///   only the meta-tools.
 ///
 /// When search is disabled (`none`): delegates to `aggregate_tools` (legacy fan-out).
-// `verified_flow_id` pushed this from 7 to 8 (added for the same
-// participant-laundering fix `handle_tools_call` below carries) — a params
-// struct isn't worth it for one more `Option<&str>` on an internal function
-// with a single call site; `ask_with_hitl_request` below already carries the
-// same allow for the same reason.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_tools_list(
     state: &McpState,
     user_id: Uuid,
     req_id: &Value,
-    servers: &[MCPServerConfig],
-    connected_toolkits: &[String],
+    resolved: &ResolvedSession,
     perms: &PermissionContext,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
@@ -317,8 +309,8 @@ pub async fn handle_tools_list(
         return match aggregator::aggregate_tools(
             state,
             user_id,
-            servers,
-            connected_toolkits,
+            &resolved.servers,
+            &resolved.connected_toolkits,
             perms,
             verified_flow_id.and(traceparent),
         )
@@ -365,9 +357,7 @@ pub async fn handle_tools_list(
             )
             .await;
 
-        for m in matches {
-            tools.push(tool_match_to_json(&m));
-        }
+        tools.extend(search_matches_to_json(&matches, resolved));
     }
 
     // The meta-tools ride along in every search-mode listing: the search
@@ -400,18 +390,34 @@ async fn resolve_flow_title(state: &McpState, verified_flow_id: Option<&str>) ->
         .flatten()
 }
 
-/// Convert a `ToolMatch` to the JSON format expected by `tools/list`.
-fn tool_match_to_json(m: &crate::search::ToolMatch) -> Value {
-    let mut obj = json!({
-        "name": m.tool_name,
-    });
-    if let Some(ref desc) = m.description {
-        obj["description"] = json!(desc);
-    }
-    if let Some(ref schema) = m.input_schema {
-        obj["inputSchema"] = schema.clone();
-    }
-    obj
+/// Search matches in the JSON format expected by `tools/list`, each named the
+/// way `tools/call` routes it. Search filters by the user's connectors, not
+/// the agent's session, so a match this session can't call
+/// (`router::callable_tool_name`) is dropped rather than listed under a name
+/// that would fail or route to the wrong backend.
+fn search_matches_to_json(
+    matches: &[crate::search::ToolMatch],
+    resolved: &ResolvedSession,
+) -> Vec<Value> {
+    matches
+        .iter()
+        .filter_map(|m| {
+            let name = router::callable_tool_name(
+                m.connector_id,
+                &m.tool_name,
+                &resolved.servers,
+                &resolved.toolkit_to_connector,
+            )?;
+            let mut obj = json!({ "name": name });
+            if let Some(ref desc) = m.description {
+                obj["description"] = json!(desc);
+            }
+            if let Some(ref schema) = m.input_schema {
+                obj["inputSchema"] = schema.clone();
+            }
+            Some(obj)
+        })
+        .collect()
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in
@@ -659,7 +665,7 @@ pub async fn handle_tools_call(
             .search_tools(query, &accessible_ids, perms, limit)
             .await;
 
-        let tools: Vec<Value> = matches.iter().map(tool_match_to_json).collect();
+        let tools = search_matches_to_json(&matches, resolved);
         let payload = json!({
             "tools": tools,
             "search_mode": format!("{:?}", state.config.tool_search_mode),
@@ -2715,12 +2721,17 @@ mod tests {
     async fn listed_tool_names(mode: ToolSearchMode) -> Vec<String> {
         let mut state = test_state();
         state.config.tool_search_mode = mode;
+        let empty = ResolvedSession {
+            servers: vec![],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
+        };
         let res = handle_tools_list(
             &state,
             Uuid::new_v4(),
             &json!(1),
-            &[],
-            &[],
+            &empty,
             &perms(&[], vec![]),
             None,
             None,
@@ -2759,6 +2770,52 @@ mod tests {
         assert!(
             !names.iter().any(|n| n == "nasiko_search_tools"),
             "None mode must not advertise the search meta-tool: {names:?}"
+        );
+    }
+
+    fn tool_match(connector_id: Uuid, tool_name: &str) -> crate::search::ToolMatch {
+        crate::search::ToolMatch {
+            connector_id,
+            tool_name: tool_name.into(),
+            description: None,
+            input_schema: None,
+            score: 1.0,
+        }
+    }
+
+    #[test]
+    fn search_match_is_listed_under_the_name_tools_call_routes() {
+        // The search index stores an uploaded connector's tools by their bare
+        // backend name; listed bare, `tools/call` can't route them back.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let listed = search_matches_to_json(&[tool_match(cid, "get_order_details")], &resolved);
+        let name = listed[0]["name"].as_str().expect("name");
+        let (server, original) = router::route_tool(name, &resolved.servers).expect("routes");
+        assert_eq!(server.connector_id, cid);
+        assert_eq!(original, "get_order_details");
+    }
+
+    #[test]
+    fn search_match_the_session_cannot_call_is_dropped() {
+        // Search filters by the user's connectors, not the agent's: a match
+        // from a connector this session has no backend for must not be listed.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let listed = search_matches_to_json(
+            &[
+                tool_match(Uuid::new_v4(), "get_order_details"),
+                tool_match(cid, "cancel_order"),
+            ],
+            &resolved,
+        );
+        let names: Vec<&str> = listed.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            [format!(
+                "{}__cancel_order",
+                crate::types::connector_prefix(cid)
+            )]
         );
     }
 

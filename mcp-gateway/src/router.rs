@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 use crate::error::{McpError, Result};
+use crate::permissions::toolkit_from_composio_slug;
 use crate::types::{MCPServerConfig, ServerType, UnusableConnector, connector_prefix};
 
 /// Resolve a tool name to its backend and the original (un-namespaced) tool name.
@@ -68,25 +69,41 @@ pub fn route_tool<'a>(
     )))
 }
 
-/// The name a catalog tool is listed under — the forward of [`route_tool`],
-/// matching the aggregator's namespacing: a non-system generic backend's tool
-/// is `{connector_prefix}__{tool}`, everything else (system backends, and
-/// Composio toolkit tools, whose catalog ids are per-toolkit connectors that
-/// no resolved server carries) stays bare. Search results must go through
-/// this, or a generic tool they name can't be called.
-pub fn listed_tool_name(
+/// The name a catalog tool is callable under in this session — the forward of
+/// [`route_tool`], matching the aggregator's namespacing: a non-system generic
+/// backend's tool is `{connector_prefix}__{tool}`, everything else (system
+/// backends, Composio toolkit tools) stays bare.
+///
+/// `None` when this session can't call it at all: the connector isn't enabled
+/// for the agent, has no usable backend right now, or the name would route to
+/// a different backend than the one that owns it (a system catalog that hasn't
+/// synced the tool, a toolkit with no active connection). Search results must
+/// go through this, so they never name a tool `tools/call` can't route back.
+/// `toolkit_connectors` is [`crate::session::ResolvedSession::toolkit_to_connector`]:
+/// a Composio toolkit tool's catalog id is its toolkit's connector, which no
+/// resolved server carries (the Composio backend is `Uuid::nil()`).
+pub fn callable_tool_name(
     connector_id: Uuid,
     tool_name: &str,
     servers: &[MCPServerConfig],
-) -> String {
+    toolkit_connectors: &HashMap<String, Uuid>,
+) -> Option<String> {
     let generic = servers
         .iter()
         .any(|s| s.connector_id == connector_id && s.kind == ServerType::Mcp && !s.system);
-    if generic {
+    let name = if generic {
         format!("{}__{tool_name}", connector_prefix(connector_id))
     } else {
         tool_name.to_string()
-    }
+    };
+    let (server, original) = route_tool(&name, servers).ok()?;
+    let owned = match server.kind {
+        ServerType::Mcp => server.connector_id == connector_id,
+        ServerType::Composio => {
+            toolkit_connectors.get(&toolkit_from_composio_slug(tool_name)) == Some(&connector_id)
+        }
+    };
+    (owned && original == tool_name).then_some(name)
 }
 
 /// When [`route_tool`] fails for a `{prefix}__tool` name, check whether the
@@ -150,13 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn listed_name_of_a_generic_tool_routes_back_to_it() {
+    fn callable_name_of_a_generic_tool_routes_back_to_it() {
         let id = Uuid::new_v4();
         let servers = vec![
             srv(ServerType::Composio, Uuid::nil(), "http://c"),
             srv(ServerType::Mcp, id, "http://s"),
         ];
-        let name = listed_tool_name(id, "get_order_details", &servers);
+        let name = callable_tool_name(id, "get_order_details", &servers, &HashMap::new())
+            .expect("callable");
         assert_eq!(name, format!("{}__get_order_details", connector_prefix(id)));
         let (s, orig) = route_tool(&name, &servers).unwrap();
         assert_eq!(s.connector_id, id);
@@ -164,21 +182,77 @@ mod tests {
     }
 
     #[test]
-    fn listed_name_stays_bare_for_system_and_composio_tools() {
+    fn callable_name_stays_bare_for_system_and_composio_tools() {
         let sys = system_srv(&["save_file"]);
+        let gmail = Uuid::new_v4();
+        let toolkits = HashMap::from([("gmail".to_string(), gmail)]);
         let servers = vec![
             srv(ServerType::Composio, Uuid::nil(), "http://c"),
             sys.clone(),
         ];
         assert_eq!(
-            listed_tool_name(sys.connector_id, "save_file", &servers),
-            "save_file"
+            callable_tool_name(sys.connector_id, "save_file", &servers, &toolkits).as_deref(),
+            Some("save_file")
         );
-        // A Composio toolkit tool's catalog id is its own toolkit connector,
-        // which no resolved server carries.
         assert_eq!(
-            listed_tool_name(Uuid::new_v4(), "GMAIL_SEND_EMAIL", &servers),
-            "GMAIL_SEND_EMAIL"
+            callable_tool_name(gmail, "GMAIL_SEND_EMAIL", &servers, &toolkits).as_deref(),
+            Some("GMAIL_SEND_EMAIL")
+        );
+    }
+
+    #[test]
+    fn a_generic_connector_outside_the_session_is_not_callable() {
+        // Search filters by the user's connectors, not the agent's: one not
+        // enabled for the agent (or with no usable backend) must not be named,
+        // bare or prefixed — bare would fall through to Composio.
+        let servers = vec![
+            srv(ServerType::Composio, Uuid::nil(), "http://c"),
+            srv(ServerType::Mcp, Uuid::new_v4(), "http://s"),
+        ];
+        assert_eq!(
+            callable_tool_name(
+                Uuid::new_v4(),
+                "get_order_details",
+                &servers,
+                &HashMap::new()
+            ),
+            None
+        );
+        let id = Uuid::new_v4();
+        let emptied = vec![srv(ServerType::Mcp, id, "")];
+        assert_eq!(
+            callable_tool_name(id, "get_order_details", &emptied, &HashMap::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_tool_that_would_route_elsewhere_is_not_callable() {
+        let sys = system_srv(&["save_file"]);
+        let gmail = Uuid::new_v4();
+        let toolkits = HashMap::from([("gmail".to_string(), gmail)]);
+        let servers = vec![
+            srv(ServerType::Composio, Uuid::nil(), "http://c"),
+            sys.clone(),
+        ];
+        // Not in the system backend's synced catalog: bare, it goes to Composio.
+        assert_eq!(
+            callable_tool_name(sys.connector_id, "delete_file", &servers, &toolkits),
+            None
+        );
+        // A toolkit with no active connection, or a slug of another toolkit.
+        assert_eq!(
+            callable_tool_name(Uuid::new_v4(), "SLACK_SEND_MESSAGE", &servers, &toolkits),
+            None
+        );
+        assert_eq!(
+            callable_tool_name(Uuid::new_v4(), "GMAIL_SEND_EMAIL", &servers, &toolkits),
+            None
+        );
+        // A toolkit tool with no Composio backend in the session.
+        assert_eq!(
+            callable_tool_name(gmail, "GMAIL_SEND_EMAIL", &[sys], &toolkits),
+            None
         );
     }
 

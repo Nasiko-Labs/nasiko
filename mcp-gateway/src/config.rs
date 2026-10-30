@@ -18,7 +18,7 @@ pub(crate) const DEFAULT_GATEWAY_INSTRUCTIONS: &str = "You are connected to the 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolSearchMode {
     /// Flat embedding-based cosine similarity (default). Falls back to `Keyword`
-    /// at startup when `EMBEDDING_MODEL` is not set.
+    /// at startup when `OPENAI_API_KEY` is not set.
     Semantic,
     /// Flat BM25 keyword search — no external dependencies.
     Keyword,
