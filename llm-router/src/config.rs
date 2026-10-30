@@ -186,6 +186,13 @@ pub struct GatewayConfig {
     /// without it.
     pub compact_tools_enabled: bool,
 
+    /// Add the router's own prompt-cache markers where the agent left slots free
+    /// (`TOKEN_CACHE_MARKERS`; Anthropic for now, see `providers::anthropic`).
+    ///
+    /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
+    /// call costs, never what the model sees. Off, the router sends only the agent's own markers.
+    pub cache_markers_enabled: bool,
+
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
@@ -244,6 +251,7 @@ impl Default for GatewayConfig {
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
             compact_tools_enabled: false,
+            cache_markers_enabled: true,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -365,6 +373,7 @@ impl GatewayConfig {
             )
             .min(100) as u8,
             compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
+            cache_markers_enabled: env_flag("TOKEN_CACHE_MARKERS", d.cache_markers_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,

@@ -1299,8 +1299,8 @@ mod tests {
             .match_header("x-api-key", "anthropic-key")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"resolved-model",
-                "system":"be useful",
-                "messages":[{"role":"user","content":"edit"}],
+                "system":[{"type":"text","text":"be useful","cache_control":{"type":"ephemeral"}}],
+                "messages":[{"role":"user","content":[{"type":"text","text":"edit","cache_control":{"type":"ephemeral"}}]}],
                 "tools":[{"name":"apply_patch","input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}]
             })))
             .with_status(200).with_header("content-type", "application/json")
@@ -1725,7 +1725,7 @@ mod tests {
             .mock("POST", "/messages")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"claude-opus-4",
-                "messages":[{"role":"user","content":"hello"}]
+                "messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
             })))
             .with_status(200)
             .with_header("content-type", "application/json")

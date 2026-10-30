@@ -41,10 +41,10 @@ pub fn provider_for(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
                 .with_max_tools(cfg.openai_max_tools),
         )),
-        "anthropic" => Ok(Box::new(AnthropicProvider::new(
-            http.clone(),
-            cfg.anthropic_api_base.clone(),
-        ))),
+        "anthropic" => Ok(Box::new(
+            AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())
+                .with_cache_markers(cfg.cache_markers_enabled),
+        )),
         "gemini" => Ok(Box::new(GeminiProvider::new(
             http.clone(),
             cfg.gemini_api_base.clone(),
