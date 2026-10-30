@@ -21,6 +21,7 @@ members = [
     "coding-policy",
     "oci",
     "flow",
+    "redis-conn",
     "hitl",
     "agent-proxy",
     "llm-router",
@@ -61,6 +62,7 @@ nasiko-server = { path = "server" }
 nasiko-spa = { path = "spa" }
 nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
+nasiko-redis-conn = { path = "redis-conn" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-tool-compact = { path = "tool-compact" }
 nasiko-bench-support = { path = "bench-support" }
@@ -88,7 +90,7 @@ regex = "1"
 
 # ─── Database & state ───────────────────────────────────────────────────────
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json", "tls-rustls"] }
-redis = { version = "0.27", features = ["tokio-comp", "aio", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio", "connection-manager", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
 rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
 
 # ─── Auth ───────────────────────────────────────────────────────────────────

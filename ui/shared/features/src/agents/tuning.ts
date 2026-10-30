@@ -40,10 +40,9 @@ export const SKILLS_SHOWN = 3
 export const EXAMPLES_SHOWN = 2
 export const CLAMP_DESCRIPTION_CHARS = 320
 export const CLAMP_SKILL_CHARS = 160
-/** Catalog: tag chips offered, skill chips per card and per list row (fewer, so the row's description has room). */
+/** Catalog: tag chips offered, skill chips per card. */
 export const TOP_TAGS = 8
 export const CARD_SKILLS = 3
-export const ROW_SKILLS = 2
 /** `/api/search/users` needs at least this many characters. */
 export const USER_SEARCH_MIN = 2
 export const USER_SEARCH_MAX = 50

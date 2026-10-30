@@ -2,15 +2,12 @@
  * Agent detail (plan §7.3). URLs carry the UUID; a name resolves through the directory (one
  * match redirects, several show a chooser, none is the not-found state), since the server's
  * name lookups aren't owner-scoped. Status comes from the reconciled list row
- * (`useAgentStatus`), not the detail. Manage-only tabs are hidden; a bad `tab` falls back. A layer adds tabs through
- * the `agentTabs` slot.
+ * (`useAgentStatus`), not the detail. Manage-only tabs are hidden; a bad `tab` falls back.
  */
-import { useQueries, useQuery } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { MoreHorizontal } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AgentTab } from '@nasiko/app-core/edition/edition'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
@@ -173,22 +170,6 @@ function tabsFor(agent: AgentView): DetailTab[] {
   return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'details']
 }
 
-/** The core's tabs with each layer tab after the one it names (or at the end); tabs naming the same one keep their order. */
-function withLayerTabs(core: readonly string[], layer: readonly AgentTab[]): string[] {
-  const out = [...core]
-  for (const t of layer) {
-    const at = t.after ? out.indexOf(t.after) : -1
-    if (at < 0) {
-      out.push(t.key)
-      continue
-    }
-    // Before the next core tab, so past any layer tab already placed after the same one.
-    const next = out.findIndex((k, i) => i > at && core.includes(k))
-    out.splice(next < 0 ? out.length : next, 0, t.key)
-  }
-  return out
-}
-
 function AgentDetail({ id, tab }: { id: string; tab?: string }) {
   const w = useWatch(id)
   const [offPage, setOffPage] = useState(false)
@@ -211,21 +192,9 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
   const errors = useErrorLogs(id, !!agent && !agent.isHarness)
   const [tailOpen, setTailOpen] = useState(false)
 
-  const { agentTabs } = useSlots()
-  const layerTabs = agent ? agentTabs.filter((t) => t.visible(agent)) : []
-  const probes = useQueries({ queries: agent ? layerTabs.map((t) => t.query(id, agent)) : [] })
-  // A layer tab shows once its read says so; a failed read shows it too (the tab reports the failure itself).
-  const extra = layerTabs.filter((t, i) => {
-    const p = probes[i]
-    return !!p && (p.isError || (p.data !== undefined && t.shown(p.data)))
-  })
-  const waiting = layerTabs.filter((_, i) => probes[i]?.isPending).map((t) => t.key)
-
   const allowed = agent ? tabsFor(agent) : []
-  const tabs = withLayerTabs(allowed, extra)
-  const current = tab && tabs.includes(tab) ? tab : 'overview'
-  // A layer tab still being checked isn't bad yet: a link to it opens it once its read answers.
-  const badTab = !!agent && !!tab && current !== tab && !waiting.includes(tab)
+  const current: DetailTab = allowed.includes(tab as DetailTab) ? (tab as DetailTab) : 'overview'
+  const badTab = !!agent && !!tab && current !== tab
   // An unknown or hidden tab falls back to Overview without a history entry.
   useEffect(() => {
     if (badTab)
@@ -290,9 +259,9 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
       ) : null}
       <Tabs value={current} onValueChange={setTab}>
         <TabsList data-tour="agent-tabs" className="max-w-full justify-start overflow-x-auto">
-          {tabs.map((t) => (
+          {allowed.map((t) => (
             <TabsTrigger key={t} value={t}>
-              {extra.find((x) => x.key === t)?.label ?? labels[t as DetailTab]}
+              {labels[t]}
               {t === 'activity' && hasErrors ? (
                 <span
                   className="ml-1 size-1.5 rounded-full bg-destructive"
@@ -363,11 +332,6 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
             <SettingsTab agent={agent} />
           </TabsContent>
         ) : null}
-        {extra.map((t) => (
-          <TabsContent key={t.key} value={t.key} className="pt-3">
-            <t.Tab agentId={agent.id} />
-          </TabsContent>
-        ))}
       </Tabs>
     </div>
   )
