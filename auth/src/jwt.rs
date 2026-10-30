@@ -80,44 +80,29 @@ fn encode_jwt_inner(
 }
 
 pub fn decode_jwt(secret: &str, token: &str) -> Result<Identity, AuthError> {
-    let mut validation = Validation::default();
-    validation.required_spec_claims.clear();
-    validation.validate_exp = true;
-    validation.leeway = 0; // treat exp literally — no clock-skew tolerance
-
-    let data = decode::<JwtClaims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    )
-    .map_err(|e| match e.kind() {
-        jsonwebtoken::errors::ErrorKind::ExpiredSignature => AuthError::Expired,
-        _ => AuthError::InvalidToken(e.to_string()),
-    })?;
-
-    let c = data.claims;
-    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
-    if c.token_type == TOKEN_TYPE_AGENT {
-        return Err(AuthError::InvalidToken(
-            "agent tokens cannot authenticate as a user".into(),
-        ));
-    }
-    // A delegated token is not a session either: it may only be accepted by
-    // the delegated path, which also enforces audience and scopes.
-    if c.token_type == TOKEN_TYPE_DELEGATED {
-        return Err(AuthError::InvalidToken(
-            "delegated tokens cannot authenticate as a session".into(),
-        ));
-    }
-    Ok(Identity {
-        user_id: c.sub,
-        username: c.username,
-        is_superuser: c.is_superuser,
-    })
+    decode_session_claims(secret, token).map(identity_of)
 }
 
 /// Like `decode_jwt` but also returns the `jti` claim for token revocation use.
 pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, String), AuthError> {
+    let claims = decode_session_claims(secret, token)?;
+    let jti = claims.jti.clone();
+    Ok((identity_of(claims), jti))
+}
+
+/// Like `decode_jwt` but also returns the `iat` claim (seconds since the
+/// epoch), for a server that ends sessions by time: every token issued at or
+/// before a user's sign-out is refused.
+pub fn decode_jwt_with_issued_at(secret: &str, token: &str) -> Result<(Identity, u64), AuthError> {
+    let claims = decode_session_claims(secret, token)?;
+    let issued_at = claims.iat;
+    Ok((identity_of(claims), issued_at))
+}
+
+/// Verifies signature and expiry, and refuses every token that is not a user
+/// session: agent tokens (AUTH-3) and delegated tokens, which only the
+/// delegated path may accept because it also enforces audience and scopes.
+fn decode_session_claims(secret: &str, token: &str) -> Result<JwtClaims, AuthError> {
     let mut validation = Validation::default();
     validation.required_spec_claims.clear();
     validation.validate_exp = true;
@@ -134,7 +119,6 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
     })?;
 
     let c = data.claims;
-    // Agent tokens must not be accepted as human-user credentials (AUTH-3).
     if c.token_type == TOKEN_TYPE_AGENT {
         return Err(AuthError::InvalidToken(
             "agent tokens cannot authenticate as a user".into(),
@@ -145,14 +129,15 @@ pub fn decode_jwt_with_jti(secret: &str, token: &str) -> Result<(Identity, Strin
             "delegated tokens cannot authenticate as a session".into(),
         ));
     }
-    let jti = c.jti.clone();
-    let identity = Identity {
-        user_id: c.sub,
-        username: c.username,
-        is_superuser: c.is_superuser,
-    };
+    Ok(c)
+}
 
-    Ok((identity, jti))
+fn identity_of(claims: JwtClaims) -> Identity {
+    Identity {
+        user_id: claims.sub,
+        username: claims.username,
+        is_superuser: claims.is_superuser,
+    }
 }
 
 // ─── Delegated tokens (ui/docs/adr/0001a-delegation-security-design.md) ───
@@ -334,7 +319,20 @@ mod delegated_tests {
             decode_jwt_with_jti("s", &tok),
             Err(AuthError::InvalidToken(_))
         ));
+        assert!(matches!(
+            decode_jwt_with_issued_at("s", &tok),
+            Err(AuthError::InvalidToken(_))
+        ));
         assert_eq!(peek_token_type(&tok).as_deref(), Some("delegated"));
+    }
+
+    #[test]
+    fn issued_at_is_the_minting_time() {
+        let before = Utc::now().timestamp() as u64;
+        let tok = encode_jwt("s", 60, &ident()).unwrap();
+        let (identity, issued_at) = decode_jwt_with_issued_at("s", &tok).unwrap();
+        assert_eq!(identity.user_id, ident().user_id);
+        assert!(issued_at >= before && issued_at <= Utc::now().timestamp() as u64);
     }
 
     #[test]
