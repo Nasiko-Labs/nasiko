@@ -41,10 +41,10 @@ pub fn provider_for(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
                 .with_max_tools(cfg.openai_max_tools),
         )),
-        "anthropic" => Ok(Box::new(
-            AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())
-                .with_cache_markers(cfg.cache_markers_enabled),
-        )),
+        "anthropic" => Ok(Box::new(AnthropicProvider::new(
+            http.clone(),
+            cfg.anthropic_api_base.clone(),
+        ))),
         "gemini" => Ok(Box::new(GeminiProvider::new(
             http.clone(),
             cfg.gemini_api_base.clone(),
@@ -224,6 +224,11 @@ pub enum ProviderError {
     Transport(String),
     #[error("response parse error: {0}")]
     Parse(String),
+    /// Refused at this edge, never sent: the request carries something the provider
+    /// cannot accept (an audio part on the Anthropic spoke). The caller's to fix, so it
+    /// surfaces as a 400 — a 502 would read as a provider fault and invite SDK retries.
+    #[error("{0}")]
+    Rejected(String),
 }
 
 impl ProviderError {
@@ -232,14 +237,17 @@ impl ProviderError {
         match self {
             ProviderError::Status { retryable, .. } => *retryable,
             ProviderError::Transport(_) => true,
-            ProviderError::Parse(_) => false,
+            ProviderError::Parse(_) | ProviderError::Rejected(_) => false,
         }
     }
 }
 
 impl From<ProviderError> for GatewayError {
     fn from(e: ProviderError) -> Self {
-        GatewayError::Upstream(e.to_string())
+        match e {
+            ProviderError::Rejected(message) => GatewayError::BadRequest(message),
+            other => GatewayError::Upstream(other.to_string()),
+        }
     }
 }
 
@@ -324,6 +332,16 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    #[test]
+    fn rejected_converts_to_bad_request_not_upstream() {
+        let e = ProviderError::Rejected("Anthropic does not accept audio input".into());
+        assert!(!e.retryable());
+        let g: GatewayError = e.into();
+        assert!(matches!(g, GatewayError::BadRequest(_)));
+        assert_eq!(g.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(g.to_string(), "Anthropic does not accept audio input");
     }
 
     fn resolved(provider: &str, base_url: Option<&str>) -> ResolvedConfig {

@@ -1091,4 +1091,44 @@ mod tests {
         assert!(matches!(err, GatewayError::Upstream(_)));
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
     }
+
+    /// An audio part routed to Anthropic is refused by the spoke before any request
+    /// leaves, and the caller gets a 400 naming why — not a 502 its SDK would retry.
+    #[tokio::test]
+    async fn input_the_provider_cannot_accept_is_400_and_never_sent() {
+        let mut anthropic = mockito::Server::new_async().await;
+        let never_called = anthropic
+            .mock("POST", "/messages")
+            .expect(0)
+            .create_async()
+            .await;
+        let cfg = GatewayConfig {
+            anthropic_api_base: anthropic.url(),
+            ..Default::default()
+        };
+        let req: ChatRequest = serde_json::from_value(json!({ "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "what is the code?" },
+                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
+            ]
+        }] }))
+        .unwrap();
+        let err = execute_chat(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary("anthropic", vec![]),
+            &req,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            err.to_string()
+                .contains("Anthropic does not accept this input"),
+            "{err}"
+        );
+        assert!(err.to_string().contains("input_audio"), "{err}");
+        never_called.assert_async().await;
+    }
 }

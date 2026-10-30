@@ -24,8 +24,8 @@ use serde_json::{Value, json};
 ///
 /// Deliberately neither `GatewayError` nor `ProviderError`: `ir` sits below both, and
 /// each edge speaks its own error type. Inbound parsers map this onto
-/// `GatewayError::BadRequest`; provider clients map it onto a non-retryable
-/// `ProviderError::Status { status: 400 }`.
+/// `GatewayError::BadRequest`; provider clients map it onto `ProviderError::Rejected`,
+/// which surfaces as the same 400.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnsupportedPart {
     message: String,

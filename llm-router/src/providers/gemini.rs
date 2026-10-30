@@ -5,8 +5,7 @@
 //! parts; `{role:"tool"}` results → a `contents[role:user]` with `functionResponse`
 //! parts. Gemini keys `functionResponse` by function **name**, not the OpenAI
 //! `tool_call_id`, so we track id→name across the history. `tools[].function` →
-//! `tools[0].functionDeclarations[]`. Brevity's directive ends the last user turn rather than
-//! joining `systemInstruction` ([`crate::brevity`]).
+//! `tools[0].functionDeclarations[]`.
 //!
 //! Response (C2): `candidates[0].content.parts[].functionCall` → OpenAI `tool_calls[]`
 //! (Gemini supplies no call id, so we synthesize one; arguments as a JSON string);
@@ -23,8 +22,9 @@ use serde_json::{Map, Value, json};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, Choice, Delta, Embedding, EmbeddingsRequest,
-    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, Usage,
+    ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, DataSource, Delta,
+    Embedding, EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message,
+    ToolCall, ToolCallDelta, UnsupportedPart, Usage,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -47,7 +47,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -83,7 +83,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let body = to_gemini_request(req, cfg);
+        let body = to_gemini_request(req, cfg)?;
 
         let resp = self
             .http
@@ -326,7 +326,87 @@ fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
     }
 }
 
-fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+/// A part the hub carries but Gemini cannot, rendered onto this edge's error type.
+fn unsupported(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Rejected(format!(
+        "Gemini does not accept this input: {}",
+        err.into_message()
+    ))
+}
+
+fn empty_user_content() -> ProviderError {
+    ProviderError::Rejected("user message content cannot be empty".to_string())
+}
+
+/// Canonical part → Gemini part.
+///
+/// `generateContent` carries media only as `inlineData` bytes — it will not fetch a URL
+/// on the caller's behalf — so every media arm goes through [`DataSource::inline`] and a
+/// URL source is refused here rather than sent as an empty part. That rule belongs to
+/// this spoke: the same URL is perfectly valid on the Anthropic edge.
+fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
+    let inline = |source: &DataSource, message: &str| -> Result<Value, UnsupportedPart> {
+        let (mime, data) = source
+            .inline()
+            .ok_or_else(|| UnsupportedPart::new(message))?;
+        Ok(json!({ "inlineData": { "mimeType": mime, "data": data } }))
+    };
+    match part {
+        ContentPart::Text(text) => Ok(json!({ "text": text })),
+        ContentPart::Image { source, .. } => inline(
+            source,
+            "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
+        ),
+        ContentPart::File { source, .. } => inline(
+            source,
+            "unsupported file_data format (must be base64 data URL)",
+        ),
+        ContentPart::Audio { data, format } => Ok(json!({
+            "inlineData": { "mimeType": format!("audio/{format}"), "data": data },
+        })),
+        ContentPart::Video { source } => inline(
+            source,
+            "unsupported content part type: 'video_url' with web URL (Gemini requires base64 data URL)",
+        ),
+    }
+}
+
+/// Splits a tool result into the text that goes *inside* `functionResponse.response`
+/// and the media parts that must travel *beside* it.
+///
+/// This is not a straight translation of the Anthropic path. Anthropic's `tool_result`
+/// takes a content-block array, so an image simply goes in it. Gemini's
+/// `functionResponse.response` is plain JSON with nowhere to put bytes, so the text goes
+/// in `response.result` and the media becomes sibling parts of the same turn — which is
+/// where Gemini actually reads them from.
+fn split_tool_result(m: &Message) -> Result<(String, Vec<Value>), ProviderError> {
+    match m.content_view().map_err(unsupported)? {
+        ContentView::Text(text) => Ok((text, Vec::new())),
+        ContentView::Empty => Ok((String::new(), Vec::new())),
+        ContentView::Parts(parts) => {
+            // Text parts concatenate with no separator, matching Message::text().
+            let text = parts
+                .iter()
+                .filter_map(ContentPart::non_empty_text)
+                .collect::<String>();
+            let media = parts
+                .iter()
+                .filter(|p| !matches!(p, ContentPart::Text(_)))
+                .map(|p| gemini_part(p).map_err(unsupported))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((text, media))
+        }
+    }
+}
+
+fn gemini_parts(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
+    parts
+        .iter()
+        .map(|p| gemini_part(p).map_err(unsupported))
+        .collect()
+}
+
+fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<Value> = Vec::new();
     let mut id_to_name: HashMap<String, String> = HashMap::new();
@@ -335,14 +415,6 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     for m in &req.messages {
         match m.role.as_str() {
             "system" => {
-                // Brevity's directive goes after the conversation, so a turn that skips it still
-                // shares this turn's prefix for implicit caching; `systemInstruction` leads it.
-                let placed = crate::brevity::is_directive(m)
-                    && pending_fn_responses.is_empty()
-                    && end_user_turn_with(contents.last_mut(), crate::brevity::DIRECTIVE);
-                if placed {
-                    continue;
-                }
                 if let Some(t) = m.text() {
                     system_parts.push(t);
                 }
@@ -351,12 +423,17 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
                 let id = m.tool_call_id.clone().unwrap_or_default();
                 // Gemini wants the function name; recover it from the call this answers.
                 let name = id_to_name.get(&id).cloned().unwrap_or(id);
+                let (result, media) = split_tool_result(m)?;
                 pending_fn_responses.push(json!({
                     "functionResponse": {
                         "name": name,
-                        "response": { "result": m.text().unwrap_or_default() }
+                        "response": { "result": result }
                     }
                 }));
+                // Media rides beside the functionResponse, not inside it — see
+                // split_tool_result. flush_fn_responses collects the whole pending run
+                // into one user turn, so these land as siblings of the response.
+                pending_fn_responses.extend(media);
             }
             "assistant" => {
                 flush_fn_responses(&mut pending_fn_responses, &mut contents);
@@ -369,9 +446,14 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
             }
             _ => {
                 flush_fn_responses(&mut pending_fn_responses, &mut contents);
+                let parts = match m.content_view().map_err(unsupported)? {
+                    ContentView::Text(s) if !s.is_empty() => vec![json!({ "text": s })],
+                    ContentView::Parts(parts) if !parts.is_empty() => gemini_parts(&parts)?,
+                    _ => return Err(empty_user_content()),
+                };
                 contents.push(json!({
                     "role": "user",
-                    "parts": [{ "text": m.text().unwrap_or_default() }]
+                    "parts": parts,
                 }));
             }
         }
@@ -414,27 +496,12 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
     }
-    body
+    Ok(body)
 }
 
 fn flush_fn_responses(pending: &mut Vec<Value>, contents: &mut Vec<Value>) {
     if !pending.is_empty() {
         contents.push(json!({ "role": "user", "parts": std::mem::take(pending) }));
-    }
-}
-
-/// Add `text` as a part at the end of `turn` when it is a user turn; `false` when it is not, or
-/// there is none.
-fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
-    match turn
-        .filter(|t| t["role"] == "user")
-        .and_then(|t| t["parts"].as_array_mut())
-    {
-        Some(parts) => {
-            parts.push(json!({ "text": text }));
-            true
-        }
-        None => false,
     }
 }
 
@@ -625,7 +692,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
 
         assert_eq!(
             body["systemInstruction"]["parts"][0]["text"],
@@ -639,62 +706,6 @@ mod tests {
         assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
-    }
-
-    #[test]
-    fn a_turn_that_skips_brevity_shares_the_prefix_of_one_that_applied_it() {
-        // Gemini caches implicitly, by prefix. In `systemInstruction` the directive would change
-        // the very start of every turn that applies or skips it.
-        let cfg = crate::config::GatewayConfig {
-            brevity_enabled: true,
-            brevity_min_bytes: 0,
-            ..Default::default()
-        };
-        let brevity_on = ResolvedConfig {
-            compress_enabled: true,
-            ..resolved()
-        };
-        let tool = json!({ "type": "function", "function": { "name": "logs" } });
-        let mut first: ChatRequest = serde_json::from_value(json!({
-            "messages": [
-                { "role": "system", "content": "You are helpful." },
-                { "role": "user", "content": "why did the deploy fail?" }
-            ],
-            "tools": [tool]
-        }))
-        .unwrap();
-        crate::brevity::apply(&mut first, &cfg, &brevity_on, None).unwrap();
-        let mut second: ChatRequest = serde_json::from_value(json!({
-            "messages": [
-                { "role": "system", "content": "You are helpful." },
-                { "role": "user", "content": "why did the deploy fail?" },
-                { "role": "assistant", "content": null, "tool_calls": [{
-                    "id": "call_1", "type": "function",
-                    "function": { "name": "logs", "arguments": "{}" }
-                }]},
-                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
-            ],
-            "tools": [tool]
-        }))
-        .unwrap();
-        assert_eq!(
-            crate::brevity::apply(&mut second, &cfg, &brevity_on, None),
-            Err(crate::brevity::Skipped::ToolContinuation)
-        );
-
-        let first = to_gemini_request(&first, &resolved());
-        let second = to_gemini_request(&second, &resolved());
-
-        assert_eq!(first["systemInstruction"], second["systemInstruction"]);
-        assert_eq!(first["tools"], second["tools"]);
-        assert_eq!(
-            first["contents"][0]["parts"],
-            json!([{ "text": "why did the deploy fail?" }, { "text": crate::brevity::DIRECTIVE }])
-        );
-        assert_eq!(
-            second["contents"][0]["parts"],
-            json!([{ "text": "why did the deploy fail?" }])
-        );
     }
 
     #[test]
@@ -712,7 +723,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
         let contents = body["contents"].as_array().unwrap();
         assert_eq!(contents.len(), 3);
         // assistant → model functionCall
@@ -746,7 +757,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_gemini_request(&req, &resolved());
+        let body = to_gemini_request(&req, &resolved()).unwrap();
         assert_eq!(body["contents"][1]["parts"][0]["text"], "Calling both.");
         assert_eq!(
             body["contents"][1]["parts"][1]["functionCall"]["name"],
@@ -1073,5 +1084,207 @@ mod tests {
     #[test]
     fn gemini_prompt_count_clamps_instead_of_going_negative() {
         assert_eq!(uncached_prompt(Some(100), Some(640)), Some(0));
+    }
+
+    #[test]
+    fn tool_result_media_rides_beside_the_function_response() {
+        // functionResponse.response is plain JSON with nowhere to put bytes, so the
+        // image has to become a sibling part of the same turn. Before this, m.text()
+        // silently dropped it and Gemini answered about an image it never saw.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "chart it" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "chart", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": [
+                    { "type": "text", "text": "here is the chart" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ]}
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let parts = body["contents"][2]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2, "media must survive as a sibling part");
+        // Text stays inside the response envelope, keyed by function name.
+        assert_eq!(parts[0]["functionResponse"]["name"], "chart");
+        assert_eq!(
+            parts[0]["functionResponse"]["response"]["result"],
+            "here is the chart"
+        );
+        // Bytes ride alongside it.
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(parts[1]["inlineData"]["data"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn text_only_tool_results_are_unchanged() {
+        // The common path must keep its exact previous shape: one part, no siblings.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "go" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "one", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": "done" }
+            ]
+        }))
+        .unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let parts = body["contents"][2]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["functionResponse"]["response"]["result"], "done");
+    }
+
+    #[test]
+    fn unfetchable_tool_result_media_is_refused_rather_than_dropped() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [
+                { "role": "user", "content": "go" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "one", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "c1", "content": [
+                    { "type": "image_url", "image_url": { "url": "https://example.com/c.png" } }
+                ]}
+            ]
+        }))
+        .unwrap();
+
+        let err = to_gemini_request(&req, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("web URL"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_gemini_request_with_image_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "What is this image?" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 1);
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "What is this image?");
+        assert_eq!(parts[1]["inlineData"]["mimeType"], "image/png");
+        assert_eq!(
+            parts[1]["inlineData"]["data"],
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        );
+    }
+
+    #[test]
+    fn video_is_carried_as_inline_data() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let part = &body["contents"][0]["parts"][0];
+        assert_eq!(part["inlineData"]["mimeType"], "video/mp4");
+        assert_eq!(part["inlineData"]["data"], "AAAA");
+    }
+
+    #[test]
+    fn to_gemini_request_with_pdf_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBERi0xLjQKJeLjz9MK" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let contents = body["contents"].as_array().unwrap();
+        let parts = contents[0]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["inlineData"]["mimeType"], "application/pdf");
+        assert_eq!(parts[0]["inlineData"]["data"], "JVBERi0xLjQKJeLjz9MK");
+    }
+
+    #[test]
+    fn to_gemini_request_with_unsupported_parts_rejected() {
+        // Public web URL not allowed in Gemini inlineData
+        let req_url: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": "https://example.com/test.png" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_url, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("URL") || message.contains("base64"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
+
+        // file.file_id not supported
+        let req_file_id: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_id": "file-123" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_file_id, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("file.file_id"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
+
+        // Empty message content
+        let req_empty: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-1.5-pro",
+            "messages": [{
+                "role": "user",
+                "content": []
+            }]
+        }))
+        .unwrap();
+        let err = to_gemini_request(&req_empty, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("empty"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
     }
 }
