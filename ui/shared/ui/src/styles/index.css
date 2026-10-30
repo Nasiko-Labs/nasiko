@@ -159,6 +159,9 @@
 }
 
 .dark {
+  /* Tells the browser the page is dark, so its own parts follow: scrollbars (white tracks otherwise, once macOS shows
+     scroll bars always, NAS-1200), date pickers, autofill. The tokens alone don't reach them. */
+  color-scheme: dark;
   --success: #68ca80;
   --warning: #f49752;
   --destructive: #fa706a;
@@ -677,6 +680,18 @@
   ::after,
   ::before {
     border-color: var(--border);
+  }
+}
+
+/* Every scrollbar the browser draws (macOS "Always show scroll bars", Windows, Linux): a thin rounded thumb in the
+   theme's muted tone on no track, not the system's boxed gutter (NAS-1200). Overlay scrollbars keep the system's
+   look and take no room either way. `no-scrollbar` still hides one (utilities beat base). */
+@layer base {
+  :root {
+    scrollbar-color: color-mix(in oklab, var(--muted-foreground) 45%, transparent) transparent;
+  }
+  * {
+    scrollbar-width: thin;
   }
 }
 

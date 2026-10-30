@@ -353,7 +353,7 @@ function NavGroups({
         onScroll={measure}
         className={cn(
           // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
-          '[scrollbar-width:thin] [scrollbar-color:var(--border)_transparent] gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
+          'gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
           edges.top && edges.bottom
             ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
             : edges.top

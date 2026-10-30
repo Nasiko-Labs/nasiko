@@ -272,10 +272,10 @@ function Page({
               data-tour="router-tabs"
               variant="line"
               aria-label={copy.anchorsLabel}
-              className="w-full max-w-full justify-start overflow-x-auto border-b border-border"
+              className="w-full max-w-full justify-start overflow-x-auto shadow-[inset_0_-1px_0_var(--color-border)]"
             >
               {ROUTER_TABS.filter((t) => t !== 'budgets' || hasBudgets).map((t) => (
-                <TabsTrigger key={t} value={t} className="min-h-10 flex-none px-3">
+                <TabsTrigger key={t} value={t} className="flex-none px-3">
                   {copy.anchors[t]}
                 </TabsTrigger>
               ))}

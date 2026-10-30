@@ -176,16 +176,18 @@ export function SpanPanel({
       {/* Tabs: arrows, Home and End move and select (`activateOnFocus`); only the
           selected panel is mounted. The selected tab lives in the page. */}
       <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)} className="gap-3">
+        {/* The three tabs brush the 22rem column's edge by a few px (more with a 3-digit count): no scrollbar track
+            for that, the row still scrolls by trackpad, Shift+wheel and the arrow keys. */}
         <TabsList
           variant="line"
           aria-label="Span details"
-          className="h-auto w-full justify-start gap-0.5 overflow-x-auto rounded-none border-b border-border p-0"
+          className="no-scrollbar w-full justify-start gap-0.5 overflow-x-auto rounded-none px-0 shadow-[inset_0_-1px_0_var(--color-border)]"
         >
           {TABS.map((t) => (
             <TabsTrigger
               key={t}
               value={t}
-              className="min-h-10 flex-none px-1.5 font-normal data-active:font-medium"
+              className="flex-none px-1.5 font-normal data-active:font-medium"
             >
               {TAB_LABEL[t]}
               {t === 'attributes' && d ? (
