@@ -1995,4 +1995,307 @@ mod tests {
         assert_eq!(block["input"], json!({"city": "Pune"}));
         assert_eq!(out["stop_reason"], "tool_use");
     }
+
+    // ── cache markers: an agent's own markers reach the wire ──────────────────────────────
+    //
+    // The adapters' unit tests cover each translation. These cover what sits between an
+    // Anthropic-SDK agent and the provider: resolution, compression, brevity and the fallback
+    // chain, any of which could drop or misplace a marker.
+
+    /// [`Store`] plus one registered custom provider, for a destination such as Bedrock.
+    struct WithCustomProvider {
+        inner: Store,
+        custom: crate::resolver::CustomProvider,
+    }
+    #[async_trait]
+    impl RegistryStore for WithCustomProvider {
+        async fn fetch_llm_config(
+            &self,
+            agent: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            self.inner.fetch_llm_config(agent).await
+        }
+        async fn fetch_agent_owner(&self, agent: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            self.inner.fetch_agent_owner(agent).await
+        }
+        async fn fetch_user_secret(
+            &self,
+            owner: Uuid,
+            name: &str,
+        ) -> Result<Option<String>, sqlx::Error> {
+            self.inner.fetch_user_secret(owner, name).await
+        }
+        async fn fetch_live_flow(
+            &self,
+            trace: &str,
+            agent: Uuid,
+            window: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            self.inner.fetch_live_flow(trace, agent, window).await
+        }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(Some(self.custom.clone()))
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            self.inner.fetch_org_embedding_default().await
+        }
+    }
+
+    /// Mocks one provider route answering `status` + `reply`, recording every body it is sent.
+    async fn capturing_mock(
+        server: &mut mockito::ServerGuard,
+        path: impl Into<mockito::Matcher>,
+        status: usize,
+        reply: Value,
+    ) -> (mockito::Mock, Arc<Mutex<Vec<Value>>>) {
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let capture = Arc::clone(&seen);
+        let reply = reply.to_string();
+        let mock = server
+            .mock("POST", path)
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body = request.body().map(Vec::as_slice).unwrap_or_default();
+                capture
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(serde_json::from_slice(body).unwrap_or(Value::Null));
+                reply.clone().into_bytes()
+            })
+            .create_async()
+            .await;
+        (mock, seen)
+    }
+
+    fn sent(seen: &Arc<Mutex<Vec<Value>>>) -> Value {
+        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(bodies.len(), 1, "expected exactly one provider call");
+        bodies[0].clone()
+    }
+
+    fn anthropic_reply() -> Value {
+        json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+            "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn",
+            "usage": { "input_tokens": 5, "output_tokens": 2 }
+        })
+    }
+
+    fn ephemeral() -> Value {
+        json!({ "type": "ephemeral" })
+    }
+
+    /// An Anthropic-SDK agent mid tool loop, marked on its system prompt, its tool and the
+    /// latest tool result: where agents such as Claude Code put their markers.
+    fn marked_tool_loop(tool_result: &str) -> Value {
+        json!({
+            "model": "claude-haiku-5-5",
+            "max_tokens": 256,
+            "system": [
+                { "type": "text", "text": "You are a coding agent." },
+                { "type": "text", "text": "Repository map.", "cache_control": ephemeral() }
+            ],
+            "tools": [{ "name": "read_logs", "input_schema": { "type": "object" }, "cache_control": ephemeral() }],
+            "messages": [
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "read_logs", "input": {} }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": tool_result, "cache_control": ephemeral() }
+                ]}
+            ]
+        })
+    }
+
+    /// `ctx_with` pointed at a mocked Anthropic API, with a platform key for it.
+    fn anthropic_ctx(base: String) -> LlmRouterCtx {
+        let mut ctx = ctx_with(base.clone());
+        ctx.cfg = Arc::new(GatewayConfig {
+            anthropic_api_base: base,
+            platform_anthropic_api_key: "sk-ant-platform".into(),
+            ..(*ctx.cfg).clone()
+        });
+        ctx
+    }
+
+    fn anthropic_store(fallback_models: Vec<String>) -> Store {
+        Store {
+            config: Some(LLMConfig {
+                provider: "anthropic".into(),
+                model: Some("claude-haiku-5-5".into()),
+                fallback_models,
+                ..openai_config()
+            }),
+            is_coding_agent: false,
+            compress_enabled: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_agents_markers_reach_anthropic_with_compression_on() {
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+
+        let ctx = anthropic_ctx(server.url());
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            marked_tool_loop(&noisy_tool_result()),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let body = sent(&seen);
+        assert_eq!(
+            body["system"],
+            json!([
+                { "type": "text", "text": "You are a coding agent." },
+                { "type": "text", "text": "Repository map.", "cache_control": ephemeral() }
+            ])
+        );
+        assert_eq!(body["tools"][0]["cache_control"], ephemeral());
+        let result = &body["messages"][2]["content"][0];
+        assert_eq!(result["cache_control"], ephemeral());
+        assert!(
+            result["content"].as_str().unwrap().contains("lines elided"),
+            "the marked tool result was not compressed: {result}"
+        );
+    }
+
+    #[tokio::test]
+    async fn brevity_lands_after_the_agents_marked_system_prompt() {
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+
+        let mut ctx = anthropic_ctx(server.url());
+        ctx.cfg = Arc::new(GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            brevity_holdout_pct: 0,
+            ..(*ctx.cfg).clone()
+        });
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 256,
+                "system": [{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() }],
+                "messages": [{ "role": "user", "content": [
+                    { "type": "text", "text": "Summarise the repository.", "cache_control": ephemeral() }
+                ]}]
+            }),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let body = sent(&seen);
+        assert_eq!(
+            body["system"],
+            json!([
+                { "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() },
+                { "type": "text", "text": crate::brevity::DIRECTIVE }
+            ])
+        );
+        assert_eq!(
+            body["messages"][0]["content"][0]["cache_control"],
+            ephemeral()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_agents_markers_become_cache_points_on_bedrock() {
+        let mut server = mockito::Server::new_async().await;
+        let reply = json!({
+            "output": { "message": { "role": "assistant", "content": [{ "text": "ok" }] } },
+            "stopReason": "end_turn",
+            "usage": { "inputTokens": 5, "outputTokens": 2, "totalTokens": 7 }
+        });
+        let path = mockito::Matcher::Regex(r"^/model/[^/]+/converse$".into());
+        let (_mock, seen) = capturing_mock(&mut server, path, 200, reply).await;
+
+        let ctx = ctx_with(server.url());
+        let store = WithCustomProvider {
+            inner: Store {
+                config: Some(LLMConfig {
+                    provider: "aws-bedrock".into(),
+                    model: Some("us.anthropic.claude-haiku-5-5".into()),
+                    ..openai_config()
+                }),
+                is_coding_agent: false,
+                compress_enabled: true,
+            },
+            custom: crate::resolver::CustomProvider {
+                base_url: server.url(),
+                dialect: crate::providers::ProviderDialect::BedrockConverse,
+                api_key: "bedrock-key".into(),
+                default_model: None,
+            },
+        };
+        chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            marked_tool_loop("fn main() {}"),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let body = sent(&seen);
+        let cache_point = json!({ "cachePoint": { "type": "default" } });
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent." }, { "text": "Repository map." }, cache_point])
+        );
+        assert_eq!(body["toolConfig"]["tools"][1], cache_point);
+        assert_eq!(body["messages"][2]["content"][1], cache_point);
+        assert!(!body.to_string().contains("cache_control"));
+    }
+
+    #[tokio::test]
+    async fn a_fallback_from_anthropic_to_openai_sends_openai_no_markers() {
+        let mut server = mockito::Server::new_async().await;
+        let overloaded = json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } });
+        let (_anthropic, to_anthropic) =
+            capturing_mock(&mut server, "/messages", 529, overloaded).await;
+        let openai_reply = json!({
+            "id": "chatcmpl-f", "object": "chat.completion", "model": "gpt-4o-mini",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+        });
+        let (_openai, to_openai) =
+            capturing_mock(&mut server, "/chat/completions", 200, openai_reply).await;
+
+        let ctx = anthropic_ctx(server.url());
+        chat_core(
+            &ctx,
+            &anthropic_store(vec!["openai/gpt-4o-mini".into()]),
+            &auth_headers(&token()),
+            marked_tool_loop("fn main() {}"),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(sent(&to_anthropic).to_string().contains("cache_control"));
+        let fallback = sent(&to_openai).to_string();
+        assert!(!fallback.contains("cache_control"), "{fallback}");
+        assert!(fallback.contains("Repository map."));
+    }
 }
