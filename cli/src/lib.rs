@@ -1924,7 +1924,7 @@ pub enum McpConnectorCommands {
         /// OAuth client secret
         #[arg(long)]
         oauth_client_secret: Option<String>,
-        /// OAuth scope to request, space separated (overrides automatic selection; empty string on update clears it)
+        /// OAuth scope to request, space separated (overrides automatic selection, offline_access is still added when the server offers it; empty string on update clears it)
         #[arg(long)]
         oauth_scopes: Option<String>,
         /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)
@@ -1956,7 +1956,7 @@ pub enum McpConnectorCommands {
         logo_url: Option<String>,
         #[arg(long)]
         active: Option<bool>,
-        /// OAuth scope to request, space separated (overrides automatic selection; empty string on update clears it)
+        /// OAuth scope to request, space separated (overrides automatic selection, offline_access is still added when the server offers it; empty string on update clears it)
         #[arg(long)]
         oauth_scopes: Option<String>,
         /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)

@@ -592,8 +592,14 @@ flowchart TD
    `scopes_supported`, else none, plus `offline_access` when the authorization server
    offers it, since some providers (Entra ID) issue a refresh token only on request.
    On the origin path (step 2) the authorization server's own `scopes_supported` is
-   used, since the resource itself published it. `oauth_scopes` on the connector
-   replaces this selection verbatim.
+   used when its `issuer` is a different origin (a proxy publishing a third-party
+   IdP's metadata, e.g. Entra ID behind APIM), since such IdPs reject a scope-less
+   request. When the `issuer` is the MCP server's own origin (the 2025-03-26 style
+   self-hosted authorization server, e.g. Atlassian) only the challenge's `scope` is
+   used, else none, because a self-hosted server's `scopes_supported` lists everything
+   it can issue, not what this resource needs. `oauth_scopes` on the connector
+   replaces this selection, but `offline_access` is still appended when the
+   selection wanted it, so the grant stays refreshable.
 4. **Resource** (RFC 8707): the connector URL, omitted when the authorization server
    is known only through OpenID Connect discovery: Entra ID rejects a `resource` that
    differs from the requested scope's own resource. It is also omitted on the origin

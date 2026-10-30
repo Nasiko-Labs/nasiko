@@ -156,6 +156,10 @@ pub struct NewConnector {
     /// `Some("pending")` for a freshly queued `uploaded_build` connector;
     /// `None` for every `external_url`/composio row (column is nullable).
     pub build_status: Option<String>,
+    /// See [`McpConnector::oauth_scopes`]; already trimmed, empty is `None`.
+    pub oauth_scopes: Option<String>,
+    /// See [`McpConnector::oauth_send_resource`].
+    pub oauth_send_resource: Option<bool>,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -232,8 +236,10 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
              (provider_type, owner_id, name, display_name, logo_url, description,
               instructions, auth_config_id, auth_scheme, use_composio_managed,
               url, transport, auth_type, url_param_name, credential_header_name,
-              headers, is_active, source_kind, auto_enable, build_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+              headers, is_active, source_kind, auto_enable, build_status,
+              oauth_scopes, oauth_send_resource)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,
+                   $21,$22)
            RETURNING *"#,
     )
     .bind(&c.provider_type)
@@ -256,6 +262,8 @@ pub async fn create_connector(db: &PgPool, c: &NewConnector) -> Result<McpConnec
     .bind(c.source_kind)
     .bind(c.auto_enable)
     .bind(&c.build_status)
+    .bind(&c.oauth_scopes)
+    .bind(c.oauth_send_resource)
     .fetch_one(db)
     .await?;
     Ok(row)
@@ -517,31 +525,6 @@ pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Res
     .fetch_one(db)
     .await?;
     Ok(row)
-}
-
-/// Persist the OAuth overrides supplied at registration. Same semantics as
-/// [`update_connector`]: `None` leaves a column alone, and an empty scope
-/// string is stored as NULL. NULLIF is what lets the owner return to
-/// automatic scope selection, since a plain `None` can only mean "unchanged".
-pub async fn set_connector_oauth_overrides(
-    db: &PgPool,
-    id: Uuid,
-    scopes: Option<&str>,
-    send_resource: Option<bool>,
-) -> Result<()> {
-    sqlx::query(
-        r#"UPDATE mcp_connectors SET
-             oauth_scopes = CASE WHEN $2::text IS NULL THEN oauth_scopes
-                                 ELSE NULLIF(BTRIM($2::text), '') END,
-             oauth_send_resource = COALESCE($3, oauth_send_resource)
-           WHERE id = $1"#,
-    )
-    .bind(id)
-    .bind(scopes)
-    .bind(send_resource)
-    .execute(db)
-    .await?;
-    Ok(())
 }
 
 /// Set a connector's setup progress for the URL-connect flow (`register_connector`

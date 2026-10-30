@@ -464,23 +464,51 @@ async fn discover_from_origin(
     challenge: &str,
 ) -> Option<DiscoveredAuthorization> {
     let server_metadata = fetch_origin_authorization_server_metadata(http, mcp_url).await?;
-    // The document came from the MCP server itself, so its scopes describe
-    // this resource and are the best available stand-in for the resource
-    // metadata's.
-    let scope = auth_param(challenge, "scope")
-        .filter(|scope| !scope.trim().is_empty())
-        .or_else(|| {
-            let advertised = scopes_supported(&server_metadata.document);
-            (!advertised.is_empty()).then(|| advertised.join(" "))
-        })
-        .map(|scope| with_offline_access(scope, &server_metadata.document));
+    let document = &server_metadata.document;
+    let scope = match authorization_server_host(mcp_url, document) {
+        // The MCP 2025-03-26 spec's clients send no scope unless the
+        // challenge names one: a self-hosted server's `scopes_supported` lists
+        // everything it can issue, not what this resource needs, and asking
+        // for all of it can be rejected as invalid_scope or over-grant consent.
+        AuthorizationServerHost::McpServer => {
+            challenge_scope(challenge).map(|scope| with_offline_access(scope, document))
+        }
+        // A proxy publishing a third-party IdP's metadata (Entra ID behind
+        // APIM): such IdPs reject a scope-less request, so fall back to the
+        // advertised scopes.
+        AuthorizationServerHost::ProxiedIdentityProvider => {
+            requested_scope(challenge, document, document)
+        }
+    };
     // No resource metadata means no published resource identifier to assert,
-    // and the only live case for this path (Entra ID behind APIM) rejects one.
+    // the 2025-03-26 spec had no resource indicator at all, and the live
+    // proxied case (Entra ID behind APIM) rejects one.
     let requested_access = RequestedAccess {
         scope,
         resource: None,
     };
     Some(discovered_from(server_metadata, requested_access))
+}
+
+/// Who issues tokens for metadata read from the MCP server's own origin.
+enum AuthorizationServerHost {
+    /// The document's `issuer` is the MCP server's origin, or names none.
+    McpServer,
+    /// The `issuer` is another origin: the server fronts a third-party IdP.
+    ProxiedIdentityProvider,
+}
+
+fn authorization_server_host(mcp_url: &str, metadata: &Value) -> AuthorizationServerHost {
+    let issuer_origin = first_str(metadata, &["issuer"])
+        .and_then(|issuer| origin_and_path(&issuer))
+        .map(|(origin, _)| origin);
+    let mcp_origin = origin_and_path(mcp_url).map(|(origin, _)| origin);
+    match issuer_origin {
+        Some(issuer_origin) if Some(&issuer_origin) != mcp_origin.as_ref() => {
+            AuthorizationServerHost::ProxiedIdentityProvider
+        }
+        _ => AuthorizationServerHost::McpServer,
+    }
 }
 
 /// Authorization server metadata published at the MCP server's own origin.
@@ -707,15 +735,15 @@ fn requested_access_or_fallback(
 
 /// The owner's per-connector overrides beat discovery: identity providers
 /// behind proxies (Entra ID behind API Management) cannot be classified from
-/// metadata alone. An explicit scope is used verbatim, with no `offline_access`
-/// appended, because explicit means explicit.
+/// metadata alone. An explicit scope replaces the discovered one, but keeps
+/// `offline_access` when discovery wanted it, so the grant stays refreshable.
 fn apply_connector_overrides(
     requested: RequestedAccess,
     connector: &McpConnector,
     server_url: &str,
 ) -> RequestedAccess {
     let scope = match connector.oauth_scopes.as_deref().map(str::trim) {
-        Some(scopes) if !scopes.is_empty() => Some(scopes.to_string()),
+        Some(scopes) if !scopes.is_empty() => Some(keep_offline_access(scopes, &requested.scope)),
         _ => requested.scope,
     };
     let resource = match connector.oauth_send_resource {
@@ -724,6 +752,19 @@ fn apply_connector_overrides(
         None => requested.resource,
     };
     RequestedAccess { scope, resource }
+}
+
+/// `scopes`, plus `offline_access` when the discovered scope carried it and
+/// `scopes` does not.
+fn keep_offline_access(scopes: &str, discovered: &Option<String>) -> String {
+    let has_offline_access =
+        |scope: &str| scope.split_whitespace().any(|s| s == OFFLINE_ACCESS_SCOPE);
+    let discovery_wanted_it = discovered.as_deref().is_some_and(has_offline_access);
+    if discovery_wanted_it && !has_offline_access(scopes) {
+        format!("{scopes} {OFFLINE_ACCESS_SCOPE}")
+    } else {
+        scopes.to_string()
+    }
 }
 
 /// First authorization only: persist the discovered endpoints and a client -
@@ -1225,13 +1266,16 @@ fn requested_scope(
     resource_metadata: &Value,
     server_metadata: &Value,
 ) -> Option<String> {
-    let scope = auth_param(challenge, "scope")
-        .filter(|scope| !scope.trim().is_empty())
-        .or_else(|| {
-            let advertised = scopes_supported(resource_metadata);
-            (!advertised.is_empty()).then(|| advertised.join(" "))
-        })?;
+    let scope = challenge_scope(challenge).or_else(|| {
+        let advertised = scopes_supported(resource_metadata);
+        (!advertised.is_empty()).then(|| advertised.join(" "))
+    })?;
     Some(with_offline_access(scope, server_metadata))
+}
+
+/// The scope the 401 challenge asks for, when it names one.
+fn challenge_scope(challenge: &str) -> Option<String> {
+    auth_param(challenge, "scope").filter(|scope| !scope.trim().is_empty())
 }
 
 /// `scope` plus `offline_access`, when the authorization server offers it and
@@ -1993,6 +2037,95 @@ mod tests {
         );
     }
 
+    /// `POST /mcp` answers a plain Bearer 401 with no `resource_metadata` and
+    /// no RFC 9728 document exists - Atlassian's shape.
+    async fn mount_plain_bearer_challenge(server: &mut mockito::ServerGuard, suffix: &str) {
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header(
+                "www-authenticate",
+                &format!(r#"Bearer realm="OAuth", error="invalid_token"{suffix}"#),
+            )
+            .create_async()
+            .await;
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            server
+                .mock("GET", path)
+                .with_status(404)
+                .create_async()
+                .await;
+        }
+    }
+
+    fn self_hosted_origin_metadata(issuer: &str) -> Value {
+        json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{issuer}/v1/authorize"),
+            "token_endpoint": format!("{issuer}/v1/token"),
+            "registration_endpoint": format!("{issuer}/v1/register"),
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+            "scopes_supported": ["read", "write", "offline_access"],
+        })
+    }
+
+    #[tokio::test]
+    async fn self_hosted_origin_as_requests_no_scope_and_keeps_registration() {
+        let mut server = mockito::Server::new_async().await;
+        mount_plain_bearer_challenge(&mut server, "").await;
+        let issuer = server.url();
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server",
+            self_hosted_origin_metadata(&issuer),
+        )
+        .await;
+
+        let discovered = discover_authorization(&reqwest::Client::new(), &format!("{issuer}/mcp"))
+            .await
+            .expect("origin metadata is used");
+
+        assert_eq!(
+            discovered.registration_endpoint.as_deref(),
+            Some(format!("{issuer}/v1/register").as_str())
+        );
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess {
+                scope: None,
+                resource: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn self_hosted_origin_as_uses_only_the_challenge_scope() {
+        let mut server = mockito::Server::new_async().await;
+        mount_plain_bearer_challenge(&mut server, r#", scope="a b""#).await;
+        let issuer = server.url();
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server",
+            self_hosted_origin_metadata(&issuer),
+        )
+        .await;
+
+        let discovered = discover_authorization(&reqwest::Client::new(), &format!("{issuer}/mcp"))
+            .await
+            .expect("origin metadata is used");
+
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess {
+                scope: Some("a b offline_access".to_string()),
+                resource: None,
+            }
+        );
+    }
+
     #[tokio::test]
     async fn unusable_pointer_and_no_origin_metadata_keeps_the_original_error() {
         let mut server = mockito::Server::new_async().await;
@@ -2048,8 +2181,26 @@ mod tests {
         assert_eq!(with(None, None), discovered);
         assert_eq!(
             with(Some("api://x/.default"), None).scope.as_deref(),
+            Some("api://x/.default offline_access"),
+            "discovery wanted offline_access, so the explicit scope keeps it"
+        );
+        assert_eq!(
+            with(Some("api://x/.default offline_access"), None)
+                .scope
+                .as_deref(),
+            Some("api://x/.default offline_access"),
+            "offline_access is not duplicated"
+        );
+        let mut without_offline_access = discovered.clone();
+        without_offline_access.scope = Some("auto".into());
+        let mut connector = oauth_connector("https://idp.example/token");
+        connector.oauth_scopes = Some("api://x/.default".into());
+        assert_eq!(
+            apply_connector_overrides(without_offline_access, &connector, url)
+                .scope
+                .as_deref(),
             Some("api://x/.default"),
-            "explicit scope is verbatim, without offline_access"
+            "not added when discovery's scope lacked it"
         );
         assert_eq!(with(Some("  "), None).scope, discovered.scope);
         assert_eq!(with(None, Some(false)).resource, None);

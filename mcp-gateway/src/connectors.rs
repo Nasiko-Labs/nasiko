@@ -291,6 +291,17 @@ async fn probe_server(http: &reqwest::Client, url: &str) -> Result<Value> {
         return Ok(resp);
     }
 
+    if detected == DetectedAuthType::Bearer && status == StatusCode::UNAUTHORIZED.as_u16() {
+        // A plain Bearer challenge can still front a server that is its own
+        // authorization server (MCP 2025-03-26 style, e.g. Atlassian); agree
+        // with discovery, which would authorize it through the origin.
+        if let Some(onboarding) = crate::oauth::origin_client_onboarding(http, url).await {
+            let mut resp = oauth_probe_view(url, Some(onboarding));
+            resp["instructions"] = json!(metadata.description_fallback());
+            return Ok(resp);
+        }
+    }
+
     let (requires, hint) = match detected {
         DetectedAuthType::None => (
             "nothing",
@@ -458,6 +469,8 @@ pub async fn register_connector(
             is_active: Some(true),
             source_kind: repo::SourceKind::ExternalUrl,
             build_status: None,
+            oauth_scopes: oauth_scopes.clone(),
+            oauth_send_resource: input.oauth_send_resource,
             ..Default::default()
         },
     )
@@ -480,16 +493,6 @@ pub async fn register_connector(
         .execute(&state.db)
         .await
         .map_err(McpError::Database)?;
-    }
-
-    if oauth_scopes.is_some() || input.oauth_send_resource.is_some() {
-        repo::set_connector_oauth_overrides(
-            &state.db,
-            connector.id,
-            oauth_scopes.as_deref(),
-            input.oauth_send_resource,
-        )
-        .await?;
     }
 
     // `basic` supplied at registration is immediately verifiable — prove it
@@ -1461,6 +1464,70 @@ mod tests {
                 .unwrap()
                 .contains("no client secret is needed")
         );
+    }
+
+    async fn mount_plain_bearer_server(server: &mut mockito::ServerGuard) {
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header(
+                "www-authenticate",
+                r#"Bearer realm="OAuth", error="invalid_token""#,
+            )
+            .create_async()
+            .await;
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            server
+                .mock("GET", path)
+                .with_status(404)
+                .create_async()
+                .await;
+        }
+    }
+
+    #[tokio::test]
+    async fn probe_reports_oauth_for_a_plain_bearer_401_with_origin_metadata() {
+        let mut server = mockito::Server::new_async().await;
+        mount_plain_bearer_server(&mut server).await;
+        server
+            .mock("GET", "/.well-known/oauth-authorization-server")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "issuer": server.url(),
+                    "authorization_endpoint": "https://host.example/authorize",
+                    "token_endpoint": "https://host.example/token",
+                    "registration_endpoint": "https://host.example/register",
+                    "token_endpoint_auth_methods_supported": ["none"],
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let view = probe_server(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+            .await
+            .expect("probe succeeds");
+
+        assert_eq!(view["auth_type"], "oauth2");
+        assert_eq!(view["supports_dcr"], true);
+    }
+
+    #[tokio::test]
+    async fn probe_keeps_the_api_key_answer_for_a_plain_bearer_401_without_origin_metadata() {
+        let mut server = mockito::Server::new_async().await;
+        mount_plain_bearer_server(&mut server).await;
+
+        let view = probe_server(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+            .await
+            .expect("probe succeeds");
+
+        assert_eq!(view["auth_type"], "bearer");
+        assert_eq!(view["requires"], "api_key_input");
     }
 
     #[test]

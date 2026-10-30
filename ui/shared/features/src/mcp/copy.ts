@@ -152,7 +152,7 @@ export const copy = {
     },
     oauth_scopes: {
       label: 'OAuth scopes',
-      hint: 'Optional. Space separated. Leave blank to use the scopes the server advertises.',
+      hint: 'Optional. Space separated. Leave blank to use the scopes the server advertises. offline_access is added when the server offers it, so the connection can refresh.',
     },
     oauth_send_resource: {
       label: 'Resource parameter',
