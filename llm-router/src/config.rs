@@ -189,10 +189,12 @@ pub struct GatewayConfig {
     /// Add the router's own prompt-cache markers where the agent left slots free
     /// (`TOKEN_CACHE_MARKERS`): on Anthropic, on Bedrock where the model caches, and on Claude
     /// models through OpenRouter. Each adapter places its own, since providers differ in where a
-    /// marker may go.
+    /// marker may go. On OpenAI, which takes no markers before GPT-5.6, it sets the agent's
+    /// `prompt_cache_key` instead.
     ///
     /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
-    /// call costs, never what the model sees. Off, the router sends only the agent's own markers.
+    /// call costs, never what the model sees. Off, the router sends only the agent's own markers
+    /// and key.
     pub cache_markers_enabled: bool,
 
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).

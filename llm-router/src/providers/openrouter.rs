@@ -304,6 +304,7 @@ mod tests {
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             compress_enabled: false,
             provider: "openrouter".into(),
             model: model.into(),

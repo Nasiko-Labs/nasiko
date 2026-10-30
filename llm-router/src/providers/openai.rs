@@ -7,6 +7,9 @@
 //! OpenAI. The bodies are identical across those; only the envelope — URL layout and
 //! credential header — differs, and that lives in [`ProviderDialect`] rather than in a
 //! forked copy of this file.
+//!
+//! With `TOKEN_CACHE_MARKERS` on, the built-in OpenAI provider also keys the prompt cache by
+//! the agent ([`add_cache_key`]); custom endpoints get no key.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -31,6 +34,8 @@ pub struct OpenAiProvider {
     dialect: ProviderDialect,
     /// Tool-array cap this endpoint enforces; `0` = uncapped. See [`fit_tools`].
     max_tools: usize,
+    /// Key the prompt cache by the agent ([`add_cache_key`]).
+    cache_key: bool,
 }
 
 impl OpenAiProvider {
@@ -48,12 +53,19 @@ impl OpenAiProvider {
             // Uncapped unless the composition root says otherwise, so a provider built
             // anywhere else keeps forwarding exactly what the caller sent.
             max_tools: 0,
+            cache_key: false,
         }
     }
 
     /// Cap the tool array this endpoint will accept (`0` = uncapped).
     pub fn with_max_tools(mut self, max_tools: usize) -> Self {
         self.max_tools = max_tools;
+        self
+    }
+
+    /// Key the prompt cache by the agent where the agent set no key (`TOKEN_CACHE_MARKERS`).
+    pub fn with_cache_key(mut self, enabled: bool) -> Self {
+        self.cache_key = enabled;
         self
     }
 
@@ -85,6 +97,52 @@ impl OpenAiProvider {
             retryable: status.as_u16() == 429 || status.is_server_error(),
         }
     }
+}
+
+/// The field an OpenAI request keys its prompt cache with.
+const PROMPT_CACHE_KEY: &str = "prompt_cache_key";
+
+/// Key the prompt cache by the agent unless the agent set its own key. Before GPT-5.6, OpenAI
+/// routes requests with the same key and prefix to the same cache; from GPT-5.6 it needs no
+/// key, so those models get none. OpenAI's docs suggest about 15 requests a minute per key.
+fn add_cache_key(out: &mut ChatRequest, cfg: &ResolvedConfig) {
+    if cfg.agent_id.is_empty()
+        || !routes_by_cache_key(&cfg.model)
+        || out.extra.contains_key(PROMPT_CACHE_KEY)
+    {
+        return;
+    }
+    out.extra
+        .insert(PROMPT_CACHE_KEY.to_string(), json!(cfg.agent_id));
+}
+
+/// Whether OpenAI routes `model` to its cache by `prompt_cache_key`: the models before GPT-5.6,
+/// such as `gpt-4o`, `gpt-4.1`, `gpt-5.5` and the `o` series. `false` for a name it can't read.
+fn routes_by_cache_key(model: &str) -> bool {
+    let model = model.strip_prefix("ft:").unwrap_or(model);
+    let model = model.strip_prefix("chat").unwrap_or(model); // `chatgpt-4o-latest`
+    if let Some(rest) = model.strip_prefix('o') {
+        return rest.starts_with(|c: char| c.is_ascii_digit());
+    }
+    let Some(version) = model.strip_prefix("gpt-") else {
+        return false;
+    };
+    let major_end = version
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(version.len());
+    let Ok(major) = version[..major_end].parse::<u32>() else {
+        return false;
+    };
+    let minor = version[major_end..]
+        .strip_prefix('.')
+        .map(|rest| {
+            rest.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+        })
+        .and_then(|digits| digits.parse::<u32>().ok())
+        .unwrap_or(0);
+    (major, minor) < (5, 6)
 }
 
 /// The OpenAI `{"error":{"param":…,"code":"unsupported_…"}}` rejection shape: the name
@@ -340,6 +398,9 @@ impl ProviderClient for OpenAiProvider {
         out.stream = Some(false);
         // OpenAI caches without markers; an Anthropic-SDK agent's `cache_control` is not its API.
         out.strip_cache_markers();
+        if self.cache_key {
+            add_cache_key(&mut out, cfg);
+        }
         self.apply_tool_budget(&mut out, &cfg.model);
 
         let resp = self
@@ -389,6 +450,9 @@ impl ProviderClient for OpenAiProvider {
             json!({ "include_usage": true }),
         );
         out.strip_cache_markers(); // see `chat`
+        if self.cache_key {
+            add_cache_key(&mut out, cfg);
+        }
         self.apply_tool_budget(&mut out, &cfg.model);
 
         let resp = self
@@ -521,6 +585,7 @@ mod tests {
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             compress_enabled: false,
             provider: "openai".into(),
             model: model.into(),
@@ -1385,5 +1450,161 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    const AGENT: &str = "0f8e4d2a-5c1b-4f3e-9a7d-2b6c8e1f4a90";
+
+    /// `resolved` for a call from a known agent.
+    fn agent_call(model: &str) -> ResolvedConfig {
+        ResolvedConfig {
+            agent_id: AGENT.into(),
+            ..resolved(model, None)
+        }
+    }
+
+    fn plain_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test." }]
+        }))
+        .unwrap()
+    }
+
+    /// The body the endpoint receives for a plain request from an agent on `model`, through
+    /// `provider_for` with `cfg`: built-in OpenAI, or an OpenAI-shaped custom endpoint.
+    async fn gateway_body(
+        cfg: crate::config::GatewayConfig,
+        custom: bool,
+        model: &str,
+        stream: bool,
+    ) -> Value {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Value::Null));
+        let capture = std::sync::Arc::clone(&seen);
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_body_from_request(move |request| {
+                *capture.lock().unwrap() = serde_json::from_slice(request.body().unwrap()).unwrap();
+                if stream {
+                    b"data: [DONE]\n\n".to_vec()
+                } else {
+                    ok_completion().into_bytes()
+                }
+            })
+            .create_async()
+            .await;
+        let cfg = crate::config::GatewayConfig {
+            openai_api_base: server.url(),
+            ..cfg
+        };
+        let endpoint = crate::resolver::CustomEndpoint {
+            base_url: server.url(),
+            dialect: ProviderDialect::OpenAi,
+        };
+        let (name, endpoint) = if custom {
+            ("self-hosted", Some(&endpoint))
+        } else {
+            ("openai", None)
+        };
+        let provider =
+            crate::providers::provider_for(name, endpoint, &reqwest::Client::new(), &cfg).unwrap();
+
+        if stream {
+            let chunks = provider
+                .chat_stream(&plain_request(), &agent_call(model))
+                .await
+                .unwrap();
+            chunks.collect::<Vec<_>>().await;
+        } else {
+            provider
+                .chat(&plain_request(), &agent_call(model))
+                .await
+                .unwrap();
+        }
+        seen.lock().unwrap().take()
+    }
+
+    #[test]
+    fn openai_models_before_gpt_5_6_route_by_the_cache_key() {
+        for model in [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "chatgpt-4o-latest",
+            "gpt-4.1-mini",
+            "gpt-5",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "o3",
+            "o4-mini",
+            "ft:gpt-4.1-mini:acme::abc123",
+        ] {
+            assert!(routes_by_cache_key(model), "{model}");
+        }
+        for model in [
+            "gpt-5.6",
+            "gpt-5.10",
+            "gpt-6",
+            "omni-moderation-latest",
+            "text-embedding-3-small",
+        ] {
+            assert!(!routes_by_cache_key(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn the_router_keys_the_prompt_cache_by_agent_unless_the_agent_did() {
+        let mut out = plain_request();
+        add_cache_key(&mut out, &agent_call("gpt-5.5"));
+        assert_eq!(out.extra[PROMPT_CACHE_KEY], AGENT);
+
+        let mut own: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test." }],
+            "prompt_cache_key": "user-7"
+        }))
+        .unwrap();
+        add_cache_key(&mut own, &agent_call("gpt-5.5"));
+        assert_eq!(own.extra[PROMPT_CACHE_KEY], "user-7");
+    }
+
+    #[test]
+    fn gpt_5_6_and_a_call_without_an_agent_get_no_cache_key() {
+        let mut newer = plain_request();
+        add_cache_key(&mut newer, &agent_call("gpt-5.6"));
+        let mut no_agent = plain_request();
+        add_cache_key(&mut no_agent, &resolved("gpt-5.5", None));
+
+        assert!(!newer.extra.contains_key(PROMPT_CACHE_KEY));
+        assert!(!no_agent.extra.contains_key(PROMPT_CACHE_KEY));
+    }
+
+    #[tokio::test]
+    async fn the_default_gateway_config_keys_openais_prompt_cache_by_agent() {
+        for stream in [false, true] {
+            let body = gateway_body(Default::default(), false, "gpt-5.5", stream).await;
+
+            assert_eq!(body[PROMPT_CACHE_KEY], AGENT, "stream: {stream}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_custom_openai_shaped_endpoint_gets_no_cache_key() {
+        // A self-hosted server may not know the field, so only OpenAI itself gets it.
+        let body = gateway_body(Default::default(), true, "gpt-5.5", false).await;
+
+        assert_eq!(body["messages"][0]["content"], "Fix the failing test.");
+        assert!(body.get(PROMPT_CACHE_KEY).is_none());
+    }
+
+    #[tokio::test]
+    async fn without_the_flag_openai_gets_no_cache_key() {
+        let off = crate::config::GatewayConfig {
+            cache_markers_enabled: false,
+            ..Default::default()
+        };
+
+        let body = gateway_body(off, false, "gpt-5.5", false).await;
+
+        assert_eq!(body["messages"][0]["content"], "Fix the failing test.");
+        assert!(body.get(PROMPT_CACHE_KEY).is_none());
     }
 }

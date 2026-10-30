@@ -39,7 +39,8 @@ pub fn provider_for(
     match provider {
         "openai" => Ok(Box::new(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
-                .with_max_tools(cfg.openai_max_tools),
+                .with_max_tools(cfg.openai_max_tools)
+                .with_cache_key(cfg.cache_markers_enabled),
         )),
         "anthropic" => Ok(Box::new(
             AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())
@@ -339,6 +340,7 @@ mod tests {
         dialect: ProviderDialect,
     ) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             compress_enabled: false,
             provider: provider.into(),
             model: "m".into(),

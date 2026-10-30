@@ -1408,6 +1408,7 @@ mod tests {
 
     fn resolved(model: &str) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             provider: "bedrock".into(),
             model: model.into(),
             litellm_model: format!("bedrock/{model}"),

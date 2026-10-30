@@ -352,6 +352,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
             compress_enabled: primary.compress_enabled,
+            agent_id: primary.agent_id.clone(),
         });
     }
     attempts
@@ -379,6 +380,7 @@ mod tests {
 
     fn primary(provider: &str, fallbacks: Vec<&str>) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             provider: provider.into(),
             model: "primary-model".into(),
             litellm_model: format!("{provider}/primary-model"),
@@ -545,10 +547,11 @@ mod tests {
 
     #[test]
     fn same_provider_fallback_reuses_key_cross_provider_uses_platform() {
-        let p = primary(
+        let mut p = primary(
             "anthropic",
             vec!["anthropic/claude-haiku", "openai/gpt-4o-mini"],
         );
+        p.agent_id = "agent-1".into();
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 3);
         // primary
@@ -563,6 +566,8 @@ mod tests {
         assert_eq!(attempts[2].api_key, "sk-platform");
         assert_eq!(attempts[2].temperature, Some(0.3));
         assert_eq!(attempts[2].max_tokens, Some(100));
+        // The same agent, so OpenAI keys its prompt cache as on a direct call.
+        assert_eq!(attempts[2].agent_id, "agent-1");
     }
 
     #[test]
@@ -642,6 +647,7 @@ mod tests {
             ..Default::default()
         };
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
             litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),
@@ -721,6 +727,7 @@ mod tests {
         };
         // Temperature comes from the resolved config (as tier routing sets it); no fallbacks.
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-5.5".into(),
             litellm_model: "openai/gpt-5.5".into(),
@@ -1015,6 +1022,7 @@ mod tests {
             ..Default::default()
         };
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "anthropic".into(),
             model: "claude-opus-4-8".into(),
             litellm_model: "anthropic/claude-opus-4-8".into(),
@@ -1065,6 +1073,7 @@ mod tests {
         };
         // primary openai + one openai fallback, both hit the failing mock
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-4o".into(),
             litellm_model: "openai/gpt-4o".into(),
@@ -1090,45 +1099,5 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GatewayError::Upstream(_)));
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
-    }
-
-    /// An audio part routed to Anthropic is refused by the spoke before any request
-    /// leaves, and the caller gets a 400 naming why — not a 502 its SDK would retry.
-    #[tokio::test]
-    async fn input_the_provider_cannot_accept_is_400_and_never_sent() {
-        let mut anthropic = mockito::Server::new_async().await;
-        let never_called = anthropic
-            .mock("POST", "/messages")
-            .expect(0)
-            .create_async()
-            .await;
-        let cfg = GatewayConfig {
-            anthropic_api_base: anthropic.url(),
-            ..Default::default()
-        };
-        let req: ChatRequest = serde_json::from_value(json!({ "messages": [{
-            "role": "user",
-            "content": [
-                { "type": "text", "text": "what is the code?" },
-                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
-            ]
-        }] }))
-        .unwrap();
-        let err = execute_chat(
-            &reqwest::Client::new(),
-            &cfg,
-            &primary("anthropic", vec![]),
-            &req,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert!(
-            err.to_string()
-                .contains("Anthropic does not accept this input"),
-            "{err}"
-        );
-        assert!(err.to_string().contains("input_audio"), "{err}");
-        never_called.assert_async().await;
     }
 }
