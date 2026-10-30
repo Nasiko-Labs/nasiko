@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_jwt;
+use crate::auth::verify_agent_token;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::execute_embeddings_once;
@@ -36,7 +36,9 @@ async fn embeddings_core(
     body: Value,
 ) -> Result<Response, GatewayError> {
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
+    let agent = verify_agent_token(authz, &ctx.cfg)?;
+    super::chat::refuse_revoked_agent_token(store, &agent).await?;
+    let (agent_id, owner_id) = (agent.agent_id, agent.owner_id);
 
     // Strict flow attribution — same rule as chat (previously embeddings
     // attempted none at all): the traceparent must name a live flow this agent

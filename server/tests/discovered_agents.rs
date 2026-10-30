@@ -7,7 +7,8 @@
 //!   - GET /api/agents/discovered — reads a machine's agents back, as `nasiko status` shows them
 //!   - Copies — two copies of one agent on a machine (one card name, two copy ids) are two
 //!     agents, and a row registered before copy ids is taken over by the first copy
-//!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key
+//!   - POST /api/agents/{id}/llm-token — a discovered agent gets a deployed agent's year-long key;
+//!     DELETE revokes every key minted so far
 //!   - POST /api/agents/{id}/mcp-token + /api/mcp — it gets an MCP gateway credential, and its
 //!     flow-less `tools/call` acts as its owner, as a local coding agent's does
 //!   - The LLM router — a discovered agent's call needs no traceparent and is billed to its
@@ -624,6 +625,37 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
         .collect();
     let expected = nasiko_server::chat::discovered_turns::session_id_for(agent_id.parse().unwrap());
     assert_eq!(session_ids, [expected.as_str()]);
+
+    // `disconnect` revokes its keys: the key it had is refused from then on, and a key minted
+    // afterwards (a later `connect`, even within the same second) works.
+    let as_owner = |request: reqwest::RequestBuilder| {
+        common::as_member(request, &user.to_string(), "disc-routing")
+    };
+    let llm_token_url = server.url(&format!("/api/agents/{agent_id}/llm-token"));
+    let revoked = as_owner(server.client.delete(&llm_token_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), 204);
+    let call = |key: String| {
+        server
+            .client
+            .post(server.url("/v1/chat/completions"))
+            .bearer_auth(key)
+            .json(&json!({"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "after"}]}))
+            .send()
+    };
+    assert_eq!(call(token.clone()).await.unwrap().status(), 401);
+    let fresh: Value = as_owner(server.client.post(&llm_token_url))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let fresh = fresh["data"]["token"].as_str().expect("token").to_string();
+    assert_eq!(call(fresh).await.unwrap().status(), 200);
 
     server.cleanup().await;
 }

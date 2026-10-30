@@ -776,7 +776,8 @@ pub fn save_a2a_connection(connection: &A2aConnection, file: Option<(&Path, &str
 }
 
 /// Undo `connect` for the A2A agent named `name`: remove Nasiko's block from the file it
-/// wrote and forget the connection. `Ok(None)` when no A2A agent of that name is connected.
+/// wrote, forget the connection, and revoke its LLM key and MCP credential. `Ok(None)` when
+/// no A2A agent of that name is connected.
 pub fn disconnect_a2a_agent(name: &str) -> Result<Option<String>> {
     let mut connections = a2a::connections::Connections::load()?;
     let found = connections.find(name).map_err(|names| {
@@ -803,6 +804,13 @@ pub fn disconnect_a2a_agent(name: &str) -> Result<Option<String>> {
     let had_mcp = connection.mcp;
     connections.agents.remove(&id);
     connections.save()?;
+    // The key may have been copied elsewhere, so removing it from the file is not enough.
+    if let Err(error) = control_plane::revoke_llm_tokens(id) {
+        term::print_warning(&format!(
+            "failed to revoke its LLM key: {}",
+            crate::commands::coding_agent_router::one_line_warning(&error)
+        ));
+    }
     if had_mcp && let Err(error) = control_plane::revoke_mcp_token(id) {
         term::print_warning(&format!(
             "failed to revoke its MCP gateway credential: {}",

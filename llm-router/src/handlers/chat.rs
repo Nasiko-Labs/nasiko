@@ -26,7 +26,7 @@ use nasiko_session_token::{
 };
 
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_jwt;
+use crate::auth::verify_agent_token;
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
@@ -119,6 +119,7 @@ pub(crate) enum AuthedCaller {
 /// unaffected. Expiry and revocation are hard failures (fail closed).
 pub(crate) async fn authenticate_caller(
     ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
     let authz = headers
@@ -154,8 +155,35 @@ pub(crate) async fn authenticate_caller(
         }
     }
 
-    let (agent_id, owner_id) = verify_agent_jwt(authz, &ctx.cfg)?;
-    Ok(AuthedCaller::Agent { agent_id, owner_id })
+    let agent = verify_agent_token(authz, &ctx.cfg)?;
+    refuse_revoked_agent_token(store, &agent).await?;
+    Ok(AuthedCaller::Agent {
+        agent_id: agent.agent_id,
+        owner_id: agent.owner_id,
+    })
+}
+
+/// Refuse an agent-identity token its owner revoked (`DELETE /api/agents/{id}/llm-token`, as
+/// `nasiko disconnect` does for a discovered agent). Fails closed: a store error denies the
+/// request rather than letting a possibly revoked key through.
+pub(crate) async fn refuse_revoked_agent_token(
+    store: &dyn RegistryStore,
+    agent: &crate::auth::VerifiedAgent,
+) -> Result<(), GatewayError> {
+    let Ok(agent_uuid) = uuid::Uuid::parse_str(&agent.agent_id) else {
+        // Not an agent id at all: resolving it fails later with NoRegistryEntry.
+        return Ok(());
+    };
+    let revoked_at = store.agent_tokens_revoked_at(agent_uuid).await.map_err(|e| {
+        tracing::error!(error = %e, "llm-router: agent-token revocation check failed — failing closed");
+        GatewayError::Forbidden("identity store unavailable".into())
+    })?;
+    if crate::auth::is_revoked(agent.issued_at, revoked_at) {
+        return Err(GatewayError::InvalidToken(
+            "revoked by the agent's owner".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// True if this session token's `jti` has been revoked. Fails closed (a store
@@ -258,7 +286,7 @@ async fn chat_core(
 ) -> Result<Response, GatewayError> {
     // A coding-agent session token carries the user + flow in signed claims; the
     // agent-identity token does not, and still relies on the request traceparent.
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             // Config/secrets resolve on the agent owner, which the token doesn't
@@ -2005,6 +2033,82 @@ mod tests {
             panic!("expected strict attribution to reject the request");
         };
         assert!(matches!(error, GatewayError::Forbidden(_)));
+    }
+
+    /// An agent whose owner revoked its LLM keys at `revoked_at` (Unix seconds).
+    struct Revoked {
+        revoked_at: Result<Option<u64>, ()>,
+    }
+    #[async_trait]
+    impl RegistryStore for Revoked {
+        async fn fetch_llm_config(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn agent_tokens_revoked_at(&self, _: Uuid) -> Result<Option<u64>, sqlx::Error> {
+            self.revoked_at.map_err(|()| sqlx::Error::PoolTimedOut)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revoked_agent_key_is_refused_and_a_newer_one_accepted() {
+        let agent = |issued_at| crate::auth::VerifiedAgent {
+            agent_id: AGENT.into(),
+            owner_id: OWNER.into(),
+            issued_at: Some(issued_at),
+        };
+        let revoked = Revoked {
+            revoked_at: Ok(Some(1_000)),
+        };
+        let err = refuse_revoked_agent_token(&revoked, &agent(900))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err}");
+        assert!(
+            refuse_revoked_agent_token(&revoked, &agent(1_001))
+                .await
+                .is_ok()
+        );
+        let never = Revoked {
+            revoked_at: Ok(None),
+        };
+        assert!(
+            refuse_revoked_agent_token(&never, &agent(900))
+                .await
+                .is_ok()
+        );
+        // The store can't answer: refused rather than letting a revoked key through.
+        let down = Revoked {
+            revoked_at: Err(()),
+        };
+        let err = refuse_revoked_agent_token(&down, &agent(900))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)), "{err}");
     }
 
     #[tokio::test]

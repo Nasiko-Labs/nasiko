@@ -43,7 +43,10 @@ pub fn router() -> Router<AppState> {
                 .patch(update_llm_config)
                 .delete(delete_llm_config),
         )
-        .route("/{id}/llm-token", post(issue_llm_token))
+        .route(
+            "/{id}/llm-token",
+            post(issue_llm_token).delete(revoke_llm_tokens),
+        )
         .route(
             "/{id}/mcp-token",
             post(issue_mcp_token).delete(revoke_mcp_token),
@@ -152,6 +155,9 @@ pub(crate) async fn issue_llm_token(
         )
             .into_response();
     }
+    if let Err(resp) = wait_out_revocation_second(&state.db, agent_id).await {
+        return resp;
+    }
     let ttl_seconds = match is_discovered_agent(&state.db, agent_id).await {
         Ok(true) => DEFAULT_TTL_SECONDS,
         Ok(false) => LOCAL_ROUTING_TOKEN_TTL_SECONDS,
@@ -183,6 +189,86 @@ pub(crate) async fn issue_llm_token(
         ),
     )
         .into_response()
+}
+
+/// A key's `iat` has whole-second precision and the router refuses every key minted up to the
+/// second of the agent's last revocation, so a key minted in that same second (a `connect`
+/// right after a `disconnect`) would be born revoked. Wait for the next second first.
+async fn wait_out_revocation_second(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+) -> Result<(), axum::response::Response> {
+    let wait_ms: Option<f64> = sqlx::query_scalar(
+        "SELECT (1000 * (floor(extract(epoch FROM llm_tokens_revoked_at)) + 1 \
+                         - extract(epoch FROM clock_timestamp())))::float8 \
+         FROM agents WHERE id = $1 AND llm_tokens_revoked_at IS NOT NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|error| {
+        tracing::error!(%error, %agent_id, "LLM key revocation lookup failed");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to issue LLM routing token",
+        )
+            .into_response()
+    })?
+    .flatten();
+    if let Some(ms) = wait_ms.filter(|ms| *ms > 0.0) {
+        tokio::time::sleep(std::time::Duration::from_millis(ms.ceil() as u64)).await;
+    }
+    Ok(())
+}
+
+/// Revoke every LLM key the agent has been given.
+///
+/// The keys are signed tokens the router verifies without a lookup, so this records a cut-off
+/// (`agents.llm_tokens_revoked_at`): the router refuses every key minted up to now, at once.
+/// A key minted afterwards (`POST`) works. `nasiko disconnect` calls this for a discovered
+/// agent, whose key lives in a file on the user's machine. The owner or a superuser may call
+/// it; like the MCP-token `DELETE` it grants nothing. For a deployed agent it leaves the
+/// running container without a working key until its next redeploy mints one.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}/llm-token",
+    tag = "agents",
+    params(("id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 204, description = "Every LLM key issued so far is revoked"),
+        (status = 403, description = "Caller is neither the agent owner nor a superuser"),
+        (status = 404, description = "No such agent"),
+    ),
+)]
+pub(crate) async fn revoke_llm_tokens(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(resp) =
+        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
+    {
+        return resp;
+    }
+    match sqlx::query("UPDATE agents SET llm_tokens_revoked_at = clock_timestamp() WHERE id = $1")
+        .bind(agent_id)
+        .execute(&state.db)
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            tracing::error!(%error, %agent_id, "failed to revoke LLM keys");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to revoke LLM keys",
+            )
+                .into_response()
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]

@@ -182,3 +182,14 @@ pub fn revoke_mcp_token(agent_id: uuid::Uuid) -> Result<()> {
     );
     client.delete(&format!("/agents/{agent_id}/mcp-token"))
 }
+
+/// Revoke every LLM key a registered A2A agent has been given, on the active cluster: the
+/// router refuses them from then on.
+pub fn revoke_llm_tokens(agent_id: uuid::Uuid) -> Result<()> {
+    let (_, entry) = crate::config::active_cluster()?;
+    let client = crate::api::Client::from_cluster_entry_with_timeout(
+        &entry,
+        Some(crate::commands::coding_agent_router::CP_CALL_TIMEOUT),
+    );
+    client.delete(&format!("/agents/{agent_id}/llm-token"))
+}

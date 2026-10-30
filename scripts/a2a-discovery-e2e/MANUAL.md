@@ -264,15 +264,19 @@ That returns the trace IDs; `curl -s localhost:3200/api/traces/<traceID>` shows 
 ## 8. Disconnect
 
 ```sh
+KEY=$(sed -n 's/^OPENAI_API_KEY=//p' "$T/app/.env")
 nasiko disconnect planner
 diff "$T/env.before" "$T/app/.env" && echo "restored"
+curl -s -o /dev/null -w '%{http_code}\n' localhost:18080/v1/chat/completions -H "authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hi"}]}'
 nasiko agents discover
 nasiko status
 ```
 
-Expect `restored` (byte for byte), `planner` CONNECTED `no`, and LLM ROUTING `off` in `status`.
-`disconnect` also revoked the agent's MCP gateway credential: the script from step 5b now fails
-with HTTP 401.
+Expect `restored` (byte for byte), then `401`: `disconnect` revoked the agent's LLM key, so a
+copy of it kept anywhere else stops working too. `planner` is CONNECTED `no`, and LLM ROUTING
+`off` in `status`. Its MCP gateway credential is revoked as well: the script from step 5b now
+fails with HTTP 401. A later `nasiko connect planner` gives it new ones.
 
 ## 9. Clean up
 

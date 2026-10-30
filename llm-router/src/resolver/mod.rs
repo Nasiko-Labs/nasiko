@@ -282,6 +282,14 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error>;
 
+    /// When the agent's owner last revoked its LLM keys (`agents.llm_tokens_revoked_at`,
+    /// Unix seconds): every key minted up to then is refused. Read per request, never
+    /// cached, so a revocation takes effect at once on every replica. `None` when never
+    /// revoked, or the agent is unknown (resolving it fails later with its own error).
+    async fn agent_tokens_revoked_at(&self, _agent_id: Uuid) -> Result<Option<u64>, sqlx::Error> {
+        Ok(None)
+    }
+
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -399,6 +407,17 @@ impl PgRegistry {
 
 #[async_trait]
 impl RegistryStore for PgRegistry {
+    async fn agent_tokens_revoked_at(&self, agent_id: Uuid) -> Result<Option<u64>, sqlx::Error> {
+        let revoked: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT floor(extract(epoch FROM llm_tokens_revoked_at))::bigint \
+             FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(revoked.flatten().and_then(|at| u64::try_from(at).ok()))
+    }
+
     async fn fetch_llm_config(
         &self,
         agent_id: Uuid,

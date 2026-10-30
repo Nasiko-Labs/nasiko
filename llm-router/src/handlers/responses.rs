@@ -92,7 +92,7 @@ async fn responses_core(
     headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, headers).await? {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
