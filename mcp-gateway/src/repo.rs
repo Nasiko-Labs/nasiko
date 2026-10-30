@@ -70,6 +70,11 @@ pub struct McpConnector {
     pub oauth_token_endpoint: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    /// Explicit scope that replaces discovery's scope selection when set.
+    pub oauth_scopes: Option<String>,
+    /// `None`: discovery decides whether to send RFC 8707 `resource`;
+    /// `Some(true)` always sends the connector URL, `Some(false)` never does.
+    pub oauth_send_resource: Option<bool>,
     pub source_kind: SourceKind,
     /// A `provider_type = 'system'` connector with this true is enabled for every
     /// agent by default — unioned into each agent's enabled set at the gateway's
@@ -466,6 +471,10 @@ pub struct UpdateConnector {
     pub display_name: Option<String>,
     pub logo_url: Option<String>,
     pub is_active: Option<bool>,
+    /// An empty string clears the override (see [`update_connector`]).
+    pub oauth_scopes: Option<String>,
+    /// `None` leaves it unchanged; `Some(None)` resets to NULL (discovery decides).
+    pub oauth_send_resource: Option<Option<bool>>,
 }
 
 /// Partial-update a connector. Uses COALESCE so omitted (`None`) fields keep
@@ -483,7 +492,10 @@ pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Res
              description = COALESCE($9, description),
              display_name = COALESCE($10, display_name),
              logo_url = COALESCE($11, logo_url),
-             is_active = COALESCE($12, is_active)
+             is_active = COALESCE($12, is_active),
+             oauth_scopes = CASE WHEN $13::text IS NULL THEN oauth_scopes
+                                 ELSE NULLIF(BTRIM($13::text), '') END,
+             oauth_send_resource = CASE WHEN $15 THEN $14 ELSE oauth_send_resource END
            WHERE id = $1
            RETURNING *"#,
     )
@@ -499,9 +511,37 @@ pub async fn update_connector(db: &PgPool, id: Uuid, u: &UpdateConnector) -> Res
     .bind(&u.display_name)
     .bind(&u.logo_url)
     .bind(u.is_active)
+    .bind(&u.oauth_scopes)
+    .bind(u.oauth_send_resource.flatten())
+    .bind(u.oauth_send_resource.is_some())
     .fetch_one(db)
     .await?;
     Ok(row)
+}
+
+/// Persist the OAuth overrides supplied at registration. Same semantics as
+/// [`update_connector`]: `None` leaves a column alone, and an empty scope
+/// string is stored as NULL. NULLIF is what lets the owner return to
+/// automatic scope selection, since a plain `None` can only mean "unchanged".
+pub async fn set_connector_oauth_overrides(
+    db: &PgPool,
+    id: Uuid,
+    scopes: Option<&str>,
+    send_resource: Option<bool>,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE mcp_connectors SET
+             oauth_scopes = CASE WHEN $2::text IS NULL THEN oauth_scopes
+                                 ELSE NULLIF(BTRIM($2::text), '') END,
+             oauth_send_resource = COALESCE($3, oauth_send_resource)
+           WHERE id = $1"#,
+    )
+    .bind(id)
+    .bind(scopes)
+    .bind(send_resource)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Set a connector's setup progress for the URL-connect flow (`register_connector`

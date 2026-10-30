@@ -313,7 +313,7 @@ enum MetadataSource {
 
 /// An authorization server's metadata, already checked to name both
 /// endpoints the flow cannot run without.
-struct AuthorizationServerMetadata {
+pub struct AuthorizationServerMetadata {
     authorization_endpoint: String,
     token_endpoint: String,
     document: Value,
@@ -416,7 +416,14 @@ pub async fn discover_authorization(
     mcp_url: &str,
 ) -> Result<DiscoveredAuthorization> {
     let challenge = fetch_auth_challenge(http, mcp_url).await?;
-    let resource_metadata = fetch_resource_metadata_for(http, mcp_url, &challenge).await?;
+    let resource_metadata = match fetch_resource_metadata_for(http, mcp_url, &challenge).await {
+        Ok(document) => document,
+        Err(no_resource_metadata) => {
+            return discover_from_origin(http, mcp_url, &challenge)
+                .await
+                .ok_or(no_resource_metadata);
+        }
+    };
     let issuer = first_authorization_server(&resource_metadata).ok_or_else(|| {
         McpError::Oauth("no authorization_servers in resource metadata document".to_string())
     })?;
@@ -432,12 +439,57 @@ pub async fn discover_authorization(
         scope: requested_scope(&challenge, &resource_metadata, &server_metadata.document),
         resource: requested_resource(mcp_url, server_metadata.source),
     };
-    Ok(DiscoveredAuthorization {
+    Ok(discovered_from(server_metadata, requested_access))
+}
+
+fn discovered_from(
+    server_metadata: AuthorizationServerMetadata,
+    requested_access: RequestedAccess,
+) -> DiscoveredAuthorization {
+    DiscoveredAuthorization {
         registration_endpoint: first_str(&server_metadata.document, &["registration_endpoint"]),
         authorization_endpoint: server_metadata.authorization_endpoint,
         token_endpoint: server_metadata.token_endpoint,
         requested_access,
-    })
+    }
+}
+
+/// The MCP server's own origin as its authorization server, for a server that
+/// names no usable resource metadata but publishes authorization server
+/// metadata itself (Entra ID behind Azure API Management). `None` when the
+/// origin publishes none either.
+async fn discover_from_origin(
+    http: &reqwest::Client,
+    mcp_url: &str,
+    challenge: &str,
+) -> Option<DiscoveredAuthorization> {
+    let server_metadata = fetch_origin_authorization_server_metadata(http, mcp_url).await?;
+    // The document came from the MCP server itself, so its scopes describe
+    // this resource and are the best available stand-in for the resource
+    // metadata's.
+    let scope = auth_param(challenge, "scope")
+        .filter(|scope| !scope.trim().is_empty())
+        .or_else(|| {
+            let advertised = scopes_supported(&server_metadata.document);
+            (!advertised.is_empty()).then(|| advertised.join(" "))
+        })
+        .map(|scope| with_offline_access(scope, &server_metadata.document));
+    // No resource metadata means no published resource identifier to assert,
+    // and the only live case for this path (Entra ID behind APIM) rejects one.
+    let requested_access = RequestedAccess {
+        scope,
+        resource: None,
+    };
+    Some(discovered_from(server_metadata, requested_access))
+}
+
+/// Authorization server metadata published at the MCP server's own origin.
+pub async fn fetch_origin_authorization_server_metadata(
+    http: &reqwest::Client,
+    mcp_url: &str,
+) -> Option<AuthorizationServerMetadata> {
+    let (origin, _) = origin_and_path(mcp_url)?;
+    fetch_authorization_server_metadata(http, &origin).await
 }
 
 /// Build the authorization URL the user opens in their browser. Parameters
@@ -594,6 +646,7 @@ pub async fn begin_authorization(
     let discovery = discover_authorization(&state.guarded_http_client, &server_url).await;
     let (connector, requested_access) = if connector.oauth_configured() {
         let requested_access = requested_access_or_fallback(discovery, &connector, &server_url);
+        let requested_access = apply_connector_overrides(requested_access, &connector, &server_url);
         (connector, requested_access)
     } else {
         let discovery = discovery?;
@@ -605,7 +658,9 @@ pub async fn begin_authorization(
             pre_client_id.as_deref(),
         )
         .await?;
-        (connector, discovery.requested_access)
+        let requested_access =
+            apply_connector_overrides(discovery.requested_access, &connector, &server_url);
+        (connector, requested_access)
     };
 
     let (Some(auth_endpoint), Some(client_id)) = (
@@ -648,6 +703,27 @@ fn requested_access_or_fallback(
             RequestedAccess::without_scope(server_url)
         }
     }
+}
+
+/// The owner's per-connector overrides beat discovery: identity providers
+/// behind proxies (Entra ID behind API Management) cannot be classified from
+/// metadata alone. An explicit scope is used verbatim, with no `offline_access`
+/// appended, because explicit means explicit.
+fn apply_connector_overrides(
+    requested: RequestedAccess,
+    connector: &McpConnector,
+    server_url: &str,
+) -> RequestedAccess {
+    let scope = match connector.oauth_scopes.as_deref().map(str::trim) {
+        Some(scopes) if !scopes.is_empty() => Some(scopes.to_string()),
+        _ => requested.scope,
+    };
+    let resource = match connector.oauth_send_resource {
+        Some(true) => Some(server_url.to_string()),
+        Some(false) => None,
+        None => requested.resource,
+    };
+    RequestedAccess { scope, resource }
 }
 
 /// First authorization only: persist the discovered endpoints and a client -
@@ -883,17 +959,51 @@ pub async fn handle_callback(
     CallbackOutcome::ClosePopup(safe_dest)
 }
 
-/// Check whether the authorization server for an OAuth-protected resource
-/// advertises a `registration_endpoint` (RFC 7591 DCR). Used by the probe
-/// endpoint so the frontend can decide whether to show client-credential fields.
-pub async fn as_supports_dcr(http: &reqwest::Client, resource_metadata: &Value) -> bool {
-    let Some(issuer) = first_authorization_server(resource_metadata) else {
-        return false;
-    };
-    fetch_authorization_server_metadata(http, issuer)
-        .await
-        .and_then(|metadata| first_str(&metadata.document, &["registration_endpoint"]))
-        .is_some_and(|endpoint| !endpoint.is_empty())
+/// What the probe learns about an authorization server's client onboarding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientOnboarding {
+    /// RFC 7591: the server advertises a `registration_endpoint`.
+    pub supports_dcr: bool,
+    /// Whether `token_endpoint_auth_methods_supported` contains `none`
+    /// (public clients: PKCE, no secret); `None` when the document is silent.
+    pub public_client: Option<bool>,
+}
+
+impl ClientOnboarding {
+    pub fn from_metadata(metadata: &AuthorizationServerMetadata) -> Self {
+        let document = &metadata.document;
+        let public_client = document
+            .get("token_endpoint_auth_methods_supported")
+            .and_then(Value::as_array)
+            .map(|methods| methods.iter().any(|m| m.as_str() == Some("none")));
+        Self {
+            supports_dcr: first_str(document, &["registration_endpoint"])
+                .is_some_and(|endpoint| !endpoint.is_empty()),
+            public_client,
+        }
+    }
+}
+
+/// Client onboarding of the authorization server an OAuth-protected
+/// resource names, for the probe endpoint so the frontend can decide whether
+/// to show client-credential fields. `None` when it cannot be discovered.
+pub async fn as_client_onboarding(
+    http: &reqwest::Client,
+    resource_metadata: &Value,
+) -> Option<ClientOnboarding> {
+    let issuer = first_authorization_server(resource_metadata)?;
+    let metadata = fetch_authorization_server_metadata(http, issuer).await?;
+    Some(ClientOnboarding::from_metadata(&metadata))
+}
+
+/// Client onboarding of the MCP server's own origin, for servers that name no
+/// resource metadata (see [`discover_from_origin`]).
+pub async fn origin_client_onboarding(
+    http: &reqwest::Client,
+    mcp_url: &str,
+) -> Option<ClientOnboarding> {
+    let metadata = fetch_origin_authorization_server_metadata(http, mcp_url).await?;
+    Some(ClientOnboarding::from_metadata(&metadata))
 }
 
 /// RFC 9728 direct discovery: `GET /.well-known/oauth-protected-resource` at
@@ -1121,12 +1231,18 @@ fn requested_scope(
             let advertised = scopes_supported(resource_metadata);
             (!advertised.is_empty()).then(|| advertised.join(" "))
         })?;
+    Some(with_offline_access(scope, server_metadata))
+}
+
+/// `scope` plus `offline_access`, when the authorization server offers it and
+/// the scope does not already ask for it.
+fn with_offline_access(scope: String, server_metadata: &Value) -> String {
     let offline_access_offered = scopes_supported(server_metadata).contains(&OFFLINE_ACCESS_SCOPE);
     let offline_access_requested = scope.split_whitespace().any(|s| s == OFFLINE_ACCESS_SCOPE);
     if offline_access_offered && !offline_access_requested {
-        Some(format!("{scope} {OFFLINE_ACCESS_SCOPE}"))
+        format!("{scope} {OFFLINE_ACCESS_SCOPE}")
     } else {
-        Some(scope)
+        scope
     }
 }
 
@@ -1302,6 +1418,8 @@ mod tests {
             oauth_token_endpoint: Some(token_endpoint.to_string()),
             oauth_client_id: Some("client123".into()),
             oauth_client_secret: None,
+            oauth_scopes: None,
+            oauth_send_resource: None,
             source_kind: crate::repo::SourceKind::ExternalUrl,
             auto_enable: false,
             build_status: None,
@@ -1772,6 +1890,184 @@ mod tests {
         assert!(matches!(err, McpError::Oauth(_)), "got {err:?}");
         assert_eq!(err.http_status(), 502);
     }
+
+    /// `POST /mcp` answers 401 pointing at a resource metadata URL that itself
+    /// 401s, with no RFC 9728 document anywhere - Entra ID behind APIM.
+    async fn mount_unusable_resource_metadata(
+        server: &mut mockito::ServerGuard,
+        challenge_suffix: &str,
+    ) {
+        let pointer = format!(
+            "{}/p/.well-known/oauth-protected-resource/p/mcp",
+            server.url()
+        );
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header(
+                "www-authenticate",
+                &format!(r#"Bearer error="invalid_token", resource_metadata="{pointer}"{challenge_suffix}"#),
+            )
+            .create_async()
+            .await;
+        server
+            .mock("GET", "/p/.well-known/oauth-protected-resource/p/mcp")
+            .with_status(401)
+            .create_async()
+            .await;
+        for path in [
+            "/.well-known/oauth-protected-resource/mcp",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            server
+                .mock("GET", path)
+                .with_status(404)
+                .create_async()
+                .await;
+        }
+    }
+
+    fn apim_origin_metadata() -> Value {
+        json!({
+            "issuer": "https://login.example/tenant/v2.0",
+            "authorization_endpoint": "https://host.example/authorize",
+            "token_endpoint": "https://login.example/tenant/oauth2/v2.0/token",
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+            "scopes_supported": ["api://x/mcp.access", "openid", "offline_access"],
+        })
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_the_origin_as_authorization_server_without_resource() {
+        let mut server = mockito::Server::new_async().await;
+        mount_unusable_resource_metadata(&mut server, "").await;
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server",
+            apim_origin_metadata(),
+        )
+        .await;
+
+        let discovered =
+            discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+                .await
+                .expect("origin metadata is used");
+
+        assert_eq!(
+            discovered.authorization_endpoint,
+            "https://host.example/authorize"
+        );
+        assert_eq!(
+            discovered.token_endpoint,
+            "https://login.example/tenant/oauth2/v2.0/token"
+        );
+        assert_eq!(discovered.registration_endpoint, None);
+        assert_eq!(
+            discovered.requested_access,
+            RequestedAccess {
+                scope: Some("api://x/mcp.access openid offline_access".to_string()),
+                resource: None,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn origin_fallback_prefers_the_challenge_scope_and_adds_offline_access() {
+        let mut server = mockito::Server::new_async().await;
+        mount_unusable_resource_metadata(&mut server, r#", scope="a b""#).await;
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server",
+            apim_origin_metadata(),
+        )
+        .await;
+
+        let discovered =
+            discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+                .await
+                .expect("origin metadata is used");
+
+        assert_eq!(
+            discovered.requested_access.scope.as_deref(),
+            Some("a b offline_access")
+        );
+    }
+
+    #[tokio::test]
+    async fn unusable_pointer_and_no_origin_metadata_keeps_the_original_error() {
+        let mut server = mockito::Server::new_async().await;
+        mount_unusable_resource_metadata(&mut server, "").await;
+
+        let err = discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+            .await
+            .expect_err("nothing to discover");
+
+        assert!(
+            matches!(&err, McpError::Oauth(m) if m.contains("no usable resource_metadata URL")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn resource_metadata_path_still_sends_resource_for_rfc_8414() {
+        let mut server = mockito::Server::new_async().await;
+        let issuer = server.url();
+        mount_protected_mcp(&mut server, "", &issuer, &["a"]).await;
+        mount_metadata(
+            &mut server,
+            "/.well-known/oauth-authorization-server",
+            json!({
+                "authorization_endpoint": "https://idp.example/authorize",
+                "token_endpoint": "https://idp.example/token",
+            }),
+        )
+        .await;
+        let mcp_url = format!("{}/mcp", server.url());
+
+        let discovered = discover_authorization(&reqwest::Client::new(), &mcp_url)
+            .await
+            .expect("discovery succeeds");
+
+        assert_eq!(discovered.requested_access.resource, Some(mcp_url));
+    }
+
+    #[test]
+    fn connector_overrides_beat_discovery() {
+        let discovered = RequestedAccess {
+            scope: Some("auto offline_access".into()),
+            resource: Some("https://example.com/mcp".into()),
+        };
+        let url = "https://example.com/mcp";
+        let with = |scopes: Option<&str>, send: Option<bool>| {
+            let mut connector = oauth_connector("https://idp.example/token");
+            connector.oauth_scopes = scopes.map(str::to_string);
+            connector.oauth_send_resource = send;
+            apply_connector_overrides(discovered.clone(), &connector, url)
+        };
+
+        assert_eq!(with(None, None), discovered);
+        assert_eq!(
+            with(Some("api://x/.default"), None).scope.as_deref(),
+            Some("api://x/.default"),
+            "explicit scope is verbatim, without offline_access"
+        );
+        assert_eq!(with(Some("  "), None).scope, discovered.scope);
+        assert_eq!(with(None, Some(false)).resource, None);
+        let mut no_resource = discovered.clone();
+        no_resource.resource = None;
+        let mut connector = oauth_connector("https://idp.example/token");
+        connector.oauth_send_resource = Some(true);
+        assert_eq!(
+            apply_connector_overrides(no_resource, &connector, url)
+                .resource
+                .as_deref(),
+            Some(url)
+        );
+    }
+
+    // The empty-string-clears-`oauth_scopes` behaviour lives in the SQL
+    // (`NULLIF(BTRIM(..), '')` in `repo::update_connector`), so it needs a
+    // database and is left to the server integration tests.
 
     #[test]
     fn requested_scope_adds_offline_access_only_when_offered_and_not_yet_asked_for() {

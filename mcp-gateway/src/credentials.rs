@@ -459,6 +459,8 @@ mod tests {
             oauth_token_endpoint: None,
             oauth_client_id: None,
             oauth_client_secret: None,
+            oauth_scopes: None,
+            oauth_send_resource: None,
             source_kind: crate::repo::SourceKind::ExternalUrl,
             auto_enable: false,
             build_status: None,

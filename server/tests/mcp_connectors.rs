@@ -962,6 +962,80 @@ async fn update_connector_edits_fields() {
 
 #[tokio::test]
 #[serial]
+async fn oauth_overrides_round_trip_and_empty_scope_clears() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    // Registration trims the explicit scope and stores the resource choice.
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/mcp/connectors")),
+        uid,
+        "admin",
+    )
+    .json(&json!({
+        "name": "entra-tool", "url": "https://example.com", "auth_type": "oauth2",
+        "oauth_client_id": "app-123", "oauth_scopes": "  api://x/mcp.access openid  ",
+        "oauth_send_resource": false,
+    }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 201);
+    let body: Value = res.json().await.unwrap();
+    let cid = body["data"]["connector_id"].as_str().unwrap().to_string();
+    assert_eq!(body["data"]["oauth_scopes"], "api://x/mcp.access openid");
+    assert_eq!(body["data"]["oauth_send_resource"], false);
+
+    let patch = |payload: Value| {
+        common::as_superuser(
+            server
+                .client
+                .patch(server.url(&format!("/api/mcp/connectors/{cid}"))),
+            uid,
+            "admin",
+        )
+        .json(&payload)
+    };
+
+    // Omitted fields leave both overrides alone.
+    let body: Value = patch(json!({"description": "x"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["data"]["oauth_scopes"], "api://x/mcp.access openid");
+    assert_eq!(body["data"]["oauth_send_resource"], false);
+
+    // An empty scope string returns to automatic selection; the resource
+    // choice can be flipped independently.
+    let body: Value = patch(json!({"oauth_scopes": "   ", "oauth_send_resource": true}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(body["data"]["oauth_scopes"].is_null());
+    assert_eq!(body["data"]["oauth_send_resource"], true);
+
+    // An explicit null returns the resource choice to automatic.
+    let body: Value = patch(json!({"oauth_send_resource": null}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(body["data"]["oauth_send_resource"].is_null());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn update_connector_non_owner_forbidden_and_invalid_auth_rejected() {
     let server = common::TestServer::start().await;
     let admin = init_admin(&server).await;

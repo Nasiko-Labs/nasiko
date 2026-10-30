@@ -1,7 +1,7 @@
 //! Custom MCP connector registration + probe.
 
 use axum::extract::State;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -28,6 +28,11 @@ pub struct CreateConnector {
     pub logo_url: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    /// Explicit OAuth scope (space-separated), replacing automatic selection.
+    pub oauth_scopes: Option<String>,
+    /// Force (`true`) or suppress (`false`) the RFC 8707 `resource` parameter;
+    /// omit to let discovery decide.
+    pub oauth_send_resource: Option<bool>,
 }
 
 fn default_transport() -> String {
@@ -73,6 +78,8 @@ pub async fn create(
             logo_url: body.logo_url,
             oauth_client_id: body.oauth_client_id,
             oauth_client_secret: body.oauth_client_secret,
+            oauth_scopes: body.oauth_scopes,
+            oauth_send_resource: body.oauth_send_resource,
         },
     )
     .await?;
@@ -92,6 +99,12 @@ pub struct UpdateConnector {
     pub display_name: Option<String>,
     pub logo_url: Option<String>,
     pub is_active: Option<bool>,
+    /// Explicit OAuth scope; an empty string returns to automatic selection.
+    pub oauth_scopes: Option<String>,
+    /// Omitted leaves it unchanged; explicit `null` returns to automatic (discovery decides).
+    #[serde(default, deserialize_with = "present")]
+    #[schema(value_type = Option<bool>)]
+    pub oauth_send_resource: Option<Option<bool>>,
 }
 
 /// `PATCH /api/mcp/connectors/{id}` — update an owned connector.
@@ -126,6 +139,8 @@ pub async fn update(
         display_name: body.display_name,
         logo_url: body.logo_url,
         is_active: body.is_active,
+        oauth_scopes: body.oauth_scopes,
+        oauth_send_resource: body.oauth_send_resource,
     };
     Ok(ApiResponse::ok(
         service::connectors::update(&state, caller, claims.is_superuser, id, input).await?,
@@ -314,4 +329,10 @@ pub async fn recent(
         service::connectors::list_recent(&state, user_id).await?,
         "Recent connectors retrieved successfully",
     ))
+}
+
+/// Tells a field sent as `null` (reset it) from a field not sent at all (leave it): serde maps both
+/// to `None` on a plain `Option`.
+fn present<'de, T: Deserialize<'de>, D: Deserializer<'de>>(d: D) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
 }

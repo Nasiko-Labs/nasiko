@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::error::{McpError, Result};
+use crate::oauth::ClientOnboarding;
 use crate::permissions;
 use crate::provider::first_str;
 use crate::provider::generic::MCP_PROTOCOL_VERSION;
@@ -35,6 +36,8 @@ pub fn connector_dto(c: &McpConnector) -> Value {
         "logo_url": c.logo_url,
         "is_active": c.active(),
         "oauth_configured": c.oauth_configured(),
+        "oauth_scopes": c.oauth_scopes,
+        "oauth_send_resource": c.oauth_send_resource,
         "source_kind": c.source_kind,
         "build_status": c.build_status,
         "setup_status": c.setup_status,
@@ -214,84 +217,105 @@ pub(crate) async fn probe_initialize(
 pub async fn probe_connector_view(state: &McpState, url: &str) -> Result<Value> {
     let url = url.trim_end_matches('/').to_string();
     crate::net::validate_public_url(&url).await?;
+    // Guarded client: `validate_public_url` is a one-shot pre-check; the probe
+    // itself must go through the SSRF/DNS-rebinding-guarded client so a rebinding
+    // DNS can't point it at an internal address between the two resolutions.
+    probe_server(&state.guarded_http_client, &url).await
+}
 
+/// How the probe tells the user to onboard an OAuth client, from what the
+/// authorization server's metadata says (`None`: none could be found).
+fn oauth_hint(onboarding: Option<ClientOnboarding>) -> &'static str {
+    match onboarding {
+        Some(o) if o.supports_dcr => {
+            "This server supports OAuth 2.1 with automatic client registration - \
+             no client credentials needed."
+        }
+        Some(ClientOnboarding {
+            public_client: Some(true),
+            ..
+        }) => {
+            "This server uses OAuth 2.1 without automatic registration: supply the client ID \
+             of an app registered with its identity provider. It accepts public clients, so no \
+             client secret is needed."
+        }
+        Some(_) => {
+            "This server uses OAuth 2.1 without automatic registration: supply your own OAuth \
+             client ID, and the client secret if the app is registered as a confidential client."
+        }
+        None => {
+            "This server uses OAuth 2.1 but does not publish discovery metadata: supply your own \
+             OAuth client ID, and the client secret if the app is registered as a confidential \
+             client."
+        }
+    }
+}
+
+fn oauth_probe_view(url: &str, onboarding: Option<ClientOnboarding>) -> Value {
+    json!({
+        "url": url,
+        "auth_type": "oauth2",
+        "requires": "oauth_flow",
+        "supports_dcr": onboarding.is_some_and(|o| o.supports_dcr),
+        "public_client": onboarding.and_then(|o| o.public_client),
+        "hint": oauth_hint(onboarding),
+    })
+}
+
+async fn probe_server(http: &reqwest::Client, url: &str) -> Result<Value> {
     // Primary: RFC 9728 direct discovery — the MCP spec's own recommended
     // method, and deterministic when a server implements it (unlike guessing
     // from a bare unauthenticated response, which is a real, verified source
     // of false classifications — see classify_response's doc comment).
-    if let Some(rm) =
-        crate::oauth::fetch_protected_resource_metadata(&state.guarded_http_client, &url).await
-    {
-        // One extra hop: check the authorization-server metadata for a
-        // registration_endpoint so the frontend knows whether client
-        // credentials are required or can be obtained via DCR (RFC 7591).
-        let supports_dcr = crate::oauth::as_supports_dcr(&state.guarded_http_client, &rm).await;
-
-        let hint = if supports_dcr {
-            "This server supports OAuth 2.1 with automatic client registration — \
-             no client credentials needed."
-        } else {
-            "This server uses OAuth 2.1 but does not support automatic registration — \
-             you must provide your own OAuth client ID and secret."
-        };
-
-        return Ok(json!({
-            "url": url,
-            "auth_type": "oauth2",
-            "requires": "oauth_flow",
-            "supports_dcr": supports_dcr,
-            "hint": hint,
-        }));
+    if let Some(rm) = crate::oauth::fetch_protected_resource_metadata(http, url).await {
+        // One extra hop: check the authorization-server metadata so the
+        // frontend knows whether client credentials are required or can be
+        // obtained via DCR (RFC 7591), and whether a secret is needed.
+        let onboarding = crate::oauth::as_client_onboarding(http, &rm).await;
+        return Ok(oauth_probe_view(url, onboarding));
     }
 
     // Fallback: no well-known metadata found (either the server doesn't
     // support OAuth, or — confirmed live for at least one real server,
     // Atlassian — it does but doesn't publish RFC 9728 metadata at all).
-    // Guarded client: `validate_public_url` is a one-shot pre-check; the probe
-    // itself must go through the SSRF/DNS-rebinding-guarded client so a rebinding
-    // DNS can't point it at an internal address between the two resolutions.
-    let (detected, status, metadata) = probe_initialize(&state.guarded_http_client, &url)
+    let (detected, status, metadata) = probe_initialize(http, url)
         .await
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
-    let (requires, hint, supports_dcr) = match detected {
+    if detected == DetectedAuthType::OAuth2 {
+        // Some servers (Entra ID behind API Management) publish authorization
+        // server metadata at their own origin instead of RFC 9728 documents.
+        let onboarding = crate::oauth::origin_client_onboarding(http, url).await;
+        let mut resp = oauth_probe_view(url, onboarding);
+        resp["instructions"] = json!(metadata.description_fallback());
+        return Ok(resp);
+    }
+
+    let (requires, hint) = match detected {
         DetectedAuthType::None => (
             "nothing",
             "This server requires no authentication.".to_string(),
-            None,
-        ),
-        DetectedAuthType::OAuth2 => (
-            "oauth_flow",
-            "This server uses OAuth 2.1 but does not publish discovery metadata — \
-             you must provide your own OAuth client ID and secret."
-                .to_string(),
-            Some(false),
         ),
         DetectedAuthType::Bearer if status == StatusCode::UNAUTHORIZED.as_u16() => (
             "api_key_input",
             "This server requires a Bearer token or API key.".to_string(),
-            None,
         ),
-        DetectedAuthType::Bearer => (
+        // `OAuth2` was returned above; it is grouped here only for exhaustiveness.
+        DetectedAuthType::Bearer | DetectedAuthType::OAuth2 => (
             "api_key_input",
             format!("Server returned HTTP {status}. It may require an API key."),
-            None,
         ),
     };
     // Reports the same combined value the probe endpoint always has — this is
     // a caller-facing preview, not what gets stored (see
     // `ProbedMetadata::description_fallback`'s own doc comment).
-    let mut resp = json!({
+    Ok(json!({
         "url": url,
         "auth_type": detected.as_str(),
         "requires": requires,
         "hint": hint,
         "instructions": metadata.description_fallback(),
-    });
-    if let Some(dcr) = supports_dcr {
-        resp["supports_dcr"] = json!(dcr);
-    }
-    Ok(resp)
+    }))
 }
 
 // ─── Registration ─────────────────────────────────────────────────────────────
@@ -312,6 +336,8 @@ pub struct NewConnectorInput {
     pub logo_url: Option<String>,
     pub oauth_client_id: Option<String>,
     pub oauth_client_secret: Option<String>,
+    pub oauth_scopes: Option<String>,
+    pub oauth_send_resource: Option<bool>,
 }
 
 /// Register a custom MCP connector owned by `owner_id` (private until shared).
@@ -331,6 +357,13 @@ pub async fn register_connector(
         ));
     }
     crate::net::validate_public_url(&input.url).await?;
+    // Same normalisation the SQL applies, so the returned row matches storage.
+    let oauth_scopes = input
+        .oauth_scopes
+        .as_deref()
+        .map(str::trim)
+        .filter(|scopes| !scopes.is_empty())
+        .map(str::to_string);
 
     if repo::get_owned_connector_by_name(&state.db, owner_id, &input.name)
         .await?
@@ -449,6 +482,16 @@ pub async fn register_connector(
         .map_err(McpError::Database)?;
     }
 
+    if oauth_scopes.is_some() || input.oauth_send_resource.is_some() {
+        repo::set_connector_oauth_overrides(
+            &state.db,
+            connector.id,
+            oauth_scopes.as_deref(),
+            input.oauth_send_resource,
+        )
+        .await?;
+    }
+
     // `basic` supplied at registration is immediately verifiable — prove it
     // actually works instead of leaving it marked `pending` indefinitely.
     let (final_status, final_error) = if basic_ready {
@@ -472,6 +515,8 @@ pub async fn register_connector(
     Ok(McpConnector {
         setup_status: Some(final_status),
         setup_error: final_error,
+        oauth_scopes,
+        oauth_send_resource: input.oauth_send_resource,
         ..connector
     })
 }
@@ -490,6 +535,10 @@ pub struct UpdateConnectorInput {
     pub display_name: Option<String>,
     pub logo_url: Option<String>,
     pub is_active: Option<bool>,
+    /// An empty string clears the override.
+    pub oauth_scopes: Option<String>,
+    /// `None` leaves it unchanged; `Some(None)` returns to automatic.
+    pub oauth_send_resource: Option<Option<bool>>,
 }
 
 /// Update an owned custom connector (owner or admin). Avoids the destructive
@@ -571,6 +620,8 @@ pub async fn update_connector(
             display_name: input.display_name,
             logo_url: input.logo_url,
             is_active: input.is_active,
+            oauth_scopes: input.oauth_scopes,
+            oauth_send_resource: input.oauth_send_resource,
         },
     )
     .await?;
@@ -1369,6 +1420,48 @@ async fn connectors_reachable_in_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn probe_reads_public_client_support_from_origin_metadata() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/mcp")
+            .with_status(401)
+            .with_header(
+                "www-authenticate",
+                r#"Bearer error="invalid_token", resource_metadata="https://nowhere.invalid/x""#,
+            )
+            .create_async()
+            .await;
+        server
+            .mock("GET", "/.well-known/oauth-authorization-server")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "authorization_endpoint": "https://host.example/authorize",
+                    "token_endpoint": "https://idp.example/token",
+                    "token_endpoint_auth_methods_supported": ["none"],
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let view = probe_server(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
+            .await
+            .expect("probe succeeds");
+
+        assert_eq!(view["auth_type"], "oauth2");
+        assert_eq!(view["supports_dcr"], false);
+        assert_eq!(view["public_client"], true);
+        assert!(
+            view["hint"]
+                .as_str()
+                .unwrap()
+                .contains("no client secret is needed")
+        );
+    }
 
     #[test]
     fn classify_response_cases() {
