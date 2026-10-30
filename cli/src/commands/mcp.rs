@@ -9,6 +9,34 @@ use serde_json::Value;
 
 use crate::api::Client;
 
+/// `--oauth-send-resource`: whether authorize requests carry the RFC 8707 `resource` parameter.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum SendResourceArg {
+    /// Let discovery decide.
+    Auto,
+    True,
+    False,
+}
+
+impl SendResourceArg {
+    /// Registration treats an absent field as automatic, so `auto` sends nothing.
+    fn to_register_json(self) -> Option<bool> {
+        match self {
+            Self::Auto => None,
+            Self::True => Some(true),
+            Self::False => Some(false),
+        }
+    }
+
+    /// On update an omitted field means unchanged, so `auto` must be an explicit null.
+    fn to_update_json(self) -> Value {
+        match self.to_register_json() {
+            Some(b) => Value::Bool(b),
+            None => Value::Null,
+        }
+    }
+}
+
 // ─── Shared helpers ─────────────────────────────────────────────────────────
 
 /// Resolve an `agent` CLI argument (bare UUID or agent name) to its UUID.
@@ -394,6 +422,9 @@ pub fn connector_probe(url: &str, json: bool) -> Result<()> {
             s(&data, "auth_type"),
             s(&data, "hint"),
         );
+        if let Some(public) = data.get("public_client").and_then(Value::as_bool) {
+            println!("  Public client (no secret needed): {public}");
+        }
     })
 }
 
@@ -413,6 +444,8 @@ pub fn connector_register(
     logo_url: Option<&str>,
     oauth_client_id: Option<&str>,
     oauth_client_secret: Option<&str>,
+    oauth_scopes: Option<&str>,
+    oauth_send_resource: Option<SendResourceArg>,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let headers = parse_headers(headers)?;
@@ -428,7 +461,7 @@ pub fn connector_register(
                 (None, None)
             } else {
                 let secret: String = dialoguer::Password::new()
-                    .with_prompt("OAuth client secret")
+                    .with_prompt("OAuth client secret (leave empty for a public client)")
                     .interact()?;
                 let secret = if secret.is_empty() {
                     None
@@ -459,6 +492,8 @@ pub fn connector_register(
         "logo_url": logo_url,
         "oauth_client_id": oauth_client_id,
         "oauth_client_secret": oauth_client_secret,
+        "oauth_scopes": oauth_scopes,
+        "oauth_send_resource": oauth_send_resource.and_then(SendResourceArg::to_register_json),
     });
     let resp: Value = client.post_json("/mcp/connectors", &body)?;
     let resp = resp.get("data").cloned().unwrap_or(Value::Null);
@@ -492,10 +527,12 @@ pub fn connector_update(
     display_name: Option<&str>,
     logo_url: Option<&str>,
     active: Option<bool>,
+    oauth_scopes: Option<&str>,
+    oauth_send_resource: Option<SendResourceArg>,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let headers = parse_headers(headers)?;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "name": name,
         "url": url,
         "transport": transport,
@@ -507,7 +544,12 @@ pub fn connector_update(
         "display_name": display_name,
         "logo_url": logo_url,
         "is_active": active,
+        "oauth_scopes": oauth_scopes,
     });
+    // A JSON null resets to automatic on update, so the key must be absent when the flag is.
+    if let Some(choice) = oauth_send_resource {
+        body["oauth_send_resource"] = choice.to_update_json();
+    }
     let resp: Value = client.patch_json(&format!("/mcp/connectors/{connector_id}"), &body)?;
     let resp = resp.get("data").cloned().unwrap_or(Value::Null);
     println!("Updated connector '{}' ({connector_id}).", s(&resp, "name"));

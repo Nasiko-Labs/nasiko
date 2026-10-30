@@ -1812,7 +1812,7 @@ pub enum McpSubCommands {
     /// Manage custom MCP server connectors
     Connector {
         #[command(subcommand)]
-        command: McpConnectorCommands,
+        command: Box<McpConnectorCommands>,
     },
     /// Manage a per-connector stored credential
     Credential {
@@ -1924,6 +1924,12 @@ pub enum McpConnectorCommands {
         /// OAuth client secret
         #[arg(long)]
         oauth_client_secret: Option<String>,
+        /// OAuth scope to request, space separated (overrides automatic selection; empty string on update clears it)
+        #[arg(long)]
+        oauth_scopes: Option<String>,
+        /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)
+        #[arg(long, value_enum)]
+        oauth_send_resource: Option<commands::mcp::SendResourceArg>,
     },
     /// Edit a connector's fields (owner/admin only)
     Update {
@@ -1950,6 +1956,12 @@ pub enum McpConnectorCommands {
         logo_url: Option<String>,
         #[arg(long)]
         active: Option<bool>,
+        /// OAuth scope to request, space separated (overrides automatic selection; empty string on update clears it)
+        #[arg(long)]
+        oauth_scopes: Option<String>,
+        /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)
+        #[arg(long, value_enum)]
+        oauth_send_resource: Option<commands::mcp::SendResourceArg>,
     },
     /// Delete a connector (owner/admin only)
     Delete {
@@ -2221,7 +2233,7 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 commands::mcp::toolkit_delete(&connector_id, yes)
             }
         },
-        McpSubCommands::Connector { command } => match command {
+        McpSubCommands::Connector { command } => match *command {
             McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
             McpConnectorCommands::Probe { url, json } => commands::mcp::connector_probe(&url, json),
             McpConnectorCommands::Register {
@@ -2239,6 +2251,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 logo_url,
                 oauth_client_id,
                 oauth_client_secret,
+                oauth_scopes,
+                oauth_send_resource,
             } => commands::mcp::connector_register(
                 &name,
                 &url,
@@ -2254,6 +2268,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 logo_url.as_deref(),
                 oauth_client_id.as_deref(),
                 oauth_client_secret.as_deref(),
+                oauth_scopes.as_deref(),
+                oauth_send_resource,
             ),
             McpConnectorCommands::Update {
                 connector_id,
@@ -2268,6 +2284,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 display_name,
                 logo_url,
                 active,
+                oauth_scopes,
+                oauth_send_resource,
             } => commands::mcp::connector_update(
                 &connector_id,
                 name.as_deref(),
@@ -2281,6 +2299,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 display_name.as_deref(),
                 logo_url.as_deref(),
                 active,
+                oauth_scopes.as_deref(),
+                oauth_send_resource,
             ),
             McpConnectorCommands::Delete { connector_id, yes } => {
                 commands::mcp::connector_delete(&connector_id, yes)
