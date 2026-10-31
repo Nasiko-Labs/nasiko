@@ -70,17 +70,7 @@ pub mod connect {
     use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
     pub async fn connect(s: &AppState, user: Uuid, input: ConnectInput) -> R<ConnectOutcome> {
-        let outcome = connect::connect_service(&s.mcp, user, input).await?;
-        // The connector list counts synced tools, so fill an empty catalog now rather than
-        // leaving it at 0 until an agent first loads the connector.
-        if let ConnectOutcome::Connected { connector_id, .. } = &outcome {
-            tokio::spawn(nasiko_mcp_gateway::permissions::sync_catalog_if_empty(
-                s.mcp.clone(),
-                user,
-                *connector_id,
-            ));
-        }
-        Ok(outcome)
+        connect::connect_service(&s.mcp, user, input).await
     }
     pub async fn list_connections(s: &AppState, user: Uuid) -> R<Value> {
         connect::list_connections_view(&s.mcp, user).await
@@ -311,14 +301,16 @@ pub mod oauth {
 
 pub mod permissions {
     use super::*;
-    use nasiko_mcp_gateway::permissions;
     pub use nasiko_mcp_gateway::permissions::ToolRuleInput;
+    use nasiko_mcp_gateway::{UserEntitlement, entitlements, permissions};
 
-    pub async fn list_connectors(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
-        permissions::list_connectors_view(&s.mcp, user, agent).await
+    /// The caller's tool entitlement; `Unrestricted` unless an edition restricts it.
+    pub async fn entitlement(s: &AppState, user: Uuid) -> R<UserEntitlement> {
+        entitlements::load_user_entitlement(&s.mcp, user).await
     }
-    pub async fn list_caller_connections(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
-        permissions::list_caller_connections_view(&s.mcp, user, agent).await
+    pub async fn list_connectors(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
+        let ent = entitlement(s, user).await?;
+        permissions::list_connectors_view(&s.mcp, user, agent, &ent).await
     }
     pub async fn set_connector_access(
         s: &AppState,
@@ -327,7 +319,8 @@ pub mod permissions {
         connector: Uuid,
         enabled: bool,
     ) -> R<Value> {
-        permissions::set_connector_access_view(&s.mcp, user, agent, connector, enabled).await
+        let ent = entitlement(s, user).await?;
+        permissions::set_connector_access_view(&s.mcp, user, agent, connector, enabled, &ent).await
     }
     pub async fn list_connector_tools(
         s: &AppState,
@@ -335,10 +328,12 @@ pub mod permissions {
         agent: Uuid,
         connector: Uuid,
     ) -> R<Value> {
-        permissions::list_connector_tools_view(&s.mcp, user, agent, connector).await
+        let ent = entitlement(s, user).await?;
+        permissions::list_connector_tools_view(&s.mcp, user, agent, connector, &ent).await
     }
-    pub async fn list_tool_rules(s: &AppState, agent: Uuid) -> R<Value> {
-        permissions::list_tool_rules_view(&s.mcp, agent).await
+    pub async fn list_tool_rules(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
+        let ent = entitlement(s, user).await?;
+        permissions::list_tool_rules_view(&s.mcp, agent, &ent).await
     }
     pub async fn bulk_update_tools(
         s: &AppState,
@@ -346,9 +341,17 @@ pub mod permissions {
         agent: Uuid,
         rules: &[ToolRuleInput],
     ) -> R<Value> {
-        permissions::bulk_update_tools(&s.mcp, user, agent, rules).await
+        let ent = entitlement(s, user).await?;
+        permissions::bulk_update_tools(&s.mcp, user, agent, rules, &ent).await
     }
-    pub async fn reset(s: &AppState, agent: Uuid) -> R<u64> {
+    pub async fn reset(s: &AppState, user: Uuid, agent: Uuid) -> R<u64> {
+        // A restricted caller cannot see every rule, so a reset would wipe rules
+        // for tools they cannot see.
+        if entitlement(s, user).await?.is_restricted() {
+            return Err(McpError::Forbidden(
+                "a tool-restricted user cannot reset an agent's permissions".into(),
+            ));
+        }
         permissions::reset(&s.mcp, agent).await
     }
 }

@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::cache;
-use crate::entitlements::UserEntitlement;
+use crate::entitlements::{ToolSet, UserEntitlement};
 use crate::error::{McpError, Result};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::repo;
@@ -337,6 +337,7 @@ pub async fn list_connectors_view(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
+    entitlement: &UserEntitlement,
 ) -> Result<Value> {
     let mut connectors = state
         .authorizer
@@ -369,7 +370,9 @@ pub async fn list_connectors_view(
         .filter(|c| {
             // Only show connectors the user has actually connected to,
             // or custom MCP servers that don't require auth (always reachable).
-            connected.contains(&c.id) || c.auth_type.as_deref() == Some("none")
+            (connected.contains(&c.id) || c.auth_type.as_deref() == Some("none"))
+                // A connector the caller has no tool on does not exist for them.
+                && entitlement.allows_connector(c.id)
         })
         .map(|c| {
             json!({
@@ -395,7 +398,11 @@ pub async fn set_connector_access_view(
     agent_id: Uuid,
     connector_id: Uuid,
     enabled: bool,
+    entitlement: &UserEntitlement,
 ) -> Result<Value> {
+    if !entitlement.allows_connector(connector_id) {
+        return Err(connector_not_found(connector_id));
+    }
     // Reachable either the normal way (caller's own owner/user/public/team/
     // department grant) OR because the connector was shared directly with
     // THIS agent (grant_type="agent") — letting whoever manages the agent
@@ -433,11 +440,13 @@ pub async fn list_connector_tools_view(
     user_id: Uuid,
     agent_id: Uuid,
     connector_id: Uuid,
+    entitlement: &UserEntitlement,
 ) -> Result<Value> {
-    if !state
-        .authorizer
-        .can_access_connector(&state.db, user_id, connector_id)
-        .await?
+    if !entitlement.allows_connector(connector_id)
+        || !state
+            .authorizer
+            .can_access_connector(&state.db, user_id, connector_id)
+            .await?
     {
         return Err(McpError::NotFound(format!(
             "connector '{connector_id}' not found"
@@ -454,6 +463,7 @@ pub async fn list_connector_tools_view(
     }
     let out: Vec<Value> = catalog
         .into_iter()
+        .filter(|t| entitlement.allows(connector_id, &t.tool_name))
         .map(|t| {
             let stance = perms.get_stance(connector_id, &t.tool_name);
             json!({
@@ -755,15 +765,85 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
 }
 
 /// `GET /agents/{id}/tools` view: the agent's current tool rules across connectors.
-pub async fn list_tool_rules_view(state: &McpState, agent_id: Uuid) -> Result<Value> {
+/// A restricted caller sees only the rules they may edit (see [`rule_is_editable`]).
+pub async fn list_tool_rules_view(
+    state: &McpState,
+    agent_id: Uuid,
+    entitlement: &UserEntitlement,
+) -> Result<Value> {
     let rows = repo::get_agent_connector_access(&state.db, agent_id).await?;
     let mut data: Vec<Value> = Vec::new();
     for row in rows {
-        for tr in parse_tool_rules(&row.tool_rules) {
+        let rules = parse_tool_rules(&row.tool_rules);
+        let universe = if is_filtered(entitlement, row.connector_id) {
+            known_tool_names(state, entitlement, row.connector_id).await?
+        } else {
+            Vec::new()
+        };
+        for tr in rules {
+            if is_filtered(entitlement, row.connector_id)
+                && !rule_is_editable(entitlement, row.connector_id, &universe, &tr.pattern)
+            {
+                continue;
+            }
             data.push(json!({ "connector_id": row.connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
         }
     }
     Ok(json!({ "rules": data }))
+}
+
+fn connector_not_found(connector_id: Uuid) -> McpError {
+    McpError::NotFound(format!("connector '{connector_id}' not found"))
+}
+
+/// True when the caller sees only part of this connector's tools: restricted
+/// and not granted `All`. Such callers get filtered views and merge-writes.
+fn is_filtered(entitlement: &UserEntitlement, connector_id: Uuid) -> bool {
+    match entitlement {
+        UserEntitlement::Unrestricted => false,
+        UserEntitlement::Restricted(map) => !matches!(map.get(&connector_id), Some(ToolSet::All)),
+    }
+}
+
+/// Tool names a rule pattern could apply to: the synced catalog plus the
+/// caller's own entitled names (which may not be synced yet).
+async fn known_tool_names(
+    state: &McpState,
+    entitlement: &UserEntitlement,
+    connector_id: Uuid,
+) -> Result<Vec<String>> {
+    let mut names: Vec<String> = repo::list_connector_tools(&state.db, connector_id)
+        .await?
+        .into_iter()
+        .map(|t| t.tool_name)
+        .collect();
+    if let UserEntitlement::Restricted(map) = entitlement
+        && let Some(ToolSet::Only(only)) = map.get(&connector_id)
+    {
+        names.extend(only.iter().cloned());
+    }
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+/// A rule is editable by a filtered caller only if it matches at least one
+/// tool and every tool it matches (case-insensitively, as `get_stance` does) is
+/// entitled. A rule that matches any hidden tool, or no known tool at all
+/// (so it could cover a hidden tool the catalog has not synced yet), belongs to
+/// the hidden part: it is never shown, replaced, or accepted from the caller.
+fn rule_is_editable(
+    entitlement: &UserEntitlement,
+    connector_id: Uuid,
+    universe: &[String],
+    pattern: &str,
+) -> bool {
+    let pattern = pattern.to_ascii_lowercase();
+    let mut matched = universe
+        .iter()
+        .filter(|name| wildcard_match(&pattern, &name.to_ascii_lowercase()))
+        .peekable();
+    matched.peek().is_some() && matched.all(|name| entitlement.allows(connector_id, name))
 }
 
 /// One rule input for [`bulk_update_tools`].
@@ -775,11 +855,18 @@ pub struct ToolRuleInput {
 
 /// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates
 /// + dedupes each connector's rules, and upserts (preserving `enabled`).
+///
+/// For a caller who sees only part of a connector's tools (see [`is_filtered`])
+/// the write is a merge: every incoming rule must be editable by them (else
+/// `Forbidden`), the existing rules they cannot see are kept, and only the
+/// editable ones are replaced. The caller can thus never change or wipe a rule
+/// for a tool they cannot see.
 pub async fn bulk_update_tools(
     state: &McpState,
     user_id: Uuid,
     agent_id: Uuid,
     rules: &[ToolRuleInput],
+    entitlement: &UserEntitlement,
 ) -> Result<Value> {
     for rule in rules {
         if !STANCES.contains(&rule.stance.as_str()) {
@@ -820,7 +907,12 @@ pub async fn bulk_update_tools(
                 stance: s.clone(),
             })
             .collect();
-        let rules_json = serde_json::to_value(&tool_rules)?;
+        let stored_rules = if is_filtered(entitlement, connector_id) {
+            merge_hidden_rules(state, entitlement, agent_id, connector_id, &tool_rules).await?
+        } else {
+            tool_rules.clone()
+        };
+        let rules_json = serde_json::to_value(&stored_rules)?;
         repo::upsert_agent_connector_access(
             &state.db,
             agent_id,
@@ -836,6 +928,37 @@ pub async fn bulk_update_tools(
 
     invalidate_permission_cache(state, agent_id).await;
     Ok(json!({ "rules": applied }))
+}
+
+/// The rules to store for a filtered caller: their `incoming` rules (each
+/// validated as editable) plus the existing rules they cannot see.
+async fn merge_hidden_rules(
+    state: &McpState,
+    entitlement: &UserEntitlement,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    incoming: &[ToolRule],
+) -> Result<Vec<ToolRule>> {
+    let universe = known_tool_names(state, entitlement, connector_id).await?;
+    if let Some(rule) = incoming
+        .iter()
+        .find(|r| !rule_is_editable(entitlement, connector_id, &universe, &r.pattern))
+    {
+        return Err(McpError::Forbidden(format!(
+            "you are not entitled to every tool matched by '{}'",
+            rule.pattern
+        )));
+    }
+    let existing = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
+        .await?
+        .map(|r| parse_tool_rules(&r.tool_rules))
+        .unwrap_or_default();
+    let mut merged: Vec<ToolRule> = existing
+        .into_iter()
+        .filter(|r| !rule_is_editable(entitlement, connector_id, &universe, &r.pattern))
+        .collect();
+    merged.extend(incoming.iter().cloned());
+    Ok(merged)
 }
 
 /// `DELETE /agents/{id}/permissions` — reset to all-allowed.

@@ -80,8 +80,6 @@ pub struct FakeRuntime {
     restarted: std::sync::Mutex<Vec<ContainerId>>,
     /// Every `refresh_secrets` call, in order: the container and the env it was given.
     refreshed: std::sync::Mutex<Vec<(ContainerId, std::collections::HashMap<String, String>)>>,
-    /// When set, the next `destroy` waits this long first, once.
-    destroy_delay: std::sync::Mutex<Option<std::time::Duration>>,
 }
 
 /// One `apply_replica_bounds` call: (container, min, max, target).
@@ -103,12 +101,6 @@ impl FakeRuntime {
             .lock()
             .unwrap()
             .insert(format!("{}/{rel_path}", workspace.subpath()), body.to_vec());
-    }
-
-    /// Makes the next `destroy` wait `delay` first, once, so a test can act while it is in flight.
-    #[allow(dead_code)]
-    pub fn delay_next_destroy(&self, delay: std::time::Duration) {
-        *self.destroy_delay.lock().unwrap() = Some(delay);
     }
 
     /// The specs deployed so far, oldest first.
@@ -255,10 +247,6 @@ impl ContainerRuntime for FakeRuntime {
     }
 
     async fn destroy(&self, container_id: &ContainerId) -> RuntimeResult<()> {
-        let delay = self.destroy_delay.lock().unwrap().take();
-        if let Some(delay) = delay {
-            tokio::time::sleep(delay).await;
-        }
         self.containers.lock().unwrap().remove(container_id);
         Ok(())
     }
@@ -310,11 +298,7 @@ impl ContainerRuntime for FakeRuntime {
         Ok(vec![])
     }
 
-    async fn build(
-        &self,
-        _tar_context: &[u8],
-        image_tag: &str,
-    ) -> RuntimeResult<nasiko_runtime::BuildReport> {
+    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
         self.builds_started
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let gate = self.build_gate.lock().unwrap().clone();
@@ -326,7 +310,7 @@ impl ContainerRuntime for FakeRuntime {
                 "fake build failure (scripted by test)".into(),
             ));
         }
-        Ok(nasiko_runtime::BuildReport::image_only(image_tag))
+        Ok(image_tag.to_owned())
     }
 
     async fn supports_autoscaling(&self) -> bool {
@@ -415,81 +399,6 @@ impl ContainerRuntime for FakeRuntime {
     }
 }
 
-// ─── RowWake ─────────────────────────────────────────────────────────────────
-
-/// Stands in for the platform's wake over [`FakeRuntime`], which models no scaling: a parked
-/// agent given an address with [`RowWake::serve_at`] goes back to `running` at that address (the
-/// fake runtime has no container for it, so the resolver falls back to the stored `url`), and is
-/// recorded as woken. A parked agent with no address is refused, as a wake that could not start
-/// it would be. Any other agent goes through untouched.
-#[allow(dead_code)]
-pub struct RowWake {
-    db: PgPool,
-    addresses: std::sync::Mutex<std::collections::HashMap<Uuid, String>>,
-    woken: std::sync::Mutex<Vec<Uuid>>,
-}
-
-#[allow(dead_code)]
-impl RowWake {
-    /// A wake installed on `server`'s state, for every path that forwards.
-    pub fn install(server: &TestServer) -> Arc<Self> {
-        let wake = Arc::new(Self {
-            db: server.db.clone(),
-            addresses: Default::default(),
-            woken: Default::default(),
-        });
-        server.state.agent_wake.install(wake.clone());
-        wake
-    }
-
-    /// Where `agent` serves once woken.
-    pub fn serve_at(&self, agent: Uuid, address: &str) {
-        self.addresses
-            .lock()
-            .unwrap()
-            .insert(agent, address.to_owned());
-    }
-
-    /// How many times `agent` was woken.
-    pub fn woken_count(&self, agent: Uuid) -> usize {
-        self.woken
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|id| **id == agent)
-            .count()
-    }
-}
-
-#[async_trait]
-impl nasiko_server::agent_wake::AgentWake for RowWake {
-    async fn before_forward(&self, agent_id: Uuid, _flow_id: Option<&str>) -> Result<(), String> {
-        let status: Option<String> = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
-            .bind(agent_id)
-            .fetch_optional(&self.db)
-            .await
-            .map_err(|e| e.to_string())?;
-        if status.as_deref() != Some("parked") {
-            return Ok(());
-        }
-        let address = self.addresses.lock().unwrap().get(&agent_id).cloned();
-        let Some(address) = address else {
-            return Err("the agent could not be started, try again shortly".to_owned());
-        };
-        sqlx::query(
-            "UPDATE agents SET status = 'running', url = $2, last_request_at = now() \
-             WHERE id = $1 AND status = 'parked'",
-        )
-        .bind(agent_id)
-        .bind(address)
-        .execute(&self.db)
-        .await
-        .map_err(|e| e.to_string())?;
-        self.woken.lock().unwrap().push(agent_id);
-        Ok(())
-    }
-}
-
 // ─── TestServer ──────────────────────────────────────────────────────────────
 
 /// A running test server bound to a random port, backed by an isolated DB.
@@ -505,9 +414,6 @@ pub struct TestServer {
     /// observations (`set_instances`) and drive the hours meter directly.
     #[allow(dead_code)]
     pub runtime: Arc<FakeRuntime>,
-    /// The fake sandbox provider backing harness sessions.
-    #[allow(dead_code)]
-    pub sandbox: Arc<nasiko_runtime::sandbox_fake::FakeSandboxProvider>,
     /// Clone of the running server's `AppState::flow_events` — lets a test
     /// subscribe to a flow's `FlowEventBus` channel directly and assert on
     /// what actually got published (or didn't), rather than only on the HTTP
@@ -553,61 +459,23 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            configure,
-            fake_runtime.clone(),
-            fake_runtime,
-            None,
-            None,
-            None,
-        )
-        .await
+        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime, None)
+            .await
     }
 
+    /// Same as [`start`](Self::start), with `entitlements` installed on the
+    /// server's MCP state - how a test plays an edition that restricts users'
+    /// tools (the OSS default is unrestricted).
     #[allow(dead_code)]
-    pub async fn start_with_storage(oci_storage: Arc<dyn nasiko_runtime::BlobStore>) -> Self {
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            |_| {},
-            fake_runtime.clone(),
-            fake_runtime,
-            Some(oci_storage),
-            None,
-            None,
-        )
-        .await
-    }
-
-    /// Same as [`start`](Self::start), with `spend_gate` on the app's `AppState`.
-    #[allow(dead_code)]
-    pub async fn start_with_spend_gate(
-        spend_gate: Arc<dyn nasiko_server::spend_gate::SpendGate>,
+    pub async fn start_with_entitlements(
+        entitlements: Arc<dyn nasiko_mcp_gateway::ToolEntitlements>,
     ) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
         Self::start_with_runtime_and_handle(
             |_| {},
             fake_runtime.clone(),
             fake_runtime,
-            None,
-            None,
-            Some(spend_gate),
-        )
-        .await
-    }
-
-    /// Same as [`start`](Self::start), with `agent_wake` installed on the app's `AppState`.
-    #[allow(dead_code)]
-    pub async fn start_with_agent_wake(
-        agent_wake: Arc<dyn nasiko_server::agent_wake::AgentWake>,
-    ) -> Self {
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            |_| {},
-            fake_runtime.clone(),
-            fake_runtime,
-            None,
-            Some(agent_wake),
-            None,
+            Some(entitlements),
         )
         .await
     }
@@ -629,8 +497,6 @@ impl TestServer {
             configure,
             runtime,
             Arc::new(FakeRuntime::default()),
-            None,
-            None,
             None,
         )
         .await
@@ -693,21 +559,8 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let sandbox = Arc::new(nasiko_runtime::sandbox_fake::FakeSandboxProvider::default());
-        let agent_scaling = Arc::new(nasiko_server::agent_scaling::SingleReplica::new(
-            runtime.clone(),
-            db.clone(),
-        ));
-        let state = AppState::from_config_with_sandbox(
-            config,
-            auth,
-            runtime,
-            oci_storage,
-            db.clone(),
-            agent_scaling,
-            sandbox.clone(),
-        )
-        .await;
+        let state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -723,7 +576,6 @@ impl TestServer {
             client: reqwest::Client::new(),
             db: db.clone(),
             runtime: Arc::new(FakeRuntime::default()),
-            sandbox,
             flow_events,
             genai_metrics,
             state: handle_state,
@@ -741,9 +593,7 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
-        oci_storage: Option<Arc<dyn nasiko_runtime::BlobStore>>,
-        agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
-        spend_gate: Option<Arc<dyn nasiko_server::spend_gate::SpendGate>>,
+        entitlements: Option<Arc<dyn nasiko_mcp_gateway::ToolEntitlements>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -785,37 +635,14 @@ impl TestServer {
 
         // Integration tests run against the S3-compatible store `just infra`
         // brings up, which is also the only backend this edition ships.
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = match oci_storage {
-            Some(storage) => storage,
-            None => Arc::new(
-                nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-            ),
-        };
-        let sandbox = Arc::new(nasiko_runtime::sandbox_fake::FakeSandboxProvider::default());
-        let agent_scaling = Arc::new(nasiko_server::agent_scaling::SingleReplica::new(
-            runtime.clone(),
-            db.clone(),
-        ));
-        let mut state = AppState::from_config_with_sandbox(
-            config,
-            auth,
-            runtime,
-            oci_storage,
-            db.clone(),
-            agent_scaling,
-            sandbox.clone(),
-        )
-        .await;
-        if let Some(spend_gate) = spend_gate {
-            state.spend_gate = spend_gate;
-        }
-        // The platform's default wake starts a parked row's own workload through the runtime, and
-        // `FakeRuntime` models no scaling, so it would wait out its budget for an address a seeded
-        // parked row never gets. Tests that exercise a wake install one (`RowWake`, or the default
-        // over a runtime that models scaling, as `tests/parked_agent_wake.rs` does).
-        state.agent_wake.install(
-            agent_wake.unwrap_or_else(|| Arc::new(nasiko_server::agent_wake::NoAgentWake)),
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
+            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
+        let mut state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        if let Some(entitlements) = entitlements {
+            state.mcp.entitlements = entitlements;
+        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -836,7 +663,6 @@ impl TestServer {
             client: reqwest::Client::new(),
             db: db.clone(),
             runtime: fake_handle,
-            sandbox,
             flow_events,
             genai_metrics,
             state: handle_state,
@@ -912,18 +738,11 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_registry_host: None,
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
-        agent_image_registry_aliases: Vec::new(),
         build_push_token: String::new(),
         agent_jwt_secret: String::new(),
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
-        seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
-        tiering_enabled: false,
-        tiering_interval_secs: 86400,
-        cold_path: String::new(),
-        agent_platform_key_fallback: true,
         openai_api_key: None,
         openai_base_url: None,
         openai_model: "gpt-4o".into(),
@@ -967,20 +786,10 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
-        sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
-        harness_sessions_enabled: true,
-        build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
-        session_idle_grace_secs: 120,
-        session_cpu_quiescent_millicores: 20,
-        session_reaper_interval_secs: 30,
-        agent_open_task_max_age_secs: 3600,
-        agent_park_idle_secs: 3600,
-        harness_image_prefix: "nasiko/harness-".to_string(),
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
         agent_state_max_body_bytes: 1_048_576,
         agent_state_rate_limit_per_minute: 600,
-        agent_peer_call_rate_limit_per_minute: 300,
         agent_state_list_bytes_budget: 8 * 1024 * 1024,
         github_client_id: None,
         github_client_secret: None,
@@ -988,7 +797,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         router_shortlist_size: 10,
         embedding_model: "text-embedding-3-small".into(),
         agent_call_timeout_secs: 600,
-        agent_startup_budget_secs: 120,
         pacms_history_pool_size: 150,
         savings_factor_refresh_secs: 86_400,
         savings_factor_min_samples: 1_600,
@@ -1011,9 +819,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
         trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 180,
-        trace_usage_max_window_secs: 600,
-        trace_usage_batch_size: 8,
+        trace_usage_overlap_secs: 600,
+        trace_usage_batch_size: 50,
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
@@ -1021,10 +828,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         ],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
-        // Tests register agents at loopback mock servers. The SSRF guard's own
-        // test (`agent_url_ssrf`) turns this off.
-        agent_allow_private_urls: true,
-        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
@@ -1071,9 +874,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_max_replicas: 1,
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
-        database_max_connections: 10,
         build_concurrency: 1,
-        build_push_rate_limit_per_minute: 600,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.
         maf_worker_concurrency: 1,
         maf_heartbeat_secs: 20,
@@ -1082,7 +883,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_memory_init_image: "alpine:3.21".to_string(),
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
-        seed_connectors: String::new(),
         mcp_tool_search_mode: "".to_string(),
         mcp_tool_search_tool_limit: 0,
         app_base_url: "".to_string(),
@@ -1183,8 +983,8 @@ pub async fn open_flow(
 ) -> (String, String) {
     let flow_id = uuid::Uuid::new_v4().simple().to_string();
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata, session_id)
-         VALUES ($1, $2, $3, 'running', '{}'::jsonb, $1)",
+        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata)
+         VALUES ($1, $2, $3, 'running', '{}'::jsonb)",
     )
     .bind(&flow_id)
     .bind(user_id)
