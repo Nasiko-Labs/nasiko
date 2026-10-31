@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::cache;
+use crate::entitlements::UserEntitlement;
 use crate::error::{McpError, Result};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::repo;
@@ -121,6 +122,64 @@ impl PermissionContext {
     }
 }
 
+/// The agent's [`PermissionContext`] narrowed by the caller's
+/// [`UserEntitlement`]. Every gate on a tool (listing, search, call) goes
+/// through [`EffectiveAccess::decide`], so a user's entitlement is checked
+/// BEFORE the agent's stance and before any approval (HITL) logic: an approval
+/// or session grant can never widen it.
+#[derive(Debug, Clone, Copy)]
+pub struct EffectiveAccess<'a> {
+    pub perms: &'a PermissionContext,
+    pub entitlement: &'a UserEntitlement,
+}
+
+/// Shared by [`EffectiveAccess::unrestricted`] so it can hand out a reference.
+static UNRESTRICTED: UserEntitlement = UserEntitlement::Unrestricted;
+
+impl<'a> EffectiveAccess<'a> {
+    pub fn new(perms: &'a PermissionContext, entitlement: &'a UserEntitlement) -> Self {
+        Self { perms, entitlement }
+    }
+
+    /// Agent permissions only (no per-user restriction).
+    pub fn unrestricted(perms: &'a PermissionContext) -> Self {
+        Self::new(perms, &UNRESTRICTED)
+    }
+
+    /// Entitlement first, then the agent's decision.
+    pub fn decide(&self, connector_id: Uuid, tool_name: &str) -> ToolAccess {
+        if !self.entitlement.allows(connector_id, tool_name) {
+            return ToolAccess::Denied;
+        }
+        self.perms.decide(connector_id, tool_name)
+    }
+
+    /// Enabled for the agent AND the user has at least one tool on it.
+    pub fn is_connector_enabled(&self, connector_id: Uuid) -> bool {
+        self.perms.is_connector_enabled(connector_id)
+            && self.entitlement.allows_connector(connector_id)
+    }
+
+    /// True when the user's tools are restricted.
+    pub fn is_restricted(&self) -> bool {
+        self.entitlement.is_restricted()
+    }
+
+    /// Manifest cache-key signal covering both inputs. Unrestricted keeps the
+    /// agent hash unchanged, so OSS cache keys are exactly as before.
+    pub fn hash(&self) -> String {
+        if !self.is_restricted() {
+            return self.perms.hash.clone();
+        }
+        let combined = format!("{}:{}", self.perms.hash, self.entitlement.hash());
+        sha256_hex16(combined.as_bytes())
+    }
+}
+
+/// Toolkit slug of Composio's cross-toolkit meta-tools (`COMPOSIO_SEARCH_TOOLS`, ...),
+/// which map to no connector.
+pub const COMPOSIO_META_TOOLKIT: &str = "composio";
+
 /// Extract the Composio toolkit slug from a tool slug:
 /// `GMAIL_SEND_EMAIL` → `gmail`. Skips leading underscores so a malformed
 /// `_GMAIL_SEND` still resolves to `gmail` rather than an empty toolkit (which
@@ -150,11 +209,20 @@ pub async fn load_permission_context(
     }
 
     let rows = repo::get_agent_connector_access(&state.db, agent_id).await?;
-    let enabled_connectors: HashSet<Uuid> = rows
+    let mut enabled_connectors: HashSet<Uuid> = rows
         .iter()
         .filter(|r| r.enabled)
         .map(|r| r.connector_id)
         .collect();
+    // Default-on system connectors: a `provider_type = 'system'` connector with
+    // `auto_enable = true` the agent's owner can reach is enabled for this agent
+    // without any `mcp_agent_connector_access` row. A PURE ADDITIVE UNION at this
+    // one chokepoint — the set feeds both `tools/list` (aggregator) and
+    // `tools/call` (protocol) through `decide`, and `compute_hash` below folds the
+    // unioned ids so the manifest cache busts correctly. Nothing else changes: an
+    // existing access row's meaning, `decide`, and `get_stance` are untouched.
+    enabled_connectors
+        .extend(repo::list_auto_enabled_system_connector_ids(&state.db, agent_id).await?);
     let mut rules = Vec::new();
     for row in &rows {
         for tr in parse_tool_rules(&row.tool_rules) {
@@ -378,13 +446,10 @@ pub async fn list_connector_tools_view(
     let perms = load_permission_context(state, agent_id).await?;
 
     // Read tools from the DB catalog. If empty, trigger a one-time sync
-    // (Composio via list_toolkit_tools, custom MCP via live tools/list), and
-    // rebuild the search index with it: a flow-less caller (a local coding or
-    // discovered agent) reaches tools only through `nasiko_search_tools`, so
-    // tools synced here and nowhere else would stay unfindable until restart.
+    // (Composio via list_toolkit_tools, custom MCP via live tools/list).
     let mut catalog = repo::list_connector_tools(&state.db, connector_id).await?;
     if catalog.is_empty() {
-        sync_connector_tools_by_id(state, user_id, connector_id).await?;
+        sync_connector_tools(state, user_id, connector_id).await?;
         catalog = repo::list_connector_tools(&state.db, connector_id).await?;
     }
     let out: Vec<Value> = catalog
@@ -783,6 +848,7 @@ pub async fn reset(state: &McpState, agent_id: Uuid) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entitlements::ToolSet;
 
     fn ctx(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
         // The old test convention passes "disabled" IDs. With the new allowlist
@@ -1258,5 +1324,87 @@ mod tests {
         let out = summarize_description(&desc, 100);
         assert!(out.chars().count() <= 101);
         assert!(out.ends_with('…'));
+    }
+    // ── EffectiveAccess: entitlement narrows, never widens ──────────────────
+
+    fn only_ent(c: Uuid, names: &[&str]) -> UserEntitlement {
+        use crate::entitlements::ToolSet;
+        UserEntitlement::Restricted(HashMap::from([(
+            c,
+            ToolSet::Only(names.iter().map(|n| n.to_string()).collect()),
+        )]))
+    }
+
+    #[test]
+    fn effective_entitlement_deny_beats_agent_allow() {
+        let a = Uuid::new_v4();
+        let perms = ctx(vec![rule(a, "*", Stance::Allow)], &[]);
+        let ent = only_ent(a, &["read"]);
+        let access = EffectiveAccess::new(&perms, &ent);
+        assert_eq!(access.decide(a, "write"), ToolAccess::Denied);
+        assert_eq!(access.decide(a, "read"), ToolAccess::Allowed);
+    }
+
+    #[test]
+    fn effective_entitled_tool_still_obeys_agent_block_and_ask() {
+        let a = Uuid::new_v4();
+        let perms = ctx(
+            vec![
+                rule(a, "blocked", Stance::Block),
+                rule(a, "asked", Stance::Ask),
+            ],
+            &[],
+        );
+        let ent = only_ent(a, &["blocked", "asked", "free"]);
+        let access = EffectiveAccess::new(&perms, &ent);
+        assert_eq!(access.decide(a, "blocked"), ToolAccess::Denied);
+        assert_eq!(access.decide(a, "asked"), ToolAccess::Ask);
+        assert_eq!(access.decide(a, "free"), ToolAccess::Allowed);
+    }
+
+    #[test]
+    fn effective_entitlement_cannot_enable_a_connector_the_agent_disabled() {
+        let a = Uuid::new_v4();
+        let perms = ctx(vec![rule(a, "*", Stance::Allow)], &[a]);
+        let ent = UserEntitlement::Restricted(HashMap::from([(a, ToolSet::All)]));
+        let access = EffectiveAccess::new(&perms, &ent);
+        assert_eq!(access.decide(a, "x"), ToolAccess::Denied);
+        assert!(!access.is_connector_enabled(a));
+    }
+
+    #[test]
+    fn effective_connector_toggle_requires_entitlement() {
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let perms = PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: [a, b].into_iter().collect(),
+            rules: vec![],
+            hash: "h".into(),
+        };
+        let ent = only_ent(a, &["read"]);
+        let access = EffectiveAccess::new(&perms, &ent);
+        assert!(access.is_connector_enabled(a));
+        assert!(!access.is_connector_enabled(b));
+    }
+
+    #[test]
+    fn effective_unrestricted_matches_agent_permissions_exactly() {
+        let a = Uuid::new_v4();
+        let perms = ctx(vec![rule(a, "x", Stance::Ask)], &[]);
+        let access = EffectiveAccess::unrestricted(&perms);
+        assert_eq!(access.decide(a, "x"), perms.decide(a, "x"));
+        assert_eq!(access.decide(a, "y"), perms.decide(a, "y"));
+        assert_eq!(access.hash(), perms.hash, "OSS cache keys are unchanged");
+    }
+
+    #[test]
+    fn effective_hash_differs_per_entitlement() {
+        let a = Uuid::new_v4();
+        let perms = ctx(vec![], &[]);
+        let (e1, e2) = (only_ent(a, &["x"]), only_ent(a, &["y"]));
+        let h1 = EffectiveAccess::new(&perms, &e1).hash();
+        let h2 = EffectiveAccess::new(&perms, &e2).hash();
+        assert_ne!(h1, h2);
+        assert_ne!(h1, EffectiveAccess::unrestricted(&perms).hash());
     }
 }

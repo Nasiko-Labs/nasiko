@@ -8,15 +8,15 @@
 //! `session::resolve_session`'s real connector/credential resolution,
 //! already covered by `credentials.rs`'s own tests) so these tests exercise
 //! exactly the new code: `protocol::handle_tools_call`'s AuthRequired
-//! branch, `session::resolve_context_id`'s `flows.session_id` lookup, and
+//! branch, `session::resolve_context_id`'s `session_traces` lookup, and
 //! `nasiko_hitl::repo::create_pending_auth_required`'s real persistence.
 
 use std::collections::HashMap;
 
 use nasiko_mcp_gateway::OssConnectorAuthorizer;
-use nasiko_mcp_gateway::permissions::PermissionContext;
+use nasiko_mcp_gateway::permissions::{EffectiveAccess, PermissionContext};
 use nasiko_mcp_gateway::protocol::handle_tools_call;
-use nasiko_mcp_gateway::provider::{ComposioProvider, ComposioSlot};
+use nasiko_mcp_gateway::provider::ComposioProvider;
 use nasiko_mcp_gateway::session::ResolvedSession;
 use nasiko_mcp_gateway::types::{
     ConnectorUnusable, MCPServerConfig, ServerType, UnusableConnector, codes,
@@ -79,7 +79,7 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -107,7 +107,7 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
     assert_eq!(row.owner_user_id, db.owner_user_id);
     assert_eq!(row.connector_id, Some(connector_id));
     // The trace_id resolves to the seeded chat session — the A2A contextId —
-    // not the raw trace_id, proving the flows.session_id lookup actually ran.
+    // not the raw trace_id, proving the session_traces lookup actually ran.
     assert_eq!(row.context_id.as_deref(), Some(session_id));
 }
 
@@ -133,7 +133,7 @@ async fn auth_required_falls_back_to_raw_trace_id_when_no_session_trace_exists()
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -178,7 +178,7 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -189,7 +189,7 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -227,7 +227,7 @@ async fn missing_credential_reason_never_persists_a_hitl_row() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -334,14 +334,11 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
     // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
     // out would forbid that impl from running.
     let mut state = db.state.clone();
-    state.providers.composio = ComposioSlot::new(
-        std::sync::Arc::new(ComposioProvider::new(
-            reqwest::Client::new(),
-            "test-composio-key".to_string(),
-            status_backend.url(),
-        )),
-        None,
-    );
+    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
+        reqwest::Client::new(),
+        "test-composio-key".to_string(),
+        status_backend.url(),
+    )));
 
     let resolved = composio_session(
         &toolcall_backend.url(),
@@ -361,7 +358,7 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
         &json!(1),
         &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -435,14 +432,11 @@ async fn composio_tool_call_failure_with_active_connection_passes_through_unchan
     // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
     // out would forbid that impl from running.
     let mut state = db.state.clone();
-    state.providers.composio = ComposioSlot::new(
-        std::sync::Arc::new(ComposioProvider::new(
-            reqwest::Client::new(),
-            "test-composio-key".to_string(),
-            status_backend.url(),
-        )),
-        None,
-    );
+    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
+        reqwest::Client::new(),
+        "test-composio-key".to_string(),
+        status_backend.url(),
+    )));
 
     let resolved = composio_session(
         &toolcall_backend.url(),
@@ -461,7 +455,7 @@ async fn composio_tool_call_failure_with_active_connection_passes_through_unchan
         &json!(1),
         &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         None,
         None,
     )

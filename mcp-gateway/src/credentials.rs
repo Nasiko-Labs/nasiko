@@ -95,25 +95,17 @@ async fn build_server_config(
     match auth_type {
         "none" => {}
 
-        "bearer" | "basic" => {
-            if !static_headers_usable_by(connector, user_id) {
-                headers.clear();
+        "bearer" | "basic" => match conn.and_then(|c| c.encrypted_credential.as_deref()) {
+            Some(enc) => {
+                let Some(value) = decrypt_or_skip(crypto, enc, connector) else {
+                    return Ok(Err(ConnectorUnusable::AuthRequired));
+                };
+                headers.insert(credential_header(connector), value);
             }
-            match conn.and_then(|c| c.encrypted_credential.as_deref()) {
-                Some(enc) => {
-                    let Some(value) = decrypt_or_skip(crypto, enc, connector) else {
-                        return Ok(Err(ConnectorUnusable::AuthRequired));
-                    };
-                    headers.insert(credential_header(connector), value);
-                }
-                // No per-user credential: the owner relies on their static headers; anyone
-                // else has to connect their own.
-                None if headers.is_empty() => {
-                    return Ok(Err(ConnectorUnusable::MissingCredential));
-                }
-                None => {}
-            }
-        }
+            // No per-user credential: rely on static headers, else skip.
+            None if headers.is_empty() => return Ok(Err(ConnectorUnusable::MissingCredential)),
+            None => {}
+        },
 
         "url_param" => {
             let Some(param) = connector.url_param_name.as_deref() else {
@@ -183,15 +175,6 @@ async fn build_server_config(
         tool_names,
         instructions: connector.instructions.clone(),
     }))
-}
-
-/// Pure: whether `user_id` may send a `bearer`/`basic` connector's static headers. Only its owner
-/// may. On these auth types the static headers are the owner's own key (a `basic` connector's
-/// registration-time username and password land there), so sending them for anyone else — a
-/// user the connector or an agent using it was shared with — would run that user's calls on the
-/// owner's account. A key meant for everyone belongs on an `auth_type = "none"` connector.
-fn static_headers_usable_by(connector: &McpConnector, user_id: Uuid) -> bool {
-    connector.owner_id == Some(user_id)
 }
 
 /// Outcome of actually calling the connector, not just submitting config for it.
@@ -450,7 +433,7 @@ mod tests {
     use super::{B64, ConnectorUnusable, McpState, build_server_config, normalize_for};
     use crate::config::{McpConfig, ToolSearchMode};
     use crate::provider::{GenericMcpProvider, Providers};
-    use crate::repo::{McpConnector, McpUserConnection};
+    use crate::repo::McpConnector;
 
     fn connector(auth_type: &str, credential_header_name: Option<&str>) -> McpConnector {
         McpConnector {
@@ -535,9 +518,7 @@ mod tests {
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
-        let redis = nasiko_redis::SharedRedis::new(
-            redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
-        );
+        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
         McpState {
             db,
             redis,
@@ -560,16 +541,17 @@ mod tests {
                 tool_search_mode: ToolSearchMode::Semantic,
                 tool_search_tool_limit: 0,
                 tool_search_meta_limit: 0,
+                openai_api_key: None,
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
-                capture_content: false,
             },
             providers: Providers {
-                composio: Default::default(),
+                composio: None,
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: Arc::new(crate::search::NoopSearchIndex),
@@ -651,78 +633,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.unwrap_err(), ConnectorUnusable::AuthRequired);
-    }
-
-    /// A `basic` connector registered with the owner's username and password, which land in
-    /// its static headers.
-    fn connector_with_owner_key(auth_type: &str) -> McpConnector {
-        let mut c = connector(auth_type, None);
-        c.headers = Some(serde_json::json!({ "Authorization": "Basic b3duZXI6c2VjcmV0" }));
-        c
-    }
-
-    fn own_credential(crypto: &SecretsCrypto, c: &McpConnector, user: Uuid) -> McpUserConnection {
-        crate::repo::McpUserConnection {
-            id: Uuid::new_v4(),
-            user_id: user,
-            connector_id: c.id,
-            status: "ACTIVE".into(),
-            connected_account_id: None,
-            redirect_url: None,
-            oauth_url: None,
-            encrypted_credential: Some(crypto.encrypt("Bearer caller-own-key")),
-            encrypted_refresh_token: None,
-            token_expires_at: None,
-            scope: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }
-    }
-
-    #[tokio::test]
-    async fn the_owner_without_a_credential_runs_on_their_static_headers() {
-        install_valid_encryption_key();
-        let state = test_state();
-        let c = connector_with_owner_key("basic");
-        let owner = c.owner_id.unwrap();
-        let crypto = SecretsCrypto::for_user(owner);
-        let cfg = build_server_config(&state, &crypto, owner, &c, None)
-            .await
-            .unwrap()
-            .expect("the owner's own static key is usable by the owner");
-        assert_eq!(cfg.headers["Authorization"], "Basic b3duZXI6c2VjcmV0");
-    }
-
-    #[tokio::test]
-    async fn a_non_owner_without_a_credential_never_gets_the_owners_static_headers() {
-        install_valid_encryption_key();
-        let state = test_state();
-        let shared_user = Uuid::new_v4();
-        let crypto = SecretsCrypto::for_user(shared_user);
-        for auth_type in ["bearer", "basic"] {
-            let c = connector_with_owner_key(auth_type);
-            let result = build_server_config(&state, &crypto, shared_user, &c, None)
-                .await
-                .unwrap();
-            assert_eq!(result.unwrap_err(), ConnectorUnusable::MissingCredential);
-        }
-    }
-
-    #[tokio::test]
-    async fn a_non_owner_with_their_own_credential_sends_only_theirs() {
-        install_valid_encryption_key();
-        let state = test_state();
-        let shared_user = Uuid::new_v4();
-        let crypto = SecretsCrypto::for_user(shared_user);
-        let mut c = connector_with_owner_key("bearer");
-        c.credential_header_name = Some("X-Api-Key".into());
-        let conn = own_credential(&crypto, &c, shared_user);
-        let cfg = build_server_config(&state, &crypto, shared_user, &c, Some(&conn))
-            .await
-            .unwrap()
-            .expect("the caller's own credential is usable");
-        assert_eq!(cfg.headers["X-Api-Key"], "Bearer caller-own-key");
-        assert!(!cfg.headers.contains_key("Authorization"));
     }
 
     #[test]

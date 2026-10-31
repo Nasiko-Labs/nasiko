@@ -134,9 +134,7 @@ impl TestDb {
 
         let state = McpState {
             db,
-            redis: nasiko_redis::SharedRedis::new(
-                redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
-            ),
+            redis: redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
             http_client: reqwest::Client::new(),
             guarded_http_client: reqwest::Client::new(),
             config: McpConfig {
@@ -156,16 +154,17 @@ impl TestDb {
                 tool_search_mode: ToolSearchMode::Semantic,
                 tool_search_tool_limit: 0,
                 tool_search_meta_limit: 0,
+                openai_api_key: None,
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
-                capture_content: false,
             },
             providers: Providers {
-                composio: Default::default(),
+                composio: None,
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer,
+            entitlements: std::sync::Arc::new(nasiko_mcp_gateway::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(
                 nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher,
             ),
@@ -181,9 +180,8 @@ impl TestDb {
         }
     }
 
-    /// Seed a `chat_sessions` + `flows` row (`flow_id = trace_id`) so `trace_id` resolves to
-    /// `session_id` (the A2A contextId) via `session::resolve_context_id`.
-    #[allow(dead_code)] // `hidden_toolkit.rs` refuses before any HITL row, so has no trace to seed
+    /// Seed a `chat_sessions` + `session_traces` row so `trace_id` resolves to `session_id` (the
+    /// A2A contextId) via `session::resolve_context_id`.
     pub async fn seed_session_trace(&self, session_id: &str, trace_id: &str) {
         sqlx::query(
             "INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 'test session')",
@@ -194,13 +192,12 @@ impl TestDb {
         .await
         .expect("seed chat_sessions row");
 
-        sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ($1, $2, $3)")
-            .bind(trace_id)
-            .bind(self.owner_user_id)
+        sqlx::query("INSERT INTO session_traces (session_id, trace_id) VALUES ($1, $2)")
             .bind(session_id)
+            .bind(trace_id)
             .execute(&self.state.db)
             .await
-            .expect("seed flows row");
+            .expect("seed session_traces row");
     }
 
     /// Seeds a minimal, real `mcp_connectors` row and returns its id — needed by any test that

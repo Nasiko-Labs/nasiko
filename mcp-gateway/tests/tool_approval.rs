@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use nasiko_mcp_gateway::permissions::PermissionRule;
+use nasiko_mcp_gateway::permissions::{EffectiveAccess, PermissionRule};
 use nasiko_mcp_gateway::protocol::handle_tools_call;
 use nasiko_mcp_gateway::session::ResolvedSession;
 use nasiko_mcp_gateway::types::{MCPServerConfig, ServerType, Stance, codes};
@@ -84,7 +84,7 @@ async fn ask_persists_tool_approval_row_and_returns_tool_ask_with_id() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -138,7 +138,7 @@ async fn repeated_ask_for_the_same_tool_and_conversation_reuses_the_same_row() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -149,7 +149,7 @@ async fn repeated_ask_for_the_same_tool_and_conversation_reuses_the_same_row() {
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -190,7 +190,7 @@ async fn different_tool_on_the_same_connector_creates_a_distinct_row() {
         &json!(1),
         &json!({ "name": connector_tool_name(connector_id, "list_repos"), "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -201,7 +201,7 @@ async fn different_tool_on_the_same_connector_creates_a_distinct_row() {
         &json!(2),
         &json!({ "name": connector_tool_name(connector_id, "delete_repo"), "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -233,10 +233,10 @@ async fn blocked_and_disabled_connector_never_persist_a_row() {
         &json!(1),
         &json!({ "name": tool.clone(), "arguments": {} }),
         &resolved,
-        &db.perms(
+        &EffectiveAccess::unrestricted(&db.perms(
             &[connector_id],
             vec![rule(connector_id, "*", Stance::Block)],
-        ),
+        )),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -253,7 +253,7 @@ async fn blocked_and_disabled_connector_never_persist_a_row() {
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &db.perms(&[], vec![]), // connector never enabled
+        &EffectiveAccess::unrestricted(&db.perms(&[], vec![])), // connector never enabled
         Some(&traceparent),
         Some(trace_id),
     )
@@ -382,7 +382,7 @@ async fn once_scope_approval_lets_the_retry_reach_the_backend_without_asking_aga
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -403,7 +403,7 @@ async fn once_scope_approval_lets_the_retry_reach_the_backend_without_asking_aga
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -476,7 +476,7 @@ async fn once_scope_approval_is_denied_on_a_second_retry() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -496,7 +496,7 @@ async fn once_scope_approval_is_denied_on_a_second_retry() {
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -510,7 +510,7 @@ async fn once_scope_approval_is_denied_on_a_second_retry() {
         &json!(3),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -572,7 +572,7 @@ async fn session_scope_approval_lets_a_second_call_succeed_without_reapproval() 
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -591,7 +591,7 @@ async fn session_scope_approval_lets_a_second_call_succeed_without_reapproval() 
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -606,7 +606,7 @@ async fn session_scope_approval_lets_a_second_call_succeed_without_reapproval() 
         &json!(3),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -643,7 +643,7 @@ async fn rejected_retry_is_denied_without_a_backend_call() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -662,7 +662,7 @@ async fn rejected_retry_is_denied_without_a_backend_call() {
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -745,7 +745,7 @@ async fn batch_multi_execute_asks_for_every_unresolved_slug_and_persists_one_row
         &json!(1),
         &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -813,7 +813,7 @@ async fn batch_multi_execute_once_scope_approval_lets_that_slug_through_while_th
         &json!(1),
         &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -851,7 +851,7 @@ async fn batch_multi_execute_once_scope_approval_lets_that_slug_through_while_th
         &json!(2),
         &multi_execute_args(&["GMAIL_SEND_EMAIL", "SLACK_SEND_MESSAGE"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -921,7 +921,7 @@ async fn batch_multi_execute_session_grant_lets_the_same_slug_succeed_repeatedly
         &json!(1),
         &multi_execute_args(&["GMAIL_SEND_EMAIL"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -940,7 +940,7 @@ async fn batch_multi_execute_session_grant_lets_the_same_slug_succeed_repeatedly
         &json!(2),
         &multi_execute_args(&["GMAIL_SEND_EMAIL"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -953,7 +953,7 @@ async fn batch_multi_execute_session_grant_lets_the_same_slug_succeed_repeatedly
         &json!(3),
         &multi_execute_args(&["GMAIL_SEND_EMAIL"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -992,7 +992,7 @@ async fn batch_multi_execute_all_rejected_slugs_are_denied_without_a_backend_cal
         &json!(1),
         &multi_execute_args(&["GMAIL_SEND_EMAIL"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -1011,7 +1011,7 @@ async fn batch_multi_execute_all_rejected_slugs_are_denied_without_a_backend_cal
         &json!(2),
         &multi_execute_args(&["GMAIL_SEND_EMAIL"]),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -1170,3 +1170,114 @@ async fn batch_multi_execute_all_rejected_slugs_are_denied_without_a_backend_cal
 
 //     assert_eq!(retried["result"]["ok"], json!(true));
 // }
+
+// ─── Per-user entitlements vs approvals ────────────────────────────────────
+
+/// A restricting `ToolEntitlements` fake, standing in for an edition's impl.
+struct FakeEntitlements(nasiko_mcp_gateway::UserEntitlement);
+#[async_trait::async_trait]
+impl nasiko_mcp_gateway::ToolEntitlements for FakeEntitlements {
+    async fn for_user(
+        &self,
+        _user_id: Uuid,
+    ) -> nasiko_mcp_gateway::Result<nasiko_mcp_gateway::UserEntitlement> {
+        Ok(self.0.clone())
+    }
+}
+
+#[tokio::test]
+async fn session_grant_cannot_bypass_a_user_entitlement() {
+    use nasiko_mcp_gateway::{ToolSet, UserEntitlement};
+
+    let db = TestDb::new(
+        "mcp_tool_approval_test",
+        std::sync::Arc::new(AllowAllAuthorizer),
+    )
+    .await;
+    let connector_id = db.seed_connector("entitlement-vs-grant").await;
+    let trace_id = "b2f7651916cd43dd8448eb211c8031a7";
+    db.seed_session_trace("ses_entitlement_grant", trace_id)
+        .await;
+
+    let mut backend = mockito::Server::new_async().await;
+    let hit = backend
+        .mock("POST", "/mcp")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"ok":true}}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mut resolved = mcp_session(connector_id);
+    resolved.servers[0].url = format!("{}/mcp", backend.url());
+    let perms = db.perms(&[connector_id], vec![rule(connector_id, "*", Stance::Ask)]);
+    let tool = connector_tool_name(connector_id, "list_repos");
+    let traceparent = format!("00-{trace_id}-b7ad6b7169203331-01");
+    let call = |id: u64, ent: UserEntitlement| {
+        let (db, resolved, perms, tool, traceparent) =
+            (&db, &resolved, &perms, &tool, &traceparent);
+        async move {
+            handle_tools_call(
+                &db.state,
+                db.owner_user_id,
+                &json!(id),
+                &json!({ "name": tool, "arguments": {} }),
+                resolved,
+                &EffectiveAccess::new(perms, &ent),
+                Some(traceparent),
+                Some(trace_id),
+            )
+            .await
+        }
+    };
+
+    // Entitled: the call asks, the human approves for the session.
+    let entitled = UserEntitlement::Restricted(HashMap::from([(connector_id, ToolSet::All)]));
+    let first = call(1, entitled.clone()).await;
+    let hitl_request_id: Uuid = first["error"]["data"]["hitl_request_id"]
+        .as_str()
+        .expect("hitl_request_id present")
+        .parse()
+        .expect("valid uuid");
+    db.resolve_tool_approval(hitl_request_id, "approve", Some("session"))
+        .await;
+
+    // Entitlement revoked: the live session grant must not let the call through.
+    let revoked = call(2, UserEntitlement::Restricted(HashMap::new())).await;
+    assert_eq!(
+        revoked["error"]["code"],
+        json!(codes::TOOL_BLOCKED),
+        "{revoked}"
+    );
+
+    // Entitled again: the grant works and the backend is reached exactly once.
+    let again = call(3, entitled).await;
+    assert_eq!(again["result"]["ok"], json!(true), "{again}");
+    hit.assert_async().await;
+}
+
+#[tokio::test]
+async fn load_user_entitlement_uses_the_installed_impl() {
+    use nasiko_mcp_gateway::entitlements::load_user_entitlement;
+    use nasiko_mcp_gateway::{ToolSet, UserEntitlement};
+
+    let mut db = TestDb::new(
+        "mcp_tool_approval_test",
+        std::sync::Arc::new(AllowAllAuthorizer),
+    )
+    .await;
+    let user = Uuid::new_v4();
+    assert_eq!(
+        load_user_entitlement(&db.state, user).await.unwrap(),
+        UserEntitlement::Unrestricted,
+        "OSS default is unrestricted"
+    );
+
+    let restricted = UserEntitlement::Restricted(HashMap::from([(Uuid::new_v4(), ToolSet::All)]));
+    db.state.entitlements = std::sync::Arc::new(FakeEntitlements(restricted.clone()));
+    assert_eq!(
+        load_user_entitlement(&db.state, user).await.unwrap(),
+        restricted
+    );
+}

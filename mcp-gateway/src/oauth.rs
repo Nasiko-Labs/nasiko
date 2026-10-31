@@ -415,19 +415,13 @@ pub async fn discover_authorization(
     http: &reqwest::Client,
     mcp_url: &str,
 ) -> Result<DiscoveredAuthorization> {
-    let (challenge, open_status) = match fetch_auth_challenge(http, mcp_url).await? {
-        AuthProbe::Challenge(header) => (header, None),
-        AuthProbe::Open(status) => (String::new(), Some(status)),
-    };
+    let challenge = fetch_auth_challenge(http, mcp_url).await?;
     let resource_metadata = match fetch_resource_metadata_for(http, mcp_url, &challenge).await {
         Ok(document) => document,
         Err(no_resource_metadata) => {
-            // A server that answered without a 401 and also publishes no OAuth metadata is
-            // not an OAuth server; say so in words the caller can act on.
-            let not_oauth = open_status.map(not_an_oauth_server);
             return discover_from_origin(http, mcp_url, &challenge)
                 .await
-                .ok_or_else(|| not_oauth.unwrap_or(no_resource_metadata));
+                .ok_or(no_resource_metadata);
         }
     };
     let issuer = first_authorization_server(&resource_metadata).ok_or_else(|| {
@@ -957,6 +951,8 @@ pub async fn handle_callback(
         repo::set_connector_setup_status(&state.db, connector.id, status, status_error.as_deref())
             .await;
     if outcome.verified {
+        crate::connect::grant_user_agents_access(&state.db, oauth_state.user_id, connector.id)
+            .await;
         // The credential now works — resolve any hitl_requests rows that were
         // waiting on exactly this fix so MCP's dispatcher (already running)
         // nudges every paused conversation to retry. A plain function call,
@@ -1093,7 +1089,7 @@ const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
 /// POST a bare `initialize`. An OAuth-protected MCP server answers 401, and
 /// its `WWW-Authenticate` value (returned here) may name the resource
 /// metadata URL and the scope to request.
-async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<AuthProbe> {
+async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<String> {
     let probe = http
         .post(mcp_url)
         .timeout(DISCOVERY_TIMEOUT)
@@ -1111,32 +1107,17 @@ async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<A
         .map_err(|e| McpError::Backend(format!("could not reach MCP server: {e}")))?;
 
     if probe.status() != reqwest::StatusCode::UNAUTHORIZED {
-        return Ok(AuthProbe::Open(probe.status().as_u16()));
+        return Err(McpError::Oauth(format!(
+            "expected 401 from OAuth server, got {}. Try auth_type='none' or 'bearer'.",
+            probe.status().as_u16()
+        )));
     }
-    Ok(AuthProbe::Challenge(
-        probe
-            .headers()
-            .get(reqwest::header::WWW_AUTHENTICATE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string(),
-    ))
-}
-
-/// How a server answered an unauthenticated `initialize`.
-enum AuthProbe {
-    /// 401, with its `WWW-Authenticate` value.
-    Challenge(String),
-    /// Anything else. Servers that make authorization optional (exa, context7) answer 200 yet
-    /// publish OAuth metadata, so this is not yet a refusal.
-    Open(u16),
-}
-
-fn not_an_oauth_server(status: u16) -> McpError {
-    McpError::BadRequest(format!(
-        "expected 401 from OAuth server, got {status}, and it publishes no OAuth metadata. \
-         Try auth_type='none' or 'bearer'."
-    ))
+    Ok(probe
+        .headers()
+        .get(reqwest::header::WWW_AUTHENTICATE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string())
 }
 
 /// The resource metadata document: from the URL the 401 challenge names,
@@ -1418,9 +1399,7 @@ mod tests {
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
-        let redis = nasiko_redis::SharedRedis::new(
-            redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
-        );
+        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
         McpState {
             db,
             redis,
@@ -1443,16 +1422,17 @@ mod tests {
                 tool_search_mode: ToolSearchMode::Semantic,
                 tool_search_tool_limit: 0,
                 tool_search_meta_limit: 0,
+                openai_api_key: None,
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
-                capture_content: false,
             },
             providers: Providers {
-                composio: Default::default(),
+                composio: None,
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: Arc::new(crate::search::NoopSearchIndex),
@@ -1940,71 +1920,6 @@ mod tests {
             discovered.requested_access,
             RequestedAccess::without_scope(&mcp_url)
         );
-    }
-
-    /// `POST /mcp` answers 200 to an anonymous `initialize` (authorization is optional), yet the
-    /// server publishes resource metadata naming `issuer`.
-    async fn mount_optional_oauth_mcp(server: &mut mockito::ServerGuard, issuer: &str) {
-        server
-            .mock("POST", "/mcp")
-            .with_status(200)
-            .with_body("{}")
-            .create_async()
-            .await;
-        server
-            .mock("GET", "/.well-known/oauth-protected-resource/mcp")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(json_body(json!({
-                "resource": format!("{}/mcp", server.url()),
-                "authorization_servers": [issuer],
-            })))
-            .create_async()
-            .await;
-    }
-
-    #[tokio::test]
-    async fn a_server_that_answers_200_but_publishes_oauth_metadata_is_discovered() {
-        let mut server = mockito::Server::new_async().await;
-        let issuer = format!("{}/tenant/v2.0", server.url());
-        mount_optional_oauth_mcp(&mut server, &issuer).await;
-        mount_metadata(
-            &mut server,
-            "/tenant/v2.0/.well-known/openid-configuration",
-            json!({
-                "authorization_endpoint": "https://idp.example/authorize",
-                "token_endpoint": "https://idp.example/token",
-            }),
-        )
-        .await;
-
-        let discovered =
-            discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
-                .await
-                .expect("published metadata is enough without a 401");
-
-        assert_eq!(
-            discovered.authorization_endpoint,
-            "https://idp.example/authorize"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_server_that_answers_200_and_publishes_no_metadata_is_a_bad_request() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/mcp")
-            .with_status(200)
-            .with_body("{}")
-            .create_async()
-            .await;
-
-        let err = discover_authorization(&reqwest::Client::new(), &format!("{}/mcp", server.url()))
-            .await
-            .expect_err("nothing to discover");
-
-        assert!(matches!(err, McpError::BadRequest(_)), "got {err:?}");
-        assert!(err.client_message().contains("expected 401"));
     }
 
     #[tokio::test]

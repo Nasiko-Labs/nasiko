@@ -9,8 +9,11 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::aggregator;
+use crate::entitlements::load_user_entitlement;
 use crate::error::McpError;
-use crate::permissions::{self, PermissionContext, ToolAccess, toolkit_from_composio_slug};
+use crate::permissions::{
+    self, COMPOSIO_META_TOOLKIT, EffectiveAccess, ToolAccess, toolkit_from_composio_slug,
+};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
@@ -45,13 +48,6 @@ pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value
 const SEARCH_TOOLS_META: &str = "nasiko_search_tools";
 const CALL_TOOL_META: &str = "nasiko_call_tool";
 const RECOVER_COMPRESSED_META: &str = "recover_compressed";
-
-fn is_meta_tool(name: &str) -> bool {
-    matches!(
-        name,
-        SEARCH_TOOLS_META | CALL_TOOL_META | RECOVER_COMPRESSED_META
-    )
-}
 
 /// Full JSON-RPC dispatch for the agent-facing gateway. Returns `None` for a
 /// notification (a request with no `id`).
@@ -99,6 +95,11 @@ pub async fn handle_request(
         Ok(p) => p,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
     };
+    let entitlement = match load_user_entitlement(state, user_id).await {
+        Ok(e) => e,
+        Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
+    };
+    let access = EffectiveAccess::new(&perms, &entitlement);
     let mut resolved = match session::resolve_session(state, user_id).await {
         Ok(r) => r,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
@@ -110,7 +111,7 @@ pub async fn handle_request(
     // performs the permission/session lookups above (it didn't before this
     // was wired up); that's intended, not a leftover of moving the match arm.
     if method == "initialize" {
-        let instr: Vec<String> = connector_instructions(&resolved.servers, &perms);
+        let instr: Vec<String> = connector_instructions(&resolved.servers, &access);
         return Some(handle_initialize(
             &req_id,
             body,
@@ -142,9 +143,8 @@ pub async fn handle_request(
                 state,
                 user_id,
                 &req_id,
-                &resolved.servers,
-                &resolved.connected_toolkits,
-                &perms,
+                &resolved,
+                &access,
                 traceparent,
                 verified_flow_id,
             )
@@ -158,7 +158,7 @@ pub async fn handle_request(
                 &req_id,
                 &params,
                 &resolved,
-                &perms,
+                &access,
                 traceparent,
                 verified_flow_id,
             )
@@ -249,10 +249,13 @@ pub fn handle_initialize(
 /// Kept as its own pure function, separate from `resolve_session`/
 /// `load_permission_context` (which need a real DB this crate's hermetic unit
 /// tests can't provide), so the composition itself stays unit-testable.
-fn connector_instructions(servers: &[MCPServerConfig], perms: &PermissionContext) -> Vec<String> {
+fn connector_instructions(
+    servers: &[MCPServerConfig],
+    access: &EffectiveAccess<'_>,
+) -> Vec<String> {
     servers
         .iter()
-        .filter(|s| perms.is_connector_enabled(s.connector_id))
+        .filter(|s| access.is_connector_enabled(s.connector_id))
         .filter_map(|s| s.instructions.clone())
         .collect()
 }
@@ -293,19 +296,12 @@ fn inject_identity(servers: &mut [MCPServerConfig], signed: &str) {
 ///   only the meta-tools.
 ///
 /// When search is disabled (`none`): delegates to `aggregate_tools` (legacy fan-out).
-// `verified_flow_id` pushed this from 7 to 8 (added for the same
-// participant-laundering fix `handle_tools_call` below carries) — a params
-// struct isn't worth it for one more `Option<&str>` on an internal function
-// with a single call site; `ask_with_hitl_request` below already carries the
-// same allow for the same reason.
-#[allow(clippy::too_many_arguments)]
 pub async fn handle_tools_list(
     state: &McpState,
     user_id: Uuid,
     req_id: &Value,
-    servers: &[MCPServerConfig],
-    connected_toolkits: &[String],
-    perms: &PermissionContext,
+    resolved: &ResolvedSession,
+    access: &EffectiveAccess<'_>,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
@@ -324,9 +320,10 @@ pub async fn handle_tools_list(
         return match aggregator::aggregate_tools(
             state,
             user_id,
-            servers,
-            connected_toolkits,
-            perms,
+            &resolved.servers,
+            &resolved.connected_toolkits,
+            &resolved.toolkit_to_connector,
+            access,
             verified_flow_id.and(traceparent),
         )
         .await
@@ -367,14 +364,12 @@ pub async fn handle_tools_list(
             .search_tools(
                 query,
                 &accessible_ids,
-                perms,
+                access,
                 state.config.tool_search_tool_limit,
             )
             .await;
 
-        for m in matches {
-            tools.push(tool_match_to_json(&m, servers));
-        }
+        tools.extend(search_matches_to_json(&matches, resolved));
     }
 
     // The meta-tools ride along in every search-mode listing: the search
@@ -407,36 +402,34 @@ async fn resolve_flow_title(state: &McpState, verified_flow_id: Option<&str>) ->
         .flatten()
 }
 
-/// Convert a `ToolMatch` to the JSON format expected by `tools/list`.
-///
-/// The name is the one `tools/call` routes (`router::route_tool`), as the
-/// eager listing (`aggregator::aggregate_tools`) gives it: a generic,
-/// non-system connector's tool is `{connector_prefix}__{tool}`; system and
-/// Composio tools keep their bare names. The index stores bare names, so a
-/// generic tool found by search was otherwise uncallable.
-fn tool_match_to_json(m: &crate::search::ToolMatch, servers: &[MCPServerConfig]) -> Value {
-    let generic = servers
+/// Search matches in the JSON format expected by `tools/list`, each named the
+/// way `tools/call` routes it. Search filters by the user's connectors, not
+/// the agent's session, so a match this session can't call
+/// (`router::callable_tool_name`) is dropped rather than listed under a name
+/// that would fail or route to the wrong backend.
+fn search_matches_to_json(
+    matches: &[crate::search::ToolMatch],
+    resolved: &ResolvedSession,
+) -> Vec<Value> {
+    matches
         .iter()
-        .any(|s| s.kind == ServerType::Mcp && !s.system && s.connector_id == m.connector_id);
-    let name = if generic {
-        format!(
-            "{}__{}",
-            crate::types::connector_prefix(m.connector_id),
-            m.tool_name
-        )
-    } else {
-        m.tool_name.clone()
-    };
-    let mut obj = json!({
-        "name": name,
-    });
-    if let Some(ref desc) = m.description {
-        obj["description"] = json!(desc);
-    }
-    if let Some(ref schema) = m.input_schema {
-        obj["inputSchema"] = schema.clone();
-    }
-    obj
+        .filter_map(|m| {
+            let name = router::callable_tool_name(
+                m.connector_id,
+                &m.tool_name,
+                &resolved.servers,
+                &resolved.toolkit_to_connector,
+            )?;
+            let mut obj = json!({ "name": name });
+            if let Some(ref desc) = m.description {
+                obj["description"] = json!(desc);
+            }
+            if let Some(ref schema) = m.input_schema {
+                obj["inputSchema"] = schema.clone();
+            }
+            Some(obj)
+        })
+        .collect()
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in
@@ -492,16 +485,19 @@ fn nasiko_call_tool_definition() -> Value {
 
 /// What `nasiko_call_tool` was asked to run — the inner tool's name and its
 /// own arguments (`{}` when omitted) — or the invalid-params message to
-/// answer with. A gateway meta-tool is refused as the inner name: the
-/// executor exists to reach tools a client cannot call directly, and the
-/// meta-tools are always directly callable, so nesting one could only loop.
+/// answer with. The other meta-tools are legitimate inner names: agents
+/// routinely route *everything* through the executor (observed with Codex
+/// calling `nasiko_search_tools` through it), and `handle_tools_call`
+/// dispatches an unwrapped name through the same branches a direct call
+/// takes, so they just work. Only the executor itself is refused — nesting
+/// it is the one shape that answers nothing a direct call wouldn't.
 fn parse_call_tool_target(arguments: Option<&Value>) -> Result<(&str, Value), &'static str> {
     let name = arguments
         .and_then(|a| a.get("name"))
         .and_then(Value::as_str)
         .ok_or("nasiko_call_tool requires `name`, the tool name exactly as returned by nasiko_search_tools")?;
-    if is_meta_tool(name) {
-        return Err("nasiko_call_tool cannot call gateway meta-tools; call them directly");
+    if name == CALL_TOOL_META {
+        return Err("nasiko_call_tool cannot nest itself; name the target tool directly");
     }
     let inner_arguments = match arguments.and_then(|a| a.get("arguments")) {
         None | Some(Value::Null) => json!({}),
@@ -552,7 +548,7 @@ pub(crate) fn flow_id_of(traceparent: &str) -> Option<String> {
 fn recover_compressed_definition() -> Value {
     json!({
         "name": RECOVER_COMPRESSED_META,
-        "description": "Retrieve the full, uncompressed content that an elision marker stands in for. Call this when a payload you were given contains a marker like `[… 412 lines elided · recover: nasiko://c/9f3a… ]` and the elided part matters for your answer.",
+        "description": "Retrieve the full, uncompressed content that an elision marker stands in for. Call this when a payload you were given contains a marker like `[⋯ 412 lines elided · recover: 9f3a6c1e-… ⋯]` and the elided part matters for your answer.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -623,40 +619,32 @@ pub async fn handle_tools_call(
     req_id: &Value,
     params: &Value,
     resolved: &ResolvedSession,
-    perms: &PermissionContext,
+    access: &EffectiveAccess<'_>,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
-    let tool_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+    let outer_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     // ── nasiko_call_tool meta-tool: the fixed-menu executor ──────────────
-    // Unwrap and re-enter the routed path with the inner tool, so nothing
-    // downstream can tell the two entry points apart. Handled before the
-    // outer `arguments` are cloned: only the inner object is needed here.
-    if tool_name == CALL_TOOL_META {
-        return match parse_call_tool_target(params.get("arguments")) {
-            Ok((inner_name, inner_arguments)) => {
-                call_routed_tool(
-                    state,
-                    user_id,
-                    req_id,
-                    inner_name,
-                    inner_arguments,
-                    resolved,
-                    perms,
-                    traceparent,
-                    verified_flow_id,
-                )
-                .await
-            }
-            Err(message) => err(req_id, codes::INVALID_PARAMS, message),
-        };
-    }
-
-    let arguments = params
-        .get("arguments")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    // Unwrapped FIRST, so the inner name falls through the very same
+    // branches a direct call takes — the other meta-tools included (an agent
+    // that routes everything through the executor must not meet an error a
+    // direct call wouldn't) — and nothing downstream can tell the two entry
+    // points apart. Only self-nesting is refused, in the parse.
+    let (tool_name, arguments) = if outer_name == CALL_TOOL_META {
+        match parse_call_tool_target(params.get("arguments")) {
+            Ok(target) => target,
+            Err(message) => return err(req_id, codes::INVALID_PARAMS, message),
+        }
+    } else {
+        (
+            outer_name,
+            params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+    };
 
     // ── nasiko_search_tools meta-tool ────────────────────────────────────
     if tool_name == SEARCH_TOOLS_META {
@@ -686,26 +674,28 @@ pub async fn handle_tools_call(
 
         let matches = state
             .search_index
-            .search_tools(query, &accessible_ids, perms, limit)
+            .search_tools(query, &accessible_ids, access, limit)
             .await;
 
-        let tools: Vec<Value> = matches
-            .iter()
-            .map(|m| tool_match_to_json(m, &resolved.servers))
-            .collect();
+        let tools = search_matches_to_json(&matches, resolved);
         let payload = json!({
             "tools": tools,
             "search_mode": format!("{:?}", state.config.tool_search_mode),
         });
         // A `tools/call` result is read through `content` by MCP clients (a
-        // fixed-menu client such as Claude Code shows the model nothing else),
-        // and through `structuredContent` by schema-aware ones; the bare
-        // `tools`/`search_mode` fields stay at the top level for programmatic
-        // callers that already read them directly.
+        // fixed-menu client such as Claude Code shows the model nothing else)
+        // and through `structuredContent` by schema-aware ones — and it
+        // carries NOTHING else. A strict client deserializes `CallToolResult`
+        // with unknown fields denied (Codex does), so the bare
+        // `tools`/`search_mode` that used to ride at the top level made every
+        // direct search call fail there with "unexpected response type";
+        // nothing of ours ever read them (both live on in `structuredContent`).
         let text = payload.to_string();
-        let mut result = payload.clone();
-        result["content"] = json!([{ "type": "text", "text": text }]);
-        result["structuredContent"] = payload;
+        let result = json!({
+            "content": [{ "type": "text", "text": text }],
+            "structuredContent": payload,
+            "isError": false,
+        });
         return ok(req_id, result);
     }
 
@@ -779,7 +769,7 @@ pub async fn handle_tools_call(
         tool_name,
         arguments,
         resolved,
-        perms,
+        access,
         traceparent,
         verified_flow_id,
     )
@@ -791,7 +781,7 @@ pub async fn handle_tools_call(
 /// or asked `nasiko_call_tool` to run it. Taking the name and arguments
 /// rather than the request's `params` is what makes that so: the executor
 /// unwraps its inner call and re-enters here, and from this point on
-/// routing, `perms.decide`, the `Ask` approval record and its retry match,
+/// routing, `access.decide`, the `Ask` approval record and its retry match,
 /// the backend request and every logged tool name see the inner tool — the
 /// wrapper no longer exists.
 ///
@@ -813,7 +803,7 @@ async fn call_routed_tool(
     tool_name: &str,
     mut arguments: Value,
     resolved: &ResolvedSession,
-    perms: &PermissionContext,
+    access: &EffectiveAccess<'_>,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
@@ -828,13 +818,13 @@ async fn call_routed_tool(
             {
                 // `unusable_connectors` is built from user-level (Layer 1) access only, so this
                 // branch used to fire before the Layer-2 per-agent gate below ever ran. A
-                // connector the admin disabled FOR THIS AGENT (`perms.is_connector_enabled`
+                // connector the admin disabled FOR THIS AGENT (`access.is_connector_enabled`
                 // false) still reached `handle_auth_required`, which discloses the connector's
                 // name/UUID to the agent and files a pending `auth_required` row asking the
                 // human to re-authenticate a connector this agent isn't even permitted to use —
-                // disclosure plus a spurious notification, even though `perms.decide` below
+                // disclosure plus a spurious notification, even though `access.decide` below
                 // would still correctly block the actual call.
-                if !perms.is_connector_enabled(connector_id) {
+                if !access.is_connector_enabled(connector_id) {
                     return err(
                         req_id,
                         codes::TOOL_BLOCKED,
@@ -845,7 +835,7 @@ async fn call_routed_tool(
                     state,
                     user_id,
                     req_id,
-                    perms.agent_id,
+                    access.perms.agent_id,
                     connector_id,
                     &info.name,
                     verified_flow_id,
@@ -886,7 +876,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        perms.agent_id,
+                        access.perms.agent_id,
                         connector.id,
                         &connector.name,
                         verified_flow_id,
@@ -901,7 +891,7 @@ async fn call_routed_tool(
             // `toolkit_from_composio_slug` extracts `"composio"` from these names (not a real
             // per-integration connector), so the check just above can never catch this — there's
             // no specific toolkit to look up. Fall back to whichever Composio connector this
-            // AGENT has actually been granted (`perms.enabled_connectors`, exactly the set
+            // AGENT has actually been granted (`access.perms.enabled_connectors`, exactly the set
             // `nasiko mcp agent-tools enable` writes to `mcp_agent_connector_access`) but that
             // has no active user connection (cross-checked against `resolved.toolkit_to_connector`,
             // which is active-connections-only by construction — see the check above's own
@@ -910,7 +900,7 @@ async fn call_routed_tool(
             // the generic error below, same as today.
             if tool_name.starts_with("COMPOSIO_") {
                 let mut candidates = Vec::new();
-                for &connector_id in &perms.enabled_connectors {
+                for &connector_id in &access.perms.enabled_connectors {
                     if resolved
                         .toolkit_to_connector
                         .values()
@@ -930,7 +920,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        perms.agent_id,
+                        access.perms.agent_id,
                         connector.id,
                         &connector.name,
                         verified_flow_id,
@@ -961,7 +951,7 @@ async fn call_routed_tool(
         }
         // Same decision `tools/list` filters on — a connector disabled for this
         // agent denies the call even though Layer 1 (owner/grant) still passes.
-        match perms.decide(server.connector_id, &original) {
+        match access.decide(server.connector_id, &original) {
             ToolAccess::Denied => {
                 return err(
                     req_id,
@@ -973,7 +963,7 @@ async fn call_routed_tool(
                 match resolve_tool_approval_retry(
                     state,
                     user_id,
-                    perms.agent_id,
+                    access.perms.agent_id,
                     server.connector_id,
                     &original,
                     verified_flow_id,
@@ -994,7 +984,7 @@ async fn call_routed_tool(
                         return ask_with_hitl_request(
                             state,
                             user_id,
-                            perms.agent_id,
+                            access.perms.agent_id,
                             server.connector_id,
                             &original,
                             &server.name,
@@ -1017,12 +1007,26 @@ async fn call_routed_tool(
     // MANAGE_CONNECTIONS, MULTI_EXECUTE_TOOL) resolve to toolkit "composio", which
     // maps to no connector — they skip this block and are handled below / passed
     // through, exactly as before.
+    //
+    // Under a restricted user entitlement a toolkit tool that maps to no
+    // connector cannot be attributed to anything the user is entitled to, so it
+    // is denied; cross-toolkit meta-tools (toolkit `composio`) stay callable.
+    let direct_toolkit = toolkit_from_composio_slug(tool_name);
     if server.kind == ServerType::Composio
-        && let Some(&cid) = resolved
-            .toolkit_to_connector
-            .get(&toolkit_from_composio_slug(tool_name))
+        && access.is_restricted()
+        && direct_toolkit != COMPOSIO_META_TOOLKIT
+        && !resolved.toolkit_to_connector.contains_key(&direct_toolkit)
     {
-        match perms.decide(cid, tool_name) {
+        return err(
+            req_id,
+            codes::TOOL_BLOCKED,
+            format!("Tool '{tool_name}' is blocked or disabled for this agent."),
+        );
+    }
+    if server.kind == ServerType::Composio
+        && let Some(&cid) = resolved.toolkit_to_connector.get(&direct_toolkit)
+    {
+        match access.decide(cid, tool_name) {
             ToolAccess::Denied => {
                 return err(
                     req_id,
@@ -1034,7 +1038,7 @@ async fn call_routed_tool(
                 match resolve_tool_approval_retry(
                     state,
                     user_id,
-                    perms.agent_id,
+                    access.perms.agent_id,
                     cid,
                     tool_name,
                     verified_flow_id,
@@ -1055,7 +1059,7 @@ async fn call_routed_tool(
                         return ask_with_hitl_request(
                             state,
                             user_id,
-                            perms.agent_id,
+                            access.perms.agent_id,
                             cid,
                             tool_name,
                             "composio",
@@ -1080,7 +1084,7 @@ async fn call_routed_tool(
             .collect();
         let blocked: Vec<String> = requested
             .iter()
-            .filter(|tk| connector_disabled(resolved, perms, tk))
+            .filter(|tk| connector_disabled(resolved, access, tk))
             .cloned()
             .collect();
         if !blocked.is_empty() {
@@ -1120,18 +1124,24 @@ async fn call_routed_tool(
         for t in &tools_arg {
             let slug = t.get("tool_slug").and_then(|v| v.as_str()).unwrap_or("");
             if slug.is_empty() {
-                allowed.push(t.clone());
+                // Unattributable to any connector: harmless today, but a
+                // restricted user must not get anything through unchecked.
+                if access.is_restricted() {
+                    blocked_slugs.push(slug.to_string());
+                } else {
+                    allowed.push(t.clone());
+                }
                 continue;
             }
             let toolkit = toolkit_from_composio_slug(slug);
             match resolved.toolkit_to_connector.get(&toolkit) {
-                Some(&cid) => match perms.decide(cid, slug) {
+                Some(&cid) => match access.decide(cid, slug) {
                     ToolAccess::Denied => blocked_slugs.push(slug.to_string()),
                     ToolAccess::Ask => {
                         match resolve_tool_approval_retry(
                             state,
                             user_id,
-                            perms.agent_id,
+                            access.perms.agent_id,
                             cid,
                             slug,
                             verified_flow_id,
@@ -1145,6 +1155,9 @@ async fn call_routed_tool(
                     }
                     ToolAccess::Allowed => allowed.push(t.clone()),
                 },
+                // No connector to attribute the slug to: only an unrestricted
+                // user may run it.
+                None if access.is_restricted() => blocked_slugs.push(slug.to_string()),
                 None => allowed.push(t.clone()),
             }
         }
@@ -1158,7 +1171,7 @@ async fn call_routed_tool(
                     if let Some(id) = create_tool_approval_id(
                         state,
                         user_id,
-                        perms.agent_id,
+                        access.perms.agent_id,
                         *cid,
                         slug,
                         verified_flow_id,
@@ -1201,7 +1214,7 @@ async fn call_routed_tool(
         }
         if !blocked_slugs.is_empty() || !denied_slugs.is_empty() || !ask_tools.is_empty() {
             let ask_slugs: Vec<&String> = ask_tools.iter().map(|(_, s)| s).collect();
-            tracing::info!(user = %user_id, agent = %perms.agent_id, ?blocked_slugs, ?denied_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
+            tracing::info!(user = %user_id, agent = %access.perms.agent_id, ?blocked_slugs, ?denied_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
             arguments["tools"] = json!(allowed);
         }
     }
@@ -1257,7 +1270,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        perms.agent_id,
+                        access.perms.agent_id,
                         connector_id,
                         verified_flow_id,
                         response,
@@ -1594,7 +1607,7 @@ enum RetryOutcome {
     AskAgain,
 }
 
-/// M7's retry-matching lookup: called immediately after `perms.decide()`
+/// M7's retry-matching lookup: called immediately after `access.decide()`
 /// returns `Ask`, before falling back to the normal ask-and-persist path.
 /// Checks, in order: (1) an unexpired `mcp_session_tool_grants` row for this
 /// exact `(agent_id, connector_id, tool_name, context_id)` tuple — reusable
@@ -1753,13 +1766,13 @@ fn is_connection_level_failure(e: &McpError) -> bool {
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.
 fn connector_disabled(
     resolved: &ResolvedSession,
-    perms: &PermissionContext,
+    access: &EffectiveAccess<'_>,
     toolkit: &str,
 ) -> bool {
     resolved
         .toolkit_to_connector
         .get(&toolkit.to_ascii_lowercase())
-        .map(|cid| !perms.is_connector_enabled(*cid))
+        .map(|cid| !access.is_connector_enabled(*cid))
         .unwrap_or(false)
 }
 
@@ -1910,7 +1923,8 @@ mod tests {
 
     use super::*;
     use crate::config::{McpConfig, ToolSearchMode};
-    use crate::permissions::PermissionRule;
+    use crate::entitlements::{ToolSet, UserEntitlement};
+    use crate::permissions::{PermissionContext, PermissionRule};
     use crate::provider::{GenericMcpProvider, Providers};
     use crate::types::Stance;
     use std::collections::HashMap;
@@ -1984,6 +1998,7 @@ mod tests {
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: Arc::new(crate::search::NoopSearchIndex),
@@ -2199,7 +2214,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2233,7 +2248,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2274,7 +2289,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2307,7 +2322,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2326,7 +2341,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2345,7 +2360,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2379,7 +2394,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2413,7 +2428,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "COMPOSIO_SEARCH_TOOLS", "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2423,6 +2438,266 @@ mod tests {
             "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}"
         );
         hit.assert_async().await;
+    }
+
+    // ─── Per-user tool entitlements (Restricted) ─────────────────────────────
+
+    fn restricted(entries: &[(Uuid, ToolSet)]) -> UserEntitlement {
+        UserEntitlement::Restricted(entries.iter().cloned().collect())
+    }
+
+    fn only(names: &[&str]) -> ToolSet {
+        ToolSet::Only(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    async fn call_with(
+        state: &McpState,
+        resolved: &ResolvedSession,
+        p: &PermissionContext,
+        ent: &UserEntitlement,
+        name: &str,
+        arguments: Value,
+    ) -> Value {
+        handle_tools_call(
+            state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": name, "arguments": arguments }),
+            resolved,
+            &EffectiveAccess::new(p, ent),
+            None,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn restricted_user_cannot_call_generic_tool_outside_entitlement() {
+        let (_guard, url) = spawn_ok_backend().await;
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session(&url, cid, false);
+        let p = perms(&[cid], vec![]); // agent allows everything on the connector
+        let ent = restricted(&[(cid, only(&["read"]))]);
+        let prefix = crate::types::connector_prefix(cid);
+
+        let denied = call_with(
+            &state,
+            &resolved,
+            &p,
+            &ent,
+            &format!("{prefix}__write"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(
+            denied["error"]["code"],
+            json!(codes::TOOL_BLOCKED),
+            "{denied}"
+        );
+
+        let allowed = call_with(
+            &state,
+            &resolved,
+            &p,
+            &ent,
+            &format!("{prefix}__read"),
+            json!({}),
+        )
+        .await;
+        assert!(
+            allowed.get("error").is_none(),
+            "entitled tool must run: {allowed}"
+        );
+
+        // Same call, no entitlement restriction: unchanged behaviour.
+        let open = call_with(
+            &state,
+            &resolved,
+            &p,
+            &UserEntitlement::Unrestricted,
+            &format!("{prefix}__write"),
+            json!({}),
+        )
+        .await;
+        assert!(open.get("error").is_none(), "{open}");
+    }
+
+    #[tokio::test]
+    async fn entitlement_denial_beats_ask_so_no_approval_is_requested() {
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
+        let ent = restricted(&[(cid, only(&["read"]))]);
+        let prefix = crate::types::connector_prefix(cid);
+
+        let res = call_with(
+            &state,
+            &resolved,
+            &p,
+            &ent,
+            &format!("{prefix}__write"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+
+        // Entitled + Ask still asks.
+        let res = call_with(
+            &state,
+            &resolved,
+            &p,
+            &ent,
+            &format!("{prefix}__read"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
+    }
+
+    #[tokio::test]
+    async fn restricted_user_composio_direct_call_needs_entitlement() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(&[cid], vec![]);
+        let ent = restricted(&[(cid, only(&["GMAIL_FETCH_EMAILS"]))]);
+        let res = call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            &ent,
+            "GMAIL_SEND_EMAIL",
+            json!({}),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+    }
+
+    #[tokio::test]
+    async fn restricted_user_composio_direct_call_with_unmapped_toolkit_is_denied() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(&[cid], vec![]);
+        let ent = restricted(&[(cid, ToolSet::All)]);
+        let res = call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            &ent,
+            "SLACK_POST_MESSAGE",
+            json!({}),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+    }
+
+    #[tokio::test]
+    async fn restricted_user_keeps_composio_meta_tools() {
+        let mut backend = mockito::Server::new_async().await;
+        let hit = backend
+            .mock("POST", "/mcp")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
+        let p = perms(&[cid], vec![]);
+        let ent = restricted(&[]);
+        let res = call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            &ent,
+            "COMPOSIO_SEARCH_TOOLS",
+            json!({}),
+        )
+        .await;
+        assert!(res.get("error").is_none(), "{res}");
+        hit.assert_async().await;
+    }
+
+    async fn multi_execute(ent: &UserEntitlement, cid: Uuid, slug: Value) -> Value {
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(&[cid], vec![]);
+        call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            ent,
+            "COMPOSIO_MULTI_EXECUTE_TOOL",
+            json!({ "tools": [{ "tool_slug": slug, "arguments": {} }] }),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn restricted_multi_execute_denies_non_entitled_empty_and_unmapped_slugs() {
+        let cid = Uuid::new_v4();
+        let ent = restricted(&[(cid, only(&["GMAIL_FETCH_EMAILS"]))]);
+        for slug in ["GMAIL_SEND_EMAIL", "", "SLACK_POST_MESSAGE"] {
+            let res = multi_execute(&ent, cid, json!(slug)).await;
+            assert_eq!(
+                res["error"]["code"],
+                json!(codes::TOOL_BLOCKED),
+                "slug {slug:?} must be denied: {res}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restricted_multi_execute_entitled_ask_still_asks() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
+        let ent = restricted(&[(cid, ToolSet::All)]);
+        let res = call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            &ent,
+            "COMPOSIO_MULTI_EXECUTE_TOOL",
+            json!({ "tools": [{ "tool_slug": "GMAIL_SEND_EMAIL", "arguments": {} }] }),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
+    }
+
+    #[tokio::test]
+    async fn restricted_manage_connections_follows_connector_toggle() {
+        let cid = Uuid::new_v4();
+        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
+        let p = perms(&[cid], vec![]);
+        let ent = restricted(&[]); // no tools on gmail
+        let res = call_with(
+            &test_state(),
+            &resolved,
+            &p,
+            &ent,
+            "COMPOSIO_MANAGE_CONNECTIONS",
+            json!({ "toolkits": ["gmail"] }),
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
+    }
+
+    #[test]
+    fn initialize_instructions_skip_connectors_without_entitlement() {
+        let (entitled, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut a = mcp_session("http://x/mcp", entitled, false).servers;
+        a[0].instructions = Some("entitled".into());
+        let mut b = mcp_session("http://x/mcp", other, false).servers;
+        b[0].instructions = Some("other".into());
+        let servers = [a, b].concat();
+        let p = perms(&[entitled, other], vec![]);
+        let ent = restricted(&[(entitled, ToolSet::All)]);
+        let got = connector_instructions(&servers, &EffectiveAccess::new(&p, &ent));
+        assert_eq!(got, vec!["entitled".to_string()]);
     }
 
     // ─── M3: AuthRequired routing ───────────────────────────────────────────
@@ -2466,7 +2741,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2501,7 +2776,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2537,7 +2812,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
             Some("0af7651916cd43dd8448eb211c80319c"),
         )
@@ -2568,7 +2843,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &p,
+            &EffectiveAccess::unrestricted(&p),
             None,
             None,
         )
@@ -2597,7 +2872,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &perms(&[cid], vec![rule(cid, "*", Stance::Block)]),
+            &EffectiveAccess::unrestricted(&perms(&[cid], vec![rule(cid, "*", Stance::Block)])),
             None,
             None,
         )
@@ -2614,7 +2889,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &perms(&[], vec![]), // connector never enabled
+            &EffectiveAccess::unrestricted(&perms(&[], vec![])), // connector never enabled
             None,
             None,
         )
@@ -2743,13 +3018,18 @@ mod tests {
     async fn listed_tool_names(mode: ToolSearchMode) -> Vec<String> {
         let mut state = test_state();
         state.config.tool_search_mode = mode;
+        let empty = ResolvedSession {
+            servers: vec![],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
+        };
         let res = handle_tools_list(
             &state,
             Uuid::new_v4(),
             &json!(1),
-            &[],
-            &[],
-            &perms(&[], vec![]),
+            &empty,
+            &EffectiveAccess::unrestricted(&perms(&[], vec![])),
             None,
             None,
         )
@@ -2790,6 +3070,52 @@ mod tests {
         );
     }
 
+    fn tool_match(connector_id: Uuid, tool_name: &str) -> crate::search::ToolMatch {
+        crate::search::ToolMatch {
+            connector_id,
+            tool_name: tool_name.into(),
+            description: None,
+            input_schema: None,
+            score: 1.0,
+        }
+    }
+
+    #[test]
+    fn search_match_is_listed_under_the_name_tools_call_routes() {
+        // The search index stores an uploaded connector's tools by their bare
+        // backend name; listed bare, `tools/call` can't route them back.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let listed = search_matches_to_json(&[tool_match(cid, "get_order_details")], &resolved);
+        let name = listed[0]["name"].as_str().expect("name");
+        let (server, original) = router::route_tool(name, &resolved.servers).expect("routes");
+        assert_eq!(server.connector_id, cid);
+        assert_eq!(original, "get_order_details");
+    }
+
+    #[test]
+    fn search_match_the_session_cannot_call_is_dropped() {
+        // Search filters by the user's connectors, not the agent's: a match
+        // from a connector this session has no backend for must not be listed.
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let listed = search_matches_to_json(
+            &[
+                tool_match(Uuid::new_v4(), "get_order_details"),
+                tool_match(cid, "cancel_order"),
+            ],
+            &resolved,
+        );
+        let names: Vec<&str> = listed.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            [format!(
+                "{}__cancel_order",
+                crate::types::connector_prefix(cid)
+            )]
+        );
+    }
+
     #[tokio::test]
     async fn nasiko_call_tool_with_invalid_params_is_rejected_before_routing() {
         // 127.0.0.1:9 is unreachable — a rejected executor call must never
@@ -2813,7 +3139,7 @@ mod tests {
                 &json!(1),
                 &json!({ "name": "nasiko_call_tool", "arguments": arguments }),
                 &resolved,
-                &p,
+                &EffectiveAccess::unrestricted(&p),
                 None,
                 None,
             )
@@ -2825,33 +3151,76 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nasiko_call_tool_refuses_to_call_a_gateway_meta_tool() {
+    async fn nasiko_call_tool_refuses_only_to_nest_itself() {
         let cid = Uuid::new_v4();
         let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
         let p = perms(&[cid], vec![]);
-        for inner in [
-            "nasiko_call_tool",
+        let res = handle_tools_call(
+            &test_state(),
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": "nasiko_call_tool", "arguments": { "name": "nasiko_call_tool" } }),
+            &resolved,
+            &EffectiveAccess::unrestricted(&p),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
+        assert_eq!(
+            res["error"]["message"],
+            json!("nasiko_call_tool cannot nest itself; name the target tool directly"),
+            "{res}"
+        );
+    }
+
+    /// The other meta-tools are legitimate inner names: an agent that routes
+    /// everything through the executor (observed with Codex) gets exactly the
+    /// direct call's answer, not an error.
+    #[tokio::test]
+    async fn nasiko_call_tool_dispatches_the_other_meta_tools_like_direct_calls() {
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
+        let p = perms(&[cid], vec![]);
+
+        let (direct, via_executor) = direct_and_via_executor(
+            &state,
+            &resolved,
+            &p,
             "nasiko_search_tools",
+            json!({ "query": "read a file" }),
+        )
+        .await;
+        assert!(
+            direct["result"]["structuredContent"]["tools"].is_array(),
+            "{direct}"
+        );
+        assert_eq!(
+            via_executor, direct,
+            "search through the executor must be byte-identical to the direct call"
+        );
+
+        // Flow-less on purpose: recover_compressed answers a deterministic
+        // invalid-params refusal, which both entry points must share verbatim.
+        let (direct, via_executor) = direct_and_via_executor(
+            &state,
+            &resolved,
+            &p,
             "recover_compressed",
-        ] {
-            let res = handle_tools_call(
-                &test_state(),
-                Uuid::new_v4(),
-                &json!(1),
-                &json!({ "name": "nasiko_call_tool", "arguments": { "name": inner } }),
-                &resolved,
-                &p,
-                None,
-                None,
-            )
-            .await;
-            assert_eq!(res["error"]["code"], json!(codes::INVALID_PARAMS), "{res}");
-            assert_eq!(
-                res["error"]["message"],
-                json!("nasiko_call_tool cannot call gateway meta-tools; call them directly"),
-                "{res}"
-            );
-        }
+            json!({ "handle": "nasiko://c/9f3a" }),
+        )
+        .await;
+        assert_eq!(
+            direct["error"]["code"],
+            json!(codes::INVALID_PARAMS),
+            "{direct}"
+        );
+        assert_eq!(
+            via_executor, direct,
+            "recover_compressed through the executor must match the direct call"
+        );
     }
 
     /// Both entry points, same inner call, same `req_id` — so a byte-identical
@@ -2870,7 +3239,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": arguments }),
             resolved,
-            p,
+            &EffectiveAccess::unrestricted(p),
             None,
             None,
         )
@@ -2884,7 +3253,7 @@ mod tests {
                 "arguments": { "name": tool, "arguments": arguments },
             }),
             resolved,
-            p,
+            &EffectiveAccess::unrestricted(p),
             None,
             None,
         )
@@ -3007,12 +3376,20 @@ mod tests {
             })),
             "abcd__echo"
         );
+        // A dispatched meta-tool is a real inner tool now, so the record names it.
+        assert_eq!(
+            invoked_tool_name(&json!({
+                "name": "nasiko_call_tool",
+                "arguments": { "name": "nasiko_search_tools" },
+            })),
+            "nasiko_search_tools"
+        );
         // What the parse rejects was never attempted as an inner tool, so the
         // record must say the executor itself failed — not blame a tool the
         // client never validly named.
         for rejected in [
             json!({}),
-            json!({ "name": "nasiko_search_tools" }),
+            json!({ "name": "nasiko_call_tool" }),
             json!({ "name": "abcd__echo", "arguments": "not-an-object" }),
         ] {
             assert_eq!(
@@ -3058,6 +3435,7 @@ mod tests {
 #[cfg(test)]
 mod initialize_tests {
     use super::*;
+    use crate::permissions::PermissionContext;
     use serde_json::json;
 
     #[test]
@@ -3185,7 +3563,7 @@ mod initialize_tests {
             cfg(disabled_with_instr, Some("SHOULD-NOT-APPEAR")),
         ];
         let perms = ctx(&[enabled_with_instr, enabled_without_instr]);
-        let got = connector_instructions(&servers, &perms);
+        let got = connector_instructions(&servers, &EffectiveAccess::unrestricted(&perms));
         assert_eq!(got, vec!["WS-INSTR".to_string()]);
     }
 
@@ -3194,40 +3572,8 @@ mod initialize_tests {
         let id = Uuid::new_v4();
         let servers = vec![cfg(id, Some("X"))];
         let perms = ctx(&[]); // never enabled
-        assert!(connector_instructions(&servers, &perms).is_empty());
-    }
-
-    // ── tool_match_to_json: search results carry the routable name ───────────
-
-    #[test]
-    fn a_found_tool_is_named_as_tools_call_routes_it() {
-        let (generic, system, composio_toolkit) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let servers = vec![cfg(generic, None), system_cfg(system)];
-        let found = |connector_id, tool_name: &str| {
-            tool_match_to_json(
-                &crate::search::ToolMatch {
-                    connector_id,
-                    tool_name: tool_name.into(),
-                    description: None,
-                    input_schema: None,
-                    score: 1.0,
-                },
-                &servers,
-            )["name"]
-                .clone()
-        };
-
-        let name = found(generic, "add");
-        assert_eq!(
-            name,
-            json!(format!("{}__add", crate::types::connector_prefix(generic)))
-        );
-        let (_, routed) = router::route_tool(name.as_str().unwrap(), &servers).unwrap();
-        assert_eq!(routed, "add");
-        assert_eq!(found(system, "save_file"), json!("save_file"));
-        assert_eq!(
-            found(composio_toolkit, "GMAIL_SEND_EMAIL"),
-            json!("GMAIL_SEND_EMAIL")
+        assert!(
+            connector_instructions(&servers, &EffectiveAccess::unrestricted(&perms)).is_empty()
         );
     }
 
