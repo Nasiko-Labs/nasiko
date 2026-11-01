@@ -89,7 +89,11 @@ pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
 /// Idempotent, and registry publishers apply the same rule before pushing, so a
 /// name survives publish → import unchanged and a re-import updates the existing
 /// agent instead of registering a second one under a differently-cased name.
-pub(crate) fn image_name_slug(name: &str) -> String {
+///
+/// `pub` for one reader outside the crate: the embedded registry repeats this
+/// rule in SQL to find a repository's owners (`nasiko_oci::authz`), and the
+/// `oci_repo_ownership` test checks the two agree.
+pub fn image_name_slug(name: &str) -> String {
     let slug: String = name
         .to_lowercase()
         .replace(' ', "-")
