@@ -213,7 +213,6 @@ mod tests {
 
     fn test_resolved() -> ResolvedConfig {
         ResolvedConfig {
-            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-4o-mini".into(),
             litellm_model: "openai/gpt-4o-mini".into(),

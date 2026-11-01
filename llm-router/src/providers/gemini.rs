@@ -587,7 +587,6 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
-            agent_id: String::new(),
             compress_enabled: false,
             provider: "gemini".into(),
             model: "gemini-1.5-pro".into(),
