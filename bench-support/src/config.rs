@@ -199,6 +199,8 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         git_clone_allowed_hosts: vec![],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
+        // Bench agents are loopback mock servers.
+        agent_allow_private_urls: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,

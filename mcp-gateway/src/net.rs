@@ -119,44 +119,43 @@ pub async fn validate_public_url(raw: &str) -> Result<()> {
     if private_urls_allowed() {
         return Ok(());
     }
+    check_public_url(raw).await.map_err(McpError::BadRequest)
+}
 
-    let url =
-        reqwest::Url::parse(raw).map_err(|e| McpError::BadRequest(format!("invalid url: {e}")))?;
+/// The check behind [`validate_public_url`], with no bypass: `raw` must be an
+/// `http(s)` URL, and every address its host resolves to must be public.
+/// `Err` carries a message fit for a 400 body.
+///
+/// Also used for agents registered by URL (`nasiko_server::catalog`), which
+/// the agent proxy reaches the same way the gateway reaches an MCP server.
+/// Each caller owns its own opt-in for private URLs.
+pub async fn check_public_url(raw: &str) -> std::result::Result<(), String> {
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid url: {e}"))?;
 
     match url.scheme() {
         "http" | "https" => {}
-        s => {
-            return Err(McpError::BadRequest(format!(
-                "unsupported url scheme '{s}' (use http/https)"
-            )));
-        }
+        s => return Err(format!("unsupported url scheme '{s}' (use http/https)")),
     }
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| McpError::BadRequest("url has no host".to_string()))?;
+    let host = url.host_str().ok_or("url has no host")?;
     let lower = host.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") {
-        return Err(McpError::BadRequest(
-            "url host is not allowed (loopback)".to_string(),
-        ));
+        return Err("url host is not allowed (loopback)".to_string());
     }
 
     let port = url.port_or_known_default().unwrap_or(443);
     let mut resolved = false;
     let addrs = tokio::net::lookup_host((host, port))
         .await
-        .map_err(|e| McpError::BadRequest(format!("cannot resolve url host: {e}")))?;
+        .map_err(|e| format!("cannot resolve url host: {e}"))?;
     for sa in addrs {
         resolved = true;
         if is_blocked_ip(sa.ip()) {
-            return Err(McpError::BadRequest(
-                "url resolves to a disallowed (private/internal) address".to_string(),
-            ));
+            return Err("url resolves to a disallowed (private/internal) address".to_string());
         }
     }
     if !resolved {
-        return Err(McpError::BadRequest("url host did not resolve".to_string()));
+        return Err("url host did not resolve".to_string());
     }
     Ok(())
 }

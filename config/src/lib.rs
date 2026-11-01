@@ -351,6 +351,14 @@ pub struct Config {
     /// own static handler in normal deployments, so cross-origin access is
     /// opt-in only for split dev servers or external integrations.
     pub cors_allowed_origins: Vec<String>,
+    /// Lets an agent registered by URL (one this platform does not deploy) point
+    /// at a loopback, private or link-local address (`AGENT_ALLOW_PRIVATE_URLS`,
+    /// default off). The agent proxy forwards to that address on the caller's
+    /// behalf, so with this on any user who may register an agent can reach
+    /// whatever the server can: cloud metadata, the database, other agents.
+    /// Turn it on only where every such user is trusted, e.g. an on-prem
+    /// install whose external agents live on internal hosts.
+    pub agent_allow_private_urls: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -790,6 +798,7 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
