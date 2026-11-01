@@ -841,18 +841,146 @@ fn offer_options() -> ConnectOptions {
 /// agents that have none and weren't declined before. It is `connect --no-routing --reporting`
 /// for those agents — the same plan, agent choice and content question — but only once the
 /// user says yes: without a terminal it says how to turn reporting on, and a no is remembered
-/// so it isn't asked again. Agents it doesn't offer are told about, one line each, when their
-/// reporting doesn't reach this cluster or was declined. One agent's failure never stops the
-/// others.
+/// so it isn't asked again. On a terminal, agents whose reporting goes to another cluster or
+/// account are asked, all in one question, to move here; without one they are told about, one
+/// line each, as are agents whose reporting was declined or isn't working. Then, as `nasiko
+/// agents setup` would, the past sessions — the current one included — of every agent reporting
+/// here are imported in the background; sessions already imported here are skipped. One agent's
+/// failure never stops the others.
 pub fn offer_reporting() -> Result<()> {
     let views: Vec<AgentView> = load_views()?
         .into_iter()
         .filter(|view| view.local.detected && view.local.reporting_supported)
         .collect();
     let destination = ReportingDestination::current().ok();
-    for line in reporting_notices(&views, destination.as_ref()) {
+    let prompter = prompter(false);
+    let (moving, told) = split_moves(views, destination.as_ref(), prompter.interactive());
+    for line in reporting_notices(&told, destination.as_ref()) {
         println!("{line}");
     }
+    offer_move(moving, destination.as_ref(), prompter.as_ref())?;
+    offer_new_reporting(told, destination.as_ref(), prompter.as_ref())?;
+    if reports_here(&load_views()?, destination.as_ref()) {
+        integration::import_in_background()?;
+    }
+    Ok(())
+}
+
+/// Whether any of `views` has reporting installed that delivers to `destination`.
+fn reports_here(views: &[AgentView], destination: Option<&ReportingDestination>) -> bool {
+    destination.is_some()
+        && views.iter().any(|view| {
+            view.local.reporting_installed
+                && reporting_elsewhere(&view.local, destination).is_none()
+        })
+}
+
+/// Splits the agents for the offer: those whose installed reporting goes to another cluster or
+/// account than `destination`, to be asked to move here (only when `ask`, on a terminal), and
+/// the rest.
+fn split_moves(
+    views: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    ask: bool,
+) -> (Vec<AgentView>, Vec<AgentView>) {
+    views.into_iter().partition(|view| {
+        ask && view.local.reporting_installed
+            && reporting_elsewhere(&view.local, destination).is_some()
+    })
+}
+
+/// Asks to move `moving`'s reporting here and applies the move on a yes, keeping each agent's
+/// content setting and leaving LLM routing alone.
+fn offer_move(
+    moving: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<()> {
+    if moving.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<&'static str> = moving.iter().map(|view| view.local.id).collect();
+    let move_hint = turn_on_reporting_hint(&ids);
+    match move_offer(moving, destination, prompter, &fetch_llm_configs)? {
+        Offer::Accepted(plan) => apply_offered(plan, prompter),
+        Offer::NotAsked | Offer::Declined => {
+            term::print_info(&format!(
+                "Session reporting stays where it is. Move it here any time with: {}",
+                term::cyan(&move_hint)
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// The move asked for in one question, defaulting to yes since logging in here is the reason to
+/// ask; on a yes, the plan `connect --no-routing --reporting` would apply to those agents.
+fn move_offer(
+    moving: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+    load_configs: &dyn Fn() -> Result<Vec<Value>>,
+) -> Result<Offer> {
+    if !prompter.interactive() {
+        return Ok(Offer::NotAsked);
+    }
+    if !prompter.confirm(&move_question(&moving, destination), true)? {
+        return Ok(Offer::Declined);
+    }
+    let plan = build_plan(
+        moving,
+        &offer_options(),
+        destination,
+        prompter,
+        load_configs,
+    )?;
+    Ok(Offer::Accepted(plan))
+}
+
+/// "Claude Code and Codex report sessions to staging. Report them to prod instead?", naming
+/// each agent's cluster when they differ.
+fn move_question(moving: &[AgentView], destination: Option<&ReportingDestination>) -> String {
+    let moves: Vec<(&str, String, String)> = moving
+        .iter()
+        .filter_map(|view| {
+            let (from, to) = reporting_elsewhere(&view.local, destination)?;
+            Some((view.local.display_name, from, to))
+        })
+        .collect();
+    let to = moves
+        .first()
+        .map(|(_, _, to)| to.as_str())
+        .unwrap_or("here");
+    let (them, from) = match moves.as_slice() {
+        [(name, from, _)] => ("it", format!("{name} reports sessions to {from}")),
+        [(_, first, _), rest @ ..] if rest.iter().all(|(_, from, _)| from == first) => {
+            let names: Vec<&str> = moves.iter().map(|(name, _, _)| *name).collect();
+            (
+                "them",
+                format!("{} report sessions to {first}", readable_list(&names)),
+            )
+        }
+        [(name, first, _), rest @ ..] => {
+            let others: Vec<String> = rest
+                .iter()
+                .map(|(name, from, _)| format!("{name} to {from}"))
+                .collect();
+            (
+                "them",
+                format!("{name} reports sessions to {first}, {}", others.join(", ")),
+            )
+        }
+        [] => ("them", "Session reporting goes elsewhere".to_string()),
+    };
+    format!("{from}. Report {them} to {to} instead?")
+}
+
+/// Offers reporting to the agents among `views` that have none and weren't declined before.
+fn offer_new_reporting(
+    views: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<()> {
     let offered: Vec<AgentView> = views
         .into_iter()
         .filter(|view| !view.local.reporting_installed && !view.local.reporting_declined)
@@ -862,8 +990,7 @@ pub fn offer_reporting() -> Result<()> {
     }
     let ids: Vec<&'static str> = offered.iter().map(|view| view.local.id).collect();
     let turn_on = turn_on_reporting_hint(&ids);
-    let prompter = prompter(false);
-    match reporting_offer(offered, destination.as_ref(), prompter.as_ref())? {
+    match reporting_offer(offered, destination, prompter)? {
         Offer::NotAsked => term::print_info(&format!(
             "Session reporting is off. Turn it on with: {}",
             term::cyan(&turn_on)
@@ -875,19 +1002,23 @@ pub fn offer_reporting() -> Result<()> {
                 term::cyan(&turn_on)
             ));
         }
-        Offer::Accepted(mut plan) => {
-            verify_plan(
-                &mut plan,
-                &Lookups {
-                    config: &check_llm_config,
-                    look_up_agent: &coding_agent_router::look_up_owned_agent,
-                },
-            )?;
-            print_plan(&plan);
-            for (name, error) in apply_plan(&plan, &offer_options(), prompter.as_ref()) {
-                term::print_warning(&format!("{name}: {error}"));
-            }
-        }
+        Offer::Accepted(plan) => apply_offered(plan, prompter)?,
+    }
+    Ok(())
+}
+
+/// Verifies, shows and applies a plan the offer built, warning about each agent it failed for.
+fn apply_offered(mut plan: Plan, prompter: &dyn Prompter) -> Result<()> {
+    verify_plan(
+        &mut plan,
+        &Lookups {
+            config: &check_llm_config,
+            look_up_agent: &coding_agent_router::look_up_owned_agent,
+        },
+    )?;
+    print_plan(&plan);
+    for (name, error) in apply_plan(&plan, &offer_options(), prompter) {
+        term::print_warning(&format!("{name}: {error}"));
     }
     Ok(())
 }
@@ -3517,6 +3648,143 @@ mod tests {
     fn agent_commands_are_spelled_where_this_cli_has_them() {
         assert_eq!(agent_command("logs weather"), "nasiko logs weather");
         assert_eq!(maf_hint(), "nasiko maf");
+    }
+
+    fn plan_of_offer(offer: Offer) -> Plan {
+        match offer {
+            Offer::Accepted(plan) => plan,
+            Offer::NotAsked => panic!("expected a plan, got NotAsked"),
+            Offer::Declined => panic!("expected a plan, got Declined"),
+        }
+    }
+
+    #[test]
+    fn after_logging_in_reporting_bound_elsewhere_moves_here_on_one_yes() {
+        let mut no_text = reporting_to("codex", Some(elsewhere()));
+        no_text.local.capture_content = false;
+        let targets = vec![reporting_to("claude", Some(elsewhere())), no_text];
+
+        let plan = plan_of_offer(
+            move_offer(
+                targets,
+                Some(&here()),
+                &Scripted::new(&[true], &[]),
+                &no_configs_expected,
+            )
+            .unwrap(),
+        );
+
+        let steps: Vec<&ReportingStep> = plan.agents.iter().map(|agent| &agent.reporting).collect();
+        assert_eq!(
+            steps,
+            [
+                &ReportingStep::Install {
+                    capture_content: true,
+                    moving_from: Some("staging".into())
+                },
+                &ReportingStep::Install {
+                    capture_content: false,
+                    moving_from: Some("staging".into())
+                },
+            ]
+        );
+        assert!(
+            plan.agents
+                .iter()
+                .all(|agent| matches!(agent.routing, RoutingStep::Skip | RoutingStep::Keep)),
+            "LLM routing is left alone"
+        );
+    }
+
+    #[test]
+    fn after_logging_in_sessions_are_imported_once_any_agent_reports_here() {
+        let not_installed = view("cursor", false, false);
+        let reporting_here = view("claude", false, true);
+        let staying_elsewhere = reporting_to("codex", Some(elsewhere()));
+
+        assert!(reports_here(
+            &[
+                not_installed.clone(),
+                reporting_here,
+                staying_elsewhere.clone()
+            ],
+            Some(&here())
+        ));
+        assert!(!reports_here(
+            &[not_installed, staying_elsewhere],
+            Some(&here())
+        ));
+        assert!(!reports_here(&[view("claude", false, true)], None));
+    }
+
+    #[test]
+    fn after_logging_in_a_no_leaves_reporting_where_it_is() {
+        let offer = move_offer(
+            vec![reporting_to("claude", Some(elsewhere()))],
+            Some(&here()),
+            &Scripted::new(&[false], &[]),
+            &no_configs_expected,
+        )
+        .unwrap();
+
+        assert!(matches!(offer, Offer::Declined));
+    }
+
+    #[test]
+    fn a_move_is_asked_on_a_terminal_and_only_told_about_without_one() {
+        let views = || {
+            vec![
+                view("claude", false, true),
+                reporting_to("codex", Some(elsewhere())),
+                view("cursor", false, false),
+            ]
+        };
+        let ids = |views: &[AgentView]| views.iter().map(|view| view.local.id).collect::<Vec<_>>();
+
+        let (asked, told) = split_moves(views(), Some(&here()), true);
+        assert_eq!(ids(&asked), ["codex"]);
+        assert_eq!(ids(&told), ["claude", "cursor"]);
+
+        let (asked, told) = split_moves(views(), Some(&here()), false);
+        assert!(asked.is_empty());
+        assert_eq!(ids(&told), ["claude", "codex", "cursor"]);
+    }
+
+    #[test]
+    fn the_move_question_names_where_each_agent_reports_now() {
+        let same = move_question(
+            &[
+                reporting_to("claude", Some(elsewhere())),
+                reporting_to("codex", Some(elsewhere())),
+            ],
+            Some(&here()),
+        );
+        assert_eq!(
+            same,
+            "claude and codex report sessions to staging. Report them to prod instead?"
+        );
+
+        let local = ReportingDestination {
+            cluster_name: "local".into(),
+            ..here()
+        };
+        let mixed = move_question(
+            &[
+                reporting_to("claude", Some(elsewhere())),
+                reporting_to("codex", Some(local)),
+            ],
+            Some(&here()),
+        );
+        assert_eq!(
+            mixed,
+            "claude reports sessions to staging, codex to local. Report them to prod instead?"
+        );
+
+        let one = move_question(&[reporting_to("claude", Some(elsewhere()))], Some(&here()));
+        assert_eq!(
+            one,
+            "claude reports sessions to staging. Report it to prod instead?"
+        );
     }
 
     #[test]
