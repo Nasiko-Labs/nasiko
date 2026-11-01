@@ -32,11 +32,20 @@ pub fn degradable_router() -> Router<AppState> {
 }
 
 /// Create a tar archive from a directory (for passing to ContainerRuntime::build).
+///
+/// Symlinks are archived as symlinks, never followed (NAS-1115). `dir` holds a
+/// user's source, and a repo acquired by `git clone` keeps its symlinks: the
+/// `tar` crate follows them by default, so `leak -> /var/run/secrets/...` put
+/// the server's own file (or a whole directory) into the build context, where a
+/// `COPY leak /leak` baked it into the user's image. Kept as a link, it is
+/// resolved by the image builder inside the context, which holds nothing of
+/// the server's; a link within the repo (`README -> docs/README.md`) still works.
 pub fn tar_directory(dir: &std::path::Path) -> Result<Vec<u8>, String> {
     use tar::Builder;
 
     let buf = Vec::new();
     let mut archive = Builder::new(buf);
+    archive.follow_symlinks(false);
     archive
         .append_dir_all(".", dir)
         .map_err(|e| format!("tar append_dir_all: {e}"))?;
@@ -175,6 +184,106 @@ pub(crate) async fn download_repo_tarball(
         buf.put(chunk);
     }
     Ok(buf.freeze())
+}
+
+#[cfg(test)]
+mod tar_directory_tests {
+    //! NAS-1115: a cloned repo is a user's directory, and it may hold symlinks
+    //! to anything on the server's filesystem. The build context must carry
+    //! the link, never the file it points at.
+    use super::tar_directory;
+    use std::path::{Path, PathBuf};
+
+    /// A fresh directory under the system temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("nasiko-tar-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `(path, is a symlink, link target or file contents)` for each entry.
+    fn entries(tar: &[u8]) -> Vec<(String, bool, String)> {
+        let mut archive = tar::Archive::new(std::io::Cursor::new(tar));
+        archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let mut entry = entry.unwrap();
+                let path = entry.path().unwrap().display().to_string();
+                let is_link = entry.header().entry_type().is_symlink();
+                let detail = if is_link {
+                    entry.link_name().unwrap().unwrap().display().to_string()
+                } else {
+                    let mut contents = String::new();
+                    std::io::Read::read_to_string(&mut entry, &mut contents).unwrap_or_default();
+                    contents
+                };
+                (path, is_link, detail)
+            })
+            .collect()
+    }
+
+    fn symlink(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_out_of_the_context_is_archived_as_a_link_not_as_the_host_file() {
+        let scratch = Scratch::new();
+        let outside = scratch.0.join("outside");
+        let context = scratch.0.join("context");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::create_dir_all(&context).unwrap();
+        std::fs::write(outside.join("marker.txt"), "host-secret").unwrap();
+        std::fs::write(
+            context.join("Dockerfile"),
+            "FROM scratch\nCOPY leak /leak\n",
+        )
+        .unwrap();
+        symlink(&outside.join("marker.txt"), &context.join("leak"));
+        symlink(&outside, &context.join("leak-dir"));
+
+        let tar = tar_directory(&context).unwrap();
+        let entries = entries(&tar);
+
+        assert!(
+            entries
+                .iter()
+                .all(|(_, _, detail)| !detail.contains("host-secret")),
+            "a host file's contents reached the build context: {entries:?}"
+        );
+        let leak = entries
+            .iter()
+            .find(|(path, ..)| path.ends_with("leak"))
+            .unwrap();
+        assert!(leak.1, "`leak` must stay a symlink: {leak:?}");
+    }
+
+    #[test]
+    fn a_symlink_inside_the_context_still_works() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.0.join("README.md"), "docs").unwrap();
+        symlink(Path::new("README.md"), &scratch.0.join("README"));
+
+        let entries = entries(&tar_directory(&scratch.0).unwrap());
+
+        let readme = entries
+            .iter()
+            .find(|(path, ..)| path.ends_with("/README") || path == "README")
+            .unwrap();
+        assert_eq!((readme.1, readme.2.as_str()), (true, "README.md"));
+    }
 }
 
 #[cfg(test)]
