@@ -192,7 +192,7 @@ A2A-Version: 1.0
                     }
                   ],
                   "capabilities": { "streaming": true },
-                  "endpoint": "/api/agents/translation-agent-uuid"
+                  "endpoint": "http://cp:8080/api/agents/translation-agent-uuid"
                 },
                 {
                   "agent_id": "deepl-agent-uuid",
@@ -206,7 +206,7 @@ A2A-Version: 1.0
                     }
                   ],
                   "capabilities": { "streaming": false },
-                  "endpoint": "/api/agents/deepl-agent-uuid"
+                  "endpoint": "http://cp:8080/api/agents/deepl-agent-uuid"
                 }
               ]
             }
@@ -217,11 +217,6 @@ A2A-Version: 1.0
   }
 }
 ```
-
-**Who sees what.** A caller with no credentials gets the public agents only. A caller that sends a
-session token (`Authorization: Bearer`) gets the agents that token may call through the proxy, by
-the same access check the proxy applies; an invalid token is refused with 401. Every `endpoint` is
-the agent proxy path, relative to the control plane; an agent's internal address is never returned.
 
 **Step 4: Agent calls discovered agent (standard A2A, through proxy)**
 ```json
@@ -241,6 +236,33 @@ A2A-Version: 1.0
   }
 }
 ```
+
+### Authentication and Access Control
+
+The registry endpoint (`/a2a/v1`) **respects authentication when provided**, but remains functional for unauthenticated callers with reduced visibility:
+
+- **Anonymous callers** (no Authorization header) see only public agents (`is_public = true`)
+- **Authenticated agents** (sending `Authorization: Bearer <MCP_GATEWAY_TOKEN>`) see what their owner may access:
+  - Agents owned by the same user
+  - Public agents
+  - Agents granted to the user via `agent_grants`
+  - In Enterprise Edition: agents granted to the user's team or department via organization grants
+
+Agents are deployed with the `MCP_GATEWAY_TOKEN` environment variable injected by the control plane (`oss/server/src/agents/deploy_env.rs`). When querying the registry, agents should include this token:
+
+```http
+POST /a2a/v1
+Authorization: Bearer <MCP_GATEWAY_TOKEN>
+Content-Type: application/json
+
+{
+  "jsonrpc": "2.0",
+  "method": "SendMessage",
+  ...
+}
+```
+
+**Migration note:** Third-party agents that relied on unauthenticated discovery seeing all agents must now send the `MCP_GATEWAY_TOKEN` to see private agents. The platform's own agents (`assistant-agent`, `react-agent`) include the token automatically when the environment variable is present.
 
 ## End-to-End: Every Path is A2A
 

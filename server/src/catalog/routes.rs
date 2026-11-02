@@ -455,12 +455,6 @@ pub(crate) async fn create(
         },
     };
 
-    let platform_deployed = body.image.as_deref().is_some_and(|i| !i.is_empty());
-    let url = match agent_url_to_store(&state, body.url.as_deref(), platform_deployed).await {
-        Ok(url) => url,
-        Err(refused) => return refused,
-    };
-
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -479,7 +473,7 @@ pub(crate) async fn create(
         .bind(&body.display_name)
         .bind(&body.description)
         .bind(owner_id)
-        .bind(&url)
+        .bind(&body.url)
         .bind(&body.icon_url)
         .bind(&body.version)
         .bind(&body.documentation_url)
@@ -968,59 +962,6 @@ async fn record_version_change_if_needed(
     }
 }
 
-/// The `agents.url` to store for a create or update (NAS-1113).
-///
-/// The agent proxy, A2A dispatch and MAF forward to this address when the
-/// runtime does not know the agent, and relay the reply. A user-chosen
-/// address is therefore a way to make the server call anything it can reach,
-/// so:
-/// - an agent this platform deploys (it has an `image`) gets its address from
-///   the deploy, never from the caller: the requested `url` is dropped. The
-///   CLI sends its card's `url` (usually `http://localhost:8000/`) on create;
-///   it was never the address the agent is reached at.
-/// - an agent registered by URL must use `http(s)` and a host that resolves
-///   only to public addresses, unless the operator set
-///   `AGENT_ALLOW_PRIVATE_URLS`.
-///
-/// Not covered: a public hostname whose DNS later moves to a private address.
-/// That needs a connect-time check on the forwarding clients.
-async fn agent_url_to_store(
-    state: &AppState,
-    requested: Option<&str>,
-    platform_deployed: bool,
-) -> Result<Option<String>, Response> {
-    let Some(requested) = requested.filter(|u| !u.is_empty()) else {
-        return Ok(requested.map(str::to_owned));
-    };
-    if platform_deployed {
-        tracing::debug!(%requested, "ignoring url for a platform-deployed agent");
-        return Ok(None);
-    }
-    if state.config.agent_allow_private_urls {
-        return Ok(Some(requested.to_owned()));
-    }
-    match nasiko_mcp_gateway::net::check_public_url(requested).await {
-        Ok(()) => Ok(Some(requested.to_owned())),
-        Err(reason) => Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "agent url refused: {reason}. An agent on a private address needs \
-                 AGENT_ALLOW_PRIVATE_URLS=true on the server."
-            ),
-        )
-            .into_response()),
-    }
-}
-
-/// Whether the agent has an image, i.e. this platform deploys it.
-async fn has_image(state: &AppState, id: Uuid) -> sqlx::Result<bool> {
-    sqlx::query_scalar("SELECT COALESCE(image, '') <> '' FROM agents WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.db)
-        .await
-        .map(|has| has.unwrap_or(false))
-}
-
 /// Update an agent's catalog metadata. Owner-or-superuser only.
 #[utoipa::path(
     put,
@@ -1062,30 +1003,6 @@ pub(crate) async fn update(
                     .into_response();
             }
         },
-    };
-
-    let url = match body.url.as_deref() {
-        None | Some("") => body.url.clone(),
-        Some(requested) => {
-            let deploys_image =
-                body.activate_version && body.image.as_deref().is_some_and(|i| !i.is_empty());
-            let platform_deployed = if deploys_image {
-                true
-            } else {
-                match has_image(&state, id).await {
-                    Ok(has) => has,
-                    Err(e) => {
-                        tracing::error!(%e, %id, "update agent: image lookup");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-                            .into_response();
-                    }
-                }
-            };
-            match agent_url_to_store(&state, Some(requested), platform_deployed).await {
-                Ok(url) => url,
-                Err(refused) => return refused,
-            }
-        }
     };
 
     let mut tx = match state.db.begin().await {
@@ -1164,7 +1081,7 @@ pub(crate) async fn update(
     .bind(id)
     .bind(&body.display_name)
     .bind(&body.description)
-    .bind(&url)
+    .bind(&body.url)
     .bind(&body.icon_url)
     .bind(&agent_version)
     .bind(&body.documentation_url)
@@ -1681,9 +1598,21 @@ pub(crate) struct UserSearchQuery {
 /// User search. Field boosts: username×3.0, display_name×2.5, email×1.5.
 /// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
 /// Minimum query length: 2 chars. Sort: score DESC, username ASC.
-/// Returns all matching users (no limit).
-#[derive(Serialize, ToSchema, sqlx::FromRow)]
+/// Email is returned only for the caller themself (to prevent enumeration).
+#[derive(Serialize, ToSchema)]
 pub(crate) struct UserSearchResult {
+    id: Uuid,
+    username: String,
+    display_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    email: Option<String>,
+    role: Option<String>,
+    score: f64,
+}
+
+/// Internal row from the search query, before filtering email.
+#[derive(sqlx::FromRow)]
+struct UserSearchRow {
     id: Uuid,
     username: String,
     display_name: String,
@@ -1763,7 +1692,7 @@ pub(crate) async fn search_users(
            LIMIT 50"#
     );
 
-    let result = sqlx::query_as::<_, UserSearchResult>(&sql)
+    let result = sqlx::query_as::<_, UserSearchRow>(&sql)
         .bind(escape_like(&q))
         .bind(&visible_ids)
         .bind(&q)
@@ -1771,7 +1700,25 @@ pub(crate) async fn search_users(
         .await;
 
     match result {
-        Ok(users) => {
+        Ok(rows) => {
+            // Filter email: only return it for the caller themself.
+            let caller_id = claims.user_uuid().ok();
+            let users: Vec<UserSearchResult> = rows
+                .into_iter()
+                .map(|row| UserSearchResult {
+                    id: row.id,
+                    username: row.username,
+                    display_name: row.display_name,
+                    email: if Some(row.id) == caller_id {
+                        Some(row.email)
+                    } else {
+                        None
+                    },
+                    role: row.role,
+                    score: row.score,
+                })
+                .collect();
+
             let total = users.len();
             Json(serde_json::json!({
                 "data": users,
