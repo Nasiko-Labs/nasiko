@@ -238,10 +238,44 @@ async fn restricted_views_are_filtered() {
         .put(&format!("/connectors/{}", f.c2), json!({"enabled": true}))
         .await;
     assert_eq!(st, 404);
+    f.server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn restricted_connector_toggle_needs_all() {
+    let f = setup().await;
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
     let (st, _) = f
-        .put(&format!("/connectors/{}", f.c1), json!({"enabled": true}))
+        .put(&format!("/connectors/{}", f.c1), json!({"enabled": false}))
+        .await;
+    assert_eq!(st, 403, "a partial view must not toggle the whole connector");
+
+    f.restrict(HashMap::from([(f.c1, ToolSet::All)]));
+    let (st, _) = f
+        .put(&format!("/connectors/{}", f.c1), json!({"enabled": false}))
         .await;
     assert_eq!(st, 200);
+    f.server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn restricted_wildcard_rules_are_rejected_and_hidden() {
+    let f = setup().await;
+    assert_eq!(f.put_rules(&[(f.c1, "*", "ask")]).await, 200);
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+
+    // A wildcard is refused even when every tool it matches today is entitled.
+    let wildcard = format!("{}*", &TOOL_A[..TOOL_A.len() - 1]);
+    assert_eq!(f.put_rules(&[(f.c1, &wildcard, "allow")]).await, 403);
+    assert_eq!(f.put_rules(&[(f.c1, "?", "allow")]).await, 403);
+    let (_, rules) = f.get("/tools").await;
+    assert!(names(&rules, "rules", "tool_pattern").is_empty());
+    assert_eq!(
+        f.stored_rules(f.c1).await,
+        HashMap::from([("*".into(), "ask".into())])
+    );
     f.server.cleanup().await;
 }
 

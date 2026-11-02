@@ -420,6 +420,14 @@ pub async fn set_connector_access_view(
     if !entitlement.allows_connector(connector_id) {
         return Err(connector_not_found(connector_id));
     }
+    // Toggling the connector also switches every tool the caller cannot see,
+    // the same reason `reset` is refused for restricted callers.
+    if is_filtered(entitlement, connector_id) {
+        return Err(McpError::Forbidden(
+            "a tool-restricted user cannot enable or disable a connector they only partly see"
+                .into(),
+        ));
+    }
     // Reachable either the normal way (caller's own owner/user/public/team/
     // department grant) OR because the connector was shared directly with
     // THIS agent (grant_type="agent") — letting whoever manages the agent
@@ -844,21 +852,25 @@ async fn known_tool_names(
     Ok(names)
 }
 
-/// A rule is editable by a filtered caller only if it matches at least one
-/// tool and every tool it matches (case-insensitively, as `get_stance` does) is
-/// entitled. A rule that matches any hidden tool, or no known tool at all
-/// (so it could cover a hidden tool the catalog has not synced yet), belongs to
-/// the hidden part: it is never shown, replaced, or accepted from the caller.
+/// A rule is editable by a filtered caller only if its pattern has no wildcard
+/// and names a tool they are entitled to. A wildcard could cover tools the
+/// caller cannot see (an unsynced or later-added catalog entry) for every user
+/// of the agent, so it belongs to the hidden part: it is never shown, replaced,
+/// or accepted from the caller. The name is compared case-insensitively, as
+/// `get_stance` does, and every known tool it matches must be entitled.
 fn rule_is_editable(
     entitlement: &UserEntitlement,
     connector_id: Uuid,
     universe: &[String],
     pattern: &str,
 ) -> bool {
+    if pattern.contains(['*', '?']) {
+        return false;
+    }
     let pattern = pattern.to_ascii_lowercase();
     let mut matched = universe
         .iter()
-        .filter(|name| wildcard_match(&pattern, &name.to_ascii_lowercase()))
+        .filter(|name| name.to_ascii_lowercase() == pattern)
         .peekable();
     matched.peek().is_some() && matched.all(|name| entitlement.allows(connector_id, name))
 }
@@ -1473,6 +1485,23 @@ mod tests {
             c,
             ToolSet::Only(names.iter().map(|n| n.to_string()).collect()),
         )]))
+    }
+
+    #[test]
+    fn rule_is_editable_needs_an_exact_entitled_name() {
+        let c = Uuid::new_v4();
+        let ent = UserEntitlement::Restricted(HashMap::from([(
+            c,
+            ToolSet::Only(HashSet::from(["send".to_string()])),
+        )]));
+        let universe = vec!["send".to_string(), "read".to_string()];
+        assert!(rule_is_editable(&ent, c, &universe, "send"));
+        assert!(rule_is_editable(&ent, c, &universe, "SEND"));
+        assert!(!rule_is_editable(&ent, c, &universe, "read"));
+        assert!(!rule_is_editable(&ent, c, &universe, "unknown"));
+        assert!(!rule_is_editable(&ent, c, &universe, "sen*"));
+        assert!(!rule_is_editable(&ent, c, &universe, "sen?"));
+        assert!(!rule_is_editable(&ent, c, &universe, "*"));
     }
 
     #[test]
