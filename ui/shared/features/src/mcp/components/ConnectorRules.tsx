@@ -19,11 +19,12 @@ import {
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Switch } from '@nasiko/ui/primitives/switch'
 import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
+import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { AgentMark } from '@nasiko/features/agents/components/bits'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useAgentTools, useSetAccess, useSetStance } from '../api'
 import { copy, reason, STANCE } from '../copy'
-import { stanceCounts } from '../logic'
+import { matchesTool, stanceCounts } from '../logic'
 import { ServerStatusBadge } from './bits'
 import { STANCES, type AgentTool, type Stance } from '../types'
 
@@ -46,7 +47,9 @@ export function ConnectorRules({
   noAsk?: boolean
 }) {
   const [open, setOpen] = useState(defaultOpen)
+  const [q, setQ] = useState('')
   const tools = useAgentTools(agentId, target.connectorId, true)
+  const shown = (tools.data ?? []).filter((t) => matchesTool(t, q))
   const access = useSetAccess(agentId)
   const enabled = target.enabled
   const n = stanceCounts(tools.data ?? [])
@@ -123,19 +126,33 @@ export function ConnectorRules({
         ) : !tools.data.length ? (
           <p className="text-sm text-muted-foreground">{copy.noToolsYet}</p>
         ) : (
-          <ul className={cn('divide-y divide-border', !enabled && 'opacity-60')}>
-            {tools.data.map((t) => (
-              <ToolRow
-                key={t.name}
-                agentId={agentId}
-                connectorId={target.connectorId}
-                tool={t}
-                tools={tools.data}
-                disabled={!enabled}
-                noAsk={noAsk}
-              />
-            ))}
-          </ul>
+          <>
+            <SearchInput
+              aria-label={copy.filterToolsOf(target.label)}
+              placeholder={copy.filterTools}
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="mb-2 w-full sm:w-72"
+            />
+            {shown.length ? (
+              <ul className={cn('divide-y divide-border', !enabled && 'opacity-60')}>
+                {shown.map((t) => (
+                  <ToolRow
+                    key={t.name}
+                    agentId={agentId}
+                    connectorId={target.connectorId}
+                    tool={t}
+                    // The whole set, not the filtered one: a stance write re-sends every rule (`rulesWith`).
+                    tools={tools.data}
+                    disabled={!enabled}
+                    noAsk={noAsk}
+                  />
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">{copy.noToolMatch}</p>
+            )}
+          </>
         )}
       </CollapsibleContent>
     </Collapsible>

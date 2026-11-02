@@ -117,6 +117,12 @@ export function matchesQuery(s: Service, q: string): boolean {
   return [s.label, s.name, s.description ?? ''].join(' ').toLowerCase().includes(term)
 }
 
+/** A tool filter (a server's Overview, each server row on an agent): name or description, any case. */
+export function matchesTool(t: { name: string; description?: string | null }, q: string): boolean {
+  const term = q.trim().toLowerCase()
+  return !term || `${t.name} ${t.description ?? ''}`.toLowerCase().includes(term)
+}
+
 /** Custom servers only have a page; building and failed ones have no Connect (legacy card). */
 export const canConnect = (s: Service) => s.status !== 'building' && s.status !== 'failed'
 

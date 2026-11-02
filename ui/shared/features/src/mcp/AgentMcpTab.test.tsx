@@ -77,6 +77,33 @@ describe("Agent detail's MCP tab (plans/feat-mcp.md §5.2)", () => {
     )
   })
 
+  it("filters a server's tools inside its row, keeping the full rule set for writes", async () => {
+    renderApp(`/agents/${seededAgent()}?tab=mcp`)
+    await userEvent.click(
+      await screen.findByRole('button', { name: copy.expand('Docs search') }, T),
+    )
+    const filter = await screen.findByRole(
+      'searchbox',
+      { name: copy.filterToolsOf('Docs search') },
+      T,
+    )
+    await userEvent.type(filter, 'PAGE')
+    expect(screen.getByRole('radiogroup', { name: copy.stanceFor('get_page') })).toBeInTheDocument()
+    expect(
+      screen.getByRole('radiogroup', { name: copy.stanceFor('summarize_page') }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: copy.stanceFor('search_docs') })).toBeNull()
+    // Descriptions match too.
+    await userEvent.clear(filter)
+    await userEvent.type(filter, 'spaces')
+    expect(
+      screen.getByRole('radiogroup', { name: copy.stanceFor('list_spaces') }),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('radiogroup', { name: copy.stanceFor('get_page') })).toBeNull()
+    await userEvent.type(filter, 'zzz')
+    expect(screen.getByText(copy.noToolMatch)).toBeInTheDocument()
+  })
+
   it('points to the catalog when no server is available', async () => {
     const other = mcpMockState()
     other.connections.clear()

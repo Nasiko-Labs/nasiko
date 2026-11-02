@@ -285,6 +285,7 @@ export const copy = {
   disable: (name: string) => `Disable ${name}`,
   expand: (name: string) => `Show tools for ${name}`,
   collapse: (name: string) => `Hide tools for ${name}`,
+  filterToolsOf: (name: string) => `Filter tools for ${name}`,
   summaryDisabled: 'Disabled',
   enabled: 'Enabled',
   summaryNoTools: 'No tools synced yet',

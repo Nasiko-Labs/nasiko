@@ -15,7 +15,7 @@ import { Section } from '@nasiko/features/agents/components/bits'
 import { useCredentialStatus, useCredentialWrites, useOauthStatus, useOauthWrites } from '../api'
 import { AUTH_LABEL, copy, reason } from '../copy'
 import { DeleteDialog } from '../components/DeleteDialog'
-import { labelOf } from '../logic'
+import { labelOf, matchesTool } from '../logic'
 import { TOOL_FILTER_FROM } from '../tuning'
 import type { ConnectorDetail } from '../types'
 
@@ -233,10 +233,7 @@ function OauthPanel({
 
 function Tools({ connector: c }: { connector: ConnectorDetail }) {
   const [q, setQ] = useState('')
-  const term = q.trim().toLowerCase()
-  const shown = term
-    ? c.tools.filter((t) => `${t.name} ${t.description ?? ''}`.toLowerCase().includes(term))
-    : c.tools
+  const shown = c.tools.filter((t) => matchesTool(t, q))
   return (
     <Section title={copy.toolsTitle(c.tools.length)}>
       {!c.tools.length ? (
