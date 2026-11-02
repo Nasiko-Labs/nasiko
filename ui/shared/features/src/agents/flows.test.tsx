@@ -13,6 +13,7 @@ import { FIXED, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { copy } from './copy'
+import { STATUS } from './status'
 import { GRACE_MS, POLL_MS, WATCH_CAP_MS } from './tuning'
 
 setupPinnedSeed()
@@ -56,11 +57,15 @@ describe('restart truth check (detail)', () => {
     await user().click(await screen.findByRole('button', { name: 'Restart' }))
     expect(await screen.findByText(copy.restarting)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Restart' })).toBeDisabled()
+    // The server already says running; the badge doesn't until the check ends.
+    const title = screen.getByRole('heading', { level: 1 })
+    expect(title).toHaveTextContent(STATUS.deploying.label)
     // Polls at 5 s (inside the grace period, ignored) and 10 s (first Running reading).
     await advance(GRACE_MS)
     expect(screen.queryByText(copy.restarted)).toBeNull()
     await advance(POLL_MS)
     expect(await screen.findByText(copy.restarted)).toBeInTheDocument()
+    expect(title).toHaveTextContent(STATUS.running.label)
   })
 
   it('failed status polls end the watch at the cap ("Still starting")', async () => {

@@ -18,7 +18,7 @@ import { isUuid, normalizeDetail, safeHttpsUrl, safeHttpUrl, withFeature } from 
 import { actionsFor, displayStatus, isHarness, STATUS } from './status'
 import { GRACE_MS, POLL_MS, WATCH_CAP_MS } from './tuning'
 import type { AgentDetailResponse } from './types'
-import { expireWatch, isWatching, startWatch, stepWatch, type Watch } from './watch'
+import { expireWatch, isWatching, shownStatus, startWatch, stepWatch, type Watch } from './watch'
 
 describe('status matrix', () => {
   it.each([
@@ -232,6 +232,13 @@ describe('truth check (restart/start)', () => {
   it('a finished watch no longer changes', () => {
     const done = run('restart', [[GRACE_MS, 'attention']])
     expect(stepWatch(done, 'running', t0 + WATCH_CAP_MS)).toBe(done)
+  })
+
+  it("shows Deploying while the watch runs (the server's synchronous Running isn't the outcome), the reading after", () => {
+    expect(shownStatus('running', startWatch('restart', t0))).toBe('deploying')
+    expect(shownStatus('stopped', startWatch('start', t0))).toBe('deploying')
+    expect(shownStatus('attention', run('restart', [[GRACE_MS, 'attention']]))).toBe('attention')
+    expect(shownStatus('running', null)).toBe('running')
   })
 })
 

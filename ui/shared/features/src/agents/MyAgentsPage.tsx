@@ -71,6 +71,7 @@ import {
   type DisplayStatus,
 } from './status'
 import type { Agent } from './types'
+import { shownStatus } from './watch'
 
 type Tab = (typeof MINE_TABS)[number]
 
@@ -432,6 +433,7 @@ function AgentRow({
   linkState: () => HistoryState
 }) {
   const flow = useLifecycleFlow(agent.id)
+  const badge = shownStatus(display, flow.w.watch)
   const name = agent.display_name || agent.name
   const note = outcomeText(flow)
   const actions = actionsFor(display)
@@ -469,10 +471,10 @@ function AgentRow({
         </div>
       </TableCell>
       <TableCell>
-        {display === 'attention' ? (
+        {badge === 'attention' ? (
           <CrashReason agent={agent} />
         ) : (
-          <StatusBadge display={display} raw={agent.status} />
+          <StatusBadge display={badge} raw={agent.status} />
         )}
       </TableCell>
       <TableCell className={WIDE}>{agent.version}</TableCell>

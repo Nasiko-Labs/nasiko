@@ -62,3 +62,10 @@ export function expireWatch(w: Watch, now: number): Watch {
 }
 
 export const isWatching = (w: Watch | null | undefined): w is Watch => !!w && !w.outcome
+
+/**
+ * The status to show: Deploying while a watch runs. Restart writes `running` before the container is up, so the
+ * server's reading would say Running all through "Restarting…"; the matrix's Deploying covers restarts too.
+ */
+export const shownStatus = (observed: DisplayStatus, w: Watch | null | undefined): DisplayStatus =>
+  isWatching(w) ? 'deploying' : observed

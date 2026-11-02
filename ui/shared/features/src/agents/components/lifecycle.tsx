@@ -29,22 +29,8 @@ export function LifecycleButtons({
   const note = outcomeText(flow)
   if (!actions.length && !note) return null
   return (
-    <div className="flex flex-col items-end gap-1">
-      <div className="flex flex-wrap gap-2">
-        {actions.map((a, i) => (
-          <Button
-            key={a}
-            size={size}
-            // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is.
-            variant={i === 0 && a !== 'stop' && display !== 'running' ? 'default' : 'outline'}
-            className={cn(collapse && i > 0 && 'hidden sm:inline-flex')}
-            disabled={flow.m.isPending || flow.w.watching}
-            onClick={() => flow.run(a)}
-          >
-            {ACTION_LABEL[a]}
-          </Button>
-        ))}
-      </div>
+    // The note sits beside the buttons, not under them: a second line would lift them out of the top bar's row.
+    <div className="flex flex-wrap items-center justify-end gap-2">
       {note ? (
         <span
           role="status"
@@ -55,8 +41,25 @@ export function LifecycleButtons({
           {note.text}
         </span>
       ) : null}
+      {actions.map((a, i) => (
+        <Button
+          key={a}
+          size={size}
+          // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is.
+          variant={i === 0 && a !== 'stop' && display !== 'running' ? 'default' : 'outline'}
+          className={cn(collapse && i > 0 && 'hidden sm:inline-flex')}
+          disabled={flow.m.isPending || flow.w.watching}
+          onClick={() => flow.run(a)}
+        >
+          {ACTION_LABEL[a]}
+        </Button>
+      ))}
       {flow.m.isError && !flow.stopOpen ? (
-        <ErrorNote error={flow.m.error} context="lifecycle" className="text-xs" />
+        <ErrorNote
+          error={flow.m.error}
+          context="lifecycle"
+          className="basis-full text-right text-xs"
+        />
       ) : null}
       <StopDialog flow={flow} name={name} />
     </div>

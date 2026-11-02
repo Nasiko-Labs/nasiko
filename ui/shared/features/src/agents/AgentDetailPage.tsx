@@ -55,6 +55,7 @@ import { AgentMcpTab } from '@nasiko/features/mcp/components/AgentMcpTab'
 import { isUuid, type AgentView } from './normalize'
 import { DETAIL_TABS, type DetailTab } from './search'
 import { actionsFor, displayStatus, isHarness } from './status'
+import { shownStatus } from './watch'
 
 export function AgentDetailPage({ agentRef, tab }: { agentRef: string; tab?: string }) {
   if (!isUuid(agentRef)) return <ResolveByName name={agentRef} tab={tab} />
@@ -370,7 +371,8 @@ function Header({
           title={
             <span className="flex flex-wrap items-center gap-2">
               <span className="truncate">{agent.displayName}</span>
-              <StatusBadge display={display} raw={raw} />
+              {/* Only the badge: the buttons keep their place (disabled) while the restart is checked. */}
+              <StatusBadge display={shownStatus(display, flow.w.watch)} raw={raw} />
             </span>
           }
           description={
