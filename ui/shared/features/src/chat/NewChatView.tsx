@@ -51,10 +51,16 @@ import {
 import type { DisplayTurn } from './turnModel'
 import { isLivePhase, type LiveTurn, type SendInput } from './turnRegistry'
 import type { ChatSessionRow } from './types'
-import { useDraft } from './hooks'
+import { useAttachments, useDraft } from './hooks'
 import { directoryOf } from './target'
 import { sendErrorText } from './errors'
-import { ConfirmDialog, NotRunningBanner, SendError, type ViewProps } from './components/PageParts'
+import {
+  AttachNotes,
+  ConfirmDialog,
+  NotRunningBanner,
+  SendError,
+  type ViewProps,
+} from './components/PageParts'
 import { DebugFrames, UnknownScenarioBanner } from './components/DebugPanels'
 
 function NewChatView({ userId, registry, search, railButton, username }: ViewProps) {
@@ -93,6 +99,10 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     setDraftRaw(v)
   }
   const composer = useRef<ComposerHandle>(null)
+  const attachments = useAttachments()
+  // The files the pending turn was sent with. Try again (a failed create) re-sends the same
+  // message, so it must re-send the same attachments: `take()` has already cleared the strip.
+  const inFlight = useRef<readonly File[]>([])
   const carry = { mock: search.mock, debug: search.debug }
   const mounted = useRef(true)
   useEffect(() => {
@@ -158,7 +168,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
   }, [failedCreate]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Resolves true once the turn started; false when it was refused before anything was sent. */
-  const send = async (text: string, retryId?: string): Promise<boolean> => {
+  const send = async (text: string, files: readonly File[], retryId?: string): Promise<boolean> => {
     if (!agent && !routed) return false
     setSendError(null)
     const draftKey = draftKeyOf(agent)
@@ -208,6 +218,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
       sessionId: retryId,
       create: !!retryId,
       text,
+      files,
       onCreated,
       onCreateFailed,
       onStart,
@@ -221,16 +232,20 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     } catch (err) {
       // Give the text back, unless the user has typed something newer since (Try again).
       if (!readDraft(userId, draftKey).trim()) setDraftRaw(text)
+      // The attachments come back either way: they belong to the message, not to the box.
+      attachments.restore(files)
       setSendError(err)
       return false
     }
   }
   const onSend = () => {
     const text = draft.trim()
+    const files = attachments.take()
+    inFlight.current = files
     dropUndo(userId)
     setUndo(null)
     setDraftRaw('')
-    void send(text)
+    void send(text, files)
   }
   const onExample = (text: string) => {
     if (draft.trim() && draft !== text) setReplaceWith(text)
@@ -284,7 +299,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     // Clear the box only if it still holds the retried text; anything newer is the user's.
     tryAgain: () =>
       live &&
-      void send(live.userText, live.sessionId).then((ok) => {
+      void send(live.userText, inFlight.current, live.sessionId).then((ok) => {
         if (ok && readDraft(userId, draftKeyOf(agent)).trim() === live.userText) setDraftRaw('')
       }),
     requests: {
@@ -334,6 +349,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         ) : undefined
       }
       value={draft}
+      attachments={attachments}
       onChange={setDraft}
       onSend={onSend}
       onStop={() => undefined}
@@ -413,6 +429,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         <div>
           {composerEl(true)}
           <SendError error={sendError} inline />
+          <AttachNotes notes={attachments.rejected} inline />
           {undo ? (
             <p className="mt-1.5 px-1 text-xs text-muted-foreground" data-testid="undo-draft">
               {copy.replacedDraft} ·{' '}
@@ -486,6 +503,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
       <div className="min-h-0 flex-1 overflow-y-auto">{body}</div>
       {search.debug ? <DebugFrames live={live} /> : null}
       {centred ? null : <SendError error={sendError} />}
+      {centred ? null : <AttachNotes notes={attachments.rejected} />}
       {!centred && (turn || target.kind === 'invalid') ? composerEl(false) : null}
       <StatusAnnouncer
         live={live}

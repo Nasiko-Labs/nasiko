@@ -10,7 +10,14 @@ import { meQuery } from '@nasiko/data-access/auth'
 import { apiFetch, fetchApi, withQuery } from '@nasiko/data-access/client'
 import { uuid } from '@nasiko/ui/lib/utils'
 import { announce } from './announce'
-import { chatKeys, createSession, resetPendingBackoff, saveMessage, sessionRows } from './api'
+import {
+  chatKeys,
+  createSession,
+  resetPendingBackoff,
+  saveMessage,
+  sessionRows,
+  uploadChatFiles,
+} from './api'
 import { copy } from './copy'
 import { createSignals, type Signals, type SignalsSnapshot } from './signals'
 import { unwrapMessagesPage } from './normalize'
@@ -46,6 +53,7 @@ function build(client: QueryClient, userId: string): { registry: TurnRegistry; s
     userId,
     createSession,
     saveMessage,
+    uploadFiles: uploadChatFiles,
     dispatch: (body, signal) =>
       fetchApi('/api/orchestrator/a2a', {
         method: 'POST',

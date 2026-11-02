@@ -126,6 +126,61 @@ impl Dialect {
             Dialect::Proto => serde_json::json!({"text": text}),
         }
     }
+
+    /// Render a caller-supplied part (always handed to us in the proto/`a2a-lf` field-presence
+    /// shape, since that's what `nasiko_types::a2a::Part` serializes to) into this dialect.
+    ///
+    /// Text already went through [`Self::text_part`]; without this, attachments were the one
+    /// part kind that skipped dialect handling entirely and went out proto-shaped on both
+    /// dialects. Verified against both SDK generations rather than inferred from the spec:
+    /// `a2a-sdk` 1.1.0 is protobuf-backed (`lf.a2a.v1.Part`) and accepts exactly these
+    /// `{raw,url,mediaType,filename}` fields while rejecting anything carrying `kind`;
+    /// `a2a-sdk` 0.3.0 is pydantic-backed and does the mirror image, rejecting `raw` and
+    /// requiring a nested `file` object. So a proto-shaped file part reaching a 0.x agent
+    /// failed that agent's own request validation — the user's attachment took the whole turn
+    /// down with it, rather than merely going unseen.
+    ///
+    /// Anything we don't recognize is passed through untouched: a part shape this function
+    /// has no rule for is better forwarded verbatim (the destination may well understand it)
+    /// than mangled into a guess.
+    fn convert_part(self, part: &serde_json::Value) -> serde_json::Value {
+        let Dialect::JsonRpc = self else {
+            return part.clone();
+        };
+        let Some(obj) = part.as_object() else {
+            return part.clone();
+        };
+
+        // `mediaType`/`filename` are siblings of the content field in the proto shape; in the
+        // JSON-RPC shape they move *inside* the `file` object under different names. Both are
+        // optional on both sides, so an absent one is omitted rather than sent as null.
+        let mut file = serde_json::Map::new();
+        if let Some(media_type) = obj.get("mediaType") {
+            file.insert("mimeType".into(), media_type.clone());
+        }
+        if let Some(filename) = obj.get("filename") {
+            file.insert("name".into(), filename.clone());
+        }
+
+        match (
+            obj.get("raw"),
+            obj.get("url"),
+            obj.get("text"),
+            obj.get("data"),
+        ) {
+            (Some(raw), ..) => {
+                file.insert("bytes".into(), raw.clone());
+                serde_json::json!({"kind": "file", "file": file})
+            }
+            (_, Some(url), ..) => {
+                file.insert("uri".into(), url.clone());
+                serde_json::json!({"kind": "file", "file": file})
+            }
+            (_, _, Some(text), _) => serde_json::json!({"kind": "text", "text": text}),
+            (_, _, _, Some(data)) => serde_json::json!({"kind": "data", "data": data}),
+            _ => part.clone(),
+        }
+    }
 }
 
 impl Default for A2aClient {
@@ -186,8 +241,8 @@ impl A2aClient {
     /// their proto-named equivalents), injecting `request_metadata` into
     /// `params.metadata`.
     ///
-    /// `extra_parts` are pre-built `Value`s taken as-is (file parts — their shape is the caller's
-    /// business, not this dialect's). `extra_text_parts` are raw strings this function tags
+    /// `extra_parts` are pre-built proto-shaped `Value`s (file parts), rendered into this dialect
+    /// by [`Dialect::convert_part`]. `extra_text_parts` are raw strings this function tags
     /// itself, via the SAME `dialect.text_part()` the primary message part uses — needed because a
     /// caller building a text part ahead of time (as `context_part::append_context_part`'s callers
     /// do for an already-serialized body) can't know here which dialect this specific attempt will
@@ -204,7 +259,7 @@ impl A2aClient {
         extra_text_parts: &[String],
     ) -> serde_json::Value {
         let mut parts = vec![dialect.text_part(message)];
-        parts.extend(extra_parts.iter().cloned());
+        parts.extend(extra_parts.iter().map(|p| dialect.convert_part(p)));
         parts.extend(extra_text_parts.iter().map(|t| dialect.text_part(t)));
 
         let mut body = serde_json::json!({
@@ -883,6 +938,7 @@ fn collect_text_parts<'a>(parts_arrays: impl Iterator<Item = &'a serde_json::Val
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn jsonrpc_dialect_uses_standard_method_role_and_typed_parts() {
@@ -926,7 +982,7 @@ mod tests {
         let client = A2aClient::new();
         let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "test.txt", "mediaType": "text/plain"});
         let body = client.build_message_body(
-            Dialect::JsonRpc,
+            Dialect::Proto,
             false,
             "analyze this",
             "ctx-1",
@@ -938,6 +994,116 @@ mod tests {
         assert_eq!(parts[0]["text"], "analyze this");
         assert_eq!(parts[1]["raw"], "aGVsbG8=");
         assert_eq!(parts[1]["filename"], "test.txt");
+    }
+
+    /// The whole point of `convert_part`: a 0.x (`kind`-tagged, pydantic) agent rejects the
+    /// proto shape outright, so forwarding it unconverted failed the agent's own request
+    /// validation and took the user's turn down with the attachment.
+    #[test]
+    fn inline_file_part_is_converted_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let file_part = serde_json::json!({"raw": "aGVsbG8=", "filename": "q3.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "summarize this",
+            "ctx-1",
+            &[file_part],
+            &[],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], json!({"kind": "text", "text": "summarize this"}));
+        assert_eq!(
+            parts[1],
+            json!({"kind": "file", "file": {
+                "mimeType": "application/pdf", "name": "q3.pdf", "bytes": "aGVsbG8="
+            }})
+        );
+        // No proto-shaped field survives — the 0.x model rejects unknown keys outright.
+        assert!(parts[1].get("raw").is_none());
+        assert!(parts[1].get("mediaType").is_none());
+    }
+
+    #[test]
+    fn url_file_part_becomes_a_uri_source_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let part = json!({"url": "https://example.com/a.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(Dialect::JsonRpc, false, "hi", "ctx-1", &[part], &[]);
+        assert_eq!(
+            body["params"]["message"]["parts"][1],
+            json!({"kind": "file", "file": {
+                "mimeType": "application/pdf", "uri": "https://example.com/a.pdf"
+            }})
+        );
+    }
+
+    /// `filename`/`mediaType` are optional on both sides; an absent one is omitted, never
+    /// sent as an explicit null (which 0.x validates as a type error, not as "unset").
+    #[test]
+    fn absent_file_metadata_is_omitted_not_nulled() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[json!({"raw": "aGk="})],
+            &[],
+        );
+        assert_eq!(
+            body["params"]["message"]["parts"][1],
+            json!({"kind": "file", "file": {"bytes": "aGk="}})
+        );
+    }
+
+    /// `a2a-sdk` 1.1.0 is protobuf-backed and rejects any part carrying `kind`, so the proto
+    /// dialect must stay a verbatim passthrough — converting both dialects would have swapped
+    /// one broken generation for the other.
+    #[test]
+    fn proto_dialect_forwards_file_parts_verbatim() {
+        let client = A2aClient::new();
+        let part = json!({"raw": "aGk=", "filename": "q3.pdf", "mediaType": "application/pdf"});
+        let body = client.build_message_body(
+            Dialect::Proto,
+            false,
+            "hi",
+            "ctx-1",
+            std::slice::from_ref(&part),
+            &[],
+        );
+        assert_eq!(body["params"]["message"]["parts"][1], part);
+    }
+
+    #[test]
+    fn unrecognized_part_shapes_are_forwarded_untouched() {
+        let client = A2aClient::new();
+        let part = json!({"somethingNew": {"v": 1}});
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            std::slice::from_ref(&part),
+            &[],
+        );
+        assert_eq!(body["params"]["message"]["parts"][1], part);
+    }
+
+    #[test]
+    fn non_file_parts_are_converted_for_the_json_rpc_dialect() {
+        let client = A2aClient::new();
+        let body = client.build_message_body(
+            Dialect::JsonRpc,
+            false,
+            "hi",
+            "ctx-1",
+            &[json!({"text": "extra"}), json!({"data": {"a": 1}})],
+            &[],
+        );
+        let parts = body["params"]["message"]["parts"].as_array().unwrap();
+        assert_eq!(parts[1], json!({"kind": "text", "text": "extra"}));
+        assert_eq!(parts[2], json!({"kind": "data", "data": {"a": 1}}));
     }
 
     /// The whole reason `extra_text_parts` is a separate parameter from `extra_parts`: the same

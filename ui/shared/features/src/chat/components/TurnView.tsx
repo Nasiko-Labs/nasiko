@@ -19,6 +19,7 @@ import { splitStopped } from '../normalize'
 import type { DisplayTurn, ReplyStatus } from '../turnModel'
 import { isLivePhase, type LiveTurn } from '../turnRegistry'
 import { tuning } from '../tuning'
+import { MessageAttachments } from './Attachments'
 import type { ChatMessage, FilePart, HitlDto } from '../types'
 import { Markdown } from './Markdown'
 import { KnownEmpty, RoutedLive, RoutedSavedReply, type RoutedContext } from './RoutedTurn'
@@ -327,6 +328,13 @@ function TurnViewBody({
   const live = turn.live
   const liveNow = live ? isLivePhase(live.phase) : false
   const userText = turn.user?.content ?? live?.userText ?? ''
+  // The saved row once history has it (hydrated from `chat_message_files` by `list_messages`),
+  // the live turn's own parts until then — so an attachment shows from the moment it is sent.
+  const userFiles = turn.user
+    ? Array.isArray(turn.user.file_parts)
+      ? turn.user.file_parts
+      : []
+    : (live?.userFiles ?? [])
   const saved: ChatMessage[] = turn.replies
   const pending = turn.requests.filter((r) => r.status === 'pending')
   const liveRequest = live?.state.request
@@ -432,10 +440,14 @@ function TurnViewBody({
       {turn.boundary ? (
         <div className="text-center text-xs text-muted-foreground">{copy.earlierMessages}</div>
       ) : null}
-      {userText ? (
+      {userText || userFiles.length ? (
         <div className="flex justify-end">
-          <div className="max-w-[85%] rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
+          <div className="max-w-[85%] space-y-2 rounded-lg bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
             {userText}
+            <MessageAttachments
+              files={userFiles}
+              pending={!turn.user && !!live?.userFilesPending}
+            />
             {(live?.phase === 'error' || live?.phase === 'not_started') &&
             live.error?.certainty === 'not-dispatched' ? (
               <div className="mt-1 text-xs text-destructive">{copy.notSent}</div>

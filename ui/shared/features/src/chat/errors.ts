@@ -9,7 +9,8 @@ import { ApiError } from '@nasiko/data-access/client'
 import type { ChatRefusal, Slots } from '@nasiko/app-core/edition/edition'
 import { errorCopy, type ErrorKey } from './copy'
 
-export type ChatErrorPhase = 'create' | 'save-user' | 'dispatch' | 'stream' | 'save-assistant'
+export type ChatErrorPhase =
+  'create' | 'save-user' | 'upload' | 'dispatch' | 'stream' | 'save-assistant'
 export type Certainty = 'not-dispatched' | 'rejected-before-run' | 'unknown' | 'definite'
 
 export class ChatError extends Error {
@@ -85,6 +86,10 @@ export function dispatchError(
     return new ChatError({ ...base, key: 'forbidden', certainty: 'rejected-before-run' })
   if (status === 404)
     return new ChatError({ ...base, key: 'agentGone', certainty: 'rejected-before-run' })
+  // The agent, not OpenRuntime, refused the body (a2a_dispatch.rs's `AgentRejected`); it never
+  // ran, so this is one of the few failures the user can fix outright by dropping the file.
+  if (status === 413)
+    return new ChatError({ ...base, key: 'messageTooLarge', certainty: 'rejected-before-run' })
   // quirk: §10.11 — 429 has no Retry-After, so the copy says "a minute".
   if (status === 429)
     return new ChatError({ ...base, key: 'rateLimited', certainty: 'rejected-before-run' })
@@ -129,6 +134,15 @@ export function restError(phase: ChatErrorPhase, err: unknown): ChatError {
     return new ChatError({
       phase,
       key: 'saveUserFailed',
+      certainty: 'not-dispatched',
+      status,
+      serverDetail: detail,
+    })
+  // The upload runs before anything is dispatched, so a failure here reached no agent either.
+  if (phase === 'upload')
+    return new ChatError({
+      phase,
+      key: 'uploadFailed',
       certainty: 'not-dispatched',
       status,
       serverDetail: detail,

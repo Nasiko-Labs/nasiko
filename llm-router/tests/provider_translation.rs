@@ -436,7 +436,6 @@ async fn translated_call(
         .map_err(|e| format!("inbound parse ({}): {e}", client.label()))?;
 
     let resolved = ResolvedConfig {
-        agent_id: String::new(),
         compress_enabled: false,
         provider: backend.label().to_string(),
         model: backend_model.to_string(),

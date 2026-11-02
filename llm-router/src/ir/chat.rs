@@ -121,12 +121,13 @@ impl Message {
             .then_some(text_parts)
     }
 
-    /// The last cache marker on the content, for a provider that marks a whole tool result.
+    /// The last cache marker on the content, on any part (text or media), for a provider that
+    /// marks a whole tool result.
     pub fn last_cache_marker(&self) -> Option<&Value> {
-        self.marked_text_parts()?
-            .into_iter()
-            .rev()
-            .find_map(|p| p.get(CACHE_CONTROL))
+        let Some(Value::Array(parts)) = &self.content else {
+            return None;
+        };
+        parts.iter().rev().find_map(|p| p.get(CACHE_CONTROL))
     }
 }
 

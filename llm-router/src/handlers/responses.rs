@@ -417,6 +417,7 @@ fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_REQUEST),
             message.clone(),
         ),
+        ProviderError::Rejected(message) => (StatusCode::BAD_REQUEST, message.clone()),
         _ => (StatusCode::BAD_GATEWAY, error.to_string()),
     };
     TranslatedAttemptError::Terminal(Box::new(mark_lossy(responses_error(

@@ -28,9 +28,9 @@ use serde_json::{Map, Value, json};
 
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest,
-    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef,
-    Usage,
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, Delta,
+    EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall,
+    ToolCallDelta, ToolDef, UnsupportedPart, Usage,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -102,7 +102,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg);
+        let (body, name_map) = to_converse_request(req, cfg)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -142,7 +142,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg);
+        let (body, name_map) = to_converse_request(req, cfg)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -252,7 +252,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg);
+        let (body, name_map) = to_converse_request(req, cfg)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -287,7 +287,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request_no_temperature(req, cfg);
+        let (body, name_map) = to_converse_request_no_temperature(req, cfg)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -319,7 +319,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, _name_map) = to_converse_request_no_temperature(req, cfg);
+        let (body, _name_map) = to_converse_request_no_temperature(req, cfg)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -401,7 +401,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg);
+        let (body, name_map) = to_converse_request(req, cfg)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -741,19 +741,191 @@ fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
 
 // ── OpenAI → Bedrock Converse (request) ─────────────────────────────────────
 
+/// A part the hub carries but Converse cannot, rendered onto this edge's error type.
+fn unsupported(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Rejected(format!(
+        "Bedrock does not accept this input: {}",
+        err.into_message()
+    ))
+}
+
+/// Converse names media by a **bare format token** (`png`, `pdf`, `mp4`) — never a mime
+/// type. A `split('/')` guess is wrong often enough to matter (`image/jpeg` → `jpg`,
+/// `video/quicktime` → `quicktime`) and the service answers with a validation error, so
+/// every accepted type is listed explicitly.
+fn converse_image_format(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpeg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// `video/quicktime` is the one that proves the point: a `split('/')` guess yields
+/// "quicktime", and Converse only knows "mov".
+fn converse_video_format(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "video/x-matroska" => Some("mkv"),
+        "video/quicktime" => Some("mov"),
+        "video/mp4" => Some("mp4"),
+        "video/webm" => Some("webm"),
+        "video/x-flv" => Some("flv"),
+        "video/mpeg" => Some("mpeg"),
+        "video/x-ms-wmv" => Some("wmv"),
+        "video/3gpp" => Some("three_gp"),
+        _ => None,
+    }
+}
+
+fn converse_document_format(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "application/pdf" => Some("pdf"),
+        "text/csv" => Some("csv"),
+        "application/msword" => Some("doc"),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some("docx"),
+        "application/vnd.ms-excel" => Some("xls"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some("xlsx"),
+        "text/html" => Some("html"),
+        "text/plain" => Some("txt"),
+        "text/markdown" => Some("md"),
+        _ => None,
+    }
+}
+
+/// Converse requires `document.name` and validates it against
+/// `[a-zA-Z0-9\s\-\(\)\[\]]+` — notably **no dots**, so a filename can never be passed
+/// through as-is. Everything outside the class becomes a space, runs collapse, and an
+/// empty result falls back to a constant so the required field is always populated.
+fn sanitize_document_name(filename: Option<&str>) -> String {
+    let swept: String = filename
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '(' | ')' | '[' | ']') {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let collapsed = swept.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        "document".to_string()
+    } else {
+        collapsed
+    }
+}
+
+/// Converse also requires document names to be **unique within a request**, so a second
+/// `report.pdf` (or a second unnamed document) gets a numeric suffix rather than a 400.
+fn unique_document_name(filename: Option<&str>, used: &mut HashSet<String>) -> String {
+    let base = sanitize_document_name(filename);
+    let mut name = base.clone();
+    let mut n = 2;
+    while !used.insert(name.clone()) {
+        name = format!("{base} {n}");
+        n += 1;
+    }
+    name
+}
+
+/// Canonical part → Converse content block.
+///
+/// Converse takes media as inline bytes only (an S3 location is a different, bucket-
+/// scoped shape we do not mint), so a URL source is refused here rather than sent as an
+/// empty block. Converse has no audio input, so audio is refused by name.
+fn converse_block(
+    part: &ContentPart,
+    doc_names: &mut HashSet<String>,
+) -> Result<Value, UnsupportedPart> {
+    match part {
+        ContentPart::Text(text) => Ok(json!({ "text": text })),
+        ContentPart::Image { source, .. } => {
+            let (media_type, data) = source.inline().ok_or_else(|| {
+                UnsupportedPart::new(
+                    "unsupported content part type: 'image_url' with web URL (Bedrock requires base64 data URL)",
+                )
+            })?;
+            let format = converse_image_format(media_type).ok_or_else(|| {
+                UnsupportedPart::new(format!(
+                    "unsupported image media type for Bedrock: '{media_type}'"
+                ))
+            })?;
+            Ok(json!({
+                "image": { "format": format, "source": { "bytes": data } },
+            }))
+        }
+        ContentPart::File { source, filename } => {
+            let (media_type, data) = source.inline().ok_or_else(|| {
+                UnsupportedPart::new("unsupported file_data format (must be base64 data URL)")
+            })?;
+            let format = converse_document_format(media_type).ok_or_else(|| {
+                UnsupportedPart::new(format!(
+                    "unsupported document media type for Bedrock: '{media_type}'"
+                ))
+            })?;
+            Ok(json!({
+                "document": {
+                    "format": format,
+                    "name": unique_document_name(filename.as_deref(), doc_names),
+                    "source": { "bytes": data },
+                },
+            }))
+        }
+        ContentPart::Audio { .. } => Err(UnsupportedPart::new(
+            "unsupported content part type: 'input_audio'",
+        )),
+        ContentPart::Video { source } => {
+            let (media_type, data) = source.inline().ok_or_else(|| {
+                UnsupportedPart::new(
+                    "unsupported content part type: 'video_url' with web URL (Bedrock requires base64 data URL)",
+                )
+            })?;
+            let format = converse_video_format(media_type).ok_or_else(|| {
+                UnsupportedPart::new(format!(
+                    "unsupported video media type for Bedrock: '{media_type}'"
+                ))
+            })?;
+            Ok(json!({
+                "video": { "format": format, "source": { "bytes": data } },
+            }))
+        }
+    }
+}
+
+/// A message's content → Converse content blocks.
+///
+/// An absent/unmodelled content value becomes a single empty text block, which is what
+/// Converse expects for a turn that carries only tool calls.
+fn converse_content(
+    m: &Message,
+    doc_names: &mut HashSet<String>,
+) -> Result<Vec<Value>, ProviderError> {
+    match m.content_view().map_err(unsupported)? {
+        ContentView::Text(text) => Ok(vec![json!({ "text": text })]),
+        ContentView::Parts(parts) => parts
+            .iter()
+            .map(|p| converse_block(p, doc_names).map_err(unsupported))
+            .collect(),
+        ContentView::Empty => Ok(vec![json!({ "text": "" })]),
+    }
+}
+
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
 fn to_converse_request(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
-) -> (Value, HashMap<String, String>) {
+) -> Result<(Value, HashMap<String, String>), ProviderError> {
     to_converse_request_inner(req, cfg, true)
 }
 
 fn to_converse_request_no_temperature(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
-) -> (Value, HashMap<String, String>) {
+) -> Result<(Value, HashMap<String, String>), ProviderError> {
     to_converse_request_inner(req, cfg, false)
 }
 
@@ -761,11 +933,13 @@ fn to_converse_request_inner(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
     allow_temperature: bool,
-) -> (Value, HashMap<String, String>) {
+) -> Result<(Value, HashMap<String, String>), ProviderError> {
     let caching = CacheSupport::of(&cfg.model);
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
+    // Converse requires document names to be unique across the whole request.
+    let mut doc_names: HashSet<String> = HashSet::new();
 
     for m in &req.messages {
         match m.role.as_str() {
@@ -791,7 +965,7 @@ fn to_converse_request_inner(
                 pending_tool_results.push(json!({
                     "toolResult": {
                         "toolUseId": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": [{ "text": m.text().unwrap_or_default() }]
+                        "content": converse_content(m, &mut doc_names)?,
                     }
                 }));
                 pending_tool_results.extend(caching.after_tool_block(m.last_cache_marker()));
@@ -803,9 +977,7 @@ fn to_converse_request_inner(
             _ => {
                 // "user" and any unexpected role → user turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                let content = caching
-                    .marked_text_blocks(m)
-                    .unwrap_or_else(|| vec![json!({ "text": m.text().unwrap_or_default() })]);
+                let content = caching.with_cache_points(m, converse_content(m, &mut doc_names)?);
                 messages.push(json!({ "role": "user", "content": content }));
             }
         }
@@ -845,7 +1017,7 @@ fn to_converse_request_inner(
             }
         }
     }
-    (body, name_map)
+    Ok((body, name_map))
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -919,6 +1091,33 @@ impl CacheSupport {
             }
         }
         Some(blocks)
+    }
+
+    /// `blocks`, the Converse rendering of `m`'s parts, with a cache point after each block whose
+    /// part carries a marker and that the model accepts one after.
+    fn with_cache_points(self, m: &Message, blocks: Vec<Value>) -> Vec<Value> {
+        let Some(Value::Array(parts)) = &m.content else {
+            return blocks;
+        };
+        let mut out = Vec::with_capacity(blocks.len());
+        // `content_view` projects the raw array one part to one part, so the two line up.
+        for (block, part) in blocks.into_iter().zip(parts) {
+            let point = part
+                .get(CACHE_CONTROL)
+                .filter(|_| self.accepts_point_after(&block))
+                .map(|marker| self.cache_point(marker));
+            out.push(block);
+            out.extend(point);
+        }
+        out
+    }
+
+    fn accepts_point_after(self, block: &Value) -> bool {
+        match self {
+            Self::Everywhere { .. } => true,
+            Self::AfterText => block.get("text").is_some(),
+            Self::None => false,
+        }
     }
 
     /// The cache point to follow a tool call, tool result or tool definition carrying `marker`.
@@ -1326,7 +1525,7 @@ mod tests {
             json!({"messages":[{"role":"user","content":"Reply with just OK."}]}),
         )
         .unwrap();
-        let (body, names) = to_converse_request(&request, &config);
+        let (body, names) = to_converse_request(&request, &config).unwrap();
         let http = reqwest::Client::new();
         for surface in ["converse", "converse-stream"] {
             let response = http
@@ -1444,11 +1643,43 @@ mod tests {
     }
 
     #[test]
+    fn a_cache_point_follows_a_marked_image_only_where_the_model_accepts_one() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" }, "cache_control": ephemeral },
+                { "type": "text", "text": "What is this?", "cache_control": ephemeral }
+            ]}]
+        }))
+        .unwrap();
+        let shape = |model: &str| -> Vec<String> {
+            let (body, _) = to_converse_request(&req, &resolved(model)).unwrap();
+            body["messages"][0]["content"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|block| block.as_object().unwrap().keys().next().unwrap().clone())
+                .collect()
+        };
+
+        assert_eq!(
+            shape("us.anthropic.claude-haiku-5-5"),
+            ["image", "cachePoint", "text", "cachePoint"]
+        );
+        // Nova takes a cache point only right after text.
+        assert_eq!(
+            shape("us.amazon.nova-pro-v1:0"),
+            ["image", "text", "cachePoint"]
+        );
+    }
+
+    #[test]
     fn an_anthropic_agents_cache_markers_become_cache_points_on_claude() {
         let (body, _) = to_converse_request(
             &marked_anthropic_request(),
             &resolved("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             body["system"],
@@ -1473,7 +1704,8 @@ mod tests {
         let (body, _) = to_converse_request(
             &marked_anthropic_request(),
             &resolved("us.amazon.nova-pro-v1:0"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             body["system"].as_array().unwrap().last(),
@@ -1496,8 +1728,9 @@ mod tests {
         ]));
         let one_hour = json!({ "cachePoint": { "type": "default", "ttl": "1h" } });
 
-        let (claude, _) = to_converse_request(&req, &resolved("us.anthropic.claude-haiku-5-5"));
-        let (nova, _) = to_converse_request(&req, &resolved("us.amazon.nova-pro-v1:0"));
+        let (claude, _) =
+            to_converse_request(&req, &resolved("us.anthropic.claude-haiku-5-5")).unwrap();
+        let (nova, _) = to_converse_request(&req, &resolved("us.amazon.nova-pro-v1:0")).unwrap();
 
         assert_eq!(claude["system"][1], one_hour);
         assert_eq!(nova["system"][1], cache_point());
@@ -1514,7 +1747,8 @@ mod tests {
         let (body, _) = to_converse_request(
             &req,
             &resolved("us.anthropic.claude-opus-4-1-20250805-v1:0"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(body["system"][1], cache_point());
     }
@@ -1539,9 +1773,11 @@ mod tests {
         // In `system` it would change the cached prefix of every turn that applies or skips it.
         let directive = json!({ "text": crate::brevity::DIRECTIVE });
         for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
-            let (without, _) = to_converse_request(&marked_anthropic_request(), &resolved(model));
+            let (without, _) =
+                to_converse_request(&marked_anthropic_request(), &resolved(model)).unwrap();
             let (with, _) =
-                to_converse_request(&with_brevity(marked_anthropic_request()), &resolved(model));
+                to_converse_request(&with_brevity(marked_anthropic_request()), &resolved(model))
+                    .unwrap();
 
             assert_eq!(with["system"], without["system"], "{model}");
             assert_eq!(with["toolConfig"], without["toolConfig"], "{model}");
@@ -1573,7 +1809,8 @@ mod tests {
         let (body, _) = to_converse_request(
             &with_brevity(req),
             &resolved("us.anthropic.claude-haiku-5-5"),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             body["system"],
@@ -1585,7 +1822,7 @@ mod tests {
     #[test]
     fn a_model_without_prompt_caching_gets_no_cache_points() {
         let (body, _) =
-            to_converse_request(&marked_anthropic_request(), &resolved("deepseek.v3.2"));
+            to_converse_request(&marked_anthropic_request(), &resolved("deepseek.v3.2")).unwrap();
 
         let sent = body.to_string();
         assert!(!sent.contains("cachePoint"));
@@ -1617,7 +1854,7 @@ mod tests {
             "tool_choice": "auto"
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
+        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2")).unwrap();
 
         // System extracted to top level.
         assert_eq!(body["system"][0]["text"], "You are helpful.");
@@ -1641,6 +1878,173 @@ mod tests {
     }
 
     #[test]
+    fn image_part_becomes_a_format_token_and_inline_bytes() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "what is this?" },
+                { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+            ]}]
+        }))
+        .unwrap();
+
+        let (body, _map) =
+            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["text"], "what is this?");
+        // A bare token, never the mime type — Converse rejects "image/png" here.
+        assert_eq!(content[1]["image"]["format"], "png");
+        assert_eq!(content[1]["image"]["source"]["bytes"], "iVBORw0KGgo=");
+    }
+
+    #[test]
+    fn jpeg_maps_to_the_jpeg_token_not_a_split_of_the_mime_type() {
+        // The trap this guards: `media_type.split('/').last()` yields "jpeg" here but
+        // "quicktime" for video/quicktime, so the mapping is a table, not a guess.
+        for (mime, token) in [
+            ("image/jpeg", "jpeg"),
+            ("image/jpg", "jpeg"),
+            ("image/gif", "gif"),
+            ("image/webp", "webp"),
+        ] {
+            assert_eq!(converse_image_format(mime), Some(token));
+        }
+        assert_eq!(converse_image_format("image/svg+xml"), None);
+    }
+
+    #[test]
+    fn video_maps_to_converse_format_tokens_not_a_split_of_the_mime_type() {
+        // video/quicktime is the case that proves the table earns its keep: a
+        // split('/') guess yields "quicktime", and Converse only knows "mov".
+        assert_eq!(converse_video_format("video/quicktime"), Some("mov"));
+        assert_eq!(converse_video_format("video/x-matroska"), Some("mkv"));
+        assert_eq!(converse_video_format("video/3gpp"), Some("three_gp"));
+        assert_eq!(converse_video_format("video/mp4"), Some("mp4"));
+        assert_eq!(converse_video_format("video/ogg"), None);
+
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/quicktime;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        let (body, _map) =
+            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
+        let video = &body["messages"][0]["content"][0]["video"];
+        assert_eq!(video["format"], "mov");
+        assert_eq!(video["source"]["bytes"], "AAAA");
+    }
+
+    #[test]
+    fn document_names_are_stripped_of_dots_and_made_unique() {
+        // Converse validates `name` against [a-zA-Z0-9\s\-\(\)\[\]]+ — no dots.
+        assert_eq!(sanitize_document_name(Some("q3.pdf")), "q3 pdf");
+        assert_eq!(sanitize_document_name(Some("a/b_c!.pdf")), "a b c pdf");
+        assert_eq!(sanitize_document_name(None), "document");
+        assert_eq!(sanitize_document_name(Some("...")), "document");
+
+        let mut used = HashSet::new();
+        assert_eq!(
+            unique_document_name(Some("report.pdf"), &mut used),
+            "report pdf"
+        );
+        assert_eq!(
+            unique_document_name(Some("report.pdf"), &mut used),
+            "report pdf 2"
+        );
+        assert_eq!(unique_document_name(None, &mut used), "document");
+        assert_eq!(unique_document_name(None, &mut used), "document 2");
+    }
+
+    #[test]
+    fn pdf_part_becomes_a_named_document_block() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "file", "file": {
+                    "file_data": "data:application/pdf;base64,JVBERi0=",
+                    "filename": "q3.pdf"
+                }}
+            ]}]
+        }))
+        .unwrap();
+
+        let (body, _map) =
+            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
+        let doc = &body["messages"][0]["content"][0]["document"];
+        assert_eq!(doc["format"], "pdf");
+        assert_eq!(doc["name"], "q3 pdf");
+        assert_eq!(doc["source"]["bytes"], "JVBERi0=");
+    }
+
+    #[test]
+    fn tool_results_carry_media_instead_of_flattening_to_text() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "anthropic.claude-3-5-sonnet",
+            "messages": [
+                { "role": "user", "content": "chart it" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "tc_1", "type": "function",
+                    "function": { "name": "chart", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "tc_1", "content": [
+                    { "type": "text", "text": "here" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ]}
+            ]
+        }))
+        .unwrap();
+
+        let (body, _map) =
+            to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap();
+        let result = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|m| m["content"][0].get("toolResult"))
+            .expect("tool result turn");
+        let content = result["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["text"], "here");
+        assert_eq!(content[1]["image"]["format"], "png");
+    }
+
+    #[test]
+    fn unfetchable_and_unsupported_media_are_refused_by_name() {
+        let cases = [
+            (
+                json!({ "type": "image_url", "image_url": { "url": "https://example.com/c.png" } }),
+                "web URL",
+            ),
+            (
+                json!({ "type": "input_audio", "input_audio": { "data": "UklG", "format": "wav" } }),
+                "input_audio",
+            ),
+            (
+                json!({ "type": "image_url", "image_url": { "url": "data:image/svg+xml;base64,PHN2" } }),
+                "image/svg+xml",
+            ),
+        ];
+        for (part, needle) in cases {
+            let req: ChatRequest = serde_json::from_value(json!({
+                "model": "anthropic.claude-3-5-sonnet",
+                "messages": [{ "role": "user", "content": [part] }]
+            }))
+            .unwrap();
+            let err =
+                to_converse_request(&req, &resolved("anthropic.claude-3-5-sonnet")).unwrap_err();
+            match err {
+                ProviderError::Rejected(message) => {
+                    assert!(message.contains(needle), "{message} should name {needle}");
+                }
+                other => panic!("expected a 400, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn tool_history_translates_to_converse_shape() {
         let req: ChatRequest = serde_json::from_value(json!({
             "messages": [
@@ -1653,7 +2057,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2"));
+        let (body, _map) = to_converse_request(&req, &resolved("deepseek.v3.2")).unwrap();
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // Assistant turn with toolUse.

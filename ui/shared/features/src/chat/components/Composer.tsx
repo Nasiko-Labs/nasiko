@@ -5,20 +5,27 @@
  * Send's slot (direct chats only). While a request is pending, Go to request and Start a new chat show
  * inside the card. `/` focuses the box when nothing else takes typing.
  */
-import { ArrowUp, Square } from 'lucide-react'
+import { ArrowUp, Paperclip, Square } from 'lucide-react'
 import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
+  type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type ReactNode,
   type Ref,
 } from 'react'
 import { Button } from '@nasiko/ui/primitives/button'
+import { Input } from '@nasiko/ui/primitives/input'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { fmtBytes } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
+import type { PendingFile } from '../attachments'
 import { copy } from '../copy'
 import { tuning } from '../tuning'
+import { AttachmentStrip } from './Attachments'
 import { CHAT_COLUMN } from './turnStyles'
 
 export type ComposerMode =
@@ -35,6 +42,16 @@ export interface ComposerHandle {
   focus(): void
 }
 
+/**
+ * The composer's attachments (§7.7). The view owns the list — it survives a failed send, and the
+ * previews are its to revoke — so this only reports what the user chose and what they removed.
+ */
+export interface ComposerAttachments {
+  files: readonly PendingFile[]
+  onAdd(files: readonly File[]): void
+  onRemove(id: string): void
+}
+
 const typingTarget = (el: Element | null) =>
   !!el &&
   (el instanceof HTMLInputElement ||
@@ -49,6 +66,7 @@ export function Composer({
   note,
   inline = false,
   targetSlot,
+  attachments,
   value,
   onChange,
   onSend,
@@ -69,6 +87,8 @@ export function Composer({
   inline?: boolean
   /** The new chat's target chip, at the card's bottom left (§5.4). */
   targetSlot?: ReactNode
+  /** Attachments; omitted where they don't apply, and the paperclip isn't shown (§7.7). */
+  attachments?: ComposerAttachments
   value: string
   onChange(v: string): void
   onSend(): void
@@ -101,6 +121,8 @@ export function Composer({
   }, [])
 
   const tooLong = value.length > tuning.MESSAGE_MAX_CHARS
+  // Text is still required with an attachment: the server's dispatch refuses a message with no
+  // text part, and on a routed chat that text is what the orchestrator routes on.
   const canSend = mode.kind === 'ready' && !!value.trim() && !tooLong
   const blocked = mode.kind === 'locked' ? mode.blocked : undefined
   const submit = () => {
@@ -118,6 +140,29 @@ export function Composer({
     mode.reason
   ) : null
 
+  // A fresh input per pick, so choosing the same file twice in a row still fires `change`.
+  const [pickKey, setPickKey] = useState(0)
+  const [over, setOver] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
+  const canAttach = !!attachments && mode.kind !== 'streaming'
+  const take = (list: FileList | null | undefined) => {
+    const files = list ? [...list] : []
+    if (files.length && canAttach) attachments.onAdd(files)
+  }
+  const onDrop = (e: DragEvent) => {
+    if (!canAttach) return
+    e.preventDefault()
+    setOver(false)
+    take(e.dataTransfer?.files)
+  }
+  // A pasted screenshot is a file on the clipboard; pasted text has none, and must still paste.
+  const onPaste = (e: ClipboardEvent) => {
+    const files = e.clipboardData?.files
+    if (!canAttach || !files?.length) return
+    e.preventDefault()
+    take(files)
+  }
+
   return (
     <form
       className={
@@ -134,8 +179,26 @@ export function Composer({
         </label>
         <div
           data-tour="chat-composer"
-          className="rounded-xl border border-border bg-card shadow-xs focus-within:border-ring focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background"
+          className={cn(
+            'relative rounded-xl border border-border bg-card shadow-xs focus-within:border-ring focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2 focus-within:ring-offset-background',
+            over && 'border-primary bg-accent',
+          )}
+          onDragOver={(e) => {
+            if (!canAttach) return
+            e.preventDefault()
+            setOver(true)
+          }}
+          onDragLeave={() => setOver(false)}
+          onDrop={onDrop}
         >
+          {over ? (
+            <p
+              className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-accent/90 text-sm font-medium"
+              data-testid="composer-drop-hint"
+            >
+              {copy.attachDrop}
+            </p>
+          ) : null}
           <Textarea
             id="chat-composer"
             ref={box}
@@ -143,6 +206,7 @@ export function Composer({
             placeholder={placeholder ?? label ?? copy.composerLabel(agentName)}
             onChange={(e) => onChange(e.target.value)}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             rows={1}
             aria-describedby={
               reason ? 'chat-composer-hint chat-composer-keys' : 'chat-composer-keys'
@@ -173,7 +237,52 @@ export function Composer({
               </Button>
             </div>
           ) : null}
+          {attachments?.files.length ? (
+            <div className="px-3 pb-1">
+              <AttachmentStrip
+                files={attachments.files}
+                disabled={mode.kind === 'streaming'}
+                onRemove={attachments.onRemove}
+              />
+            </div>
+          ) : null}
           <div className="flex min-h-11 items-center gap-2 px-2 pb-2">
+            {attachments ? (
+              <>
+                <label className="contents">
+                  <span className="sr-only">{copy.attach}</span>
+                  <Input
+                    key={pickKey}
+                    ref={picker}
+                    type="file"
+                    multiple
+                    className="sr-only"
+                    tabIndex={-1}
+                    data-testid="attach-input"
+                    disabled={!canAttach}
+                    onChange={(e) => {
+                      take(e.target.files)
+                      setPickKey((k) => k + 1)
+                    }}
+                  />
+                </label>
+                <Button
+                  type="button"
+                  size="icon-sm"
+                  variant="ghost"
+                  className="shrink-0 pointer-coarse:size-11"
+                  disabled={!canAttach}
+                  aria-label={copy.attach}
+                  title={copy.attachHint(
+                    tuning.MAX_ATTACHMENTS,
+                    fmtBytes(tuning.ATTACHMENT_MAX_BYTES),
+                  )}
+                  onClick={() => picker.current?.click()}
+                >
+                  <Paperclip aria-hidden />
+                </Button>
+              </>
+            ) : null}
             {targetSlot}
             <span
               id="chat-composer-keys"

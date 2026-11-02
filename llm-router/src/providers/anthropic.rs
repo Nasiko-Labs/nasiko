@@ -22,9 +22,9 @@ use serde_json::{Map, Value, json};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest,
-    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef,
-    Usage,
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView,
+    DataSource, Delta, EmbeddingsRequest, EmbeddingsResponse, FunctionCall, FunctionCallDelta,
+    Message, ToolCall, ToolCallDelta, ToolDef, UnsupportedPart, Usage,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -51,7 +51,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_anthropic_request(req, cfg);
+        let body = to_anthropic_request(req, cfg)?;
 
         let resp = self
             .http
@@ -85,7 +85,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut body = to_anthropic_request(req, cfg);
+        let mut body = to_anthropic_request(req, cfg)?;
         body["stream"] = json!(true);
 
         let resp = self
@@ -336,7 +336,85 @@ impl ProviderClient for AnthropicProvider {
 
 // ── OpenAI → Anthropic (request) ─────────────────────────────────────────────
 
-fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+/// A part the hub carries but Anthropic cannot, rendered onto this edge's error type.
+fn unsupported(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Rejected(format!(
+        "Anthropic does not accept this input: {}",
+        err.into_message()
+    ))
+}
+
+fn empty_user_content() -> ProviderError {
+    ProviderError::Rejected("user message content cannot be empty".to_string())
+}
+
+/// Anthropic takes bytes inline or by URL, so both [`DataSource`] arms map directly.
+fn anthropic_source(source: &DataSource) -> Value {
+    match source {
+        DataSource::Inline { media_type, data } => json!({
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }),
+        DataSource::Url(url) => json!({ "type": "url", "url": url }),
+    }
+}
+
+/// Canonical part → Anthropic content block.
+///
+/// The Messages API has no audio input, so audio is refused by name here rather than
+/// dropped — a model answering confidently about audio it never received is the worse
+/// failure. `detail` and `filename` have no Anthropic equivalent and stop at this edge.
+fn anthropic_block(part: &ContentPart) -> Result<Value, UnsupportedPart> {
+    match part {
+        ContentPart::Text(text) => Ok(json!({ "type": "text", "text": text })),
+        ContentPart::Image { source, .. } => Ok(json!({
+            "type": "image",
+            "source": anthropic_source(source),
+        })),
+        ContentPart::File { source, .. } => Ok(json!({
+            "type": "document",
+            "source": anthropic_source(source),
+        })),
+        ContentPart::Audio { .. } => Err(UnsupportedPart::new(
+            "unsupported content part type: 'input_audio'",
+        )),
+        // The Messages API has no video input of any kind.
+        ContentPart::Video { .. } => Err(UnsupportedPart::new(
+            "unsupported content part type: 'video_url'",
+        )),
+    }
+}
+
+fn anthropic_blocks(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
+    parts
+        .iter()
+        .map(|p| anthropic_block(p).map_err(unsupported))
+        .collect()
+}
+
+fn has_media(parts: &[ContentPart]) -> bool {
+    parts.iter().any(|p| !matches!(p, ContentPart::Text(_)))
+}
+
+/// [`anthropic_blocks`] for `m`'s parts, each block keeping the cache marker its part carried.
+fn marked_anthropic_blocks(
+    m: &Message,
+    parts: &[ContentPart],
+) -> Result<Vec<Value>, ProviderError> {
+    let mut blocks = anthropic_blocks(parts)?;
+    if let Some(Value::Array(raw)) = &m.content {
+        // `content_view` projects the raw array one part to one part, so the two line up.
+        for (block, part) in blocks.iter_mut().zip(raw) {
+            if let Some(marker) = part.get(CACHE_CONTROL) {
+                block[CACHE_CONTROL] = marker.clone();
+            }
+        }
+    }
+    Ok(blocks)
+}
+
+fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
     let mut system_messages: Vec<&Message> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -354,11 +432,18 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
                 }
             }
             "tool" => {
-                // Accumulate consecutive tool results into one following user turn.
+                // Accumulate consecutive tool results into one following user turn. A result
+                // keeps one marker, on the whole result, so its own blocks go unmarked.
+                let content = match m.content_view().map_err(unsupported)? {
+                    ContentView::Parts(parts) if has_media(&parts) => {
+                        Value::Array(anthropic_blocks(&parts)?)
+                    }
+                    _ => json!(m.text().unwrap_or_default()),
+                };
                 let mut result = json!({
                     "type": "tool_result",
                     "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
-                    "content": m.text().unwrap_or_default(),
+                    "content": content,
                 });
                 if let Some(marker) = m.last_cache_marker() {
                     result[CACHE_CONTROL] = marker.clone();
@@ -370,9 +455,21 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
                 messages.push(assistant_to_anthropic(m));
             }
             _ => {
-                // "user" (and any unexpected role) → a user text turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(json!({ "role": "user", "content": text_content(m) }));
+                // Unmarked text goes as one string, byte-identical to before markers and media
+                // were kept; a marker or a media part needs blocks.
+                let content_val = match m.content_view().map_err(unsupported)? {
+                    ContentView::Parts(parts)
+                        if has_media(&parts) || m.last_cache_marker().is_some() =>
+                    {
+                        Value::Array(marked_anthropic_blocks(m, &parts)?)
+                    }
+                    _ => match m.text() {
+                        Some(text) if !text.is_empty() => Value::String(text),
+                        _ => return Err(empty_user_content()),
+                    },
+                };
+                messages.push(json!({ "role": "user", "content": content_val }));
             }
         }
     }
@@ -402,7 +499,7 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_anthropic) {
         body["tool_choice"] = choice;
     }
-    body
+    Ok(body)
 }
 
 fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
@@ -454,14 +551,6 @@ fn system_field(system_messages: &[&Message]) -> Option<Value> {
         })
         .collect();
     Some(json!(blocks))
-}
-
-/// A user turn's content: its text as one string, or text blocks when a part carries a marker.
-fn text_content(m: &Message) -> Value {
-    match marked_text_blocks(m) {
-        Some(blocks) => json!(blocks),
-        None => json!(m.text().unwrap_or_default()),
-    }
 }
 
 /// One Anthropic text block per text part, each keeping its cache marker; `None` when no part
@@ -754,7 +843,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
 
         assert_eq!(body["model"], "claude-3-5-sonnet-20241022");
         assert_eq!(body["max_tokens"], 4000); // from request (config didn't set it)
@@ -783,7 +872,7 @@ mod tests {
             "logit_bias": { "50256": -100 }
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert!(body.get("top_p").is_none());
         assert!(body.get("frequency_penalty").is_none());
         assert!(body.get("logit_bias").is_none());
@@ -794,7 +883,7 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert_eq!(body["max_tokens"], DEFAULT_MAX_TOKENS);
     }
 
@@ -813,7 +902,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         let msgs = body["messages"].as_array().unwrap();
         assert_eq!(msgs.len(), 3);
         // assistant turn carries a tool_use block with the parsed input object
@@ -842,7 +931,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let body = to_anthropic_request(&req, &resolved());
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
         assert_eq!(body["messages"][1]["content"][0]["text"], "Calling both.");
         assert_eq!(body["messages"][1]["content"][1]["name"], "one");
         assert_eq!(body["messages"][1]["content"][2]["name"], "two");
@@ -855,7 +944,7 @@ mod tests {
         let ir = crate::inbound::AnthropicInbound
             .parse_chat(agent_request.clone())
             .unwrap();
-        to_anthropic_request(&ir, &resolved())
+        to_anthropic_request(&ir, &resolved()).unwrap()
     }
 
     #[test]
@@ -970,7 +1059,7 @@ mod tests {
             }))
             .unwrap();
 
-        let sent = to_anthropic_request(&req, &resolved());
+        let sent = to_anthropic_request(&req, &resolved()).unwrap();
 
         assert_eq!(
             sent["system"],
@@ -1001,6 +1090,35 @@ mod tests {
         assert_eq!(sent["system"], "You are a coding agent. Repository map.");
         assert_eq!(sent["messages"][0]["content"], "Fix the test. Then stop.");
         assert!(sent["tools"][0].get("cache_control").is_none());
+    }
+
+    #[test]
+    fn cache_markers_beside_media_survive_the_round_trip() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let image = json!({ "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" });
+        let agent_request = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "image", "source": image, "cache_control": ephemeral },
+                    { "type": "text", "text": "What is this?" }
+                ]},
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "zoom", "input": {} }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "cache_control": ephemeral, "content": [
+                        { "type": "text", "text": "Zoomed." },
+                        { "type": "image", "source": image }
+                    ]}
+                ]}
+            ]
+        });
+
+        let sent = round_trip(&agent_request);
+
+        assert_eq!(sent["messages"], agent_request["messages"]);
     }
 
     /// Brevity's seam, run as the handler runs it: `Ok` when it added the directive.
@@ -1038,7 +1156,7 @@ mod tests {
             .parse_chat(agent_request.clone())
             .unwrap();
         assert_eq!(brevity(&mut first), Ok(()));
-        let first = to_anthropic_request(&first, &resolved());
+        let first = to_anthropic_request(&first, &resolved()).unwrap();
 
         // The next turn is mid tool-loop, where brevity stands down.
         let history = agent_request["messages"].as_array_mut().unwrap();
@@ -1055,7 +1173,7 @@ mod tests {
             brevity(&mut second),
             Err(crate::brevity::Skipped::ToolContinuation)
         );
-        let second = to_anthropic_request(&second, &resolved());
+        let second = to_anthropic_request(&second, &resolved()).unwrap();
 
         // Tools, system, then the first user turn up to its marker: the cached prefix, unchanged.
         assert_eq!(first["tools"], second["tools"]);
@@ -1076,7 +1194,7 @@ mod tests {
         .unwrap();
         brevity(&mut ir).unwrap();
 
-        let body = to_anthropic_request(&ir, &resolved());
+        let body = to_anthropic_request(&ir, &resolved()).unwrap();
 
         assert_eq!(body["system"], "You are helpful.");
         assert_eq!(
@@ -1104,7 +1222,7 @@ mod tests {
             .unwrap();
             brevity(&mut ir).unwrap();
 
-            let body = to_anthropic_request(&ir, &resolved());
+            let body = to_anthropic_request(&ir, &resolved()).unwrap();
 
             assert_eq!(body["system"], joined.as_str());
             assert_eq!(body["messages"][0]["content"], "why did the deploy fail?");
@@ -1410,5 +1528,207 @@ mod tests {
         assert_eq!(resp.model, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("नमस्ते"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(13));
+    }
+
+    #[test]
+    fn to_anthropic_request_with_image_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "What is this image?" },
+                    { "type": "image_url", "image_url": { "url": "https://example.com/test.png" } }
+                ]
+            }]
+        }))
+        .unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[0]["text"], "What is this image?");
+        assert_eq!(blocks[1]["type"], "image");
+        assert_eq!(blocks[1]["source"]["type"], "url");
+        assert_eq!(blocks[1]["source"]["url"], "https://example.com/test.png");
+    }
+
+    #[test]
+    fn to_anthropic_request_with_image_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "image");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "image/png");
+        assert_eq!(blocks[0]["source"]["data"], "iVBORw0KGgo=");
+    }
+
+    /// Emptiness is the destination's rule, not the front door's. The Anthropic inbound
+    /// parser forwards an empty turn; this spoke is what refuses it, because the Messages
+    /// API does. Routed to OpenAI instead, the same request would go through.
+    #[test]
+    fn an_empty_turn_is_refused_by_this_spoke_not_by_the_inbound_parser() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+
+        // The front door lets it past.
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": "" }]
+            }))
+            .unwrap();
+        assert_eq!(req.messages[0].content, Some(json!("")));
+
+        // The spoke is where it stops.
+        match to_anthropic_request(&req, &resolved()).unwrap_err() {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("empty"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn video_is_refused_by_name_rather_than_sent_empty() {
+        // The Messages API has no video input; a silent drop would have the model
+        // answering about a video it never received.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet",
+            "messages": [{ "role": "user", "content": [
+                { "type": "video_url", "video_url": { "url": "data:video/mp4;base64,AAAA" } }
+            ]}]
+        }))
+        .unwrap();
+        match to_anthropic_request(&req, &resolved()).unwrap_err() {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("video_url"), "{message}");
+            }
+            other => panic!("expected a 400, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_anthropic_request_with_file_data_url() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_data": "data:application/pdf;base64,JVBERi0xLjQK" } }
+                ]
+            }]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        let blocks = msgs[0]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "document");
+        assert_eq!(blocks[0]["source"]["type"], "base64");
+        assert_eq!(blocks[0]["source"]["media_type"], "application/pdf");
+        assert_eq!(blocks[0]["source"]["data"], "JVBERi0xLjQK");
+    }
+
+    #[test]
+    fn to_anthropic_request_with_unsupported_parts_rejected() {
+        // file.file_id not supported
+        let req_file_id: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "file", "file": { "file_id": "file-123" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_file_id, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("file.file_id"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
+
+        // input_audio not supported
+        let req_audio: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    { "type": "input_audio", "input_audio": { "data": "abc" } }
+                ]
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_audio, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("input_audio"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
+
+        // Empty message content
+        let req_empty: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [{
+                "role": "user",
+                "content": []
+            }]
+        }))
+        .unwrap();
+        let err = to_anthropic_request(&req_empty, &resolved()).unwrap_err();
+        match err {
+            ProviderError::Rejected(message) => {
+                assert!(message.contains("empty"));
+            }
+            _ => panic!("Expected ProviderError::Rejected"),
+        }
+    }
+
+    #[test]
+    fn to_anthropic_request_tool_result_preserves_images() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-3-5-sonnet-20241022",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_123",
+                    "content": [
+                        { "type": "text", "text": "Here is the chart:" },
+                        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+                    ]
+                }
+            ]
+        })).unwrap();
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        let msgs = body["messages"].as_array().unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0]["role"], "user");
+        let tr = &msgs[0]["content"][0];
+        assert_eq!(tr["type"], "tool_result");
+        assert_eq!(tr["tool_use_id"], "call_123");
+        let content_blocks = tr["content"].as_array().unwrap();
+        assert_eq!(content_blocks.len(), 2);
+        assert_eq!(content_blocks[0]["type"], "text");
+        assert_eq!(content_blocks[1]["type"], "image");
     }
 }

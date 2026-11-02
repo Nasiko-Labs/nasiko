@@ -84,6 +84,7 @@ describe('dispatchError', () => {
     [400, 'badRequest', 'rejected-before-run'],
     [403, 'forbidden', 'rejected-before-run'],
     [404, 'agentGone', 'rejected-before-run'],
+    [413, 'messageTooLarge', 'rejected-before-run'],
     [429, 'rateLimited', 'rejected-before-run'],
     [503, 'noAgents', 'rejected-before-run'],
     [500, 'cutOff', 'unknown'],

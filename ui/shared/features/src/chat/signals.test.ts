@@ -23,6 +23,7 @@ function setup(over: Partial<ChatDeps> = {}, frames: MockFrame[] = CHAT_SCENARIO
   let m = 0
   const deps: ChatDeps = {
     userId: 'u-1',
+    uploadFiles: vi.fn(async () => []),
     createSession: vi.fn(
       async (b) =>
         ({

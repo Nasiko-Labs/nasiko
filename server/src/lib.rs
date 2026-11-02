@@ -434,8 +434,7 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx =
-        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
@@ -662,6 +661,12 @@ async fn authenticate_oci_request(
         };
     }
 
+    // A browser session can delete or overwrite image tags here, so it gets the
+    // same cross-origin check as every other session-authenticated write.
+    if auth::middleware::is_cross_origin_cookie_write(&auth_state.app, req.method(), req.headers())
+    {
+        return auth::middleware::cross_origin_refused();
+    }
     let claims = match auth::middleware::validate_bearer(&auth_state.app, req.headers()).await {
         Ok(c) => c,
         Err((status, message)) => {

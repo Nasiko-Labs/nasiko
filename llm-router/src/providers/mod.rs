@@ -39,33 +39,29 @@ pub fn provider_for(
     match provider {
         "openai" => Ok(Box::new(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
-                .with_max_tools(cfg.openai_max_tools)
-                .with_cache_key(cfg.cache_markers_enabled),
+                .with_max_tools(cfg.openai_max_tools),
         )),
-        "anthropic" => Ok(Box::new(
-            AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())
-                .with_cache_markers(cfg.cache_markers_enabled),
-        )),
+        "anthropic" => Ok(Box::new(AnthropicProvider::new(
+            http.clone(),
+            cfg.anthropic_api_base.clone(),
+        ))),
         "gemini" => Ok(Box::new(GeminiProvider::new(
             http.clone(),
             cfg.gemini_api_base.clone(),
         ))),
-        "openrouter" => Ok(Box::new(
-            OpenRouterProvider::new(
-                http.clone(),
-                cfg.openrouter_api_base.clone(),
-                cfg.openrouter_http_referer.clone(),
-                cfg.openrouter_x_title.clone(),
-            )
-            .with_cache_markers(cfg.cache_markers_enabled),
-        )),
+        "openrouter" => Ok(Box::new(OpenRouterProvider::new(
+            http.clone(),
+            cfg.openrouter_api_base.clone(),
+            cfg.openrouter_http_referer.clone(),
+            cfg.openrouter_x_title.clone(),
+        ))),
         other => match custom_endpoint {
             Some(endpoint) => match &endpoint.dialect {
                 // Bedrock Converse has its own wire format; use the dedicated provider.
-                ProviderDialect::BedrockConverse => Ok(Box::new(
-                    BedrockConverseProvider::new(http.clone(), endpoint.base_url.clone())
-                        .with_cache_markers(cfg.cache_markers_enabled),
-                )),
+                ProviderDialect::BedrockConverse => Ok(Box::new(BedrockConverseProvider::new(
+                    http.clone(),
+                    endpoint.base_url.clone(),
+                ))),
                 // Other custom providers carry OpenAI-shaped bodies; the dialect
                 // supplies the envelope (URL layout + credential header).
                 _ => Ok(Box::new(OpenAiProvider::with_dialect(
@@ -358,7 +354,6 @@ mod tests {
         dialect: ProviderDialect,
     ) -> ResolvedConfig {
         ResolvedConfig {
-            agent_id: String::new(),
             compress_enabled: false,
             provider: provider.into(),
             model: "m".into(),
