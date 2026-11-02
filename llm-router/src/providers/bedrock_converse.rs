@@ -789,7 +789,7 @@ fn to_converse_request_inner(
                 // matches this turn's cached prefix; in `system` it would sit ahead of them all.
                 let placed = crate::brevity::is_directive(m)
                     && pending_tool_results.is_empty()
-                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE, caching);
                 if placed {
                     continue;
                 }
@@ -870,13 +870,26 @@ fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
 }
 
 /// Add `text` as a block at the end of `turn` when it is a user turn; `false` when it is not,
-/// or there is none.
-fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+/// or there is none. On Claude the text before it loses its trailing whitespace, unless that
+/// would empty it: the next request ends the turn at that text, and with trailing whitespace it
+/// missed the prefix this request cached there (checked live, Nov 2026). Nova read it either way.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str, caching: CacheSupport) -> bool {
     match turn
         .filter(|t| t["role"] == "user")
         .and_then(|t| t["content"].as_array_mut())
     {
         Some(content) => {
+            if matches!(caching, CacheSupport::Everywhere { .. })
+                && let Some(last) = content
+                    .iter_mut()
+                    .rev()
+                    .find(|b| b.get("cachePoint").is_none())
+                && let Some(before) = last["text"].as_str()
+                && before.trim_end().len() != before.len()
+                && !before.trim_end().is_empty()
+            {
+                last["text"] = json!(before.trim_end());
+            }
             content.push(json!({ "text": text }));
             true
         }
@@ -1678,6 +1691,29 @@ mod tests {
                 assert_eq!(with["messages"][turn], without["messages"][turn], "{model}");
             }
         }
+    }
+
+    #[test]
+    fn on_claude_the_text_ahead_of_brevitys_directive_loses_its_trailing_whitespace() {
+        // The next turn ends at that text; with the whitespace it missed this turn's cache live.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test.\n" }]
+        }))
+        .unwrap();
+        let directive = json!({ "text": crate::brevity::DIRECTIVE });
+
+        let claude =
+            with_router_points(&with_brevity(req.clone()), "us.anthropic.claude-haiku-5-5");
+        let nova = with_router_points(&with_brevity(req), "us.amazon.nova-pro-v1:0");
+
+        assert_eq!(
+            claude["messages"][0]["content"],
+            json!([{ "text": "Fix the failing test." }, cache_point(), directive])
+        );
+        assert_eq!(
+            nova["messages"][0]["content"],
+            json!([{ "text": "Fix the failing test.\n" }, cache_point(), directive])
+        );
     }
 
     #[test]

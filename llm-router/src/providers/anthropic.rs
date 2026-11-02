@@ -6,7 +6,8 @@
 //! `tool_result` blocks (consecutive results merged into one turn). `max_tokens` is
 //! required by Anthropic, so we always send one. An agent's `cache_control` markers go back
 //! on the system block, message block, tool result or tool they came from. Brevity's directive
-//! ends the last user turn rather than joining `system` ([`crate::brevity`]).
+//! ends the last user turn rather than joining `system` ([`crate::brevity`]). With
+//! `TOKEN_CACHE_MARKERS` on, the router fills slots the agent left free ([`add_cache_markers`]).
 //!
 //! Response (C2): `content[].tool_use` → OpenAI `tool_calls[]` (arguments as a JSON
 //! string); text blocks → `message.content`; `stop_reason` → `finish_reason`;
@@ -31,16 +32,38 @@ use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 /// Anthropic requires `max_tokens`; used when neither config nor request sets it.
 const DEFAULT_MAX_TOKENS: i64 = 4096;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+/// Anthropic accepts at most this many `cache_control` breakpoints in one request.
+const MAX_CACHE_MARKERS: usize = 4;
 
 pub struct AnthropicProvider {
     http: reqwest::Client,
     /// API base, e.g. `https://api.anthropic.com/v1` (overridable for tests).
     base: String,
+    /// Add the router's own cache markers ([`add_cache_markers`]).
+    cache_markers: bool,
 }
 
 impl AnthropicProvider {
     pub fn new(http: reqwest::Client, base: String) -> Self {
-        Self { http, base }
+        Self {
+            http,
+            base,
+            cache_markers: false,
+        }
+    }
+
+    /// Fill the cache-marker slots an agent leaves free (`TOKEN_CACHE_MARKERS`).
+    pub fn with_cache_markers(mut self, enabled: bool) -> Self {
+        self.cache_markers = enabled;
+        self
+    }
+
+    fn request_body(&self, req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
+        let mut body = to_anthropic_request(req, cfg);
+        if self.cache_markers {
+            add_cache_markers(&mut body);
+        }
+        body
     }
 }
 
@@ -51,7 +74,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_anthropic_request(req, cfg);
+        let body = self.request_body(req, cfg);
 
         let resp = self
             .http
@@ -85,7 +108,7 @@ impl ProviderClient for AnthropicProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut body = to_anthropic_request(req, cfg);
+        let mut body = self.request_body(req, cfg);
         body["stream"] = json!(true);
 
         let resp = self
@@ -420,14 +443,34 @@ fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
     let block = json!({ "type": "text", "text": text });
     turn["content"] = match turn["content"].take() {
         Value::Array(mut blocks) => {
+            if let Some(last) = blocks.last_mut() {
+                trim_text_end(last);
+            }
             blocks.push(block);
             Value::Array(blocks)
         }
         // Anthropic rejects an empty text block.
         Value::String(s) if s.is_empty() => json!([block]),
-        content => json!([{ "type": "text", "text": content }, block]),
+        content => {
+            let mut first = json!({ "type": "text", "text": content });
+            trim_text_end(&mut first);
+            json!([first, block])
+        }
     };
     true
+}
+
+/// Drop a text block's trailing whitespace, unless that would empty it. The text ahead of brevity's
+/// directive needs this: the next request ends the turn at that text, and with trailing whitespace
+/// it missed the prefix this request cached there (checked live, Nov 2026).
+fn trim_text_end(block: &mut Value) {
+    if block["type"] == "text"
+        && let Some(text) = block["text"].as_str()
+        && text.trim_end().len() != text.len()
+        && !text.trim_end().is_empty()
+    {
+        block["text"] = json!(text.trim_end());
+    }
 }
 
 /// Anthropic's top-level `system`: one joined string, unless a system message carries a cache
@@ -535,6 +578,87 @@ fn tool_to_anthropic(t: &ToolDef) -> Value {
         out[CACHE_CONTROL] = marker.clone();
     }
     out
+}
+
+/// Add the router's own cache markers in the slots the agent left free: first the end of the
+/// conversation, then the end of `system` (tools render before it, so that marker covers them
+/// too). Each is a 5-minute marker, the cheapest write.
+///
+/// Explicit markers, not Anthropic's top-level `cache_control`: that one marks the last block,
+/// which is brevity's directive when it applied, so the next turn would miss; and it is a 400
+/// when the agent already holds four markers or marked the last block with another TTL.
+fn add_cache_markers(body: &mut Value) {
+    let mut free = MAX_CACHE_MARKERS.saturating_sub(count_cache_markers(body));
+    // A 5-minute marker may not come before a 1-hour one, and `system` comes before every turn.
+    let turns_hold_long_marker = turn_blocks(body).any(|block| block[CACHE_CONTROL]["ttl"] == "1h");
+
+    if free > 0
+        && let Some(block) = last_cacheable_block(&mut body["messages"])
+        && block.get(CACHE_CONTROL).is_none()
+    {
+        block[CACHE_CONTROL] = json!({ "type": "ephemeral" });
+        free -= 1;
+    }
+    if free > 0
+        && !turns_hold_long_marker
+        && let Some(block) = last_system_block(body)
+        && block.get(CACHE_CONTROL).is_none()
+    {
+        block[CACHE_CONTROL] = json!({ "type": "ephemeral" });
+    }
+}
+
+fn count_cache_markers(body: &Value) -> usize {
+    ["tools", "system"]
+        .into_iter()
+        .filter_map(|field| body[field].as_array())
+        .flatten()
+        .chain(turn_blocks(body))
+        .filter(|block| block.get(CACHE_CONTROL).is_some())
+        .count()
+}
+
+/// Every content block of every turn.
+fn turn_blocks(body: &Value) -> impl Iterator<Item = &Value> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn["content"].as_array())
+        .flatten()
+}
+
+/// The last block of the last turn that can carry a marker, walking back past brevity's
+/// directive and anything Anthropic won't mark. A string content becomes its one text block.
+fn last_cacheable_block(messages: &mut Value) -> Option<&mut Value> {
+    let turn = messages.as_array_mut()?.last_mut()?;
+    as_blocks(&mut turn["content"])?
+        .iter_mut()
+        .rev()
+        .find(|block| match block["type"].as_str() {
+            Some("text") => block["text"]
+                .as_str()
+                .is_some_and(|t| !t.is_empty() && t != crate::brevity::DIRECTIVE),
+            Some("tool_use" | "tool_result" | "image" | "document") => true,
+            _ => false,
+        })
+}
+
+/// The last `system` block, unless it carries brevity's directive (it falls back there when the
+/// last turn is not the user's): a marker after it would cache a prefix the next turn drops.
+fn last_system_block(body: &mut Value) -> Option<&mut Value> {
+    let last = as_blocks(&mut body["system"])?.last_mut()?;
+    let text = last["text"].as_str()?;
+    (!text.is_empty() && !text.ends_with(crate::brevity::DIRECTIVE)).then_some(last)
+}
+
+/// `content` or `system` as a block array, turning a non-empty string into its one text block
+/// (Anthropic reads the two forms alike). `None` for anything else.
+fn as_blocks(field: &mut Value) -> Option<&mut Vec<Value>> {
+    if let Some(text) = field.as_str().filter(|t| !t.is_empty()) {
+        *field = json!([{ "type": "text", "text": text }]);
+    }
+    field.as_array_mut()
 }
 
 fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
@@ -651,6 +775,7 @@ mod tests {
 
     fn resolved() -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             compress_enabled: false,
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
@@ -1019,6 +1144,45 @@ mod tests {
 
     fn directive_block() -> Value {
         json!({ "type": "text", "text": crate::brevity::DIRECTIVE })
+    }
+
+    #[test]
+    fn the_text_ahead_of_brevitys_directive_loses_its_trailing_whitespace() {
+        // The next turn ends at that text; with the whitespace it missed this turn's cache live.
+        let ephemeral = json!({ "type": "ephemeral" });
+        for (content, trimmed) in [
+            (
+                json!("Fix the failing test.\n"),
+                json!({ "type": "text", "text": "Fix the failing test." }),
+            ),
+            // The agent's marker keeps the turn a block array.
+            (
+                json!([{ "type": "text", "text": "Fix the failing test.  \n", "cache_control": ephemeral }]),
+                json!({ "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }),
+            ),
+        ] {
+            let mut ir: ChatRequest = serde_json::from_value(json!({
+                "messages": [{ "role": "user", "content": content }]
+            }))
+            .unwrap();
+            brevity(&mut ir).unwrap();
+
+            let sent = to_anthropic_request(&ir, &resolved());
+
+            assert_eq!(
+                sent["messages"][0]["content"],
+                json!([trimmed, directive_block()])
+            );
+        }
+
+        // Whitespace alone stays: Anthropic rejects an empty text block.
+        let mut ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "\n" }]
+        }))
+        .unwrap();
+        brevity(&mut ir).unwrap();
+        let sent = to_anthropic_request(&ir, &resolved());
+        assert_eq!(sent["messages"][0]["content"][0]["text"], "\n");
     }
 
     #[test]
@@ -1410,5 +1574,205 @@ mod tests {
         assert_eq!(resp.model, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("नमस्ते"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(13));
+    }
+
+    /// The body the provider sends with `TOKEN_CACHE_MARKERS` on.
+    fn with_router_markers(ir: &ChatRequest) -> Value {
+        AnthropicProvider::new(reqwest::Client::new(), "http://x".into())
+            .with_cache_markers(true)
+            .request_body(ir, &resolved())
+    }
+
+    fn anthropic_agent(request: Value) -> ChatRequest {
+        use crate::inbound::InboundParser;
+        crate::inbound::AnthropicInbound
+            .parse_chat(request)
+            .unwrap()
+    }
+
+    #[test]
+    fn the_router_marks_the_end_of_the_conversation_then_of_system() {
+        let ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap();
+
+        let body = with_router_markers(&ir);
+
+        let ephemeral = json!({ "type": "ephemeral" });
+        assert_eq!(
+            body["system"],
+            json!([{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral }])
+        );
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{ "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }])
+        );
+    }
+
+    #[test]
+    fn the_routers_last_marker_goes_ahead_of_brevitys_directive() {
+        let mut ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "why did the deploy fail?" }]
+        }))
+        .unwrap();
+        assert_eq!(brevity(&mut ir), Ok(()));
+
+        let body = with_router_markers(&ir);
+
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([
+                { "type": "text", "text": "why did the deploy fail?", "cache_control": { "type": "ephemeral" } },
+                directive_block()
+            ])
+        );
+    }
+
+    #[test]
+    fn an_agent_holding_all_four_markers_gets_none_from_the_router() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let ir = anthropic_agent(json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "system": "You are a coding agent.",
+            "tools": [{ "name": "read", "input_schema": { "type": "object" }, "cache_control": ephemeral }],
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                ]},
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {}, "cache_control": ephemeral }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral },
+                    { "type": "text", "text": "Then stop." }
+                ]}
+            ]
+        }));
+
+        // Neither the end of the conversation nor `system` is marked, but a fifth marker is a 400.
+        let body = with_router_markers(&ir);
+
+        assert_eq!(count_cache_markers(&body), MAX_CACHE_MARKERS);
+        assert_eq!(body, to_anthropic_request(&ir, &resolved()));
+    }
+
+    #[test]
+    fn the_router_fills_only_the_slots_the_agent_left_free() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let ir = anthropic_agent(json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "system": "You are a coding agent.",
+            "tools": [{ "name": "read", "input_schema": { "type": "object" }, "cache_control": ephemeral }],
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                ]},
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {}, "cache_control": ephemeral }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}" }
+                ]}
+            ]
+        }));
+
+        let body = with_router_markers(&ir);
+
+        // One slot was free: it goes to the end of the conversation, the most valuable place.
+        assert_eq!(count_cache_markers(&body), MAX_CACHE_MARKERS);
+        assert_eq!(body["messages"][2]["content"][0][CACHE_CONTROL], ephemeral);
+        assert_eq!(body["system"], "You are a coding agent.");
+    }
+
+    #[test]
+    fn no_five_minute_system_marker_goes_ahead_of_an_agents_one_hour_marker() {
+        // Anthropic rejects a shorter TTL ahead of a longer one, and `system` precedes every turn.
+        let ir = anthropic_agent(json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 1024,
+            "system": "You are a coding agent.",
+            "messages": [
+                { "role": "user", "content": [
+                    { "type": "text", "text": "Read the repository map.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+                ]},
+                { "role": "assistant", "content": "Done." },
+                { "role": "user", "content": "Now fix the failing test." }
+            ]
+        }));
+
+        let body = with_router_markers(&ir);
+
+        assert_eq!(body["system"], "You are a coding agent.");
+        assert_eq!(
+            body["messages"][2]["content"][0][CACHE_CONTROL],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn without_the_flag_the_router_adds_no_marker() {
+        let ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap();
+        let provider = AnthropicProvider::new(reqwest::Client::new(), "http://x".into());
+
+        assert_eq!(
+            provider.request_body(&ir, &resolved()),
+            to_anthropic_request(&ir, &resolved())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_default_gateway_config_sends_the_routers_markers() {
+        let mut server = mockito::Server::new_async().await;
+        let ephemeral = json!({ "type": "ephemeral" });
+        let m = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "system": [{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral }],
+                "messages": [{ "role": "user", "content": [
+                    { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                ]}]
+            })))
+            .with_status(200)
+            .with_body(
+                json!({
+                    "id": "msg_1", "type": "message", "role": "assistant",
+                    "content": [{ "type": "text", "text": "On it." }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 10, "output_tokens": 3 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let cfg = crate::config::GatewayConfig {
+            anthropic_api_base: server.url(),
+            ..Default::default()
+        };
+        let provider =
+            crate::providers::provider_for("anthropic", None, &reqwest::Client::new(), &cfg)
+                .unwrap();
+        let ir: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap();
+
+        provider.chat(&ir, &resolved()).await.unwrap();
+
+        m.assert_async().await;
     }
 }
