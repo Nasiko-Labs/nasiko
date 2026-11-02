@@ -1265,6 +1265,23 @@ pub(crate) async fn delete(
         }
     }
 
+    // Converge the deployment history on reality, the same agent-wide sweep a stop
+    // does (`admin::routes::record_lifecycle_status`). Not gated on `runtime_errors`:
+    // the name-keyed fallback above is absent for every UUID-keyed agent, so that list
+    // is almost never empty, and nothing of a deleted agent should still claim to run.
+    // Left alone, these rows list as `running` forever and EE's crash guardian keeps
+    // probing workloads that no longer exist.
+    if let Err(e) = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
+         WHERE agent_id = $1 AND status != 'stopped'",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%e, %id, "delete agent: mark deployments stopped");
+    }
+
     // The row was already marked by the claiming UPDATE above, so reaching here
     // means this caller owns the delete — nothing left to decide.
     (

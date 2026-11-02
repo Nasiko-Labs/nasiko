@@ -103,7 +103,8 @@ struct AgentDeployInfo {
 
 // ─── GET /deployments ────────────────────────────────────────────────────────
 
-/// List the caller's deployments (superuser → all, newest 50 first). Callers
+/// List the caller's deployments (superuser → all, newest 50 first), skipping
+/// soft-deleted agents — their rows are history, not deployments. Callers
 /// below deployer role get `200 {"available": false}` instead of an error —
 /// see `nasiko_server::unavailable`.
 #[utoipa::path(
@@ -135,7 +136,7 @@ pub(crate) async fn list_deployments(
                     d.crash_reason, d.crashed_at, d.last_logs, d.restart_count,
                     d.k8s_deployment_name
              FROM agent_deployments d
-             LEFT JOIN agents a ON a.id = d.agent_id
+             JOIN agents a ON a.id = d.agent_id AND a.deleted_at IS NULL
              ORDER BY d.created_at DESC LIMIT 50",
         )
         .fetch_all(&state.db)
@@ -148,7 +149,7 @@ pub(crate) async fn list_deployments(
                     d.crash_reason, d.crashed_at, d.last_logs, d.restart_count,
                     d.k8s_deployment_name
              FROM agent_deployments d
-             LEFT JOIN agents a ON a.id = d.agent_id
+             JOIN agents a ON a.id = d.agent_id AND a.deleted_at IS NULL
              WHERE d.owner_id = $1
              ORDER BY d.created_at DESC LIMIT 50",
         )
