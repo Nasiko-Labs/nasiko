@@ -801,9 +801,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         ],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
-        // Tests register agents at loopback mock servers. The SSRF guard's own
-        // test (`agent_url_ssrf`) turns this off.
-        agent_allow_private_urls: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,

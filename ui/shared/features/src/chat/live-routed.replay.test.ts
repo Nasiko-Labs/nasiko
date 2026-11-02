@@ -65,6 +65,7 @@ describe('live routed fixture', () => {
     let n = 0
     const reg = createTurnRegistry({
       userId: 'u',
+      uploadFiles: vi.fn(async () => []),
       createSession: vi.fn(
         async (b) =>
           ({

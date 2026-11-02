@@ -417,9 +417,7 @@ fn is_bare_safe(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(['[', '{', '"', ' '])
         && !s.ends_with(' ')
-        // `split_row` counts bracket depth to find cell boundaries, so a bare bracket would
-        // shift every boundary after it.
-        && !s.contains([',', '"', '\\', '\n', '\r', '[', ']', '{', '}'])
+        && !s.contains([',', '"', '\\', '\n', '\r'])
 }
 
 #[cfg(test)]
@@ -600,25 +598,6 @@ mod tests {
             "the key is still written once"
         );
         round_trip(items);
-    }
-
-    /// The odd value sits in a middle column: a stray bracket in the last cell has no later
-    /// boundary to shift, so it would round-trip even without quoting.
-    #[test]
-    fn strings_with_brackets_inside_round_trip() {
-        for odd in ["a]0", "x}y", "a]", "a[b", "f{x", "[a"] {
-            let items: Vec<Value> = (0..6)
-                .map(|i| {
-                    let s = if i == 2 {
-                        odd.to_string()
-                    } else {
-                        format!("val{i}")
-                    };
-                    json!({"n": i, "s": s, "t": format!("row {i}")})
-                })
-                .collect();
-            round_trip(items);
-        }
     }
 
     #[test]

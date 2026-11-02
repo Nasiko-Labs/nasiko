@@ -76,6 +76,7 @@ function setup(
   const ends: string[] = []
   const deps: ChatDeps = {
     userId: 'u-1',
+    uploadFiles: vi.fn(async () => []),
     createSession: vi.fn(
       async (b) =>
         ({

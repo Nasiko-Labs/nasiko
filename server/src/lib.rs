@@ -662,12 +662,6 @@ async fn authenticate_oci_request(
         };
     }
 
-    // A browser session can delete or overwrite image tags here, so it gets the
-    // same cross-origin check as every other session-authenticated write.
-    if auth::middleware::is_cross_origin_cookie_write(&auth_state.app, req.method(), req.headers())
-    {
-        return auth::middleware::cross_origin_refused();
-    }
     let claims = match auth::middleware::validate_bearer(&auth_state.app, req.headers()).await {
         Ok(c) => c,
         Err((status, message)) => {

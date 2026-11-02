@@ -107,6 +107,24 @@ export function SendError({ error, inline = false }: { error: unknown; inline?: 
   ) : null
 }
 
+/**
+ * Files the composer turned away, one line each (§7.7). Not a `SendError`: nothing failed and
+ * nothing was sent — the rest of the message is still there to send.
+ */
+export function AttachNotes({ notes, inline = false }: { notes: string[]; inline?: boolean }) {
+  if (!notes.length) return null
+  return (
+    <ul
+      className={cn(inline ? 'mt-1.5 px-1' : CHAT_COLUMN, 'text-sm text-muted-foreground')}
+      data-testid="attach-notes"
+    >
+      {notes.map((n) => (
+        <li key={n}>{n}</li>
+      ))}
+    </ul>
+  )
+}
+
 export function NotRunningBanner({
   agentId,
   name,

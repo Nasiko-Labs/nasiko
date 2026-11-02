@@ -123,9 +123,6 @@ pub struct ResolvedConfig {
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
-    /// The agent the call is for. OpenAI groups its prompt cache by it (`prompt_cache_key`,
-    /// see `providers::openai`). Empty when no agent is known.
-    pub agent_id: String,
 }
 
 /// The resolved **embedding** call configuration.
@@ -651,7 +648,6 @@ pub async fn resolve(
         }),
         is_coding_agent,
         compress_enabled,
-        agent_id: agent_id.to_string(),
     };
     tracing::info!(
         target: "nasiko::llm_router::resolver",
@@ -1256,7 +1252,6 @@ mod tests {
         assert_eq!(r.api_key, "platform-key");
         assert!(r.fallback_models.is_empty());
         assert_eq!(r.temperature, None);
-        assert_eq!(r.agent_id, AGENT);
     }
 
     #[tokio::test]

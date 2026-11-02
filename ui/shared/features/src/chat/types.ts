@@ -162,6 +162,12 @@ export interface HitlFrame {
 export interface SaveMessageBody {
   role: 'user' | 'assistant'
   content: string
+  /**
+   * Files already uploaded for this session, claimed onto the row being saved
+   * (`chat/routes.rs::send_message`). The server answers 400 for an id that is unknown, belongs
+   * to another session, or is already attached to a message.
+   */
+  file_ids?: string[]
   /** The agent ended the turn as failed: the server keeps it so a reload shows the failure. */
   error?: { message: string }
   usage?: {
