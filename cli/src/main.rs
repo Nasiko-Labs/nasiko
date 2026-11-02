@@ -281,14 +281,6 @@ fn main() -> Result<()> {
                 coding_agent,
             } => match target.as_deref() {
                 Some(url) if !local_agents::is_coding_agent(url) => {
-                    if let Some((agent, running)) = local_agents::running_a2a_agent(url)? {
-                        if name.is_some() {
-                            anyhow::bail!(
-                                "--name applies only when connecting a control-plane URL"
-                            );
-                        }
-                        return local_agents::connect_a2a(&agent, &running, &coding_agent);
-                    }
                     if coding_agent.is_set() {
                         anyhow::bail!(
                             "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
@@ -501,6 +493,22 @@ mod tests {
     }
 
     #[test]
+    fn the_mcp_gateway_connects_and_disconnects_on_its_own() {
+        let cli =
+            Cli::try_parse_from(["nasiko", "connect", "claude", "--no-routing", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Connect { coding_agent, .. }) = cli.command else {
+            panic!("expected connect command");
+        };
+        assert!(coding_agent.no_routing && coding_agent.mcp);
+
+        let cli = Cli::try_parse_from(["nasiko", "disconnect", "claude", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Disconnect { options, .. }) = cli.command else {
+            panic!("expected disconnect command");
+        };
+        assert!(options.mcp && !options.routing && !options.reporting);
+    }
+
+    #[test]
     fn bare_connect_and_disconnect_pick_from_local_agents() {
         let connect = Cli::try_parse_from(["nasiko", "connect"]).unwrap();
         assert!(matches!(
@@ -691,9 +699,9 @@ mod tests {
             assert!(!script.contains("__claude-token"), "{shell}");
         }
 
-        // Hidden subcommands are dropped at every level, not just the top: `agents install`
-        // (hidden, renamed to `connect --reporting`) is gone while its visible siblings stay.
-        // Checked on the tree rather than the scripts, where "install" also appears elsewhere.
+        // Hidden subcommands are dropped at every level, not just the top: `agents discover`
+        // (hidden, renamed to `status`) is gone while its visible siblings stay. Checked on the
+        // tree rather than the scripts, where "discover" also appears in other commands' help.
         let tree = without_hidden_subcommands(&Cli::command());
         let agents = tree
             .get_subcommands()
@@ -701,8 +709,7 @@ mod tests {
             .expect("agents command");
         let names: Vec<&str> = agents.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"list-uploaded"), "{names:?}");
-        assert!(names.contains(&"discover"), "{names:?}");
-        assert!(!names.contains(&"install"), "{names:?}");
+        assert!(!names.contains(&"discover"), "{names:?}");
         assert!(!names.contains(&"report"), "{names:?}");
     }
 
@@ -749,6 +756,70 @@ mod tests {
             Commands::Ops(AgentOpsCommands::Agents {
                 command: nasiko::AgentsCommands::Report { agent }
             }) if agent == "opencode"
+        ));
+    }
+
+    #[test]
+    fn parses_coding_agent_setup_and_import_under_agents() {
+        let setup = Cli::try_parse_from(["nasiko", "agents", "setup"]).unwrap();
+        assert!(matches!(
+            setup.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Setup {
+                    yes: false,
+                    no_import: false,
+                    wait: false
+                }
+            })
+        ));
+
+        let consented =
+            Cli::try_parse_from(["nasiko", "agents", "setup", "--yes", "--no-import"]).unwrap();
+        assert!(matches!(
+            consented.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Setup {
+                    yes: true,
+                    no_import: true,
+                    wait: false
+                }
+            })
+        ));
+
+        let import = Cli::try_parse_from(["nasiko", "agents", "import"]).unwrap();
+        assert!(matches!(
+            import.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Import
+            })
+        ));
+    }
+
+    #[test]
+    fn parses_a_foreground_setup_the_import_status_and_the_background_worker() {
+        let waiting = Cli::try_parse_from(["nasiko", "agents", "setup", "--wait"]).unwrap();
+        assert!(matches!(
+            waiting.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Setup { wait: true, .. }
+            })
+        ));
+
+        let status = Cli::try_parse_from(["nasiko", "agents", "status"]).unwrap();
+        assert!(matches!(
+            status.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::Status
+            })
+        ));
+
+        // What `agents setup` runs in the background.
+        let worker = Cli::try_parse_from(["nasiko", "agents", "import-worker"]).unwrap();
+        assert!(matches!(
+            worker.command,
+            Commands::Ops(AgentOpsCommands::Agents {
+                command: nasiko::AgentsCommands::ImportWorker
+            })
         ));
     }
 }
