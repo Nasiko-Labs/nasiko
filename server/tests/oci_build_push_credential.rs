@@ -30,12 +30,31 @@ async fn insert_user(db: &PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) -> Uuid {
-    sqlx::query_scalar("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1') RETURNING id")
+    let image = format!("nasiko/{}:1.0.0", name);
+    sqlx::query_scalar("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3) RETURNING id")
         .bind(name)
         .bind(owner_id)
+        .bind(image)
         .fetch_one(db)
         .await
         .expect("insert test agent")
+}
+
+async fn insert_manifest(db: &PgPool, repository: &str) {
+    sqlx::query(
+        "WITH m AS (
+             INSERT INTO oci_manifests (digest, repository, media_type, content, size_bytes)
+             VALUES ($1, $2, 'application/vnd.oci.image.manifest.v1+json', '{}', 2)
+             RETURNING repository, digest
+         )
+         INSERT INTO oci_tags (repository, tag, digest)
+         SELECT repository, 'latest', digest FROM m",
+    )
+    .bind(format!("sha256:{}", Uuid::new_v4().simple()))
+    .bind(repository)
+    .execute(db)
+    .await
+    .expect("insert test manifest");
 }
 
 async fn start_server_with_build_push_token() -> common::TestServer {
@@ -183,6 +202,7 @@ async fn build_service_credential_has_unrestricted_read_and_write_access() {
     let owner_id = insert_user(&server.db, "build-push-owner5").await;
     let agent_name = format!("build-push-agent-{}", Uuid::new_v4());
     insert_agent(&server.db, &agent_name, owner_id).await;
+    insert_manifest(&server.db, &format!("nasiko/{}", agent_name)).await;
 
     let tags_resp = common::as_pull_credential(
         server

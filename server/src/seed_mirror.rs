@@ -144,7 +144,11 @@ pub async fn mirror_image(
         tracing::info!(%image, %repository, %tag, "seed image already mirrored");
     }
     Ok(MirrorOutcome {
-        internal_ref: crate::agents::build_image_tag(&settings.internal_registry, name, &tag),
+        internal_ref: crate::agents::build_legacy_image_tag(
+            &settings.internal_registry,
+            name,
+            &tag,
+        ),
         repointed,
     })
 }

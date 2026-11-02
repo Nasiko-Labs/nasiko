@@ -212,9 +212,20 @@ pub(crate) async fn build_and_deploy(
 ) -> Result<ImportResult, (StatusCode, String)> {
     let image_tag = crate::agents::build_image_tag(
         &state.config.agent_image_registry,
+        owner_id,
         &meta.name,
         &meta.version,
     );
+
+    // Validate image namespace
+    crate::agents::validate_image_ref(
+        &state.db,
+        &state.config.agent_image_registry,
+        &image_tag,
+        owner_id,
+        false, // Import is deployer-gated, but still validate non-superusers
+    )
+    .await?;
 
     // Verify Dockerfile exists
     if !source_dir.join("Dockerfile").exists() {

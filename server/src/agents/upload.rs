@@ -561,8 +561,27 @@ pub(crate) async fn upload_and_deploy(
         }
     };
 
-    let image_tag =
-        crate::agents::build_image_tag(&state.config.agent_image_registry, &name, &version_tag);
+    let image_tag = crate::agents::build_image_tag(
+        &state.config.agent_image_registry,
+        owner_id,
+        &name,
+        &version_tag,
+    );
+
+    // Validate image namespace before persisting
+    if let Err((code, msg)) = crate::agents::validate_image_ref(
+        &state.db,
+        &state.config.agent_image_registry,
+        &image_tag,
+        owner_id,
+        false, // Non-superusers validated here; superusers skip this path via deployer gate
+    )
+    .await
+    {
+        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+        return (code, msg).into_response();
+    }
+
     // Empty → canonical default is applied by build_agent_spec (8000, matching the
     // agent images' EXPOSE); never default to 5000 here.
 
@@ -1323,7 +1342,20 @@ pub async fn execute_clone_and_deploy(
                 }
             };
 
-            let new_tag = crate::agents::build_image_tag(agent_image_registry, &name, &ver);
+            let new_tag = crate::agents::build_image_tag(agent_image_registry, owner_id, &name, &ver);
+
+            // Validate image namespace
+            if let Err((_, msg)) = crate::agents::validate_image_ref(
+                db,
+                agent_image_registry,
+                &new_tag,
+                owner_id,
+                false,
+            )
+            .await
+            {
+                return Err(msg);
+            }
 
             // Atomically claim this version before any build/deploy work
             // starts, via the real `UNIQUE(agent_id, version)` constraint —

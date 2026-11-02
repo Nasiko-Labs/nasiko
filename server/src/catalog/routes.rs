@@ -1056,6 +1056,30 @@ pub(crate) async fn update(
         (None, None)
     };
 
+    // Validate image namespace when activating a version
+    if let Some(ref image) = agent_image {
+        // Need owner_id from the agent row
+        let owner_id: Option<Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.db)
+                .await
+                .unwrap_or(None);
+
+        if let Some(owner_id) = owner_id
+            && let Err((code, msg)) = crate::agents::validate_image_ref(
+                &state.db,
+                &state.config.agent_image_registry,
+                image,
+                owner_id,
+                claims.is_superuser,
+            )
+            .await
+        {
+            return (code, msg).into_response();
+        }
+    }
+
     let result = sqlx::query_as::<_, Agent>(
         r#"UPDATE agents SET
              display_name = COALESCE($2, display_name),

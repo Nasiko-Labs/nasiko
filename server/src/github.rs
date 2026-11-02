@@ -758,9 +758,23 @@ async fn github_clone(
     let version_tag = "latest".to_string();
     let image_tag = crate::agents::build_image_tag(
         &state.config.agent_image_registry,
+        user_id,
         &agent_name,
         &version_tag,
     );
+
+    // Validate image namespace
+    if let Err((code, msg)) = crate::agents::validate_image_ref(
+        &state.db,
+        &state.config.agent_image_registry,
+        &image_tag,
+        user_id,
+        false,
+    )
+    .await
+    {
+        return (code, msg).into_response();
+    }
 
     // ── DB transaction: upsert agent + build record + job ────────────────────
     let mut tx = match state.db.begin().await {

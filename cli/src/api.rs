@@ -202,6 +202,21 @@ impl Client {
         crate::config::token_subject(self.token.as_deref()?)
     }
 
+    /// Get the caller's image namespace from the server capability endpoint.
+    /// Returns `Ok(Some(namespace))` on success, `Ok(None)` if the server
+    /// doesn't support per-owner namespaces (404), or `Err` on other failures.
+    pub fn image_namespace(&self) -> Result<Option<String>> {
+        let data: serde_json::Value = match self.get_json_optional("/agents/image-namespace")? {
+            Some(d) => d,
+            None => return Ok(None), // 404 from old server
+        };
+        let namespace = data
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Ok(namespace)
+    }
+
     fn api_url(&self, path: &str) -> String {
         format!("{}/api{}", self.base_url, path)
     }
@@ -1901,5 +1916,33 @@ mod tests {
             err.to_string().contains("no Dockerfile found"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn image_namespace_returns_namespace_on_200() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/image-namespace")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"namespace":"u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), Some("token"));
+        let namespace = client.image_namespace().unwrap();
+        assert_eq!(
+            namespace,
+            Some("u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4".to_string())
+        );
+    }
+
+    #[test]
+    fn image_namespace_returns_none_on_404() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/image-namespace")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), Some("token"));
+        let namespace = client.image_namespace().unwrap();
+        assert_eq!(namespace, None);
     }
 }

@@ -23,9 +23,11 @@ async fn insert_user(db: &PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) -> Uuid {
-    sqlx::query_scalar("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1') RETURNING id")
+    let image = format!("nasiko/{}:1.0.0", name);
+    sqlx::query_scalar("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3) RETURNING id")
         .bind(name)
         .bind(owner_id)
+        .bind(image)
         .fetch_one(db)
         .await
         .expect("insert test agent")

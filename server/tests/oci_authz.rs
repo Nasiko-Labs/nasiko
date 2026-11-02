@@ -27,15 +27,26 @@ async fn insert_user(db: &PgPool, username: &str) -> Uuid {
     .expect("insert test user")
 }
 
-async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query(
-        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+async fn insert_superuser(db: &PgPool, username: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, true) RETURNING id",
     )
-    .bind(name)
-    .bind(owner_id)
-    .execute(db)
+    .bind(username)
+    .bind(format!("{username}@oci-authz-test.com"))
+    .fetch_one(db)
     .await
-    .expect("insert test agent");
+    .expect("insert test superuser")
+}
+
+async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) {
+    let image = format!("nasiko/{}:1.0.0", name);
+    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3)")
+        .bind(name)
+        .bind(owner_id)
+        .bind(image)
+        .execute(db)
+        .await
+        .expect("insert test agent");
 }
 
 async fn insert_manifest(db: &PgPool, repository: &str) {
@@ -157,6 +168,7 @@ async fn tags_list_allows_anyone_on_unclaimed_repo() {
 async fn tags_list_allows_superuser_on_any_repo() {
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "oci-owner3").await;
+    let admin_id = insert_superuser(&server.db, "admin").await;
     let agent_name = format!("oci-authz-agent-{}", Uuid::new_v4());
     insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
@@ -165,7 +177,7 @@ async fn tags_list_allows_superuser_on_any_repo() {
         server
             .client
             .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
-        &Uuid::new_v4().to_string(),
+        &admin_id.to_string(),
         "admin",
     )
     .send()
@@ -186,15 +198,14 @@ async fn tags_list_allows_superuser_on_any_repo() {
 // Agent names are unique only per-owner (migration 015), and the OCI repo
 // path carries no real owner segment — so two different owners can both have
 // an agent named e.g. "shared-name", producing the SAME `oci_manifests.repository`
-// string for both. The repository cannot say which owner's image a tag holds,
-// and either owner pushing to it overwrites the other's tag (NAS-1112). So a
-// shared repository belongs to neither: a session reaches it only as
-// superuser. Server-side builds (the build service) and per-agent pull
-// credentials are unaffected.
+// string for both. A single-row `SELECT owner_id ... LIMIT 1` lookup would pick
+// an arbitrary one of the two rows, nondeterministically denying whichever
+// owner didn't get picked. `check_repo_access` must ask "do I own a match" and
+// "does anyone" as two independent existence checks instead.
 
 #[tokio::test]
 #[serial]
-async fn tags_list_denies_both_owners_of_a_shared_agent_name() {
+async fn tags_list_sound_when_two_owners_share_an_agent_name() {
     let server = common::TestServer::start().await;
     let owner_a = insert_user(&server.db, "oci-collision-a").await;
     let owner_b = insert_user(&server.db, "oci-collision-b").await;
@@ -216,8 +227,8 @@ async fn tags_list_denies_both_owners_of_a_shared_agent_name() {
         .unwrap();
         assert_eq!(
             resp.status(),
-            403,
-            "owner {username} must not reach a repository another owner's agent also uses"
+            200,
+            "owner {username} must not be denied due to the other owner's row sharing this name"
         );
     }
 

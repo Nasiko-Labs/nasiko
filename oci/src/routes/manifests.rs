@@ -26,8 +26,8 @@ pub async fn get_manifest(
     caller: Caller,
     Path((owner, repo, reference)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_pull_access(&state, &caller, &name).await?;
     let m = ops::get_manifest(&state, &name, &reference).await?;
 
     Ok((
@@ -47,8 +47,8 @@ pub async fn put_manifest(
     Path((owner, repo, reference)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
     let content_type = request
         .headers()
         .get("content-type")
@@ -83,8 +83,8 @@ pub async fn delete_manifest(
     caller: CallerIdentity,
     Path((owner, repo, reference)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_repo_delete_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_repo_delete_access(&state, &caller, &name).await?;
     ops::delete_manifest(&state, &name, &reference).await?;
     Ok((StatusCode::ACCEPTED, "").into_response())
 }
@@ -102,8 +102,8 @@ pub async fn get_referrers(
     Path((owner, repo, subject_digest)): Path<(String, String, String)>,
     Query(params): Query<ReferrerParams>,
 ) -> Result<Response> {
-    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_pull_access(&state, &caller, &name).await?;
     let entries = ops::get_referrers(
         &state,
         &name,

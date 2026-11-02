@@ -39,8 +39,8 @@ pub async fn list_tags(
     Path((owner, repo)): Path<(String, String)>,
     Query(params): Query<TagListParams>,
 ) -> Result<Response> {
-    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_pull_access(&state, &caller, &name).await?;
     let limit = params.n.unwrap_or(DEFAULT_PAGE).clamp(0, MAX_PAGE);
 
     if !ops::manifests::repository_exists(&state, &name).await? {

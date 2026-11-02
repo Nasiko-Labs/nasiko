@@ -271,9 +271,23 @@ pub(crate) async fn update_agent(
 
     let image_tag = crate::agents::build_image_tag(
         &state.config.agent_image_registry,
+        agent_owner_id,
         &agent_name,
         &new_version,
     );
+
+    // Validate image namespace
+    if let Err((code, msg)) = crate::agents::validate_image_ref(
+        &state.db,
+        &state.config.agent_image_registry,
+        &image_tag,
+        agent_owner_id,
+        claims.is_superuser,
+    )
+    .await
+    {
+        return (code, msg).into_response();
+    }
 
     // Optimistic write — lets the UI show "deploying to <image_tag>".
     // On failure the background task rolls both version and image back.

@@ -18,11 +18,13 @@ use axum::Router;
 use nasiko_runtime::{
     ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits,
 };
+use nasiko_utils::image::strip_image_to_repo;
 use uuid::Uuid;
 
 use crate::agent_scaling::ReplicaBounds;
 use crate::state::AppState;
 
+pub use nasiko_utils::image::image_name_slug;
 pub use upload::UploadAndDeployResponse;
 
 /// Canonical container port for Nasiko agents. Every agent image serves on 8000
@@ -67,44 +69,28 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 /// The name segment goes through [`image_name_slug`]: an agent name is a
 /// display string that may legally carry uppercase or spaces, neither of which
 /// an OCI repository name admits.
-pub(crate) fn build_image_tag(registry: &str, name: &str, tag: &str) -> String {
-    let name = image_name_slug(name);
+///
+/// Images are namespaced per owner: `u-{owner_uuid}/{slug}:{tag}`. The legacy
+/// `nasiko/` namespace is no longer written except by seeds (BuildService identity).
+pub(crate) fn build_image_tag(registry: &str, owner_id: Uuid, name: &str, tag: &str) -> String {
+    let slug = image_name_slug(name);
+    let namespace = format!("u-{}", owner_id.as_simple());
     if registry.is_empty() {
-        format!("nasiko/{name}:{tag}")
+        format!("{namespace}/{slug}:{tag}")
     } else {
-        format!("{registry}/nasiko/{name}:{tag}")
+        format!("{registry}/{namespace}/{slug}:{tag}")
     }
 }
 
-/// Lowercase a display name into an OCI-safe repository component.
-///
-/// An OCI repository name is `[a-z0-9]+([._-][a-z0-9]+)*` — no uppercase, no
-/// spaces — but an agent name is validated against the *tag* charset
-/// (`build::routes::validate_version_tag`), which permits both. An agent named
-/// "General-Assistant" therefore reached the builder as
-/// `nasiko/General-Assistant:1.0.0`, and docker rejected it ("repository name
-/// must be lowercase") *after* the agent/build/job rows had already committed —
-/// leaving the agent behind with nothing but a failed build.
-///
-/// Idempotent, and registry publishers apply the same rule before pushing, so a
-/// name survives publish → import unchanged and a re-import updates the existing
-/// agent instead of registering a second one under a differently-cased name.
-///
-/// `pub` for one reader outside the crate: the embedded registry repeats this
-/// rule in SQL to find a repository's owners (`nasiko_oci::authz`), and the
-/// `oci_repo_ownership` test checks the two agree.
-pub fn image_name_slug(name: &str) -> String {
-    let slug: String = name
-        .to_lowercase()
-        .replace(' ', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .collect();
-    let slug = slug.trim_matches('-');
-    if slug.is_empty() {
-        "agent".to_string()
+/// Build a legacy image tag in the `nasiko/` namespace for platform-owned
+/// seeds and system agents. New user agents should use `build_image_tag`
+/// with an owner_id instead.
+pub(crate) fn build_legacy_image_tag(registry: &str, name: &str, tag: &str) -> String {
+    let slug = image_name_slug(name);
+    if registry.is_empty() {
+        format!("nasiko/{slug}:{tag}")
     } else {
-        slug.to_string()
+        format!("{registry}/nasiko/{slug}:{tag}")
     }
 }
 
@@ -171,6 +157,158 @@ pub(crate) async fn resolve_agent_url(
     runtime.endpoint(container_id).await.unwrap_or_default()
 }
 
+/// Parse an OCI repository path into namespace and slug components.
+///
+/// Returns `Some((owner_uuid, slug))` for `u-{32 lowercase hex}/{slug}`,
+/// `None` for `nasiko/{slug}` (legacy), and errors for malformed `u-` paths.
+fn parse_owner_namespace(repo: &str) -> Result<Option<(Uuid, &str)>, String> {
+    if let Some(rest) = repo.strip_prefix("u-") {
+        let parts: Vec<&str> = rest.splitn(2, '/').collect();
+        if parts.len() != 2 {
+            return Err(format!(
+                "invalid owner namespace: expected u-{{uuid}}/{{name}}, got '{repo}'"
+            ));
+        }
+        let hex = parts[0];
+        if hex.len() != 32
+            || !hex
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            return Err(format!(
+                "invalid owner namespace: uuid must be 32 lowercase hex chars, got '{hex}'"
+            ));
+        }
+        let uuid = Uuid::parse_str(hex)
+            .map_err(|_| format!("invalid owner namespace: '{hex}' is not a valid UUID"))?;
+        Ok(Some((uuid, parts[1])))
+    } else if repo.starts_with("nasiko/") {
+        Ok(None)
+    } else {
+        Err(format!("unknown namespace in repository path '{repo}'"))
+    }
+}
+
+/// Validate that an image reference in THIS registry is owned by the caller.
+///
+/// Images in the caller's own namespace (`u-{caller}/...`) are always allowed.
+/// Legacy `nasiko/R` images are allowed iff `owners(R)` is non-empty and contains
+/// only the caller (superusers may use any image). External registries (different
+/// host) are unaffected.
+pub(crate) async fn validate_image_ref(
+    pool: &sqlx::PgPool,
+    registry: &str,
+    image: &str,
+    caller_id: Uuid,
+    is_superuser: bool,
+) -> Result<(), (axum::http::StatusCode, String)> {
+    use axum::http::StatusCode;
+
+    if is_superuser {
+        return Ok(());
+    }
+
+    let repo = strip_image_to_repo(image);
+
+    // Check if this is an external registry by comparing hosts
+    let image_host = if let Some(slash) = image.find('/') {
+        let before = &image[..slash];
+        if before.contains('.') || before.contains(':') {
+            Some(before)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let our_registry = if registry.is_empty() {
+        None
+    } else {
+        Some(registry)
+    };
+
+    // If hosts differ, it's external - allow it
+    if image_host != our_registry {
+        return Ok(());
+    }
+
+    // It's our registry - enforce namespace rules
+    match parse_owner_namespace(repo) {
+        Ok(Some((owner_uuid, _slug))) => {
+            if owner_uuid == caller_id {
+                Ok(())
+            } else {
+                Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "image reference '{image}' is not in your namespace (expected u-{}/...)",
+                        caller_id.as_simple()
+                    ),
+                ))
+            }
+        }
+        Ok(None) => {
+            // Legacy nasiko/ path - check owners(R)
+            let repo_without_prefix = repo.strip_prefix("nasiko/").unwrap();
+
+            // Narrow in SQL via substring match, then confirm exact match in Rust
+            let rows: Vec<(Uuid, String)> = sqlx::query_as(
+                "SELECT owner_id, image FROM agents WHERE deleted_at IS NULL AND strpos(image, $1) > 0",
+            )
+            .bind(repo)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| {
+                tracing::error!(%e, "validate_image_ref: db query failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal error".to_string(),
+                )
+            })?;
+
+            let mut owner_ids = Vec::new();
+            for (owner_id, img) in rows {
+                if strip_image_to_repo(&img) == repo && !owner_ids.contains(&owner_id) {
+                    owner_ids.push(owner_id);
+                }
+            }
+
+            if owner_ids.is_empty() {
+                Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "legacy repository 'nasiko/{}' is unclaimed - use your own namespace u-{}/... instead",
+                        repo_without_prefix,
+                        caller_id.as_simple()
+                    ),
+                ))
+            } else if owner_ids.len() == 1 && owner_ids[0] == caller_id {
+                Ok(())
+            } else if owner_ids.contains(&caller_id) {
+                Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "legacy repository 'nasiko/{}' is shared with other owners - use your own namespace u-{}/... instead",
+                        repo_without_prefix,
+                        caller_id.as_simple()
+                    ),
+                ))
+            } else {
+                Err((
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "legacy repository 'nasiko/{}' is owned by another user - use your own namespace u-{}/... instead",
+                        repo_without_prefix,
+                        caller_id.as_simple()
+                    ),
+                ))
+            }
+        }
+        Err(e) => Err((StatusCode::BAD_REQUEST, e)),
+    }
+}
+
 /// Qualifies an already-composed `name:tag` image reference with
 /// `AGENT_IMAGE_REGISTRY`, for the ad-hoc `POST /containers` deploy path
 /// (`admin::routes::deploy`) — unlike upload/update/rollback/import, that
@@ -178,18 +316,35 @@ pub(crate) async fn resolve_agent_url(
 /// composing one from separate name+tag args, so it can't go through
 /// `build_image_tag` directly.
 ///
-/// Only qualifies images starting with the literal `"nasiko/"` prefix — the
-/// CLI's own internal convention for images it just pushed via `nasiko
-/// deploy`/`nasiko push` (see `oss/cli/src/commands/deploy.rs`/`push.rs`).
-/// An arbitrary third-party reference the caller deploys directly (e.g.
-/// `nginx:latest`) is left untouched, since there's no way to distinguish
-/// "this needs our private registry" from "this is already resolvable as-is"
-/// beyond that one known convention.
+/// Qualifies images in the platform namespaces: `nasiko/` (legacy) and
+/// `u-{32 lowercase hex}/` (per-owner). An arbitrary third-party reference
+/// (e.g. `nginx:latest`) is left untouched.
 pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
-    if registry.is_empty() || !image.starts_with("nasiko/") {
-        image.to_string()
-    } else {
+    if registry.is_empty() {
+        return image.to_string();
+    }
+
+    let needs_qualification = image.starts_with("nasiko/") || {
+        // Check for u-{32 hex}/ without regex dependency
+        if let Some(rest) = image.strip_prefix("u-") {
+            if let Some(slash_pos) = rest.find('/') {
+                let hex = &rest[..slash_pos];
+                hex.len() == 32
+                    && hex
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    };
+
+    if needs_qualification {
         format!("{registry}/{image}")
+    } else {
+        image.to_string()
     }
 }
 
@@ -279,6 +434,34 @@ pub fn degradable_router() -> Router<AppState> {
 
 pub fn user_routes() -> Router<AppState> {
     upload::user_routes().merge(llm_config::router())
+}
+
+/// Capability route for CLI feature detection.
+pub fn capability_routes() -> Router<AppState> {
+    use axum::routing::get;
+    Router::new().route("/image-namespace", get(get_image_namespace))
+}
+
+/// GET /api/agents/image-namespace - returns the caller's image namespace
+/// for CLI push/deploy operations.
+#[utoipa::path(
+    get,
+    path = "/api/agents/image-namespace",
+    tag = "agents",
+    responses(
+        (status = 200, description = "Image namespace for this user"),
+    ),
+)]
+async fn get_image_namespace(claims: crate::auth::Claims) -> impl axum::response::IntoResponse {
+    use axum::response::IntoResponse;
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
+    axum::Json(serde_json::json!({
+        "namespace": format!("u-{}", user_id.as_simple())
+    }))
+    .into_response()
 }
 
 #[cfg(test)]
@@ -515,40 +698,6 @@ mod spec_tests {
     }
 
     #[test]
-    fn build_image_tag_includes_nasiko_owner_segment_with_registry() {
-        // oss/oci's registry routes are shaped /v2/{owner}/{repo}/... (two
-        // path segments) — a single-segment repo 404s at the router level.
-        assert_eq!(
-            build_image_tag("registry.example.com", "my-agent", "1.0.0"),
-            "registry.example.com/nasiko/my-agent:1.0.0"
-        );
-    }
-
-    #[test]
-    fn build_image_tag_includes_nasiko_owner_segment_without_registry() {
-        assert_eq!(
-            build_image_tag("", "my-agent", "1.0.0"),
-            "nasiko/my-agent:1.0.0"
-        );
-    }
-
-    #[test]
-    fn build_image_tag_slugifies_the_name_segment() {
-        // Found live on POST /api/agents/upload: an agent named
-        // "General-Assistant" produced `nasiko/General-Assistant:<ver>`, and the
-        // docker build failed with "repository name must be lowercase" only
-        // after the agent/build/job rows had committed.
-        assert_eq!(
-            build_image_tag("", "General-Assistant", "1.0.0"),
-            "nasiko/general-assistant:1.0.0"
-        );
-        assert_eq!(
-            build_image_tag("registry.example.com", "Infrastructure Manager", "1.0.0"),
-            "registry.example.com/nasiko/infrastructure-manager:1.0.0"
-        );
-    }
-
-    #[test]
     fn image_name_slug_yields_oci_safe_repository_components() {
         assert_eq!(
             image_name_slug("Infrastructure Manager"),
@@ -577,4 +726,97 @@ mod spec_tests {
         assert_eq!(image_name_slug("Infrastructure Manager"), published);
         assert_eq!(image_name_slug(published), published);
     }
+}
+
+#[test]
+fn build_image_tag_with_owner_namespace() {
+    let owner_id = Uuid::parse_str("a1b2c3d4-e5f6-a1b2-c3d4-e5f6a1b2c3d4").unwrap();
+    let result = build_image_tag("", owner_id, "My Agent", "1.0.0");
+    assert_eq!(result, "u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/my-agent:1.0.0");
+}
+
+#[test]
+fn build_image_tag_with_registry_and_owner() {
+    let owner_id = Uuid::parse_str("12345678-1234-1234-1234-123456789abc").unwrap();
+    let result = build_image_tag("registry.example.com", owner_id, "test", "2.0.0");
+    assert_eq!(
+        result,
+        "registry.example.com/u-12345678123412341234123456789abc/test:2.0.0"
+    );
+}
+
+#[test]
+fn qualify_deploy_image_recognizes_owner_namespace() {
+    let image = "u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/agent:1.0";
+    assert_eq!(
+        qualify_deploy_image("registry.io", image),
+        "registry.io/u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/agent:1.0"
+    );
+}
+
+#[test]
+fn qualify_deploy_image_rejects_malformed_owner_namespace() {
+    // Uppercase should not be qualified
+    let image = "u-A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4/agent:1.0";
+    assert_eq!(qualify_deploy_image("registry.io", image), image);
+}
+
+#[test]
+fn parse_owner_namespace_valid() {
+    let repo = "u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/agent";
+    let result = parse_owner_namespace(repo).unwrap();
+    assert!(result.is_some());
+    let (uuid, slug) = result.unwrap();
+    assert_eq!(
+        uuid.as_simple().to_string(),
+        "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
+    );
+    assert_eq!(slug, "agent");
+}
+
+#[test]
+fn parse_owner_namespace_legacy() {
+    let repo = "nasiko/code-reviewer";
+    let result = parse_owner_namespace(repo).unwrap();
+    assert!(result.is_none());
+}
+
+#[test]
+fn parse_owner_namespace_malformed() {
+    assert!(parse_owner_namespace("u-short/agent").is_err());
+    assert!(parse_owner_namespace("u-UPPERCASE32CHARSUPPERCASECHARS/agent").is_err());
+    assert!(parse_owner_namespace("unknown/agent").is_err());
+}
+
+#[test]
+fn strip_image_to_repo_strips_tag() {
+    assert_eq!(strip_image_to_repo("u-abc/agent:1.0"), "u-abc/agent");
+    assert_eq!(strip_image_to_repo("nasiko/agent:latest"), "nasiko/agent");
+}
+
+#[test]
+fn strip_image_to_repo_strips_registry() {
+    assert_eq!(
+        strip_image_to_repo("registry.io/u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/agent:1.0"),
+        "u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4/agent"
+    );
+    assert_eq!(
+        strip_image_to_repo("registry.io:5000/nasiko/agent"),
+        "nasiko/agent"
+    );
+}
+
+#[test]
+fn strip_image_to_repo_bare_repo() {
+    assert_eq!(strip_image_to_repo("u-abc/agent"), "u-abc/agent");
+    assert_eq!(strip_image_to_repo("nasiko/agent"), "nasiko/agent");
+}
+
+#[test]
+fn slug_vs_name_mismatch() {
+    // The slug for "Code Reviewer" is "code-reviewer"
+    let owner_id = Uuid::new_v4();
+    let tag = build_image_tag("", owner_id, "Code Reviewer", "1.0");
+    assert!(tag.contains("/code-reviewer:"));
+    assert!(!tag.contains("/Code Reviewer:"));
 }

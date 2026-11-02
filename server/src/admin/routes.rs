@@ -212,7 +212,21 @@ async fn deploy(
     let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
+        image: {
+            // Validate image namespace before qualification
+            if let Err((code, msg)) = crate::agents::validate_image_ref(
+                &state.db,
+                &state.config.agent_image_registry,
+                &req.image,
+                owner_id,
+                claims.is_superuser,
+            )
+            .await
+            {
+                return (code, msg).into_response();
+            }
+            crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image)
+        },
         ports,
         env_vars: env,
         min_replicas: bounds.min,

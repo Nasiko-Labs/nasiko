@@ -24,14 +24,14 @@ async fn insert_user(db: &sqlx::PgPool, username: &str) -> Uuid {
 }
 
 async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query(
-        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
-    )
-    .bind(name)
-    .bind(owner_id)
-    .execute(db)
-    .await
-    .expect("insert test agent");
+    let image = format!("nasiko/{}:1.0.0", name);
+    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3)")
+        .bind(name)
+        .bind(owner_id)
+        .bind(image)
+        .execute(db)
+        .await
+        .expect("insert test agent");
 }
 
 /// Push-by-digest verification: PUTting a manifest under a digest reference

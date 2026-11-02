@@ -11,6 +11,7 @@ path = "src/lib.rs"
 tokio.workspace = true
 axum.workspace = true
 nasiko-auth.workspace = true
+nasiko-utils.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true

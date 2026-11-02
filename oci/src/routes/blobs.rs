@@ -24,8 +24,8 @@ pub async fn head_blob(
     caller: Caller,
     Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_pull_access(&state, &caller, &name).await?;
     if !ops::blob_linked(&state, &name, &digest).await? {
         return Err(OciError::blob_unknown(format!("blob {digest} not found")));
     }
@@ -48,8 +48,8 @@ pub async fn get_blob(
     caller: Caller,
     Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_pull_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_pull_access(&state, &caller, &name).await?;
     let data = ops::get_blob_bytes(&state, &name, &digest).await?;
     let size_str = data.len().to_string();
     Ok((
@@ -69,8 +69,8 @@ pub async fn delete_blob(
     caller: CallerIdentity,
     Path((owner, repo, digest)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_repo_delete_access(&state, &caller, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_repo_delete_access(&state, &caller, &name).await?;
     ops::delete_blob(&state, &name, &digest).await?;
     Ok((StatusCode::ACCEPTED, "").into_response())
 }
@@ -101,8 +101,8 @@ pub async fn initiate_upload(
     Query(params): Query<InitiateUploadParams>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
 
     if let Some(mount_digest) = params.mount.as_deref() {
         // Authorize the SOURCE as well as the destination. Without this, mounting
@@ -111,12 +111,10 @@ pub async fn initiate_upload(
         // session caller this is the same `check_repo_access` a pull would do;
         // the build service is already trusted everywhere.
         //
-        // `from` arrives as a full repository name (`owner/name`), while the
-        // access check keys on the trailing name segment, as the path extractors
-        // elsewhere in this file do.
+        // `from` arrives as a full repository name (`owner/name`), so pass it
+        // directly to the access check.
         if let Some(source) = params.from.as_deref() {
-            let source_repo = source.rsplit('/').next().unwrap_or(source);
-            check_write_access(&state, &writer, source_repo).await?;
+            check_write_access(&state, &writer, source).await?;
         }
         if ops::mount_blob(&state, &name, mount_digest, params.from.as_deref()).await? {
             tracing::debug!(
@@ -181,8 +179,8 @@ pub async fn upload_status(
     writer: Writer,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
     let upload_id = parse_upload_id(&upload_uuid)?;
 
     let offset = ops::upload_offset(&state, &name, upload_id).await?;
@@ -207,8 +205,8 @@ pub async fn cancel_upload(
     writer: Writer,
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
     let upload_id = parse_upload_id(&upload_uuid)?;
     ops::cancel_upload(&state, &name, upload_id).await?;
     Ok((StatusCode::NO_CONTENT, "").into_response())
@@ -227,8 +225,8 @@ pub async fn patch_upload(
     Path((owner, repo, upload_uuid)): Path<(String, String, String)>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
     let upload_id = parse_upload_id(&upload_uuid)?;
 
     // Parsed before the body is consumed: a mismatched range must be rejected
@@ -297,8 +295,8 @@ pub async fn complete_upload(
     Query(params): Query<CompleteUploadParams>,
     request: Request<Body>,
 ) -> Result<Response> {
-    check_write_access(&state, &writer, &repo).await?;
     let name = format!("{owner}/{repo}");
+    check_write_access(&state, &writer, &name).await?;
     let upload_id = parse_upload_id(&upload_uuid)?;
 
     let put_body = axum::body::to_bytes(request.into_body(), MAX_CHUNK_BYTES)

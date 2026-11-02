@@ -98,6 +98,7 @@ async fn queue_upload(
 ) -> Result<(Uuid, Uuid), McpError> {
     let image_tag = crate::agents::build_image_tag(
         &state.config.agent_image_registry,
+        owner_id,
         &format!("mcp-{name}"),
         &version_tag,
     );

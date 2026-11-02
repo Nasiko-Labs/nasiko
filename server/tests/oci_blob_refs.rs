@@ -35,14 +35,14 @@ async fn insert_user(db: &sqlx::PgPool, username: &str) -> Uuid {
 /// unlike the read-side `check_repo_access`, an unclaimed repo name does NOT
 /// grant delete access. Tests that DELETE a blob must claim the repo first.
 async fn insert_agent(db: &sqlx::PgPool, name: &str, owner_id: Uuid) {
-    sqlx::query(
-        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
-    )
-    .bind(name)
-    .bind(owner_id)
-    .execute(db)
-    .await
-    .expect("insert test agent");
+    let image = format!("nasiko/{}:1.0.0", name);
+    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3)")
+        .bind(name)
+        .bind(owner_id)
+        .bind(image)
+        .execute(db)
+        .await
+        .expect("insert test agent");
 }
 
 fn sha256_hex(data: &[u8]) -> String {
@@ -142,6 +142,7 @@ async fn manifest_push_records_blob_refs_for_config_and_layers() {
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "oci-refs-owner").await;
     let repo = format!("oci-refs-repo-{}", Uuid::new_v4());
+    insert_agent(&server.db, &repo, owner_id).await;
 
     let config_digest = push_blob(
         &server,
@@ -200,6 +201,7 @@ async fn delete_blob_shared_across_repos_preserves_other_repos_copy() {
     let repo_a = format!("oci-shared-repo-a-{}", Uuid::new_v4());
     let repo_b = format!("oci-shared-repo-b-{}", Uuid::new_v4());
     insert_agent(&server.db, &repo_a, owner_a).await;
+    insert_agent(&server.db, &repo_b, owner_b).await;
 
     // Both repos push a manifest referencing the IDENTICAL layer digest
     // (byte-identical layer content forces the digest collision).
@@ -382,6 +384,8 @@ async fn get_blob_confidentiality_denies_repo_that_never_referenced_digest() {
     let owner_b = insert_user(&server.db, "oci-confid-b").await;
     let repo_a = format!("oci-confid-repo-a-{}", Uuid::new_v4());
     let repo_b = format!("oci-confid-repo-b-{}", Uuid::new_v4());
+    insert_agent(&server.db, &repo_a, owner_a).await;
+    insert_agent(&server.db, &repo_b, owner_b).await;
 
     // A pushes a blob + manifest referencing it under repo A only.
     let secret_layer = push_blob(
@@ -472,6 +476,8 @@ async fn two_repos_pushing_identical_manifest_content_dont_clobber_each_other() 
     let owner_b = insert_user(&server.db, "oci-hijack-b").await;
     let repo_a = format!("oci-hijack-repo-a-{}", Uuid::new_v4());
     let repo_b = format!("oci-hijack-repo-b-{}", Uuid::new_v4());
+    insert_agent(&server.db, &repo_a, owner_a).await;
+    insert_agent(&server.db, &repo_b, owner_b).await;
 
     let config_digest = push_blob(
         &server,
