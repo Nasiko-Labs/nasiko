@@ -192,7 +192,7 @@ A2A-Version: 1.0
                     }
                   ],
                   "capabilities": { "streaming": true },
-                  "endpoint": "http://cp:8080/api/agents/translation-agent-uuid"
+                  "endpoint": "/api/agents/translation-agent-uuid"
                 },
                 {
                   "agent_id": "deepl-agent-uuid",
@@ -206,7 +206,7 @@ A2A-Version: 1.0
                     }
                   ],
                   "capabilities": { "streaming": false },
-                  "endpoint": "http://cp:8080/api/agents/deepl-agent-uuid"
+                  "endpoint": "/api/agents/deepl-agent-uuid"
                 }
               ]
             }
@@ -217,6 +217,11 @@ A2A-Version: 1.0
   }
 }
 ```
+
+**Who sees what.** A caller with no credentials gets the public agents only. A caller that sends a
+session token (`Authorization: Bearer`) gets the agents that token may call through the proxy, by
+the same access check the proxy applies; an invalid token is refused with 401. Every `endpoint` is
+the agent proxy path, relative to the control plane; an agent's internal address is never returned.
 
 **Step 4: Agent calls discovered agent (standard A2A, through proxy)**
 ```json

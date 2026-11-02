@@ -8,25 +8,37 @@
 //! (`oss/agents/assistant-agent/main.py::_discover_agents`) and
 //! `nasiko_react_agent::AgentRegistry::discover_from_cp`.
 //!
-//! Deliberately unauthenticated (agents carry no platform credentials — the
-//! proxy strips `authorization` before forwarding, by design) but globally
-//! rate-limited. What it exposes is the discovery surface the design doc
-//! declares public anyway: running agents' names, descriptions, skills, and
-//! their *runtime-internal* endpoints (VPC-private node IPs / localhost),
-//! which are unreachable from outside the deployment's network.
+//! What a caller sees depends on who it is:
+//! - **No credentials:** public agents only. This is the catalog anyone who
+//!   can reach the server may read, so it stays unauthenticated and globally
+//!   rate-limited.
+//! - **A session token** (`Authorization: Bearer`, or the session cookie): the
+//!   agents that caller may call through the agent proxy, decided by the same
+//!   edition-aware check the proxy uses (`AuthService::can_access_agent`). An
+//!   invalid token is a 401, never a silent fall back to the public view.
+//!
+//! Every entry's address is the agent proxy path, `/api/agents/{id}`, relative
+//! to this server. The runtime-internal address (a node IP, a pod address,
+//! `localhost`) is never returned: it let any caller map the private network,
+//! and calling it directly skipped the proxy's ACL, flow guard and tracing
+//! (NAS-1129). A caller that wants to call an agent goes through the proxy
+//! with a token the proxy accepts.
 
 use axum::{
     Json,
     extract::State,
+    http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+use crate::auth::Claims;
 use crate::state::AppState;
 
 pub async fn registry_a2a_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<Value>,
 ) -> Response {
     let request_id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -45,7 +57,11 @@ pub async fn registry_a2a_handler(
         .into_response();
     }
 
-    match discoverable_agents(&state).await {
+    let viewer = match viewer(&state, &headers).await {
+        Ok(viewer) => viewer,
+        Err(refused) => return refused,
+    };
+    match discoverable_agents(&state, viewer.as_ref()).await {
         Ok(agents) => Json(agents_response(request_id, agents)).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "registry a2a: agent listing failed");
@@ -54,12 +70,27 @@ pub async fn registry_a2a_handler(
     }
 }
 
+/// Who is asking: `None` for a caller with no credentials, else the session
+/// the caller presented. A credential that does not validate is refused with
+/// 401, so an expired token never quietly narrows the answer to the public
+/// view.
+async fn viewer(state: &AppState, headers: &HeaderMap) -> Result<Option<Claims>, Response> {
+    let presented = headers.contains_key(header::AUTHORIZATION)
+        || crate::auth::middleware::extract_token(headers).is_some();
+    if !presented {
+        return Ok(None);
+    }
+    crate::auth::middleware::validate_bearer(state, headers)
+        .await
+        .map(Some)
+        .map_err(|(status, message)| (status, message).into_response())
+}
+
 #[derive(sqlx::FromRow)]
 struct AgentRow {
     id: Uuid,
     name: String,
     description: Option<String>,
-    url: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -75,75 +106,88 @@ struct SkillRow {
     examples: Value,
 }
 
-/// Every running agent, with its callable endpoint and advertised skills.
+/// The running agents `viewer` may call, with their advertised skills.
 ///
-/// `agents.url` may be empty (a fresh k8s deploy persists before the pod is
-/// Ready) — resolve those live from the runtime, same as `agent_proxy`, so a
-/// discovery answer never hands out a knowingly-dead URL. An agent that still
-/// has no endpoint stays listed (its name/description remain useful to a
-/// planner); callers already skip delegation targets without a URL.
-async fn discoverable_agents(state: &AppState) -> Result<Vec<Value>, sqlx::Error> {
+/// No viewer: public agents only (`is_public`, or a public grant). A viewer:
+/// every running agent the edition's `can_access_agent` lets them call, which
+/// for a superuser is all of them.
+async fn discoverable_agents(
+    state: &AppState,
+    viewer: Option<&Claims>,
+) -> Result<Vec<Value>, sqlx::Error> {
     let rows = sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, description, url FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL \
-           AND NOT is_internal \
-         ORDER BY name",
+        "SELECT a.id, a.name, a.description FROM agents a \
+         WHERE a.status = 'running' AND a.deleted_at IS NULL \
+           AND NOT a.is_internal \
+           AND ($1 OR a.is_public OR EXISTS ( \
+                SELECT 1 FROM agent_grants g \
+                 WHERE g.agent_id = a.id AND g.grant_type = 'public' AND g.grantee_id = '*')) \
+         ORDER BY a.name",
     )
+    .bind(viewer.is_some())
     .fetch_all(&state.db)
     .await?;
+
+    let rows = match viewer {
+        None => rows,
+        Some(claims) => {
+            let mut callable = Vec::with_capacity(rows.len());
+            for row in rows {
+                if crate::acl::can_access_agent(state, claims, row.id).await {
+                    callable.push(row);
+                }
+            }
+            callable
+        }
+    };
 
     let skills = sqlx::query_as::<_, SkillRow>(
-        "SELECT agent_id, skill_key, name, description, tags, examples FROM agent_skills",
+        "SELECT agent_id, skill_key, name, description, tags, examples FROM agent_skills \
+         WHERE agent_id = ANY($1)",
     )
+    .bind(rows.iter().map(|r| r.id).collect::<Vec<_>>())
     .fetch_all(&state.db)
     .await?;
 
-    let mut agents = Vec::with_capacity(rows.len());
-    for row in rows {
-        let url = match row.url.as_deref() {
-            Some(url) if !url.is_empty() => url.to_string(),
-            _ => state
-                .runtime
-                .endpoint(&nasiko_runtime::ContainerId::from_uuid(row.id))
-                .await
-                .unwrap_or_default(),
-        };
-        let agent_skills: Vec<Value> = skills
-            .iter()
-            .filter(|s| s.agent_id == row.id)
-            .map(|s| {
-                json!({
-                    "id": s.skill_key,
-                    "name": s.name,
-                    "description": s.description,
-                    "tags": s.tags,
-                    "examples": s.examples,
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let agent_skills: Vec<Value> = skills
+                .iter()
+                .filter(|s| s.agent_id == row.id)
+                .map(|s| {
+                    json!({
+                        "id": s.skill_key,
+                        "name": s.name,
+                        "description": s.description,
+                        "tags": s.tags,
+                        "examples": s.examples,
+                    })
                 })
-            })
-            .collect();
-        agents.push(agent_entry(
-            row.id,
-            &row.name,
-            row.description.as_deref().unwrap_or_default(),
-            &url,
-            agent_skills,
-        ));
-    }
-    Ok(agents)
+                .collect();
+            agent_entry(
+                row.id,
+                &row.name,
+                row.description.as_deref().unwrap_or_default(),
+                agent_skills,
+            )
+        })
+        .collect())
 }
 
 /// One discovery entry. Carries both naming conventions in use — `url`
-/// (assistant-agent, and the design doc's docker-era `localhost` rewrite
-/// depends on it) and `endpoint`/`agent_id` (`nasiko_react_agent::AgentInfo`,
+/// (assistant-agent) and `endpoint`/`agent_id` (`nasiko_react_agent::AgentInfo`,
 /// the design doc's examples) — so either consumer deserializes it directly.
-fn agent_entry(id: Uuid, name: &str, description: &str, url: &str, skills: Vec<Value>) -> Value {
+/// Both hold the agent proxy path, relative to this server.
+fn agent_entry(id: Uuid, name: &str, description: &str, skills: Vec<Value>) -> Value {
+    let proxy_path = format!("/api/agents/{id}");
     json!({
         "id": id.to_string(),
         "agent_id": id.to_string(),
         "name": name,
         "description": description,
-        "url": url,
-        "endpoint": url,
+        "url": proxy_path,
+        "endpoint": proxy_path,
         "skills": skills,
     })
 }
@@ -178,7 +222,6 @@ mod tests {
             Uuid::nil(),
             "currency-agent",
             "Converts currencies",
-            "http://172.31.0.68:31640",
             vec![json!({
                 "id": "convert",
                 "name": "Currency Conversion",
@@ -221,6 +264,7 @@ mod tests {
             );
         }
         assert_eq!(entry["url"], entry["endpoint"]);
+        assert_eq!(entry["url"], format!("/api/agents/{}", Uuid::nil()));
         assert!(entry["skills"].is_array());
         assert_eq!(entry["skills"][0]["tags"][0], "finance");
     }

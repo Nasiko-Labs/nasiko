@@ -121,16 +121,35 @@ impl AgentRegistry {
             .cloned()
     }
 
+    /// Lists the agents from the control plane's A2A registry (`{base_url}/a2a/v1`).
+    ///
+    /// `api_key` is a control-plane session token. Without one the registry
+    /// lists public agents only; with one, the agents that token may call.
+    /// Each entry's address is the agent proxy path (`/api/agents/{id}`),
+    /// relative to the control plane, so it is resolved against `base_url` and
+    /// the same token is attached to calls to it: the proxy checks it on every
+    /// call. The token is attached only to those control-plane paths, never to
+    /// an absolute address a registry response names, so a registry cannot
+    /// steer it elsewhere.
     async fn discover_from_cp(
         &self,
         base_url: &str,
-        _api_key: Option<&str>,
+        api_key: Option<&str>,
     ) -> Result<Vec<AgentInfo>, RegistryError> {
-        let url = format!("{}/a2a/v1", base_url.trim_end_matches('/'));
+        let base_url = base_url.trim_end_matches('/');
+        let url = format!("{base_url}/a2a/v1");
+        let auth_header = api_key.map(|key| ("authorization".to_string(), format!("Bearer {key}")));
 
-        let response = self
+        let (_, response) = self
             .client
-            .send_message(&url, "list all agents", None)
+            .send_message_with_headers(
+                &url,
+                "list all agents",
+                None,
+                auth_header.as_slice(),
+                &[],
+                &[],
+            )
             .await
             .map_err(|e| RegistryError::Discovery(e.to_string()))?;
 
@@ -145,10 +164,15 @@ impl AgentRegistry {
 
         let mut agents = Vec::new();
         for val in agents_data {
-            if let Ok(agent) = serde_json::from_value::<AgentInfo>(val.clone()) {
-                agents.push(agent);
-            } else {
-                tracing::warn!("skipping unparseable agent entry: {val}");
+            match serde_json::from_value::<AgentInfo>(val.clone()) {
+                Ok(mut agent) => {
+                    if agent.endpoint.starts_with('/') {
+                        agent.endpoint = format!("{base_url}{}", agent.endpoint);
+                        agent.auth_header = auth_header.clone();
+                    }
+                    agents.push(agent);
+                }
+                Err(_) => tracing::warn!("skipping unparseable agent entry: {val}"),
             }
         }
 
@@ -203,5 +227,71 @@ mod tests {
         assert!(!debug.contains("s3cret"), "{debug}");
         assert!(debug.contains("authorization: <redacted>"), "{debug}");
         assert!(format!("{:?}", info(None)).contains("auth_header: None"));
+    }
+
+    /// A registry answering `message/send` with one proxy-path entry and one
+    /// absolute entry, and recording the `authorization` it was sent.
+    async fn registry(
+        server: &mut mockito::ServerGuard,
+        expect_auth: Option<&str>,
+    ) -> mockito::Mock {
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": "1",
+            "result": {"artifacts": [{"parts": [{"kind": "data", "data": {"agents": [
+                {"id": "a1", "name": "proxied", "description": "d", "endpoint": "/api/agents/a1", "skills": []},
+                {"id": "a2", "name": "elsewhere", "description": "d", "endpoint": "https://other.example/a2a", "skills": []}
+            ]}}]}]}
+        });
+        let mock = server.mock("POST", "/a2a/v1");
+        let mock = match expect_auth {
+            Some(value) => mock.match_header("authorization", value),
+            None => mock.match_header("authorization", mockito::Matcher::Missing),
+        };
+        mock.with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create_async()
+            .await
+    }
+
+    #[tokio::test]
+    async fn proxy_paths_resolve_against_the_control_plane_and_carry_the_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = registry(&mut server, Some("Bearer user-token")).await;
+        let source = RegistrySource::ControlPlane {
+            base_url: format!("{}/", server.url()),
+            api_key: Some("user-token".into()),
+        };
+
+        let agents = AgentRegistry::new(source).discover().await.unwrap();
+
+        mock.assert_async().await;
+        let proxied = agents.iter().find(|a| a.id == "a1").unwrap();
+        assert_eq!(proxied.endpoint, format!("{}/api/agents/a1", server.url()));
+        assert_eq!(
+            proxied.auth_header,
+            Some(("authorization".into(), "Bearer user-token".into()))
+        );
+        // An absolute address from the response never gets the key.
+        let elsewhere = agents.iter().find(|a| a.id == "a2").unwrap();
+        assert_eq!(elsewhere.endpoint, "https://other.example/a2a");
+        assert_eq!(elsewhere.auth_header, None);
+    }
+
+    #[tokio::test]
+    async fn without_a_key_discovery_sends_no_credential() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = registry(&mut server, None).await;
+        let source = RegistrySource::ControlPlane {
+            base_url: server.url(),
+            api_key: None,
+        };
+
+        let agents = AgentRegistry::new(source).discover().await.unwrap();
+
+        mock.assert_async().await;
+        let proxied = agents.iter().find(|a| a.id == "a1").unwrap();
+        assert_eq!(proxied.endpoint, format!("{}/api/agents/a1", server.url()));
+        assert_eq!(proxied.auth_header, None);
     }
 }

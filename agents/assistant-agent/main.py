@@ -142,10 +142,17 @@ class AssistantExecutor(AgentExecutor):
                     if part.get("kind") == "data":
                         agents = part.get("data", {}).get("agents", [])
 
+            # The registry lists public agents to a caller with no credentials,
+            # and gives each one's agent proxy path (`/api/agents/{id}`), never
+            # its internal address. Resolve that path against the control plane.
+            # The proxy checks a user session on every call, which this example
+            # agent does not carry, so a delegation is refused until agent-to-agent
+            # calls through the proxy are supported.
+            base = DISCOVERY_URL.rstrip("/")
             for agent in agents:
                 url = agent.get("url", "")
-                if "localhost" in url:
-                    agent["url"] = url.replace("localhost", "host.docker.internal")
+                if url.startswith("/"):
+                    agent["url"] = f"{base}{url}"
 
             return [a for a in agents if a.get("name") != "assistant-agent"]
 
