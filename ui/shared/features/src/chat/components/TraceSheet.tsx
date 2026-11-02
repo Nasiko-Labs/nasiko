@@ -41,7 +41,7 @@ export function TraceSheet({
 }) {
   return (
     <Sheet open={!!target} onOpenChange={(o) => !o && onClose()}>
-      <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-2xl">
+      <SheetContent side="right" className="w-full gap-0 overflow-y-auto sm:max-w-4xl">
         <SheetHeader>
           <SheetTitle>{copy.traceTitle}</SheetTitle>
           <SheetDescription className="font-mono text-xs">
@@ -114,7 +114,8 @@ function TraceBody({ target, sessionId }: { target: TraceTarget; sessionId: stri
           onToggleNode={toggle(setCollapsed)}
           highlight={new Set()}
         />
-        {trace.isFetching ? (
+        {/* On `fresh`, the one condition that polls, not on each poll's fetch: that blinked every 5 s. */}
+        {target.fresh ? (
           <p className="text-xs text-muted-foreground">{copy.traceStillArriving}</p>
         ) : null}
       </div>
