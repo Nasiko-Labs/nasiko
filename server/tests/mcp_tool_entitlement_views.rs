@@ -105,8 +105,16 @@ fn only(names: &[&str]) -> ToolSet {
 }
 
 impl Fixture {
-    fn restrict(&self, map: HashMap<Uuid, ToolSet>) {
+    /// Swap the caller's entitlement. The gateway caches every answer, so the
+    /// cached one is dropped like an edition's write path would.
+    async fn restrict(&self, map: HashMap<Uuid, ToolSet>) {
         *self.ent.0.lock().unwrap() = UserEntitlement::Restricted(map);
+        let admin = Uuid::parse_str(&self.admin_id).unwrap();
+        nasiko_mcp_gateway::entitlements::invalidate_user_entitlements(
+            &self.server.state.mcp,
+            &[admin],
+        )
+        .await;
     }
 
     fn req(&self, rb: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -219,7 +227,7 @@ async fn restricted_views_are_filtered() {
             .await,
         200
     );
-    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))])).await;
 
     let (_, conns) = f.get("/connectors").await;
     assert_eq!(
@@ -245,13 +253,16 @@ async fn restricted_views_are_filtered() {
 #[serial]
 async fn restricted_connector_toggle_needs_all() {
     let f = setup().await;
-    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))])).await;
     let (st, _) = f
         .put(&format!("/connectors/{}", f.c1), json!({"enabled": false}))
         .await;
-    assert_eq!(st, 403, "a partial view must not toggle the whole connector");
+    assert_eq!(
+        st, 403,
+        "a partial view must not toggle the whole connector"
+    );
 
-    f.restrict(HashMap::from([(f.c1, ToolSet::All)]));
+    f.restrict(HashMap::from([(f.c1, ToolSet::All)])).await;
     let (st, _) = f
         .put(&format!("/connectors/{}", f.c1), json!({"enabled": false}))
         .await;
@@ -264,7 +275,7 @@ async fn restricted_connector_toggle_needs_all() {
 async fn restricted_wildcard_rules_are_rejected_and_hidden() {
     let f = setup().await;
     assert_eq!(f.put_rules(&[(f.c1, "*", "ask")]).await, 200);
-    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))])).await;
 
     // A wildcard is refused even when every tool it matches today is entitled.
     let wildcard = format!("{}*", &TOOL_A[..TOOL_A.len() - 1]);
@@ -288,7 +299,7 @@ async fn restricted_bulk_put_merges_and_rejects() {
             .await,
         200
     );
-    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))])).await;
 
     assert_eq!(f.put_rules(&[(f.c1, TOOL_A, "allow")]).await, 200);
     assert_eq!(
@@ -323,7 +334,7 @@ async fn restricted_with_all_keeps_replace_behaviour() {
             .await,
         200
     );
-    f.restrict(HashMap::from([(f.c1, ToolSet::All)]));
+    f.restrict(HashMap::from([(f.c1, ToolSet::All)])).await;
     assert_eq!(f.put_rules(&[(f.c1, "*", "allow")]).await, 200);
     assert_eq!(
         f.stored_rules(f.c1).await,
@@ -337,7 +348,7 @@ async fn restricted_with_all_keeps_replace_behaviour() {
 async fn restricted_reset_is_forbidden() {
     let f = setup().await;
     assert_eq!(f.put_rules(&[(f.c1, TOOL_B, "ask")]).await, 200);
-    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))]));
+    f.restrict(HashMap::from([(f.c1, only(&[TOOL_A]))])).await;
     let res = f
         .req(f.server.client.delete(f.path("/permissions")))
         .send()

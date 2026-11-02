@@ -1259,7 +1259,9 @@ async fn session_grant_cannot_bypass_a_user_entitlement() {
 
 #[tokio::test]
 async fn load_user_entitlement_uses_the_installed_impl() {
-    use nasiko_mcp_gateway::entitlements::load_user_entitlement;
+    use nasiko_mcp_gateway::entitlements::{
+        OssToolEntitlements, invalidate_user_entitlements, load_user_entitlement,
+    };
     use nasiko_mcp_gateway::{ToolSet, UserEntitlement};
 
     let mut db = TestDb::new(
@@ -1267,6 +1269,10 @@ async fn load_user_entitlement_uses_the_installed_impl() {
         std::sync::Arc::new(AllowAllAuthorizer),
     )
     .await;
+    // The shared test state points Redis at a dead port; the cache behaviour
+    // below needs a live one.
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
+    db.state.redis = redis::Client::open(redis_url).expect("redis url");
     let user = Uuid::new_v4();
     assert_eq!(
         load_user_entitlement(&db.state, user).await.unwrap(),
@@ -1274,10 +1280,33 @@ async fn load_user_entitlement_uses_the_installed_impl() {
         "OSS default is unrestricted"
     );
 
+    // Unrestricted is cached like any answer: a swapped impl is not consulted
+    // for this user until the entry is invalidated.
     let restricted = UserEntitlement::Restricted(HashMap::from([(Uuid::new_v4(), ToolSet::All)]));
     db.state.entitlements = std::sync::Arc::new(FakeEntitlements(restricted.clone()));
     assert_eq!(
         load_user_entitlement(&db.state, user).await.unwrap(),
+        UserEntitlement::Unrestricted,
+        "Unrestricted is served from the cache"
+    );
+    invalidate_user_entitlements(&db.state, &[user]).await;
+    assert_eq!(
+        load_user_entitlement(&db.state, user).await.unwrap(),
         restricted
     );
+
+    // A batch larger than one DEL chunk is cleared completely.
+    let users: Vec<Uuid> = (0..1200).map(|_| Uuid::new_v4()).collect();
+    for u in &users {
+        load_user_entitlement(&db.state, *u).await.unwrap();
+    }
+    db.state.entitlements = std::sync::Arc::new(OssToolEntitlements);
+    invalidate_user_entitlements(&db.state, &users).await;
+    for u in [users[0], users[499], users[500], users[1199]] {
+        assert_eq!(
+            load_user_entitlement(&db.state, u).await.unwrap(),
+            UserEntitlement::Unrestricted,
+            "invalidated entries are recomputed"
+        );
+    }
 }

@@ -123,31 +123,32 @@ fn entitlement_cache_key(user_id: Uuid) -> String {
 
 /// Load the user's entitlement, Redis cached for `perm_cache_ttl_seconds`.
 /// A Redis outage degrades to a cache miss, like `load_permission_context`.
-/// `Unrestricted` is never cached: it is free to recompute, and skipping the
-/// write keeps OSS from touching Redis for a constant.
+/// `Unrestricted` is cached too: an edition's resolver may need a database read
+/// to reach it (enforcement off, a superuser), which would otherwise run on every
+/// request. Whatever changes the answer must call [`invalidate_user_entitlements`];
+/// a change nothing hooks (e.g. editing `is_superuser` in the database by hand)
+/// shows up after at most the TTL.
 pub async fn load_user_entitlement(state: &McpState, user_id: Uuid) -> Result<UserEntitlement> {
     let key = entitlement_cache_key(user_id);
     if let Some(cached) = cache::get_json::<UserEntitlement>(&state.redis, &key).await {
         return Ok(cached);
     }
     let entitlement = state.entitlements.for_user(user_id).await?;
-    if entitlement.is_restricted() {
-        cache::set_json_ex(
-            &state.redis,
-            &key,
-            &entitlement,
-            state.config.perm_cache_ttl_seconds,
-        )
-        .await;
-    }
+    cache::set_json_ex(
+        &state.redis,
+        &key,
+        &entitlement,
+        state.config.perm_cache_ttl_seconds,
+    )
+    .await;
     Ok(entitlement)
 }
 
-/// Drop the cached entitlements of `user_ids` (call after changing them).
+/// Drop the cached entitlements of `user_ids` (call after changing them), in
+/// batched multi-key deletes so an org-wide change is a handful of commands.
 pub async fn invalidate_user_entitlements(state: &McpState, user_ids: &[Uuid]) {
-    for user_id in user_ids {
-        cache::delete(&state.redis, &entitlement_cache_key(*user_id)).await;
-    }
+    let keys: Vec<String> = user_ids.iter().map(|u| entitlement_cache_key(*u)).collect();
+    cache::delete_many(&state.redis, &keys).await;
 }
 
 #[cfg(test)]
