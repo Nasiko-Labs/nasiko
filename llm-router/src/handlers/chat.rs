@@ -545,8 +545,10 @@ async fn chat_core(
     }
 
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
+    // One deadline for the whole request, compact-tools re-send included.
+    let deadline = fallback::provider_deadline(&ctx.cfg);
     let (mut resp, (mut provider, mut model)) =
-        fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &req)
+        fallback::execute_chat_by(&ctx.http, &ctx.cfg, &resolved, &req, deadline)
             .instrument(llm_span.clone())
             .await?;
 
@@ -586,7 +588,7 @@ async fn chat_core(
             },
         );
         (resp, (provider, model)) =
-            fallback::execute_chat(&ctx.http, &ctx.cfg, &resolved, &compacted.native)
+            fallback::execute_chat_by(&ctx.http, &ctx.cfg, &resolved, &compacted.native, deadline)
                 .instrument(llm_span.clone())
                 .await?;
     }

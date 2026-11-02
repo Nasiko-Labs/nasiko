@@ -58,7 +58,9 @@ pub struct GatewayConfig {
     /// Longest a provider connection may go without receiving a byte before the call
     /// fails. A read timeout, not a total one: it restarts on every chunk, so a stream
     /// that keeps arriving is never cut, while a non-streaming call (silent until its
-    /// reply is ready) is bounded by it. Default 300. Keep it below the calling
+    /// reply is ready) is bounded by it. It is also the deadline for the whole fallback
+    /// chain — every attempt and parameter-fix retry together, up to the first streamed
+    /// chunk — so fallbacks never multiply it. Default 300. Keep it below the calling
     /// agent's own LLM-client timeout, or the agent retries while the router still waits.
     pub provider_timeout_secs: u64,
 
