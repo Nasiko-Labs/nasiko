@@ -180,6 +180,23 @@ impl<'a> EffectiveAccess<'a> {
 /// which map to no connector.
 pub const COMPOSIO_META_TOOLKIT: &str = "composio";
 
+/// The only meta-tools a user under a restricted entitlement may list or call.
+/// Composio's router can also expose code-running meta-tools (a remote
+/// workbench or shell) that reach every connected toolkit with the user's
+/// credentials, which no per-slug check can attribute. Exact, case-sensitive
+/// names; the two batch tools are still argument-filtered at `tools/call`.
+const RESTRICTED_COMPOSIO_META_TOOLS: [&str; 4] = [
+    "COMPOSIO_SEARCH_TOOLS",
+    "COMPOSIO_GET_TOOL_SCHEMAS",
+    "COMPOSIO_MULTI_EXECUTE_TOOL",
+    "COMPOSIO_MANAGE_CONNECTIONS",
+];
+
+/// May a restricted user see/call the toolkit-`composio` tool `name`?
+pub fn restricted_composio_meta_tool_allowed(name: &str) -> bool {
+    RESTRICTED_COMPOSIO_META_TOOLS.contains(&name)
+}
+
 /// Extract the Composio toolkit slug from a tool slug:
 /// `GMAIL_SEND_EMAIL` → `gmail`. Skips leading underscores so a malformed
 /// `_GMAIL_SEND` still resolves to `gmail` rather than an empty toolkit (which
