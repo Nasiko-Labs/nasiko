@@ -41,7 +41,9 @@ export function AppShell({
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const fullHeight = FULL_HEIGHT.test(pathname)
   // The top bar's start: the page's nav group and item, layer patches applied (as the sidebar does).
-  const active = activeItem(pathname, applyNav(NAV_ITEMS, use(EditionContext).edition.layers))
+  const { edition, slots } = use(EditionContext)
+  const active = activeItem(pathname, applyNav(NAV_ITEMS, edition.layers))
+  const Notice = slots.shellNotice
   const item = active
     ? {
         to: active.to,
@@ -63,6 +65,7 @@ export function AppShell({
   const inset = (
     <SidebarInset id="main" tabIndex={-1} className={cn('outline-none', fullHeight && 'min-h-0')}>
       <StaleBuildNotice />
+      {Notice ? <Notice /> : null}
       {/* One bar above every page (TopBar.tsx); on phones it also holds the menu button (§4.2). */}
       <ShellTopBar item={item} pathname={pathname} bare={bare}>
         {fullHeight ? (

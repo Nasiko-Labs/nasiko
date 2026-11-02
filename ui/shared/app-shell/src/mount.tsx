@@ -17,8 +17,13 @@ const loadMotionFeatures = () => import('@nasiko/ui/lib/motionFeatures').then((m
 /**
  * Boot an edition (docs/lab-vs-react-migration-review.md §10.2): each edition's `src/main.tsx` calls this with the
  * edition its `src/edition.ts` declares. The route tree is the edition's own (`@edition/routeTree.gen`).
+ * `beforeRender` runs once the mocks are up (in mock mode) and before the first render; false means the page is
+ * leaving, so nothing renders.
  */
-export async function mount(edition: Edition) {
+export async function mount(
+  edition: Edition,
+  { beforeRender }: { beforeRender?: () => Promise<boolean> } = {},
+) {
   // A holder, since the query client is built before the router it redirects with.
   const routerRef: { current?: AnyRouter } = {}
   const queryClient = createQueryClient(() => routerRef.current)
@@ -54,6 +59,7 @@ export async function mount(edition: Edition) {
       document.body.prepend(banner)
     }
   }
+  if (beforeRender && !(await beforeRender())) return
   const root = document.getElementById('root')
   if (!root) throw new Error('index.html has no #root element')
   createRoot(root).render(

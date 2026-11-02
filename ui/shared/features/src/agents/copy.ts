@@ -19,6 +19,10 @@ export const copy = {
   publicChip: 'Public',
   harnessChip: 'Coding harness',
   harnessesToggle: (n: number) => `Coding harnesses (${n})`,
+  // With the `agentPlacement` slot (MT): where each agent runs (FR-4, TM-5).
+  local: 'Local',
+  cloud: 'Cloud',
+  localToggle: (n: number) => `Local agents (${n})`,
   ownerLabel: 'Owner',
   ownerFilter: 'Filter by owner',
   anyone: 'Anyone',
