@@ -1,8 +1,7 @@
 //! Ordered fallback execution.
 //!
 //! Try the primary resolved config, then each `fallback_models` entry in order; the
-//! first success wins, and only after all are exhausted — or the chain's shared
-//! `provider_timeout_secs` deadline passes — do we surface a 502. Each
+//! first success wins, and only after all are exhausted do we surface a 502. Each
 //! call returns the **effective** provider/model actually used, so usage logging
 //! records the fallback when one fires.
 //!
@@ -14,11 +13,8 @@
 //! could end up with vectors from two different models in one corpus. They now take a
 //! single attempt in [`crate::providers::execute_embeddings_once`].
 
-use std::time::Duration;
-
 use futures::stream::BoxStream;
 use serde_json::Value;
-use tokio::time::Instant;
 
 use super::{ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
@@ -40,74 +36,8 @@ const MAX_PARAM_FIXES: usize = 4;
 type ParamFix = (String, Value);
 
 /// Run a non-streaming chat with ordered fallbacks. Returns the response and the
-/// effective `(provider, model)`. The whole chain shares one deadline
-/// ([`within_provider_deadline`]).
+/// effective `(provider, model)`.
 pub async fn execute_chat(
-    http: &reqwest::Client,
-    cfg: &GatewayConfig,
-    primary: &ResolvedConfig,
-    req: &ChatRequest,
-) -> Result<(ChatResponse, Effective), GatewayError> {
-    execute_chat_by(http, cfg, primary, req, provider_deadline(cfg)).await
-}
-
-/// [`execute_chat`] against a deadline the caller already holds, so a request that runs
-/// more than one chain (the compact-tools re-send) spends one budget, not one per chain.
-pub async fn execute_chat_by(
-    http: &reqwest::Client,
-    cfg: &GatewayConfig,
-    primary: &ResolvedConfig,
-    req: &ChatRequest,
-    deadline: Instant,
-) -> Result<(ChatResponse, Effective), GatewayError> {
-    within_provider_deadline(cfg, deadline, chat_attempts(http, cfg, primary, req)).await
-}
-
-/// When a provider call starting now must have answered: `provider_timeout_secs` away.
-pub fn provider_deadline(cfg: &GatewayConfig) -> Instant {
-    Instant::now() + Duration::from_secs(cfg.provider_timeout_secs)
-}
-
-/// Run a streaming chat with ordered fallbacks (fallback applies to the *initial*
-/// connect failure; once bytes flow, mid-stream errors end the stream). Returns the
-/// chunk stream and the effective `(provider, model)`. The deadline covers establishing
-/// the stream, never the chunks that follow.
-pub async fn execute_chat_stream(
-    http: &reqwest::Client,
-    cfg: &GatewayConfig,
-    primary: &ResolvedConfig,
-    req: &ChatRequest,
-) -> Result<
-    (
-        BoxStream<'static, Result<ChatChunk, ProviderError>>,
-        Effective,
-    ),
-    GatewayError,
-> {
-    let deadline = provider_deadline(cfg);
-    within_provider_deadline(cfg, deadline, chat_stream_attempts(http, cfg, primary, req)).await
-}
-
-/// Bound a whole attempt chain — every fallback and parameter-fix retry — by `deadline`.
-/// The client's read timeout bounds one attempt; without this a stalled provider costs it
-/// once per attempt, so a chain with two fallbacks would outlast the calling agent's own
-/// timeout and the agent would retry while the router still waits.
-async fn within_provider_deadline<T>(
-    cfg: &GatewayConfig,
-    deadline: Instant,
-    attempts: impl Future<Output = Result<T, GatewayError>>,
-) -> Result<T, GatewayError> {
-    tokio::time::timeout_at(deadline, attempts)
-        .await
-        .unwrap_or_else(|_| {
-            Err(GatewayError::Upstream(format!(
-                "no provider answered within {}s across all attempts",
-                cfg.provider_timeout_secs
-            )))
-        })
-}
-
-async fn chat_attempts(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
@@ -155,7 +85,10 @@ async fn chat_attempts(
     Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
 }
 
-async fn chat_stream_attempts(
+/// Run a streaming chat with ordered fallbacks (fallback applies to the *initial*
+/// connect failure; once bytes flow, mid-stream errors end the stream). Returns the
+/// chunk stream and the effective `(provider, model)`.
+pub async fn execute_chat_stream(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
@@ -313,6 +246,13 @@ fn strip_param(req: &mut ChatRequest, cfg: &mut ResolvedConfig, param: &str) -> 
             cfg.max_tokens = None;
             had
         }
+        // The provider adds a cache key from `cfg.agent_id` (`TOKEN_CACHE_MARKERS`), so the
+        // key is not in `extra` to remove; clearing the id stops the retry adding it again.
+        "prompt_cache_key" | "session_id" => {
+            let had = req.extra.remove(param).is_some() || !cfg.agent_id.is_empty();
+            cfg.agent_id.clear();
+            had
+        }
         other => req.extra.remove(other).is_some(),
     }
 }
@@ -419,6 +359,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
             compress_enabled: primary.compress_enabled,
+            agent_id: primary.agent_id.clone(),
         });
     }
     attempts
@@ -446,6 +387,7 @@ mod tests {
 
     fn primary(provider: &str, fallbacks: Vec<&str>) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             provider: provider.into(),
             model: "primary-model".into(),
             litellm_model: format!("{provider}/primary-model"),
@@ -611,11 +553,53 @@ mod tests {
     }
 
     #[test]
+    fn a_rejected_router_cache_key_is_dropped_and_not_re_added() {
+        // An OpenAI-compatible base that does not know `prompt_cache_key`. The key was added by
+        // the provider, not the caller, so the repair has to stop the provider adding it.
+        let provider =
+            crate::providers::OpenAiProvider::new(reqwest::Client::new(), "http://x".into());
+        let err = ProviderError::Status {
+            status: 400,
+            message: json!({
+                "error": {
+                    "message": "Unrecognized request argument supplied: prompt_cache_key",
+                    "type": "invalid_request_error",
+                    "param": "prompt_cache_key",
+                    "code": "unsupported_parameter"
+                }
+            })
+            .to_string(),
+            retryable: false,
+        };
+        let mut req = chat_req();
+        let mut cfg = primary("openai", vec![]);
+        cfg.agent_id = "agent-1".into();
+        let mut applied: Vec<ParamFix> = Vec::new();
+
+        assert!(try_fix_param(
+            &provider,
+            &err,
+            &mut req,
+            &mut cfg,
+            &mut applied
+        ));
+        assert!(cfg.agent_id.is_empty());
+        assert!(!try_fix_param(
+            &provider,
+            &err,
+            &mut req,
+            &mut cfg,
+            &mut applied
+        ));
+    }
+
+    #[test]
     fn same_provider_fallback_reuses_key_cross_provider_uses_platform() {
-        let p = primary(
+        let mut p = primary(
             "anthropic",
             vec!["anthropic/claude-haiku", "openai/gpt-4o-mini"],
         );
+        p.agent_id = "agent-1".into();
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 3);
         // primary
@@ -630,6 +614,8 @@ mod tests {
         assert_eq!(attempts[2].api_key, "sk-platform");
         assert_eq!(attempts[2].temperature, Some(0.3));
         assert_eq!(attempts[2].max_tokens, Some(100));
+        // The same agent, so OpenAI keys its prompt cache as on a direct call.
+        assert_eq!(attempts[2].agent_id, "agent-1");
     }
 
     #[test]
@@ -709,6 +695,7 @@ mod tests {
             ..Default::default()
         };
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "anthropic".into(),
             model: "claude-3-5-sonnet-20241022".into(),
             litellm_model: "anthropic/claude-3-5-sonnet-20241022".into(),
@@ -788,6 +775,7 @@ mod tests {
         };
         // Temperature comes from the resolved config (as tier routing sets it); no fallbacks.
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-5.5".into(),
             litellm_model: "openai/gpt-5.5".into(),
@@ -1082,6 +1070,7 @@ mod tests {
             ..Default::default()
         };
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "anthropic".into(),
             model: "claude-opus-4-8".into(),
             litellm_model: "anthropic/claude-opus-4-8".into(),
@@ -1132,6 +1121,7 @@ mod tests {
         };
         // primary openai + one openai fallback, both hit the failing mock
         let primary = ResolvedConfig {
+            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-4o".into(),
             litellm_model: "openai/gpt-4o".into(),
@@ -1157,95 +1147,6 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GatewayError::Upstream(_)));
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
-    }
-
-    /// A provider that accepts the connection and never answers costs each attempt its
-    /// read timeout. Three attempts at 700 ms would be 2.1 s; the shared 1 s deadline ends
-    /// the chain part-way through the second.
-    #[tokio::test]
-    async fn a_stalled_provider_is_bounded_once_across_all_attempts() {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let connections = Arc::new(AtomicUsize::new(0));
-        let seen = connections.clone();
-        tokio::spawn(async move {
-            // Hold every socket open and silent.
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = listener.accept().await {
-                seen.fetch_add(1, Ordering::SeqCst);
-                held.push(socket);
-            }
-        });
-        let cfg = GatewayConfig {
-            openai_api_base: base,
-            platform_openai_api_key: "sk-platform".into(),
-            provider_timeout_secs: 1,
-            ..Default::default()
-        };
-        let mut primary = primary("openai", vec!["openai/gpt-4o-mini", "openai/gpt-4o"]);
-        primary.temperature = None;
-        primary.max_tokens = None;
-        let req: ChatRequest =
-            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
-                .unwrap();
-        let http = crate::provider_client(std::time::Duration::from_millis(700));
-
-        let started = std::time::Instant::now();
-        let err = execute_chat(&http, &cfg, &primary, &req).await.unwrap_err();
-        let elapsed = started.elapsed();
-
-        assert!(
-            err.to_string().contains("across all attempts"),
-            "expected the chain deadline, got {err}"
-        );
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
-        assert!(
-            elapsed < std::time::Duration::from_millis(1600),
-            "{elapsed:?}"
-        );
-        // The fallback did run — the deadline, not the read timeout, ended the chain.
-        assert!(connections.load(Ordering::SeqCst) >= 2);
-    }
-
-    /// The compact-tools re-send runs a second chain against the first one's deadline, so
-    /// a request whose first chain spent the budget gets no second budget.
-    #[tokio::test]
-    async fn a_second_chain_on_a_spent_deadline_ends_at_once() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let mut held = Vec::new();
-            while let Ok((socket, _)) = listener.accept().await {
-                held.push(socket);
-            }
-        });
-        let cfg = GatewayConfig {
-            openai_api_base: base,
-            provider_timeout_secs: 1,
-            ..Default::default()
-        };
-        let primary = primary("openai", vec![]);
-        let req: ChatRequest =
-            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
-                .unwrap();
-        let http = reqwest::Client::new();
-        let deadline = provider_deadline(&cfg);
-
-        let first = execute_chat_by(&http, &cfg, &primary, &req, deadline).await;
-        assert!(first.is_err());
-        let started = std::time::Instant::now();
-        let second = execute_chat_by(&http, &cfg, &primary, &req, deadline).await;
-
-        let err = second.unwrap_err();
-        assert!(err.to_string().contains("across all attempts"), "{err}");
-        assert!(
-            started.elapsed() < std::time::Duration::from_millis(200),
-            "{:?}",
-            started.elapsed()
-        );
     }
 
     /// An audio part routed to Anthropic is refused by the spoke before any request

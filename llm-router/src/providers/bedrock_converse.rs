@@ -10,6 +10,8 @@
 //! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`. An
 //! agent's `cache_control` markers become `cachePoint` blocks where the model accepts them.
 //! Brevity's directive ends the last user turn rather than joining `system` ([`crate::brevity`]).
+//! With `TOKEN_CACHE_MARKERS` on, the router fills cache points the agent left free
+//! ([`add_cache_points`]).
 //!
 //! Response: `output.message.content[].text` → concatenated content; `toolUse` →
 //! OpenAI `tool_calls[]`; `stopReason` mapped; `usage` fields renamed.
@@ -39,16 +41,43 @@ use super::dialect::{bedrock_region, bedrock_region_prefix};
 /// Bedrock requires `maxTokens` in `inferenceConfig`; used when neither config nor
 /// request sets it.
 const DEFAULT_MAX_TOKENS: i64 = 4096;
+/// Bedrock accepts at most this many cache points in one request, on Claude and Nova alike.
+const MAX_CACHE_POINTS: usize = 4;
 
 pub struct BedrockConverseProvider {
     http: reqwest::Client,
     /// API base, e.g. `https://bedrock-runtime.us-west-2.amazonaws.com`.
     base: String,
+    /// Add the router's own cache points ([`add_cache_points`]).
+    cache_markers: bool,
 }
 
 impl BedrockConverseProvider {
     pub fn new(http: reqwest::Client, base: String) -> Self {
-        Self { http, base }
+        Self {
+            http,
+            base,
+            cache_markers: false,
+        }
+    }
+
+    /// Fill the cache points an agent leaves free (`TOKEN_CACHE_MARKERS`).
+    pub fn with_cache_markers(mut self, enabled: bool) -> Self {
+        self.cache_markers = enabled;
+        self
+    }
+
+    fn request_body(
+        &self,
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+        allow_temperature: bool,
+    ) -> Result<(Value, HashMap<String, String>), ProviderError> {
+        let (mut body, name_map) = to_converse_request_inner(req, cfg, allow_temperature)?;
+        if self.cache_markers {
+            add_cache_points(&mut body, CacheSupport::for_router(&cfg.model));
+        }
+        Ok((body, name_map))
     }
 
     fn status_error(status: reqwest::StatusCode, body: String) -> ProviderError {
@@ -102,7 +131,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -142,7 +171,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -252,7 +281,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -287,7 +316,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = to_converse_request_no_temperature(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, false)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -319,7 +348,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, _name_map) = to_converse_request_no_temperature(req, cfg)?;
+        let (body, _name_map) = self.request_body(req, cfg, false)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -379,8 +408,8 @@ impl BedrockConverseProvider {
             return Err(Self::status_error(status, text));
         }
 
-        // `_name_map` is empty here because `to_converse_request_no_temperature`
-        // discards it. Rebuild so tool names are properly unsanitized in the response.
+        // `_name_map` was discarded above. Rebuild so tool names are properly unsanitized in
+        // the response.
         let name_map = req
             .tools
             .as_ref()
@@ -401,7 +430,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, name_map) = to_converse_request(req, cfg)?;
+        let (body, name_map) = self.request_body(req, cfg, true)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -915,20 +944,6 @@ fn converse_content(
 
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
-fn to_converse_request(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> Result<(Value, HashMap<String, String>), ProviderError> {
-    to_converse_request_inner(req, cfg, true)
-}
-
-fn to_converse_request_no_temperature(
-    req: &ChatRequest,
-    cfg: &ResolvedConfig,
-) -> Result<(Value, HashMap<String, String>), ProviderError> {
-    to_converse_request_inner(req, cfg, false)
-}
-
 fn to_converse_request_inner(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
@@ -948,7 +963,7 @@ fn to_converse_request_inner(
                 // matches this turn's cached prefix; in `system` it would sit ahead of them all.
                 let placed = crate::brevity::is_directive(m)
                     && pending_tool_results.is_empty()
-                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE, caching);
                 if placed {
                     continue;
                 }
@@ -1027,13 +1042,26 @@ fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
 }
 
 /// Add `text` as a block at the end of `turn` when it is a user turn; `false` when it is not,
-/// or there is none.
-fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+/// or there is none. On Claude the text before it loses its trailing whitespace, unless that
+/// would empty it: the next request ends the turn at that text, and with trailing whitespace it
+/// missed the prefix this request cached there (checked live, Nov 2026). Nova read it either way.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str, caching: CacheSupport) -> bool {
     match turn
         .filter(|t| t["role"] == "user")
         .and_then(|t| t["content"].as_array_mut())
     {
         Some(content) => {
+            if matches!(caching, CacheSupport::Everywhere { .. })
+                && let Some(last) = content
+                    .iter_mut()
+                    .rev()
+                    .find(|b| b.get("cachePoint").is_none())
+                && let Some(before) = last["text"].as_str()
+                && before.trim_end().len() != before.len()
+                && !before.trim_end().is_empty()
+            {
+                last["text"] = json!(before.trim_end());
+            }
             content.push(json!({ "text": text }));
             true
         }
@@ -1064,6 +1092,15 @@ const CLAUDE_WITHOUT_TTL: [&str; 4] = [
     "claude-opus-4-1",
 ];
 
+/// Claude models Bedrock serves without prompt caching. The router adds no cache points
+/// there; an agent's own marker still passes through as it did before the router added any.
+const CLAUDE_WITHOUT_CACHING: [&str; 4] = [
+    "claude-3-haiku",
+    "claude-3-sonnet",
+    "claude-3-opus",
+    "claude-3-5-sonnet",
+];
+
 impl CacheSupport {
     fn of(model: &str) -> Self {
         if model.contains("anthropic.claude") {
@@ -1074,6 +1111,17 @@ impl CacheSupport {
             Self::AfterText
         } else {
             Self::None
+        }
+    }
+
+    /// Where the router may add cache points of its own: as [`of`](Self::of), except no
+    /// Claude in [`CLAUDE_WITHOUT_CACHING`]. A cache point there would fail the request,
+    /// and nothing retries without it.
+    fn for_router(model: &str) -> Self {
+        if CLAUDE_WITHOUT_CACHING.iter().any(|old| model.contains(old)) {
+            Self::None
+        } else {
+            Self::of(model)
         }
     }
 
@@ -1136,6 +1184,108 @@ impl CacheSupport {
         }
         point
     }
+}
+
+/// Add the router's own cache points in the slots the agent left free: first at the end of the
+/// conversation, on Nova again where the previous request put that point, then after `system`
+/// (tools come before it, so that point covers them too). Each is a 5-minute point. Only where
+/// the model accepts one: after any block on Claude, only after text on Nova, so on Nova the end
+/// of a tool loop is its last assistant text.
+fn add_cache_points(body: &mut Value, caching: CacheSupport) {
+    if caching == CacheSupport::None {
+        return;
+    }
+    let mut free = MAX_CACHE_POINTS.saturating_sub(count_cache_points(body));
+    // A 5-minute point may not come before a 1-hour one, and `system` comes before every turn.
+    let turns_hold_long_point = turn_blocks(body).any(|block| block["cachePoint"]["ttl"] == "1h");
+
+    if free > 0
+        && let Some(slot) = cache_point_slot(turns(body), caching)
+    {
+        insert_cache_point(body, slot);
+        free -= 1;
+    }
+    // Claude finds the previous request's cached prefix by looking back from this request's
+    // point. Nova reads only at a point the request repeats, so it gets the previous request's
+    // end point again: the same slot, found in the turns before the last answer.
+    if free > 0
+        && caching == CacheSupport::AfterText
+        && let Some(answer) = turns(body).iter().rposition(|t| t["role"] == "assistant")
+        && let Some(slot) = cache_point_slot(&turns(body)[..answer], caching)
+    {
+        insert_cache_point(body, slot);
+        free -= 1;
+    }
+    if free > 0
+        && !turns_hold_long_point
+        && let Some(system) = body["system"].as_array_mut()
+        && system
+            .last()
+            .and_then(|block| block["text"].as_str())
+            .is_some_and(|t| !t.is_empty() && !t.ends_with(crate::brevity::DIRECTIVE))
+    {
+        system.push(json!({ "cachePoint": { "type": "default" } }));
+    }
+}
+
+fn turns(body: &Value) -> &[Value] {
+    body["messages"].as_array().map_or(&[], Vec::as_slice)
+}
+
+/// Put a cache point at `(turn, index)` in the conversation.
+fn insert_cache_point(body: &mut Value, (turn, at): (usize, usize)) {
+    if let Some(content) = body["messages"][turn]["content"].as_array_mut() {
+        content.insert(at, json!({ "cachePoint": { "type": "default" } }));
+    }
+}
+
+fn count_cache_points(body: &Value) -> usize {
+    [&body["system"], &body["toolConfig"]["tools"]]
+        .into_iter()
+        .filter_map(Value::as_array)
+        .flatten()
+        .chain(turn_blocks(body))
+        .filter(|block| block.get("cachePoint").is_some())
+        .count()
+}
+
+/// Every content block of every turn.
+fn turn_blocks(body: &Value) -> impl Iterator<Item = &Value> {
+    body["messages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| turn["content"].as_array())
+        .flatten()
+}
+
+/// Where a cache point ending `turns` goes, as `(turn, index)`: after the last block the model
+/// accepts one after, walking back past brevity's directive. On Claude that is in the last turn.
+/// Nova takes one only after text, so it walks back past turns of tool calls and results to the
+/// last text, which may sit ahead of an assistant's tool call. `None` when a point already ends
+/// that stretch or no block qualifies.
+fn cache_point_slot(turns: &[Value], caching: CacheSupport) -> Option<(usize, usize)> {
+    for (t, turn) in turns.iter().enumerate().rev() {
+        let blocks = turn["content"].as_array().map_or(&[][..], Vec::as_slice);
+        for (i, block) in blocks.iter().enumerate().rev() {
+            if block.get("cachePoint").is_some() {
+                return None;
+            }
+            let text = block["text"].as_str();
+            if text == Some(crate::brevity::DIRECTIVE) {
+                continue;
+            }
+            let accepted = match caching {
+                CacheSupport::Everywhere { .. } => text.is_none_or(|t| !t.is_empty()),
+                CacheSupport::AfterText => text.is_some_and(|t| !t.is_empty()),
+                CacheSupport::None => false,
+            };
+            if accepted {
+                return Some((t, i + 1));
+            }
+        }
+    }
+    None
 }
 
 fn assistant_to_converse(m: &Message, caching: CacheSupport) -> Value {
@@ -1484,8 +1634,17 @@ fn decode_event_stream_frame(buf: &mut BytesMut) -> Option<EventStreamFrame> {
 mod tests {
     use super::*;
 
+    /// The request as translated, before the router adds any cache point.
+    fn to_converse_request(
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+    ) -> Result<(Value, HashMap<String, String>), ProviderError> {
+        to_converse_request_inner(req, cfg, true)
+    }
+
     fn resolved(model: &str) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             provider: "bedrock".into(),
             model: model.into(),
             litellm_model: format!("bedrock/{model}"),
@@ -1788,6 +1947,29 @@ mod tests {
                 assert_eq!(with["messages"][turn], without["messages"][turn], "{model}");
             }
         }
+    }
+
+    #[test]
+    fn on_claude_the_text_ahead_of_brevitys_directive_loses_its_trailing_whitespace() {
+        // The next turn ends at that text; with the whitespace it missed this turn's cache live.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test.\n" }]
+        }))
+        .unwrap();
+        let directive = json!({ "text": crate::brevity::DIRECTIVE });
+
+        let claude =
+            with_router_points(&with_brevity(req.clone()), "us.anthropic.claude-haiku-5-5");
+        let nova = with_router_points(&with_brevity(req), "us.amazon.nova-pro-v1:0");
+
+        assert_eq!(
+            claude["messages"][0]["content"],
+            json!([{ "text": "Fix the failing test." }, cache_point(), directive])
+        );
+        assert_eq!(
+            nova["messages"][0]["content"],
+            json!([{ "text": "Fix the failing test.\n" }, cache_point(), directive])
+        );
     }
 
     #[test]
@@ -2269,5 +2451,317 @@ mod tests {
         assert_eq!(unsanitize_tool_name("query_docs", &map), "query-docs");
         // Names that don't need sanitizing have no map entry.
         assert_eq!(unsanitize_tool_name("search", &map), "search");
+    }
+
+    /// The body the provider sends with `TOKEN_CACHE_MARKERS` on.
+    fn with_router_points(req: &ChatRequest, model: &str) -> Value {
+        BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into())
+            .with_cache_markers(true)
+            .request_body(req, &resolved(model), true)
+            .unwrap()
+            .0
+    }
+
+    fn plain_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap()
+    }
+
+    /// An agent that set no markers, mid tool loop: its last turn is a tool result.
+    fn tool_loop_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "toolu_1", "type": "function",
+                    "function": { "name": "read", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_router_ends_the_conversation_then_system_with_a_cache_point() {
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&plain_request(), model);
+
+            assert_eq!(
+                body["system"],
+                json!([{ "text": "You are a coding agent." }, cache_point()]),
+                "{model}"
+            );
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([{ "text": "Fix the failing test." }, cache_point()]),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_turn_of_tool_results_gets_a_cache_point_on_claude_and_nova_takes_the_last_text() {
+        let claude = with_router_points(&tool_loop_request(), "us.anthropic.claude-haiku-5-5");
+        let nova = with_router_points(&tool_loop_request(), "us.amazon.nova-pro-v1:0");
+
+        assert_eq!(claude["messages"][2]["content"][1], cache_point());
+        // Nova rejects a cache point after a tool call or result, so the last text takes it.
+        assert_eq!(nova["messages"][2]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(nova["messages"][1]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            nova["messages"][0]["content"],
+            json!([{ "text": "Fix the failing test." }, cache_point()])
+        );
+        assert_eq!(nova["system"][1], cache_point());
+    }
+
+    /// Step `n` of a tool loop in which the agent says a line before each tool call.
+    fn narrated_tool_loop(steps: usize) -> ChatRequest {
+        let mut messages = vec![
+            json!({ "role": "system", "content": "You are a coding agent." }),
+            json!({ "role": "user", "content": "Fix the failing test." }),
+        ];
+        for i in 0..steps {
+            messages.push(json!({ "role": "assistant", "content": format!("Reading file {i}."), "tool_calls": [{
+                "id": format!("toolu_{i}"), "type": "function",
+                "function": { "name": "read", "arguments": "{}" }
+            }]}));
+            messages.push(json!({ "role": "tool", "tool_call_id": format!("toolu_{i}"), "content": format!("fn f{i}() {{}}") }));
+        }
+        serde_json::from_value(json!({ "messages": messages })).unwrap()
+    }
+
+    #[test]
+    fn in_a_nova_tool_loop_each_request_repeats_the_point_the_last_one_ended_with() {
+        let nova = "us.amazon.nova-pro-v1:0";
+        let before = with_router_points(&narrated_tool_loop(1), nova);
+        let after = with_router_points(&narrated_tool_loop(2), nova);
+
+        // The assistant's text ahead of its tool call ends each request.
+        let narrated = |i: usize| {
+            json!([
+                { "text": format!("Reading file {i}.") },
+                cache_point(),
+                { "toolUse": { "toolUseId": format!("toolu_{i}"), "name": "read", "input": {} } }
+            ])
+        };
+        assert_eq!(before["messages"][1]["content"], narrated(0));
+        assert_eq!(after["messages"][3]["content"], narrated(1));
+        // The next request repeats that point, so it reads everything up to it.
+        assert_eq!(after["messages"][1]["content"], narrated(0));
+        assert_eq!(before["messages"][2], after["messages"][2]);
+        assert_eq!(count_cache_points(&after), 3);
+    }
+
+    #[test]
+    fn the_routers_last_cache_point_goes_ahead_of_brevitys_directive() {
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&with_brevity(plain_request()), model);
+
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([
+                    { "text": "Fix the failing test." },
+                    cache_point(),
+                    { "text": crate::brevity::DIRECTIVE }
+                ]),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn nova_gets_the_previous_turns_cache_point_again_and_claude_does_not() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Read the notes." },
+                { "role": "assistant", "content": "Read." },
+                { "role": "user", "content": "Say ok." }
+            ]
+        }))
+        .unwrap();
+
+        let nova = with_router_points(&req, "us.amazon.nova-pro-v1:0");
+        let claude = with_router_points(&req, "us.anthropic.claude-haiku-5-5");
+
+        let previous_turn_marked = json!([{ "text": "Read the notes." }, cache_point()]);
+        assert_eq!(nova["messages"][0]["content"], previous_turn_marked);
+        assert_eq!(nova["messages"][2]["content"][1], cache_point());
+        assert_eq!(
+            claude["messages"][0]["content"],
+            json!([{ "text": "Read the notes." }])
+        );
+    }
+
+    #[test]
+    fn an_agent_holding_all_four_cache_points_gets_none_from_the_router() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let ephemeral = json!({ "type": "ephemeral" });
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "tools": [{ "name": "read", "input_schema": { "type": "object" }, "cache_control": ephemeral }],
+                "messages": [
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                    ]},
+                    { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {}, "cache_control": ephemeral }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral },
+                        { "type": "text", "text": "Then stop." }
+                    ]}
+                ]
+            }))
+            .unwrap();
+        let model = "us.anthropic.claude-haiku-5-5";
+
+        // Neither the end of the conversation nor `system` has one, but a fifth is rejected.
+        let body = with_router_points(&req, model);
+
+        assert_eq!(count_cache_points(&body), MAX_CACHE_POINTS);
+        assert_eq!(body, to_converse_request(&req, &resolved(model)).unwrap().0);
+    }
+
+    #[test]
+    fn no_five_minute_system_point_goes_ahead_of_an_agents_one_hour_point() {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "messages": [
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Read the repository map.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+                    ]},
+                    { "role": "assistant", "content": "Done." },
+                    { "role": "user", "content": "Now fix the failing test." }
+                ]
+            }))
+            .unwrap();
+
+        let body = with_router_points(&req, "us.anthropic.claude-haiku-5-5");
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent." }])
+        );
+        assert_eq!(body["messages"][2]["content"][1], cache_point());
+    }
+
+    #[test]
+    fn the_router_adds_no_cache_point_without_the_flag_or_for_a_model_without_caching() {
+        let off = BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into());
+        let claude = "us.anthropic.claude-haiku-5-5";
+        assert_eq!(
+            off.request_body(&plain_request(), &resolved(claude), true)
+                .unwrap()
+                .0,
+            to_converse_request(&plain_request(), &resolved(claude))
+                .unwrap()
+                .0
+        );
+
+        let gpt = "us.openai.gpt-6-astra";
+        assert_eq!(
+            with_router_points(&plain_request(), gpt),
+            to_converse_request(&plain_request(), &resolved(gpt))
+                .unwrap()
+                .0
+        );
+    }
+
+    #[test]
+    fn claude_without_prompt_caching_gets_no_router_cache_point_but_keeps_the_agents() {
+        for model in [
+            "anthropic.claude-3-haiku-20240307-v1:0",
+            "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        ] {
+            let sent = with_router_points(&plain_request(), model).to_string();
+            assert!(!sent.contains("cachePoint"), "{model}");
+
+            let marked = with_router_points(&marked_anthropic_request(), model);
+            assert_eq!(
+                marked,
+                to_converse_request(&marked_anthropic_request(), &resolved(model))
+                    .unwrap()
+                    .0,
+                "{model}"
+            );
+        }
+        // Claude 3.5 Haiku and 3.7 Sonnet cache, so they still get the router's points.
+        let sent = with_router_points(
+            &plain_request(),
+            "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+        );
+        assert!(sent.to_string().contains("cachePoint"));
+    }
+
+    #[test]
+    fn glm_gets_no_cache_point_from_the_agent_or_the_router() {
+        // Converse fails the whole GLM call with 403 when a request carries one.
+        for model in ["zai.glm-5", "zai.glm-4.7", "us.zai.glm-5.3"] {
+            for req in [marked_anthropic_request(), plain_request()] {
+                let sent = with_router_points(&req, model).to_string();
+
+                assert!(!sent.contains("cachePoint"), "{model}");
+                assert!(!sent.contains("cache_control"), "{model}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_gateway_config_sends_the_routers_cache_points() {
+        let mut server = mockito::Server::new_async().await;
+        let model = "us.anthropic.claude-haiku-5-5";
+        let m = server
+            .mock("POST", format!("/model/{model}/converse").as_str())
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "system": [{ "text": "You are a coding agent." }, cache_point()],
+                "messages": [{ "role": "user", "content": [
+                    { "text": "Fix the failing test." }, cache_point()
+                ]}]
+            })))
+            .with_status(200)
+            .with_body(
+                json!({
+                    "output": { "message": { "role": "assistant", "content": [{ "text": "On it." }] } },
+                    "stopReason": "end_turn",
+                    "usage": { "inputTokens": 10, "outputTokens": 3, "totalTokens": 13 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let endpoint = crate::resolver::CustomEndpoint {
+            base_url: server.url(),
+            dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+        };
+        let provider = crate::providers::provider_for(
+            "aws-bedrock",
+            Some(&endpoint),
+            &reqwest::Client::new(),
+            &crate::config::GatewayConfig::default(),
+        )
+        .unwrap();
+
+        provider
+            .chat(&plain_request(), &resolved(model))
+            .await
+            .unwrap();
+
+        m.assert_async().await;
     }
 }
