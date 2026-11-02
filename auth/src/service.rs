@@ -62,6 +62,76 @@ impl AuthServiceImpl {
         .execute(&self.db)
         .await;
     }
+
+    /// The user this `(provider, provider_id)` OAuth login resolves to, if
+    /// one already exists — an exact identity match, a *verified* email that
+    /// already belongs to a user (how one person keeps a single CP user
+    /// across Google + GitHub), or a username that already belongs to a user
+    /// (a pre-seeded account, or one whose provider label changed since a
+    /// previous login) — the same conflict target `upsert_oauth_user`'s own
+    /// `INSERT ... ON CONFLICT (username)` uses. Synthetic email placeholders
+    /// (`{username}@{provider}.users`) are never matched: callers only pass
+    /// emails they have verified. `None` means this login would create a
+    /// brand-new user. Backs `would_create_user` (a read-only check of that
+    /// question, used to enforce a creation cap before provisioning), which
+    /// must resolve "new" exactly as `upsert_oauth_user`'s own find-or-create
+    /// does, or the cap and the write would disagree.
+    async fn find_existing_or_linked_user(
+        &self,
+        provider: &str,
+        provider_id: &str,
+        username: &str,
+        verified_email: Option<&str>,
+    ) -> Result<Option<ExistingUser>, AuthError> {
+        let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
+            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_id = $2",
+        )
+        .bind(provider)
+        .bind(provider_id)
+        .fetch_optional(&self.db)
+        .await?;
+        if existing.is_some() {
+            return Ok(Some(ExistingUser::ExactMatch));
+        }
+
+        let linked: Option<(uuid::Uuid,)> = match verified_email {
+            Some(email) => {
+                sqlx::query_as("SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL")
+                    .bind(email)
+                    .fetch_optional(&self.db)
+                    .await?
+            }
+            None => None,
+        };
+        if linked.is_some() {
+            return Ok(Some(ExistingUser::LinkedByEmail));
+        }
+
+        // No `deleted_at IS NULL` filter here, unlike the email lookup above:
+        // `users.username` is a plain, non-partial `UNIQUE` constraint
+        // (`oss/migrations/0001_schema.sql`), so it still reserves a
+        // soft-deleted user's username too. `upsert_oauth_user`'s own
+        // `ON CONFLICT (username)` will match that row regardless of
+        // `deleted_at` — this has to agree, or a soft-deleted user's old
+        // username would look like a genuinely new signup here and get
+        // wrongly capacity-gated for what the real write actually does
+        // (reactivate/relink the existing row, not insert a new one).
+        let linked_by_username: Option<(uuid::Uuid,)> =
+            sqlx::query_as("SELECT id FROM users WHERE username = $1")
+                .bind(username)
+                .fetch_optional(&self.db)
+                .await?;
+        Ok(linked_by_username.map(|_| ExistingUser::LinkedByUsername))
+    }
+}
+
+/// The three ways `find_existing_or_linked_user` can resolve to an existing
+/// user. Only the presence of a match is read today (by `would_create_user`);
+/// the variant names record which lookup matched for anyone extending this.
+enum ExistingUser {
+    ExactMatch,
+    LinkedByEmail,
+    LinkedByUsername,
 }
 
 /// How many usernames `insert_oauth_user` tries: the provider's own, then
@@ -547,6 +617,19 @@ impl AuthService for AuthServiceImpl {
             access_key: None,
             access_secret: None,
         })
+    }
+
+    async fn would_create_user(
+        &self,
+        provider: &str,
+        provider_id: &str,
+        username: &str,
+        verified_email: Option<&str>,
+    ) -> Result<bool, AuthError> {
+        let found = self
+            .find_existing_or_linked_user(provider, provider_id, username, verified_email)
+            .await?;
+        Ok(found.is_none())
     }
 
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError> {

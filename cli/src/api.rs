@@ -120,6 +120,14 @@ fn status_hint(status: u16) -> &'static str {
     match status {
         401 => "\nhint: session expired or invalid — run: nasiko auth login",
         403 => "\nhint: you don't have permission to do this",
+        // The server refuses a *change* with 402 when its licence does not
+        // permit it — the detail message above already carries the server's own
+        // explanation and recovery step, so this only names the category, which
+        // is the fact that is otherwise easy to miss behind a status code.
+        // Deliberately generic: this crate is edition-agnostic, and the wording
+        // that mentions a specific product or command belongs in the server's
+        // response, not here.
+        402 => "\nhint: refused for licensing reasons — reads and running agents are unaffected",
         404 => "\nhint: resource not found — check the ID or name",
         // No blanket hint for 409: the server's detail message (already shown)
         // covers several distinct conflicts — name collision, version-not-greater,
@@ -1583,6 +1591,31 @@ pub struct DeploySpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_licence_refusal_is_named_as_one() {
+        // A bare `HTTP 402` reads as a bug. Naming the category is what stops
+        // an operator debugging their request instead of their licence.
+        let hint = status_hint(402);
+        assert!(hint.contains("licensing"), "got: {hint}");
+        // ...and says what still works, so nobody assumes the fleet is down.
+        assert!(hint.contains("running agents are unaffected"));
+    }
+
+    #[test]
+    fn the_hint_names_no_edition_product_or_command() {
+        // This crate is synced verbatim to the public repo, so the hint must
+        // stay edition-agnostic — the wording that mentions Enterprise, or the
+        // `nasiko-ee license apply` recovery, comes from the server's own
+        // response body, which is already printed above it.
+        let hint = status_hint(402).to_lowercase();
+        for leaked in ["enterprise", "nasiko-ee", "gamma", "renew the license"] {
+            assert!(
+                !hint.contains(leaked),
+                "{leaked:?} must not appear in an OSS hint"
+            );
+        }
+    }
 
     #[test]
     fn urlencode_escapes_query_text() {
