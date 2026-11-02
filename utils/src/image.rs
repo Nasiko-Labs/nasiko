@@ -50,6 +50,42 @@ pub fn strip_image_to_repo(image: &str) -> &str {
     }
 }
 
+/// Parse an owner-namespaced repository path like `u-{hex32}/slug` into
+/// `(owner_uuid, slug)`, or return `None` for legacy `nasiko/` repositories.
+///
+/// Rejects malformed namespace prefixes (wrong UUID length, uppercase hex).
+/// Used for authorization: the caller's UUID must match the namespace owner.
+pub fn parse_owner_namespace(repo: &str) -> Result<Option<(uuid::Uuid, &str)>, String> {
+    let parts: Vec<&str> = repo.splitn(2, '/').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "repository path '{}' has no namespace segment",
+            repo
+        ));
+    }
+    if let Some(hex) = parts[0].strip_prefix("u-") {
+        if hex.len() != 32 {
+            return Err(format!(
+                "invalid owner namespace: '{}' must be exactly 32 hex digits",
+                hex
+            ));
+        }
+        if hex.chars().any(|c| c.is_ascii_uppercase()) {
+            return Err(format!(
+                "invalid owner namespace: '{}' must be lowercase hex",
+                hex
+            ));
+        }
+        let uuid = uuid::Uuid::parse_str(hex)
+            .map_err(|_| format!("invalid owner namespace: '{hex}' is not a valid UUID"))?;
+        Ok(Some((uuid, parts[1])))
+    } else if repo.starts_with("nasiko/") {
+        Ok(None)
+    } else {
+        Err(format!("unknown namespace in repository path '{repo}'"))
+    }
+}
+
 /// Lowercase a display name into an OCI-safe repository component.
 ///
 /// Replaces spaces with hyphens, filters to alphanumeric/hyphen/underscore,

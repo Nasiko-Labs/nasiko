@@ -161,32 +161,33 @@ pub(crate) async fn resolve_agent_url(
 ///
 /// Returns `Some((owner_uuid, slug))` for `u-{32 lowercase hex}/{slug}`,
 /// `None` for `nasiko/{slug}` (legacy), and errors for malformed `u-` paths.
+/// Parse an owner-namespaced repository - delegates to the shared implementation
+/// in `nasiko_utils::image`.
 fn parse_owner_namespace(repo: &str) -> Result<Option<(Uuid, &str)>, String> {
-    if let Some(rest) = repo.strip_prefix("u-") {
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            return Err(format!(
-                "invalid owner namespace: expected u-{{uuid}}/{{name}}, got '{repo}'"
-            ));
-        }
-        let hex = parts[0];
-        if hex.len() != 32
-            || !hex
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        {
-            return Err(format!(
-                "invalid owner namespace: uuid must be 32 lowercase hex chars, got '{hex}'"
-            ));
-        }
-        let uuid = Uuid::parse_str(hex)
-            .map_err(|_| format!("invalid owner namespace: '{hex}' is not a valid UUID"))?;
-        Ok(Some((uuid, parts[1])))
-    } else if repo.starts_with("nasiko/") {
-        Ok(None)
-    } else {
-        Err(format!("unknown namespace in repository path '{repo}'"))
-    }
+    nasiko_utils::image::parse_owner_namespace(repo)
+}
+
+/// Canonicalize an image reference (add registry prefix if needed), then validate
+/// that it is owned by the caller. This is the single authorization function for
+/// user-controlled image references.
+///
+/// Qualifying first closes the R-123 bypass: an unqualified reference like
+/// `u-abc/agent:v1` has no host, so its comparison with the configured registry
+/// would incorrectly treat it as external. Qualifying it first produces
+/// `registry.example.com/u-abc/agent:v1`, which has a host and can be compared
+/// correctly.
+///
+/// Returns the canonicalized (qualified) image reference on success.
+pub(crate) async fn canonicalize_and_validate_image_ref(
+    pool: &sqlx::PgPool,
+    registry: &str,
+    image: &str,
+    caller_id: Uuid,
+    is_superuser: bool,
+) -> Result<String, (axum::http::StatusCode, String)> {
+    let qualified_image = qualify_deploy_image(registry, image);
+    validate_image_ref(pool, registry, &qualified_image, caller_id, is_superuser).await?;
+    Ok(qualified_image)
 }
 
 /// Validate that an image reference in THIS registry is owned by the caller.
@@ -195,6 +196,9 @@ fn parse_owner_namespace(repo: &str) -> Result<Option<(Uuid, &str)>, String> {
 /// Legacy `nasiko/R` images are allowed iff `owners(R)` is non-empty and contains
 /// only the caller (superusers may use any image). External registries (different
 /// host) are unaffected.
+///
+/// Most callers should use `canonicalize_and_validate_image_ref` instead, which
+/// qualifies the image first to close the R-123 unqualified-reference bypass.
 pub(crate) async fn validate_image_ref(
     pool: &sqlx::PgPool,
     registry: &str,

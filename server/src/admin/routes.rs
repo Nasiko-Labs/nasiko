@@ -213,8 +213,8 @@ async fn deploy(
         container_id,
         name: req.name.clone(),
         image: {
-            // Validate image namespace before qualification
-            if let Err((code, msg)) = crate::agents::validate_image_ref(
+            // Canonicalize (qualify) then validate - fixes R-123 unqualified-reference bypass
+            match crate::agents::canonicalize_and_validate_image_ref(
                 &state.db,
                 &state.config.agent_image_registry,
                 &req.image,
@@ -223,9 +223,9 @@ async fn deploy(
             )
             .await
             {
-                return (code, msg).into_response();
+                Ok(qualified) => qualified,
+                Err((code, msg)) => return (code, msg).into_response(),
             }
-            crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image)
         },
         ports,
         env_vars: env,

@@ -501,3 +501,367 @@ async fn pull_credential_legacy_namespace() {
 
     server.cleanup().await;
 }
+
+// ─── R-123/R-124 regression tests ────────────────────────────────────────────
+
+/// Catalog create with a foreign owner namespace image is refused (R-123).
+#[tokio::test]
+#[serial]
+async fn catalog_create_foreign_owner_namespace_rejected() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "owner-a-catalog").await;
+    let owner_b = insert_user(&server.db, "owner-b-catalog").await;
+    let foreign_image = format!("u-{}/agent:1.0", owner_a.as_simple());
+
+    let body = serde_json::json!({
+        "name": "malicious-agent",
+        "display_name": "Malicious Agent",
+        "description": "Trying to use another owner's image",
+        "image": foreign_image,
+    });
+
+    let resp = common::as_member(
+        server.client.post(server.url("/api/agents")).json(&body),
+        &owner_b.to_string(),
+        "owner-b-catalog",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "catalog create must reject foreign owner namespace"
+    );
+
+    // Verify DB unchanged - no agent created
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE owner_id = $1")
+        .bind(owner_b)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "no agent should be created");
+
+    server.cleanup().await;
+}
+
+/// Catalog create with a foreign legacy repository is refused (R-123.reply-1).
+#[tokio::test]
+#[serial]
+async fn catalog_create_foreign_legacy_rejected() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "owner-a-legacy").await;
+    let owner_b = insert_user(&server.db, "owner-b-legacy").await;
+    let repo = format!("nasiko/agent-{}", Uuid::new_v4());
+    let legacy_image = format!("{}:1.0", repo);
+
+    // Owner A has an agent using this legacy repo
+    insert_agent(&server.db, "agent-a", owner_a, &legacy_image).await;
+
+    // Owner B tries to register their own agent with the same legacy repo
+    let body = serde_json::json!({
+        "name": "agent-b",
+        "display_name": "Agent B",
+        "description": "Trying to use another owner's legacy repo",
+        "image": legacy_image,
+    });
+
+    let resp = common::as_member(
+        server.client.post(server.url("/api/agents")).json(&body),
+        &owner_b.to_string(),
+        "owner-b-legacy",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "catalog create must reject foreign legacy repository"
+    );
+
+    // Verify DB unchanged - no agent created
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE owner_id = $1")
+        .bind(owner_b)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "no agent should be created");
+
+    server.cleanup().await;
+}
+
+/// Admin deploy with unqualified foreign reference is refused before deployment (R-123).
+#[tokio::test]
+#[serial]
+async fn admin_deploy_unqualified_foreign_rejected() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "owner-a-deploy").await;
+    let owner_b = insert_user(&server.db, "owner-b-deploy").await;
+
+    // Unqualified foreign reference
+    let foreign_image = format!("u-{}/agent:1.0", owner_a.as_simple());
+
+    let body = serde_json::json!({
+        "name": "bad-agent",
+        "image": foreign_image,
+    });
+
+    let resp = common::as_member(
+        server
+            .client
+            .post(server.url("/api/containers"))
+            .json(&body),
+        &owner_b.to_string(),
+        "owner-b-deploy",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "admin deploy must reject unqualified foreign reference"
+    );
+
+    // Verify DB unchanged - no agent deployed
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE owner_id = $1")
+        .bind(owner_b)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "no agent should be deployed");
+
+    server.cleanup().await;
+}
+
+/// Pull credential bound to an agent with a foreign image is denied (R-123).
+#[tokio::test]
+#[serial]
+async fn pull_credential_foreign_image_rejected() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "owner-a-pull").await;
+    let owner_b = insert_user(&server.db, "owner-b-pull").await;
+
+    let owner_a_repo = format!("u-{}/agent-a", owner_a.as_simple());
+
+    // Owner A's real image
+    let owner_a_image = format!("{}:1.0", owner_a_repo);
+
+    // Create agent for owner B but with owner A's image (simulating the bypass)
+    let agent_b_id = insert_agent(&server.db, "agent-b", owner_b, &owner_a_image).await;
+    insert_manifest(&server.db, &owner_a_repo).await;
+
+    // Mint pull credential for owner B's agent
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, agent_b_id)
+        .await
+        .unwrap()
+        .expect("mint credential");
+
+    // Try to use it to pull owner A's repository
+    let resp = server
+        .client
+        .get(server.url(&format!("/v2/{}/tags/list", owner_a_repo)))
+        .basic_auth(&cred.username, Some(&cred.token))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "pull credential must not work for foreign namespace in bound image"
+    );
+
+    server.cleanup().await;
+}
+
+/// Connector pull credential works for its own repository (R-124).
+#[tokio::test]
+#[serial]
+async fn connector_pull_credential_own_repo_allowed() {
+    let server = common::TestServer::start().await;
+    let owner_id = insert_user(&server.db, "connector-owner").await;
+    let connector_name = format!("test-connector-{}", Uuid::new_v4().simple());
+    let repo = format!("u-{}/mcp-{}", owner_id.as_simple(), connector_name);
+    let image = format!("{}:1.0", repo);
+
+    // Insert connector
+    let connector_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO mcp_connectors (provider_type, owner_id, name, source_kind) \
+         VALUES ('mcp_server', $1, $2, 'uploaded_build') RETURNING id",
+    )
+    .bind(owner_id)
+    .bind(&connector_name)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    // Insert successful build with image_tag
+    sqlx::query(
+        "INSERT INTO mcp_connector_builds (connector_id, owner_id, version_tag, image_tag, status) \
+         VALUES ($1, $2, '1.0.0', $3, 'success')",
+    )
+    .bind(connector_id)
+    .bind(owner_id)
+    .bind(&image)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    insert_manifest(&server.db, &repo).await;
+
+    // Mint pull credential
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, connector_id)
+        .await
+        .unwrap()
+        .expect("mint connector credential");
+
+    // Use it to pull the connector's own repo
+    let resp = server
+        .client
+        .get(server.url(&format!("/v2/{}/tags/list", repo)))
+        .basic_auth(&cred.username, Some(&cred.token))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        200,
+        "connector pull credential must work for its own repository"
+    );
+
+    server.cleanup().await;
+}
+
+/// Connector pull credential is denied for foreign repository (R-124).
+#[tokio::test]
+#[serial]
+async fn connector_pull_credential_foreign_repo_rejected() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "connector-owner-a").await;
+    let owner_b = insert_user(&server.db, "connector-owner-b").await;
+    let connector_name = format!("connector-{}", Uuid::new_v4().simple());
+    let foreign_repo = format!("u-{}/agent", owner_a.as_simple());
+    let connector_repo = format!("u-{}/mcp-{}", owner_b.as_simple(), connector_name);
+    let connector_image = format!("{}:1.0", connector_repo);
+
+    // Insert connector for owner B
+    let connector_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO mcp_connectors (provider_type, owner_id, name, source_kind) \
+         VALUES ('mcp_server', $1, $2, 'uploaded_build') RETURNING id",
+    )
+    .bind(owner_b)
+    .bind(&connector_name)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    // Build with proper image
+    sqlx::query(
+        "INSERT INTO mcp_connector_builds (connector_id, owner_id, version_tag, image_tag, status) \
+         VALUES ($1, $2, '1.0.0', $3, 'success')",
+    )
+    .bind(connector_id)
+    .bind(owner_b)
+    .bind(&connector_image)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    insert_manifest(&server.db, &foreign_repo).await;
+
+    // Mint pull credential for connector
+    let cred = nasiko_oci::pull_credentials::get_or_create(&server.db, connector_id)
+        .await
+        .unwrap()
+        .expect("mint credential");
+
+    // Try to use it to pull owner A's repo
+    let resp = server
+        .client
+        .get(server.url(&format!("/v2/{}/tags/list", foreign_repo)))
+        .basic_auth(&cred.username, Some(&cred.token))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        403,
+        "connector credential must not work for foreign repository"
+    );
+
+    server.cleanup().await;
+}
+
+/// External registry images are allowed for any user (positive control).
+#[tokio::test]
+#[serial]
+async fn catalog_create_external_registry_allowed() {
+    let server = common::TestServer::start().await;
+    let owner_id = insert_user(&server.db, "external-user").await;
+    let external_image = "docker.io/library/nginx:latest";
+
+    let body = serde_json::json!({
+        "name": "external-agent",
+        "display_name": "External Agent",
+        "description": "Using external registry",
+        "image": external_image,
+    });
+
+    let resp = common::as_member(
+        server.client.post(server.url("/api/agents")).json(&body),
+        &owner_id.to_string(),
+        "external-user",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        201,
+        "catalog create must allow external registry images"
+    );
+
+    server.cleanup().await;
+}
+
+/// Superuser can create agents with any namespace (positive control).
+#[tokio::test]
+#[serial]
+async fn catalog_create_superuser_unrestricted() {
+    let server = common::TestServer::start().await;
+    let owner_a = insert_user(&server.db, "owner-a-super").await;
+    let admin_id = insert_superuser(&server.db, "admin-super").await;
+    let any_image = format!("u-{}/agent:1.0", owner_a.as_simple());
+
+    let body = serde_json::json!({
+        "name": "super-agent",
+        "display_name": "Super Agent",
+        "description": "Created by superuser",
+        "image": any_image,
+    });
+
+    let resp = common::as_superuser(
+        server.client.post(server.url("/api/agents")).json(&body),
+        &admin_id.to_string(),
+        "admin-super",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(
+        resp.status(),
+        201,
+        "superuser must be able to create agents with any namespace"
+    );
+
+    server.cleanup().await;
+}

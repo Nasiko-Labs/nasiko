@@ -304,34 +304,94 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                     .map_err(OciError::Database)?;
 
             if bound_image.is_none() {
-                let connector_name: Option<String> =
-                    sqlx::query_scalar("SELECT name FROM mcp_connectors WHERE id = $1")
-                        .bind(pull.agent_id)
-                        .fetch_optional(&state.pool)
-                        .await
-                        .map_err(OciError::Database)?;
+                // Connector fallback - fixes R-124 by querying owner_id and parsing the stored image
+                let connector_data: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
+                    "SELECT c.owner_id, b.image_tag \
+                     FROM mcp_connectors c \
+                     LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id AND b.status = 'success' \
+                     WHERE c.id = $1 \
+                     ORDER BY b.created_at DESC \
+                     LIMIT 1",
+                )
+                .bind(pull.agent_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(OciError::Database)?;
 
-                let expected_repo = connector_name.map(|n| format!("mcp-{}", n));
-                if expected_repo.as_deref() == Some(repo) {
+                if let Some((owner_id, Some(image))) = connector_data {
+                    let bound_repo = strip_image_to_repo(&image);
+                    // Check the repository matches
+                    if bound_repo != repo {
+                        return Err(OciError::Forbidden(format!(
+                            "not permitted to access repository '{}' (bound to '{}')",
+                            repo, bound_repo
+                        )));
+                    }
+                    // Check the namespace matches the connector's owner
+                    match nasiko_utils::image::parse_owner_namespace(repo) {
+                        Ok(Some((ns_owner, _))) => {
+                            if ns_owner != owner_id {
+                                return Err(OciError::Forbidden(
+                                    "repository namespace does not match connector owner"
+                                        .to_string(),
+                                ));
+                            }
+                        }
+                        Ok(None) => {
+                            // Legacy nasiko/ namespace - allow for backward compat
+                        }
+                        Err(_) => {
+                            return Err(OciError::Forbidden(format!(
+                                "invalid namespace in repository '{}'",
+                                repo
+                            )));
+                        }
+                    }
                     return Ok(());
                 } else {
+                    return Err(OciError::Forbidden(
+                        "no successful build found for connector or connector not found"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            // Agent case - check both repo match and namespace ownership (R-123)
+            let bound_repo = bound_image.as_deref().map(strip_image_to_repo);
+            if bound_repo != Some(repo) {
+                return Err(OciError::Forbidden(format!(
+                    "not permitted to access repository '{}'",
+                    repo
+                )));
+            }
+
+            // Also verify the namespace matches the agent's owner
+            let agent_owner: uuid::Uuid =
+                sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
+                    .bind(pull.agent_id)
+                    .fetch_one(&state.pool)
+                    .await
+                    .map_err(OciError::Database)?;
+
+            match nasiko_utils::image::parse_owner_namespace(repo) {
+                Ok(Some((ns_owner, _))) => {
+                    if ns_owner != agent_owner {
+                        return Err(OciError::Forbidden(
+                            "repository namespace does not match agent owner".to_string(),
+                        ));
+                    }
+                }
+                Ok(None) => {
+                    // Legacy nasiko/ namespace - allow for backward compat
+                }
+                Err(_) => {
                     return Err(OciError::Forbidden(format!(
-                        "not permitted to access repository '{}'",
+                        "invalid namespace in repository '{}'",
                         repo
                     )));
                 }
             }
-
-            let bound_repo = bound_image.as_deref().map(strip_image_to_repo);
-
-            if bound_repo == Some(repo) {
-                Ok(())
-            } else {
-                Err(OciError::Forbidden(format!(
-                    "not permitted to access repository '{}'",
-                    repo
-                )))
-            }
+            Ok(())
         }
     }
 }

@@ -455,6 +455,24 @@ pub(crate) async fn create(
         },
     };
 
+    // Canonicalize and validate the image reference before storing - fixes R-123
+    let validated_image = if let Some(ref image) = body.image {
+        match crate::agents::canonicalize_and_validate_image_ref(
+            &state.db,
+            &state.config.agent_image_registry,
+            image,
+            owner_id,
+            claims.is_superuser,
+        )
+        .await
+        {
+            Ok(img) => Some(img),
+            Err((code, msg)) => return (code, msg).into_response(),
+        }
+    } else {
+        None
+    };
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -481,7 +499,7 @@ pub(crate) async fn create(
         .bind(skills)
         .bind(&tags)
         .bind(meta)
-        .bind(&body.image)
+        .bind(&validated_image)
         .bind(minimal_code_enabled)
         .bind(workload_kind.as_db_str())
         .bind(body.hitl_enabled)
@@ -1056,29 +1074,41 @@ pub(crate) async fn update(
         (None, None)
     };
 
-    // Validate image namespace when activating a version
-    if let Some(ref image) = agent_image {
-        // Need owner_id from the agent row
-        let owner_id: Option<Uuid> =
-            sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
-                .bind(id)
-                .fetch_optional(&state.db)
-                .await
-                .unwrap_or(None);
-
-        if let Some(owner_id) = owner_id
-            && let Err((code, msg)) = crate::agents::validate_image_ref(
-                &state.db,
-                &state.config.agent_image_registry,
-                image,
-                owner_id,
-                claims.is_superuser,
-            )
+    // Canonicalize and validate image namespace when activating a version - fixes R-123
+    let validated_image = if let Some(image) = agent_image {
+        // Query owner_id inside the transaction - fixes R-123.reply-2 fail-open
+        let owner_id: Uuid = match sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&mut *tx)
             .await
         {
-            return (code, msg).into_response();
+            Ok(Some(id)) => id,
+            Ok(None) => {
+                // Agent not found - should not happen since can_manage_agent passed
+                return (StatusCode::NOT_FOUND, "agent not found").into_response();
+            }
+            Err(e) => {
+                tracing::error!(%e, %id, "update agent: owner lookup failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                    .into_response();
+            }
+        };
+
+        match crate::agents::canonicalize_and_validate_image_ref(
+            &state.db,
+            &state.config.agent_image_registry,
+            &image,
+            owner_id,
+            claims.is_superuser,
+        )
+        .await
+        {
+            Ok(qualified) => Some(qualified),
+            Err((code, msg)) => return (code, msg).into_response(),
         }
-    }
+    } else {
+        None
+    };
 
     let result = sqlx::query_as::<_, Agent>(
         r#"UPDATE agents SET
@@ -1118,7 +1148,7 @@ pub(crate) async fn update(
     .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
-    .bind(&agent_image)
+    .bind(&validated_image)
     .bind(body.minimal_code_enabled)
     .bind(body.compress_enabled)
     .bind(workload_kind)
