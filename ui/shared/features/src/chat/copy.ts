@@ -25,14 +25,6 @@ export const errorCopy = {
     cause: 'OpenRuntime rejected the request before running it.',
     action: 'Edit the message and send it again.',
   },
-  // The agent's own HTTP server refused the body — not a OpenRuntime limit, so the composer
-  // accepted the file and the dispatch still bounced. Attachments are sent base64'd inside the
-  // message, which is what pushes a request past an agent's own cap (§7.7).
-  messageTooLarge: {
-    problem: 'The agent refused this message as too large.',
-    cause: 'Its server caps how big one request can be, and the attachment is over that cap.',
-    action: 'Remove the attachment or send a smaller one.',
-  },
   forbidden: {
     problem: "You can't use this agent.",
     cause: "Your account doesn't have access to it.",
@@ -168,12 +160,6 @@ export const errorCopy = {
     cause: 'A browser tab can keep only a few replies streaming at once.',
     action: 'Wait for one to finish.',
   },
-  // The attachments failed to upload, so nothing was sent: the message is still in the box.
-  uploadFailed: {
-    problem: "Couldn't upload your attachments.",
-    cause: 'OpenRuntime refused or lost the upload, so nothing was sent to the agent.',
-    action: 'Try again, or remove the attachment and send the message without it.',
-  },
 } satisfies Record<string, ErrorCopy>
 
 /** `policy_rejected` copy per FlowGuard limit (v1b §5.6). */
@@ -194,20 +180,6 @@ export type ErrorKey = keyof typeof errorCopy
 
 export const copy = {
   receivingStopped: 'Receiving stopped. The agent may still be running tools.',
-  // Attachments (§7.7). `attach` names the control; the rejection lines each say which file and why.
-  attach: 'Attach files',
-  attachHint: (max: number, size: string) => `Up to ${max} files, ${size} each`,
-  attachedCount: (n: number) => `${n} attachment${n === 1 ? '' : 's'}`,
-  removeAttachment: (name: string) => `Remove ${name}`,
-  attachDrop: 'Drop files to attach',
-  uploading: 'Uploading attachments…',
-  attachTooMany: (name: string, max: number) =>
-    `${name} wasn't attached: a message can carry ${max} files.`,
-  attachTooLarge: (name: string, size: string) =>
-    `${name} wasn't attached: files must be under ${size}.`,
-  attachOverBudget: (name: string, size: string) =>
-    `${name} wasn't attached: one message can carry ${size} of files in total.`,
-  attachEmpty: (name: string) => `${name} wasn't attached: it is empty, or it is a folder.`,
   checkingForReply: 'Checking for a reply…',
   runAgainConfirmTitle: 'Run this message again?',
   runAgainConfirmBody:

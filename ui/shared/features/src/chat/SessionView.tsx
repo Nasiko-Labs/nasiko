@@ -52,11 +52,10 @@ import { answeredResume, firstSeenAnswer, mergeTurns, replyStatus } from './turn
 import { endOf, isLivePhase, sawTerminal, stepsOf, type SendInput } from './turnRegistry'
 import { tuning } from './tuning'
 import type { HitlDto } from './types'
-import { useAttachments, useDraft, useNow } from './hooks'
+import { useDraft, useNow } from './hooks'
 import { directoryOf } from './target'
 import { sendErrorText } from './errors'
 import {
-  AttachNotes,
   ConfirmDialog,
   MetadataOnly,
   NotRunningBanner,
@@ -218,7 +217,6 @@ function SessionView({
     [routed, liveNow, lastTurn, now, seenEnded],
   )
   const [draft, setDraft] = useDraft(userId, sessionId)
-  const attachments = useAttachments()
   // This chat is open (v1c E10): it's seen, and its finishes earn no dot or Reply ready. The mount token
   // keeps /chat/a → /chat/b (new mount before old cleanup) and StrictMode from clearing the wrong chat.
   useEffect(() => {
@@ -304,19 +302,16 @@ function SessionView({
   const doSend = async () => {
     if (!agent && !routed) return
     const text = draft.trim()
-    const files = attachments.take()
     setDraft('')
     setSendError(null)
     registry.clearExecutionUnknown(sessionId)
     const input: SendInput = agent
-      ? { sessionId, agentId: agent.id, text, files, transcript: row?.transcript }
-      : { sessionId, chatMode: 'routed', text, files }
+      ? { sessionId, agentId: agent.id, text, transcript: row?.transcript }
+      : { sessionId, chatMode: 'routed', text }
     try {
       await registry.send(input)
     } catch (err) {
-      // Refused before anything was dispatched: give the message and its attachments back.
       setDraft(text)
-      attachments.restore(files)
       setSendError(err)
     }
   }
@@ -612,7 +607,6 @@ function SessionView({
         />
       ) : null}
       <SendError error={sendError} />
-      <AttachNotes notes={attachments.rejected} />
       {/* A recorded or removed-agent chat: the read-only notice takes the composer's place (v1c §5.5). */}
       {target.kind === 'readonly' ? (
         <ReadOnlyNote why={target.why} />
@@ -624,7 +618,6 @@ function SessionView({
           placeholder={routed ? copy.askOrchestrator : undefined}
           note={routed && liveNow ? copy.routedHint : undefined}
           value={draft}
-          attachments={attachments}
           onChange={setDraft}
           onSend={onSend}
           onStop={() => registry.stop(sessionId)}

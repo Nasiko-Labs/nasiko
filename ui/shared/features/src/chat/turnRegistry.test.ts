@@ -45,7 +45,6 @@ function setup(over: Partial<ChatDeps> = {}, frames: MockFrame[] = CHAT_SCENARIO
           updated_at: '',
         }) as ChatSessionRow,
     ),
-    uploadFiles: vi.fn(async () => []),
     saveMessage: vi.fn(async (sessionId: string, body: SaveMessageBody) => {
       saved.push({ sessionId, body })
       return {
@@ -175,7 +174,6 @@ describe('direct turn', () => {
       onUnauthorized: vi.fn(),
       createSession: vi.fn(),
       replyExists: vi.fn(async () => false),
-      uploadFiles: vi.fn(async () => []),
       saveMessage: vi.fn(
         async (sessionId: string, body: SaveMessageBody) =>
           ({

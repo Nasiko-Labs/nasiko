@@ -301,9 +301,7 @@ fn compress_content(
     stats: &mut CompressionStats,
 ) {
     match content {
-        // Anthropic and Gemini inbound flatten to this shape for a lone text block; multimodal
-        // turns, and turns where the agent set a cache marker, arrive as part arrays and take
-        // the branch below.
+        // Anthropic and Gemini inbound flatten to this shape, unless the agent set a cache marker.
         Value::String(s) => compress_str(s, policy, recovery, stats),
 
         // OpenAI inbound preserves whatever the caller sent, including multimodal part arrays.

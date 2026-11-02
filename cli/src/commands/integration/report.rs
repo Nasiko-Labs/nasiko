@@ -138,9 +138,7 @@ fn capture_locked(
         ));
         return Ok(Captured::default());
     }
-    let destination_key =
-        state::destination_key(&destination.cluster_url, destination.principal_id);
-    let progress = lock.progress(&destination_key)?;
+    let progress = lock.progress()?;
     if progress.migrated_legacy_counts {
         mode.log(&format!(
             "session {} — migrated legacy progress; replaying complete turns once",
@@ -165,10 +163,7 @@ fn capture_locked(
         );
         if let Err(error) = record.event.validate() {
             queue::reject_invalid(&record, &error)?;
-            lock.mark_captured(
-                &destination_key,
-                std::slice::from_ref(&record.event.turn.id),
-            )?;
+            lock.mark_captured(std::slice::from_ref(&record.event.turn.id))?;
             captured.rejected += 1;
             mode.log(&format!(
                 "session {} turn {} — quarantined invalid event: {error}",
@@ -178,12 +173,7 @@ fn capture_locked(
         }
         ordered_commit(
             || enqueue(&record),
-            || {
-                lock.mark_captured(
-                    &destination_key,
-                    std::slice::from_ref(&record.event.turn.id),
-                )
-            },
+            || lock.mark_captured(std::slice::from_ref(&record.event.turn.id)),
         )?;
         captured.queued.push(record.event.event_id.clone());
     }
@@ -525,63 +515,6 @@ mod tests {
             (2, 0, 1)
         );
         assert_eq!(*queued.borrow(), ["a", "b", "c"]);
-    }
-
-    #[test]
-    fn a_session_captured_for_one_control_plane_is_captured_again_for_the_next() {
-        let dir = tempfile::tempdir().unwrap();
-        let lock =
-            SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
-        let state = AgentState {
-            agent_name: "claude-code".into(),
-            capture_content: true,
-            hook_version: 4,
-            binding: None,
-        };
-        let server = |url: &str| QueueDestination {
-            cluster_name: "cluster".into(),
-            cluster_url: url.into(),
-            principal_id: uuid::Uuid::new_v4(),
-        };
-        let (server_1, server_2) = (server("https://one.example"), server("https://two.example"));
-        let snapshot = SessionSnapshot {
-            session_id: "session".into(),
-            title: None,
-            turns: vec![turn("a", true), turn("b", true)],
-            parent: None,
-        };
-        let queued = std::cell::RefCell::new(Vec::new());
-        let capture = |destination: &QueueDestination| {
-            capture_locked(
-                "claude",
-                &state,
-                destination,
-                &snapshot,
-                &lock,
-                CaptureMode::Import,
-                |record| {
-                    queued.borrow_mut().push((
-                        record.destination.cluster_url.clone(),
-                        record.event.turn.id.clone(),
-                    ));
-                    Ok(())
-                },
-            )
-            .unwrap()
-            .queued
-            .len()
-        };
-
-        let counts = (capture(&server_1), capture(&server_2), capture(&server_2));
-
-        assert_eq!(counts, (2, 2, 0));
-        let to_server_2: Vec<String> = queued
-            .borrow()
-            .iter()
-            .filter(|(url, _)| url == "https://two.example")
-            .map(|(_, turn)| turn.clone())
-            .collect();
-        assert_eq!(to_server_2, ["a", "b"]);
     }
 
     #[test]

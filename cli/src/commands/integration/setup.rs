@@ -200,7 +200,7 @@ fn connect(tracker: &mut Tracker) -> Result<()> {
 
 /// Starts the import as a background process, unless one is running already, and says where to
 /// follow it.
-pub(super) fn start_background_import() -> Result<()> {
+fn start_background_import() -> Result<()> {
     let dir = state::integrations_dir();
     if background::import_running(&dir)? {
         println!("\n{ALREADY_IMPORTING}");

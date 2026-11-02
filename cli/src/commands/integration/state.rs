@@ -11,7 +11,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -92,7 +92,6 @@ pub struct SessionLock {
 pub struct SessionProgress {
     pub exported_turn_ids: HashSet<String>,
     pub uploaded_turn_ids: HashSet<String>,
-    /// Turns already queued for the destination progress was read for.
     pub captured_turn_ids: HashSet<String>,
     /// A count-only file cannot be mapped safely after transcript edits. Its
     /// first ID-aware run deliberately replays complete turns once.
@@ -156,7 +155,7 @@ impl SessionLock {
                     .map_or(legacy.uploaded_messages, Vec::len),
                 exported_turn_ids: None,
                 uploaded_turn_ids: None,
-                captured: BTreeMap::new(),
+                captured_turn_ids: None,
             };
             write_watermark_path(&watermark_path, &conservative)?;
         }
@@ -166,11 +165,10 @@ impl SessionLock {
         })
     }
 
-    /// Read progress, with the turns captured for `destination` (a [`destination_key`]). Legacy
-    /// counts are intentionally not assigned to current IDs: truncation or reordering makes that
-    /// mapping unknowable. Existing complete turns replay once, after which stable IDs govern all
-    /// progress.
-    pub fn progress(&self, destination: &str) -> Result<SessionProgress> {
+    /// Read progress. Legacy counts are intentionally not assigned to current
+    /// IDs: truncation or reordering makes that mapping unknowable. Existing
+    /// complete turns replay once, after which stable IDs govern all progress.
+    pub fn progress(&self) -> Result<SessionProgress> {
         let mut current = read_watermark_path(&self.watermark_path);
         let mut migrated = false;
         let mut migrated_legacy_counts = false;
@@ -182,6 +180,27 @@ impl SessionLock {
         if current.uploaded_turn_ids.is_none() {
             migrated_legacy_counts |= current.uploaded_messages > 0;
             current.uploaded_turn_ids = Some(Vec::new());
+            migrated = true;
+        }
+        if current.captured_turn_ids.is_none() {
+            // Only turns completed by both old delivery paths can safely be
+            // treated as captured by the replacement pipeline.
+            let exported: HashSet<_> = current
+                .exported_turn_ids
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .cloned()
+                .collect();
+            let captured = current
+                .uploaded_turn_ids
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .filter(|id| exported.contains(*id))
+                .cloned()
+                .collect();
+            current.captured_turn_ids = Some(captured);
             migrated = true;
         }
         if migrated {
@@ -199,8 +218,7 @@ impl SessionLock {
                 .into_iter()
                 .collect(),
             captured_turn_ids: current
-                .captured
-                .remove(destination)
+                .captured_turn_ids
                 .unwrap_or_default()
                 .into_iter()
                 .collect(),
@@ -208,13 +226,17 @@ impl SessionLock {
         })
     }
 
-    /// Records `turn_ids` as queued for `destination` (a [`destination_key`]).
-    pub fn mark_captured(&self, destination: &str, turn_ids: &[String]) -> Result<()> {
+    pub fn mark_captured(&self, turn_ids: &[String]) -> Result<()> {
+        self.mark(turn_ids, |watermark| &mut watermark.captured_turn_ids)
+    }
+
+    fn mark(
+        &self,
+        turn_ids: &[String],
+        field: impl FnOnce(&mut Watermark) -> &mut Option<Vec<String>>,
+    ) -> Result<()> {
         let mut watermark = read_watermark_path(&self.watermark_path);
-        let ids = watermark
-            .captured
-            .entry(destination.to_string())
-            .or_default();
+        let ids = field(&mut watermark).get_or_insert_with(Vec::new);
         let mut known: HashSet<String> = ids.iter().cloned().collect();
         for turn_id in turn_ids {
             if known.insert(turn_id.clone()) {
@@ -266,19 +288,8 @@ struct Watermark {
     exported_turn_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     uploaded_turn_ids: Option<Vec<String>>,
-    /// Turn ids queued, per [`destination_key`]: moving reporting to another control plane or
-    /// account sends that destination every turn it doesn't have yet. The destination-less
-    /// `captured_turn_ids` of older files is no longer read, so those turns replay once to the
-    /// current destination — the server keeps one copy per event id.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    captured: BTreeMap<String, Vec<String>>,
-}
-
-/// Where captured turns go, for keeping capture progress apart per destination: the control
-/// plane's URL and the account. The local cluster name is left out, so renaming it resends
-/// nothing.
-pub fn destination_key(cluster_url: &str, principal_id: Uuid) -> String {
-    format!("{}#{principal_id}", cluster_url.trim_end_matches('/'))
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    captured_turn_ids: Option<Vec<String>>,
 }
 
 // ─── Paths ───────────────────────────────────────────────────────────────────
@@ -446,13 +457,13 @@ mod tests {
             r#"{"exported_turns":2,"uploaded_messages":1}"#,
         )
         .unwrap();
-        let progress = guard.progress(SERVER_1).unwrap();
+        let progress = guard.progress().unwrap();
         assert!(progress.exported_turn_ids.is_empty());
         assert!(progress.uploaded_turn_ids.is_empty());
         assert!(progress.captured_turn_ids.is_empty());
         assert!(progress.migrated_legacy_counts);
 
-        let second = guard.progress(SERVER_1).unwrap();
+        let second = guard.progress().unwrap();
         assert!(!second.migrated_legacy_counts);
     }
 
@@ -474,69 +485,29 @@ mod tests {
         )
         .unwrap();
 
-        let progress = guard.progress(SERVER_1).unwrap();
+        let progress = guard.progress().unwrap();
         assert!(progress.migrated_legacy_counts);
         assert!(progress.exported_turn_ids.is_empty());
         assert!(progress.uploaded_turn_ids.is_empty());
         assert!(progress.captured_turn_ids.is_empty());
     }
 
-    const SERVER_1: &str = "https://one.example#11111111-1111-1111-1111-111111111111";
-    const SERVER_2: &str = "https://two.example#22222222-2222-2222-2222-222222222222";
-
     #[test]
-    fn turns_captured_for_one_destination_are_still_pending_for_another() {
-        let dir = tempfile::tempdir().unwrap();
-        let guard = test_lock(dir.path());
-
-        guard.mark_captured(SERVER_1, &["a".to_string()]).unwrap();
-        guard.mark_captured(SERVER_2, &["b".to_string()]).unwrap();
-
-        assert_eq!(
-            guard.progress(SERVER_1).unwrap().captured_turn_ids,
-            HashSet::from(["a".to_string()])
-        );
-        assert_eq!(
-            guard.progress(SERVER_2).unwrap().captured_turn_ids,
-            HashSet::from(["b".to_string()])
-        );
-    }
-
-    #[test]
-    fn captured_ids_recorded_without_a_destination_replay_once_to_the_current_one() {
+    fn captured_ids_migrate_conservatively_from_completed_old_delivery() {
         let dir = tempfile::tempdir().unwrap();
         let guard = test_lock(dir.path());
         std::fs::write(
             dir.path().join("session.json"),
-            r#"{"exported_turn_ids":["a","b"],"uploaded_turn_ids":["b","c"],"captured_turn_ids":["b"]}"#,
+            r#"{"exported_turn_ids":["a","b"],"uploaded_turn_ids":["b","c"]}"#,
         )
         .unwrap();
 
-        assert!(
-            guard
-                .progress(SERVER_2)
-                .unwrap()
-                .captured_turn_ids
-                .is_empty()
-        );
-        guard.mark_captured(SERVER_2, &["b".to_string()]).unwrap();
+        let progress = guard.progress().unwrap();
+        assert_eq!(progress.captured_turn_ids, HashSet::from(["b".to_string()]));
+        guard.mark_captured(&["d".to_string()]).unwrap();
         assert_eq!(
-            guard.progress(SERVER_2).unwrap().captured_turn_ids,
-            HashSet::from(["b".to_string()])
-        );
-    }
-
-    #[test]
-    fn a_destination_key_ignores_a_trailing_slash_but_not_the_account() {
-        let principal = Uuid::parse_str("11111111-1111-1111-1111-111111111111").unwrap();
-
-        assert_eq!(
-            destination_key("https://one.example/", principal),
-            destination_key("https://one.example", principal)
-        );
-        assert_ne!(
-            destination_key("https://one.example", principal),
-            destination_key("https://one.example", Uuid::nil())
+            guard.progress().unwrap().captured_turn_ids,
+            HashSet::from(["b".to_string(), "d".to_string()])
         );
     }
 

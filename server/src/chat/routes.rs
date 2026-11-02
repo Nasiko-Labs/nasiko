@@ -804,14 +804,6 @@ async fn list_messages(
         rows.reverse();
     }
 
-    // Attachments are served from `chat_message_files`, never from a stored copy of them.
-    // `send_message` claims a client's uploads onto the row by setting `message_id` and flips
-    // `has_file_parts`, but writes no inline `file_parts`; `delete_file` removes a row without
-    // rewriting any JSON that named it. Deriving the array at read time is what keeps those two
-    // honest — one history page costs one extra query instead of a `/files` call per message,
-    // and a part can never outlive the file it points at.
-    hydrate_file_parts(&state, &mut rows).await;
-
     let out_prev_cursor = rows
         .first()
         .map(|r| encode_cursor(r.timestamp, &r.id.to_string()));
@@ -1374,65 +1366,6 @@ async fn capture_turn_files(
     .execute(&state.db)
     .await;
     Some(file_parts)
-}
-
-/// The one shape a file reaches a client as. `capture_turn_files` writes these same four keys
-/// into `chat_messages.file_parts`, so a hydrated page and a captured reply are indistinguishable
-/// to the frontend.
-fn file_part_json(f: &ChatMessageFile) -> serde_json::Value {
-    serde_json::json!({
-        "id": f.id,
-        "name": f.filename,
-        "size": f.size_bytes,
-        "mime": f.mime_type,
-    })
-}
-
-/// Fill `file_parts` for one history page from `chat_message_files`, in a single query.
-///
-/// Only rows already flagged `has_file_parts` are looked up, so a page with no attachments
-/// costs nothing. A message with no file rows keeps whatever it already carries: a capture
-/// inserts its rows before it writes the JSON, so the rows are a superset and a lookup failure
-/// degrades to the stored copy rather than to an empty transcript.
-async fn hydrate_file_parts(state: &AppState, rows: &mut [ChatMessage]) {
-    let ids: Vec<Uuid> = rows
-        .iter()
-        .filter(|m| m.has_file_parts)
-        .map(|m| m.id)
-        .collect();
-    if ids.is_empty() {
-        return;
-    }
-    let files = match sqlx::query_as::<_, ChatMessageFile>(
-        "SELECT * FROM chat_message_files WHERE message_id = ANY($1) ORDER BY created_at ASC",
-    )
-    .bind(&ids)
-    .fetch_all(&state.db)
-    .await
-    {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(%e, "list_messages: file hydrate failed; serving stored file_parts");
-            return;
-        }
-    };
-
-    let mut by_message: std::collections::HashMap<Uuid, Vec<serde_json::Value>> =
-        std::collections::HashMap::new();
-    for f in &files {
-        let Some(message_id) = f.message_id else {
-            continue;
-        };
-        by_message
-            .entry(message_id)
-            .or_default()
-            .push(file_part_json(f));
-    }
-    for m in rows.iter_mut() {
-        if let Some(parts) = by_message.remove(&m.id) {
-            m.file_parts = Some(sqlx::types::Json(serde_json::Value::Array(parts)));
-        }
-    }
 }
 
 // ─── File upload ─────────────────────────────────────────────────────────────

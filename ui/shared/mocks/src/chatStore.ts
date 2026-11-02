@@ -4,13 +4,7 @@
  * would remove it. State lives in memory; `resetChatMock()` drops it between tests.
  */
 import { http, HttpResponse, type HttpHandler } from 'msw'
-import type {
-  ChatMessage,
-  ChatSessionRow,
-  FilePart,
-  HitlDto,
-  HitlKind,
-} from '@nasiko/features/chat/types'
+import type { ChatMessage, ChatSessionRow, HitlDto, HitlKind } from '@nasiko/features/chat/types'
 import type { FlowStep } from '@nasiko/features/chat/activity'
 import {
   CODING_SESSION_TITLE,
@@ -270,62 +264,6 @@ export function chatMockProxyTurn(
 }
 
 const iso = (ms: number) => new Date(ms).toISOString()
-/**
- * The file parts of a multipart body, by hand: Node's `Request.formData()` rejects the bodies
- * jsdom produces (the deploy mock's `readMultipart` exists for the same reason). Every file is
- * sent under the one field name `files`, so this keeps a list, not a map, and reads only what the
- * mock stores — name, type and length.
- */
-async function readUploadedFiles(
-  request: Request,
-): Promise<{ name: string; type: string; size: number }[]> {
-  const boundary = /boundary=([^;]+)/
-    .exec(request.headers.get('content-type') ?? '')?.[1]
-    ?.replace(/^"|"$/g, '')
-  if (!boundary) return []
-  const body = new Uint8Array(await request.arrayBuffer())
-  const dec = new TextDecoder()
-  const marker = new TextEncoder().encode(`--${boundary}`)
-  const find = (from: number) => {
-    outer: for (let i = from; i <= body.length - marker.length; i++) {
-      for (let j = 0; j < marker.length; j++) if (body[i + j] !== marker[j]) continue outer
-      return i
-    }
-    return -1
-  }
-  const out: { name: string; type: string; size: number }[] = []
-  let at = find(0)
-  while (at >= 0) {
-    const start = at + marker.length
-    if (body[start] === 45 && body[start + 1] === 45) break // `--` ends the body
-    const next = find(start)
-    if (next < 0) break
-    const part = body.subarray(start + 2, next - 2)
-    let headerEnd = -1
-    for (let i = 0; i < part.length - 3; i++)
-      if (part[i] === 13 && part[i + 1] === 10 && part[i + 2] === 13 && part[i + 3] === 10) {
-        headerEnd = i
-        break
-      }
-    if (headerEnd >= 0) {
-      const headers = dec.decode(part.subarray(0, headerEnd))
-      const filename = /filename="([^"]*)"/.exec(headers)?.[1]
-      if (filename !== undefined)
-        out.push({
-          name: filename,
-          type: /content-type:\s*([^\r\n]+)/i.exec(headers)?.[1]?.trim() ?? '',
-          size: part.length - headerEnd - 4,
-        })
-    }
-    at = next
-  }
-  return out
-}
-
-/** The upload route's own limits (`chat/routes.rs`). */
-const MAX_FILES_PER_UPLOAD = 10
-const MAX_FILE_BYTES = 50 * 1024 * 1024
-
 const id = (prefix: string) =>
   `5eedc${prefix}-0000-4000-8000-${String(++counter).padStart(12, '0')}`
 const text = (body: string, s: number) =>
@@ -1144,8 +1082,6 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
     const c = chats.get(sid)
     return c && c.row.user_id === ctx.userId() ? c : null
   }
-  /** Uploaded files by id, unattached until a message claims them (`chat_message_files`). */
-  const files = new Map<string, { part: FilePart; sessionId: string; messageId: string | null }>()
   return [
     // GET /api/chat/sessions: own-only, updated_at DESC, keyset (chat/routes.rs:157).
     http.get('/api/chat/sessions', ({ request }) => {
@@ -1286,43 +1222,6 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
     }),
 
     // POST messages: bare ChatMessage; cost_usd as a Decimal string (models.rs).
-    // POST /api/chat/sessions/{id}/files: multipart, max 10 × 50 MB, rows unattached
-    // (routes.rs::upload_files). A partial failure rolls the whole batch back, so this
-    // either stores all of them or none.
-    http.post('/api/chat/sessions/:id/files', async ({ params, request }) => {
-      const denied = guard()
-      if (denied) return denied
-      const c = own(String(params.id))
-      if (!c) return new HttpResponse(null, { status: 404 })
-      const picked = await readUploadedFiles(request)
-      if (picked.length > MAX_FILES_PER_UPLOAD) return text('too many files (max 10)', 400)
-      const over = picked.find((f) => f.size > MAX_FILE_BYTES)
-      if (over) return text(`file '${over.name}' exceeds 50 MB limit`, 413)
-      const rows = picked.map((f) => {
-        const fileId = id('f')
-        const mime = f.type || 'application/octet-stream'
-        files.set(fileId, {
-          part: { id: fileId, name: f.name, size: f.size, mime },
-          sessionId: c.row.session_id,
-          messageId: null,
-        })
-        // The server answers with the raw row, whose field names differ from `FilePart`.
-        return { id: fileId, filename: f.name, mime_type: mime, size_bytes: f.size }
-      })
-      return HttpResponse.json(rows, { status: 201 })
-    }),
-
-    // GET /api/chat/files/{id}/download: the real route redirects to presigned storage; a
-    // mock has no bytes, so this only proves the id resolves and is the caller's.
-    http.get('/api/chat/files/:fileId/download', ({ params }) => {
-      const f = files.get(String(params.fileId))
-      if (!f || !own(f.sessionId)) return new HttpResponse(null, { status: 404 })
-      return new HttpResponse(new Blob([f.part.name]), {
-        status: 200,
-        headers: { 'Content-Type': f.part.mime || 'application/octet-stream' },
-      })
-    }),
-
     http.post('/api/chat/sessions/:id/messages', async ({ params, request }) => {
       const denied = guard()
       if (denied) return denied
@@ -1331,7 +1230,6 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       const body = (await request.json().catch(() => ({}))) as {
         role?: string
         content?: string
-        file_ids?: string[]
         usage?: Record<string, unknown>
         error?: { message?: string }
         file_parts?: unknown
@@ -1341,13 +1239,7 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       if (body.error && body.role !== 'assistant')
         return text('error is only for assistant messages', 400)
       if (body.role === 'assistant' && saveFails) return text('internal error', 500)
-      // Claim the named files, all or nothing: an id that is unknown, another session's or
-      // already attached is a 400 (routes.rs "invalid or already attached file_ids").
-      const claimed = [...new Set(body.file_ids ?? [])].map((fid) => files.get(fid))
-      if (claimed.some((f) => !f || f.sessionId !== c.row.session_id || f.messageId !== null))
-        return text('invalid or already attached file_ids', 400)
       const m = msg(c.row.session_id, body.role, String(body.content ?? ''), ctx.now())
-      for (const f of claimed) if (f) f.messageId = m.id
       const u = body.usage ?? {}
       const saved: ChatMessage = {
         ...m,
@@ -1373,15 +1265,9 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
           ? { file_parts: body.file_parts as ChatMessage['file_parts'], has_file_parts: true }
           : {}),
       }
-      // `list_messages` hydrates `file_parts` from the file rows, so the stored message
-      // carries them and a reload renders the same chips the live turn showed.
-      const parts = claimed.flatMap((f) => (f ? [f.part] : []))
-      const withFiles: ChatMessage = parts.length
-        ? { ...saved, file_parts: parts, has_file_parts: true }
-        : saved
-      c.messages.push(withFiles)
-      c.row = { ...c.row, updated_at: withFiles.timestamp }
-      return HttpResponse.json(withFiles, { status: 201 })
+      c.messages.push(saved)
+      c.row = { ...c.row, updated_at: saved.timestamp }
+      return HttpResponse.json(saved, { status: 201 })
     }),
 
     // GET /api/flows/{flow_id}: owner-scoped {flow, steps}, steps by step_order (flows.rs:143-175).

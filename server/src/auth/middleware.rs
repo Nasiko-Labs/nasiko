@@ -86,9 +86,6 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
         return next.run(req).await;
     }
 
-    if is_cross_origin_cookie_write(&state, req.method(), req.headers()) {
-        return cross_origin_refused();
-    }
     let claims = match validate_bearer(&state, req.headers()).await {
         Ok(c) => c,
         Err((status, message)) => return AuthRejection(status, message).into_response(),
@@ -101,41 +98,6 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
     }
     req.extensions_mut().insert(claims);
     next.run(req).await
-}
-
-/// True for a state-changing request that is authenticated only by the
-/// session cookie and that another origin started (NAS-1239).
-///
-/// Every workspace runs at `<sub>.<platform domain>`, so all workspaces are
-/// the same *site*, and `SameSite=Strict` still sends one workspace's cookie on
-/// a request a page on another workspace started. A form POST, or a `fetch`
-/// with no JSON body, skips CORS preflight, so without this check a page on
-/// any workspace could write to every other workspace the user is signed in
-/// to. Origins in `CORS_ALLOWED_ORIGINS` are trusted: a front end on another
-/// origin (the multi-tenant dashboard) that this server already lets read its
-/// responses. A request with an `Authorization: Bearer` header is never
-/// refused: the browser does not attach that on its own.
-///
-/// `pub` for the same reason as [`validate_bearer`]: a mount that
-/// authenticates a session itself instead of going through [`require_auth`]
-/// must apply this too.
-pub fn is_cross_origin_cookie_write(
-    state: &AppState,
-    method: &axum::http::Method,
-    headers: &axum::http::HeaderMap,
-) -> bool {
-    bearer_token(headers).is_none()
-        && extract_token(headers).is_some()
-        && nasiko_auth::csrf::is_cross_origin_write(
-            method,
-            headers,
-            &state.config.cors_allowed_origins,
-        )
-}
-
-/// The response for a request [`is_cross_origin_cookie_write`] refuses.
-pub fn cross_origin_refused() -> Response {
-    AuthRejection(StatusCode::FORBIDDEN, "cross-origin request refused").into_response()
 }
 
 /// Only the `Authorization: Bearer` form — delegated tokens are never cookies.

@@ -417,7 +417,6 @@ fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
             StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_REQUEST),
             message.clone(),
         ),
-        ProviderError::Rejected(message) => (StatusCode::BAD_REQUEST, message.clone()),
         _ => (StatusCode::BAD_GATEWAY, error.to_string()),
     };
     TranslatedAttemptError::Terminal(Box::new(mark_lossy(responses_error(
@@ -1300,8 +1299,8 @@ mod tests {
             .match_header("x-api-key", "anthropic-key")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"resolved-model",
-                "system":[{"type":"text","text":"be useful","cache_control":{"type":"ephemeral"}}],
-                "messages":[{"role":"user","content":[{"type":"text","text":"edit","cache_control":{"type":"ephemeral"}}]}],
+                "system":"be useful",
+                "messages":[{"role":"user","content":"edit"}],
                 "tools":[{"name":"apply_patch","input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":false}}]
             })))
             .with_status(200).with_header("content-type", "application/json")
@@ -1565,7 +1564,6 @@ mod tests {
     async fn unsupported_provider_configuration_is_terminal_internal_error() {
         let context = ctx("http://unused".into());
         let attempt = crate::resolver::ResolvedConfig {
-            agent_id: String::new(),
             provider: "unsupported".into(),
             model: "model".into(),
             litellm_model: "unsupported/model".into(),
@@ -1727,7 +1725,7 @@ mod tests {
             .mock("POST", "/messages")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model":"claude-opus-4",
-                "messages":[{"role":"user","content":[{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}]
+                "messages":[{"role":"user","content":"hello"}]
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -1955,7 +1953,6 @@ mod tests {
             agent_id: AGENT.into(),
             owner_id: OWNER.into(),
             resolved: crate::resolver::ResolvedConfig {
-                agent_id: String::new(),
                 provider: "openai".into(),
                 model: "model".into(),
                 litellm_model: "openai/model".into(),

@@ -255,10 +255,9 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-/// Connects every detected coding agent to the active cluster and account, for `nasiko agents
-/// setup`. Running setup is the user's yes, so an agent declined at a login offer is connected
-/// too, and one reporting elsewhere is moved here with its content setting kept. One broken
-/// adapter must not block the others.
+/// Connects every detected coding agent that has no reporting yet, for `nasiko agents setup`.
+/// Running setup is the user's yes, so an agent declined at a login offer is connected too.
+/// Agents already reporting keep their binding. One broken adapter must not block the others.
 pub(super) fn auto_install_detected() -> Result<()> {
     let settings = IntegrationState::load()?;
     let agents: Vec<_> = Agent::ALL
@@ -272,7 +271,6 @@ pub(super) fn auto_install_detected() -> Result<()> {
         return Ok(());
     }
 
-    let here = ReportingDestination::current()?;
     println!("\nConfiguring detected coding agents for this account...");
     let mut installed = 0usize;
     for agent in agents {
@@ -282,30 +280,17 @@ pub(super) fn auto_install_detected() -> Result<()> {
             crate::commands::local_agents::cli_name(),
             spec.id
         );
-        let capture_content = match setup_step(settings.get(spec.id), &here) {
-            SetupStep::Keep => {
-                println!(
-                    "{} already reports sessions to {}.",
-                    spec.display_name, here.cluster_name
-                );
-                installed += 1;
-                continue;
-            }
-            SetupStep::Install => true,
-            SetupStep::Move {
-                from,
-                capture_content,
-            } => {
-                println!(
-                    "{} reports sessions to {from}; moving it to {}.",
-                    spec.display_name, here.cluster_name
-                );
-                capture_content
-            }
-        };
+        if settings.get(spec.id).is_some() {
+            println!(
+                "{} reporting is already installed; keeping its existing cluster binding. Rebind explicitly with: {reconnect}",
+                spec.display_name
+            );
+            installed += 1;
+            continue;
+        }
         match install(InstallOptions {
             agent_id: spec.id,
-            no_content: !capture_content,
+            no_content: false,
             agent_name: None,
         }) {
             Ok(()) => installed += 1,
@@ -318,37 +303,6 @@ pub(super) fn auto_install_detected() -> Result<()> {
     }
     println!("Automatic coding-agent setup completed for {installed} agent(s).");
     Ok(())
-}
-
-/// What `nasiko agents setup` does with one detected agent's reporting.
-#[derive(Debug, PartialEq, Eq)]
-enum SetupStep {
-    /// Nothing installed yet: install it here, with prompt and response text.
-    Install,
-    /// Already reporting to this cluster and account.
-    Keep,
-    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
-    /// here, keeping its content setting.
-    Move { from: String, capture_content: bool },
-}
-
-/// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
-/// cluster and account setup runs for.
-fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupStep {
-    let Some(state) = state else {
-        return SetupStep::Install;
-    };
-    let from = match &state.binding {
-        Some(binding) if ReportingDestination::from(binding).same_as(here) => {
-            return SetupStep::Keep;
-        }
-        Some(binding) => binding.cluster_name.clone(),
-        None => "an older install with no cluster recorded".to_string(),
-    };
-    SetupStep::Move {
-        from,
-        capture_content: state.capture_content,
-    }
 }
 
 /// `nasiko agents sync` — see [`setup::sync`].
@@ -364,12 +318,6 @@ pub fn setup(options: SetupOptions) -> Result<()> {
 /// `nasiko agents import` — see [`setup`].
 pub fn import() -> Result<()> {
     setup::import()
-}
-
-/// Imports the connected agents' past sessions in the background, each to where it reports now —
-/// see [`setup::start_background_import`].
-pub fn import_in_background() -> Result<()> {
-    setup::start_background_import()
 }
 
 /// `nasiko agents status` — see [`setup::status`].
@@ -809,50 +757,6 @@ mod tests {
                 principal_id: uuid::Uuid::nil(),
             }),
         }
-    }
-
-    fn signed_in_to(cluster_name: &str, cluster_url: &str) -> ReportingDestination {
-        ReportingDestination {
-            cluster_name: cluster_name.into(),
-            cluster_url: cluster_url.into(),
-            principal_id: uuid::Uuid::nil().to_string(),
-        }
-    }
-
-    #[test]
-    fn setup_moves_reporting_bound_to_another_cluster_here() {
-        let state = bound_state(7);
-
-        assert_eq!(
-            setup_step(None, &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Install
-        );
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Keep
-        );
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move {
-                from: "cp".into(),
-                capture_content: true
-            }
-        );
-    }
-
-    #[test]
-    fn setup_moves_an_older_install_with_no_cluster_recorded() {
-        let mut state = bound_state(7);
-        state.binding = None;
-        state.capture_content = false;
-
-        assert_eq!(
-            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
-            SetupStep::Move {
-                from: "an older install with no cluster recorded".into(),
-                capture_content: false
-            }
-        );
     }
 
     #[test]

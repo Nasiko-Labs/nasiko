@@ -26,7 +26,6 @@ import type {
   ChatMessage,
   ChatSessionRow,
   CursorPage,
-  FilePart,
   HitlDto,
   MessagesPage,
   SaveMessageBody,
@@ -155,44 +154,6 @@ export const createSession = async (
       signal,
     }),
   )
-
-/**
- * Upload this turn's attachments (`POST /api/chat/sessions/{id}/files`, multipart). The rows come
- * back unattached: `saveMessage` claims them onto the user row by id, and the dispatch names the
- * same ids so the server can hand the bytes to the agent.
- *
- * One request for the batch, since the server's own limit (10 files) is the batch limit, and a
- * partial failure rolls every file in it back — so this either attaches all of them or none.
- * The response is the raw `chat_message_files` rows; the transcript's shape is `FilePart`.
- */
-export async function uploadChatFiles(
-  sessionId: string,
-  files: readonly File[],
-  signal?: AbortSignal,
-): Promise<FilePart[]> {
-  const form = new FormData()
-  for (const f of files) form.append('files', f, f.name)
-  const rows = await apiFetch<ChatMessageFileRow[]>(
-    `${SESSIONS}/${encodeURIComponent(sessionId)}/files`,
-    // No deadline: the shared 30 s one is sized for JSON reads, and 50 MB on a slow link is not
-    // a hung request. The turn's own abort signal still ends it (navigation away, user switch).
-    { method: 'POST', body: form, signal, timeout: 0 },
-  )
-  return (Array.isArray(rows) ? rows : []).map((r) => ({
-    id: r.id,
-    name: r.filename,
-    size: r.size_bytes,
-    mime: r.mime_type,
-  }))
-}
-
-/** `ChatMessageFile` (chat/models.rs), as the upload route returns it. */
-interface ChatMessageFileRow {
-  id: string
-  filename: string
-  mime_type: string
-  size_bytes: number
-}
 
 export const saveMessage = (sessionId: string, body: SaveMessageBody) =>
   apiFetch<ChatMessage>(`${SESSIONS}/${encodeURIComponent(sessionId)}/messages`, {
