@@ -447,6 +447,11 @@ async fn github_callback_login(
             tracing::warn!(github_login = %github_user.login, "GitHub SSO login rejected: account deactivated");
             return (StatusCode::FORBIDDEN, "account deactivated").into_response();
         }
+        // Members-only workspace: only pre-existing users may sign in.
+        Err(nasiko_auth::AuthError::NotInvited) => {
+            tracing::info!(github_login = %github_user.login, "GitHub SSO login rejected: account not invited");
+            return login_error_redirect(&state, "not_invited");
+        }
         Err(e) => {
             tracing::error!(%e, github_login = %github_user.login, "GitHub SSO login: upsert_oauth_user failed");
             return (

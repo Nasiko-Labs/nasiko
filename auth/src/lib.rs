@@ -224,6 +224,9 @@ pub enum AuthError {
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,
+    /// Sign-in is members-only and this account has not been invited. Maps to 403.
+    #[error("this account has not been invited")]
+    NotInvited,
     /// Too many failed login attempts — account temporarily locked.
     /// `retry_after_secs` is the number of seconds until the lockout expires.
     #[error("account locked")]
