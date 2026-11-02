@@ -19,7 +19,6 @@ use crate::commands::integration;
 
 pub use claude_mcp::unregister_best_effort as unregister_claude_best_effort;
 
-const PLATFORM_CONNECTOR: &str = "platform-control";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DESKTOP_STATE_DIR_ENV: &str = "NASIKO_DESKTOP_STATE_DIR";
 
@@ -440,15 +439,17 @@ pub fn install(client: McpClient) -> Result<()> {
         coding_agent_router::revoke_mcp_credential_best_effort(&api, &state.binding.agent_id);
         return Err(error.context("could not record the MCP gateway connection"));
     }
+    if let Err(error) = enable_platform_connectors(&api, &state.binding.agent_id) {
+        term::print_warning(&format!(
+            "could not turn on the platform tools ({}); turn them on in the agent's MCP tab on the website",
+            coding_agent_router::one_line_warning(&error)
+        ));
+    }
     term::print_success(&format!(
         "{} can now use your Nasiko tools (MCP gateway, agent {}).",
         client.spec().display_name,
         state.binding.agent_name
     ));
-    println!("{}", coding_agent_router::mcp_multi_machine_note());
-    if let Some(hint) = platform_tools_hint(&api, &state.binding) {
-        println!("{hint}");
-    }
     println!(
         "Start a new {} session to load it.",
         client.spec().display_name
@@ -520,60 +521,36 @@ fn probe(cluster_url: &str, token: &str) -> Probe {
     }
 }
 
-fn agent_connectors(api: &Client, agent_id: &str) -> Result<Vec<(String, bool)>> {
-    let response: Value = api.get_json(&format!("/mcp/agents/{agent_id}/connectors"))?;
-    Ok(response
-        .get("data")
-        .and_then(|data| data.get("connectors"))
+fn disabled_platform_connectors(response: &Value) -> Result<Vec<String>> {
+    let connectors = response
+        .pointer("/data/connectors")
         .and_then(Value::as_array)
-        .map(|connectors| {
-            connectors
-                .iter()
-                .filter_map(|connector| {
-                    Some((
-                        connector.get("name")?.as_str()?.to_string(),
-                        connector
-                            .get("enabled")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-fn platform_tools_hint(api: &Client, binding: &ConnectionBinding) -> Option<String> {
-    let connectors = agent_connectors(api, &binding.agent_id).ok()?;
+        .context("the control plane returned no connector list")?;
     connectors
         .iter()
-        .any(|(name, enabled)| name == PLATFORM_CONNECTOR && !enabled)
-        .then(|| {
-            format!(
-                "Platform tools (list and delete your agents) are off. Turn them on with: {}",
-                term::cyan(&format!(
-                    "{} mcp agent-tools enable {} {PLATFORM_CONNECTOR}",
-                    crate::commands::local_agents::cli_name(),
-                    binding.agent_name
-                ))
-            )
+        .filter(|connector| {
+            connector.get("provider_type").and_then(Value::as_str) == Some("system")
         })
+        .filter(|connector| connector.get("enabled").and_then(Value::as_bool) != Some(true))
+        .map(|connector| {
+            connector
+                .get("connector_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .context("the control plane returned a connector without an id")
+        })
+        .collect()
 }
 
-fn owner_client(summary: &McpSummary) -> Option<Client> {
-    let (_, entry) = crate::config::active_cluster().ok()?;
-    let token = entry.token.as_deref()?;
-    let same_cluster = entry.url.trim_end_matches('/') == summary.cluster_url.trim_end_matches('/');
-    let same_user = match (
-        crate::config::token_subject(token),
-        summary.principal_id.as_deref(),
-    ) {
-        (Some(subject), Some(principal)) => crate::config::same_principal(&subject, principal),
-        _ => false,
-    };
-    (same_cluster && same_user).then(|| {
-        Client::from_cluster_entry_with_timeout(&entry, Some(coding_agent_router::CP_CALL_TIMEOUT))
-    })
+fn enable_platform_connectors(api: &Client, agent_id: &str) -> Result<()> {
+    let response: Value = api.get_json(&format!("/mcp/agents/{agent_id}/connectors"))?;
+    for connector_id in disabled_platform_connectors(&response)? {
+        let _: Value = api.put_json(
+            &format!("/mcp/agents/{agent_id}/connectors/{connector_id}"),
+            &json!({ "enabled": true }),
+        )?;
+    }
+    Ok(())
 }
 
 pub fn print_status(client: McpClient, summary: Option<&McpSummary>) -> Result<()> {
@@ -628,34 +605,6 @@ pub fn print_status(client: McpClient, summary: Option<&McpSummary>) -> Result<(
             Probe::Unreachable(reason) => format!("{} ({reason})", value("unreachable")),
         };
         println!("Credential:        {credential}");
-    }
-    if let Some(api) = owner_client(summary) {
-        match agent_connectors(&api, &summary.agent_id) {
-            Ok(connectors) if connectors.is_empty() => {
-                println!("Connectors:        none visible to this agent");
-            }
-            Ok(connectors) => {
-                let names: Vec<&str> = connectors.iter().map(|(name, _)| name.as_str()).collect();
-                println!("Connectors:        {}", names.join(", "));
-                let binding = ConnectionBinding {
-                    version: coding_agent_router::STATE_VERSION,
-                    integration_id: Some(client.id().to_string()),
-                    cluster: summary.cluster.clone(),
-                    cluster_url: summary.cluster_url.clone(),
-                    principal_id: summary.principal_id.clone(),
-                    agent_id: summary.agent_id.clone(),
-                    agent_name: summary.agent_name.clone(),
-                    executable: None,
-                };
-                if let Some(hint) = platform_tools_hint(&api, &binding) {
-                    println!("{hint}");
-                }
-            }
-            Err(error) => println!(
-                "Connectors:        could not be read ({})",
-                coding_agent_router::one_line_warning(&error)
-            ),
-        }
     }
     Ok(())
 }
@@ -866,50 +815,100 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn connectors_are_read_from_the_agent_view() {
+    fn connector_view(body: &str) -> (mockito::ServerGuard, Client) {
         let mut server = mockito::Server::new();
         server
             .mock("GET", "/api/mcp/agents/agent/connectors")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"data":{"connectors":[{"connector_id":"w","name":"workspace","enabled":true},{"connector_id":"p","name":"platform-control","enabled":false},{"connector_id":"x"}]}}"#,
-            )
+            .with_body(body)
             .create();
         let api = Client::for_test(&server.url(), Some("jwt"));
-        assert_eq!(
-            agent_connectors(&api, "agent").unwrap(),
-            vec![
-                ("workspace".to_string(), true),
-                ("platform-control".to_string(), false)
-            ]
-        );
-        let hint = platform_tools_hint(&api, &binding()).unwrap();
-        assert!(hint.contains("mcp agent-tools enable owner-claude-code platform-control"));
+        (server, api)
     }
 
     #[test]
-    fn no_hint_when_platform_tools_are_on_or_unreachable() {
-        let mut server = mockito::Server::new();
-        server
-            .mock("GET", "/api/mcp/agents/agent/connectors")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"connectors":[{"name":"platform-control","enabled":true}]}}"#)
-            .create();
-        let api = Client::for_test(&server.url(), Some("jwt"));
-        assert!(platform_tools_hint(&api, &binding()).is_none());
+    fn only_disabled_platform_connectors_are_picked() {
+        let view = json!({"data": {"connectors": [
+            {"connector_id": "on", "provider_type": "system", "name": "workspace", "enabled": true},
+            {"connector_id": "off", "provider_type": "system", "name": "platform-control", "enabled": false},
+            {"connector_id": "unset", "provider_type": "system", "name": "other"},
+            {"connector_id": "spoof", "provider_type": "mcp_server", "name": "platform-control", "enabled": false},
+            {"connector_id": "app", "provider_type": "composio", "name": "github", "enabled": false},
+            {"connector_id": "untyped", "name": "platform-control", "enabled": false}
+        ]}});
+        assert_eq!(
+            disabled_platform_connectors(&view).unwrap(),
+            vec!["off".to_string(), "unset".to_string()]
+        );
+    }
 
-        let mut hidden = mockito::Server::new();
-        hidden
-            .mock("GET", "/api/mcp/agents/agent/connectors")
+    #[test]
+    fn a_malformed_connector_view_is_an_error() {
+        assert!(disabled_platform_connectors(&json!({"data": {}})).is_err());
+        assert!(disabled_platform_connectors(&json!({"data": {"connectors": {}}})).is_err());
+        assert!(
+            disabled_platform_connectors(&json!({"data": {"connectors": [
+                {"provider_type": "system", "enabled": false}
+            ]}}))
+            .is_err()
+        );
+        assert!(
+            disabled_platform_connectors(&json!({"data": {"connectors": []}}))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn connecting_turns_on_every_disabled_platform_connector() {
+        let (mut server, api) = connector_view(
+            r#"{"data":{"connectors":[
+                {"connector_id":"w","provider_type":"system","name":"workspace","enabled":true},
+                {"connector_id":"p","provider_type":"system","name":"platform-control","enabled":false},
+                {"connector_id":"s","provider_type":"mcp_server","name":"platform-control","enabled":false}
+            ]}}"#,
+        );
+        let enabled = server
+            .mock("PUT", "/api/mcp/agents/agent/connectors/p")
+            .match_body(mockito::Matcher::Json(json!({"enabled": true})))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"connectors":[{"name":"workspace","enabled":true}]}}"#)
+            .with_body(r#"{"data":{"connector_id":"p","enabled":true}}"#)
+            .expect(1)
             .create();
-        let api = Client::for_test(&hidden.url(), Some("jwt"));
-        assert!(platform_tools_hint(&api, &binding()).is_none());
+        let untouched = server
+            .mock("PUT", mockito::Matcher::Regex("/connectors/(w|s)$".into()))
+            .expect(0)
+            .create();
+        enable_platform_connectors(&api, "agent").unwrap();
+        enabled.assert();
+        untouched.assert();
+    }
+
+    #[test]
+    fn nothing_is_written_when_the_platform_tools_are_already_on_or_absent() {
+        for body in [
+            r#"{"data":{"connectors":[{"connector_id":"p","provider_type":"system","enabled":true}]}}"#,
+            r#"{"data":{"connectors":[]}}"#,
+        ] {
+            let (mut server, api) = connector_view(body);
+            let writes = server.mock("PUT", mockito::Matcher::Any).expect(0).create();
+            enable_platform_connectors(&api, "agent").unwrap();
+            writes.assert();
+        }
+    }
+
+    #[test]
+    fn a_refused_enable_or_an_unreadable_view_is_reported() {
+        let (mut server, api) = connector_view(
+            r#"{"data":{"connectors":[{"connector_id":"p","provider_type":"system","enabled":false}]}}"#,
+        );
+        server
+            .mock("PUT", "/api/mcp/agents/agent/connectors/p")
+            .with_status(403)
+            .create();
+        assert!(enable_platform_connectors(&api, "agent").is_err());
 
         let mut failing = mockito::Server::new();
         failing
@@ -917,6 +916,6 @@ mod tests {
             .with_status(500)
             .create();
         let api = Client::for_test(&failing.url(), Some("jwt"));
-        assert!(platform_tools_hint(&api, &binding()).is_none());
+        assert!(enable_platform_connectors(&api, "agent").is_err());
     }
 }

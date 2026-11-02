@@ -300,14 +300,6 @@ pub fn mcp_connected_line() -> String {
     format!("MCP gateway: connected (server \"{MCP_SERVER_NAME}\")")
 }
 
-/// Printed right after `mcp_connected_line()`: the control plane keeps one MCP gateway credential
-/// per agent row (`nasiko_mcp_gateway::agent_tokens::mint` upserts), so connecting the same agent
-/// from a second machine replaces this one, and disconnecting from either machine revokes it for
-/// both.
-pub fn mcp_multi_machine_note() -> &'static str {
-    "Note: one MCP credential per agent; connecting from another machine replaces it."
-}
-
 /// Revoke the bound agent's MCP gateway credential. The caller softens a failure into a warning.
 pub fn revoke_mcp_credential(client: &Client, agent_id: &str) -> Result<()> {
     client.delete(&format!("/agents/{agent_id}/mcp-token"))
