@@ -37,6 +37,24 @@
 //! set `NASIKO_TRANSLATION_VERBOSE=0` to print only the summarized view.
 //!
 //! Models are env-overridable: `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `GEMINI_MODEL`.
+//!
+//! ## Scenarios
+//!
+//! Four, two of them carrying an attachment (`image_describe`, `pdf_describe`). Each
+//! declares what a correct answer contains, printed above every result — because for a
+//! media scenario the interesting failure is not an error, it is a *fluent answer about
+//! an attachment the model never received*. Comparing the text against `Expected:` is
+//! what separates those two.
+//!
+//! ## What this harness does not cover
+//!
+//! * **Bedrock.** [`Provider`] has no Bedrock arm — it uses SigV4-style auth and a
+//!   different request envelope, so adding it is more than another enum variant. The
+//!   Converse spoke therefore has unit coverage only, and no live confirmation that it
+//!   carries image or document blocks. Stated here rather than left to be discovered.
+//! * **Streaming.** Non-streaming responses only; the SSE renderers are unit-tested.
+//! * **Pass/fail.** Report-only by design, and deliberately not a CI gate: it costs
+//!   money per run, needs three real keys, and its output is judged by a human.
 
 use std::fs;
 use std::path::PathBuf;
@@ -123,11 +141,54 @@ struct Tool {
     force: bool,
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Media fixtures
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Both carry a **verifiable fact**, which is the only reason a media scenario proves
+// anything. A 1×1 transparent pixel would not: asked to describe it, a model that never
+// received the attachment still answers plausibly, and the run looks like a pass. These
+// have a single right answer, so a dropped attachment is visible in the text.
+
+/// 64×64 PNG — solid blue top half, solid yellow bottom half.
+const IMAGE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAATUlEQVR42u3PMQkAAAwDsPo3vWnoWQjEQJLcOAEBAQEBAQEBAQEBAQEBAQEBAQEBAQGB1o0TEBAQEBAQEBAQEBAQEBAQEBAQEBAQEKg92xfpWluMiUoAAAAASUVORK5CYII=";
+
+/// One-page PDF whose only text is "Quarterly revenue was 47 million dollars."
+const DOC_PDF_B64: &str = "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgNjEyIDc5Ml0vUmVzb3VyY2VzPDwvRm9udDw8L0YxIDUgMCBSPj4+Pi9Db250ZW50cyA0IDAgUj4+ZW5kb2JqCjQgMCBvYmo8PC9MZW5ndGggNzI+PnN0cmVhbQpCVCAvRjEgMTggVGYgNzIgNzAwIFRkIChRdWFydGVybHkgcmV2ZW51ZSB3YXMgNDcgbWlsbGlvbiBkb2xsYXJzLikgVGogRVQKZW5kc3RyZWFtZW5kb2JqCjUgMCBvYmo8PC9UeXBlL0ZvbnQvU3VidHlwZS9UeXBlMS9CYXNlRm9udC9IZWx2ZXRpY2E+PmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1MiAwMDAwMCBuIAowMDAwMDAwMTAxIDAwMDAwIG4gCjAwMDAwMDAyMTEgMDAwMDAgbiAKMDAwMDAwMDMyOCAwMDAwMCBuIAp0cmFpbGVyPDwvU2l6ZSA2L1Jvb3QgMSAwIFI+PgpzdGFydHhyZWYKMzg5CiUlRU9GCg==";
+
+#[derive(Clone, Copy)]
+enum Media {
+    Image {
+        mime: &'static str,
+        b64: &'static str,
+    },
+    Document {
+        mime: &'static str,
+        b64: &'static str,
+        filename: &'static str,
+    },
+}
+
+impl Media {
+    fn data_url(self) -> String {
+        match self {
+            Self::Image { mime, b64 } | Self::Document { mime, b64, .. } => {
+                format!("data:{mime};base64,{b64}")
+            }
+        }
+    }
+}
+
 struct Scenario {
     name: &'static str,
     system: Option<&'static str>,
     user: &'static str,
     tool: Option<Tool>,
+    /// Attachment carried on the user turn, rendered natively per provider.
+    media: Option<Media>,
+    /// What a correct answer contains. Printed with every result so the human reading
+    /// the report can tell "the model saw it" from "the model guessed".
+    expect: Option<&'static str>,
 }
 
 fn scenarios() -> Vec<Scenario> {
@@ -138,6 +199,8 @@ fn scenarios() -> Vec<Scenario> {
             system: Some("You are concise. Answer with as few words as possible."),
             user: "What is the capital of France? Answer with only the city name.",
             tool: None,
+            media: None,
+            expect: Some("Paris"),
         },
         // Tool call — structure (name + args) stays stable even when wording drifts,
         // and exercises the hardest parts of the translation (tool schema + tool_use).
@@ -158,8 +221,83 @@ fn scenarios() -> Vec<Scenario> {
                 }),
                 force: true,
             }),
+            media: None,
+            expect: Some("a translate_text call with target_language = Hindi"),
+        },
+        // Image → the attachment must survive the whole round trip. Two colours in a
+        // fixed order: a model that never received the image cannot land both.
+        Scenario {
+            name: "image_describe",
+            system: Some("You are concise."),
+            user: "Name the colour of the top half of this image, then the bottom half. \
+                   Answer with exactly two words.",
+            tool: None,
+            media: Some(Media::Image {
+                mime: "image/png",
+                b64: IMAGE_PNG_B64,
+            }),
+            expect: Some("blue yellow"),
+        },
+        // Document → same idea, and the figure appears nowhere but inside the PDF.
+        Scenario {
+            name: "pdf_describe",
+            system: Some("You are concise."),
+            user: "What revenue figure is stated in this document? \
+                   Answer with just the number and unit.",
+            tool: None,
+            media: Some(Media::Document {
+                mime: "application/pdf",
+                b64: DOC_PDF_B64,
+                filename: "report.pdf",
+            }),
+            expect: Some("47 million"),
         },
     ]
+}
+
+/// The user turn in OpenAI shape — a bare string, or a part array when media rides along.
+fn openai_user_content(s: &Scenario) -> Value {
+    let Some(media) = s.media else {
+        return json!(s.user);
+    };
+    let attachment = match media {
+        Media::Image { .. } => json!({
+            "type": "image_url",
+            "image_url": { "url": media.data_url() },
+        }),
+        Media::Document { filename, .. } => json!({
+            "type": "file",
+            "file": { "file_data": media.data_url(), "filename": filename },
+        }),
+    };
+    json!([{ "type": "text", "text": s.user }, attachment])
+}
+
+/// The user turn in Anthropic shape — `image` / `document` blocks with a base64 source.
+fn anthropic_user_content(s: &Scenario) -> Value {
+    let Some(media) = s.media else {
+        return json!(s.user);
+    };
+    let (kind, mime, b64) = match media {
+        Media::Image { mime, b64 } => ("image", mime, b64),
+        Media::Document { mime, b64, .. } => ("document", mime, b64),
+    };
+    json!([
+        { "type": "text", "text": s.user },
+        { "type": kind, "source": { "type": "base64", "media_type": mime, "data": b64 } },
+    ])
+}
+
+/// The user turn in Gemini shape — `inlineData` siblings of the text part.
+fn gemini_user_parts(s: &Scenario) -> Value {
+    let mut parts = vec![json!({ "text": s.user })];
+    if let Some(media) = s.media {
+        let (mime, b64) = match media {
+            Media::Image { mime, b64 } | Media::Document { mime, b64, .. } => (mime, b64),
+        };
+        parts.push(json!({ "inlineData": { "mimeType": mime, "data": b64 } }));
+    }
+    json!(parts)
 }
 
 /// Build the native request body for `provider` from a logical scenario.
@@ -176,7 +314,7 @@ fn openai_request(s: &Scenario, model: &str) -> Value {
     if let Some(sys) = s.system {
         messages.push(json!({ "role": "system", "content": sys }));
     }
-    messages.push(json!({ "role": "user", "content": s.user }));
+    messages.push(json!({ "role": "user", "content": openai_user_content(s) }));
 
     let mut body = json!({
         "model": model,
@@ -203,7 +341,7 @@ fn anthropic_request(s: &Scenario, model: &str) -> Value {
         "model": model,
         "max_tokens": MAX_TOKENS,
         "temperature": TEMPERATURE,
-        "messages": [{ "role": "user", "content": s.user }],
+        "messages": [{ "role": "user", "content": anthropic_user_content(s) }],
     });
     if let Some(sys) = s.system {
         body["system"] = json!(sys);
@@ -224,7 +362,7 @@ fn anthropic_request(s: &Scenario, model: &str) -> Value {
 /// Gemini takes the model in the URL, not the body.
 fn gemini_request(s: &Scenario) -> Value {
     let mut body = json!({
-        "contents": [{ "role": "user", "parts": [{ "text": s.user }] }],
+        "contents": [{ "role": "user", "parts": gemini_user_parts(s) }],
         "generationConfig": { "temperature": TEMPERATURE, "maxOutputTokens": MAX_TOKENS },
     });
     if let Some(sys) = s.system {
@@ -298,7 +436,6 @@ async fn translated_call(
         .map_err(|e| format!("inbound parse ({}): {e}", client.label()))?;
 
     let resolved = ResolvedConfig {
-        agent_id: String::new(),
         compress_enabled: false,
         provider: backend.label().to_string(),
         model: backend_model.to_string(),
@@ -510,6 +647,12 @@ impl ResultRecord {
 #[derive(Serialize)]
 struct CaseReport {
     scenario: String,
+    /// What a correct answer contains — the yardstick for reading the three results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expect: Option<String>,
+    /// Whether this scenario carried an attachment, so a reader can tell at a glance
+    /// which rows actually exercise the media path.
+    media: Option<String>,
     client_format: String,
     backend_provider: String,
     pure_x: ResultRecord,
@@ -523,6 +666,12 @@ fn print_case(c: &CaseReport) {
         "Scenario: {}   |   client(X)={}   backend(Y)={}",
         c.scenario, c.client_format, c.backend_provider
     );
+    if let Some(media) = &c.media {
+        println!("Attachment: {media}");
+    }
+    if let Some(expect) = &c.expect {
+        println!("Expected:   {expect}");
+    }
     println!("──────────────────────────────────────────────────────────────────");
     print_result("PURE X  — direct call to client's provider", &c.pure_x);
     print_result("PURE Y  — direct call to backend provider", &c.pure_y);
@@ -686,6 +835,13 @@ async fn run_pair(client: Provider, backend: Provider) {
 
         let case = CaseReport {
             scenario: s.name.to_string(),
+            expect: s.expect.map(str::to_string),
+            media: s.media.map(|m| match m {
+                Media::Image { mime, b64 } => format!("image ({mime}, {} b64 chars)", b64.len()),
+                Media::Document { mime, b64, .. } => {
+                    format!("document ({mime}, {} b64 chars)", b64.len())
+                }
+            }),
             client_format: client.label().to_string(),
             backend_provider: backend.label().to_string(),
             pure_x,
@@ -741,4 +897,108 @@ async fn gemini_to_openai() {
 #[ignore = "live: needs GEMINI_API_KEY + ANTHROPIC_API_KEY"]
 async fn gemini_to_anthropic() {
     run_pair(Provider::Gemini, Provider::Anthropic).await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Harness self-check — hermetic, always runs
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Guards the harness itself. The live pairs above cost money and need three keys, so a
+/// scenario that silently fails to attach its media would be discovered late and
+/// expensively — and would look like a *translation* bug rather than a test-rig one.
+/// This asserts the attachment reaches every dialect before anyone spends a cent.
+#[test]
+fn media_scenarios_attach_in_every_dialect() {
+    let media: Vec<Scenario> = scenarios()
+        .into_iter()
+        .filter(|s| s.media.is_some())
+        .collect();
+    assert_eq!(media.len(), 2, "expected an image and a document scenario");
+
+    for s in &media {
+        // OpenAI: a part array carrying text + the attachment.
+        let oa = openai_request(s, "gpt-4o");
+        let parts = oa["messages"]
+            .as_array()
+            .and_then(|m| m.last())
+            .and_then(|m| m["content"].as_array())
+            .unwrap_or_else(|| panic!("{}: openai content is not a part array", s.name));
+        assert_eq!(parts.len(), 2, "{}: openai", s.name);
+        let attached = &parts[1];
+        let url = attached["image_url"]["url"]
+            .as_str()
+            .or_else(|| attached["file"]["file_data"].as_str())
+            .unwrap_or_else(|| panic!("{}: openai attachment has no payload", s.name));
+        assert!(
+            url.starts_with("data:"),
+            "{}: openai not a data URL",
+            s.name
+        );
+
+        // Anthropic: an image/document block with a base64 source.
+        let an = anthropic_request(s, "claude-3-5-sonnet-20241022");
+        let blocks = an["messages"][0]["content"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: anthropic content is not a block array", s.name));
+        assert_eq!(blocks.len(), 2, "{}: anthropic", s.name);
+        assert_eq!(
+            blocks[1]["source"]["type"], "base64",
+            "{}: anthropic",
+            s.name
+        );
+        assert!(
+            !blocks[1]["source"]["data"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{}: anthropic payload empty",
+            s.name
+        );
+
+        // Gemini: inlineData sitting beside the text part.
+        let ge = gemini_request(s);
+        let gparts = ge["contents"][0]["parts"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{}: gemini parts missing", s.name));
+        assert_eq!(gparts.len(), 2, "{}: gemini", s.name);
+        assert!(
+            !gparts[1]["inlineData"]["data"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{}: gemini payload empty",
+            s.name
+        );
+    }
+}
+
+/// The fixtures must stay real files. If either is truncated or re-encoded badly the
+/// live run fails upstream with a provider-side parse error that looks like our bug.
+#[test]
+fn media_fixtures_are_well_formed() {
+    use base64::Engine as _;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(IMAGE_PNG_B64)
+        .expect("image fixture is not valid base64");
+    assert_eq!(
+        &png[..8],
+        b"\x89PNG\r\n\x1a\n",
+        "image fixture is not a PNG"
+    );
+
+    let pdf = base64::engine::general_purpose::STANDARD
+        .decode(DOC_PDF_B64)
+        .expect("pdf fixture is not valid base64");
+    assert_eq!(&pdf[..5], b"%PDF-", "pdf fixture is not a PDF");
+    assert!(
+        pdf.windows(7)
+            .any(|w| w == b"%%EOF\n".as_slice() || w == b"%%EOF\r\n".as_slice())
+            || pdf.ends_with(b"%%EOF\n"),
+        "pdf fixture has no EOF marker"
+    );
+    // The answer the live scenario checks for must actually be in the document.
+    assert!(
+        String::from_utf8_lossy(&pdf).contains("47 million"),
+        "pdf fixture no longer states the expected figure"
+    );
 }

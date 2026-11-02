@@ -240,6 +240,17 @@ pub fn build_stream_request_with_parts(
     build_request("SendStreamingMessage", text, context_id, extra_parts, None)
 }
 
+/// Non-streaming counterpart to [`build_stream_request_with_parts`] — the `message/send` retry
+/// for an agent that rejects `message/stream` must carry the same attachments, or the agent
+/// answers about a file it never received.
+pub fn build_send_request_with_parts(
+    text: &str,
+    context_id: Option<&str>,
+    extra_parts: &[Part],
+) -> JsonRpcRequest {
+    build_request("SendMessage", text, context_id, extra_parts, None)
+}
+
 pub fn build_stream_request_with_metadata(
     text: &str,
     context_id: Option<&str>,
@@ -1695,5 +1706,35 @@ mod transport_path_tests {
             { "artifactId": "a2", "parts": [{ "text": "second" }] },
         ]});
         assert_eq!(extract_text(&result).as_deref(), Some("first\nsecond"));
+    }
+}
+
+#[cfg(test)]
+mod request_builder_tests {
+    use super::*;
+
+    #[test]
+    fn send_request_with_parts_carries_attachments() {
+        let part = file_part(
+            b"png".to_vec(),
+            Some("img.png".into()),
+            Some("image/png".into()),
+        );
+        let req = build_send_request_with_parts("what is this?", Some("ctx-1"), &[part]);
+        assert_eq!(req.method, "SendMessage");
+        let parts = &req.params.as_ref().unwrap()["message"]["parts"];
+        assert_eq!(parts.as_array().unwrap().len(), 2, "text + the attachment");
+        assert_eq!(parts[1]["filename"], "img.png");
+    }
+
+    #[test]
+    fn send_request_with_no_parts_matches_plain_send() {
+        let with = build_send_request_with_parts("hi", Some("ctx-1"), &[]);
+        let plain = build_send_request("hi", Some("ctx-1"));
+        assert_eq!(with.method, plain.method);
+        assert_eq!(
+            with.params.as_ref().unwrap()["message"]["parts"],
+            plain.params.as_ref().unwrap()["message"]["parts"]
+        );
     }
 }
