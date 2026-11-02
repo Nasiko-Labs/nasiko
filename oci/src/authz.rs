@@ -221,7 +221,8 @@ enum RepoNamespace {
 }
 
 /// Compute owners(R) - the set of owner_ids of live agents whose stored
-/// `agents.image` (with registry host and tag stripped) equals repository R.
+/// `agents.image` (with registry host and tag stripped) equals repository R,
+/// and of uploaded MCP connectors whose successful build image is R.
 /// Narrows candidates in SQL via substring search, then confirms exact match
 /// in Rust to avoid LIKE wildcard issues with `_` in names.
 async fn owners_of_repository(state: &OciState, repo: &str) -> Result<Vec<uuid::Uuid>> {
@@ -242,6 +243,28 @@ async fn owners_of_repository(state: &OciState, repo: &str) -> Result<Vec<uuid::
         // An external image with the same path is not an owner of the platform repository.
         if let Some(platform_repo) = nasiko_utils::image::platform_repository_from_image(
             &image,
+            &state.platform_registry_host,
+        ) && platform_repo == repo
+            && !owner_ids.contains(&owner_id)
+        {
+            owner_ids.push(owner_id);
+        }
+    }
+
+    let connector_rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT c.owner_id, b.image_tag \
+         FROM mcp_connectors c \
+         JOIN mcp_connector_builds b ON b.connector_id = c.id \
+         WHERE b.status = 'success' AND b.image_tag IS NOT NULL AND strpos(b.image_tag, $1) > 0",
+    )
+    .bind(repo)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(OciError::Database)?;
+
+    for (owner_id, image_tag) in connector_rows {
+        if let Some(platform_repo) = nasiko_utils::image::platform_repository_from_image(
+            &image_tag,
             &state.platform_registry_host,
         ) && platform_repo == repo
             && !owner_ids.contains(&owner_id)
@@ -290,7 +313,7 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                 }
                 RepoNamespace::Legacy(_slug) => {
                     let owners = owners_of_repository(state, repo).await?;
-                    if owners.is_empty() || owners.contains(&caller_uuid) {
+                    if owners.is_empty() || (owners.len() == 1 && owners[0] == caller_uuid) {
                         Ok(())
                     } else {
                         Err(OciError::Forbidden(format!(
