@@ -153,18 +153,11 @@ pub fn extract_token_attrs(
         "output_tokens",
     ]);
 
-    // The model that answered, before the one asked for: after a fallback they differ, and
-    // pricing the failed model bills a call that never happened at its rate.
-    let model = [
-        "gen_ai.response.model",
-        "gen_ai.request.model",
-        "llm.request.model",
-        "model",
-    ]
-    .iter()
-    .find_map(|k| attrs.get(*k))
-    .and_then(|v| v.as_str())
-    .map(String::from);
+    let model = ["gen_ai.request.model", "llm.request.model", "model"]
+        .iter()
+        .find_map(|k| attrs.get(*k))
+        .and_then(|v| v.as_str())
+        .map(String::from);
 
     (input, output, model)
 }
@@ -304,14 +297,6 @@ fn read_u64(attrs: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option
     })
 }
 
-/// `trace_usage.agent_name` of the Orchestrator's own model calls. The control plane writes its
-/// spend live under this name, so the Tempo copy of those calls must be booked to it too.
-pub const ORCHESTRATOR_USAGE_AGENT: &str = "orchestrator";
-
-/// The span the Orchestrator emits for each of its own model calls
-/// (`oss/react-agent/src/completion.rs`). Its service is the control plane's, not an agent's.
-pub const ORCHESTRATOR_LLM_SPAN: &str = "gen_ai.orchestrator.chat";
-
 /// Whether this span is the LLM router's own record of a call it served.
 ///
 /// `gen_ai.agent.id` is set only there (`oss/llm-router/src/handlers/chat.rs`),
@@ -345,8 +330,8 @@ pub struct RouterSpanLinks<'a> {
 ///
 /// The router's span usually sits under the HTTP span for the agent's request,
 /// whose parent is the agent's own LLM span, so the nearest ancestor from a
-/// different service names the calling agent, and the usage-reporting span at or
-/// above it in that service ([`usage_span_of`]) is the duplicate.
+/// different service is the calling agent, and that ancestor's usage is the
+/// duplicate.
 ///
 /// Some instrumentation doesn't nest that way: an agent's own legacy
 /// instrumentation (pre-GenAI-semconv spans such as `ChatCompletion`) can
@@ -413,8 +398,8 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         match agent {
             Some(agent) => {
                 attributed.insert(span.span_id.as_str(), agent.service_name.as_str());
-                if let Some(duplicate) = usage_span_of(agent, &by_id) {
-                    excluded.insert(duplicate.span_id.as_str());
+                if !extract_usage_attrs(&agent.attributes).is_empty() {
+                    excluded.insert(agent.span_id.as_str());
                 }
             }
             None => {
@@ -447,72 +432,6 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         attributed,
         excluded,
     }
-}
-
-/// The span holding `agent`'s usage for a call: `agent` itself, else its nearest ancestor from
-/// the same service that reports usage. An instrumented HTTP client puts a usage-less `POST`
-/// span between the router's span and the agent's LLM span; stopping there double-counts it.
-fn usage_span_of<'a>(agent: &'a Span, by_id: &HashMap<&str, &'a Span>) -> Option<&'a Span> {
-    let mut current = agent;
-    for _ in 0..MAX_ANCESTOR_HOPS {
-        if !extract_usage_attrs(&current.attributes).is_empty() {
-            return Some(current);
-        }
-        let parent = by_id.get(current.parent_span_id.as_deref()?)?;
-        if parent.service_name != agent.service_name {
-            return None;
-        }
-        current = parent;
-    }
-    None
-}
-
-/// Bounds the walk, so a parent cycle in bad data can't hang it.
-const MAX_ANCESTOR_HOPS: usize = 32;
-
-/// A tool-call span: GenAI semconv `execute_tool` (what the MCP gateway
-/// emits), its older `call_tool` spelling, or OpenInference's `TOOL` kind.
-pub fn is_tool_span(span: &Span) -> bool {
-    let operation = span
-        .attributes
-        .get("gen_ai.operation.name")
-        .and_then(|v| v.as_str());
-    matches!(operation, Some("execute_tool" | "call_tool"))
-        || span
-            .attributes
-            .get("openinference.span.kind")
-            .and_then(|v| v.as_str())
-            .is_some_and(|kind| kind.eq_ignore_ascii_case("tool"))
-}
-
-/// The agent a gateway-emitted tool span served. The gateway runs in the
-/// control plane, so the span's `service.name` is the server's; the agent's
-/// UUID (also what agents report as their `service.name`) rides on `agent.id`.
-pub fn gateway_tool_agent(span: &Span) -> Option<&str> {
-    let is_gateway_call = span
-        .attributes
-        .get("mcp.method.name")
-        .and_then(|v| v.as_str())
-        == Some("tools/call");
-    is_gateway_call
-        .then(|| span.attributes.get("agent.id").and_then(|v| v.as_str()))
-        .flatten()
-        .filter(|id| !id.is_empty())
-}
-
-/// Agent-side tool spans to leave out of tool counts because the gateway's own
-/// span, their direct child, already records the same call. The gateway span
-/// is the source of truth: it exists for every call, whatever the agent's
-/// framework instruments.
-pub fn superseded_tool_spans(spans: &[Span]) -> HashSet<&str> {
-    let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
-    spans
-        .iter()
-        .filter(|s| gateway_tool_agent(s).is_some())
-        .filter_map(|s| by_id.get(s.parent_span_id.as_deref()?))
-        .filter(|parent| is_tool_span(parent) && gateway_tool_agent(parent).is_none())
-        .map(|parent| parent.span_id.as_str())
-        .collect()
 }
 
 /// The sibling case `link_router_spans` can't reach by walking ancestry: a
@@ -739,67 +658,6 @@ pub struct TraceUsageRow {
     /// is keyed `(trace_id, agent_name)`, so a trace-wide figure here would be
     /// multiplied by the agent count by anything that sums it.
     pub error_count: u32,
-    /// One entry per tool span this agent emitted, for the `tool_calls` table.
-    pub tool_calls: Vec<ToolCallSpan>,
-}
-
-/// A tool span read back from Tempo, written to `tool_calls` by the materializer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ToolCallSpan {
-    pub call_id: String,
-    pub tool_name: String,
-    pub status: String,
-    pub error: Option<String>,
-    pub arguments: Option<String>,
-    pub output: Option<String>,
-    pub duration_ms: Option<i64>,
-    pub started_at: DateTime<Utc>,
-}
-
-impl ToolCallSpan {
-    /// Pure mapping from a span; attribute names cover GenAI semconv and OpenInference.
-    pub fn from_span(span: &Span) -> Self {
-        let attr = |keys: &[&str]| {
-            keys.iter().find_map(|k| {
-                span.attributes.get(*k).map(|v| match v.as_str() {
-                    Some(s) => s.to_string(),
-                    None => v.to_string(),
-                })
-            })
-        };
-        // `tool.status` is set by the coding-agent OTLP bridge (oss/server/src/coding_agent_otlp.rs);
-        // OTLP status code is the fallback for other emitters.
-        let status: String = match (span.status_code, attr(&["tool.status"])) {
-            (2, _) => "failed".into(),
-            (_, Some(s)) => s,
-            (1, None) => "succeeded".into(),
-            _ => "unknown".into(),
-        };
-        let failed: bool = status == "failed";
-        ToolCallSpan {
-            call_id: attr(&["gen_ai.tool.call.id", "tool.call.id"])
-                .unwrap_or_else(|| span.span_id.clone()),
-            tool_name: attr(&["gen_ai.tool.name", "tool.name"])
-                .unwrap_or_else(|| span.name.clone()),
-            error: (!span.status_message.is_empty() && failed)
-                .then(|| span.status_message.clone())
-                .or_else(|| attr(&["error.message"])),
-            status,
-            arguments: attr(&[
-                "gen_ai.tool.call.arguments",
-                "tool.arguments",
-                "input.value",
-            ]),
-            output: attr(&[
-                "gen_ai.tool.call.result",
-                "tool.result",
-                "tool.output",
-                "output.value",
-            ]),
-            duration_ms: span.duration_ms.map(|d| d as i64),
-            started_at: span.started_at,
-        }
-    }
 }
 
 /// Gap tolerance when deciding whether one span started after another ended.
@@ -807,41 +665,9 @@ impl ToolCallSpan {
 /// classify the same trace the same way.
 const RETRY_GAP_TOLERANCE_MS: i64 = 1;
 
-/// OTLP status code 2 is `ERROR` (0 unset, 1 ok), except the A2A SDK's end of stream
-/// and an agent state read that found nothing.
+/// OTLP status code 2 is `ERROR` (0 unset, 1 ok).
 fn is_error(span: &Span) -> bool {
-    span.status_code == 2 && !is_a2a_queue_shutdown(span) && !is_agent_state_miss(span)
-}
-
-/// An agent's read of its own durable state (`GET /api/agent-state/...`) that answered
-/// 404: the key was never written, which is how every conversation's first turn starts
-/// (the checkpointer looks for a saved head before there is one). HTTP client
-/// instrumentation records every 4xx as an ERROR span, but here the 404 is the answer,
-/// not a failure. Only reads: a 404 on a write still counts. The UI's span nodes carry no
-/// attributes, so the trace view reports such a span's status as `UNSET` instead
-/// (`span_status_str` in `oss/server/src/observability/service.rs`).
-pub fn is_agent_state_miss(span: &Span) -> bool {
-    let attr = |keys: &[&str]| {
-        keys.iter().find_map(|k| span.attributes.get(*k)).map(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| v.to_string())
-        })
-    };
-    let method = attr(&["http.request.method", "http.method"]).unwrap_or_else(|| span.name.clone());
-    let status = attr(&["http.response.status_code", "http.status_code"]);
-    let url = attr(&["url.full", "http.url", "url.path", "http.target"]);
-    method.eq_ignore_ascii_case("GET")
-        && status.as_deref() == Some("404")
-        && url.is_some_and(|u| u.contains("/api/agent-state/"))
-}
-
-/// The a2a Python SDK ends every stream by shutting its event queue down, and its own
-/// tracing records the waiting consumer's `QueueShutDown` as an ERROR span — once per
-/// completed reply. That is how a stream finishes, not a failure. Mirrors the UI's
-/// `isA2aQueueShutdown` (`ui/shared/features/src/observability/spans.ts`).
-fn is_a2a_queue_shutdown(span: &Span) -> bool {
-    span.name.ends_with(".dequeue_event") && span.status_message.starts_with("QueueShutDown")
+    span.status_code == 2
 }
 
 /// Error spans that nothing recovered from: an ERROR span with no same-name
@@ -908,36 +734,6 @@ mod link_router_spans_tests {
                 .collect(),
             events: Vec::new(),
         }
-    }
-
-    #[test]
-    fn is_tool_span_recognises_the_tool_operation_spellings() {
-        assert!(is_tool_span(&span(
-            "a",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "execute_tool")]
-        )));
-        assert!(is_tool_span(&span(
-            "b",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "call_tool")]
-        )));
-        assert!(is_tool_span(&span(
-            "c",
-            None,
-            "svc",
-            &[("openinference.span.kind", "TOOL")]
-        )));
-        // An LLM/router span (chat op, or just a model) is not a tool span,
-        // even though it carries gen_ai.agent.id.
-        assert!(!is_tool_span(&span(
-            "d",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "chat"), ("gen_ai.agent.id", "x")]
-        )));
     }
 
     #[test]
@@ -1036,51 +832,6 @@ mod link_router_spans_tests {
     }
 
     #[test]
-    fn an_agents_http_span_between_the_router_and_its_llm_span_does_not_hide_the_duplicate() {
-        // router span -> control-plane request -> the agent's `POST` (no usage) -> the agent's
-        // own LLM span. The LLM span is the duplicate; the `POST` is only where the walk lands.
-        let usage = [
-            ("gen_ai.usage.input_tokens", "913"),
-            ("gen_ai.usage.output_tokens", "3000"),
-        ];
-        let mut router_attrs = vec![("gen_ai.agent.id", "agent-uuid")];
-        router_attrs.extend(usage);
-        let spans = vec![
-            span("chat", None, "meeting-notes", &usage),
-            span("post", Some("chat"), "meeting-notes", &[]),
-            span("req", Some("post"), "nasiko-cp", &[]),
-            span("r1", Some("req"), "nasiko-cp", &router_attrs),
-        ];
-        let links = link_router_spans(&spans);
-        assert_eq!(links.attributed.get("r1"), Some(&"meeting-notes"));
-        assert!(
-            links.excluded.contains("chat"),
-            "the agent's copy is dropped"
-        );
-        assert!(!links.excluded.contains("r1"), "the router's span stands");
-    }
-
-    #[test]
-    fn the_walk_for_a_usage_span_stays_inside_the_agents_service() {
-        // The agent's `POST` has no usage, and above it is another service's span that does:
-        // that one is not this agent's call, so it must not be dropped.
-        let spans = vec![
-            span(
-                "other",
-                None,
-                "caller-agent",
-                &[("gen_ai.usage.input_tokens", "50")],
-            ),
-            span("post", Some("other"), "my-agent", &[]),
-            span("req", Some("post"), "nasiko-cp", &[]),
-            span("r1", Some("req"), "nasiko-cp", &[("gen_ai.agent.id", "a")]),
-        ];
-        let links = link_router_spans(&spans);
-        assert_eq!(links.attributed.get("r1"), Some(&"my-agent"));
-        assert!(!links.excluded.contains("other"));
-    }
-
-    #[test]
     fn router_span_with_agent_ancestor_still_attributes_by_service_name() {
         // Regression guard: a self-instrumenting agent's own span is the ancestor,
         // so the router span is still attributed to the agent's service name (the
@@ -1096,118 +847,6 @@ mod link_router_spans_tests {
         ];
         let links = link_router_spans(&spans);
         assert_eq!(links.attributed.get("r1"), Some(&"my-agent"));
-    }
-}
-
-#[cfg(test)]
-mod tool_span_tests {
-    use super::*;
-
-    fn span(id: &str, parent: Option<&str>, service: &str, attrs: &[(&str, &str)]) -> Span {
-        Span {
-            span_id: id.to_string(),
-            parent_span_id: parent.map(str::to_string),
-            name: "s".into(),
-            started_at: chrono::Utc::now(),
-            ended_at: None,
-            duration_ms: None,
-            service_name: service.to_string(),
-            kind: 3,
-            status_code: 0,
-            status_message: String::new(),
-            attributes: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
-                .collect(),
-            events: Vec::new(),
-        }
-    }
-
-    const GATEWAY: &[(&str, &str)] = &[
-        ("gen_ai.operation.name", "execute_tool"),
-        ("mcp.method.name", "tools/call"),
-        ("agent.id", "agent-1"),
-    ];
-
-    #[test]
-    fn execute_call_and_openinference_tool_spans_all_count_as_tools() {
-        for attrs in [
-            &[("gen_ai.operation.name", "execute_tool")][..],
-            &[("gen_ai.operation.name", "call_tool")][..],
-            &[("openinference.span.kind", "TOOL")][..],
-        ] {
-            assert!(is_tool_span(&span("a", None, "svc", attrs)));
-        }
-        assert!(!is_tool_span(&span(
-            "a",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "chat")]
-        )));
-    }
-
-    #[test]
-    fn a_gateway_span_is_credited_to_the_agent_it_served() {
-        assert_eq!(
-            gateway_tool_agent(&span("g", None, "nasiko", GATEWAY)),
-            Some("agent-1")
-        );
-    }
-
-    #[test]
-    fn an_agent_side_tool_span_with_an_agent_id_is_not_a_gateway_span() {
-        let agent_side = span(
-            "a",
-            None,
-            "agent-1",
-            &[
-                ("gen_ai.operation.name", "execute_tool"),
-                ("agent.id", "agent-1"),
-            ],
-        );
-        assert_eq!(gateway_tool_agent(&agent_side), None);
-    }
-
-    #[test]
-    fn the_agent_span_above_a_gateway_span_is_superseded() {
-        let spans = vec![
-            span(
-                "a",
-                None,
-                "agent-1",
-                &[("gen_ai.operation.name", "execute_tool")],
-            ),
-            span("g", Some("a"), "nasiko", GATEWAY),
-        ];
-        assert_eq!(superseded_tool_spans(&spans), HashSet::from(["a"]));
-    }
-
-    #[test]
-    fn a_tool_span_with_no_gateway_child_is_kept() {
-        let spans = vec![
-            span(
-                "a",
-                None,
-                "agent-1",
-                &[("gen_ai.operation.name", "execute_tool")],
-            ),
-            span("g", Some("other"), "nasiko", GATEWAY),
-        ];
-        assert!(superseded_tool_spans(&spans).is_empty());
-    }
-
-    #[test]
-    fn a_non_tool_parent_is_never_superseded() {
-        let spans = vec![
-            span(
-                "a",
-                None,
-                "agent-1",
-                &[("gen_ai.operation.name", "invoke_agent")],
-            ),
-            span("g", Some("a"), "nasiko", GATEWAY),
-        ];
-        assert!(superseded_tool_spans(&spans).is_empty());
     }
 }
 
@@ -1244,47 +883,6 @@ mod unrecovered_error_tests {
     fn count(spans: &[Span]) -> usize {
         let refs: Vec<&Span> = spans.iter().collect();
         unrecovered_error_spans(&refs).len()
-    }
-
-    #[test]
-    fn the_a2a_sdks_end_of_stream_is_not_an_error() {
-        let name = "a2a.server.events.event_queue_v2.EventQueueSource.dequeue_event";
-        let shutdown = Span {
-            status_message: "QueueShutDown: ".into(),
-            ..span("a", Some("p"), name, 0, 3, true)
-        };
-        assert_eq!(count(&[shutdown]), 0);
-        // Any other failure of the same call still counts.
-        let failed = Span {
-            status_message: "RuntimeError: boom".into(),
-            ..span("b", Some("p"), name, 0, 3, true)
-        };
-        assert_eq!(count(&[failed]), 1);
-    }
-
-    fn http(method: &str, url: &str, status: serde_json::Value) -> Span {
-        let mut s = span("h", Some("p"), method, 0, 9, true);
-        s.attributes
-            .insert("http.url".into(), serde_json::json!(url));
-        s.attributes.insert("http.status_code".into(), status);
-        s
-    }
-
-    #[test]
-    fn an_agent_state_read_that_finds_nothing_is_not_an_error() {
-        // The checkpointer's first read in a new conversation, as httpx records it.
-        let url = "http://10.24.0.15:8080/api/agent-state/kv/lgh%3A81cc%3A";
-        assert_eq!(count(&[http("GET", url, serde_json::json!("404"))]), 0);
-        assert_eq!(count(&[http("GET", url, serde_json::json!(404))]), 0);
-    }
-
-    #[test]
-    fn other_404s_and_agent_state_failures_still_count() {
-        let state = "http://10.24.0.15:8080/api/agent-state/kv/k";
-        assert_eq!(count(&[http("PUT", state, serde_json::json!("404"))]), 1);
-        assert_eq!(count(&[http("GET", state, serde_json::json!("500"))]), 1);
-        let other = "http://10.24.0.15:8080/api/agents/x";
-        assert_eq!(count(&[http("GET", other, serde_json::json!("404"))]), 1);
     }
 
     #[test]
@@ -1352,57 +950,6 @@ mod unrecovered_error_tests {
     }
 
     #[test]
-    fn a_failed_tool_is_not_recovered_by_a_different_tool_succeeding_next() {
-        // The MCP tool-span regression: two different tools under one turn's
-        // parent, the first failing and an unrelated one succeeding after it.
-        // Tool spans must carry tool-specific names (`execute_tool <tool>`), or
-        // this reads as a recovered retry and the failure disappears.
-        assert_eq!(
-            count(&[
-                span(
-                    "a",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    0,
-                    10,
-                    true
-                ),
-                span(
-                    "b",
-                    Some("turn"),
-                    "execute_tool calendar__list_events",
-                    10,
-                    10,
-                    false
-                ),
-            ]),
-            1
-        );
-        // A real retry of the *same* tool still recovers.
-        assert_eq!(
-            count(&[
-                span(
-                    "a",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    0,
-                    10,
-                    true
-                ),
-                span(
-                    "b",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    10,
-                    10,
-                    false
-                ),
-            ]),
-            0
-        );
-    }
-
-    #[test]
     fn the_gap_tolerance_allows_an_immediate_retry() {
         // A retry recorded as starting 1ms before the failure's recorded end is
         // still a retry: the timestamps come from different clocks.
@@ -1420,125 +967,5 @@ mod unrecovered_error_tests {
         let mut s = span("a", Some("p"), "call", 0, 10, false);
         s.status_code = 0;
         assert_eq!(count(&[s]), 0);
-    }
-}
-
-#[cfg(test)]
-mod tool_call_span_tests {
-    use super::*;
-
-    fn span(status: u8, msg: &str, attrs: &[(&str, &str)]) -> Span {
-        Span {
-            span_id: "sp1".into(),
-            parent_span_id: None,
-            name: "execute_tool Bash".into(),
-            started_at: chrono::Utc::now(),
-            ended_at: None,
-            duration_ms: Some(12.0 as _),
-            service_name: "agent".into(),
-            kind: 1,
-            status_code: status,
-            status_message: msg.into(),
-            attributes: attrs
-                .iter()
-                .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
-                .collect(),
-            events: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn genai_semconv_attributes() {
-        let t = ToolCallSpan::from_span(&span(
-            1,
-            "",
-            &[
-                ("gen_ai.tool.call.id", "call-1"),
-                ("gen_ai.tool.name", "Bash"),
-                ("gen_ai.tool.call.arguments", "{\"cmd\":\"ls\"}"),
-                ("gen_ai.tool.call.result", "ok"),
-            ],
-        ));
-        assert_eq!(t.call_id, "call-1");
-        assert_eq!(t.tool_name, "Bash");
-        assert_eq!(t.status, "succeeded");
-        assert_eq!(t.arguments.as_deref(), Some("{\"cmd\":\"ls\"}"));
-        assert_eq!(t.output.as_deref(), Some("ok"));
-        assert_eq!(t.duration_ms, Some(12));
-        assert!(t.error.is_none());
-    }
-
-    /// Attributes as emitted by `coding_agent_otlp::trace_payload` for an ACP tool call.
-    #[test]
-    fn coding_agent_bridge_span() {
-        let t = ToolCallSpan::from_span(&span(
-            0,
-            "",
-            &[
-                ("gen_ai.operation.name", "execute_tool"),
-                ("tool.call.id", "toolu_01ABC"),
-                ("tool.name", "Read"),
-                ("tool.kind", "read"),
-                ("tool.status", "succeeded"),
-                ("tool.association", "turn"),
-                ("tool.arguments", "{\"path\":\"src/lib.rs\"}"),
-                ("tool.result", "\"fn main() {}\""),
-            ],
-        ));
-        assert_eq!(t.call_id, "toolu_01ABC");
-        assert_eq!(t.tool_name, "Read");
-        assert_eq!(t.status, "succeeded");
-        assert_eq!(t.arguments.as_deref(), Some("{\"path\":\"src/lib.rs\"}"));
-        assert_eq!(t.output.as_deref(), Some("\"fn main() {}\""));
-        let failed = ToolCallSpan::from_span(&span(
-            2,
-            "",
-            &[("tool.status", "failed"), ("error.message", "ENOENT")],
-        ));
-        assert_eq!(failed.status, "failed");
-        assert_eq!(failed.error.as_deref(), Some("ENOENT"));
-    }
-
-    #[test]
-    fn openinference_and_fallbacks() {
-        let t = ToolCallSpan::from_span(&span(
-            2,
-            "boom",
-            &[("input.value", "q"), ("output.value", "r")],
-        ));
-        assert_eq!(t.call_id, "sp1");
-        assert_eq!(t.tool_name, "execute_tool Bash");
-        assert_eq!(t.status, "failed");
-        assert_eq!(t.error.as_deref(), Some("boom"));
-        assert_eq!(t.arguments.as_deref(), Some("q"));
-        assert_eq!(t.output.as_deref(), Some("r"));
-    }
-}
-
-#[cfg(test)]
-mod extract_token_attrs_tests {
-    use super::*;
-
-    fn attrs(pairs: &[(&str, &str)]) -> HashMap<String, serde_json::Value> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
-            .collect()
-    }
-
-    #[test]
-    fn the_model_that_answered_wins_over_the_one_requested() {
-        // TO-02: the config's model failed with 404 and the fallback answered.
-        let (.., model) = extract_token_attrs(&attrs(&[
-            ("gen_ai.request.model", "gpt-bogus-model"),
-            ("gen_ai.response.model", "gpt-4o-mini"),
-        ]));
-        assert_eq!(model.as_deref(), Some("gpt-4o-mini"));
-    }
-
-    #[test]
-    fn the_requested_model_is_used_when_no_answer_was_recorded() {
-        let (.., model) = extract_token_attrs(&attrs(&[("gen_ai.request.model", "gpt-4.1")]));
-        assert_eq!(model.as_deref(), Some("gpt-4.1"));
     }
 }

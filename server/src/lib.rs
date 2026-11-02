@@ -13,14 +13,21 @@ pub mod agent_proxy;
 pub mod agent_scaling;
 pub mod agent_state;
 pub mod agents;
+pub mod assessment;
 pub mod auth;
 pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
 pub mod coding;
+pub mod coding_agent_backlog;
+pub mod coding_agent_ingest_guard;
+pub mod coding_agent_onboarding;
 pub mod coding_agent_otlp;
+pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
+pub mod coding_agent_turn_summary_backfill;
+mod coding_agent_usage;
 pub mod context_selection;
 pub mod embedding_change;
 pub mod flows;
@@ -29,12 +36,14 @@ pub mod hitl;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
+pub mod maf_policy;
 pub mod mcp;
 pub mod multipart_util;
 pub mod observability;
 pub mod onboarding;
 pub mod openapi;
 pub mod orchestrator_policy;
+pub mod overview;
 pub mod pool;
 pub mod prompt_context;
 pub mod rate_limit;
@@ -46,7 +55,9 @@ pub mod seed;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
 pub mod settings;
-pub mod spa;
+/// The SPA serving shared by every binary that embeds a UI bundle.
+pub use nasiko_spa as spa;
+pub mod spend_gate;
 pub mod state;
 pub mod telemetry;
 pub mod titling;
@@ -167,10 +178,14 @@ where
     // panicking: MAF routes still work (create/list/run) without a key, jobs
     // just queue in Redis unprocessed until one is configured.
     if let Some(api_key) = state.config.openai_api_key.clone() {
-        let llm_config = nasiko_orchestrator::maf::LlmConfig {
-            api_key,
-            base_url: state.config.openai_base_url.clone(),
-            model: state.config.openai_model.clone(),
+        let worker_config = nasiko_orchestrator::maf::WorkerConfig {
+            llm: nasiko_orchestrator::maf::LlmConfig {
+                api_key,
+                base_url: state.config.openai_base_url.clone(),
+                model: state.config.openai_model.clone(),
+            },
+            concurrency: state.config.maf_worker_concurrency,
+            heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
         // The MAF worker's LLM calls carry the agent-call budget at the client
         // level. Their own pool, deliberately: a background worker's traffic
@@ -200,8 +215,9 @@ where
             // MAF step's agent call is bounded by exactly the cascade limits
             // every other inter-agent call already is.
             std::sync::Arc::new(state.flow_guard.clone()),
-            llm_config,
+            worker_config,
             state.hitl_store.clone(),
+            state.maf_executor.clone(),
         );
     } else {
         tracing::warn!(
@@ -281,6 +297,8 @@ where
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
     let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    // Each assessment is an S3 write; a human submits the form once or twice.
+    let assessment_limiter = RateLimiter::new(5, Duration::from_secs(60));
     // Starting a MAF run is the single most expensive authenticated action in
     // the product: the executor makes 4 LLM calls minimum (plan, per-step
     // placeholder fill, per-step extraction, final synthesis) plus one agent
@@ -319,7 +337,10 @@ where
         .merge(chat::router())
         .merge(context_selection::router())
         .merge(onboarding::router())
-        .merge(coding_agent_telemetry::router())
+        .merge(assessment::router(assessment_limiter))
+        .merge(overview::router())
+        .merge(coding_agent_onboarding::router())
+        .merge(coding_agent_telemetry::router(state.clone()))
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
@@ -413,12 +434,8 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let mut llm_ctx =
+    let llm_ctx =
         nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
-    // A discovered A2A agent's calls become turns of its chat session, so it shows in Sessions.
-    llm_ctx.turn_recorder = std::sync::Arc::new(
-        chat::discovered_turns::DiscoveredAgentSessions::new(state.db.clone()),
-    );
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
@@ -485,8 +502,9 @@ where
         .fallback_service(ui_pages)
         .layer(cors)
         // Default span-making records the full request URI, which would publish
-        // the agent credential carried by `/api/mcp/s/{token}` into every span
-        // and log line. Redact that one route; everything else is unchanged.
+        // credentials into every span and log line: the agent credential in
+        // `/api/mcp/s/{token}`, and query values such as the SSO `?token=`
+        // session JWT or an OAuth `code`/`state`. See `redact_credential_uri`.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
                 let span = tracing::info_span!(

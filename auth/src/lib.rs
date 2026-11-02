@@ -2,7 +2,6 @@ pub mod assertion;
 pub mod csrf;
 pub mod jwt;
 pub mod service;
-pub mod sharing;
 
 pub use service::AuthServiceImpl;
 
@@ -131,23 +130,6 @@ pub trait AuthService: Send + Sync + 'static {
         username: &str,
         verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError>;
-    /// Whether calling `upsert_oauth_user` with these same arguments would
-    /// create a brand-new user, without writing anything. Lets a caller that
-    /// can't complete the write transactionally (an OIDC callback redirect,
-    /// say) check a creation cap *before* provisioning happens, instead of
-    /// only after — a plain user/agent-count would let an over-limit login
-    /// through as easily as an under-limit one.
-    ///
-    /// Must answer what `upsert_oauth_user` then does: only an existing
-    /// identity or a verified email resolves to an existing user. The username
-    /// plays no part, because a first-time sign-in whose username is taken gets
-    /// a numbered username of its own, so it takes no argument for it.
-    async fn would_create_user(
-        &self,
-        provider: &str,
-        provider_id: &str,
-        verified_email: Option<&str>,
-    ) -> Result<bool, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
     async fn record_user_token(&self, token: &str, user_id: &str) -> Result<(), AuthError>;
     /// Revoke a single session by its token `jti` — used by logout, so signing
@@ -242,9 +224,6 @@ pub enum AuthError {
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,
-    /// Sign-in is members-only and this account has not been invited. Maps to 403.
-    #[error("this account has not been invited")]
-    NotInvited,
     /// Too many failed login attempts — account temporarily locked.
     /// `retry_after_secs` is the number of seconds until the lockout expires.
     #[error("account locked")]
@@ -255,12 +234,6 @@ pub enum AuthError {
     /// Uniqueness / state conflict. Maps to 409.
     #[error("conflict: {0}")]
     Conflict(String),
-    /// Refused for a policy reason distinct from bad credentials, e.g. a
-    /// capacity gate declining to auto-provision a new user. The payload is
-    /// a caller-facing reason code, never raw internal detail (the same
-    /// convention as `Conflict`).
-    #[error("forbidden: {0}")]
-    Forbidden(String),
     /// A backend/database failure — must surface as 500, NEVER as 401. Previously
     /// these were coerced to `InvalidToken(e.to_string())`, so a DB outage looked
     /// like an auth failure (and leaked the raw error).
@@ -520,15 +493,6 @@ impl AuthService for SimpleJwtAuth {
         _username: &str,
         _verified_email: Option<&str>,
     ) -> Result<LoginResult, AuthError> {
-        Err(AuthError::Unsupported)
-    }
-
-    async fn would_create_user(
-        &self,
-        _provider: &str,
-        _provider_id: &str,
-        _verified_email: Option<&str>,
-    ) -> Result<bool, AuthError> {
         Err(AuthError::Unsupported)
     }
 

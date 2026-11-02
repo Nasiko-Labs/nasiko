@@ -11,7 +11,6 @@ use axum::response::{IntoResponse, Response};
 use serde_json::Value;
 
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_token;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::execute_embeddings_once;
@@ -36,9 +35,7 @@ async fn embeddings_core(
     body: Value,
 ) -> Result<Response, GatewayError> {
     let authz = headers.get(AUTHORIZATION).and_then(|v| v.to_str().ok());
-    let agent = verify_agent_token(authz, &ctx.cfg)?;
-    super::chat::refuse_revoked_agent_token(store, &agent).await?;
-    let (agent_id, owner_id) = (agent.agent_id, agent.owner_id);
+    let (agent_id, owner_id) = super::chat::verify_agent_identity(ctx, store, authz).await?;
 
     // Strict flow attribution — same rule as chat (previously embeddings
     // attempted none at all): the traceparent must name a live flow this agent
@@ -180,9 +177,11 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
-                is_discovered_agent: false,
                 compress_enabled: false,
             }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
@@ -236,7 +235,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 

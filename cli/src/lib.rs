@@ -786,7 +786,8 @@ pub enum MafExecutionCommands {
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
-    /// Discover coding agents installed and A2A agents running on this machine
+    /// Discover coding agents installed on this machine (now: `status`)
+    #[command(hide = true)]
     Discover,
     /// Install session reporting for a local coding agent (now: `connect <agent> --reporting`)
     #[command(hide = true)]
@@ -803,8 +804,31 @@ pub enum AgentsCommands {
         /// Agent to uninstall (e.g. claude or opencode)
         agent: String,
     },
-    /// Deliver queued coding-agent session events now
-    Sync,
+    /// Validate and deliver queued coding-agent events
+    Sync {
+        /// Queue the turns that were set aside again, then deliver them
+        #[arg(long)]
+        retry_rejected: bool,
+    },
+    /// Connect every coding agent on this computer and import its past sessions, newest first
+    Setup {
+        /// No longer needed (setup doesn't ask); accepted for older scripts
+        #[arg(long, short = 'y', hide = true)]
+        yes: bool,
+        /// Connect the agents but don't import their past sessions
+        #[arg(long)]
+        no_import: bool,
+        /// Import in this terminal and return when done, instead of in the background
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Import the past sessions of the coding agents already connected
+    Import,
+    /// Show how the coding-agent import is going and what is still waiting to send
+    Status,
+    /// Run the import `agents setup` starts in the background.
+    #[command(hide = true)]
+    ImportWorker,
     /// Export one session's new turns. Invoked by installed hooks.
     #[command(hide = true)]
     Report {
@@ -1368,13 +1392,26 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Discover => {
-                commands::integration::discover(commands::local_agents::cli_name())
+                commands::local_agents::note_renamed("agents discover", "status");
+                commands::local_agents::print_overview()
             }
             AgentsCommands::Install { agent, no_content } => {
                 install_reporting_renamed("agents", &agent, no_content)
             }
             AgentsCommands::Uninstall { agent } => uninstall_reporting_renamed("agents", &agent),
-            AgentsCommands::Sync => commands::integration::sync(),
+            AgentsCommands::Sync { retry_rejected } => commands::integration::sync(retry_rejected),
+            AgentsCommands::Setup {
+                yes,
+                no_import,
+                wait,
+            } => commands::integration::setup(commands::integration::SetupOptions {
+                yes,
+                no_import,
+                wait,
+            }),
+            AgentsCommands::Import => commands::integration::import(),
+            AgentsCommands::Status => commands::integration::import_status(),
+            AgentsCommands::ImportWorker => commands::integration::import_worker(),
             AgentsCommands::Report { agent } => commands::integration::report(&agent),
             AgentsCommands::Ls => commands::agents::cmd_ls(),
             AgentsCommands::Get {
@@ -1729,7 +1766,7 @@ pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
             uninstall_reporting_renamed("integration", &agent)
         }
         IntegrationSubCommands::Report { agent } => commands::integration::report(&agent),
-        IntegrationSubCommands::Sync => commands::integration::sync(),
+        IntegrationSubCommands::Sync => commands::integration::sync(false),
     }
 }
 
@@ -1775,7 +1812,7 @@ pub enum McpSubCommands {
     /// Manage custom MCP server connectors
     Connector {
         #[command(subcommand)]
-        command: McpConnectorCommands,
+        command: Box<McpConnectorCommands>,
     },
     /// Manage a per-connector stored credential
     Credential {
@@ -1887,6 +1924,12 @@ pub enum McpConnectorCommands {
         /// OAuth client secret
         #[arg(long)]
         oauth_client_secret: Option<String>,
+        /// OAuth scope to request, space separated (overrides automatic selection, offline_access is still added when the server offers it; empty string on update clears it)
+        #[arg(long)]
+        oauth_scopes: Option<String>,
+        /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)
+        #[arg(long, value_enum)]
+        oauth_send_resource: Option<commands::mcp::SendResourceArg>,
     },
     /// Edit a connector's fields (owner/admin only)
     Update {
@@ -1913,6 +1956,12 @@ pub enum McpConnectorCommands {
         logo_url: Option<String>,
         #[arg(long)]
         active: Option<bool>,
+        /// OAuth scope to request, space separated (overrides automatic selection, offline_access is still added when the server offers it; empty string on update clears it)
+        #[arg(long)]
+        oauth_scopes: Option<String>,
+        /// Send the RFC 8707 resource parameter on authorize: true, false, or auto to let discovery decide (set false for Entra ID behind a proxy)
+        #[arg(long, value_enum)]
+        oauth_send_resource: Option<commands::mcp::SendResourceArg>,
     },
     /// Delete a connector (owner/admin only)
     Delete {
@@ -2184,7 +2233,7 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 commands::mcp::toolkit_delete(&connector_id, yes)
             }
         },
-        McpSubCommands::Connector { command } => match command {
+        McpSubCommands::Connector { command } => match *command {
             McpConnectorCommands::List { json } => commands::mcp::connector_list(json),
             McpConnectorCommands::Probe { url, json } => commands::mcp::connector_probe(&url, json),
             McpConnectorCommands::Register {
@@ -2202,6 +2251,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 logo_url,
                 oauth_client_id,
                 oauth_client_secret,
+                oauth_scopes,
+                oauth_send_resource,
             } => commands::mcp::connector_register(
                 &name,
                 &url,
@@ -2217,6 +2268,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 logo_url.as_deref(),
                 oauth_client_id.as_deref(),
                 oauth_client_secret.as_deref(),
+                oauth_scopes.as_deref(),
+                oauth_send_resource,
             ),
             McpConnectorCommands::Update {
                 connector_id,
@@ -2231,6 +2284,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 display_name,
                 logo_url,
                 active,
+                oauth_scopes,
+                oauth_send_resource,
             } => commands::mcp::connector_update(
                 &connector_id,
                 name.as_deref(),
@@ -2244,6 +2299,8 @@ pub fn dispatch_mcp(cmd: McpSubCommands) -> Result<()> {
                 display_name.as_deref(),
                 logo_url.as_deref(),
                 active,
+                oauth_scopes.as_deref(),
+                oauth_send_resource,
             ),
             McpConnectorCommands::Delete { connector_id, yes } => {
                 commands::mcp::connector_delete(&connector_id, yes)

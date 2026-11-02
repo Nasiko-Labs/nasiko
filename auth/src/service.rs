@@ -10,13 +10,6 @@ const LOGIN_LOCKOUT_THRESHOLD: i32 = 3;
 /// Lockout duration in seconds (15 minutes).
 const LOGIN_LOCKOUT_DURATION_SECS: u64 = 15 * 60;
 
-/// The `jti` of a token this service just signed. Every token it issues
-/// carries one, so a missing `jti` is an internal fault, not a bad credential.
-fn issued_jti(token: &str) -> Result<String, AuthError> {
-    crate::jwt::extract_jti(token)
-        .ok_or_else(|| AuthError::Internal("issued token has no jti".into()))
-}
-
 /// DB-backed implementation of AuthService.
 /// Handles user lookup, password verification, token issuance, and revocation.
 #[derive(Clone)]
@@ -31,13 +24,14 @@ impl AuthServiceImpl {
     }
 
     /// Record a user token JTI so it can be revoked later.
-    /// A failure fails the caller: revocation only finds recorded tokens, so a
-    /// token handed out unrecorded could never be revoked.
-    async fn record_token(&self, token: &str, user_id: uuid::Uuid) -> Result<(), AuthError> {
-        let jti = issued_jti(token)?;
+    /// Fire-and-forget — a failure to record doesn't fail the login.
+    async fn record_token(&self, token: &str, user_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
-        sqlx::query(
+        let _ = sqlx::query(
             "INSERT INTO auth_tokens (user_id, token_hash, expires_at)
              VALUES ($1, $2, $3)
              ON CONFLICT (token_hash) DO NOTHING",
@@ -46,17 +40,18 @@ impl AuthServiceImpl {
         .bind(hash)
         .bind(expires)
         .execute(&self.db)
-        .await?;
-        Ok(())
+        .await;
     }
 
     /// Record an agent token JTI so it can be revoked later.
     /// Agent tokens store `agent_id` instead of `user_id` (different subject table).
-    async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) -> Result<(), AuthError> {
-        let jti = issued_jti(token)?;
+    async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
-        sqlx::query(
+        let _ = sqlx::query(
             "INSERT INTO auth_tokens (agent_id, token_hash, expires_at)
              VALUES ($1, $2, $3)
              ON CONFLICT (token_hash) DO NOTHING",
@@ -65,48 +60,7 @@ impl AuthServiceImpl {
         .bind(hash)
         .bind(expires)
         .execute(&self.db)
-        .await?;
-        Ok(())
-    }
-
-    /// Whether this `(provider, provider_id)` OAuth login resolves to a user
-    /// that already exists: an exact identity match, or a *verified* email that
-    /// already belongs to a user (how one person keeps a single CP user across
-    /// Google + GitHub). Synthetic email placeholders
-    /// (`{username}@{provider}.users`) are never matched: callers only pass
-    /// emails they have verified. Backs `would_create_user`, which must resolve
-    /// "new" exactly as `upsert_oauth_user`'s own find-or-create does, or a cap
-    /// on new accounts and the write would disagree.
-    ///
-    /// A username never matches: `insert_oauth_user` gives a first-time
-    /// sign-in whose username is taken a numbered username of its own.
-    async fn resolves_to_existing_user(
-        &self,
-        provider: &str,
-        provider_id: &str,
-        verified_email: Option<&str>,
-    ) -> Result<bool, AuthError> {
-        let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
-            "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_id = $2",
-        )
-        .bind(provider)
-        .bind(provider_id)
-        .fetch_optional(&self.db)
-        .await?;
-        if existing.is_some() {
-            return Ok(true);
-        }
-
-        let linked: Option<(uuid::Uuid,)> = match verified_email {
-            Some(email) => {
-                sqlx::query_as("SELECT id FROM users WHERE email = $1 AND deleted_at IS NULL")
-                    .bind(email)
-                    .fetch_optional(&self.db)
-                    .await?
-            }
-            None => None,
-        };
-        Ok(linked.is_some())
+        .await;
     }
 }
 
@@ -266,13 +220,10 @@ impl AuthService for AuthServiceImpl {
         // Record every issued token in auth_tokens so it is revocable (matches the
         // EE impl). Previously only `authenticate` recorded, so tokens minted via
         // `issue_token` directly — e.g. initialize-admin — were unrevocable.
-        // ON CONFLICT DO NOTHING, so it's safe if a caller also records. A token
-        // that cannot be recorded is not handed out: it could never be revoked.
-        let uid = identity
-            .user_id
-            .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::NotFound)?;
-        self.record_token(&token, uid).await?;
+        // Best-effort + ON CONFLICT DO NOTHING, so it's safe if a caller also records.
+        if let Ok(uid) = identity.user_id.parse::<uuid::Uuid>() {
+            self.record_token(&token, uid).await;
+        }
         Ok(token)
     }
 
@@ -451,7 +402,7 @@ impl AuthService for AuthServiceImpl {
         // Use encode_agent_jwt so token_type = "agent" — prevents the token from
         // being accepted by decode_jwt as a human-user credential (AUTH-3).
         let token = crate::jwt::encode_agent_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, &identity)?;
-        self.record_agent_token(&token, agent_uuid).await?;
+        self.record_agent_token(&token, agent_uuid).await;
         Ok(token)
     }
 
@@ -585,7 +536,7 @@ impl AuthService for AuthServiceImpl {
         };
 
         let token = self.issue_token(&identity).await?;
-        self.record_token(&token, user_id).await?;
+        self.record_token(&token, user_id).await;
 
         Ok(LoginResult {
             token,
@@ -596,18 +547,6 @@ impl AuthService for AuthServiceImpl {
             access_key: None,
             access_secret: None,
         })
-    }
-
-    async fn would_create_user(
-        &self,
-        provider: &str,
-        provider_id: &str,
-        verified_email: Option<&str>,
-    ) -> Result<bool, AuthError> {
-        let existing = self
-            .resolves_to_existing_user(provider, provider_id, verified_email)
-            .await?;
-        Ok(!existing)
     }
 
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError> {
@@ -641,7 +580,8 @@ impl AuthService for AuthServiceImpl {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()
             .map_err(|_| AuthError::NotFound)?;
-        self.record_token(token, user_uuid).await
+        self.record_token(token, user_uuid).await;
+        Ok(())
     }
 
     async fn revoke_token(&self, jti: &str) -> Result<u64, AuthError> {
@@ -701,8 +641,7 @@ impl AuthService for AuthServiceImpl {
         Ok(result.rows_affected())
     }
 
-    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all), where no grant reaches a
-    /// harness agent ([`crate::sharing`]).
+    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all).
     /// Team/department grants are EE-only — `EeAuthService` overrides this with the
     /// fuller check. This is the single source of truth for per-agent access in OSS;
     /// handlers reach it via `state.auth.can_access_agent`, so the check is
@@ -718,7 +657,7 @@ impl AuthService for AuthServiceImpl {
             return false;
         };
 
-        sqlx::query_scalar::<_, bool>(&format!(
+        sqlx::query_scalar::<_, bool>(
             r#"SELECT EXISTS(
                 SELECT 1 FROM agents a
                 WHERE a.id = $2
@@ -726,18 +665,17 @@ impl AuthService for AuthServiceImpl {
                   AND (
                       a.owner_id = $1
                       OR a.is_public = TRUE
-                      OR ({grants_reach} AND EXISTS (
+                      OR EXISTS (
                           SELECT 1 FROM agent_grants ag
                           WHERE ag.agent_id = a.id
                             AND (
                                 (ag.grant_type = 'public' AND ag.grantee_id = '*')
                              OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
                             )
-                      ))
+                      )
                   )
             )"#,
-            grants_reach = crate::sharing::grants_reach_sql("a"),
-        ))
+        )
         .bind(user_uuid)
         .bind(agent_uuid)
         .fetch_one(&self.db)

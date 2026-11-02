@@ -79,7 +79,6 @@ fn test_spec() -> DeploymentSpec {
         resources: Some(ResourceLimits {
             memory: "256Mi".to_owned(),
             cpu_milli: 250,
-            cpu_request_milli: None,
         }),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
@@ -90,8 +89,6 @@ fn test_spec() -> DeploymentSpec {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     }
 }
 
@@ -107,7 +104,6 @@ fn spec_resource_limits_zero_cpu_fails() {
     spec.resources = Some(ResourceLimits {
         memory: "256Mi".to_owned(),
         cpu_milli: 0,
-        cpu_request_milli: None,
     });
     // validate() on DeploymentSpec calls ResourceLimits::validate() internally
     assert!(spec.validate().is_err());
@@ -119,7 +115,6 @@ fn spec_resource_limits_unrecognized_memory_suffix_fails() {
     spec.resources = Some(ResourceLimits {
         memory: "256KB".to_owned(),
         cpu_milli: 250,
-        cpu_request_milli: None,
     });
     assert!(spec.validate().is_err());
 }
@@ -130,7 +125,6 @@ fn spec_resource_limits_bare_bytes_is_valid() {
     spec.resources = Some(ResourceLimits {
         memory: "536870912".to_owned(), // 512 MiB in bytes
         cpu_milli: 500,
-        cpu_request_milli: None,
     });
     assert!(spec.validate().is_ok());
 }
@@ -141,7 +135,6 @@ fn spec_resource_limits_gi_suffix_is_valid() {
     spec.resources = Some(ResourceLimits {
         memory: "2Gi".to_owned(),
         cpu_milli: 2000,
-        cpu_request_milli: None,
     });
     assert!(spec.validate().is_ok());
 }
@@ -258,8 +251,6 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
 
     // Deploy
@@ -331,8 +322,6 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -394,8 +383,6 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -466,8 +453,6 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
             force_pull: false,
-            parkable: false,
-            overrides: Default::default(),
         }
     }
 
@@ -551,8 +536,6 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         writable_path: None,
         owner_id,
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
     runtime.deploy(&spec).await.expect("deploy writable agent");
     let container = "nasiko-agent-test-workspace-reader";
@@ -676,8 +659,6 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         writable_path: None,
         owner_id: owner,
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
 
     // Victim agent, holding a secret only its owner may download.
@@ -822,8 +803,6 @@ async fn coding_agent_attach_stdio_echo() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
-        parkable: false,
-        overrides: Default::default(),
     };
 
     // Clean slate, then deploy the container.

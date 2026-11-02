@@ -120,9 +120,6 @@ pub struct ResolvedConfig {
     /// model-routing boundary signals from the transcript instead of the (permanently
     /// unreachable, for these agents) `flows`-table lookup.
     pub is_coding_agent: bool,
-    /// Whether this agent is an A2A agent the CLI discovered on a user's machine. See
-    /// [`AgentConfigResult::is_discovered_agent`].
-    pub is_discovered_agent: bool,
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
@@ -235,11 +232,6 @@ pub struct AgentConfigResult {
     /// `flows` row; the chat handler uses this to derive boundary signals from the
     /// transcript instead ([`crate::routing::BoundarySignals::for_coding_agent`]).
     pub is_coding_agent: bool,
-    /// Whether this agent is an A2A agent the CLI discovered running on a user's machine
-    /// (`agents.discovered_on` set). Like a coding agent it is never dispatched through the
-    /// orchestrator, so its calls carry no flow to attribute and are billed to its owner; unlike
-    /// one it is an ordinary agent in every other respect (brevity, tool compaction).
-    pub is_discovered_agent: bool,
     /// Per-agent opt-in for payload compression (`agents.compress_enabled`).
     pub compress_enabled: bool,
 }
@@ -282,13 +274,10 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error>;
 
-    /// When the agent's owner last revoked its LLM keys (`agents.llm_tokens_revoked_at`,
-    /// Unix seconds): every key minted up to then is refused. Read per request, never
-    /// cached, so a revocation takes effect at once on every replica. `None` when never
-    /// revoked, or the agent is unknown (resolving it fails later with its own error).
-    async fn agent_tokens_revoked_at(&self, _agent_id: Uuid) -> Result<Option<u64>, sqlx::Error> {
-        Ok(None)
-    }
+    /// The current owner of a live (not deleted) agent, or `None` when there is
+    /// no such agent. Read per request, never cached: it decides whose keys pay,
+    /// and an ownership transfer must take effect at once.
+    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error>;
 
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
@@ -407,17 +396,6 @@ impl PgRegistry {
 
 #[async_trait]
 impl RegistryStore for PgRegistry {
-    async fn agent_tokens_revoked_at(&self, agent_id: Uuid) -> Result<Option<u64>, sqlx::Error> {
-        let revoked: Option<Option<i64>> = sqlx::query_scalar(
-            "SELECT floor(extract(epoch FROM llm_tokens_revoked_at))::bigint \
-             FROM agents WHERE id = $1",
-        )
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(revoked.flatten().and_then(|at| u64::try_from(at).ok()))
-    }
-
     async fn fetch_llm_config(
         &self,
         agent_id: Uuid,
@@ -425,25 +403,17 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        #[allow(clippy::type_complexity)]
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool, bool)> = sqlx::query_as(
+        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool)> = sqlx::query_as(
             "SELECT llm_config_id, owner_id, pinned_model, \
-                        coding_agent_integration_id IS NOT NULL, \
-                        discovered_on IS NOT NULL, \
-                        compress_enabled \
-                 FROM agents WHERE id = $1",
+                    coding_agent_integration_id IS NOT NULL, \
+                    compress_enabled \
+             FROM agents WHERE id = $1",
         )
         .bind(agent_id)
         .fetch_optional(&self.db)
         .await?;
-        let Some((
-            config_id,
-            owner_id,
-            agent_pinned_model,
-            is_coding_agent,
-            is_discovered_agent,
-            compress_enabled,
-        )) = agent
+        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
+            agent
         else {
             return Ok(None);
         };
@@ -461,9 +431,15 @@ impl RegistryStore for PgRegistry {
             config,
             agent_pinned_model,
             is_coding_agent,
-            is_discovered_agent,
             compress_enabled,
         }))
+    }
+
+    async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&self.db)
+            .await
     }
 
     async fn fetch_user_secret(
@@ -604,7 +580,6 @@ pub async fn resolve(
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
-    let is_discovered_agent = agent_result.is_discovered_agent;
     let compress_enabled = agent_result.compress_enabled;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
@@ -672,7 +647,6 @@ pub async fn resolve(
             dialect: c.dialect.clone(),
         }),
         is_coding_agent,
-        is_discovered_agent,
         compress_enabled,
     };
     tracing::info!(
@@ -951,13 +925,11 @@ async fn load_llm_config(
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());
         let compress_enabled = agent_row.as_ref().is_some_and(|r| r.compress_enabled);
-        let is_coding_agent = agent_row.as_ref().is_some_and(|r| r.is_coding_agent);
-        let is_discovered_agent = agent_row.is_some_and(|r| r.is_discovered_agent);
+        let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
             is_coding_agent,
-            is_discovered_agent,
             compress_enabled,
         });
     }
@@ -1186,9 +1158,11 @@ mod tests {
                 // Coding-agent detection and compression opt-in are exercised at the
                 // handler level (handlers::chat), where they're actually consumed.
                 is_coding_agent: false,
-                is_discovered_agent: false,
                 compress_enabled: false,
             }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(self.secret.clone())

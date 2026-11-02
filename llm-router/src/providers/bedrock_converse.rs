@@ -7,7 +7,9 @@
 //!
 //! Request: system messages → top-level `system`; user/assistant content → `[{text}]`
 //! blocks; tool calls → `toolUse` blocks; tool results → `toolResult` in a following
-//! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`.
+//! user turn; tools → `toolConfig.tools[].toolSpec`; params → `inferenceConfig`. An
+//! agent's `cache_control` markers become `cachePoint` blocks where the model accepts them.
+//! Brevity's directive ends the last user turn rather than joining `system` ([`crate::brevity`]).
 //!
 //! Response: `output.message.content[].text` → concatenated content; `toolUse` →
 //! OpenAI `tool_calls[]`; `stopReason` mapped; `usage` fields renamed.
@@ -26,8 +28,9 @@ use serde_json::{Map, Value, json};
 
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest, EmbeddingsResponse,
-    FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef, Usage,
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, Delta, EmbeddingsRequest,
+    EmbeddingsResponse, FunctionCall, FunctionCallDelta, Message, ToolCall, ToolCallDelta, ToolDef,
+    Usage,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -759,6 +762,7 @@ fn to_converse_request_inner(
     cfg: &ResolvedConfig,
     allow_temperature: bool,
 ) -> (Value, HashMap<String, String>) {
+    let caching = CacheSupport::of(&cfg.model);
     let mut system_parts: Vec<Value> = Vec::new();
     let mut messages: Vec<Value> = Vec::new();
     let mut pending_tool_results: Vec<Value> = Vec::new();
@@ -766,8 +770,21 @@ fn to_converse_request_inner(
     for m in &req.messages {
         match m.role.as_str() {
             "system" => {
-                if let Some(t) = m.text() {
-                    system_parts.push(json!({ "text": t }));
+                // Brevity's directive goes after every cache point, so a turn that skips it still
+                // matches this turn's cached prefix; in `system` it would sit ahead of them all.
+                let placed = crate::brevity::is_directive(m)
+                    && pending_tool_results.is_empty()
+                    && end_user_turn_with(messages.last_mut(), crate::brevity::DIRECTIVE);
+                if placed {
+                    continue;
+                }
+                match caching.marked_text_blocks(m) {
+                    Some(blocks) => system_parts.extend(blocks),
+                    None => {
+                        if let Some(t) = m.text() {
+                            system_parts.push(json!({ "text": t }));
+                        }
+                    }
                 }
             }
             "tool" => {
@@ -777,18 +794,19 @@ fn to_converse_request_inner(
                         "content": [{ "text": m.text().unwrap_or_default() }]
                     }
                 }));
+                pending_tool_results.extend(caching.after_tool_block(m.last_cache_marker()));
             }
             "assistant" => {
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(assistant_to_converse(m));
+                messages.push(assistant_to_converse(m, caching));
             }
             _ => {
                 // "user" and any unexpected role → user turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                messages.push(json!({
-                    "role": "user",
-                    "content": [{ "text": m.text().unwrap_or_default() }]
-                }));
+                let content = caching
+                    .marked_text_blocks(m)
+                    .unwrap_or_else(|| vec![json!({ "text": m.text().unwrap_or_default() })]);
+                messages.push(json!({ "role": "user", "content": content }));
             }
         }
     }
@@ -815,7 +833,11 @@ fn to_converse_request_inner(
     let mut name_map = HashMap::new();
     if let Some(tools) = &req.tools {
         name_map = build_tool_name_map(tools);
-        let translated: Vec<Value> = tools.iter().map(tool_to_converse).collect();
+        let mut translated: Vec<Value> = Vec::new();
+        for t in tools {
+            translated.push(tool_to_converse(t));
+            translated.extend(caching.after_tool_block(t.extra.get(CACHE_CONTROL)));
+        }
         if !translated.is_empty() {
             body["toolConfig"] = json!({ "tools": translated });
             if let Some(choice) = req.tool_choice.as_ref().and_then(tool_choice_to_converse) {
@@ -832,12 +854,102 @@ fn flush_tool_results(pending: &mut Vec<Value>, messages: &mut Vec<Value>) {
     }
 }
 
-fn assistant_to_converse(m: &Message) -> Value {
-    let mut blocks: Vec<Value> = Vec::new();
-    if let Some(t) = m.text()
-        && !t.is_empty()
+/// Add `text` as a block at the end of `turn` when it is a user turn; `false` when it is not,
+/// or there is none.
+fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
+    match turn
+        .filter(|t| t["role"] == "user")
+        .and_then(|t| t["content"].as_array_mut())
     {
-        blocks.push(json!({ "text": t }));
+        Some(content) => {
+            content.push(json!({ "text": text }));
+            true
+        }
+        None => false,
+    }
+}
+
+/// Where a model accepts a `cachePoint`, Bedrock's equivalent of `cache_control`: a block that
+/// ends the cached prefix after the content before it. A cache point a model does not accept
+/// fails the whole request, so these follow what Converse accepted live (Oct 2026).
+#[derive(Clone, Copy, PartialEq)]
+enum CacheSupport {
+    /// Claude: after any block and in the tool list; with the agent's TTL when `ttl`.
+    Everywhere {
+        ttl: bool,
+    },
+    /// Nova: only right after a text block; no TTL ("only supported for Anthropic models").
+    AfterText,
+    None,
+}
+
+/// Claude models from before the 1-hour TTL. Opus 4.1 rejects a cache point carrying one
+/// ("ttl: Extra inputs are not permitted"); the rest are past end of life on Bedrock.
+const CLAUDE_WITHOUT_TTL: [&str; 4] = [
+    "claude-3",
+    "claude-opus-4-2025",
+    "claude-sonnet-4-2025",
+    "claude-opus-4-1",
+];
+
+impl CacheSupport {
+    fn of(model: &str) -> Self {
+        if model.contains("anthropic.claude") {
+            Self::Everywhere {
+                ttl: !CLAUDE_WITHOUT_TTL.iter().any(|old| model.contains(old)),
+            }
+        } else if model.contains("amazon.nova") {
+            Self::AfterText
+        } else {
+            Self::None
+        }
+    }
+
+    /// One `{text}` block per text part, with a cache point after each marked one; `None` when
+    /// no part carries a marker or the model caches nothing.
+    fn marked_text_blocks(self, m: &Message) -> Option<Vec<Value>> {
+        if self == Self::None {
+            return None;
+        }
+        let mut blocks = Vec::new();
+        for part in m.marked_text_parts()? {
+            blocks.push(json!({ "text": part["text"] }));
+            if let Some(marker) = part.get(CACHE_CONTROL) {
+                blocks.push(self.cache_point(marker));
+            }
+        }
+        Some(blocks)
+    }
+
+    /// The cache point to follow a tool call, tool result or tool definition carrying `marker`.
+    fn after_tool_block(self, marker: Option<&Value>) -> Option<Value> {
+        marker
+            .filter(|_| matches!(self, Self::Everywhere { .. }))
+            .map(|m| self.cache_point(m))
+    }
+
+    fn cache_point(self, marker: &Value) -> Value {
+        let mut point = json!({ "cachePoint": { "type": "default" } });
+        if self == (Self::Everywhere { ttl: true })
+            && let Some(ttl) = marker.get("ttl")
+        {
+            point["cachePoint"]["ttl"] = ttl.clone();
+        }
+        point
+    }
+}
+
+fn assistant_to_converse(m: &Message, caching: CacheSupport) -> Value {
+    let mut blocks: Vec<Value> = Vec::new();
+    match caching.marked_text_blocks(m) {
+        Some(text_blocks) => blocks.extend(text_blocks),
+        None => {
+            if let Some(t) = m.text()
+                && !t.is_empty()
+            {
+                blocks.push(json!({ "text": t }));
+            }
+        }
     }
     if let Some(tool_calls) = &m.tool_calls {
         for tc in tool_calls {
@@ -850,6 +962,7 @@ fn assistant_to_converse(m: &Message) -> Value {
                     "input": input,
                 }
             }));
+            blocks.extend(caching.after_tool_block(tc.extra.get(CACHE_CONTROL)));
         }
     }
     if blocks.is_empty() {
@@ -1189,7 +1302,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         }
     }
@@ -1291,6 +1403,197 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// An Anthropic-SDK agent's request with a cache marker on a system block, a tool, a tool
+    /// result and a user text block, parsed as the router parses it.
+    fn marked_anthropic_request() -> ChatRequest {
+        use crate::inbound::{AnthropicInbound, InboundParser};
+        let ephemeral = json!({ "type": "ephemeral" });
+        AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 1024,
+                "system": [
+                    { "type": "text", "text": "You are a coding agent." },
+                    { "type": "text", "text": "Repository map.", "cache_control": ephemeral }
+                ],
+                "tools": [
+                    { "name": "read", "input_schema": { "type": "object" } },
+                    { "name": "edit", "input_schema": { "type": "object" }, "cache_control": ephemeral }
+                ],
+                "messages": [
+                    { "role": "user", "content": "Fix the failing test." },
+                    { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {} }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Also run clippy." },
+                        { "type": "text", "text": "Then stop.", "cache_control": ephemeral }
+                    ]}
+                ]
+            }))
+            .unwrap()
+    }
+
+    fn cache_point() -> Value {
+        json!({ "cachePoint": { "type": "default" } })
+    }
+
+    #[test]
+    fn an_anthropic_agents_cache_markers_become_cache_points_on_claude() {
+        let (body, _) = to_converse_request(
+            &marked_anthropic_request(),
+            &resolved("us.anthropic.claude-sonnet-4-5-20250929-v1:0"),
+        );
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent." }, { "text": "Repository map." }, cache_point()])
+        );
+        let tools = body["toolConfig"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[1]["toolSpec"]["name"], "edit");
+        assert_eq!(tools[2], cache_point());
+        assert_eq!(body["messages"][2]["content"][1], cache_point());
+        assert_eq!(
+            body["messages"][3]["content"],
+            json!([{ "text": "Also run clippy." }, { "text": "Then stop." }, cache_point()])
+        );
+        assert!(!body.to_string().contains("cache_control"));
+    }
+
+    #[test]
+    fn nova_gets_cache_points_only_after_text() {
+        // Nova rejects the whole request for a cache point after a tool call, a tool result or
+        // in the tool list, so the marked tool and tool result go uncached there.
+        let (body, _) = to_converse_request(
+            &marked_anthropic_request(),
+            &resolved("us.amazon.nova-pro-v1:0"),
+        );
+
+        assert_eq!(
+            body["system"].as_array().unwrap().last(),
+            Some(&cache_point())
+        );
+        assert_eq!(
+            body["messages"][3]["content"].as_array().unwrap().last(),
+            Some(&cache_point())
+        );
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 1);
+        let tools = body["toolConfig"]["tools"].as_array().unwrap();
+        assert!(!tools.contains(&cache_point()));
+    }
+
+    #[test]
+    fn a_one_hour_marker_keeps_its_ttl_on_claude_but_not_on_nova() {
+        let mut req = marked_anthropic_request();
+        req.messages[0].content = Some(json!([
+            { "type": "text", "text": "You are a coding agent.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+        ]));
+        let one_hour = json!({ "cachePoint": { "type": "default", "ttl": "1h" } });
+
+        let (claude, _) = to_converse_request(&req, &resolved("us.anthropic.claude-haiku-5-5"));
+        let (nova, _) = to_converse_request(&req, &resolved("us.amazon.nova-pro-v1:0"));
+
+        assert_eq!(claude["system"][1], one_hour);
+        assert_eq!(nova["system"][1], cache_point());
+    }
+
+    #[test]
+    fn claude_from_before_the_one_hour_ttl_gets_a_cache_point_without_it() {
+        // Opus 4.1 rejects the whole request for a TTL, but caches for 5 minutes without one.
+        let mut req = marked_anthropic_request();
+        req.messages[0].content = Some(json!([
+            { "type": "text", "text": "You are a coding agent.", "cache_control": { "type": "ephemeral", "ttl": "1h" } }
+        ]));
+
+        let (body, _) = to_converse_request(
+            &req,
+            &resolved("us.anthropic.claude-opus-4-1-20250805-v1:0"),
+        );
+
+        assert_eq!(body["system"][1], cache_point());
+    }
+
+    /// Brevity's seam, run as the handler runs it.
+    fn with_brevity(mut req: ChatRequest) -> ChatRequest {
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let resolved = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("unused")
+        };
+        crate::brevity::apply(&mut req, &cfg, &resolved, None).unwrap();
+        req
+    }
+
+    #[test]
+    fn brevitys_directive_follows_the_last_cache_point_on_claude_and_nova() {
+        // In `system` it would change the cached prefix of every turn that applies or skips it.
+        let directive = json!({ "text": crate::brevity::DIRECTIVE });
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let (without, _) = to_converse_request(&marked_anthropic_request(), &resolved(model));
+            let (with, _) =
+                to_converse_request(&with_brevity(marked_anthropic_request()), &resolved(model));
+
+            assert_eq!(with["system"], without["system"], "{model}");
+            assert_eq!(with["toolConfig"], without["toolConfig"], "{model}");
+            let mut last_turn = without["messages"][3]["content"].clone();
+            last_turn.as_array_mut().unwrap().push(directive.clone());
+            assert_eq!(with["messages"][3]["content"], last_turn, "{model}");
+            for turn in 0..3 {
+                assert_eq!(with["messages"][turn], without["messages"][turn], "{model}");
+            }
+        }
+    }
+
+    #[test]
+    fn brevitys_directive_stays_in_system_when_the_last_turn_is_not_the_users() {
+        // No tools, so brevity does not read the trailing tool result as mid tool-loop.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are helpful." },
+                { "role": "user", "content": "why did the deploy fail?" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": { "name": "logs", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "call_1", "content": "exit 1" }
+            ]
+        }))
+        .unwrap();
+
+        let (body, _) = to_converse_request(
+            &with_brevity(req),
+            &resolved("us.anthropic.claude-haiku-5-5"),
+        );
+
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are helpful." }, { "text": crate::brevity::DIRECTIVE }])
+        );
+        assert_eq!(body["messages"][2]["content"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_model_without_prompt_caching_gets_no_cache_points() {
+        let (body, _) =
+            to_converse_request(&marked_anthropic_request(), &resolved("deepseek.v3.2"));
+
+        let sent = body.to_string();
+        assert!(!sent.contains("cachePoint"));
+        assert!(!sent.contains("cache_control"));
+        assert_eq!(
+            body["system"],
+            json!([{ "text": "You are a coding agent.Repository map." }])
+        );
     }
 
     #[test]

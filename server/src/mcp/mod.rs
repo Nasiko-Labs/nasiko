@@ -206,10 +206,6 @@ pub fn router() -> Router<AppState> {
             get(handlers::upload::list_my_uploads),
         )
         .route(
-            "/mcp/connectors/uploads/{upload_id}",
-            get(handlers::upload::upload_status),
-        )
-        .route(
             "/mcp/connectors/{id}",
             get(handlers::connectors::get)
                 .patch(handlers::connectors::update)
@@ -269,10 +265,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/mcp/agents/{agent_id}/connectors",
             get(handlers::permissions::list_connectors),
-        )
-        .route(
-            "/mcp/agents/{agent_id}/my-connections",
-            get(handlers::permissions::list_caller_connections),
         )
         .route(
             "/mcp/agents/{agent_id}/connectors/{connector_id}",

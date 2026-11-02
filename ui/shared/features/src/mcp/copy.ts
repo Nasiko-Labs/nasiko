@@ -49,7 +49,6 @@ export const copy = {
   sub: 'Connect MCP servers and choose which agents can use their tools',
   upload: 'Upload MCP server',
   register: 'Register server',
-  sections: { label: 'MCP', builds: 'Builds' },
   searchLabel: 'Search MCP servers',
   searchPlaceholder: 'Search servers and toolkits',
   views: { yours: 'Yours', shared: 'Shared with you', toolkits: 'Toolkits' } satisfies Record<
@@ -74,32 +73,6 @@ export const copy = {
   buildingHint: 'This may take a few minutes. Status updates automatically.',
   buildFailed: 'Build failed',
   buildFailedHint: 'Open the server to see its build logs.',
-  builds: {
-    title: 'Builds',
-    description: 'Every MCP server you uploaded. In-progress ones stay on top.',
-    what: 'uploads',
-    empty: 'No uploads yet',
-    emptyHint: 'Upload your own MCP server and its build shows up here.',
-    loading: 'Loading builds',
-    noMatch: 'No uploads match these filters',
-    noMatchHint: 'Try another status or search, or clear the filters.',
-    clearFilters: 'Clear filters',
-    searchLabel: 'Search uploads',
-    searchPlaceholder: 'Server name',
-    filterLabel: 'Status',
-    deletedConnector: 'This upload failed before it ever deployed, so there is no page for it.',
-    deletedConnectorName: 'Deleted connector',
-    colBuild: 'Build',
-    colStatus: 'Status',
-    colSource: 'Source',
-    colStarted: 'Started',
-    colDuration: 'Duration',
-  },
-  buildFilter: { all: 'All', building: 'In progress', failed: 'Failed', success: 'Succeeded' },
-  // The per-row status badge: past-tense/outcome wording, not `buildFilter`'s tab labels ("In
-  // progress" there, "Building" here) — same split Agents' `copy.filter`/`copy.status` keep.
-  buildStatus: { building: 'Building', failed: 'Failed', success: 'Succeeded' },
-  buildSource: { zip: 'Zip upload', github: 'GitHub' },
   loadFailed: "Couldn't load the catalog",
   loadFailedFix: 'Something went wrong loading connectable servers and toolkits.',
   toolkitsFailed: "Couldn't load toolkits. Custom servers are shown.",
@@ -132,19 +105,6 @@ export const copy = {
   nothingConnectedDesc:
     'Connect a server or toolkit and its tools become available to your agents.',
   browseAvailable: 'Browse available',
-  // No toolkit yet (NAS-1599): only an admin can set the Composio key, so everyone else is told to ask.
-  toolkitSetup: {
-    title: 'Get app toolkits with Composio',
-    intro: 'Toolkits for apps like Gmail, Slack and Notion come from Composio. To list them here:',
-    steps: [
-      'Go to Settings → MCP toolkits.',
-      'Enter your Composio API key.',
-      'Tick the toolkits you want people to connect to, then save.',
-      'They appear here, ready to connect.',
-    ],
-    open: 'Open MCP toolkits',
-    askAdmin: 'Only an admin can change these settings. Ask yours to add a key and pick toolkits.',
-  },
   allConnected: 'Everything is connected',
   allConnectedDesc: 'Every server and toolkit in this view is already connected.',
 
@@ -192,7 +152,6 @@ export const copy = {
     },
     oauth_scopes: {
       label: 'OAuth scopes',
-      placeholder: 'e.g. read write',
       hint: 'Optional. Space separated. Leave blank to use the scopes the server advertises. offline_access is added when the server offers it, so the connection can refresh.',
     },
     oauth_send_resource: {
@@ -326,7 +285,6 @@ export const copy = {
   disable: (name: string) => `Disable ${name}`,
   expand: (name: string) => `Show tools for ${name}`,
   collapse: (name: string) => `Hide tools for ${name}`,
-  filterToolsOf: (name: string) => `Filter tools for ${name}`,
   summaryDisabled: 'Disabled',
   enabled: 'Enabled',
   summaryNoTools: 'No tools synced yet',
@@ -337,30 +295,16 @@ export const copy = {
   viewServer: 'View server',
   viewLogs: 'View build logs',
   disabledNote: 'This server is disabled for this agent. Tool rules apply once it is re-enabled.',
-  alwaysOn: 'Always on',
-  alwaysOnNote:
-    'The platform turns this server on for every agent, so it can’t be switched off. Its tools still follow the rules below.',
   noToolsYet: 'This server exposes no tools yet.',
   stanceFor: (tool: string) => `Tool access for ${tool}`,
   toolsFailed: "Couldn't load this server's tools",
   agentFailed: "Couldn't load this agent's MCP servers",
-
-  // The MCP tab for someone the agent is shared with
-  sharedMcpSub:
-    "This agent's tools run on your own connections, never its owner's. Connect each server it uses to let it call that server's tools for you.",
-  noSharedServers: 'This agent uses no MCP servers.',
-  callerReady: 'Ready',
-  callerConnected: 'Connected as you',
-  callerNeedsConnection: 'Connect your account',
-  callerNotShared: 'Not shared with you',
-  callerNotSharedNote:
-    "Ask the agent's owner to share this server with you, then connect your own account.",
   accessFailed: (reason: string) => `Couldn't update access: ${reason}`,
   ruleFailed: (reason: string) => `Couldn't save the tool rule: ${reason}`,
 
   // Access tab
   publicTitle: 'Visibility',
-  publicToggle: 'Public: everyone on this Open Runtime can use this server',
+  publicToggle: 'Public: everyone on this OpenRuntime can use this server',
   grantsTitle: 'Who has access',
   grantsSub: 'Who this server is shared with.',
   searchGrants: 'Search people',
@@ -404,11 +348,11 @@ export const copy = {
 
 /** The server's own words when it sent any (the gateway's `client_message` is safe to show), else a fallback. */
 export function reason(err: unknown): string {
-  if (isTimeoutError(err)) return 'Open Runtime took too long to answer.'
+  if (isTimeoutError(err)) return 'OpenRuntime took too long to answer.'
   if (err instanceof ApiError) {
     if (err.status === 403 && !err.serverMessage) return "you don't have permission"
     if (err.serverMessage) return err.serverMessage
-    if (err.isServerUnreachable) return "Open Runtime isn't answering."
+    if (err.isServerUnreachable) return "OpenRuntime isn't answering."
     return `error ${err.status}`
   }
   return err instanceof Error ? err.message : 'unknown error'

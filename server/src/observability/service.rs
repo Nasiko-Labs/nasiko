@@ -11,8 +11,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use nasiko_config::Config;
-use nasiko_event_store::flows::FlowRow;
-use nasiko_event_store::trace_usage::TraceUsageRow;
 use nasiko_observability::{
     CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
     extract_usage_attrs,
@@ -23,7 +21,6 @@ use sqlx::PgPool;
 use utoipa::ToSchema;
 
 use crate::agents::hours_meter;
-use crate::agents::hours_meter::sandbox as sandbox_meter;
 
 // ─── Session listing tuning ───────────────────────────────────────────────────
 
@@ -87,16 +84,6 @@ fn status_code_str(code: u8) -> &'static str {
         2 => "ERROR",
         _ => "UNSET",
     }
-}
-
-/// A span's status as the trace view reports it. An agent state read that found nothing
-/// ([`nasiko_observability::types::is_agent_state_miss`]) is `UNSET`, not `ERROR`: the UI
-/// marks a trace failing on any unrecovered ERROR span, and this 404 is an answer.
-fn span_status_str(span: &nasiko_observability::Span) -> &'static str {
-    if nasiko_observability::types::is_agent_state_miss(span) {
-        return "UNSET";
-    }
-    status_code_str(span.status_code)
 }
 
 fn parse_iso(iso: Option<&str>) -> Option<DateTime<Utc>> {
@@ -200,7 +187,6 @@ fn sort_agent_rows(rows: &mut [AgentFinopsRow], sort_by: Option<&str>, desc: boo
                 .total_cmp(&b.avg_latency_ms.unwrap_or(0.0))
         }),
         "container_hours" => rows.sort_by(|a, b| a.container_hours.total_cmp(&b.container_hours)),
-        "sandbox_minutes" => rows.sort_by(|a, b| a.sandbox_minutes.total_cmp(&b.sandbox_minutes)),
         "name" => rows.sort_by(|a, b| a.agent_name.cmp(&b.agent_name)),
         _ => rows.sort_by(|a, b| a.total_cost.total_cmp(&b.total_cost)),
     }
@@ -260,26 +246,12 @@ fn encode_trace_id(trace_id: &str) -> String {
     )
 }
 
-/// `model` is the model that answered the span's call, when it has one.
-fn span_display_name(span: &nasiko_observability::Span, model: Option<&str>) -> String {
+fn span_display_name(span: &nasiko_observability::Span) -> String {
     let operation = span
         .attributes
         .get("gen_ai.operation.name")
         .and_then(Value::as_str);
     if operation != Some("execute_tool") {
-        // GenAI semconv names an LLM span `{operation} {request model}`. Through the LLM
-        // gateway the agent's routing config picks the model, not the request (often just
-        // the platform's injected `OPENAI_MODEL` default), so name the one that answered.
-        let requested = span
-            .attributes
-            .get("gen_ai.request.model")
-            .and_then(Value::as_str);
-        if let (Some(op), Some(requested), Some(model)) = (operation, requested, model)
-            && model != requested
-            && span.name == format!("{op} {requested}")
-        {
-            return format!("{op} {model}");
-        }
         return span.name.clone();
     }
     let tool = span
@@ -329,84 +301,9 @@ fn tool_argument_summary(attributes: &HashMap<String, Value>) -> Option<String> 
 
 // ─── Span tree builder ────────────────────────────────────────────────────────
 
-/// The model, and the provider when known, that answered an agent's LLM call.
-#[derive(Debug, Clone)]
-struct Answer {
-    model: String,
-    provider: Option<String>,
-}
-
-/// The answer for each LLM span whose own attributes do not say what actually ran.
-///
-/// An agent's call through the LLM gateway nests the gateway's `gen_ai.chat` span, whose
-/// `gen_ai.response.model` is the model the agent's routing config picked, under the
-/// agent's own LLM span. The Rust and Go agents' manual spans record just the requested
-/// model, so without this they show the platform's `OPENAI_MODEL` default. The gateway's
-/// own span ([`nasiko_observability::types::is_router_llm_span`]) also overrides an agent
-/// span that records a response model: the OpenAI SDK the agent called names the provider
-/// `openai` whichever provider the gateway routed to, and only the gateway's span knows.
-fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, Answer> {
-    let by_id: HashMap<&str, &nasiko_observability::Span> =
-        spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
-    let parent_of = |s: &nasiko_observability::Span| {
-        s.parent_span_id
-            .as_deref()
-            .and_then(|id| by_id.get(id))
-            .copied()
-    };
-    let mut answered: HashMap<&str, (Answer, bool)> = HashMap::new();
-    for span in spans {
-        let Some(model) = first_str_attr(&span.attributes, &["gen_ai.response.model"]) else {
-            continue;
-        };
-        // Bounded by the span count, so a malformed parent cycle can't loop forever.
-        let nearest_llm = std::iter::successors(parent_of(span), |s| parent_of(s))
-            .take(spans.len())
-            .find(|s| is_llm_call(s));
-        let Some(llm) = nearest_llm else {
-            continue;
-        };
-        let from_router = nasiko_observability::types::is_router_llm_span(span);
-        if !from_router && llm.attributes.contains_key("gen_ai.response.model") {
-            continue;
-        }
-        let answer = Answer {
-            model,
-            provider: first_str_attr(&span.attributes, &["gen_ai.provider.name", "gen_ai.system"]),
-        };
-        match answered.get(llm.span_id.as_str()) {
-            Some((_, true)) => {}
-            Some((_, false)) if !from_router => {}
-            _ => {
-                answered.insert(llm.span_id.as_str(), (answer, from_router));
-            }
-        }
-    }
-    answered
-        .into_iter()
-        .map(|(id, (answer, _))| (id, answer))
-        .collect()
-}
-
-/// Whether the span is a model call, not just a span that names a model: an agent's
-/// `invoke_agent` span often carries `gen_ai.request.model` too, and must not take a
-/// gateway answer meant for one of the calls under it.
-fn is_llm_call(span: &nasiko_observability::Span) -> bool {
-    let attr = |key| span.attributes.get(key).and_then(Value::as_str);
-    if let Some(operation) = attr("gen_ai.operation.name") {
-        return matches!(operation, "chat" | "text_completion" | "generate_content");
-    }
-    if attr("openinference.span.kind").is_some_and(|k| k.eq_ignore_ascii_case("llm")) {
-        return true;
-    }
-    let (input, output, model) = extract_token_attrs(&span.attributes);
-    model.is_some() && (input > 0 || output > 0)
-}
-
 fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
-    let answered = answered_models(spans);
     let mut seen = HashSet::new();
     let mut trace_usage = (0u64, 0u64, 0u64, 0u64, None);
     for span in spans {
@@ -438,19 +335,14 @@ fn build_span_tree(
             )
         } else {
             let u = extract_usage_attrs(&s.attributes);
-            let model = answered
-                .get(s.span_id.as_str())
-                .map(|a| a.model.clone())
-                .or(u.model);
-            (u.input, u.output, model, u.cache_read, u.cache_creation)
+            (u.input, u.output, u.model, u.cache_read, u.cache_creation)
         };
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
-            name: span_display_name(s, model.as_deref()),
+            name: span_display_name(s),
             span_kind: span_kind_str(s.kind).to_string(),
-            status_code: span_status_str(s).to_string(),
-            status_message: (!s.status_message.is_empty()).then(|| s.status_message.clone()),
+            status_code: status_code_str(s.status_code).to_string(),
             start_time: Some(fmt_ts(s.started_at)),
             end_time: s.ended_at.map(fmt_ts),
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
@@ -463,19 +355,9 @@ fn build_span_tree(
             model,
             operation: first_str_attr(
                 &s.attributes,
-                &[
-                    "gen_ai.operation.name",
-                    "rpc.method",
-                    "code.function",
-                    "http.route",
-                ],
+                &["gen_ai.operation.name", "rpc.method", "code.function"],
             ),
-            provider: answered
-                .get(s.span_id.as_str())
-                .and_then(|a| a.provider.clone())
-                .or_else(|| {
-                    first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"])
-                }),
+            provider: first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"]),
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -582,15 +464,12 @@ pub struct SessionSummary {
     pub trace_latency_ms_p50: Option<f64>,
     pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
-    /// `running` | `ok` | `failed` | `timed_out`, derived from the session's flow rows — the
+    /// `running` | `ok` | `failed`, derived from the session's flow rows — the
     /// outcome recorded at the proxy. `null` when the session has no recorded
     /// flow, which is "unknown", never "ok".
     pub status: Option<String>,
     /// Requests in this session that ended in an error.
     pub failed_flows: u32,
-    /// Requests the proxy recorded for this session. `0` for a session that
-    /// never crossed it, which has no flow to open.
-    pub flow_count: u32,
     /// Unrecovered error spans across the session's traces (the SE-3 rule).
     /// `null` while none of them has been materialized yet -- "not yet known",
     /// never "zero".
@@ -809,10 +688,6 @@ pub struct SpanNode {
     pub name: String,
     pub span_kind: String,
     pub status_code: String,
-    /// The span's status description, when it has one — lets the UI tell the a2a SDK's
-    /// end-of-stream `QueueShutDown` from a real failure, exactly as the server does.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_message: Option<String>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub parent_id: Option<String>,
@@ -948,10 +823,6 @@ pub struct FinopsDashboardData {
     /// plus an "Others" catchall, ready to feed a pie/donut chart without any
     /// client-side aggregation.
     pub spend_by_agent: SpendByAgentBreakdown,
-    /// Who spent it: one row per user in the window, largest spender first, under the same
-    /// filters as everything above. A caller who may not see other users gets only their own
-    /// row (`handler::get_finops_dashboard`).
-    pub users: Vec<UserFinopsRow>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -965,16 +836,10 @@ pub struct FinopsSummary {
     /// Replica-hours consumed in the dashboard window — includes agents that
     /// have since been deleted (their sessions survive deletion).
     pub total_container_hours: f64,
-    /// Sandbox-minutes (Running time) consumed in the dashboard window, deleted agents
-    /// included. Container-hours carry no price here, so sandbox time is reported in minutes
-    /// only and is not part of `total_cost`. `finops/insights` does not carry it: that endpoint
-    /// only relays client-supplied figures to the model.
-    pub total_sandbox_minutes: f64,
-    /// Calls in the window that consumed tokens with no price row for the model
-    /// (e.g. a custom provider with no price book): they carry no cost, or a cost
-    /// at the default rate (`metadata.pricing.source = 'Default'`). Either way
-    /// `total_cost` is not a looked-up figure for them; this surfaces the gap as a
-    /// known number.
+    /// Calls in the window that consumed tokens but carry no cost (no price row
+    /// for the model — e.g. a custom provider with no price book). `SUM(cost_usd)`
+    /// silently skips these, so `total_cost` under-reports; this surfaces the gap
+    /// as a known number rather than a smaller one.
     pub unpriced_calls: usize,
     /// Sum of rows explicitly priced using inferred rates or usage evidence.
     pub estimated_cost: f64,
@@ -1008,8 +873,6 @@ pub struct AgentFinopsRow {
     pub version: Option<String>,
     /// Replica-hours this agent consumed in the dashboard window.
     pub container_hours: f64,
-    /// Sandbox-minutes this agent consumed in the dashboard window.
-    pub sandbox_minutes: f64,
     /// This agent's figures for the preceding window of the same length, present
     /// only with `compare=previous`.
     ///
@@ -1216,26 +1079,6 @@ pub struct SpendByAgentBreakdown {
     pub total_spend_usd: f64,
 }
 
-/// One user's usage in the dashboard window.
-#[derive(Serialize, Clone, Debug, ToSchema, sqlx::FromRow)]
-pub struct UserFinopsRow {
-    /// `None` for calls no user made: the platform's own routing and planning.
-    pub user_id: Option<String>,
-    pub username: Option<String>,
-    pub email: Option<String>,
-    pub total_cost: f64,
-    pub operations: i64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub cache_creation_tokens: i64,
-    /// Prompt, completion and both cache counts, as the dashboard's `token_usage` counts them.
-    pub total_tokens: i64,
-    pub tool_call_count: i64,
-    /// How many agents the user's calls went to.
-    pub agents: i64,
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct FinopsDayDrilldownResponse {
     pub data: FinopsDayDrilldown,
@@ -1371,14 +1214,7 @@ pub struct ObservabilityService {
     db: PgPool,
     http_client: reqwest::Client,
     config: Arc<Config>,
-    store: nasiko_event_store::EventStore,
-    /// In-process LLM router; serves insights when the user saved no OpenAI key.
-    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 }
-
-/// `trace_usage.agent_name` for finops insight calls.
-const INSIGHTS_COMPONENT: &str =
-    nasiko_orchestrator::llm_backend::PlatformComponent::FinopsInsights.as_str();
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnsureSessionOutcome {
@@ -1421,55 +1257,6 @@ struct ScopeBinds {
     user_ids: Vec<uuid::Uuid>,
 }
 
-/// The agents a dashboard-shaped FinOps view covers, and the SQL scope that keeps its queries to
-/// them. One answer for the dashboard and [`ObservabilityService::get_finops_spend_by_user_agent`],
-/// so a breakdown of the dashboard's spend always adds up to the dashboard's own total.
-struct AgentsInView {
-    /// `(id, name, display_name, version)` of every live agent in view.
-    agents: Vec<(uuid::Uuid, String, String, String)>,
-    /// The agents the caller may see, or `None` for every agent.
-    accessible: Option<HashSet<uuid::Uuid>>,
-    /// Internal agents left out because the caller has no other agent in view.
-    dropped_internal: HashSet<uuid::Uuid>,
-    /// A caller who sees only some agents aggregates only their rows, in SQL.
-    /// Narrowing afterwards made every member's dashboard cost as much as the
-    /// whole organization's history, and the summary figures summed straight
-    /// from the rows (unpriced, estimated, unknown-confidence) counted other
-    /// users' spend. `None`: the caller sees every agent.
-    scoped_names: Option<Vec<String>>,
-    own_platform_user: Option<uuid::Uuid>,
-    /// Whether the platform's own rows count toward the view's totals: all of them for a caller
-    /// who sees the whole fleet, the caller's own for a scoped one.
-    platform_rows: bool,
-}
-
-/// One user's spend on one agent in a FinOps window
-/// ([`ObservabilityService::get_finops_spend_by_user_agent`]).
-#[derive(Debug, Clone)]
-pub struct UserAgentSpend {
-    /// `None`: the call carried no user.
-    pub user_id: Option<uuid::Uuid>,
-    /// The registered agent, or `None` for the platform's own calls (orchestrator, MAF).
-    pub agent_id: Option<uuid::Uuid>,
-    /// The agent's display name, or the platform row's name.
-    pub agent_name: String,
-    pub total_cost: f64,
-    pub operations: i64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub cache_creation_tokens: i64,
-    pub tool_call_count: i64,
-}
-
-/// The rows of [`ObservabilityService::get_finops_spend_by_user_agent`] and the window they cover.
-#[derive(Debug, Clone)]
-pub struct FinopsUserAgentSpend {
-    pub start: DateTime<Utc>,
-    pub end: DateTime<Utc>,
-    pub rows: Vec<UserAgentSpend>,
-}
-
 impl ObservabilityService {
     /// Per-turn tokens + cost for a chat session (its A2A contextId), read from
     /// the `token_usage` ledger joined to `flows`, grouped by flow (one row per
@@ -1484,23 +1271,13 @@ impl ObservabilityService {
         let turns = sqlx::query_as::<_, TurnUsage>(
             r#"SELECT f.title                         AS title,
                       t.session_id                    AS flow_id,
-                      sum(t.calls)::bigint            AS calls,
+                      count(*)::bigint                AS calls,
                       sum(t.total_tokens)::bigint     AS tokens,
                       round(sum(t.cost_usd), 6)::float8 AS cost_usd,
                       min(t.created_at)               AS turn_start
-               -- Hot trace_usage rows plus per-trace totals of tiered rows (trace_totals),
-               -- counted the same way on both sides: one call per row, tokens including
-               -- both cache counts, so tiering a turn never changes its figures.
-               FROM (SELECT trace_id AS session_id, started_at AS created_at, 1::bigint AS calls,
-                            (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::bigint
-                                AS total_tokens,
-                            cost_usd::numeric AS cost_usd
-                       FROM trace_usage
-                     UNION ALL
-                     SELECT trace_id, first_at, row_count, tokens, cost_usd::numeric
-                       FROM trace_totals) t
+               FROM token_usage t
                JOIN flows f ON f.flow_id = t.session_id
-               WHERE f.session_id = $1
+               WHERE f.metadata->>'context_id' = $1
                  AND ($3 OR f.user_id = $2::uuid)
                GROUP BY f.flow_id, f.title, t.session_id
                ORDER BY turn_start"#,
@@ -1520,8 +1297,6 @@ impl ObservabilityService {
             db: state.db.clone(),
             http_client: state.http_client.clone(),
             config: state.config.clone(),
-            store: state.event_store(),
-            llm_backend: Arc::clone(&state.llm_backend),
         }
     }
 
@@ -1557,209 +1332,6 @@ impl ObservabilityService {
         })
     }
 
-    /// The agents a dashboard-shaped view covers: live agents, narrowed to one by `agent_name`,
-    /// to the caller's own by `owner_id`, and to those the caller may see.
-    async fn agents_in_view(
-        &self,
-        caller: &str,
-        agent_name: Option<&str>,
-        accessible_agent_ids: Option<&[uuid::Uuid]>,
-        owner_id: Option<uuid::Uuid>,
-    ) -> Result<AgentsInView, ObservabilityError> {
-        let accessible: Option<HashSet<uuid::Uuid>> =
-            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
-        let own_platform_user = own_platform_rows_user(
-            accessible.is_some(),
-            owner_id.is_some() || agent_name.is_some(),
-            caller,
-        );
-        let all_agents = self.get_agent_names(owner_id).await?;
-        let mut agents: Vec<_> = match agent_name {
-            Some(name) => all_agents
-                .into_iter()
-                .filter(|(_, n, _, _)| n == name)
-                .collect(),
-            None => all_agents,
-        };
-        if let Some(accessible) = &accessible {
-            agents.retain(|(id, _, _, _)| accessible.contains(id));
-        }
-        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
-        // not the caller's fleet, so a workspace holding nothing else has still
-        // deployed nothing -- and the overview/tokenops pages read exactly that
-        // off `total_agents` to decide between their first-run screen and a real
-        // dashboard. Dropping them makes the list empty, which the early return
-        // in the dashboard turns into the zeroed payload those pages expect. Once
-        // the caller has an agent of their own the internal one stays in, so its
-        // spend is still attributed.
-        //
-        // Scoped to the agents actually in hand, and skipped entirely when there
-        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
-        // every internal agent in the deployment on every dashboard load, and ran
-        // even for the no-agent first-run case this exists to serve, where its
-        // answer cannot change anything.
-        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
-        if !agents.is_empty() {
-            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
-            let internal_count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM agents \
-                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
-            )
-            .bind(&ids)
-            .fetch_one(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-            if internal_count as usize == ids.len() {
-                dropped_internal = ids.into_iter().collect();
-                agents.clear();
-            }
-        }
-        let scoped_names = (accessible.is_some() || owner_id.is_some())
-            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
-        let fleet_view = accessible.is_none() && owner_id.is_none() && agent_name.is_none();
-        Ok(AgentsInView {
-            agents,
-            accessible,
-            dropped_internal,
-            scoped_names,
-            own_platform_user,
-            platform_rows: fleet_view || own_platform_user.is_some(),
-        })
-    }
-
-    /// Spend per user per agent: the dashboard's totals, under the same filters and agent scope,
-    /// broken down by who made each call. `access.user_ids` narrows it to those users, and an
-    /// empty list means nobody, not everybody.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn get_finops_spend_by_user_agent(
-        &self,
-        caller: &str,
-        start_time: Option<&str>,
-        end_time: Option<&str>,
-        agent_name: Option<&str>,
-        model: Option<&str>,
-        provider: Option<&str>,
-        access: FinopsAccess<'_>,
-    ) -> Result<FinopsUserAgentSpend, ObservabilityError> {
-        let start = parse_iso_or_default(start_time, 30);
-        let end = end_time
-            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            .map(|d| d.with_timezone(&Utc))
-            .unwrap_or_else(Utc::now);
-        let nothing = FinopsUserAgentSpend {
-            start,
-            end,
-            rows: vec![],
-        };
-        if access.user_ids.is_some_and(<[uuid::Uuid]>::is_empty) {
-            return Ok(nothing);
-        }
-        let view = self
-            .agents_in_view(caller, agent_name, access.accessible_agent_ids, None)
-            .await?;
-        if view.agents.is_empty() && view.own_platform_user.is_none() {
-            return Ok(nothing);
-        }
-        let user_ids: Vec<uuid::Uuid> = access.user_ids.map(<[_]>::to_vec).unwrap_or_default();
-
-        #[derive(sqlx::FromRow)]
-        struct Row {
-            user_id: Option<uuid::Uuid>,
-            agent_name: String,
-            operations: i64,
-            input_tokens: i64,
-            output_tokens: i64,
-            cache_read_tokens: i64,
-            cache_creation_tokens: i64,
-            total_cost: f64,
-            tool_call_count: i64,
-            platform: bool,
-        }
-        // The dashboard's aggregation (`get_finops_dashboard`), grouped by user as well.
-        let rows: Vec<Row> = sqlx::query_as(
-            r#"WITH s AS (
-                 SELECT user_id, agent_name,
-                        COALESCE(SUM(traces), 0)::BIGINT AS operations,
-                        COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
-                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                        COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
-                        COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count
-                 FROM trace_spend
-                 WHERE ts >= $1 AND ts < $2
-                   AND ($3::TEXT IS NULL OR agent_name = $3)
-                   AND ($4::TEXT IS NULL OR model = $4)
-                   AND ($5::TEXT IS NULL OR provider = $5)
-                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
-                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
-                 GROUP BY user_id, agent_name),
-               h AS (
-                 SELECT agent_name, BOOL_AND(agent_id IS NULL) AS platform
-                 FROM trace_usage
-                 WHERE started_at >= $1 AND started_at < $2
-                   AND ($3::TEXT IS NULL OR agent_name = $3)
-                   AND ($4::TEXT IS NULL OR model = $4)
-                   AND ($5::TEXT IS NULL OR provider = $5)
-                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
-                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
-                 GROUP BY agent_name)
-               SELECT s.*, COALESCE(h.platform, false) AS platform
-               FROM s LEFT JOIN h USING (agent_name)"#,
-        )
-        .bind(start)
-        .bind(end)
-        .bind(agent_name)
-        .bind(model)
-        .bind(provider)
-        .bind(!user_ids.is_empty())
-        .bind(&user_ids)
-        .bind(&view.scoped_names)
-        .bind(view.own_platform_user)
-        .bind(platform_row_names())
-        .bind(PLATFORM_STEP_ROW_PATTERN)
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        // Kept exactly as the dashboard's totals keep them: a live agent in view, or a platform
-        // row when the view counts those. Calls to a deleted agent are in neither.
-        let registered: HashMap<&str, (uuid::Uuid, &str)> = view
-            .agents
-            .iter()
-            .map(|(id, name, display, _)| (name.as_str(), (*id, display.as_str())))
-            .collect();
-        let rows = rows
-            .into_iter()
-            .filter_map(|r| {
-                let (agent_id, agent_name) = match registered.get(r.agent_name.as_str()) {
-                    Some((id, display)) => (Some(*id), display.to_string()),
-                    None if view.platform_rows
-                        && (r.platform || is_platform_row_name(&r.agent_name)) =>
-                    {
-                        (None, r.agent_name)
-                    }
-                    None => return None,
-                };
-                Some(UserAgentSpend {
-                    user_id: r.user_id,
-                    agent_id,
-                    agent_name,
-                    total_cost: r.total_cost,
-                    operations: r.operations,
-                    prompt_tokens: r.input_tokens,
-                    completion_tokens: r.output_tokens,
-                    cache_read_tokens: r.cache_read_tokens,
-                    cache_creation_tokens: r.cache_creation_tokens,
-                    tool_call_count: r.tool_call_count,
-                })
-            })
-            .collect();
-        Ok(FinopsUserAgentSpend { start, end, rows })
-    }
-
     async fn get_agent_names(
         &self,
         owner_id: Option<uuid::Uuid>,
@@ -1771,7 +1343,7 @@ impl ObservabilityService {
         // fleet totals (the name-keyed `agent_finops`/`count_user_traces` queries
         // return identical results for every duplicate). Historical spend of
         // deleted agents still counts toward the fleet figures via the
-        // `token_usage`/`flows` queries, which are name/agent_id-keyed,
+        // `token_usage`/`session_traces` queries, which are name/agent_id-keyed,
         // not row-keyed.
         sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
             "SELECT id, name, COALESCE(display_name, name), version FROM agents \
@@ -1871,9 +1443,9 @@ impl ObservabilityService {
 
     /// The session a trace belongs to, for authorizing the trace view.
     ///
-    /// The server's own `flows` row (`flow_id` = trace id) is the authority:
-    /// every server path that starts or forwards a turn writes its `session_id`
-    /// after checking the caller owns the session. Span attributes are written by agents, and any agent
+    /// The server's own `session_traces` record is the authority: every server
+    /// path that starts or forwards a turn writes it after checking the caller
+    /// owns the session. Span attributes are written by agents, and any agent
     /// in a flow can set `session.id` to a session its own owner controls, so
     /// a span's claim is used only when the server recorded nothing. Even then
     /// it is refused when the trace is a flow the server knows belongs to
@@ -1887,7 +1459,7 @@ impl ObservabilityService {
         let not_found = || ObservabilityError::NotFound("trace not found".into());
 
         let recorded: Option<String> =
-            sqlx::query_scalar("SELECT session_id FROM flows WHERE flow_id = $1 LIMIT 1")
+            sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1 LIMIT 1")
                 .bind(trace_id)
                 .fetch_optional(&self.db)
                 .await
@@ -2058,8 +1630,8 @@ impl ObservabilityService {
     /// The trace store is queried over a window, and this used to hardcode
     /// `now() - 7d`: opening any session older than a week returned an empty
     /// trace list. The session's own rows say when it actually ran —
-    /// `chat_sessions` for chat-originated sessions, `flows` (one row per
-    /// turn, keyed by `session_id`) for the rest — so take the
+    /// `chat_sessions` for chat-originated sessions, `session_traces` (written
+    /// by agent_proxy for every forwarded query) for the rest — so take the
     /// window from whichever exists, padded for clock skew between the control
     /// plane and the agents' exporters.
     ///
@@ -2083,7 +1655,7 @@ impl ObservabilityService {
                       LEAST(c.created_at, t.lo) AS lo,
                       GREATEST(c.updated_at, t.hi) AS hi
                  FROM (SELECT MIN(created_at) AS lo, MAX(created_at) AS hi
-                         FROM flows WHERE session_id = $1) t
+                         FROM session_traces WHERE session_id = $1) t
                  LEFT JOIN chat_sessions c ON c.session_id = $1"#,
         )
         .bind(session_id)
@@ -2117,23 +1689,19 @@ impl ObservabilityService {
     ) -> Result<SessionDetailResponse, ObservabilityError> {
         self.authorize_session(session_id, user_id, is_superuser, "session")
             .await?;
-        // An orchestrator-routed session has no agent of its own; name the one that did the work.
-        let ran_agent = super::sessions_sql::ran_agent_name("cs.session_id");
-        let agent_name: Option<String> = sqlx::query_scalar(&format!(
-            r#"SELECT COALESCE(
-                 CASE
+        let agent_name: Option<String> = sqlx::query_scalar(
+            r#"SELECT CASE
                    WHEN a.coding_agent_integration_id IS NOT NULL
                         AND u.username IS NOT NULL
                         AND a.name NOT LIKE u.username || '-%'
                      THEN u.username || '-' || a.name
                    ELSE a.name
-                 END,
-                 {ran_agent})
+                 END
                FROM chat_sessions cs
                LEFT JOIN agents a ON a.id = cs.agent_id
                LEFT JOIN users u ON u.id = cs.user_id
-               WHERE cs.session_id = $1"#
-        ))
+               WHERE cs.session_id = $1"#,
+        )
         .bind(session_id)
         .fetch_optional(&self.db)
         .await
@@ -2143,28 +1711,7 @@ impl ObservabilityService {
         // than to today. Otherwise an old session that still exists in
         // Postgres can never find its historical traces.
         let (title, start, end) = self.session_window(session_id).await;
-        // Traces, tokens and cost come from `flows` + `trace_usage` (hot + cold), so
-        // sessions older than Tempo's retention, seeded or tiered, still list them.
-        // Tempo only adds span attributes and prompt/completion text while it has them.
-        let flows = self
-            .store
-            .load_flows_for_session(session_id)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        let flow_ids: Vec<String> = flows.iter().map(|f| f.flow_id.clone()).collect();
-        let usage = self
-            .store
-            .load_trace_usage_for_session(session_id, &flow_ids)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        // A coding-agent session (a subagent's included) has no flows: its turns are its usage rows.
-        let turns = super::session_store::flows_with_usage_turns(&flows, &usage);
-        let mut details = super::session_store::session_from_rows(session_id, &turns, &usage);
-        match self.provider.get_session(session_id, start, end).await {
-            Ok(live) if flows.is_empty() => details = live,
-            Ok(live) => super::session_store::enrich_from_tempo(&mut details, &live),
-            Err(e) => tracing::debug!(%session_id, error = %e, "tempo enrichment skipped"),
-        }
+        let details = self.provider.get_session(session_id, start, end).await?;
         let lineage = super::subagents_sql::session_lineage(&self.db, session_id).await?;
 
         let trace_entries: Vec<TraceEntry> = details
@@ -2285,30 +1832,6 @@ impl ObservabilityService {
         })
     }
 
-    /// What the server recorded of one turn, for a trace Tempo cannot serve: its
-    /// `flows` row, else (a coding-agent turn, which never crosses the proxy) a
-    /// turn rebuilt from its `trace_usage` rows. `None` when it recorded neither.
-    async fn recorded_turn(
-        &self,
-        trace_id: &str,
-    ) -> Result<Option<(FlowRow, Vec<TraceUsageRow>)>, ObservabilityError> {
-        let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
-        if let Some(flow) = self.store.load_flow(trace_id).await.map_err(internal)? {
-            let usage = self
-                .store
-                .load_trace_usage_for_session(&flow.session_id, std::slice::from_ref(&flow.flow_id))
-                .await
-                .map_err(internal)?;
-            return Ok(Some((flow, usage)));
-        }
-        let usage = self
-            .store
-            .load_trace_usage_for_trace(trace_id)
-            .await
-            .map_err(internal)?;
-        Ok(super::session_store::flow_from_usage(trace_id, &usage).map(|flow| (flow, usage)))
-    }
-
     // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
@@ -2317,30 +1840,16 @@ impl ObservabilityService {
         user_id: &str,
         is_superuser: bool,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
-        // Tempo first; when it no longer has the trace (retention, seeded or tiered
-        // turns), rebuild it from the flow + `trace_usage` rows, hot + cold.
-        let mut sql_cost: Option<CostBreakdown> = None;
-        let mut trace = match self.provider.get_trace(trace_id).await {
-            Ok(t) if !t.spans.is_empty() => t,
-            // Any Tempo miss or failure (retention, non-hex seeded ids, outage) falls
-            // back to SQL; a trace the server recorded nothing for is still a 404.
-            Ok(_) | Err(_) => {
-                let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
-                let (flow, usage) = self
-                    .recorded_turn(trace_id)
-                    .await?
-                    .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))?;
-                let (mut t, c) = super::session_store::trace_from_rows(&flow, &usage);
-                let calls = self
-                    .store
-                    .session_tool_calls_all(&flow.session_id)
-                    .await
-                    .map_err(internal)?;
-                super::session_store::add_tool_call_spans(&mut t, &calls);
-                sql_cost = Some(c);
-                t
-            }
-        };
+        let mut trace = self
+            .provider
+            .get_trace(trace_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("trace not found".into())
+                }
+                other => other,
+            })?;
         let mut seen_spans = HashSet::new();
         trace
             .spans
@@ -2349,10 +1858,9 @@ impl ObservabilityService {
         self.authorize_session(&project_session_id, user_id, is_superuser, "trace")
             .await?;
 
-        let from_sql = sql_cost.is_some();
-        let mut cost = sql_cost.unwrap_or_default();
+        let mut cost = CostBreakdown::default();
         let mut seen_spans = HashSet::new();
-        for span in trace.spans.iter().filter(|_| !from_sql) {
+        for span in &trace.spans {
             if !seen_spans.insert(&span.span_id) {
                 continue;
             }
@@ -2435,14 +1943,16 @@ impl ObservabilityService {
     ) -> Result<SpanDetailResponse, ObservabilityError> {
         // Resolve and authorize the trace's session before looking up the span
         // or its Loki content, so inaccessible traces reveal no span existence.
-        let span_nf = || ObservabilityError::NotFound("span not found".into());
-        let (trace, from_sql) = match self.provider.get_trace(trace_id).await {
-            Ok(t) if !t.spans.is_empty() => (t, false),
-            Ok(_) | Err(_) => {
-                let (flow, usage) = self.recorded_turn(trace_id).await?.ok_or_else(span_nf)?;
-                (super::session_store::trace_from_rows(&flow, &usage).0, true)
-            }
-        };
+        let trace = self
+            .provider
+            .get_trace(trace_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("span not found".into())
+                }
+                other => other,
+            })?;
         let session_id = self
             .trace_session_id(trace_id, &trace)
             .await
@@ -2454,51 +1964,21 @@ impl ObservabilityService {
             })?;
         self.authorize_session(&session_id, user_id, is_superuser, "span")
             .await?;
-        let details = if from_sql {
-            let span = trace
-                .spans
-                .iter()
-                .find(|s| s.span_id == span_id)
-                .cloned()
-                .ok_or_else(span_nf)?;
-            super::session_store::span_details_from_sql(span)
-        } else {
-            match self.provider.get_span(trace_id, span_id).await {
-                Ok(details) => details,
-                Err(ObservabilityError::NotFound(_)) => return Err(span_nf()),
-                // The trace was just read, so this is the trace store failing the
-                // second read (an overloaded Tempo answers 429). Serve the span from
-                // that read, without the prompt and completion text, rather than a 500.
-                Err(e) => {
-                    tracing::warn!(
-                        %trace_id, %span_id, error = %e,
-                        "span read failed; serving the span from its trace"
-                    );
-                    let span = trace
-                        .spans
-                        .iter()
-                        .find(|s| s.span_id == span_id)
-                        .cloned()
-                        .ok_or_else(span_nf)?;
-                    super::session_store::span_details_from_sql(span)
+        let details = self
+            .provider
+            .get_span(trace_id, span_id)
+            .await
+            .map_err(|e| match e {
+                ObservabilityError::NotFound(_) => {
+                    ObservabilityError::NotFound("span not found".into())
                 }
-            }
-        };
+                other => other,
+            })?;
         let span = &details.span;
 
         // Token counts come from the provider (it rolls the span's children up);
-        // only the model name still has to be read off the raw attributes, after the one
-        // its gateway span answered with, so the panel agrees with the trace tree.
-        let answer = answered_models(&trace.spans).remove(span.span_id.as_str());
-        let provider = answer
-            .as_ref()
-            .and_then(|a| a.provider.clone())
-            .or_else(|| {
-                first_str_attr(&span.attributes, &["gen_ai.system", "gen_ai.provider.name"])
-            });
-        let model = answer
-            .map(|a| a.model)
-            .or_else(|| extract_token_attrs(&span.attributes).2);
+        // only the model name still has to be read off the raw attributes.
+        let (.., model) = extract_token_attrs(&span.attributes);
         let usage = &details.token_usage;
 
         // Span kind: prefer openinference.span.kind (e.g. "LLM"), fallback to OTel kind
@@ -2553,7 +2033,7 @@ impl ObservabilityService {
                 .to_string()
         };
 
-        let status = span_status_str(span).to_string();
+        let status = status_code_str(span.status_code).to_string();
 
         Ok(SpanDetailResponse {
             data: SpanDetailData {
@@ -2564,7 +2044,7 @@ impl ObservabilityService {
                         id: encode_trace_id(trace_id),
                         trace_id: trace_id.to_string(),
                     },
-                    name: span_display_name(span, model.as_deref()),
+                    name: span_display_name(span),
                     span_kind,
                     code: status.clone(),
                     status_code: status,
@@ -2574,7 +2054,10 @@ impl ObservabilityService {
                     parent_id: span.parent_span_id.clone(),
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: usage.total_tokens,
-                    provider,
+                    provider: first_str_attr(
+                        &span.attributes,
+                        &["gen_ai.system", "gen_ai.provider.name"],
+                    ),
                     model: model
                         .or_else(|| first_str_attr(&span.attributes, &["gen_ai.response.model"])),
                     cache_read_tokens: usage.cache_read_tokens,
@@ -2711,7 +2194,7 @@ impl ObservabilityService {
     #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_dashboard(
         &self,
-        user_id: &str,
+        _user_id: &str,
         _role: Option<&str>,
         _department_id: Option<&str>,
         _team_id: Option<&str>,
@@ -2735,16 +2218,49 @@ impl ObservabilityService {
             ..
         } = access;
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
-        let AgentsInView {
-            agents,
-            accessible,
-            dropped_internal,
-            scoped_names,
-            own_platform_user,
-            platform_rows,
-        } = self
-            .agents_in_view(user_id, agent_name, accessible_agent_ids, parsed_owner_id)
-            .await?;
+        let accessible: Option<HashSet<uuid::Uuid>> =
+            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let all_agents = self.get_agent_names(parsed_owner_id).await?;
+        let mut agents: Vec<_> = match agent_name {
+            Some(name) => all_agents
+                .into_iter()
+                .filter(|(_, n, _, _)| n == name)
+                .collect(),
+            None => all_agents,
+        };
+        if let Some(accessible) = &accessible {
+            agents.retain(|(id, _, _, _)| accessible.contains(id));
+        }
+        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
+        // not the caller's fleet, so a workspace holding nothing else has still
+        // deployed nothing -- and the overview/tokenops pages read exactly that
+        // off `total_agents` to decide between their first-run screen and a real
+        // dashboard. Dropping them makes the list empty, which the early return
+        // below turns into the zeroed payload those pages expect. Once the caller
+        // has an agent of their own the internal one stays in, so its spend is
+        // still attributed.
+        //
+        // Scoped to the agents actually in hand, and skipped entirely when there
+        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
+        // every internal agent in the deployment on every dashboard load, and ran
+        // even for the no-agent first-run case this exists to serve, where its
+        // answer cannot change anything.
+        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
+        if !agents.is_empty() {
+            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
+            let internal_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents \
+                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            if internal_count as usize == ids.len() {
+                dropped_internal = ids.into_iter().collect();
+                agents.clear();
+            }
+        }
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
@@ -2782,35 +2298,12 @@ impl ObservabilityService {
         if !dropped_internal.is_empty() {
             hours_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
         }
-        let mut minutes_rows = sandbox_meter::windowed_sandbox_minutes(&self.db, start, now)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "sandbox minutes aggregation failed");
-                vec![]
-            });
-        if let Some(accessible) = &accessible {
-            minutes_rows.retain(|row| accessible.contains(&row.agent_id));
-        }
-        if !dropped_internal.is_empty() {
-            minutes_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
-        }
-        let total_sandbox_minutes = round6(minutes_rows.iter().map(|r| r.minutes).sum());
-        let minutes_by_agent: HashMap<uuid::Uuid, f64> = minutes_rows
-            .iter()
-            .map(|r| (r.agent_id, r.minutes))
-            .collect();
         let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
         let hours_by_agent: HashMap<uuid::Uuid, f64> =
             hours_rows.iter().map(|r| (r.agent_id, r.hours)).collect();
 
-        // A scoped caller with no agents can still have spent through the platform (a chat the
-        // orchestrator answered itself, a generated MAF plan), so only skip the queries when
-        // those rows could not be in view.
-        if agents.is_empty() && own_platform_user.is_none() {
-            return Ok(empty_finops_response(
-                total_container_hours,
-                total_sandbox_minutes,
-            ));
+        if agents.is_empty() {
+            return Ok(empty_finops_response(total_container_hours));
         }
 
         // ── Postgres-backed aggregation from trace_usage ─────────────────────
@@ -2831,9 +2324,6 @@ impl ObservabilityService {
             p50_latency: Option<f64>,
             p95_latency: Option<f64>,
             p99_latency: Option<f64>,
-            /// Every row has no agent id: the platform's own calls (orchestrator routing and
-            /// MAF planning, service `nasiko-cp`), which belong to no registered agent.
-            platform: bool,
         }
 
         let agent_filter: Option<&str> = agent_name;
@@ -2846,55 +2336,38 @@ impl ObservabilityService {
             .filter(|ids| !ids.is_empty())
             .map(|ids| ids.to_vec())
             .unwrap_or_default();
+        // A caller who sees only some agents aggregates only their rows, in SQL.
+        // Narrowing afterwards made every member's dashboard cost as much as the
+        // whole organization's history, and the summary figures summed straight
+        // from the rows (unpriced, estimated, unknown-confidence) counted other
+        // users' spend. `None`: the caller sees every agent.
+        let scoped_names: Option<Vec<String>> = (accessible.is_some() || parsed_owner_id.is_some())
+            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
 
         // Shared WHERE fragment: agent, model, provider, user_id filters.
         // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
         // $6 = has_user_filter (bool), $7 = user_id_list (uuid[]).
-        // Counts, tokens and cost come from `trace_spend` (hot rows + tiered days), so
-        // the totals survive tiering. Cost confidence and latency percentiles exist only
-        // per hot row, so they describe the hot part of the window.
-        const TRACE_USAGE_AGG_QUERY: &str = r#"WITH s AS (
-                 SELECT agent_name,
-                        COALESCE(SUM(traces), 0)::BIGINT AS operations,
-                        COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
-                        COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
-                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                        COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
-                        COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count
-                 FROM trace_spend
-                 WHERE ts >= $1 AND ts < $2
-                   AND ($3::TEXT IS NULL OR agent_name = $3)
-                   AND ($4::TEXT IS NULL OR model = $4)
-                   AND ($5::TEXT IS NULL OR provider = $5)
-                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
-                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
-                 GROUP BY agent_name),
-               h AS (
-                 SELECT agent_name,
-                        COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
-                        COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
-                        percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
-                        percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
-                        percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency,
-                        BOOL_AND(agent_id IS NULL) AS platform
-                 FROM trace_usage
-                 WHERE started_at >= $1 AND started_at < $2
-                   AND ($3::TEXT IS NULL OR agent_name = $3)
-                   AND ($4::TEXT IS NULL OR model = $4)
-                   AND ($5::TEXT IS NULL OR provider = $5)
-                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
-                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
-                 GROUP BY agent_name)
-               SELECT s.agent_name, s.operations, s.input_tokens, s.output_tokens,
-                      s.cache_read_tokens, s.cache_creation_tokens, s.total_cost,
-                      COALESCE(h.estimated_cost, 0)::FLOAT8 AS estimated_cost,
-                      COALESCE(h.unknown_confidence_calls, 0)::BIGINT AS unknown_confidence_calls,
-                      s.tool_call_count, h.p50_latency, h.p95_latency, h.p99_latency,
-                       COALESCE(h.platform, false) AS platform
-               FROM s LEFT JOIN h USING (agent_name)"#;
+        const TRACE_USAGE_AGG_QUERY: &str = r#"SELECT agent_name,
+                      COUNT(*)::BIGINT AS operations,
+                      COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                      COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
+                      COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
+                      COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
+                      percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
+                      percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
+                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency
+               FROM trace_usage
+               WHERE started_at >= $1 AND started_at < $2
+                 AND ($3::TEXT IS NULL OR agent_name = $3)
+                 AND ($4::TEXT IS NULL OR model = $4)
+                 AND ($5::TEXT IS NULL OR provider = $5)
+                 AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
+               GROUP BY agent_name"#;
 
         // 1. Current window
         let current_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
@@ -2906,9 +2379,6 @@ impl ObservabilityService {
             .bind(has_user_filter)
             .bind(&user_id_list)
             .bind(&scoped_names)
-            .bind(own_platform_user)
-            .bind(platform_row_names())
-            .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2923,9 +2393,6 @@ impl ObservabilityService {
             .bind(has_user_filter)
             .bind(&user_id_list)
             .bind(&scoped_names)
-            .bind(own_platform_user)
-            .bind(platform_row_names())
-            .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2944,8 +2411,7 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR model = $3)
                  AND ($4::TEXT IS NULL OR provider = $4)
                  AND (NOT $5::BOOL OR user_id = ANY($6::UUID[]))
-                 AND ($7::TEXT[] IS NULL OR agent_name = ANY($7)
-                      OR (user_id = $8 AND (agent_name = ANY($9) OR agent_name LIKE $10)))
+                 AND ($7::TEXT[] IS NULL OR agent_name = ANY($7))
                GROUP BY agent_name"#,
         )
         .bind(last_24h)
@@ -2955,16 +2421,13 @@ impl ObservabilityService {
         .bind(has_user_filter)
         .bind(&user_id_list)
         .bind(&scoped_names)
-        .bind(own_platform_user)
-        .bind(platform_row_names())
-        .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
-        // 4. Unpriced calls in the window: ran (had tokens) but no price row backs the
-        //    model, so they recorded no cost or a cost at the default rate. Surface the
-        //    count as a known gap. Same filters as the main aggregation.
+        // 4. Unpriced calls in the window: ran (had tokens) but recorded no cost,
+        //    because no price row backs the model. `SUM(cost_usd)` skips them, so
+        //    surface the count as a known gap. Same filters as the main aggregation.
         let unpriced_calls: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)::BIGINT
                FROM trace_usage
@@ -2973,11 +2436,9 @@ impl ObservabilityService {
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                 AND (COALESCE(cost_usd, 0) = 0
-                      OR metadata->'pricing'->>'source' = 'Default')
+                 AND COALESCE(cost_usd, 0) = 0
                  AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0
-                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
-                      OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))"#,
+                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))"#,
         )
         .bind(start)
         .bind(now)
@@ -2987,50 +2448,7 @@ impl ObservabilityService {
         .bind(has_user_filter)
         .bind(&user_id_list)
         .bind(&scoped_names)
-        .bind(own_platform_user)
-        .bind(platform_row_names())
-        .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        // 5. Per user, under the same filters: who spent what.
-        let users: Vec<UserFinopsRow> = sqlx::query_as(
-            r#"SELECT s.user_id::TEXT AS user_id, u.username, u.email,
-                      COALESCE(SUM(s.cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(s.traces), 0)::BIGINT AS operations,
-                      COALESCE(SUM(s.input_tokens), 0)::BIGINT AS prompt_tokens,
-                      COALESCE(SUM(s.output_tokens), 0)::BIGINT AS completion_tokens,
-                      COALESCE(SUM(s.cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                      COALESCE(SUM(s.cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                      COALESCE(SUM(s.input_tokens + s.output_tokens + s.cache_read_tokens
-                                   + s.cache_creation_tokens), 0)::BIGINT AS total_tokens,
-                      COALESCE(SUM(s.tool_call_count), 0)::BIGINT AS tool_call_count,
-                      COUNT(DISTINCT s.agent_name)::BIGINT AS agents
-               FROM trace_spend s
-               LEFT JOIN users u ON u.id = s.user_id
-               WHERE s.ts >= $1 AND s.ts < $2
-                 AND ($3::TEXT IS NULL OR s.agent_name = $3)
-                 AND ($4::TEXT IS NULL OR s.model = $4)
-                 AND ($5::TEXT IS NULL OR s.provider = $5)
-                 AND (NOT $6::BOOL OR s.user_id = ANY($7::UUID[]))
-                 AND ($8::TEXT[] IS NULL OR s.agent_name = ANY($8)
-                      OR (s.user_id = $9 AND (s.agent_name = ANY($10) OR s.agent_name LIKE $11)))
-               GROUP BY s.user_id, u.username, u.email
-               ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
-        )
-        .bind(start)
-        .bind(now)
-        .bind(agent_filter)
-        .bind(model_filter)
-        .bind(provider_filter)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
-        .bind(&scoped_names)
-        .bind(own_platform_user)
-        .bind(platform_row_names())
-        .bind(PLATFORM_STEP_ROW_PATTERN)
-        .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
@@ -3151,7 +2569,6 @@ impl ObservabilityService {
                 tool_call_count: tool_calls,
                 version: Some(version.clone()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
-                sandbox_minutes: round6(minutes_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
                 previous: compare_previous.then(|| AgentFinopsPrevious {
                     total_cost: prev.map(|p| round6(p.total_cost)).unwrap_or(0.0),
                     operations: prev.map(|p| p.operations as usize).unwrap_or(0),
@@ -3167,46 +2584,6 @@ impl ObservabilityService {
                     avg_latency_ms: prev.and_then(|p| p.p50_latency),
                 }),
             });
-        }
-
-        // The platform's own calls are real spend under no registered agent, so the loop above
-        // never meets them. A caller who sees the whole fleet gets them in the totals, and as
-        // one slice of the spend chart; a scoped caller gets the same for their own calls only,
-        // which is all the queries above let through for them.
-        let mut platform_cost = 0.0;
-        if platform_rows {
-            let registered: HashSet<&str> =
-                agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
-            // The orchestrator's and MAF's rows carry the routed agent's id (other views name the
-            // agent a session ran from it), so they are recognised by name, not by a NULL id.
-            let is_platform = |r: &&TraceUsageAgg| {
-                (r.platform || is_platform_row_name(&r.agent_name))
-                    && !registered.contains(r.agent_name.as_str())
-            };
-            // Orchestrator rows store `latency_ms = 0`; a zero would drag the KPI latency down.
-            let measured = |latency: Option<f64>| latency.filter(|l| *l > 0.0);
-            for r in current_rows.iter().filter(is_platform) {
-                grand_input += r.input_tokens as u64;
-                grand_output += r.output_tokens as u64;
-                grand_cache_read += r.cache_read_tokens as u64;
-                grand_cache_creation += r.cache_creation_tokens as u64;
-                grand_cost += r.total_cost;
-                grand_tool_calls += r.tool_call_count as u64;
-                total_ops += r.operations as usize;
-                latency_samples.extend(measured(r.p50_latency));
-                latency_samples_p95.extend(measured(r.p95_latency));
-                latency_samples_p99.extend(measured(r.p99_latency));
-                platform_cost += r.total_cost;
-            }
-            for r in prev_rows.iter().filter(is_platform) {
-                prev_grand_cost += r.total_cost;
-                prev_grand_total_tokens += (r.input_tokens + r.output_tokens) as u64;
-                prev_total_ops += r.operations as usize;
-                prev_grand_tool_calls += r.tool_call_count as u64;
-                prev_latency_samples.extend(measured(r.p50_latency));
-                prev_latency_samples_p95.extend(measured(r.p95_latency));
-                prev_latency_samples_p99.extend(measured(r.p99_latency));
-            }
         }
 
         let avg_cost = if total_ops > 0 {
@@ -3290,13 +2667,6 @@ impl ObservabilityService {
                     pct: pct(others),
                 });
             }
-            if platform_cost > 0.0 {
-                slices.push(SpendPieSlice {
-                    agent_name: "Platform (routing and planning)".into(),
-                    spend_usd: round6(platform_cost),
-                    pct: pct(platform_cost),
-                });
-            }
             SpendByAgentBreakdown {
                 slices,
                 total_spend_usd: total,
@@ -3328,7 +2698,6 @@ impl ObservabilityService {
                     active_agents: active,
                     total_agents,
                     total_container_hours,
-                    total_sandbox_minutes,
                     unpriced_calls: unpriced_calls.max(0) as usize,
                     estimated_cost: current_rows.iter().map(|row| row.estimated_cost).sum(),
                     unknown_confidence_calls: current_rows
@@ -3348,7 +2717,6 @@ impl ObservabilityService {
                 kpis,
                 attributions,
                 spend_by_agent,
-                users,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -3631,7 +2999,6 @@ impl ObservabilityService {
 
     // ── 6c. finops/spend-calendar ─────────────────────────────────────────────
 
-    #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_spend_calendar(
         &self,
         month: &str,
@@ -3639,7 +3006,6 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
-        source: Option<&str>,
         access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendCalendarResponse, ObservabilityError> {
         let scope = self.scope_binds(access).await?;
@@ -3665,18 +3031,17 @@ impl ObservabilityService {
         }
 
         let rows: Vec<DayRow> = sqlx::query_as(
-            r#"SELECT DATE(ts) AS date,
+            r#"SELECT DATE(started_at) AS date,
                       COALESCE(SUM(cost_usd), 0)::FLOAT8 AS spend_usd,
-                      COALESCE(SUM(traces), 0)::BIGINT AS operations
-               FROM trace_spend
-               WHERE ts >= $1 AND ts < $2
+                      COUNT(*)::BIGINT AS operations
+               FROM trace_usage
+               WHERE started_at >= $1 AND started_at < $2
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
                  AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
-                 AND ($9::TEXT IS NULL OR source = $9)
-               GROUP BY DATE(ts)
+               GROUP BY DATE(started_at)
                ORDER BY date"#,
         )
         .bind(month_start)
@@ -3687,7 +3052,6 @@ impl ObservabilityService {
         .bind(&scope.agent_names)
         .bind(scope.has_user_filter)
         .bind(&scope.user_ids)
-        .bind(source)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -3871,10 +3235,9 @@ impl ObservabilityService {
 
     // ── 6e. finops/attributions ───────────────────────────────────────────────
 
-    /// Postgres only, no Tempo calls. A run's cost is MAF's own calls
-    /// (`maf_executions.cost_usd`) plus every agent step's usage, read from
-    /// `trace_usage` by the trace id each step recorded — the same lookup as
-    /// `GET /api/maf/execution/{id}/usage`.
+    /// Single Postgres GROUP BY, no Tempo calls — MAF already persists
+    /// per-step cost/tokens (see `oss/orchestrator/src/maf`), so workflow
+    /// attribution is naturally fast without any live trace aggregation.
     async fn get_workflow_finops_rows(
         &self,
         start: DateTime<Utc>,
@@ -3934,27 +3297,21 @@ impl ObservabilityService {
             latencies: Vec<f64>,
         }
 
-        // Each run's step traces. A retried step reuses its trace id, so dedupe per run.
-        let step_traces = |row: &ExecRow| -> HashSet<String> {
-            row.step_results
-                .as_ref()
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter_map(|step| step.get("trace_id")?.as_str().map(str::to_string))
-                .collect()
+        let get_step_i64 = |step: &serde_json::Value, key: &str| -> u64 {
+            step.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0) as u64
         };
-        let trace_ids: Vec<String> = rows.iter().flat_map(step_traces).collect();
-        let step_usage = self.step_trace_usage(&trace_ids).await?;
 
         let mut by_workflow: HashMap<String, Acc> = HashMap::new();
         for row in rows {
             let Some(maf_id) = row.maf_id else { continue };
             let key = maf_id.to_string();
-            let mut steps = StepTraceUsage::default();
-            for trace in step_traces(&row) {
-                if let Some(usage) = step_usage.get(&trace) {
-                    steps.add(usage);
+            let (mut input, mut output, mut cr, mut cc) = (0u64, 0u64, 0u64, 0u64);
+            if let Some(steps) = row.step_results.as_ref().and_then(|v| v.as_array()) {
+                for step in steps {
+                    input += get_step_i64(step, "input_tokens");
+                    output += get_step_i64(step, "output_tokens");
+                    cr += get_step_i64(step, "cache_read_tokens");
+                    cc += get_step_i64(step, "cache_creation_tokens");
                 }
             }
             let acc = by_workflow.entry(key).or_insert_with(|| Acc {
@@ -3965,11 +3322,11 @@ impl ObservabilityService {
                 ..Default::default()
             });
             acc.executions += 1;
-            acc.cost += row.cost_usd + steps.cost_usd;
-            acc.input_tokens += steps.input_tokens.max(0) as u64;
-            acc.output_tokens += steps.output_tokens.max(0) as u64;
-            acc.cache_read_tokens += steps.cache_read_tokens.max(0) as u64;
-            acc.cache_creation_tokens += steps.cache_creation_tokens.max(0) as u64;
+            acc.cost += row.cost_usd;
+            acc.input_tokens += input;
+            acc.output_tokens += output;
+            acc.cache_read_tokens += cr;
+            acc.cache_creation_tokens += cc;
             if let Some(d) = row.duration_ms {
                 acc.latencies.push(d as f64);
             }
@@ -4005,42 +3362,6 @@ impl ObservabilityService {
             .collect();
         out.sort_by(|a, b| b.total_cost.total_cmp(&a.total_cost));
         Ok(out)
-    }
-
-    /// Agent usage per MAF step trace, hot rows plus tiered totals. MAF's own rows are left out:
-    /// their cost is already `maf_executions.cost_usd`.
-    async fn step_trace_usage(
-        &self,
-        trace_ids: &[String],
-    ) -> Result<HashMap<String, StepTraceUsage>, ObservabilityError> {
-        if trace_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let rows: Vec<StepTraceUsage> = sqlx::query_as(
-            r#"SELECT trace_id,
-                      COALESCE(SUM(input_tokens), 0)::BIGINT          AS input_tokens,
-                      COALESCE(SUM(output_tokens), 0)::BIGINT         AS output_tokens,
-                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT     AS cache_read_tokens,
-                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                      COALESCE(SUM(cost_usd), 0)::FLOAT8              AS cost_usd
-               FROM (SELECT trace_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens,
-                            cache_read_tokens::bigint AS cache_read_tokens,
-                            cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd
-                       FROM trace_usage
-                      WHERE agent_name <> 'maf' AND agent_name NOT LIKE $2
-                     UNION ALL
-                     SELECT trace_id, input_tokens, output_tokens, cache_read_tokens,
-                            cache_creation_tokens, cost_usd
-                       FROM trace_totals) u
-               WHERE trace_id = ANY($1)
-               GROUP BY trace_id"#,
-        )
-        .bind(trace_ids)
-        .bind(PLATFORM_STEP_ROW_PATTERN)
-        .fetch_all(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        Ok(rows.into_iter().map(|r| (r.trace_id.clone(), r)).collect())
     }
 
     /// Standalone attributions endpoint — same per-view row sources as
@@ -4107,10 +3428,13 @@ impl ObservabilityService {
     pub async fn get_finops_insights(
         &self,
         payload: &InsightsRequest,
-        user_id: uuid::Uuid,
     ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
-        let saved_key: Option<String> =
-            nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
+        let base_url = self
+            .config
+            .openai_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        let api_key = self.config.openai_api_key.as_deref().unwrap_or_default();
 
         let prompt = format!(
             r#"You are a FinOps analyst reviewing AI agent usage metrics for the last 30 days.
@@ -4127,26 +3451,33 @@ Data: {}"#,
         );
 
         let body = serde_json::json!({
-            "model": &self.config.capability_generator_model,
+            "model": "gpt-4o-mini",
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 200,
             "temperature": 0.3,
         });
 
-        let json: Value = match saved_key {
-            Some(api_key) => self.insights_with_user_key(&api_key, &body).await?,
-            None => {
-                let call = nasiko_orchestrator::llm_backend::LlmCallContext {
-                    user_id,
-                    component: INSIGHTS_COMPONENT.to_string(),
-                    session_id: None,
-                };
-                self.llm_backend
-                    .chat(&call, body)
-                    .await
-                    .map_err(|e| ObservabilityError::Internal(e.message))?
-            }
-        };
+        let resp = self
+            .http_client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ObservabilityError::Internal(format!(
+                "LLM HTTP {status}: {text}"
+            )));
+        }
+
+        let json: Value = resp
+            .json()
+            .await
+            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
 
         let text = json["choices"][0]["message"]["content"]
             .as_str()
@@ -4163,47 +3494,6 @@ Data: {}"#,
             status_code: 200,
             message: "Insights generated successfully".into(),
         })
-    }
-
-    /// Insights on the user's own saved OpenAI key; bypasses the router (user pays).
-    async fn insights_with_user_key(
-        &self,
-        api_key: &str,
-        body: &Value,
-    ) -> Result<Value, ObservabilityError> {
-        let base_url: &str = self
-            .config
-            .openai_base_url
-            .as_deref()
-            .unwrap_or("https://api.openai.com/v1");
-        // Inherited task model may be another provider's (e.g. Gemini `DEFAULT_MODEL`);
-        // swap it only on the official OpenAI API, keep it on custom compatible endpoints.
-        let mut body: Value = body.clone();
-        if nasiko_orchestrator::providers::is_official_openai(base_url) {
-            let requested: String = body["model"].as_str().unwrap_or_default().to_owned();
-            let fallback: String = nasiko_orchestrator::providers::direct_openai_fallback();
-            body["model"] = Value::String(nasiko_orchestrator::providers::direct_openai_model(
-                &requested, &fallback,
-            ));
-        }
-        let resp = self
-            .http_client
-            .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::Internal(format!(
-                "LLM HTTP {status}: {text}"
-            )));
-        }
-        resp.json()
-            .await
-            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))
     }
 
     // ── 8. finops/agent-hours ─────────────────────────────────────────────────
@@ -4386,64 +3676,7 @@ fn empty_agent_hours_response(
 
 /// `total_container_hours` is threaded in rather than zeroed: a deployment
 /// whose agents were all hard-deleted still has billable session history.
-/// The `trace_usage.agent_name`s the platform's own model calls are written under, which belong
-/// to no registered agent: the chat orchestrator (`router::usage_meta::PricedTurn::persist`), the
-/// routing selector (`nasiko_orchestrator` `write_selector_usage`) and MAF's run-level phases
-/// (`executor::maf_agent_name(None)`) and every router-billed component; the list lives in
-/// `PlatformComponent`. MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
-fn platform_row_names() -> Vec<&'static str> {
-    nasiko_orchestrator::llm_backend::PlatformComponent::all_names()
-}
-
-/// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
-const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
-
-/// Whether `agent_name` is one of the platform's own rows: [`platform_row_names`], or a MAF
-/// per-step row matching [`PLATFORM_STEP_ROW_PATTERN`].
-fn is_platform_row_name(agent_name: &str) -> bool {
-    nasiko_orchestrator::llm_backend::PlatformComponent::is_platform_row(agent_name)
-}
-
-/// The agent usage booked on one MAF step's trace (`step_trace_usage`), or a run's sum of them.
-#[derive(sqlx::FromRow, Default)]
-struct StepTraceUsage {
-    trace_id: String,
-    input_tokens: i64,
-    output_tokens: i64,
-    cache_read_tokens: i64,
-    cache_creation_tokens: i64,
-    cost_usd: f64,
-}
-
-impl StepTraceUsage {
-    fn add(&mut self, other: &Self) {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-        self.cache_read_tokens += other.cache_read_tokens;
-        self.cache_creation_tokens += other.cache_creation_tokens;
-        self.cost_usd += other.cost_usd;
-    }
-}
-
-/// The caller whose own platform rows a scoped FinOps view keeps, or `None` when it keeps none.
-///
-/// A scoped caller sees only the agents they may access, which a filter on agent name enforces;
-/// platform rows carry no agent, so that filter dropped them all, and a member's own
-/// orchestrator turns never reached their dashboard. They are matched on the row's user
-/// instead, so a caller sees their own and never anyone else's. An unscoped caller already sees
-/// every platform row, and a view narrowed to one agent or to the caller's own agents is about
-/// agents, so neither needs this.
-fn own_platform_rows_user(scoped: bool, narrowed: bool, caller: &str) -> Option<uuid::Uuid> {
-    if !scoped || narrowed {
-        return None;
-    }
-    caller.parse().ok()
-}
-
-fn empty_finops_response(
-    total_container_hours: f64,
-    total_sandbox_minutes: f64,
-) -> FinopsDashboardResponse {
+fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse {
     FinopsDashboardResponse {
         data: FinopsDashboardData {
             summary: FinopsSummary {
@@ -4454,7 +3687,6 @@ fn empty_finops_response(
                 active_agents: 0,
                 total_agents: 0,
                 total_container_hours,
-                total_sandbox_minutes,
                 unpriced_calls: 0,
                 estimated_cost: 0.0,
                 unknown_confidence_calls: 0,
@@ -4485,7 +3717,6 @@ fn empty_finops_response(
                 slices: vec![],
                 total_spend_usd: 0.0,
             },
-            users: vec![],
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
@@ -4500,51 +3731,6 @@ mod tests {
     use nasiko_observability::Span;
 
     use super::*;
-
-    #[test]
-    fn a_scoped_caller_keeps_their_own_platform_rows() {
-        let caller = uuid::Uuid::new_v4();
-        assert_eq!(
-            own_platform_rows_user(true, false, &caller.to_string()),
-            Some(caller)
-        );
-    }
-
-    #[test]
-    fn an_unscoped_or_narrowed_view_adds_no_own_platform_rows() {
-        let caller = uuid::Uuid::new_v4().to_string();
-        assert_eq!(own_platform_rows_user(false, false, &caller), None);
-        assert_eq!(own_platform_rows_user(true, true, &caller), None);
-    }
-
-    #[test]
-    fn a_caller_without_a_user_id_sees_no_platform_rows() {
-        assert_eq!(own_platform_rows_user(true, false, ""), None);
-    }
-
-    /// The names are matched by value in SQL, so they must stay the ones the writers use.
-    #[test]
-    fn platform_row_names_match_the_maf_writers() {
-        use nasiko_orchestrator::maf::executor::maf_agent_name;
-        assert!(platform_row_names().contains(&maf_agent_name(None).as_str()));
-        let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
-        assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
-    }
-
-    /// Q1-3: the orchestrator's and MAF's rows carry an agent id, so the dashboard totals find
-    /// them by name. An agent's own name must not match.
-    #[test]
-    fn platform_rows_are_recognised_by_name() {
-        use nasiko_orchestrator::maf::executor::maf_agent_name;
-        assert!(is_platform_row_name(
-            nasiko_observability::types::ORCHESTRATOR_USAGE_AGENT
-        ));
-        assert!(is_platform_row_name("router_selection"));
-        assert!(is_platform_row_name(&maf_agent_name(None)));
-        assert!(is_platform_row_name(&maf_agent_name(Some(3))));
-        assert!(!is_platform_row_name("crm-agent"));
-        assert!(!is_platform_row_name("mafia-agent"));
-    }
 
     #[test]
     fn session_trace_window_is_anchored_to_historical_session() {
@@ -4640,166 +3826,6 @@ mod tests {
 
         let (roots, _) = build_span_tree(&[span]);
         assert_eq!(roots[0].name, "Bash: git status --short");
-    }
-
-    fn span_with(id: &str, parent: Option<&str>, name: &str, attrs: &[(&str, &str)]) -> Span {
-        Span {
-            span_id: id.into(),
-            parent_span_id: parent.map(String::from),
-            name: name.into(),
-            started_at: Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0).unwrap(),
-            ended_at: None,
-            duration_ms: None,
-            service_name: "agent".into(),
-            kind: 3,
-            status_code: 0,
-            status_message: String::new(),
-            attributes: attrs
-                .iter()
-                .map(|(k, v)| ((*k).into(), serde_json::json!(v)))
-                .collect(),
-            events: vec![],
-        }
-    }
-
-    #[test]
-    fn llm_span_is_named_after_the_model_that_answered() {
-        // openai-v2 names the span after the model the agent asked for; the gateway
-        // answered with the agent's configured one.
-        let span = span_with(
-            "llm",
-            None,
-            "chat gpt-4o-mini",
-            &[
-                ("gen_ai.operation.name", "chat"),
-                ("gen_ai.request.model", "gpt-4o-mini"),
-                ("gen_ai.response.model", "gpt-4.1"),
-            ],
-        );
-
-        let (roots, _) = build_span_tree(&[span]);
-        assert_eq!(roots[0].name, "chat gpt-4.1");
-        assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
-    }
-
-    #[test]
-    fn llm_span_without_a_response_model_takes_the_one_its_gateway_span_answered_with() {
-        // The Rust and Go agents record only the requested model; the gateway's nested
-        // span (under the agent's HTTP client span) records the one that answered.
-        let agent = span_with(
-            "llm",
-            None,
-            "chat gpt-4o-mini",
-            &[
-                ("gen_ai.operation.name", "chat"),
-                ("gen_ai.request.model", "gpt-4o-mini"),
-            ],
-        );
-        let http = span_with("http", Some("llm"), "POST", &[]);
-        let gateway = span_with(
-            "gateway",
-            Some("http"),
-            "gen_ai.chat",
-            &[
-                ("gen_ai.request.model", "gpt-4.1"),
-                ("gen_ai.response.model", "gpt-4.1"),
-            ],
-        );
-
-        let (roots, _) = build_span_tree(&[agent, http, gateway]);
-        assert_eq!(roots[0].name, "chat gpt-4.1");
-        assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
-    }
-
-    #[test]
-    fn agent_state_read_that_finds_nothing_is_not_reported_as_an_error() {
-        let mut miss = span_with(
-            "miss",
-            None,
-            "GET",
-            &[
-                (
-                    "http.url",
-                    "http://10.24.0.15:8080/api/agent-state/kv/lgh%3Ac%3A",
-                ),
-                ("http.status_code", "404"),
-            ],
-        );
-        miss.status_code = 2;
-        let mut failed = span_with(
-            "failed",
-            None,
-            "GET",
-            &[
-                ("http.url", "http://10.24.0.15:8080/api/agent-state/kv/k"),
-                ("http.status_code", "500"),
-            ],
-        );
-        failed.status_code = 2;
-
-        let (_, lookup) = build_span_tree(&[miss, failed]);
-        let status = |id: &str| lookup[&encode_span_id(id)].status_code.clone();
-        assert_eq!(status("miss"), "UNSET");
-        assert_eq!(status("failed"), "ERROR");
-    }
-
-    #[test]
-    fn llm_span_takes_the_provider_its_gateway_span_routed_to() {
-        // openai-v2 records `openai` and the model it asked for even when the gateway's
-        // routing config sent the call to Gemini; its response model already says Gemini.
-        let agent = span_with(
-            "llm",
-            None,
-            "chat gpt-4o-mini",
-            &[
-                ("gen_ai.operation.name", "chat"),
-                ("gen_ai.provider.name", "openai"),
-                ("gen_ai.request.model", "gpt-4o-mini"),
-                ("gen_ai.response.model", "gemini-4-hydrogen"),
-            ],
-        );
-        let http = span_with("http", Some("llm"), "POST", &[]);
-        let gateway = span_with(
-            "gateway",
-            Some("http"),
-            "gen_ai.chat",
-            &[
-                ("gen_ai.agent.id", "93595357-5f48-44a7-a17e-c46e8a20cd82"),
-                ("gen_ai.provider.name", "gemini"),
-                ("gen_ai.request.model", "gemini-4-hydrogen"),
-                ("gen_ai.response.model", "gemini-4-hydrogen"),
-            ],
-        );
-
-        let (roots, _) = build_span_tree(&[agent, http, gateway]);
-        assert_eq!(roots[0].name, "chat gemini-4-hydrogen");
-        assert_eq!(roots[0].model.as_deref(), Some("gemini-4-hydrogen"));
-        assert_eq!(roots[0].provider.as_deref(), Some("gemini"));
-    }
-
-    #[test]
-    fn agent_span_naming_a_model_does_not_take_its_gateway_calls_answer() {
-        // An uninstrumented LLM client leaves the gateway span directly under the
-        // agent's `invoke_agent` span, which names a model but is not a model call.
-        let agent = span_with(
-            "agent",
-            None,
-            "invoke_agent hr",
-            &[
-                ("gen_ai.operation.name", "invoke_agent"),
-                ("gen_ai.request.model", "gpt-4o-mini"),
-            ],
-        );
-        let gateway = span_with(
-            "gateway",
-            Some("agent"),
-            "gen_ai.chat",
-            &[("gen_ai.response.model", "gpt-4.1")],
-        );
-
-        let (roots, _) = build_span_tree(&[agent, gateway]);
-        assert_eq!(roots[0].name, "invoke_agent hr");
-        assert_eq!(roots[0].model.as_deref(), Some("gpt-4o-mini"));
     }
 
     // ── KpiValue::new ────────────────────────────────────────────────────────
@@ -4960,7 +3986,6 @@ mod tests {
             tool_call_count: 0,
             version: None,
             container_hours: 0.0,
-            sandbox_minutes: 0.0,
             previous: None,
         }
     }

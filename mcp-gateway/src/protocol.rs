@@ -9,11 +9,8 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::aggregator;
-use crate::entitlements::load_user_entitlement;
 use crate::error::McpError;
-use crate::permissions::{
-    self, COMPOSIO_META_TOOLKIT, EffectiveAccess, ToolAccess, toolkit_from_composio_slug,
-};
+use crate::permissions::{self, PermissionContext, ToolAccess, toolkit_from_composio_slug};
 use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
@@ -95,11 +92,6 @@ pub async fn handle_request(
         Ok(p) => p,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
     };
-    let entitlement = match load_user_entitlement(state, user_id).await {
-        Ok(e) => e,
-        Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
-    };
-    let access = EffectiveAccess::new(&perms, &entitlement);
     let mut resolved = match session::resolve_session(state, user_id).await {
         Ok(r) => r,
         Err(e) => return Some(err(&req_id, e.json_rpc_code(), e.to_json_rpc().message)),
@@ -111,7 +103,7 @@ pub async fn handle_request(
     // performs the permission/session lookups above (it didn't before this
     // was wired up); that's intended, not a leftover of moving the match arm.
     if method == "initialize" {
-        let instr: Vec<String> = connector_instructions(&resolved.servers, &access);
+        let instr: Vec<String> = connector_instructions(&resolved.servers, &perms);
         return Some(handle_initialize(
             &req_id,
             body,
@@ -144,7 +136,7 @@ pub async fn handle_request(
                 user_id,
                 &req_id,
                 &resolved,
-                &access,
+                &perms,
                 traceparent,
                 verified_flow_id,
             )
@@ -158,7 +150,7 @@ pub async fn handle_request(
                 &req_id,
                 &params,
                 &resolved,
-                &access,
+                &perms,
                 traceparent,
                 verified_flow_id,
             )
@@ -249,13 +241,10 @@ pub fn handle_initialize(
 /// Kept as its own pure function, separate from `resolve_session`/
 /// `load_permission_context` (which need a real DB this crate's hermetic unit
 /// tests can't provide), so the composition itself stays unit-testable.
-fn connector_instructions(
-    servers: &[MCPServerConfig],
-    access: &EffectiveAccess<'_>,
-) -> Vec<String> {
+fn connector_instructions(servers: &[MCPServerConfig], perms: &PermissionContext) -> Vec<String> {
     servers
         .iter()
-        .filter(|s| access.is_connector_enabled(s.connector_id))
+        .filter(|s| perms.is_connector_enabled(s.connector_id))
         .filter_map(|s| s.instructions.clone())
         .collect()
 }
@@ -301,7 +290,7 @@ pub async fn handle_tools_list(
     user_id: Uuid,
     req_id: &Value,
     resolved: &ResolvedSession,
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
@@ -322,8 +311,7 @@ pub async fn handle_tools_list(
             user_id,
             &resolved.servers,
             &resolved.connected_toolkits,
-            &resolved.toolkit_to_connector,
-            access,
+            perms,
             verified_flow_id.and(traceparent),
         )
         .await
@@ -364,7 +352,7 @@ pub async fn handle_tools_list(
             .search_tools(
                 query,
                 &accessible_ids,
-                access,
+                perms,
                 state.config.tool_search_tool_limit,
             )
             .await;
@@ -619,7 +607,7 @@ pub async fn handle_tools_call(
     req_id: &Value,
     params: &Value,
     resolved: &ResolvedSession,
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
@@ -674,7 +662,7 @@ pub async fn handle_tools_call(
 
         let matches = state
             .search_index
-            .search_tools(query, &accessible_ids, access, limit)
+            .search_tools(query, &accessible_ids, perms, limit)
             .await;
 
         let tools = search_matches_to_json(&matches, resolved);
@@ -769,7 +757,7 @@ pub async fn handle_tools_call(
         tool_name,
         arguments,
         resolved,
-        access,
+        perms,
         traceparent,
         verified_flow_id,
     )
@@ -781,7 +769,7 @@ pub async fn handle_tools_call(
 /// or asked `nasiko_call_tool` to run it. Taking the name and arguments
 /// rather than the request's `params` is what makes that so: the executor
 /// unwraps its inner call and re-enters here, and from this point on
-/// routing, `access.decide`, the `Ask` approval record and its retry match,
+/// routing, `perms.decide`, the `Ask` approval record and its retry match,
 /// the backend request and every logged tool name see the inner tool — the
 /// wrapper no longer exists.
 ///
@@ -803,7 +791,7 @@ async fn call_routed_tool(
     tool_name: &str,
     mut arguments: Value,
     resolved: &ResolvedSession,
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
@@ -818,13 +806,13 @@ async fn call_routed_tool(
             {
                 // `unusable_connectors` is built from user-level (Layer 1) access only, so this
                 // branch used to fire before the Layer-2 per-agent gate below ever ran. A
-                // connector the admin disabled FOR THIS AGENT (`access.is_connector_enabled`
+                // connector the admin disabled FOR THIS AGENT (`perms.is_connector_enabled`
                 // false) still reached `handle_auth_required`, which discloses the connector's
                 // name/UUID to the agent and files a pending `auth_required` row asking the
                 // human to re-authenticate a connector this agent isn't even permitted to use —
-                // disclosure plus a spurious notification, even though `access.decide` below
+                // disclosure plus a spurious notification, even though `perms.decide` below
                 // would still correctly block the actual call.
-                if !access.is_connector_enabled(connector_id) {
+                if !perms.is_connector_enabled(connector_id) {
                     return err(
                         req_id,
                         codes::TOOL_BLOCKED,
@@ -835,7 +823,7 @@ async fn call_routed_tool(
                     state,
                     user_id,
                     req_id,
-                    access.perms.agent_id,
+                    perms.agent_id,
                     connector_id,
                     &info.name,
                     verified_flow_id,
@@ -876,7 +864,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        access.perms.agent_id,
+                        perms.agent_id,
                         connector.id,
                         &connector.name,
                         verified_flow_id,
@@ -891,7 +879,7 @@ async fn call_routed_tool(
             // `toolkit_from_composio_slug` extracts `"composio"` from these names (not a real
             // per-integration connector), so the check just above can never catch this — there's
             // no specific toolkit to look up. Fall back to whichever Composio connector this
-            // AGENT has actually been granted (`access.perms.enabled_connectors`, exactly the set
+            // AGENT has actually been granted (`perms.enabled_connectors`, exactly the set
             // `nasiko mcp agent-tools enable` writes to `mcp_agent_connector_access`) but that
             // has no active user connection (cross-checked against `resolved.toolkit_to_connector`,
             // which is active-connections-only by construction — see the check above's own
@@ -900,7 +888,7 @@ async fn call_routed_tool(
             // the generic error below, same as today.
             if tool_name.starts_with("COMPOSIO_") {
                 let mut candidates = Vec::new();
-                for &connector_id in &access.perms.enabled_connectors {
+                for &connector_id in &perms.enabled_connectors {
                     if resolved
                         .toolkit_to_connector
                         .values()
@@ -920,7 +908,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        access.perms.agent_id,
+                        perms.agent_id,
                         connector.id,
                         &connector.name,
                         verified_flow_id,
@@ -951,7 +939,7 @@ async fn call_routed_tool(
         }
         // Same decision `tools/list` filters on — a connector disabled for this
         // agent denies the call even though Layer 1 (owner/grant) still passes.
-        match access.decide(server.connector_id, &original) {
+        match perms.decide(server.connector_id, &original) {
             ToolAccess::Denied => {
                 return err(
                     req_id,
@@ -963,7 +951,7 @@ async fn call_routed_tool(
                 match resolve_tool_approval_retry(
                     state,
                     user_id,
-                    access.perms.agent_id,
+                    perms.agent_id,
                     server.connector_id,
                     &original,
                     verified_flow_id,
@@ -984,7 +972,7 @@ async fn call_routed_tool(
                         return ask_with_hitl_request(
                             state,
                             user_id,
-                            access.perms.agent_id,
+                            perms.agent_id,
                             server.connector_id,
                             &original,
                             &server.name,
@@ -1007,26 +995,12 @@ async fn call_routed_tool(
     // MANAGE_CONNECTIONS, MULTI_EXECUTE_TOOL) resolve to toolkit "composio", which
     // maps to no connector — they skip this block and are handled below / passed
     // through, exactly as before.
-    //
-    // Under a restricted user entitlement a toolkit tool that maps to no
-    // connector cannot be attributed to anything the user is entitled to, so it
-    // is denied; cross-toolkit meta-tools (toolkit `composio`) stay callable.
-    let direct_toolkit = toolkit_from_composio_slug(tool_name);
     if server.kind == ServerType::Composio
-        && access.is_restricted()
-        && direct_toolkit != COMPOSIO_META_TOOLKIT
-        && !resolved.toolkit_to_connector.contains_key(&direct_toolkit)
+        && let Some(&cid) = resolved
+            .toolkit_to_connector
+            .get(&toolkit_from_composio_slug(tool_name))
     {
-        return err(
-            req_id,
-            codes::TOOL_BLOCKED,
-            format!("Tool '{tool_name}' is blocked or disabled for this agent."),
-        );
-    }
-    if server.kind == ServerType::Composio
-        && let Some(&cid) = resolved.toolkit_to_connector.get(&direct_toolkit)
-    {
-        match access.decide(cid, tool_name) {
+        match perms.decide(cid, tool_name) {
             ToolAccess::Denied => {
                 return err(
                     req_id,
@@ -1038,7 +1012,7 @@ async fn call_routed_tool(
                 match resolve_tool_approval_retry(
                     state,
                     user_id,
-                    access.perms.agent_id,
+                    perms.agent_id,
                     cid,
                     tool_name,
                     verified_flow_id,
@@ -1059,7 +1033,7 @@ async fn call_routed_tool(
                         return ask_with_hitl_request(
                             state,
                             user_id,
-                            access.perms.agent_id,
+                            perms.agent_id,
                             cid,
                             tool_name,
                             "composio",
@@ -1084,7 +1058,7 @@ async fn call_routed_tool(
             .collect();
         let blocked: Vec<String> = requested
             .iter()
-            .filter(|tk| connector_disabled(resolved, access, tk))
+            .filter(|tk| connector_disabled(resolved, perms, tk))
             .cloned()
             .collect();
         if !blocked.is_empty() {
@@ -1124,24 +1098,18 @@ async fn call_routed_tool(
         for t in &tools_arg {
             let slug = t.get("tool_slug").and_then(|v| v.as_str()).unwrap_or("");
             if slug.is_empty() {
-                // Unattributable to any connector: harmless today, but a
-                // restricted user must not get anything through unchecked.
-                if access.is_restricted() {
-                    blocked_slugs.push(slug.to_string());
-                } else {
-                    allowed.push(t.clone());
-                }
+                allowed.push(t.clone());
                 continue;
             }
             let toolkit = toolkit_from_composio_slug(slug);
             match resolved.toolkit_to_connector.get(&toolkit) {
-                Some(&cid) => match access.decide(cid, slug) {
+                Some(&cid) => match perms.decide(cid, slug) {
                     ToolAccess::Denied => blocked_slugs.push(slug.to_string()),
                     ToolAccess::Ask => {
                         match resolve_tool_approval_retry(
                             state,
                             user_id,
-                            access.perms.agent_id,
+                            perms.agent_id,
                             cid,
                             slug,
                             verified_flow_id,
@@ -1155,9 +1123,6 @@ async fn call_routed_tool(
                     }
                     ToolAccess::Allowed => allowed.push(t.clone()),
                 },
-                // No connector to attribute the slug to: only an unrestricted
-                // user may run it.
-                None if access.is_restricted() => blocked_slugs.push(slug.to_string()),
                 None => allowed.push(t.clone()),
             }
         }
@@ -1171,7 +1136,7 @@ async fn call_routed_tool(
                     if let Some(id) = create_tool_approval_id(
                         state,
                         user_id,
-                        access.perms.agent_id,
+                        perms.agent_id,
                         *cid,
                         slug,
                         verified_flow_id,
@@ -1214,7 +1179,7 @@ async fn call_routed_tool(
         }
         if !blocked_slugs.is_empty() || !denied_slugs.is_empty() || !ask_tools.is_empty() {
             let ask_slugs: Vec<&String> = ask_tools.iter().map(|(_, s)| s).collect();
-            tracing::info!(user = %user_id, agent = %access.perms.agent_id, ?blocked_slugs, ?denied_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
+            tracing::info!(user = %user_id, agent = %perms.agent_id, ?blocked_slugs, ?denied_slugs, ?ask_slugs, forwarding = allowed.len(), "partial composio multi-execute filter");
             arguments["tools"] = json!(allowed);
         }
     }
@@ -1270,7 +1235,7 @@ async fn call_routed_tool(
                         state,
                         user_id,
                         req_id,
-                        access.perms.agent_id,
+                        perms.agent_id,
                         connector_id,
                         verified_flow_id,
                         response,
@@ -1607,7 +1572,7 @@ enum RetryOutcome {
     AskAgain,
 }
 
-/// M7's retry-matching lookup: called immediately after `access.decide()`
+/// M7's retry-matching lookup: called immediately after `perms.decide()`
 /// returns `Ask`, before falling back to the normal ask-and-persist path.
 /// Checks, in order: (1) an unexpired `mcp_session_tool_grants` row for this
 /// exact `(agent_id, connector_id, tool_name, context_id)` tuple — reusable
@@ -1766,13 +1731,13 @@ fn is_connection_level_failure(e: &McpError) -> bool {
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.
 fn connector_disabled(
     resolved: &ResolvedSession,
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
     toolkit: &str,
 ) -> bool {
     resolved
         .toolkit_to_connector
         .get(&toolkit.to_ascii_lowercase())
-        .map(|cid| !access.is_connector_enabled(*cid))
+        .map(|cid| !perms.is_connector_enabled(*cid))
         .unwrap_or(false)
 }
 
@@ -1923,8 +1888,7 @@ mod tests {
 
     use super::*;
     use crate::config::{McpConfig, ToolSearchMode};
-    use crate::entitlements::{ToolSet, UserEntitlement};
-    use crate::permissions::{PermissionContext, PermissionRule};
+    use crate::permissions::PermissionRule;
     use crate::provider::{GenericMcpProvider, Providers};
     use crate::types::Stance;
     use std::collections::HashMap;
@@ -1998,7 +1962,6 @@ mod tests {
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
-            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: Arc::new(crate::search::NoopSearchIndex),
@@ -2214,7 +2177,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2248,7 +2211,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2289,7 +2252,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2322,7 +2285,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2341,7 +2304,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2360,7 +2323,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2394,7 +2357,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "GMAIL_SEND_EMAIL", "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2428,7 +2391,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "COMPOSIO_SEARCH_TOOLS", "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2438,266 +2401,6 @@ mod tests {
             "a cross-toolkit meta-tool must not be blocked by the per-toolkit check: {res}"
         );
         hit.assert_async().await;
-    }
-
-    // ─── Per-user tool entitlements (Restricted) ─────────────────────────────
-
-    fn restricted(entries: &[(Uuid, ToolSet)]) -> UserEntitlement {
-        UserEntitlement::Restricted(entries.iter().cloned().collect())
-    }
-
-    fn only(names: &[&str]) -> ToolSet {
-        ToolSet::Only(names.iter().map(|n| n.to_string()).collect())
-    }
-
-    async fn call_with(
-        state: &McpState,
-        resolved: &ResolvedSession,
-        p: &PermissionContext,
-        ent: &UserEntitlement,
-        name: &str,
-        arguments: Value,
-    ) -> Value {
-        handle_tools_call(
-            state,
-            Uuid::new_v4(),
-            &json!(1),
-            &json!({ "name": name, "arguments": arguments }),
-            resolved,
-            &EffectiveAccess::new(p, ent),
-            None,
-            None,
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn restricted_user_cannot_call_generic_tool_outside_entitlement() {
-        let (_guard, url) = spawn_ok_backend().await;
-        let mut state = test_state();
-        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
-        let cid = Uuid::new_v4();
-        let resolved = mcp_session(&url, cid, false);
-        let p = perms(&[cid], vec![]); // agent allows everything on the connector
-        let ent = restricted(&[(cid, only(&["read"]))]);
-        let prefix = crate::types::connector_prefix(cid);
-
-        let denied = call_with(
-            &state,
-            &resolved,
-            &p,
-            &ent,
-            &format!("{prefix}__write"),
-            json!({}),
-        )
-        .await;
-        assert_eq!(
-            denied["error"]["code"],
-            json!(codes::TOOL_BLOCKED),
-            "{denied}"
-        );
-
-        let allowed = call_with(
-            &state,
-            &resolved,
-            &p,
-            &ent,
-            &format!("{prefix}__read"),
-            json!({}),
-        )
-        .await;
-        assert!(
-            allowed.get("error").is_none(),
-            "entitled tool must run: {allowed}"
-        );
-
-        // Same call, no entitlement restriction: unchanged behaviour.
-        let open = call_with(
-            &state,
-            &resolved,
-            &p,
-            &UserEntitlement::Unrestricted,
-            &format!("{prefix}__write"),
-            json!({}),
-        )
-        .await;
-        assert!(open.get("error").is_none(), "{open}");
-    }
-
-    #[tokio::test]
-    async fn entitlement_denial_beats_ask_so_no_approval_is_requested() {
-        let mut state = test_state();
-        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
-        let cid = Uuid::new_v4();
-        let resolved = mcp_session("http://127.0.0.1:9/mcp", cid, false);
-        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
-        let ent = restricted(&[(cid, only(&["read"]))]);
-        let prefix = crate::types::connector_prefix(cid);
-
-        let res = call_with(
-            &state,
-            &resolved,
-            &p,
-            &ent,
-            &format!("{prefix}__write"),
-            json!({}),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
-
-        // Entitled + Ask still asks.
-        let res = call_with(
-            &state,
-            &resolved,
-            &p,
-            &ent,
-            &format!("{prefix}__read"),
-            json!({}),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
-    }
-
-    #[tokio::test]
-    async fn restricted_user_composio_direct_call_needs_entitlement() {
-        let cid = Uuid::new_v4();
-        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(&[cid], vec![]);
-        let ent = restricted(&[(cid, only(&["GMAIL_FETCH_EMAILS"]))]);
-        let res = call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            &ent,
-            "GMAIL_SEND_EMAIL",
-            json!({}),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
-    }
-
-    #[tokio::test]
-    async fn restricted_user_composio_direct_call_with_unmapped_toolkit_is_denied() {
-        let cid = Uuid::new_v4();
-        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(&[cid], vec![]);
-        let ent = restricted(&[(cid, ToolSet::All)]);
-        let res = call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            &ent,
-            "SLACK_POST_MESSAGE",
-            json!({}),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
-    }
-
-    #[tokio::test]
-    async fn restricted_user_keeps_composio_meta_tools() {
-        let mut backend = mockito::Server::new_async().await;
-        let hit = backend
-            .mock("POST", "/mcp")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let cid = Uuid::new_v4();
-        let resolved = gmail_session(&format!("{}/mcp", backend.url()), cid);
-        let p = perms(&[cid], vec![]);
-        let ent = restricted(&[]);
-        let res = call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            &ent,
-            "COMPOSIO_SEARCH_TOOLS",
-            json!({}),
-        )
-        .await;
-        assert!(res.get("error").is_none(), "{res}");
-        hit.assert_async().await;
-    }
-
-    async fn multi_execute(ent: &UserEntitlement, cid: Uuid, slug: Value) -> Value {
-        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(&[cid], vec![]);
-        call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            ent,
-            "COMPOSIO_MULTI_EXECUTE_TOOL",
-            json!({ "tools": [{ "tool_slug": slug, "arguments": {} }] }),
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn restricted_multi_execute_denies_non_entitled_empty_and_unmapped_slugs() {
-        let cid = Uuid::new_v4();
-        let ent = restricted(&[(cid, only(&["GMAIL_FETCH_EMAILS"]))]);
-        for slug in ["GMAIL_SEND_EMAIL", "", "SLACK_POST_MESSAGE"] {
-            let res = multi_execute(&ent, cid, json!(slug)).await;
-            assert_eq!(
-                res["error"]["code"],
-                json!(codes::TOOL_BLOCKED),
-                "slug {slug:?} must be denied: {res}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn restricted_multi_execute_entitled_ask_still_asks() {
-        let cid = Uuid::new_v4();
-        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(&[cid], vec![rule(cid, "*", Stance::Ask)]);
-        let ent = restricted(&[(cid, ToolSet::All)]);
-        let res = call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            &ent,
-            "COMPOSIO_MULTI_EXECUTE_TOOL",
-            json!({ "tools": [{ "tool_slug": "GMAIL_SEND_EMAIL", "arguments": {} }] }),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_ASK), "{res}");
-    }
-
-    #[tokio::test]
-    async fn restricted_manage_connections_follows_connector_toggle() {
-        let cid = Uuid::new_v4();
-        let resolved = gmail_session("http://127.0.0.1:9/mcp", cid);
-        let p = perms(&[cid], vec![]);
-        let ent = restricted(&[]); // no tools on gmail
-        let res = call_with(
-            &test_state(),
-            &resolved,
-            &p,
-            &ent,
-            "COMPOSIO_MANAGE_CONNECTIONS",
-            json!({ "toolkits": ["gmail"] }),
-        )
-        .await;
-        assert_eq!(res["error"]["code"], json!(codes::TOOL_BLOCKED), "{res}");
-    }
-
-    #[test]
-    fn initialize_instructions_skip_connectors_without_entitlement() {
-        let (entitled, other) = (Uuid::new_v4(), Uuid::new_v4());
-        let mut a = mcp_session("http://x/mcp", entitled, false).servers;
-        a[0].instructions = Some("entitled".into());
-        let mut b = mcp_session("http://x/mcp", other, false).servers;
-        b[0].instructions = Some("other".into());
-        let servers = [a, b].concat();
-        let p = perms(&[entitled, other], vec![]);
-        let ent = restricted(&[(entitled, ToolSet::All)]);
-        let got = connector_instructions(&servers, &EffectiveAccess::new(&p, &ent));
-        assert_eq!(got, vec!["entitled".to_string()]);
     }
 
     // ─── M3: AuthRequired routing ───────────────────────────────────────────
@@ -2741,7 +2444,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2776,7 +2479,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2812,7 +2515,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
             Some("0af7651916cd43dd8448eb211c80319c"),
         )
@@ -2843,7 +2546,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -2872,7 +2575,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&perms(&[cid], vec![rule(cid, "*", Stance::Block)])),
+            &perms(&[cid], vec![rule(cid, "*", Stance::Block)]),
             None,
             None,
         )
@@ -2889,7 +2592,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": {} }),
             &resolved,
-            &EffectiveAccess::unrestricted(&perms(&[], vec![])), // connector never enabled
+            &perms(&[], vec![]), // connector never enabled
             None,
             None,
         )
@@ -3029,7 +2732,7 @@ mod tests {
             Uuid::new_v4(),
             &json!(1),
             &empty,
-            &EffectiveAccess::unrestricted(&perms(&[], vec![])),
+            &perms(&[], vec![]),
             None,
             None,
         )
@@ -3139,7 +2842,7 @@ mod tests {
                 &json!(1),
                 &json!({ "name": "nasiko_call_tool", "arguments": arguments }),
                 &resolved,
-                &EffectiveAccess::unrestricted(&p),
+                &p,
                 None,
                 None,
             )
@@ -3161,7 +2864,7 @@ mod tests {
             &json!(1),
             &json!({ "name": "nasiko_call_tool", "arguments": { "name": "nasiko_call_tool" } }),
             &resolved,
-            &EffectiveAccess::unrestricted(&p),
+            &p,
             None,
             None,
         )
@@ -3239,7 +2942,7 @@ mod tests {
             &json!(1),
             &json!({ "name": tool, "arguments": arguments }),
             resolved,
-            &EffectiveAccess::unrestricted(p),
+            p,
             None,
             None,
         )
@@ -3253,7 +2956,7 @@ mod tests {
                 "arguments": { "name": tool, "arguments": arguments },
             }),
             resolved,
-            &EffectiveAccess::unrestricted(p),
+            p,
             None,
             None,
         )
@@ -3435,7 +3138,6 @@ mod tests {
 #[cfg(test)]
 mod initialize_tests {
     use super::*;
-    use crate::permissions::PermissionContext;
     use serde_json::json;
 
     #[test]
@@ -3563,7 +3265,7 @@ mod initialize_tests {
             cfg(disabled_with_instr, Some("SHOULD-NOT-APPEAR")),
         ];
         let perms = ctx(&[enabled_with_instr, enabled_without_instr]);
-        let got = connector_instructions(&servers, &EffectiveAccess::unrestricted(&perms));
+        let got = connector_instructions(&servers, &perms);
         assert_eq!(got, vec!["WS-INSTR".to_string()]);
     }
 
@@ -3572,9 +3274,7 @@ mod initialize_tests {
         let id = Uuid::new_v4();
         let servers = vec![cfg(id, Some("X"))];
         let perms = ctx(&[]); // never enabled
-        assert!(
-            connector_instructions(&servers, &EffectiveAccess::unrestricted(&perms)).is_empty()
-        );
+        assert!(connector_instructions(&servers, &perms).is_empty());
     }
 
     // ── inject_identity: stamps only system backends ─────────────────────────
