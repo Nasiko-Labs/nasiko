@@ -195,7 +195,7 @@ async fn start_registry_with_realm(realm: Option<String>) -> Shared {
 
 async fn oci_state(server: &common::TestServer) -> nasiko_oci::OciState {
     let storage = nasiko_oci::storage::S3Storage::from_env("nasiko-test-artifacts".into()).await;
-    nasiko_oci::OciState::new(server.db.clone(), Arc::new(storage))
+    nasiko_oci::OciState::new(server.db.clone(), Arc::new(storage), String::new())
 }
 
 fn settings(credential_host: &str, password: &str) -> MirrorSettings {

@@ -395,7 +395,11 @@ where
         .nest("/api", agent_state::router(&state))
         .with_state(state.clone());
 
-    let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    let oci_state = nasiko_oci::OciState::new(
+        state.db.clone(),
+        state.oci_storage.clone(),
+        state.config.agent_image_registry.clone(),
+    );
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,

@@ -65,7 +65,11 @@ pub async fn build_docker_runtime(
     db: sqlx::PgPool,
     storage: std::sync::Arc<dyn nasiko_runtime::BlobStore>,
 ) -> Result<InstrumentedRuntime<InstrumentedRuntime<DockerRuntime, OtelInjector>, McpInjector>> {
-    let image_source = std::sync::Arc::new(nasiko_oci::OciState::new(db, storage));
+    let image_source = std::sync::Arc::new(nasiko_oci::OciState::new(
+        db,
+        storage,
+        config.agent_image_registry.clone(),
+    ));
 
     let docker = DockerRuntime::new(DockerRuntimeConfig {
         network: config.docker_agent_network.clone(),

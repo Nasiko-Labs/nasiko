@@ -26,14 +26,18 @@ pub struct OciState {
     pub pool: PgPool,
     pub storage: Arc<dyn BlobStore>,
     pub upload_buffers: Arc<DashMap<Uuid, BytesMut>>,
+    /// The host agent images are qualified with (`AGENT_IMAGE_REGISTRY`); empty when unset.
+    /// Only images on this host or with no host count as platform repositories.
+    pub platform_registry_host: String,
 }
 
 impl OciState {
-    pub fn new(pool: PgPool, storage: Arc<dyn BlobStore>) -> Self {
+    pub fn new(pool: PgPool, storage: Arc<dyn BlobStore>, platform_registry_host: String) -> Self {
         Self {
             pool,
             storage,
             upload_buffers: Arc::new(DashMap::new()),
+            platform_registry_host,
         }
     }
 }

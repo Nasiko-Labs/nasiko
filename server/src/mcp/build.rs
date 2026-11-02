@@ -116,14 +116,15 @@ async fn queue_upload(
     .await?;
 
     let build_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO mcp_connector_builds (connector_id, owner_id, version_tag, github_url, source_key) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING id",
+        "INSERT INTO mcp_connector_builds (connector_id, owner_id, version_tag, github_url, source_key, image_tag) \
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(connector_id)
     .bind(owner_id)
     .bind(&version_tag)
     .bind(&github_url)
     .bind(&source_key)
+    .bind(&image_tag)
     .fetch_one(&mut *tx)
     .await?;
 

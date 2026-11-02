@@ -239,7 +239,13 @@ async fn owners_of_repository(state: &OciState, repo: &str) -> Result<Vec<uuid::
 
     let mut owner_ids = Vec::new();
     for (owner_id, image) in rows {
-        if strip_image_to_repo(&image) == repo && !owner_ids.contains(&owner_id) {
+        // An external image with the same path is not an owner of the platform repository.
+        if let Some(platform_repo) = nasiko_utils::image::platform_repository_from_image(
+            &image,
+            &state.platform_registry_host,
+        ) && platform_repo == repo
+            && !owner_ids.contains(&owner_id)
+        {
             owner_ids.push(owner_id);
         }
     }
@@ -303,12 +309,16 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                     .await
                     .map_err(OciError::Database)?;
 
-            if bound_image.is_none() {
-                // Connector fallback - fixes R-124 by querying owner_id and parsing the stored image
+            let Some(image_ref) = bound_image.as_deref() else {
+                // Connector: its first pull happens before the build is marked successful, so
+                // pending and building builds count too.
                 let connector_data: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
                     "SELECT c.owner_id, b.image_tag \
                      FROM mcp_connectors c \
-                     LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id AND b.status = 'success' \
+                     LEFT JOIN mcp_connector_builds b \
+                       ON b.connector_id = c.id \
+                       AND b.status IN ('pending', 'building', 'success') \
+                       AND b.image_tag IS NOT NULL \
                      WHERE c.id = $1 \
                      ORDER BY b.created_at DESC \
                      LIMIT 1",
@@ -350,14 +360,16 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                     return Ok(());
                 } else {
                     return Err(OciError::Forbidden(
-                        "no successful build found for connector or connector not found"
-                            .to_string(),
+                        "no build found for connector or connector not found".to_string(),
                     ));
                 }
-            }
+            };
 
-            // Agent case - check both repo match and namespace ownership (R-123)
-            let bound_repo = bound_image.as_deref().map(strip_image_to_repo);
+            // Agent case: the bound image must be this platform repository, in the owner's namespace.
+            let bound_repo = nasiko_utils::image::platform_repository_from_image(
+                image_ref,
+                &state.platform_registry_host,
+            );
             if bound_repo != Some(repo) {
                 return Err(OciError::Forbidden(format!(
                     "not permitted to access repository '{}'",

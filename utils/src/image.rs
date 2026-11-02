@@ -50,6 +50,22 @@ pub fn strip_image_to_repo(image: &str) -> &str {
     }
 }
 
+/// The platform repository an image names (host and tag stripped), or `None` when the image
+/// lives on another registry. An image is a platform image when it has no registry host or its
+/// host is exactly `platform_registry_host`; a different port is a different registry.
+pub fn platform_repository_from_image<'a>(
+    image: &'a str,
+    platform_registry_host: &str,
+) -> Option<&'a str> {
+    let first = image.split('/').next().unwrap_or(image);
+    let has_host =
+        image.contains('/') && (first.contains('.') || first.contains(':') || first == "localhost");
+    if has_host && !first.eq_ignore_ascii_case(platform_registry_host) {
+        return None;
+    }
+    Some(strip_image_to_repo(image))
+}
+
 /// Parse an owner-namespaced repository path like `u-{hex32}/slug` into
 /// `(owner_uuid, slug)`, or return `None` for legacy `nasiko/` repositories.
 ///
@@ -195,5 +211,69 @@ mod tests {
     #[test]
     fn slug_trims_leading_trailing_hyphens() {
         assert_eq!(image_name_slug("--agent--"), "agent");
+    }
+
+    #[test]
+    fn platform_repository_unqualified_image() {
+        assert_eq!(
+            platform_repository_from_image("nasiko/agent:1.0", "registry.example.com"),
+            Some("nasiko/agent")
+        );
+    }
+
+    #[test]
+    fn platform_repository_qualified_matching_host() {
+        assert_eq!(
+            platform_repository_from_image(
+                "registry.example.com/nasiko/agent:1.0",
+                "registry.example.com"
+            ),
+            Some("nasiko/agent")
+        );
+    }
+
+    #[test]
+    fn platform_repository_external_registry_returns_none() {
+        assert_eq!(
+            platform_repository_from_image(
+                "external.example/nasiko/agent:1.0",
+                "registry.example.com"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn platform_repository_host_with_port() {
+        assert_eq!(
+            platform_repository_from_image("localhost:5000/nasiko/agent:1.0", "localhost:5000"),
+            Some("nasiko/agent")
+        );
+        assert_eq!(
+            platform_repository_from_image("localhost:5000/nasiko/agent:1.0", "localhost"),
+            None
+        );
+    }
+
+    #[test]
+    fn platform_repository_digest_reference() {
+        assert_eq!(
+            platform_repository_from_image(
+                "registry.example.com/u-abc123/agent@sha256:deadbeef",
+                "registry.example.com"
+            ),
+            Some("u-abc123/agent")
+        );
+    }
+
+    #[test]
+    fn platform_repository_external_with_port() {
+        assert_eq!(
+            platform_repository_from_image(
+                "external.io:5000/nasiko/agent:1.0",
+                "registry.example.com"
+            ),
+            None
+        );
     }
 }

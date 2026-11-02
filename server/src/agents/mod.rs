@@ -253,7 +253,7 @@ pub(crate) async fn validate_image_ref(
             }
         }
         Ok(None) => {
-            // Legacy nasiko/ path - check owners(R)
+            // Legacy nasiko/ path - check owners(R), counting platform images only.
             let repo_without_prefix = repo.strip_prefix("nasiko/").unwrap();
 
             // Narrow in SQL via substring match, then confirm exact match in Rust
@@ -273,7 +273,11 @@ pub(crate) async fn validate_image_ref(
 
             let mut owner_ids = Vec::new();
             for (owner_id, img) in rows {
-                if strip_image_to_repo(&img) == repo && !owner_ids.contains(&owner_id) {
+                if let Some(platform_repo) =
+                    nasiko_utils::image::platform_repository_from_image(&img, registry)
+                    && platform_repo == repo
+                    && !owner_ids.contains(&owner_id)
+                {
                     owner_ids.push(owner_id);
                 }
             }
