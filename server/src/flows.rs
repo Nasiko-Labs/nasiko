@@ -224,11 +224,14 @@ async fn get_flow(
         Err(e) => return e.into_response(),
     };
 
-    let flow = sqlx::query_as::<_, Flow>("SELECT * FROM flows WHERE flow_id = $1 AND user_id = $2")
-        .bind(&flow_id)
-        .bind(user_id)
-        .fetch_optional(&state.db)
-        .await;
+    let flow = sqlx::query_as::<_, Flow>(
+        "SELECT * FROM flows WHERE flow_id = $1 AND ($2 OR user_id = $3)",
+    )
+    .bind(&flow_id)
+    .bind(claims.is_superuser)
+    .bind(user_id)
+    .fetch_optional(&state.db)
+    .await;
 
     match flow {
         Ok(Some(f)) => {
@@ -361,6 +364,20 @@ async fn complete_flow(
     }
 }
 
+/// Whether the caller owns the flow, or is a superuser (who may open anyone's, as
+/// `authorize_session` lets them open anyone's session).
+async fn can_see_flow(state: &AppState, claims: &Claims, user_id: Uuid, flow_id: &str) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id = $1 AND ($2 OR user_id = $3))",
+    )
+    .bind(flow_id)
+    .bind(claims.is_superuser)
+    .bind(user_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false)
+}
+
 async fn list_steps(
     State(state): State<AppState>,
     claims: Claims,
@@ -371,17 +388,7 @@ async fn list_steps(
         Err(e) => return e.into_response(),
     };
 
-    // Verify ownership
-    let owns = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id = $1 AND user_id = $2)",
-    )
-    .bind(&flow_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
-
-    if !owns {
+    if !can_see_flow(&state, &claims, user_id, &flow_id).await {
         return StatusCode::NOT_FOUND.into_response();
     }
 
@@ -421,17 +428,7 @@ async fn add_step(
         Err(e) => return e.into_response(),
     };
 
-    // Verify ownership
-    let owns = sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM flows WHERE flow_id = $1 AND user_id = $2)",
-    )
-    .bind(&flow_id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false);
-
-    if !owns {
+    if !can_see_flow(&state, &claims, user_id, &flow_id).await {
         return StatusCode::NOT_FOUND.into_response();
     }
 

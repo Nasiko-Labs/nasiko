@@ -750,6 +750,7 @@ function recordedSessionRow(r: ChatSessionRow, agentName: string): SessionSummar
     num_traces: turns || null,
     status: turns ? 'ok' : null,
     failed_flows: 0,
+    flow_count: 0,
     start_time: r.created_at,
     end_time: end,
     duration_ms: turns ? Date.parse(end) - Date.parse(r.created_at) : null,

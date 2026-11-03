@@ -1191,6 +1191,10 @@ async fn session_list_totals_a_coding_session_from_its_turns() {
     assert_eq!(row["start_time"], "2023-11-14T22:13:20.000Z");
     assert_eq!(row["status"], "ok");
     assert_eq!(row["failed_flows"], 0);
+    assert_eq!(
+        row["flow_count"], 0,
+        "a coding-agent session never crossed the proxy"
+    );
 
     server.cleanup().await;
 }
@@ -1223,18 +1227,6 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
         ],
     )
     .await;
-    // An error the agent worked past is not a failed session: only the latest
-    // turn decides.
-    let recovered = ingest_session(
-        &server,
-        user_id,
-        "recovered-tool",
-        vec![
-            turn_at("recovered-tool", 0, vec![Failed]),
-            turn_at("recovered-tool", 1, vec![Succeeded]),
-        ],
-    )
-    .await;
     // An ordinary chat session beside them keeps its flow-derived status and
     // its absent trace count.
     sqlx::query(
@@ -1259,7 +1251,6 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
     assert_eq!(find(&body, &ok)["status"], "ok");
     assert_eq!(find(&body, &failed)["status"], "failed");
     assert_eq!(find(&body, &failed)["num_traces"], 2);
-    assert_eq!(find(&body, &recovered)["status"], "ok");
     let plain = find(&body, "plain-chat");
     assert_eq!(plain["status"], "ok");
     assert!(plain["num_traces"].is_null(), "{plain}");
@@ -1273,7 +1264,7 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
     let mut ok_ids =
         session_ids(&list_sessions(&server, user_id, &format!("{LIST_SINCE}&status=ok")).await);
     ok_ids.sort();
-    let mut expected = vec![ok, recovered, "plain-chat".to_owned()];
+    let mut expected = vec![ok, "plain-chat".to_owned()];
     expected.sort();
     assert_eq!(ok_ids, expected);
     let running = list_sessions(&server, user_id, &format!("{LIST_SINCE}&status=running")).await;

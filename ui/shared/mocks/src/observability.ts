@@ -265,6 +265,7 @@ function sessionSummary(
     // No requests in the window means nothing says this session succeeded.
     status: !traces.length ? null : failedFlows > 0 ? ('failed' as const) : ('ok' as const),
     failed_flows: failedFlows,
+    flow_count: traces.length,
     // Unrecovered error spans. `null` means "not materialized yet", which only
     // applies when there is nothing to have materialized.
     error_count: traces.length ? failedFlows : null,
