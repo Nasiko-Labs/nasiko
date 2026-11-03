@@ -150,7 +150,7 @@ pub fn pending_event_count() -> Result<usize> {
 // ─── Commands ────────────────────────────────────────────────────────────────
 
 pub use a2a::DiscoveredAgent as A2aAgent;
-pub use a2a::env_file::{AgentFramework, EnvTarget};
+pub use a2a::env_file::{AgentFramework, EnvTarget, Provider};
 pub use control_plane::{ListedA2aAgent, RegisteredA2aAgent};
 
 /// The A2A agents running on this machine, and what discovery could not look at.
@@ -642,9 +642,14 @@ pub struct A2aConnection {
     pub card_name: String,
     /// Its catalog name.
     pub name: String,
+    /// Empty until [`A2aConnection::choose`] sets them.
     pub vars: Vec<(&'static str, String)>,
     /// Whether `vars` include the MCP gateway's.
     pub mcp: McpSetup,
+    /// The providers its env file already routes or calls, to offer as the default choice.
+    pub providers_in_use: Vec<a2a::env_file::Provider>,
+    key: String,
+    cluster_url: String,
     /// The framework it runs on, when known, for showing how its code opens the gateway.
     pub framework: Option<a2a::env_file::AgentFramework>,
     /// The agent's working folder, when known.
@@ -656,7 +661,7 @@ pub struct A2aConnection {
 /// Whether `connect` gives an A2A agent the MCP gateway, as a deployed agent has it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McpSetup {
-    /// `--no-mcp`.
+    /// Not chosen.
     NotRequested,
     /// The credential could not be minted (an older control plane, say); LLM routing goes on.
     Unavailable(String),
@@ -664,13 +669,12 @@ pub enum McpSetup {
     Added,
 }
 
-/// Register the running agents, then prepare `agent`'s connection: its LLM key, its MCP
-/// gateway credential when `with_mcp`, and the file decided from its process (see
-/// [`a2a::env_file`]).
+/// Register the running agents, then prepare `agent`'s connection: its LLM key and the file
+/// decided from its process (see [`a2a::env_file`]). What goes in the file is chosen next,
+/// with [`A2aConnection::choose`].
 pub fn prepare_a2a_connection(
     agent: &A2aAgent,
     running: &RunningA2aAgents,
-    with_mcp: bool,
 ) -> Result<A2aConnection> {
     if let Err(issues) = &agent.card {
         let issues: Vec<String> = issues.iter().map(ToString::to_string).collect();
@@ -688,20 +692,6 @@ pub fn prepare_a2a_connection(
             )
         })?;
     let (key, cluster_url) = control_plane::routing_key(entry.id)?;
-    let mut vars = a2a::env_file::routing_vars(&cluster_url, &key);
-    let mcp = if with_mcp {
-        match control_plane::mcp_token(entry.id) {
-            Ok(token) => {
-                vars.extend(a2a::env_file::mcp_vars(&cluster_url, &token));
-                McpSetup::Added
-            }
-            Err(error) => McpSetup::Unavailable(
-                crate::commands::coding_agent_router::one_line_warning(&error),
-            ),
-        }
-    } else {
-        McpSetup::NotRequested
-    };
     let mut framework = None;
     let (folder, target) = match &agent.origin {
         a2a::EndpointOrigin::Docker { container } => (
@@ -730,16 +720,47 @@ pub fn prepare_a2a_connection(
             (facts.cwd, target)
         }
     };
+    let providers_in_use = match &target {
+        EnvTarget::File(file) => {
+            a2a::env_file::providers_in(&std::fs::read_to_string(file).unwrap_or_default())
+        }
+        EnvTarget::Unknown(_) => Vec::new(),
+    };
     Ok(A2aConnection {
         agent_id: entry.id,
         card_name: agent.name.clone(),
         name: entry.name.clone(),
-        vars,
-        mcp,
+        vars: Vec::new(),
+        mcp: McpSetup::NotRequested,
+        providers_in_use,
+        key,
+        cluster_url,
         framework,
         folder,
         target,
     })
+}
+
+impl A2aConnection {
+    /// Set the variables for what the user chose: routing for `providers`, and the MCP
+    /// gateway when `with_mcp` (its credential is minted only then).
+    pub fn choose(&mut self, providers: &[a2a::env_file::Provider], with_mcp: bool) {
+        self.vars = a2a::env_file::routing_vars(&self.cluster_url, &self.key, providers);
+        self.mcp = if with_mcp {
+            match control_plane::mcp_token(self.agent_id) {
+                Ok(token) => {
+                    self.vars
+                        .extend(a2a::env_file::mcp_vars(&self.cluster_url, &token));
+                    McpSetup::Added
+                }
+                Err(error) => McpSetup::Unavailable(
+                    crate::commands::coding_agent_router::one_line_warning(&error),
+                ),
+            }
+        } else {
+            McpSetup::NotRequested
+        };
+    }
 }
 
 /// The text `file` will hold once connected, for showing and writing.

@@ -48,6 +48,10 @@ pub struct ConnectOptions {
     /// Don't give the agent your MCP connectors through the Nasiko gateway
     #[arg(long, conflicts_with = "no_routing", help_heading = HELP_HEADING)]
     pub no_mcp: bool,
+    /// A2A agents: the LLM providers whose calls to route (asked on a terminal; otherwise the
+    /// ones its env file already uses, else openai)
+    #[arg(long = "provider", value_enum, value_delimiter = ',', help_heading = HELP_HEADING)]
+    pub providers: Vec<integration::Provider>,
     /// Report sessions to Nasiko observability — tokens, latency and cost; add --content for
     /// prompt and response text (asked on a terminal, off otherwise)
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
@@ -77,6 +81,7 @@ impl ConnectOptions {
             || self.no_routing
             || self.mcp
             || self.no_mcp
+            || !self.providers.is_empty()
             || self.reporting
             || self.no_reporting
             || self.content
@@ -2044,7 +2049,19 @@ pub fn connect_a2a(
 ) -> Result<()> {
     let prompter = prompter(options.yes);
     ensure_logged_in(prompter.as_ref())?;
-    let connection = integration::prepare_a2a_connection(agent, running, !options.no_mcp)?;
+    let mut connection = integration::prepare_a2a_connection(agent, running)?;
+    let providers = choose_providers(prompter.as_ref(), options, &connection)?;
+    let with_mcp = match options.mcp_choice() {
+        Some(choice) => choice,
+        None => prompter.confirm(
+            &format!(
+                "Give {} your MCP tools through the Nasiko gateway? (its code opens the client; Nasiko shows how)",
+                connection.card_name
+            ),
+            false,
+        )?,
+    };
+    connection.choose(&providers, with_mcp);
     let cli = cli_name();
     let name = quoted(&connection.card_name);
     let written = match &connection.target {
@@ -2073,16 +2090,47 @@ pub fn connect_a2a(
         integration::EnvTarget::Unknown(_) => false,
     };
     if !written {
-        print_variables_to_set(&connection);
         integration::save_a2a_connection(&connection, None)?;
     }
-    print_mcp_setup(&connection, written);
-    println!(
-        "\nRestart {} to apply. {} shows its LLM ROUTING as on after its first call.",
-        connection.card_name,
-        term::cyan(&format!("{cli} status"))
-    );
+    print_next_steps(&connection, written);
     Ok(())
+}
+
+/// The providers whose calls `connect` routes: `--provider`, else asked with the ones the
+/// agent's env file already uses ticked (OpenAI when it uses none).
+fn choose_providers(
+    prompter: &dyn Prompter,
+    options: &ConnectOptions,
+    connection: &integration::A2aConnection,
+) -> Result<Vec<integration::Provider>> {
+    if !options.providers.is_empty() {
+        return Ok(options.providers.clone());
+    }
+    let all = integration::Provider::ALL;
+    let in_use = &connection.providers_in_use;
+    let defaults: Vec<bool> = all
+        .iter()
+        .map(|provider| {
+            in_use.contains(provider)
+                || (in_use.is_empty() && *provider == integration::Provider::OpenAi)
+        })
+        .collect();
+    let labels: Vec<String> = all
+        .iter()
+        .map(|provider| provider.label().to_string())
+        .collect();
+    let chosen = prompter.multi_select(
+        &format!(
+            "Which LLM providers does {} call? Their calls go through Nasiko (space selects, enter confirms)",
+            connection.card_name
+        ),
+        &labels,
+        &defaults,
+    )?;
+    if chosen.is_empty() {
+        bail!("no provider chosen, so nothing to route; run connect again and select at least one");
+    }
+    Ok(chosen.into_iter().map(|index| all[index]).collect())
 }
 
 fn print_planned_write(connection: &integration::A2aConnection, file: &std::path::Path) {
@@ -2115,47 +2163,55 @@ fn planned_value<'a>(key: &str, value: &'a str) -> &'a str {
     }
 }
 
-fn print_variables_to_set(connection: &integration::A2aConnection) {
-    if let integration::EnvTarget::Unknown(reason) = &connection.target {
-        term::print_info(&format!(
-            "Not writing a file for {}: {reason}.",
-            connection.card_name
-        ));
+/// What the user still has to do, as a numbered list: set the variables when Nasiko didn't
+/// write them, restart the agent, and — only for MCP tools — change its code once.
+fn print_next_steps(connection: &integration::A2aConnection, written: bool) {
+    let agent = &connection.card_name;
+    println!("\n{}", term::bold("What you need to do:"));
+    let mut step = 0;
+    let mut next = || {
+        step += 1;
+        step
+    };
+    if !written {
+        let why = match &connection.target {
+            integration::EnvTarget::Unknown(reason) => format!(" (Nasiko didn't: {reason})"),
+            integration::EnvTarget::File(_) => String::new(),
+        };
+        println!("  {}. Add these to {agent}'s environment{why}:", next());
+        for (key, value) in &connection.vars {
+            println!("       {key}={value}");
+        }
     }
     println!(
-        "Set these where {} reads its environment:",
-        connection.card_name
+        "  {}. Restart {agent}. No code change for LLM routing; {} shows it on after the first call.",
+        next(),
+        term::cyan(&format!("{} status", cli_name()))
     );
-    for (key, value) in &connection.vars {
-        println!("  {key}={value}");
-    }
-}
-
-/// How the agent gets its MCP tools. The variables are in place (or were just shown), but
-/// unlike an LLM SDK, no agent framework opens an MCP client from the environment by itself:
-/// its code has to, once, so show how for its framework.
-fn print_mcp_setup(connection: &integration::A2aConnection, written: bool) {
     match &connection.mcp {
-        integration::McpSetup::NotRequested => println!("\nMCP gateway: not requested"),
-        integration::McpSetup::Unavailable(reason) => term::print_warning(&format!(
-            "MCP gateway unavailable ({reason}); LLM routing is connected, MCP tools are not"
-        )),
         integration::McpSetup::Added => {
-            let place = if written {
-                "are in its environment file"
-            } else {
-                "are among the variables above"
-            };
             println!(
-                "\nMCP gateway: MCP_GATEWAY_URL, MCP_GATEWAY_TOKEN and MCP_GATEWAY_CONNECT_URL {place}, \
-                 as a Nasiko-deployed agent has them. Its code opens the MCP client; {}",
+                "  {}. Code change, once, for MCP tools: {}",
+                next(),
                 mcp_snippet(connection.framework)
             );
             println!(
-                "Choose its tools in Nasiko: Agents → {} → MCP (connectors are off until enabled).",
+                "  {}. Pick its tools in Nasiko: Agents → {} → MCP.",
+                next(),
                 connection.name
             );
         }
+        integration::McpSetup::NotRequested => println!(
+            "\nMCP tools: not added. To add them: {}",
+            term::cyan(&format!(
+                "{} connect {} --mcp",
+                cli_name(),
+                quoted(&connection.name)
+            ))
+        ),
+        integration::McpSetup::Unavailable(reason) => term::print_warning(&format!(
+            "MCP tools not added: the gateway is unavailable ({reason})"
+        )),
     }
 }
 
@@ -2163,7 +2219,7 @@ fn print_mcp_setup(connection: &integration::A2aConnection, written: bool) {
 fn mcp_snippet(framework: Option<integration::AgentFramework>) -> &'static str {
     match framework {
         Some(integration::AgentFramework::LangGraph) => {
-            "with langchain-mcp-adapters:
+            "use langchain-mcp-adapters:
 
     import os
     from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -2177,7 +2233,7 @@ fn mcp_snippet(framework: Option<integration::AgentFramework>) -> &'static str {
 "
         }
         Some(integration::AgentFramework::CrewAi) => {
-            "with CrewAI's own MCP support:
+            "use CrewAI's own MCP support:
 
     import os
     from crewai.mcp import MCPServerHTTP

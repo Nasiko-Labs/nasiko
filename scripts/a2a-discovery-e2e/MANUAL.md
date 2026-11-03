@@ -139,14 +139,19 @@ nasiko agents discover
 nasiko status
 ```
 
-`connect` names the file it will write (here the agent's existing `.env`) and asks first; after
-writing it says the file now holds this agent's Nasiko key, so keep it out of version control. In
-`.env`, expect your own `OPENAI_API_KEY` line commented out as `# nasiko-off: …`, and a block
-between `# >>> nasiko` and `# <<< nasiko` with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and
-this agent's key, plus `MCP_GATEWAY_URL`, `MCP_GATEWAY_TOKEN` and `MCP_GATEWAY_CONNECT_URL`: the
-MCP gateway variables a Nasiko-deployed agent gets (`--no-mcp` leaves them out). Because no
+`connect` asks two things first. **Which LLM providers** the agent calls: OpenAI is already
+ticked, because its `.env` sets `OPENAI_API_KEY` (Anthropic would be ticked if it set an
+`ANTHROPIC_*` variable); press enter. **Whether to give it your MCP tools** through the gateway:
+answer `y` (the default is no, since it needs a few lines in the agent's code). Then it names the
+file it will write (here the agent's existing `.env`) and asks before writing; after writing it
+says the file now holds this agent's Nasiko key, so keep it out of version control. In `.env`,
+expect your own `OPENAI_API_KEY` line commented out as `# nasiko-off: …`, and a block between
+`# >>> nasiko` and `# <<< nasiko` with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and this
+agent's key, no `ANTHROPIC_*` lines, plus `MCP_GATEWAY_URL`, `MCP_GATEWAY_TOKEN` and
+`MCP_GATEWAY_CONNECT_URL`: the MCP gateway variables a Nasiko-deployed agent gets. Because no
 framework opens an MCP client from the environment on its own, `connect` also prints the few
-lines of LangGraph code that do (CrewAI agents get CrewAI's). Step 5b runs them.
+lines of LangGraph code that do (CrewAI agents get CrewAI's). Step 5b runs them. Without a
+terminal (`--yes`), `--provider openai,anthropic` and `--mcp` give the same answers.
 `planner`'s CONNECTED is `waiting`, and `status` shows its LLM ROUTING `waiting`: LangGraph has
 not reread `.env` yet.
 

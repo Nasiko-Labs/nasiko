@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use super::process::{ProcessFacts, is_within};
 
-/// The variables `connect` sets. Both OpenAI base-URL names are set because frameworks read
+/// The variables `connect` can set, for the providers chosen. Both OpenAI base-URL names are set because frameworks read
 /// different ones first (CrewAI `OPENAI_BASE_URL`, LangChain `OPENAI_API_BASE`); likewise
 /// for Anthropic.
 pub const MANAGED_KEYS: [&str; 6] = [
@@ -51,20 +51,72 @@ pub enum EnvTarget {
     Unknown(String),
 }
 
+/// An LLM API an agent calls, each routed through Nasiko by its own variables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Provider {
+    #[value(name = "openai")]
+    OpenAi,
+    Anthropic,
+}
+
+impl Provider {
+    pub const ALL: [Provider; 2] = [Provider::OpenAi, Provider::Anthropic];
+
+    /// How `connect` names it when asking.
+    pub fn label(self) -> &'static str {
+        match self {
+            Provider::OpenAi => "OpenAI (and OpenAI-compatible) — OPENAI_*",
+            Provider::Anthropic => "Anthropic — ANTHROPIC_*",
+        }
+    }
+
+    fn prefix(self) -> &'static str {
+        match self {
+            Provider::OpenAi => "OPENAI_",
+            Provider::Anthropic => "ANTHROPIC_",
+        }
+    }
+}
+
 /// The routing variables for an agent whose key is `key`, on the control plane at
-/// `cluster_url`. The router serves OpenAI's API under `/v1` and Anthropic's at the root,
-/// matching what `connect` writes for coding agents.
-pub fn routing_vars(cluster_url: &str, key: &str) -> Vec<(&'static str, String)> {
+/// `cluster_url`, for the `providers` it calls. The router serves OpenAI's API under `/v1`
+/// and Anthropic's at the root, matching what `connect` writes for coding agents.
+pub fn routing_vars(
+    cluster_url: &str,
+    key: &str,
+    providers: &[Provider],
+) -> Vec<(&'static str, String)> {
     let base = cluster_url.trim_end_matches('/');
-    let openai = format!("{base}/v1");
-    vec![
-        ("OPENAI_BASE_URL", openai.clone()),
-        ("OPENAI_API_BASE", openai),
-        ("OPENAI_API_KEY", key.to_string()),
-        ("ANTHROPIC_BASE_URL", base.to_string()),
-        ("ANTHROPIC_API_URL", base.to_string()),
-        ("ANTHROPIC_API_KEY", key.to_string()),
-    ]
+    let mut vars = Vec::new();
+    if providers.contains(&Provider::OpenAi) {
+        let openai = format!("{base}/v1");
+        vars.extend([
+            ("OPENAI_BASE_URL", openai.clone()),
+            ("OPENAI_API_BASE", openai),
+            ("OPENAI_API_KEY", key.to_string()),
+        ]);
+    }
+    if providers.contains(&Provider::Anthropic) {
+        vars.extend([
+            ("ANTHROPIC_BASE_URL", base.to_string()),
+            ("ANTHROPIC_API_URL", base.to_string()),
+            ("ANTHROPIC_API_KEY", key.to_string()),
+        ]);
+    }
+    vars
+}
+
+/// The providers `text`, an env file, already sets variables for — the user's own lines, set
+/// aside or not, and an earlier Nasiko block — in [`Provider::ALL`] order.
+pub fn providers_in(text: &str) -> Vec<Provider> {
+    let keys: Vec<&str> = text
+        .lines()
+        .filter_map(|line| key_of(line.strip_prefix(SET_ASIDE).unwrap_or(line)))
+        .collect();
+    Provider::ALL
+        .into_iter()
+        .filter(|provider| keys.iter().any(|key| key.starts_with(provider.prefix())))
+        .collect()
 }
 
 /// The MCP gateway variables for an agent whose gateway credential is `token`, on the control
@@ -274,13 +326,14 @@ fn key_of(line: &str) -> Option<&str> {
 }
 
 /// `text` with Nasiko's block for `agent` at the end, replacing any earlier one. The user's
-/// own lines for these variables are set aside as comments, so the block decides and undo
-/// can restore them.
+/// own lines for the variables it sets are set aside as comments, so the block decides and
+/// undo can restore them; their lines for a provider not routed stay in force.
 pub fn with_block(text: &str, header: &str, vars: &[(&str, String)]) -> String {
+    let sets = |key: &str| vars.iter().any(|(set, _)| *set == key);
     let mut lines: Vec<String> = without_block(text)
         .lines()
         .map(|line| match key_of(line) {
-            Some(key) if MANAGED_KEYS.contains(&key) => format!("{SET_ASIDE}{line}"),
+            Some(key) if sets(key) => format!("{SET_ASIDE}{line}"),
             _ => line.to_string(),
         })
         .collect();
@@ -353,7 +406,7 @@ mod tests {
     use super::*;
 
     fn vars() -> Vec<(&'static str, String)> {
-        routing_vars("https://cp.example/", "jwt")
+        routing_vars("https://cp.example/", "jwt", &Provider::ALL)
     }
 
     fn facts(cwd: &Path, args: &[&str], site_packages: &[PathBuf]) -> ProcessFacts {
@@ -377,6 +430,41 @@ mod tests {
                 ("ANTHROPIC_API_KEY", "jwt".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn routing_vars_cover_only_the_chosen_providers() {
+        let anthropic = routing_vars("https://cp.example", "jwt", &[Provider::Anthropic]);
+        assert!(
+            anthropic
+                .iter()
+                .all(|(key, _)| key.starts_with("ANTHROPIC_"))
+        );
+        assert_eq!(anthropic.len(), 3);
+        assert!(routing_vars("https://cp.example", "jwt", &[]).is_empty());
+    }
+
+    #[test]
+    fn the_providers_a_file_uses_are_read_from_its_lines_set_aside_or_not() {
+        assert_eq!(providers_in("OTHER=1\n"), vec![]);
+        assert_eq!(
+            providers_in("export ANTHROPIC_API_KEY=a\n# OPENAI_API_KEY=commented\n"),
+            vec![Provider::Anthropic]
+        );
+        let connected = with_block("OPENAI_API_KEY=mine\n", "h", &vars());
+        assert_eq!(providers_in(&connected), Provider::ALL.to_vec());
+    }
+
+    #[test]
+    fn a_provider_not_routed_keeps_the_users_own_lines_in_force() {
+        let original = "OPENAI_API_KEY=mine\nANTHROPIC_API_KEY=theirs\n";
+        let openai = routing_vars("https://cp.example", "jwt", &[Provider::OpenAi]);
+        let connected = with_block(original, "h", &openai);
+        assert!(connected.contains("# nasiko-off: OPENAI_API_KEY=mine\n"));
+        assert!(
+            connected.starts_with("# nasiko-off: OPENAI_API_KEY=mine\nANTHROPIC_API_KEY=theirs\n")
+        );
+        assert_eq!(without_block(&connected), original);
     }
 
     #[test]

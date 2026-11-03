@@ -200,7 +200,14 @@ expect_status "$planner" off "once registered"
 expect_status "$planner_copy" off "once registered"
 expect_status writer off "once registered"
 
-connected=$(nasiko connect "$planner" --yes 2>&1)
+# Without a terminal, connect routes the providers the agent's .env already uses (OpenAI here)
+# and leaves the MCP gateway out until asked for.
+nasiko connect "$planner" --yes
+grep -q '^OPENAI_BASE_URL=' "$app/.env" || fail "connect did not route the provider the agent uses"
+! grep -q '^ANTHROPIC_' "$app/.env" || fail "connect wrote a provider the agent does not use"
+! grep -q '^MCP_GATEWAY_' "$app/.env" || fail "connect added the MCP gateway without being asked"
+
+connected=$(nasiko connect "$planner" --yes --mcp 2>&1)
 echo "$connected"
 grep -q "now holds this agent's Nasiko key" <<< "$connected" ||
   fail "connect did not tell the user the file now holds the agent's key"
@@ -210,7 +217,7 @@ grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$app/.env" ||
 grep -q "^OPENAI_BASE_URL=$server/v1$" "$app/.env" || fail "connect wrote the wrong OPENAI_BASE_URL"
 cmp -s "$copy/.env" "$work/env.before" || fail "connect changed the other copy's .env"
 
-# MCP: connect wrote the gateway's variables too. With a connector enabled for the agent, the
+# MCP: with --mcp, connect wrote the gateway's variables too. With a connector enabled for the agent, the
 # code connect prints for each framework reaches its tool through the gateway, as the owner.
 grep -q '^MCP_GATEWAY_TOKEN=' "$app/.env" || fail "connect did not write the MCP gateway variables"
 mcp_port=$(free_port)
@@ -302,7 +309,7 @@ disconnect_and_check() { # disconnect_and_check <agent> <env file> <its env file
 disconnect_and_check "$planner" "$app/.env" "$work/env.before"
 
 # ── CrewAI: the same path ────────────────────────────────────────────────────
-connected=$(nasiko connect crew-researcher --yes 2>&1)
+connected=$(nasiko connect crew-researcher --yes --mcp 2>&1)
 echo "$connected"
 grep -q '^# >>> nasiko' "$crew/.env" || fail "connect did not write Nasiko's block to $crew/.env"
 grep -q '^# nasiko-off: OPENAI_API_KEY=sk-agent-own-key$' "$crew/.env" ||
