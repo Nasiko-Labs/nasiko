@@ -64,8 +64,8 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     },
     {
       target: 'overview-views',
-      title: 'Three ways to look',
-      body: 'Overview is the cards. Village and Map draw the same fleet as a place you can explore. Your choice is remembered.',
+      title: 'Pick a view',
+      body: 'Overview is the cards. The other views draw the same fleet as a place you can explore. Your choice is remembered.',
     },
     {
       target: 'overview-range',

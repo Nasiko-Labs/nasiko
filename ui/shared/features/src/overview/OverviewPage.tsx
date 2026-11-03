@@ -17,12 +17,13 @@
  * reads the persona's default scope (`homeScopeFor`: Fleet for leads and finance, Yours otherwise), since the Overview
  * has no scope switch; the first paint waits for it, so it never pushes the cards down mid-look.
  *
- * OSS only: the header's view switch swaps the summary bento for the estate's canvas (plans/feat-village-overview.md,
- * ported from nasiko-ui-lab feat/product-shell); the cards under it stay either way. `?view=village` draws the village
- * and `?view=map` the Map's board (`fleet/`), with the same HUD and insight drawer. A bare `/` opens the viewer's last
- * pick (`homeViewKey`), else the summary; a `?sel=` without a view opens the village. The estate is read only while the
+ * The header's view switch swaps the summary bento for the estate's canvas (plans/feat-village-overview.md, ported from
+ * nasiko-ui-lab feat/product-shell); the cards under it stay either way. `?view=village` draws the village and
+ * `?view=map` the Map's board (`fleet/`), with the same HUD and insight drawer. A bare `/` opens the viewer's last pick
+ * (`homeViewKey`), else the summary; a `?sel=` without a view opens the village. The estate is read only while the
  * canvas shows. Admins pick Org or Mine (`?scope=`) beside the range on the canvas; the filters bar shows only while a
- * filter is set. Other editions get the summary alone, whatever the URL says.
+ * filter is set. The village is OSS only (the desktop app embeds the OSS build); other editions switch between the
+ * summary and the Map, and anything that would open the village opens the Map there (NAS-1318).
  */
 import { useEdition, useSlots } from '@nasiko/app-core/edition/edition-context'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
@@ -82,6 +83,8 @@ import { loadVillage } from './village/load'
 type SetSearch = (patch: Partial<OverviewSearch>) => void
 type HomeView = 'overview' | VillageView
 const HOME_VIEWS: readonly HomeView[] = ['overview', 'village', 'map']
+/** Every edition but OSS: the Map without the village. */
+const MAP_VIEWS: readonly HomeView[] = ['overview', 'map']
 
 /** The view a bare `/` opens, per viewer, under the drafts prefix (sign-out clears it, as chat's rail view). */
 const homeViewKey = (sub: string) => `${DRAFT_PREFIX}${sub}:meta:homeView`
@@ -125,6 +128,7 @@ function HeaderActions({
   setup,
   admin,
   view,
+  views,
   onView,
 }: {
   search: OverviewSearch
@@ -134,37 +138,36 @@ function HeaderActions({
   /** Admins choose Org or Mine for the canvas; members only ever see their own. */
   admin: boolean
   view: HomeView
-  /** Null where the canvas isn't offered (any edition but OSS): no view switch. */
-  onView: ((v: HomeView) => void) | null
+  /** The edition's views (the village is OSS only). */
+  views: readonly HomeView[]
+  onView(v: HomeView): void
 }) {
   return (
     <>
-      {onView ? (
-        <ToggleGroup
-          data-tour="overview-views"
-          variant="outline"
-          size="sm"
-          value={[view]}
-          onValueChange={(vs) => {
-            const v = vs[0] as string
-            return v && onView(v as HomeView)
-          }}
-          aria-label={copy.views.label}
-        >
-          {HOME_VIEWS.map((v) => (
-            <ToggleGroupItem
-              key={v}
-              value={v}
-              className="px-3 text-xs pointer-coarse:min-h-11"
-              // Intent to open the canvas starts its download, so the switch feels instant.
-              onPointerEnter={v === 'overview' ? undefined : () => void loadVillage()}
-              onFocus={v === 'overview' ? undefined : () => void loadVillage()}
-            >
-              {copy.views[v]}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
-      ) : null}
+      <ToggleGroup
+        data-tour="overview-views"
+        variant="outline"
+        size="sm"
+        value={[view]}
+        onValueChange={(vs) => {
+          const v = vs[0] as string
+          return v && onView(v as HomeView)
+        }}
+        aria-label={copy.views.label}
+      >
+        {views.map((v) => (
+          <ToggleGroupItem
+            key={v}
+            value={v}
+            className="px-3 text-xs pointer-coarse:min-h-11"
+            // Intent to open the canvas starts its download, so the switch feels instant.
+            onPointerEnter={v === 'overview' ? undefined : () => void loadVillage()}
+            onFocus={v === 'overview' ? undefined : () => void loadVillage()}
+          >
+            {copy.views[v]}
+          </ToggleGroupItem>
+        ))}
+      </ToggleGroup>
       {admin && view !== 'overview' ? (
         <ToggleGroup
           variant="outline"
@@ -341,15 +344,13 @@ function Overview({
     [spend.summary, spend.unpriced, needs],
   )
 
-  // The village and the map are OSS only. `list` was the village's List view; its list is the Map's System card now, so
-  // an old link opens the Map.
-  const offersCanvas = useEdition() === 'oss'
+  // `list` was the village's List view; its list is the Map's System card now, so an old link opens the Map. Without
+  // the village (any edition but OSS), so does a village link or pick.
+  const hasVillage = useEdition() === 'oss'
   const [remembered, setRemembered] = useState(() => readHomeView(me.sub))
-  const view: HomeView = !offersCanvas
-    ? 'overview'
-    : search.view === 'list'
-      ? 'map'
-      : (search.view ?? (search.sel ? 'village' : remembered))
+  const asked =
+    search.view === 'list' ? 'map' : (search.view ?? (search.sel ? 'village' : remembered))
+  const view: HomeView = asked === 'village' && !hasVillage ? 'map' : asked
   const canvas = view !== 'overview'
   // The canvas's chunk downloads alongside the estate, not after it.
   useEffect(() => {
@@ -435,7 +436,8 @@ function Overview({
       setup={!firstRun}
       admin={admin}
       view={view}
-      onView={offersCanvas ? pickView : null}
+      views={hasVillage ? HOME_VIEWS : MAP_VIEWS}
+      onView={pickView}
     />
   )
   // One page loader until the first paint's reads settle (data or error: a failed read renders its card's error), in
@@ -499,7 +501,7 @@ function Overview({
   }
   return (
     <Frame description={description} actions={actions}>
-      {/* The summary, or in its place the canvas (OSS): the cards under it stay either way. */}
+      {/* The summary, or in its place the canvas: the cards under it stay either way. */}
       {!canvas ? (
         <SummaryCard
           days={days}
