@@ -513,6 +513,26 @@ pub fn invoked_tool_name(params: &Value) -> &str {
     }
 }
 
+/// The arguments a `tools/call` is really about, the companion to
+/// `invoked_tool_name`: `params.arguments`, except that `nasiko_call_tool`
+/// resolves to the inner tool's own `arguments` it dispatches — by the same
+/// parse, so the recorded arguments always belong to the recorded name. An
+/// executor call the parse rejects falls back to the outer arguments the caller
+/// actually sent. Returned owned because the executor case unwraps a nested
+/// object out of a borrowed tree.
+pub fn invoked_tool_arguments(params: &Value) -> Value {
+    let outer = params.get("name").and_then(Value::as_str).unwrap_or("");
+    if outer == CALL_TOOL_META
+        && let Ok((_, inner)) = parse_call_tool_target(params.get("arguments"))
+    {
+        return inner;
+    }
+    params
+        .get("arguments")
+        .cloned()
+        .unwrap_or_else(|| json!({}))
+}
+
 /// The W3C trace-id out of a `traceparent`, which is what a flow is keyed by.
 ///
 /// Mirrors `nasiko_llm_router::routing::boundary::parse_flow_id`; duplicated rather than shared
@@ -3101,6 +3121,37 @@ mod tests {
             );
         }
         assert_eq!(invoked_tool_name(&json!({})), "");
+    }
+
+    #[test]
+    fn invoked_tool_arguments_follow_the_name_through_the_executor_wrapper() {
+        // Direct call: the arguments are the call's own `arguments`.
+        assert_eq!(
+            invoked_tool_arguments(&json!({ "name": "abcd__echo", "arguments": { "path": "x" } })),
+            json!({ "path": "x" })
+        );
+        // Executor dispatch: the arguments are the inner tool's, not the wrapper's.
+        assert_eq!(
+            invoked_tool_arguments(&json!({
+                "name": "nasiko_call_tool",
+                "arguments": { "name": "abcd__echo", "arguments": { "path": "x" } },
+            })),
+            json!({ "path": "x" })
+        );
+        // What the parse rejects (here the inner `name` is missing) falls back to
+        // the arguments the caller sent, matching the name (`nasiko_call_tool`)
+        // recorded for the same rejected call.
+        assert_eq!(
+            invoked_tool_arguments(
+                &json!({ "name": "nasiko_call_tool", "arguments": { "bad": 1 } })
+            ),
+            json!({ "bad": 1 })
+        );
+        // Omitted arguments default to an empty object, never null.
+        assert_eq!(
+            invoked_tool_arguments(&json!({ "name": "abcd__echo" })),
+            json!({})
+        );
     }
 
     #[test]
