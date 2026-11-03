@@ -54,8 +54,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
-        delegation_audience: "nasiko-cp-test".to_string(),
-        delegation_enabled: true,
         database_url,
         redis_url: redis_url(),
         agent_runtime: "simulated".into(),
@@ -78,6 +76,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         mcp_manifest_ttl_seconds: 300,
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
+        seed_connectors: String::new(),
         mcp_tool_search_mode: "none".into(),
         mcp_tool_search_tool_limit: 15,
         mcp_tool_search_meta_limit: 10,
@@ -97,9 +96,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
         build_concurrency: 1,
-        // Same reasoning: no MAF runs compete with the benchmarked request path.
-        maf_worker_concurrency: 1,
-        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".into(),
         agent_memory_volume: "nasiko-agent-memory".into(),
         agent_memory_init_image: "alpine:3.21".into(),
@@ -121,8 +117,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
         build_push_token: String::new(),
-        agent_jwt_secret: String::new(),
-        agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
@@ -162,9 +156,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         hitl_resume_lease_minutes: 2,
         hitl_resume_max_attempts: 3,
         hitl_resume_retry_delay_secs: 2,
-        coding_agent_idle_ttl_secs: 0,
-        coding_agent_turn_lease_secs: 60,
-        coding_agent_lease_heartbeat_secs: 20,
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
         agent_state_max_body_bytes: 1_048_576,
@@ -199,8 +190,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         git_clone_allowed_hosts: vec![],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
-        // Bench agents are loopback mock servers.
-        agent_allow_private_urls: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
