@@ -837,59 +837,181 @@ fn offer_options() -> ConnectOptions {
     }
 }
 
-/// After `auth login`, `connect <url>` or `use`: offers session reporting for the detected
-/// agents that have none and weren't declined before. It is `connect --no-routing --reporting`
-/// for those agents — the same plan, agent choice and content question — but only once the
-/// user says yes: without a terminal it says how to turn reporting on, and a no is remembered
-/// so it isn't asked again. Agents it doesn't offer are told about, one line each, when their
-/// reporting doesn't reach this cluster or was declined. One agent's failure never stops the
-/// others.
+/// After `auth login`, `connect <url>` or `use`: offers session reporting, as `connect
+/// --no-routing --reporting` would, to the detected agents that have none (and weren't declined
+/// before) and to those whose reporting goes to another cluster or account. Nothing is turned on
+/// or moved unasked: on a terminal the user picks agents from a list with none selected, answers
+/// the content question, sees the plan and confirms it, and only then is asked whether to import
+/// past sessions. A new agent left unpicked is remembered so it isn't offered again. Without a
+/// terminal nothing changes; every agent the user should hear about gets one line saying how to
+/// set it up. One agent's failure never stops the others.
 pub fn offer_reporting() -> Result<()> {
     let views: Vec<AgentView> = load_views()?
         .into_iter()
         .filter(|view| view.local.detected && view.local.reporting_supported)
         .collect();
     let destination = ReportingDestination::current().ok();
-    for line in reporting_notices(&views, destination.as_ref()) {
+    let prompter = prompter(false);
+    let (offered, told) = split_offered(views, destination.as_ref());
+    for line in reporting_notices(&told, destination.as_ref()) {
         println!("{line}");
     }
-    let offered: Vec<AgentView> = views
-        .into_iter()
-        .filter(|view| !view.local.reporting_installed && !view.local.reporting_declined)
-        .collect();
     if offered.is_empty() {
         return Ok(());
     }
     let ids: Vec<&'static str> = offered.iter().map(|view| view.local.id).collect();
-    let turn_on = turn_on_reporting_hint(&ids);
-    let prompter = prompter(false);
-    match reporting_offer(offered, destination.as_ref(), prompter.as_ref())? {
-        Offer::NotAsked => term::print_info(&format!(
-            "Session reporting is off. Turn it on with: {}",
-            term::cyan(&turn_on)
-        )),
-        Offer::Declined => {
-            integration::record_declined(&ids)?;
+    let hint = turn_on_reporting_hint(&ids);
+    if !prompter.interactive() {
+        for line in reporting_notices(&offered, destination.as_ref()) {
+            println!("{line}");
+        }
+        if offered.iter().any(|view| !view.local.reporting_installed) {
             term::print_info(&format!(
-                "Session reporting left off; it won't be offered again. Turn it on any time with: {}",
-                term::cyan(&turn_on)
+                "Session reporting is off. Turn it on with: {}",
+                term::cyan(&hint)
             ));
         }
-        Offer::Accepted(mut plan) => {
-            verify_plan(
-                &mut plan,
-                &Lookups {
-                    config: &check_llm_config,
-                    look_up_agent: &coding_agent_router::look_up_owned_agent,
-                },
-            )?;
-            print_plan(&plan);
-            for (name, error) in apply_plan(&plan, &offer_options(), prompter.as_ref()) {
-                term::print_warning(&format!("{name}: {error}"));
-            }
-        }
+        return Ok(());
+    }
+    let (offer, declined) = login_offer(
+        offered,
+        destination.as_ref(),
+        prompter.as_ref(),
+        &fetch_llm_configs,
+    )?;
+    if !declined.is_empty() {
+        integration::record_declined(&declined)?;
+    }
+    let applied = match offer {
+        Offer::Accepted(plan) => apply_offered(plan, prompter.as_ref())?,
+        Offer::NotAsked | Offer::Declined => false,
+    };
+    if !applied {
+        term::print_info(&format!(
+            "Session reporting left as it is. Set it up any time with: {}",
+            term::cyan(&hint)
+        ));
+        return Ok(());
+    }
+    if reports_here(&load_views()?, destination.as_ref())
+        && prompter.confirm(IMPORT_QUESTION, true)?
+    {
+        integration::import_in_background()?;
     }
     Ok(())
+}
+
+/// Asked once reporting is set up, by the login offer and by `connect`.
+pub const IMPORT_QUESTION: &str = "Import your sessions from before connecting? (newest first)";
+
+/// Whether any of `views` has reporting installed that delivers to `destination`.
+fn reports_here(views: &[AgentView], destination: Option<&ReportingDestination>) -> bool {
+    destination.is_some()
+        && views.iter().any(|view| {
+            view.local.reporting_installed
+                && reporting_elsewhere(&view.local, destination).is_none()
+        })
+}
+
+/// Splits the agents for the offer: those it offers — no reporting and never declined, or
+/// reporting that goes to another cluster or account than `destination` — and the rest.
+fn split_offered(
+    views: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+) -> (Vec<AgentView>, Vec<AgentView>) {
+    views.into_iter().partition(|view| {
+        let local = &view.local;
+        if local.reporting_installed {
+            reporting_elsewhere(local, destination).is_some()
+        } else {
+            !local.reporting_declined
+        }
+    })
+}
+
+/// Lets the user pick, from `offered` with none selected, the agents that should report here,
+/// and on a pick builds the plan `connect --no-routing --reporting` would apply to them, which
+/// keeps a moved agent's content setting and asks it for a new one. Also returns the agents
+/// without reporting that were left unpicked, to be remembered as declined.
+fn login_offer(
+    offered: Vec<AgentView>,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+    load_configs: &dyn Fn() -> Result<Vec<Value>>,
+) -> Result<(Offer, Vec<&'static str>)> {
+    if !prompter.interactive() {
+        return Ok((Offer::NotAsked, Vec::new()));
+    }
+    let labels: Vec<String> = offered
+        .iter()
+        .map(|view| offer_label(view, destination))
+        .collect();
+    let to = destination.map_or("this cluster", |to| to.cluster_name.as_str());
+    let chosen = prompter.multi_select(
+        &format!(
+            "Which coding agents should report sessions to {to}? (space selects, enter confirms; none changes nothing)"
+        ),
+        &labels,
+        &vec![false; offered.len()],
+    )?;
+    let mut picked = Vec::with_capacity(chosen.len());
+    let mut declined = Vec::new();
+    for (i, view) in offered.into_iter().enumerate() {
+        if chosen.contains(&i) {
+            picked.push(view);
+        } else if !view.local.reporting_installed {
+            declined.push(view.local.id);
+        }
+    }
+    if picked.is_empty() {
+        return Ok((Offer::Declined, declined));
+    }
+    let plan = build_plan(
+        picked,
+        &offer_options(),
+        destination,
+        prompter,
+        load_configs,
+    )?;
+    Ok((Offer::Accepted(plan), declined))
+}
+
+/// "Claude Code (claude) — reports sessions to staging; select to move it here", or "— no
+/// session reporting yet".
+fn offer_label(view: &AgentView, destination: Option<&ReportingDestination>) -> String {
+    let local = &view.local;
+    let state = match reporting_elsewhere(local, destination) {
+        Some((from, _)) if local.reporting_installed => {
+            format!("reports sessions to {from}; select to move it here")
+        }
+        _ => "no session reporting yet".to_string(),
+    };
+    format!("{} ({}) — {state}", local.display_name, local.id)
+}
+
+/// Verifies and shows a plan the offer built, then applies it once the user confirms, warning
+/// about each agent it failed for. Returns whether it was applied.
+fn apply_offered(mut plan: Plan, prompter: &dyn Prompter) -> Result<bool> {
+    verify_plan(
+        &mut plan,
+        &Lookups {
+            config: &check_llm_config,
+            look_up_agent: &coding_agent_router::look_up_owned_agent,
+        },
+    )?;
+    if !plan.agents.iter().any(AgentPlan::changes_anything) {
+        print_nothing_to_do(&plan);
+        return Ok(false);
+    }
+    print_plan(&plan);
+    if !prompter.confirm("Apply these changes?", true)? {
+        println!("Cancelled; nothing was changed.");
+        return Ok(false);
+    }
+    for (name, error) in apply_plan(&plan, &offer_options(), prompter) {
+        term::print_warning(&format!("{name}: {error}"));
+    }
+    Ok(true)
 }
 
 /// One line for each agent the offer skips but the user should hear about: reporting installed
@@ -936,34 +1058,6 @@ fn turn_on_reporting_hint(ids: &[&str]) -> String {
             ids.join(", ")
         ),
     }
-}
-
-/// Asks whether to report sessions from `targets` — defaulting to no, since nobody asked for
-/// it — and, on a yes, builds the reporting plan, which asks about prompt and response text.
-fn reporting_offer(
-    targets: Vec<AgentView>,
-    destination: Option<&ReportingDestination>,
-    prompter: &dyn Prompter,
-) -> Result<Offer> {
-    if !prompter.interactive() {
-        return Ok(Offer::NotAsked);
-    }
-    let names: Vec<&str> = targets.iter().map(|view| view.local.display_name).collect();
-    let question = format!(
-        "Report sessions from {} to Nasiko observability?",
-        readable_list(&names)
-    );
-    if !prompter.confirm(&question, false)? {
-        return Ok(Offer::Declined);
-    }
-    let plan = build_plan(
-        targets,
-        &offer_options(),
-        destination,
-        prompter,
-        &fetch_llm_configs,
-    )?;
-    Ok(Offer::Accepted(plan))
 }
 
 fn check_llm_config(reference: &str) -> Result<()> {
@@ -2343,6 +2437,7 @@ mod tests {
     struct Scripted {
         confirms: RefCell<VecDeque<bool>>,
         selects: RefCell<VecDeque<usize>>,
+        picks: RefCell<VecDeque<(Vec<usize>, Vec<bool>)>>,
     }
 
     impl Scripted {
@@ -2350,7 +2445,16 @@ mod tests {
             Self {
                 confirms: RefCell::new(confirms.iter().copied().collect()),
                 selects: RefCell::new(selects.iter().copied().collect()),
+                picks: RefCell::new(VecDeque::new()),
             }
+        }
+
+        /// Answers the next multi-select with `chosen`, asserting what it suggested.
+        fn picking(self, chosen: &[usize], expected_defaults: &[bool]) -> Self {
+            self.picks
+                .borrow_mut()
+                .push_back((chosen.to_vec(), expected_defaults.to_vec()));
+            self
         }
     }
 
@@ -2374,9 +2478,18 @@ mod tests {
             &self,
             question: &str,
             _items: &[String],
-            _defaults: &[bool],
+            defaults: &[bool],
         ) -> Result<Vec<usize>> {
-            bail!("unexpected multi-select: {question}")
+            let (chosen, expected_defaults) = self
+                .picks
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("unexpected multi-select: {question}"))?;
+            assert_eq!(
+                defaults, expected_defaults,
+                "suggested picks for: {question}"
+            );
+            Ok(chosen)
         }
     }
 
@@ -3519,6 +3632,178 @@ mod tests {
         assert_eq!(maf_hint(), "nasiko maf");
     }
 
+    fn plan_of_offer(offer: Offer) -> Plan {
+        match offer {
+            Offer::Accepted(plan) => plan,
+            Offer::NotAsked => panic!("expected a plan, got NotAsked"),
+            Offer::Declined => panic!("expected a plan, got Declined"),
+        }
+    }
+
+    #[test]
+    fn after_logging_in_picked_agents_move_here_keeping_their_content_setting() {
+        let mut no_text = reporting_to("codex", Some(elsewhere()));
+        no_text.local.capture_content = false;
+        let targets = vec![reporting_to("claude", Some(elsewhere())), no_text];
+
+        let (offer, declined) = login_offer(
+            targets,
+            Some(&here()),
+            &Scripted::new(&[], &[]).picking(&[0, 1], &[false, false]),
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert!(declined.is_empty());
+        let plan = plan_of_offer(offer);
+
+        let steps: Vec<&ReportingStep> = plan.agents.iter().map(|agent| &agent.reporting).collect();
+        assert_eq!(
+            steps,
+            [
+                &ReportingStep::Install {
+                    capture_content: true,
+                    moving_from: Some("staging".into())
+                },
+                &ReportingStep::Install {
+                    capture_content: false,
+                    moving_from: Some("staging".into())
+                },
+            ]
+        );
+        assert!(
+            plan.agents
+                .iter()
+                .all(|agent| matches!(agent.routing, RoutingStep::Skip | RoutingStep::Keep)),
+            "LLM routing is left alone"
+        );
+    }
+
+    #[test]
+    fn after_logging_in_sessions_are_imported_once_any_agent_reports_here() {
+        let not_installed = view("cursor", false, false);
+        let reporting_here = view("claude", false, true);
+        let staying_elsewhere = reporting_to("codex", Some(elsewhere()));
+
+        assert!(reports_here(
+            &[
+                not_installed.clone(),
+                reporting_here,
+                staying_elsewhere.clone()
+            ],
+            Some(&here())
+        ));
+        assert!(!reports_here(
+            &[not_installed, staying_elsewhere],
+            Some(&here())
+        ));
+        assert!(!reports_here(&[view("claude", false, true)], None));
+    }
+
+    #[test]
+    fn after_logging_in_picking_nothing_changes_nothing_and_remembers_new_agents() {
+        let (offer, declined) = login_offer(
+            vec![
+                reporting_to("claude", Some(elsewhere())),
+                view("cursor", false, false),
+            ],
+            Some(&here()),
+            &Scripted::new(&[], &[]).picking(&[], &[false, false]),
+            &no_configs_expected,
+        )
+        .unwrap();
+
+        assert!(matches!(offer, Offer::Declined));
+        assert_eq!(
+            declined,
+            ["cursor"],
+            "a move left unpicked is offered again"
+        );
+    }
+
+    #[test]
+    fn after_logging_in_a_picked_new_agent_is_asked_about_text() {
+        // pick claude · include text? no
+        let (offer, declined) = login_offer(
+            vec![view("claude", false, false), view("codex", true, false)],
+            Some(&here()),
+            &Scripted::new(&[false], &[]).picking(&[0], &[false, false]),
+            &no_configs_expected,
+        )
+        .unwrap();
+
+        assert_eq!(declined, ["codex"]);
+        let plan = plan_of_offer(offer);
+        assert_eq!(plan.agents.len(), 1);
+        assert_eq!(
+            plan.agents[0].routing,
+            RoutingStep::Skip,
+            "no routing is added"
+        );
+        assert_eq!(
+            plan.agents[0].reporting,
+            ReportingStep::Install {
+                capture_content: false,
+                moving_from: None
+            }
+        );
+    }
+
+    #[test]
+    fn after_logging_in_a_picked_agent_reports_under_the_agent_routing_already_uses() {
+        let (offer, _) = login_offer(
+            vec![view("claude", true, false)],
+            Some(&here()),
+            &Scripted::new(&[true], &[]).picking(&[0], &[false]),
+            &no_configs_expected,
+        )
+        .unwrap();
+        let mut plan = plan_of_offer(offer);
+        verify(&mut plan, &|_, _| Ok(true)).unwrap();
+        assert!(plan.agents[0].reports_under_routing_agent());
+    }
+
+    #[test]
+    fn without_a_terminal_nothing_is_offered_or_declined() {
+        let (offer, declined) = login_offer(
+            vec![view("claude", false, false)],
+            Some(&here()),
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert!(matches!(offer, Offer::NotAsked));
+        assert!(declined.is_empty());
+    }
+
+    #[test]
+    fn the_offer_covers_new_agents_and_reporting_that_goes_elsewhere() {
+        let mut declined = view("opencode", false, false);
+        declined.local.reporting_declined = true;
+        let views = vec![
+            view("claude", false, true),
+            reporting_to("codex", Some(elsewhere())),
+            view("cursor", false, false),
+            declined,
+        ];
+        let ids = |views: &[AgentView]| views.iter().map(|view| view.local.id).collect::<Vec<_>>();
+
+        let (offered, told) = split_offered(views, Some(&here()));
+        assert_eq!(ids(&offered), ["codex", "cursor"]);
+        assert_eq!(ids(&told), ["claude", "opencode"]);
+    }
+
+    #[test]
+    fn the_offer_labels_say_where_each_agent_reports_now() {
+        assert_eq!(
+            offer_label(&reporting_to("codex", Some(elsewhere())), Some(&here())),
+            "codex (codex) — reports sessions to staging; select to move it here"
+        );
+        assert_eq!(
+            offer_label(&view("cursor", false, false), Some(&here())),
+            "cursor (cursor) — no session reporting yet"
+        );
+    }
+
     #[test]
     fn the_offer_tells_about_reporting_that_misses_this_cluster_and_about_declines() {
         let reporting_here = view("claude", false, true);
@@ -4032,39 +4317,16 @@ mod tests {
     // ── offered after logging in ──
 
     #[test]
-    fn without_a_terminal_reporting_is_not_offered() {
-        let offer = reporting_offer(
-            vec![view("claude", false, false)],
-            Some(&here()),
-            &Unattended,
-        )
-        .unwrap();
-        assert!(matches!(offer, Offer::NotAsked));
-    }
-
-    #[test]
-    fn a_no_to_the_offer_turns_nothing_on() {
-        let offer = reporting_offer(
-            vec![view("claude", false, false)],
-            Some(&here()),
-            &Scripted::new(&[false], &[]),
-        )
-        .unwrap();
-        assert!(matches!(offer, Offer::Declined));
-    }
-
-    #[test]
-    fn a_yes_plans_reporting_only_with_the_chosen_content_setting() {
-        // report? yes · include text? no
-        let offer = reporting_offer(
+    fn picking_agents_plans_reporting_only_with_the_chosen_content_setting() {
+        // pick both · include text? no
+        let (offer, _) = login_offer(
             vec![view("claude", true, false), view("codex", false, false)],
             Some(&here()),
-            &Scripted::new(&[true, false], &[]),
+            &Scripted::new(&[false], &[]).picking(&[0, 1], &[false, false]),
+            &no_configs_expected,
         )
         .unwrap();
-        let Offer::Accepted(plan) = offer else {
-            panic!("expected a plan");
-        };
+        let plan = plan_of_offer(offer);
         assert_eq!(
             plan.agents[0].routing,
             RoutingStep::Keep,
@@ -4084,21 +4346,6 @@ mod tests {
                 }
             );
         }
-    }
-
-    #[test]
-    fn a_yes_reports_under_the_agent_routing_already_uses() {
-        let offer = reporting_offer(
-            vec![view("claude", true, false)],
-            Some(&here()),
-            &Scripted::new(&[true, true], &[]),
-        )
-        .unwrap();
-        let Offer::Accepted(mut plan) = offer else {
-            panic!("expected a plan");
-        };
-        verify(&mut plan, &|_, _| Ok(true)).unwrap();
-        assert!(plan.agents[0].reports_under_routing_agent());
     }
 
     #[test]
