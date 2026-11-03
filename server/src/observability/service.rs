@@ -343,6 +343,7 @@ fn build_span_tree(
             name: span_display_name(s),
             span_kind: span_kind_str(s.kind).to_string(),
             status_code: status_code_str(s.status_code).to_string(),
+            status_message: (!s.status_message.is_empty()).then(|| s.status_message.clone()),
             start_time: Some(fmt_ts(s.started_at)),
             end_time: s.ended_at.map(fmt_ts),
             parent_id: s.parent_span_id.as_deref().map(encode_span_id),
@@ -688,6 +689,10 @@ pub struct SpanNode {
     pub name: String,
     pub span_kind: String,
     pub status_code: String,
+    /// The span's status description, when it has one — lets the UI tell the a2a SDK's
+    /// end-of-stream `QueueShutDown` from a real failure, exactly as the server does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_message: Option<String>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
     pub parent_id: Option<String>,

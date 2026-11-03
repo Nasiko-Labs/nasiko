@@ -686,9 +686,17 @@ pub struct TraceUsageRow {
 /// classify the same trace the same way.
 const RETRY_GAP_TOLERANCE_MS: i64 = 1;
 
-/// OTLP status code 2 is `ERROR` (0 unset, 1 ok).
+/// OTLP status code 2 is `ERROR` (0 unset, 1 ok), except the A2A SDK's end of stream.
 fn is_error(span: &Span) -> bool {
-    span.status_code == 2
+    span.status_code == 2 && !is_a2a_queue_shutdown(span)
+}
+
+/// The a2a Python SDK ends every stream by shutting its event queue down, and its own
+/// tracing records the waiting consumer's `QueueShutDown` as an ERROR span — once per
+/// completed reply. That is how a stream finishes, not a failure. Mirrors the UI's
+/// `isA2aQueueShutdown` (`ui/shared/features/src/observability/spans.ts`).
+fn is_a2a_queue_shutdown(span: &Span) -> bool {
+    span.name.ends_with(".dequeue_event") && span.status_message.starts_with("QueueShutDown")
 }
 
 /// Error spans that nothing recovered from: an ERROR span with no same-name
@@ -934,6 +942,22 @@ mod unrecovered_error_tests {
     fn count(spans: &[Span]) -> usize {
         let refs: Vec<&Span> = spans.iter().collect();
         unrecovered_error_spans(&refs).len()
+    }
+
+    #[test]
+    fn the_a2a_sdks_end_of_stream_is_not_an_error() {
+        let name = "a2a.server.events.event_queue_v2.EventQueueSource.dequeue_event";
+        let shutdown = Span {
+            status_message: "QueueShutDown: ".into(),
+            ..span("a", Some("p"), name, 0, 3, true)
+        };
+        assert_eq!(count(&[shutdown]), 0);
+        // Any other failure of the same call still counts.
+        let failed = Span {
+            status_message: "RuntimeError: boom".into(),
+            ..span("b", Some("p"), name, 0, 3, true)
+        };
+        assert_eq!(count(&[failed]), 1);
     }
 
     #[test]

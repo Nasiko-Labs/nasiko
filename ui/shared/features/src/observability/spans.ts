@@ -117,7 +117,16 @@ export function traceDurationMs(spans: FlatSpan[]): number {
   return spans.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0)
 }
 
-export const isError = (s: Pick<SpanNode, 'status_code'>) => s.status_code === 'ERROR'
+/**
+ * The a2a Python SDK ends every stream by shutting its event queue down, and its own tracing
+ * records the waiting consumer's `QueueShutDown` as an ERROR span, once per completed reply.
+ * That is how a stream finishes, not a failure. Mirrors the server's `is_a2a_queue_shutdown`.
+ */
+const isA2aQueueShutdown = (s: Pick<SpanNode, 'name' | 'status_message'>) =>
+  s.name.endsWith('.dequeue_event') && (s.status_message ?? '').startsWith('QueueShutDown')
+
+export const isError = (s: Pick<SpanNode, 'status_code' | 'name' | 'status_message'>) =>
+  s.status_code === 'ERROR' && !isA2aQueueShutdown(s)
 
 /** The span status as the UI prints it. */
 export const statusText = (s: Pick<SpanNode, 'status_code'>) =>

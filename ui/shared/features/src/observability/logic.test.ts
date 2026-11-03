@@ -36,7 +36,6 @@ const row = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({
   agent_id: 'seed-a',
   status: 'ok',
   failed_flows: 0,
-  flow_count: 0,
   error_count: 0,
   num_traces: 1,
   start_time: '2026-03-11T10:00:00.000Z',
@@ -596,6 +595,25 @@ describe('recovery needs a retry that starts after the failure ended', () => {
       latency_ms: 500,
     })
     expect(isTraceFailing(trace([r, failed, retry]))).toBe(false)
+  })
+})
+
+describe("the a2a SDK's end of stream", () => {
+  const root = node('aa', { name: 'request', latency_ms: 3000, end_time: at(3000) })
+  const dequeue = (id: string, status_message: string) =>
+    node(id, {
+      name: 'a2a.server.events.event_queue_v2.EventQueueSource.dequeue_event',
+      parent_id: root.id,
+      status_code: 'ERROR',
+      status_message,
+      start_time: at(0),
+      latency_ms: 3,
+    })
+  it('a QueueShutDown on dequeue is how a reply ends, not a failure', () => {
+    expect(isTraceFailing(trace([root, dequeue('b1', 'QueueShutDown: ')]))).toBe(false)
+  })
+  it('any other dequeue failure still fails the trace', () => {
+    expect(isTraceFailing(trace([root, dequeue('b1', 'RuntimeError: boom')]))).toBe(true)
   })
 })
 
