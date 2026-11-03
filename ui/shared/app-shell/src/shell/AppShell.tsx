@@ -70,7 +70,8 @@ export function AppShell({
             <Outlet />
           </div>
         ) : (
-          <div className="mx-auto w-full max-w-page px-4 py-4">
+          // `--float-clearance`: room a layer's floating control asks the page to leave at its foot.
+          <div className="mx-auto w-full max-w-page px-4 pt-4 pb-[calc(1rem+var(--float-clearance,0px))]">
             <Outlet />
           </div>
         )}
