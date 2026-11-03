@@ -154,11 +154,8 @@ async fn materialize_once(
         return Ok(());
     }
 
-    let mut upserted = 0usize;
-    for row in &rows {
-        upsert_row(db, session_resolver, row).await?;
-        upserted += 1;
-    }
+    upsert_rows(db, session_resolver, &rows).await?;
+    let upserted = rows.len();
 
     // Advance only when every fetch and write succeeded.
     if errors == 0
@@ -179,48 +176,99 @@ async fn materialize_once(
 }
 
 /// Shared idempotent write path for window scans and receipt-driven recovery.
-pub(crate) async fn upsert_row(
+///
+/// Rows are merged by the agent they resolve to before anything is written: the
+/// gateway credits a tool call to the agent's UUID while the agent's own spans
+/// carry its name, and both resolve to the same `(trace_id, agent_name)` key,
+/// where a plain upsert of each would overwrite the other's tokens or tool count.
+pub(crate) async fn upsert_rows(
+    db: &PgPool,
+    session_resolver: &dyn SessionIdResolver,
+    rows: &[TraceUsageRow],
+) -> Result<(), String> {
+    let mut merged: Vec<(Option<uuid::Uuid>, TraceUsageRow)> = Vec::new();
+    for row in rows {
+        let (agent_id, agent_name) = resolve_agent(db, &row.agent_name).await;
+        let row = TraceUsageRow {
+            agent_name,
+            ..row.clone()
+        };
+        match merged
+            .iter_mut()
+            .find(|(_, m)| m.trace_id == row.trace_id && m.agent_name == row.agent_name)
+        {
+            Some((id, existing)) => {
+                *id = id.or(agent_id);
+                merge_usage_rows(existing, &row);
+            }
+            None => merged.push((agent_id, row)),
+        }
+    }
+    for (agent_id, row) in &merged {
+        write_resolved_row(db, session_resolver, row, *agent_id).await?;
+    }
+    Ok(())
+}
+
+/// Fold `other`, a row for the same agent in the same trace, into `into`.
+fn merge_usage_rows(into: &mut TraceUsageRow, other: &TraceUsageRow) {
+    into.input_tokens += other.input_tokens;
+    into.output_tokens += other.output_tokens;
+    into.cache_read_tokens += other.cache_read_tokens;
+    into.cache_creation_tokens += other.cache_creation_tokens;
+    into.tool_call_count += other.tool_call_count;
+    into.error_count += other.error_count;
+    into.cost_usd += other.cost_usd;
+    into.prompt_cost_usd += other.prompt_cost_usd;
+    into.completion_cost_usd += other.completion_cost_usd;
+    into.cost_estimated |= other.cost_estimated;
+    // A row with no tokens (tool calls only) has no model of its own to disagree with.
+    let other_has_usage = other.input_tokens + other.output_tokens > 0;
+    if into.model.is_none() && other_has_usage {
+        into.model = other.model.clone();
+    }
+    if into.provider.is_none() && other_has_usage {
+        into.provider = other.provider.clone();
+    }
+    into.session_id = into.session_id.take().or_else(|| other.session_id.clone());
+}
+
+/// Resolve what the provider called the agent (a name, or the UUID the router
+/// stamps) to its id and name.
+async fn resolve_agent(db: &PgPool, reported: &str) -> (Option<uuid::Uuid>, String) {
+    let by_name: Option<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 1")
+            .bind(reported)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+    if let Some(id) = by_name {
+        return (Some(id), reported.to_string());
+    }
+    let Ok(uuid) = uuid::Uuid::parse_str(reported) else {
+        return (None, reported.to_string());
+    };
+    let name: Option<String> =
+        sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL LIMIT 1")
+            .bind(uuid)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+    match name {
+        Some(name) => (Some(uuid), name),
+        None => (None, reported.to_string()),
+    }
+}
+
+/// Write one merged row with its owners resolved.
+async fn write_resolved_row(
     db: &PgPool,
     session_resolver: &dyn SessionIdResolver,
     row: &TraceUsageRow,
+    agent_id: Option<uuid::Uuid>,
 ) -> Result<(), String> {
-    // Resolve the agent. Self-instrumenting agents are attributed by their service
-    // name, so `row.agent_name` is the agent name. A coding agent (no self-emitted
-    // spans) is attributed off the router's `gen_ai.agent.id`, so `row.agent_name`
-    // may instead be that UUID — resolve it to the real name/id so the row keys on
-    // the agent name like every other, and the FinOps dashboard (which groups by
-    // `agent_name`) picks it up.
-    let (agent_id, agent_name): (Option<uuid::Uuid>, String) = {
-        let by_name: Option<uuid::Uuid> = sqlx::query_scalar(
-            "SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
-        )
-        .bind(&row.agent_name)
-        .fetch_optional(db)
-        .await
-        .ok()
-        .flatten();
-        match by_name {
-            Some(id) => (Some(id), row.agent_name.clone()),
-            None => match uuid::Uuid::parse_str(&row.agent_name) {
-                Ok(uuid) => {
-                    let name: Option<String> = sqlx::query_scalar(
-                        "SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL LIMIT 1",
-                    )
-                    .bind(uuid)
-                    .fetch_optional(db)
-                    .await
-                    .ok()
-                    .flatten();
-                    match name {
-                        Some(n) => (Some(uuid), n),
-                        None => (None, row.agent_name.clone()),
-                    }
-                }
-                Err(_) => (None, row.agent_name.clone()),
-            },
-        }
-    };
-
     // Backfill session_id from the DB index if the span didn't carry it.
     let session_id = match &row.session_id {
         Some(s) => Some(s.clone()),
@@ -240,12 +288,8 @@ pub(crate) async fn upsert_row(
         None => None,
     };
 
-    let row = TraceUsageRow {
-        agent_name,
-        ..row.clone()
-    };
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-    write_usage_row(&mut tx, &row, session_id.as_deref(), agent_id, user_id)
+    write_usage_row(&mut tx, row, session_id.as_deref(), agent_id, user_id)
         .await
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
@@ -452,4 +496,55 @@ async fn sync_direct_token_usage(db: &PgPool) -> Result<(), String> {
 
     tracing::info!(count, "trace_materializer: direct-usage sync complete");
     Ok(())
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    fn row(tokens: u64, tools: u32, model: Option<&str>) -> TraceUsageRow {
+        TraceUsageRow {
+            trace_id: "t".into(),
+            agent_name: "calendar-agent-1".into(),
+            session_id: None,
+            model: model.map(str::to_owned),
+            provider: None,
+            input_tokens: tokens,
+            output_tokens: tokens / 10,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            tool_call_count: tools,
+            cost_estimated: false,
+            cost_usd: tokens as f64,
+            prompt_cost_usd: 0.0,
+            completion_cost_usd: 0.0,
+            latency_ms: Some(5),
+            started_at: Utc::now(),
+            error_count: 0,
+        }
+    }
+
+    #[test]
+    fn a_tool_only_row_adds_its_calls_to_the_token_row_without_touching_tokens() {
+        let mut llm = row(1000, 0, Some("gpt-4o"));
+        merge_usage_rows(&mut llm, &row(0, 6, None));
+        assert_eq!(
+            (llm.input_tokens, llm.tool_call_count, llm.model.as_deref()),
+            (1000, 6, Some("gpt-4o"))
+        );
+    }
+
+    #[test]
+    fn the_merge_is_order_independent() {
+        let mut tools_first = row(0, 6, None);
+        merge_usage_rows(&mut tools_first, &row(1000, 0, Some("gpt-4o")));
+        assert_eq!(
+            (
+                tools_first.input_tokens,
+                tools_first.tool_call_count,
+                tools_first.model.as_deref()
+            ),
+            (1000, 6, Some("gpt-4o"))
+        );
+    }
 }

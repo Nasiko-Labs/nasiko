@@ -5,6 +5,7 @@ pub mod pricing;
 pub mod provider;
 pub mod runtime_ext;
 pub mod tempo;
+pub mod trace_context;
 pub mod types;
 
 pub use error::ObservabilityError;
@@ -17,6 +18,9 @@ pub use provider::{
 };
 pub use runtime_ext::InstrumentedRuntime;
 pub use tempo::TempoClient;
+pub use trace_context::{
+    join_remote_trace, remote_context_from_traceparent, span_ids, traceparent_of,
+};
 pub use types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, SpanUsage, TokenUsage,
     TraceDetails, TraceSummary, TraceUsageRow, extract_cache_token_attrs, extract_token_attrs,

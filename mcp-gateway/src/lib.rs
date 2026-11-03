@@ -43,6 +43,7 @@ pub mod router;
 pub mod search;
 pub mod session;
 pub mod state;
+mod tool_span;
 pub mod types;
 pub mod validation;
 pub mod webhooks;

@@ -105,6 +105,9 @@ pub struct McpConfig {
     /// (itself `MCP_IDENTITY_SIGNING_KEY`, falling back to `JWT_SECRET`); never
     /// empty past `from_config`, which panics rather than sign with no key.
     pub identity_signing_key: Vec<u8>,
+    /// Whether tool-call spans may carry the model-supplied arguments
+    /// (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, the switch agents get).
+    pub capture_content: bool,
 }
 
 impl McpConfig {
@@ -189,6 +192,7 @@ impl McpConfig {
                 }
                 key.as_bytes().to_vec()
             },
+            capture_content: config.otel_capture_content,
         }
     }
 
@@ -243,6 +247,7 @@ mod tests {
             embedding_model: "text-embedding-3-small".to_string(),
             gateway_instructions: String::new(),
             identity_signing_key: b"test-identity-signing-key".to_vec(),
+            capture_content: false,
         }
     }
 

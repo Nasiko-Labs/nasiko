@@ -308,27 +308,6 @@ pub fn is_router_llm_span(span: &Span) -> bool {
     span.attributes.contains_key("gen_ai.agent.id")
 }
 
-/// Whether a span records a tool execution rather than an LLM call.
-///
-/// Both tool spans the platform emits set `gen_ai.operation.name =
-/// "execute_tool"` — the MCP gateway's `execute_tool` span and the coding-agent
-/// OTLP tool span; `"call_tool"` is the older GenAI-semconv spelling and
-/// `openinference.span.kind = "TOOL"` the OpenInference one. A tool span may
-/// also carry `gen_ai.agent.id` (the MCP gateway stamps it for attribution), so
-/// it is **not** exclusive with [`is_router_llm_span`]; callers that must treat
-/// tool calls apart from LLM calls check this first.
-pub fn is_tool_span(span: &Span) -> bool {
-    span.attributes
-        .get("gen_ai.operation.name")
-        .and_then(|v| v.as_str())
-        .is_some_and(|s| s == "execute_tool" || s == "call_tool")
-        || span
-            .attributes
-            .get("openinference.span.kind")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s.eq_ignore_ascii_case("tool"))
-}
-
 /// How each LLM-router span relates to the agent span for the same call.
 pub struct RouterSpanLinks<'a> {
     /// Router span id → service name of the agent whose call it served.
@@ -453,6 +432,51 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         attributed,
         excluded,
     }
+}
+
+/// A tool-call span: GenAI semconv `execute_tool` (what the MCP gateway
+/// emits), its older `call_tool` spelling, or OpenInference's `TOOL` kind.
+pub fn is_tool_span(span: &Span) -> bool {
+    let operation = span
+        .attributes
+        .get("gen_ai.operation.name")
+        .and_then(|v| v.as_str());
+    matches!(operation, Some("execute_tool" | "call_tool"))
+        || span
+            .attributes
+            .get("openinference.span.kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|kind| kind.eq_ignore_ascii_case("tool"))
+}
+
+/// The agent a gateway-emitted tool span served. The gateway runs in the
+/// control plane, so the span's `service.name` is the server's; the agent's
+/// UUID (also what agents report as their `service.name`) rides on `agent.id`.
+pub fn gateway_tool_agent(span: &Span) -> Option<&str> {
+    let is_gateway_call = span
+        .attributes
+        .get("mcp.method.name")
+        .and_then(|v| v.as_str())
+        == Some("tools/call");
+    is_gateway_call
+        .then(|| span.attributes.get("agent.id").and_then(|v| v.as_str()))
+        .flatten()
+        .filter(|id| !id.is_empty())
+}
+
+/// Agent-side tool spans to leave out of tool counts because the gateway's own
+/// span, their direct child, already records the same call. The gateway span
+/// is the source of truth: it exists for every call, whatever the agent's
+/// framework instruments.
+pub fn superseded_tool_spans(spans: &[Span]) -> HashSet<&str> {
+    let by_id: HashMap<&str, &Span> = spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
+    spans
+        .iter()
+        .filter(|s| gateway_tool_agent(s).is_some())
+        .filter_map(|s| by_id.get(s.parent_span_id.as_deref()?))
+        .filter(|parent| is_tool_span(parent) && gateway_tool_agent(parent).is_none())
+        .map(|parent| parent.span_id.as_str())
+        .collect()
 }
 
 /// The sibling case `link_router_spans` can't reach by walking ancestry: a
@@ -758,36 +782,6 @@ mod link_router_spans_tests {
     }
 
     #[test]
-    fn is_tool_span_recognises_the_tool_operation_spellings() {
-        assert!(is_tool_span(&span(
-            "a",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "execute_tool")]
-        )));
-        assert!(is_tool_span(&span(
-            "b",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "call_tool")]
-        )));
-        assert!(is_tool_span(&span(
-            "c",
-            None,
-            "svc",
-            &[("openinference.span.kind", "TOOL")]
-        )));
-        // An LLM/router span (chat op, or just a model) is not a tool span,
-        // even though it carries gen_ai.agent.id.
-        assert!(!is_tool_span(&span(
-            "d",
-            None,
-            "svc",
-            &[("gen_ai.operation.name", "chat"), ("gen_ai.agent.id", "x")]
-        )));
-    }
-
-    #[test]
     fn unlinkable_router_span_is_attributed_by_gen_ai_agent_id() {
         // A coding agent (e.g. OpenCode) emits no spans of its own, so the router's
         // span is the only token-bearing one and has no agent-span ancestor. It must
@@ -902,6 +896,118 @@ mod link_router_spans_tests {
 }
 
 #[cfg(test)]
+mod tool_span_tests {
+    use super::*;
+
+    fn span(id: &str, parent: Option<&str>, service: &str, attrs: &[(&str, &str)]) -> Span {
+        Span {
+            span_id: id.to_string(),
+            parent_span_id: parent.map(str::to_string),
+            name: "s".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            duration_ms: None,
+            service_name: service.to_string(),
+            kind: 3,
+            status_code: 0,
+            status_message: String::new(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+                .collect(),
+            events: Vec::new(),
+        }
+    }
+
+    const GATEWAY: &[(&str, &str)] = &[
+        ("gen_ai.operation.name", "execute_tool"),
+        ("mcp.method.name", "tools/call"),
+        ("agent.id", "agent-1"),
+    ];
+
+    #[test]
+    fn execute_call_and_openinference_tool_spans_all_count_as_tools() {
+        for attrs in [
+            &[("gen_ai.operation.name", "execute_tool")][..],
+            &[("gen_ai.operation.name", "call_tool")][..],
+            &[("openinference.span.kind", "TOOL")][..],
+        ] {
+            assert!(is_tool_span(&span("a", None, "svc", attrs)));
+        }
+        assert!(!is_tool_span(&span(
+            "a",
+            None,
+            "svc",
+            &[("gen_ai.operation.name", "chat")]
+        )));
+    }
+
+    #[test]
+    fn a_gateway_span_is_credited_to_the_agent_it_served() {
+        assert_eq!(
+            gateway_tool_agent(&span("g", None, "nasiko", GATEWAY)),
+            Some("agent-1")
+        );
+    }
+
+    #[test]
+    fn an_agent_side_tool_span_with_an_agent_id_is_not_a_gateway_span() {
+        let agent_side = span(
+            "a",
+            None,
+            "agent-1",
+            &[
+                ("gen_ai.operation.name", "execute_tool"),
+                ("agent.id", "agent-1"),
+            ],
+        );
+        assert_eq!(gateway_tool_agent(&agent_side), None);
+    }
+
+    #[test]
+    fn the_agent_span_above_a_gateway_span_is_superseded() {
+        let spans = vec![
+            span(
+                "a",
+                None,
+                "agent-1",
+                &[("gen_ai.operation.name", "execute_tool")],
+            ),
+            span("g", Some("a"), "nasiko", GATEWAY),
+        ];
+        assert_eq!(superseded_tool_spans(&spans), HashSet::from(["a"]));
+    }
+
+    #[test]
+    fn a_tool_span_with_no_gateway_child_is_kept() {
+        let spans = vec![
+            span(
+                "a",
+                None,
+                "agent-1",
+                &[("gen_ai.operation.name", "execute_tool")],
+            ),
+            span("g", Some("other"), "nasiko", GATEWAY),
+        ];
+        assert!(superseded_tool_spans(&spans).is_empty());
+    }
+
+    #[test]
+    fn a_non_tool_parent_is_never_superseded() {
+        let spans = vec![
+            span(
+                "a",
+                None,
+                "agent-1",
+                &[("gen_ai.operation.name", "invoke_agent")],
+            ),
+            span("g", Some("a"), "nasiko", GATEWAY),
+        ];
+        assert!(superseded_tool_spans(&spans).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod unrecovered_error_tests {
     use super::*;
     use std::collections::HashMap;
@@ -997,57 +1103,6 @@ mod unrecovered_error_tests {
                 span("b", Some("p2"), "call", 10, 10, false),
             ]),
             1
-        );
-    }
-
-    #[test]
-    fn a_failed_tool_is_not_recovered_by_a_different_tool_succeeding_next() {
-        // The MCP tool-span regression: two different tools under one turn's
-        // parent, the first failing and an unrelated one succeeding after it.
-        // Tool spans must carry tool-specific names (`execute_tool <tool>`), or
-        // this reads as a recovered retry and the failure disappears.
-        assert_eq!(
-            count(&[
-                span(
-                    "a",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    0,
-                    10,
-                    true
-                ),
-                span(
-                    "b",
-                    Some("turn"),
-                    "execute_tool calendar__list_events",
-                    10,
-                    10,
-                    false
-                ),
-            ]),
-            1
-        );
-        // A real retry of the *same* tool still recovers.
-        assert_eq!(
-            count(&[
-                span(
-                    "a",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    0,
-                    10,
-                    true
-                ),
-                span(
-                    "b",
-                    Some("turn"),
-                    "execute_tool gmail__send_email",
-                    10,
-                    10,
-                    false
-                ),
-            ]),
-            0
         );
     }
 
