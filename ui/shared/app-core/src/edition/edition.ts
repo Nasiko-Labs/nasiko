@@ -70,6 +70,30 @@ export interface GranteeKind {
   Section: ComponentType<{ agentId: string }>
 }
 
+/**
+ * A tab a layer adds to an agent's detail page. It shows once `query` answers and `shown` agrees with the answer; a
+ * read that fails shows it too, and the tab reports the failure itself. Build it with `agentTab()`, which pairs the
+ * query's data type with `shown`.
+ */
+export interface AgentTab<T = unknown> {
+  /** Its `?tab=` value: unique among the core's tabs and every layer's. */
+  key: string
+  label: string
+  /**
+   * The core tab it follows (e.g. `activity`), after any earlier layer tab that follows it too; the end of the list
+   * when absent or that tab isn't shown.
+   */
+  after?: string
+  /** Whether this viewer may see it at all (the core's manage-only tabs go by `canManage`). */
+  visible: (agent: { canManage: boolean; isHarness: boolean }) => boolean
+  /** Its probe; it gets the agent too, for a layer whose own rule goes beyond `canManage`. */
+  query: (agentId: string, agent: { canManage: boolean; isHarness: boolean }) => SlotQuery<T>
+  shown: (data: T) => boolean
+  Tab: ComponentType<{ agentId: string }>
+}
+
+export const agentTab = <T>(t: AgentTab<T>) => t as unknown as AgentTab
+
 /** Who else an MCP server can be shared with, besides users (EE: org units). */
 interface ConnectorGranteeKind {
   key: string
@@ -102,6 +126,8 @@ export interface PersonalSettingsLink {
   label: string
   /** The layer's own route, e.g. `/settings/memory` — not `/settings?section=`. */
   to: string
+  /** The layer's own check that the page exists on this server; the link is listed once it answers true. */
+  available?: (userId: string) => SlotQuery<boolean>
 }
 
 /**
@@ -343,6 +369,8 @@ export interface Slots {
   harnessOrgScope: HarnessOrgScope | null
   homeOrgScope: HomeOrgScope | null
   granteeKinds: GranteeKind[]
+  /** Tabs a layer adds to an agent's detail page. */
+  agentTabs: AgentTab[]
   connectorGranteeKinds: ConnectorGranteeKind[]
   settingsSections: SettingsSection[]
   personalSettingsLinks: PersonalSettingsLink[]
@@ -425,6 +453,7 @@ export const OSS_SLOTS: Slots = {
   harnessOrgScope: null,
   homeOrgScope: null,
   granteeKinds: [],
+  agentTabs: [],
   connectorGranteeKinds: [],
   settingsSections: [],
   personalSettingsLinks: [],
@@ -470,6 +499,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
   const out: Slots = {
     ...OSS_SLOTS,
     granteeKinds: [],
+    agentTabs: [],
     connectorGranteeKinds: [],
     settingsSections: [],
     personalSettingsLinks: [],
@@ -478,6 +508,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
   for (const layer of layers) {
     const s = layer.slots ?? {}
     if (s.granteeKinds) out.granteeKinds = [...out.granteeKinds, ...s.granteeKinds]
+    if (s.agentTabs) out.agentTabs = [...out.agentTabs, ...s.agentTabs]
     if (s.connectorGranteeKinds)
       out.connectorGranteeKinds = [...out.connectorGranteeKinds, ...s.connectorGranteeKinds]
     if (s.settingsSections) out.settingsSections = [...out.settingsSections, ...s.settingsSections]
