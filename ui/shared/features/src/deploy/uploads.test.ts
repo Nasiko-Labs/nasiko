@@ -1,6 +1,6 @@
 import { MutationCache, QueryClient } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError } from '@nasiko/data-access/client'
+import { ApiError, apiUrl, setApiBase } from '@nasiko/data-access/client'
 import {
   cancelUpload,
   clearUploads,
@@ -78,9 +78,23 @@ afterEach(() => {
   clearUploads()
   if (prev) setXhrFactory(prev)
   FakeXhr.last = null
+  setApiBase('')
 })
 
 describe('upload registry (eng review R1, R2, R3, R7)', () => {
+  it('posts to the API base, not the page, when the control plane is another origin', async () => {
+    // The multi-tenant dashboard: page on nasiko.dev, API on the workspace's own host.
+    setApiBase('https://acme.nasiko.example')
+    const { qc } = setup()
+    void startUpload(qc, USER, file, 'bot.zip', { name: 'bot' })
+    const x = await xhr()
+    expect([x.method, x.url, x.withCredentials]).toEqual([
+      'POST',
+      'https://acme.nasiko.example/api/agents/upload',
+      true,
+    ])
+  })
+
   it('sends the multipart fields the server reads, only the touched ones', async () => {
     const { qc } = setup()
     void startUpload(qc, USER, file, 'bot.zip', {
@@ -91,7 +105,7 @@ describe('upload registry (eng review R1, R2, R3, R7)', () => {
       inboundFormat: 'openai',
     })
     const x = await xhr()
-    expect([x.method, x.url, x.withCredentials]).toEqual(['POST', UPLOAD_PATH, true])
+    expect([x.method, x.url, x.withCredentials]).toEqual(['POST', apiUrl(UPLOAD_PATH).href, true])
     expect(
       Object.fromEntries(
         [...x.body!.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : 'FILE']),

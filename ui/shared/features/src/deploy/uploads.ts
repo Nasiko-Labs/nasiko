@@ -12,7 +12,7 @@
  * 202 `{data: {build_id, agent_id, …}}`; errors are plain text (400/409/413/500).
  */
 import type { QueryClient } from '@tanstack/react-query'
-import { ApiError, isAbortError, safeJson } from '@nasiko/data-access/client'
+import { ApiError, apiUrl, isAbortError, safeJson } from '@nasiko/data-access/client'
 import type { components } from '@nasiko/data-access/schema.gen'
 import { clearFollower, follow, importFinished } from './follower'
 import { parseReference } from './registry'
@@ -109,7 +109,9 @@ function send(
   return new Promise((resolve, reject) => {
     const xhr = xhrFactory()
     entry.xhr = xhr
-    xhr.open('POST', UPLOAD_PATH)
+    // Against the API base, as every apiFetch is: the workspace's control plane can be another origin than the page
+    // (the multi-tenant dashboard), and a bare path would post to the page's own host instead.
+    xhr.open('POST', apiUrl(UPLOAD_PATH).href)
     xhr.withCredentials = true
     xhr.setRequestHeader('Accept', 'application/json')
     xhr.upload.onprogress = (e) => {
