@@ -30,7 +30,6 @@ pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
 pub mod context_selection;
 pub mod embedding_change;
-pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
 pub mod hitl;
@@ -53,6 +52,7 @@ pub mod router;
 pub mod runtime;
 pub mod secrets;
 pub mod seed;
+pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
 pub mod settings;
@@ -435,8 +435,7 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx =
-        nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone(), state.http_client.clone());
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
