@@ -10,7 +10,6 @@ const row = (extra: Record<string, unknown> = {}) =>
     session_annotations: [],
     session_annotation_summaries: [],
     failed_flows: 0,
-    flow_count: 0,
     num_traces: 3,
     start_time: '2026-10-20T10:00:00.000Z',
     duration_ms: 60_000,
@@ -65,6 +64,7 @@ describe('detailSubagents', () => {
         subagents: [
           {
             session_id: 'c1',
+            title: 'Map the auth flow',
             subagent_type: 'Explore',
             spawn_tool_call_id: 'call-1',
             turns: 3,
@@ -80,6 +80,7 @@ describe('detailSubagents', () => {
     expect(d.subagents).toEqual([
       {
         sessionId: 'c1',
+        title: 'Map the auth flow',
         type: 'Explore',
         spawnToolCallId: 'call-1',
         turns: 3,

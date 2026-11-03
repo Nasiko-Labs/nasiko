@@ -57,7 +57,10 @@ function RunList({
             search={linkSearch}
             className={`col-span-2 truncate font-medium @[560px]:col-span-1 ${LINK}`}
           >
-            {r.type ?? copy.untyped}
+            {r.title ?? r.type ?? copy.untyped}
+            {r.title && r.type ? (
+              <span className="ml-1.5 font-normal text-muted-foreground">{r.type}</span>
+            ) : null}
           </Link>
           <Figure
             label={copy.turns}

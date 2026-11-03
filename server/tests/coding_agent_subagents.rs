@@ -530,6 +530,12 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
         .unwrap();
     }
 
+    // The importer stores a subagent's description as its session title.
+    sqlx::query("UPDATE chat_sessions SET title = 'Map the auth flow' WHERE session_id = $1")
+        .bind(&explore)
+        .execute(&server.db)
+        .await
+        .unwrap();
     let detail = get_as(
         &server,
         user_id,
@@ -541,10 +547,10 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
     assert_eq!(
         session["subagents"],
         json!([
-            {"session_id": explore, "subagent_type": "Explore", "spawn_tool_call_id": "toolu_1",
+            {"session_id": explore, "title": "Map the auth flow", "subagent_type": "Explore", "spawn_tool_call_id": "toolu_1",
              "turns": 2, "tokens": 2 * TURN_TOKENS, "cost": 0.5,
              "start_time": "2023-11-14T22:14:20.000Z", "end_time": "2023-11-14T22:15:30.000Z"},
-            {"session_id": plan, "subagent_type": "Plan", "spawn_tool_call_id": "toolu_2",
+            {"session_id": plan, "title": null, "subagent_type": "Plan", "spawn_tool_call_id": "toolu_2",
              "turns": 1, "tokens": TURN_TOKENS, "cost": 0.25,
              "start_time": "2023-11-14T22:18:20.000Z", "end_time": "2023-11-14T22:18:30.000Z"},
         ])

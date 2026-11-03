@@ -22,7 +22,7 @@ use crate::coding_agent_subagents::{link_parent, same_turn_but_parent};
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
-const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
+pub(crate) const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
 
 /// Largest request body the batch route reads. A full batch of content turns
 /// fits; a client that hits it splits the batch.
