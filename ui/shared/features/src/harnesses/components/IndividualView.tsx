@@ -224,12 +224,6 @@ export function ConnectHelp({
         <p className="text-xs text-muted-foreground">{copy.connectHint}</p>
         <CopyButton text={steps.join('\n')} label="Copy" />
       </div>
-      <p className="text-xs text-muted-foreground">
-        {copy.needsCli}{' '}
-        <Link to="/cli" className="text-primary-text underline-offset-4 hover:underline">
-          {copy.installCli}
-        </Link>
-      </p>
     </div>
   )
 }

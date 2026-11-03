@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
+use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
@@ -42,6 +43,19 @@ pub struct AppState {
     /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
     /// replaces it, the same way it replaces `routing_engine`.
     pub orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource>,
+    /// Asked before each of the chat orchestrator's own model calls. OSS wires
+    /// `NoSpendGate`, which never refuses; the EE composition root replaces it
+    /// with its budget check.
+    pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// What the MAF worker runs each queued workflow through. OSS wires
+    /// `LinearMafExecutor` (steps in array order); the EE composition root
+    /// replaces it before the app is built, the same way it replaces
+    /// `routing_engine`, so the worker started by the app sees the swap.
+    pub maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor>,
+    /// What the MAF workflow routes consult beyond their own checks when a
+    /// workflow is saved or run. OSS wires `NoMafWorkflowPolicy`, which changes
+    /// nothing; the EE composition root replaces it.
+    pub maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy>,
     /// Supplemental per-agent prompt context (e.g. admin-authored knowledge) added before an
     /// agent runs. OSS default is a no-op; the EE composition root installs the real
     /// implementation through this cell (`SwappablePromptContext::install`, not a plain
@@ -60,6 +74,15 @@ pub struct AppState {
     /// build worker and HITL dispatcher copy `AppState` while it is built. OSS wires
     /// `SingleReplica`.
     pub agent_scaling: Arc<dyn AgentScaling>,
+    /// Where a completed chat turn's files may also come from — files a turn
+    /// produced outside this crate's own chat store. OSS default is a no-op
+    /// ([`NoTurnArtifacts`]): no chips are added and no download scheme beyond
+    /// the ones the chat routes own is claimed. The EE composition root installs
+    /// the real implementation through this cell
+    /// (`SwappableTurnArtifactSource::install`, not a plain reassignment) for the
+    /// same reason `prompt_context` does — see that field's doc comment and the
+    /// `chat::turn_artifacts` module docs.
+    pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -189,8 +212,8 @@ impl AppState {
         let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         // Shared client for short, bounded calls: embeddings, registry probes,
-        // OAuth, provider requests. Agent hops are *not* short, and go through
-        // `agent_client` instead.
+        // OAuth. Agent hops are *not* short, and go through `agent_client`
+        // instead; LLM provider calls go through the router's own client.
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
             .timeout(std::time::Duration::from_secs(60))
@@ -207,6 +230,12 @@ impl AppState {
         );
         let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
+        let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
+            Arc::new(crate::spend_gate::NoSpendGate);
+        let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
+            Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
+        let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
+            Arc::new(crate::maf_policy::NoMafWorkflowPolicy);
         let prompt_context = Arc::new(SwappablePromptContext::new(Arc::new(
             crate::prompt_context::NoopPromptContextProvider,
         )));
@@ -214,6 +243,7 @@ impl AppState {
             Arc::new(crate::agent_lifecycle::SwappableAgentDeletionHook::new(
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
+        let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -326,9 +356,13 @@ impl AppState {
             config: Arc::new(config),
             routing_engine,
             orchestrator_policy,
+            spend_gate,
+            maf_executor,
+            maf_policy,
             prompt_context,
             agent_deletion_hook,
             agent_scaling,
+            turn_artifacts,
             history_embedding_cache,
             observability,
             github_svc,

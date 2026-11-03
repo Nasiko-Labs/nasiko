@@ -54,7 +54,6 @@ uuid = { workspace = true }
 
 # Router decision cache (S3) — sticky (conv_id, agent_id) → model across turns/scale
 redis = { workspace = true }
-nasiko-redis-conn = { workspace = true }
 
 # Errors / time / logging
 thiserror = { workspace = true }

@@ -1426,7 +1426,6 @@ mod tests {
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
-                capture_content: false,
             },
             providers: Providers {
                 composio: None,

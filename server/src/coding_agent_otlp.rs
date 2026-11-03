@@ -684,7 +684,7 @@ fn timestamp_quality(quality: CodingAgentTimestampQuality) -> &'static str {
     }
 }
 
-pub(crate) fn bounded_json(value: &Value) -> String {
+fn bounded_json(value: &Value) -> String {
     truncate_chars(
         &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
         MAX_CONTENT_CHARS,
@@ -766,7 +766,7 @@ fn scoped_id(domain: &str, service: &str, session: &str, identity: &str, len: us
     hex::encode(hasher.finalize())[..len].to_owned()
 }
 
-pub(crate) fn truncate_chars(value: &str, max: usize) -> String {
+fn truncate_chars(value: &str, max: usize) -> String {
     if value.chars().count() <= max {
         value.to_owned()
     } else {

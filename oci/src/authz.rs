@@ -169,18 +169,32 @@ impl<S: Send + Sync> FromRequestParts<S> for Writer {
     }
 }
 
-/// `(does the caller own an agent named `repo`, does ANY agent own that name)`.
+/// The repository component an image name is pushed under, as a SQL
+/// expression over the text expression `$name`.
 ///
-/// Two existence checks rather than fetching a single `owner_id` — agent
-/// names are unique only **per owner** (migration 015's `(owner_id, name)`
-/// index), and the OCI repo path is name-only (the `owner` path segment is a
-/// constant written by every CLI caller, carrying no real per-tenant
-/// meaning). If two different owners both have an agent named "foo", a
-/// single-row lookup would pick an arbitrary one of them, wrongly denying
-/// the caller who legitimately owns "their" foo, or wrongly comparing against
-/// someone else's. Asking two yes/no questions instead is sound regardless of
-/// how many owners share a name: "do I own a match" and "does anyone" never
-/// require picking a single arbitrary winner.
+/// It must equal `nasiko_server::agents::image_name_slug` (lowercase, spaces
+/// to `-`, drop everything outside `[a-z0-9_-]`, trim `-`, empty → `agent`):
+/// agents push to `nasiko/<slug of name>` and uploaded MCP connectors to
+/// `nasiko/<slug of "mcp-" + name>`. The server's `oci_repo_ownership` test
+/// compares the two over sample names, so a change to one fails it.
+fn repo_slug_sql(name: &str) -> String {
+    format!(
+        "COALESCE(NULLIF(btrim(regexp_replace(replace(lower({name}), ' ', '-'), \
+         '[^a-z0-9_-]', '', 'g'), '-'), ''), 'agent')"
+    )
+}
+
+/// Every owner whose agent or uploaded MCP connector pushes to `repo`, as
+/// `(does every one of them equal the caller, is there any)`.
+///
+/// The repository is named after the agent or connector name, not its id
+/// (see [`repo_slug_sql`]), and names are unique only per owner, so several
+/// owners can map to one repository. The caller owns it only when *all* of
+/// them are the caller: a repository two owners share cannot say whose image
+/// a tag holds, so neither may write it (NAS-1112). Comparing the real
+/// repository name matters too: an exact `agents.name = repo` match missed
+/// every name with uppercase or spaces and every connector, and an unmatched
+/// repository counted as unclaimed, which anyone may push to.
 async fn repo_claim_status(
     state: &OciState,
     caller: &CallerIdentity,
@@ -189,23 +203,34 @@ async fn repo_claim_status(
     let Ok(caller_uuid) = caller.user_id.parse::<uuid::Uuid>() else {
         return Ok((false, false));
     };
-    sqlx::query_as(
-        r#"SELECT
-             EXISTS(SELECT 1 FROM agents WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL) AS owns,
-             EXISTS(SELECT 1 FROM agents WHERE name = $1 AND deleted_at IS NULL) AS claimed"#,
-    )
-    .bind(repo)
-    .bind(caller_uuid)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(OciError::Database)
+    let query = format!(
+        r#"WITH claimants AS (
+             SELECT owner_id FROM agents
+              WHERE deleted_at IS NULL AND {agent} = $1
+             UNION ALL
+             SELECT owner_id FROM mcp_connectors
+              WHERE source_kind = 'uploaded_build' AND {connector} = $1
+           )
+           SELECT COALESCE(bool_and(owner_id IS NOT DISTINCT FROM $2), false) AS owns,
+                  EXISTS(SELECT 1 FROM claimants) AS claimed
+             FROM claimants"#,
+        agent = repo_slug_sql("name"),
+        connector = repo_slug_sql("'mcp-' || name"),
+    );
+    sqlx::query_as(&query)
+        .bind(repo)
+        .bind(caller_uuid)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(OciError::Database)
 }
 
 /// Enforce that `caller` may operate on `repo` (the agent-name path segment).
 ///
-/// Policy: superusers may always proceed. Otherwise, if an `agents` row
-/// already exists with this name, the caller must own it. If no such row
-/// exists yet, the request is allowed through — the CLI pushes an image
+/// Policy: superusers may always proceed. Otherwise, if any agent or uploaded
+/// MCP connector already pushes to this repository, the caller must own every
+/// one of them (see [`repo_claim_status`]). If none does yet, the request is
+/// allowed through — the CLI pushes an image
 /// *before* registering the agent (`oss/cli/src/commands/push.rs`), so a
 /// brand-new repo name has no owner to check against yet. This means a
 /// not-yet-registered name is first-come-first-served until an agent claims
@@ -233,12 +258,6 @@ pub async fn check_repo_access(
     }
 }
 
-/// An agent name may carry capitals but an OCI repository name may not, so the
-/// image is addressed by the lowercased name and the two compare case-insensitively.
-fn repo_names_match(agent_name: &str, repo: &str) -> bool {
-    agent_name.eq_ignore_ascii_case(repo)
-}
-
 /// Enforce that `caller` may read `repo` — the [`Caller`]-accepting
 /// counterpart of [`check_repo_access`], used by the read-only manifest/blob/
 /// tags handlers. A [`Caller::Session`] goes through the exact same policy
@@ -253,26 +272,29 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
             // Check agents first, then fall back to MCP connectors — the
             // credential's `agent_id` column is effectively a workload_id
             // that can reference either table.
-            let bound_repo: Option<String> =
-                sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL")
-                    .bind(pull.agent_id)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .map_err(OciError::Database)?;
+            // Compared as the repository the workload's image is pushed to
+            // ([`repo_slug_sql`]), not its display name: an agent named
+            // "General Assistant" pulls from `nasiko/general-assistant`.
+            let bound_repo: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT {} FROM agents WHERE id = $1 AND deleted_at IS NULL",
+                repo_slug_sql("name")
+            ))
+            .bind(pull.agent_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(OciError::Database)?;
             let bound_repo = match bound_repo {
                 Some(name) => Some(name),
-                None => {
-                    sqlx::query_scalar("SELECT 'mcp-' || name FROM mcp_connectors WHERE id = $1")
-                        .bind(pull.agent_id)
-                        .fetch_optional(&state.pool)
-                        .await
-                        .map_err(OciError::Database)?
-                }
+                None => sqlx::query_scalar(&format!(
+                    "SELECT {} FROM mcp_connectors WHERE id = $1",
+                    repo_slug_sql("'mcp-' || name")
+                ))
+                .bind(pull.agent_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(OciError::Database)?,
             };
-            if bound_repo
-                .as_deref()
-                .is_some_and(|bound| repo_names_match(bound, repo))
-            {
+            if bound_repo.as_deref() == Some(repo) {
                 Ok(())
             } else {
                 Err(OciError::Forbidden(format!(
@@ -322,22 +344,5 @@ pub async fn check_repo_delete_access(
         Err(OciError::Forbidden(format!(
             "not permitted to delete from repository '{repo}'"
         )))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::repo_names_match;
-
-    #[test]
-    fn a_capitalised_agent_name_matches_its_lowercase_repository() {
-        assert!(repo_names_match("Calendar-Agent", "calendar-agent"));
-        assert!(repo_names_match("translator", "translator"));
-    }
-
-    #[test]
-    fn a_different_name_never_matches() {
-        assert!(!repo_names_match("Calendar-Agent", "email-agent"));
-        assert!(!repo_names_match("calendar-agent-1", "calendar-agent"));
     }
 }

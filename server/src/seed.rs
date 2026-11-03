@@ -69,11 +69,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     // (e.g. gpt-4o-mini), which non-OpenAI providers reject with a 400.
     let openai_model = std::env::var("OPENAI_MODEL").unwrap_or_default();
     let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
-    let oci = nasiko_oci::OciState::new(
-        state.db.clone(),
-        state.oci_storage.clone(),
-        state.config.agent_image_registry.clone(),
-    );
+    let oci = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     let mirror_settings = mirror_settings(&state.config);
     let mut registry_checked = false;
 

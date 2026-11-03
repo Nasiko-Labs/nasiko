@@ -140,6 +140,8 @@ fn into_input(spec: SeedConnectorSpec) -> NewConnectorInput {
         logo_url: spec.logo_url,
         oauth_client_id: None,
         oauth_client_secret: None,
+        oauth_scopes: None,
+        oauth_send_resource: None,
     }
 }
 

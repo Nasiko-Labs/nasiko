@@ -3,10 +3,56 @@ use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 mod coding_agent_ingest;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 
+/// The audience a control plane falls back to when nothing identifies its
+/// public origin. Fine for a standalone deployment; never unique across a
+/// fleet, which is why the assertion exchange refuses it.
+pub const DEFAULT_DELEGATION_AUDIENCE: &str = "nasiko-cp";
+
+fn nonempty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// `scheme://host[:port]` of a URL, or `None` when it has no scheme.
+fn origin_of(url: &str) -> Option<String> {
+    let (scheme, rest) = url.split_once("://")?;
+    let host = rest.split(['/', '?', '#']).next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host}"))
+}
+
+/// See [`Config::delegation_audience`].
+fn delegation_audience_from_env() -> String {
+    if let Some(explicit) = nonempty_env("NASIKO_CP_AUDIENCE") {
+        return explicit.trim_end_matches('/').to_string();
+    }
+    if let Some(domain) = nonempty_env("CP_DOMAIN") {
+        return origin_of(&domain).unwrap_or_else(|| format!("https://{domain}"));
+    }
+    if let Some(origin) = nonempty_env("APP_BASE_URL").and_then(|u| origin_of(&u)) {
+        return origin;
+    }
+    DEFAULT_DELEGATION_AUDIENCE.to_string()
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
     pub domain: Option<String>,
+    /// Audience string this control plane stamps into, and requires on,
+    /// delegated tokens (ui/docs/adr/0001a). It is this deployment's public
+    /// origin: `NASIKO_CP_AUDIENCE`, else `https://<CP_DOMAIN>`, else the origin
+    /// of `APP_BASE_URL`, else [`DEFAULT_DELEGATION_AUDIENCE`]. Two workspaces
+    /// must never share one, so the cross-workspace (BFF assertion) path refuses
+    /// to run on the shared default — see `oss/server/src/auth/assertion.rs`.
+    pub delegation_audience: String,
+    /// Kill switch for `POST /api/auth/delegate` (default on). Existing
+    /// delegated tokens die within `DELEGATION_MAX_TTL_SECS` anyway.
+    pub delegation_enabled: bool,
     pub database_url: String,
     pub redis_url: String,
     pub agent_runtime: String,
@@ -63,6 +109,12 @@ pub struct Config {
     /// `nasiko_oci::authz::Writer::BuildService`. Empty means not configured
     /// (fine for `AGENT_RUNTIME=local`, where no such build path exists).
     pub build_push_token: String,
+    /// Shared HMAC secret for the agent-identity / coding-agent session JWTs
+    /// (the same `AGENT_JWT_SECRET` the LLM router verifies with). Empty means
+    /// not configured; mint/verify fail closed in that case.
+    pub agent_jwt_secret: String,
+    /// Algorithm for the above (`HS256`/`HS384`/`HS512`); defaults to `HS256`.
+    pub agent_jwt_algorithm: String,
     /// Shared credential the EE injection proxy's internal route requires on every request —
     /// mirrors `build_push_token`'s shape exactly (one cluster-wide secret, not a per-caller
     /// identity): the route's only caller is the control plane's own outbound forward to an
@@ -151,6 +203,23 @@ pub struct Config {
     pub hitl_resume_lease_minutes: i64,
     pub hitl_resume_max_attempts: u32,
     pub hitl_resume_retry_delay_secs: u64,
+    /// Coding-agent (ACP) session lifecycle tunables.
+    ///
+    /// `coding_agent_idle_ttl_secs` is how long a coding-agent container may sit
+    /// idle (no turn running) before it is torn down. **Default `0`** = stop
+    /// after every turn (no warm window) — the safe default until the cluster's
+    /// storage class and the agent's session-resume support are confirmed; a
+    /// positive value keeps the container warm for that many seconds so the next
+    /// turn skips cold start.
+    pub coding_agent_idle_ttl_secs: i64,
+    /// How long one turn's lock on a session is held before it lapses. A turn
+    /// that runs longer must renew it (heartbeat); this only bounds how long a
+    /// *dead* turn-owner can block the next turn.
+    pub coding_agent_turn_lease_secs: i64,
+    /// How often a running turn renews its lease. Must be well under
+    /// `coding_agent_turn_lease_secs` so a live turn never lets its own lock
+    /// lapse mid-turn.
+    pub coding_agent_lease_heartbeat_secs: u64,
     /// How many times the `direct_chat`/`agent_proxy`/`orchestrator` resume dispatcher re-sends a
     /// resume the agent answered with "task not found" before it concludes the agent lost the
     /// paused task (`agent_lost_task`). A round-robin Service can send the first attempt to a
@@ -282,6 +351,14 @@ pub struct Config {
     /// own static handler in normal deployments, so cross-origin access is
     /// opt-in only for split dev servers or external integrations.
     pub cors_allowed_origins: Vec<String>,
+    /// Lets an agent registered by URL (one this platform does not deploy) point
+    /// at a loopback, private or link-local address (`AGENT_ALLOW_PRIVATE_URLS`,
+    /// default off). The agent proxy forwards to that address on the caller's
+    /// behalf, so with this on any user who may register an agent can reach
+    /// whatever the server can: cloud metadata, the database, other agents.
+    /// Turn it on only where every such user is trusted, e.g. an on-prem
+    /// install whose external agents live on internal hosts.
+    pub agent_allow_private_urls: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -383,6 +460,19 @@ pub struct Config {
     /// this value — the claim query skips a target that already has a build in
     /// flight (see `build_worker::claim_next_job`).
     pub build_concurrency: usize,
+    /// Number of MAF workflow executions each server process runs concurrently.
+    /// MAF_WORKER_CONCURRENCY, default 4. Clamped to 1..=32. An execution mostly
+    /// waits on agents and LLMs, so the limit that matters is shared capacity, not
+    /// CPU: every execution makes its planning, extraction and final-answer calls on
+    /// the platform's LLM key, so raise this with that key's rate limit in mind.
+    /// Set 1 to restore the old strictly-serial behavior.
+    pub maf_worker_concurrency: usize,
+    /// How often a MAF worker refreshes the stream messages of the runs it is
+    /// executing, in seconds. MAF_HEARTBEAT_SECS, default 20, clamped 5..=120. A
+    /// message is taken over by another worker's recovery once its worker has missed
+    /// six refreshes in a row (2 min at the default), and recovery passes run every
+    /// three (1 min) — both derived from this, never set on their own.
+    pub maf_heartbeat_secs: u64,
     /// Default memory limit for every agent container, Kubernetes notation
     /// (`"512Mi"`, `"1Gi"`) — see `nasiko_runtime::ResourceLimits::memory`.
     /// AGENT_DEFAULT_MEMORY, default `"1Gi"`. `nasiko_runtime::ResourceLimits`
@@ -494,11 +584,34 @@ fn derive_identity_signing_key(dedicated: Option<&str>, jwt_secret: &str) -> Str
     format!("{IDENTITY_KEY_PREFIX}{jwt_secret}")
 }
 
+/// Where to ship coding-agent OTLP (traces + logs) when `CODING_AGENT_OTLP_ENDPOINT`
+/// is not set — so a standard deployment needs no dedicated var.
+///
+/// The coding-agent exporter speaks OTLP/**HTTP** (it `POST`s `/v1/traces`), while
+/// the general `OTEL_EXPORTER_OTLP_ENDPOINT` is commonly gRPC on `:4317`. The OTel
+/// Collector serves HTTP on `:4318`, so a bare `:4317` endpoint is mapped to `:4318`
+/// here; an endpoint that is already HTTP (any other port, or none) is reused as-is.
+/// Set `CODING_AGENT_OTLP_ENDPOINT` explicitly to override for a non-standard setup.
+fn coding_agent_otlp_fallback() -> Option<String> {
+    let base = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .or_else(|_| std::env::var("OTEL_COLLECTOR_ENDPOINT"))
+        .ok()?;
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(base.replace(":4317", ":4318"))
+}
+
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
         Ok(Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
+            delegation_audience: delegation_audience_from_env(),
+            delegation_enabled: std::env::var("DELEGATION_ENABLED")
+                .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),
             database_url: required_env("DATABASE_URL")?,
             redis_url: required_env("REDIS_URL")?,
             agent_runtime: env_or("AGENT_RUNTIME", "local"),
@@ -541,6 +654,8 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             seed_image_platform: env_or("SEED_IMAGE_PLATFORM", "linux/amd64"),
             build_push_token: env_or("BUILD_PUSH_TOKEN", ""),
+            agent_jwt_secret: env_or("AGENT_JWT_SECRET", ""),
+            agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
@@ -573,6 +688,9 @@ impl Config {
             .unwrap_or(true),
             coding_agent_otlp_endpoint: std::env::var("CODING_AGENT_OTLP_ENDPOINT")
                 .ok()
+                // No dedicated var? Reuse the general OTLP endpoint (mapped to the
+                // collector's HTTP port), so coding-agent traces ship out of the box.
+                .or_else(coding_agent_otlp_fallback)
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             coding_agent_ingest: CodingAgentIngestConfig::from_env(),
@@ -610,6 +728,9 @@ impl Config {
             hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
             hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
+            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
+            coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
+            coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
             hitl_lost_task_retries: env_parse("HITL_LOST_TASK_RETRIES", 3),
             agent_state_ttl_days: env_parse("AGENT_STATE_TTL_DAYS", 7).clamp(1, 365),
             agent_state_max_body_bytes: env_parse("AGENT_STATE_MAX_BODY_BYTES", 1_048_576).max(1),
@@ -688,6 +809,7 @@ impl Config {
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -741,6 +863,8 @@ impl Config {
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
+            maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
+            maf_heartbeat_secs: env_parse("MAF_HEARTBEAT_SECS", 20).clamp(5, 120),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
             agent_memory_volume: env_or("AGENT_MEMORY_VOLUME", "nasiko-agent-memory"),
             agent_memory_init_image: env_or("AGENT_MEMORY_INIT_IMAGE", "alpine:3.21"),
@@ -804,6 +928,16 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn origin_of_keeps_scheme_and_host_only() {
+        assert_eq!(
+            super::origin_of("https://acme.nasiko.dev/app?x=1"),
+            Some("https://acme.nasiko.dev".to_string())
+        );
+        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
+        assert_eq!(super::origin_of("https:///app"), None);
+    }
+
     use super::*;
 
     #[test]

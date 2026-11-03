@@ -169,11 +169,6 @@ async fn login(
             Json(serde_json::json!({"error": "account disabled"})),
         )
             .into_response(),
-        Err(nasiko_auth::AuthError::NotInvited) => (
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({"error": "this account has not been invited"})),
-        )
-            .into_response(),
         Err(nasiko_auth::AuthError::AccountLocked { retry_after_secs }) => (
             StatusCode::TOO_MANY_REQUESTS,
             Json(serde_json::json!({

@@ -28,28 +28,6 @@ describe('resolveSlots', () => {
     expect(s.granteeKinds.map((k) => k.key)).toEqual(['units', 'workspaces'])
     expect(s.harnessOrgScope).toBeNull()
   })
-
-  it('lets an upper layer’s settings section replace a lower one’s with the same key, in place', () => {
-    const section = (key: string, label: string) => ({
-      key,
-      label,
-      group: 'security' as const,
-      Section: () => null,
-    })
-    const ee: EditionLayer = {
-      id: 'ee',
-      slots: { settingsSections: [section('sso', 'Single sign-on'), section('alerts', 'Alerts')] },
-    }
-    const mt: EditionLayer = {
-      id: 'mt',
-      slots: { settingsSections: [section('sso', 'SSO and domain'), section('extra', 'Extra')] },
-    }
-    expect(resolveSlots([ee, mt]).settingsSections.map((x) => x.label)).toEqual([
-      'SSO and domain',
-      'Alerts',
-      'Extra',
-    ])
-  })
 })
 
 describe('applyNav', () => {

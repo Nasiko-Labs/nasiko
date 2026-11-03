@@ -479,6 +479,88 @@ impl TestServer {
             .await
     }
 
+    /// Like [`start_with_runtime`](Self::start_with_runtime), but binds `0.0.0.0`
+    /// and publishes `LLM_GATEWAY_BASE_URL=http://host.docker.internal:<port>`
+    /// into the environment **before** the app reads its config at boot — so a
+    /// deployed agent *container* can route its model calls back to this server.
+    /// A container cannot reach the host's loopback, which is why the default
+    /// `127.0.0.1` bind of the other constructors is unusable here.
+    ///
+    /// Mutates process env, so callers must be `#[serial]`. Used by the
+    /// coding-agent live E2E; `TestServer.runtime` is an unrelated `FakeRuntime`.
+    #[allow(dead_code)]
+    pub async fn start_reachable_with_runtime(
+        configure: impl FnOnce(&mut Config),
+        runtime: Arc<dyn ContainerRuntime>,
+    ) -> Self {
+        let pg_admin = pg_admin_url();
+        let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
+        let admin = minimal_pool_opts()
+            .connect(&pg_admin)
+            .await
+            .expect("connect to postgres — is the DB available? (set TEST_PG_URL to override)");
+        sqlx::query(&format!("CREATE DATABASE \"{db_name}\""))
+            .execute(&admin)
+            .await
+            .expect("create test database");
+        let db_url = {
+            let base = pg_admin.rsplitn(2, '/').last().unwrap_or(&pg_admin);
+            format!("{base}/{db_name}")
+        };
+        let db = minimal_pool_opts()
+            .connect(&db_url)
+            .await
+            .expect("connect to test db");
+        AppState::run_migrations(&db).await;
+
+        // Bind first so the port is known, then publish it as the gateway base URL
+        // the app's router config reads at boot (and the coding-agent per-turn
+        // injector reads per request).
+        let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // SAFETY: callers of this constructor are #[serial].
+        unsafe {
+            std::env::set_var(
+                "LLM_GATEWAY_BASE_URL",
+                format!("http://host.docker.internal:{port}"),
+            );
+        }
+
+        let s3_ep = s3_endpoint();
+        let mut config = test_config(db_url, redis_url(), s3_ep.clone());
+        configure(&mut config);
+
+        let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+        let auth: Arc<dyn nasiko_auth::AuthService> =
+            Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
+            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
+        );
+        let state =
+            AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        let flow_events = state.flow_events.clone();
+        let genai_metrics = state.genai_metrics.clone();
+        let handle_state = state.clone();
+        let app = nasiko_server::build_app(state, fallback);
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        TestServer {
+            // The test's own client runs on the host, so loopback works for it.
+            base_url: format!("http://127.0.0.1:{port}"),
+            client: reqwest::Client::new(),
+            db: db.clone(),
+            runtime: Arc::new(FakeRuntime::default()),
+            flow_events,
+            genai_metrics,
+            state: handle_state,
+            db_name,
+            admin_pool: admin,
+        }
+    }
+
     /// Shared implementation: `runtime` backs `AppState` (may be fake or
     /// real); `fake_handle` is stored on `TestServer` so hours-meter tests can
     /// script instance observations (`set_instances`) — the two must be the
@@ -607,6 +689,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
     Config {
         bind: "127.0.0.1:0".into(),
         domain: None,
+        delegation_audience: "nasiko-cp-test".to_string(),
+        delegation_enabled: true,
         database_url: db_url,
         redis_url,
         agent_runtime: "local".into(),
@@ -628,6 +712,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
         build_push_token: String::new(),
+        agent_jwt_secret: String::new(),
+        agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         openai_api_key: None,
@@ -670,6 +756,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         hitl_resume_lease_minutes: 2,
         hitl_resume_max_attempts: 3,
         hitl_resume_retry_delay_secs: 2,
+        coding_agent_idle_ttl_secs: 0,
+        coding_agent_turn_lease_secs: 60,
+        coding_agent_lease_heartbeat_secs: 20,
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
         agent_state_max_body_bytes: 1_048_576,
@@ -712,6 +801,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         ],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
+        // Tests register agents at loopback mock servers. The SSRF guard's own
+        // test (`agent_url_ssrf`) turns this off.
+        agent_allow_private_urls: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
@@ -759,6 +851,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
         build_concurrency: 1,
+        // Serial MAF runs in tests, for the same reason as build_concurrency above.
+        maf_worker_concurrency: 1,
+        maf_heartbeat_secs: 20,
         agent_default_memory: "512Mi".to_string(),
         agent_memory_volume: "nasiko-agent-memory".to_string(),
         agent_memory_init_image: "alpine:3.21".to_string(),

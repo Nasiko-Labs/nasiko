@@ -174,8 +174,6 @@ async fn a_member_cannot_move_an_agent_to_a_private_address_and_reach_it() {
 async fn a_platform_deployed_agent_takes_no_address_from_the_caller() {
     let server = guarded_server().await;
     let member = insert_member(&server).await;
-    let member_uuid = Uuid::parse_str(&member).unwrap();
-    let image = format!("u-{}/dummy-deployed:1.0.0", member_uuid.as_simple());
 
     let created = create(
         &server,
@@ -183,7 +181,7 @@ async fn a_platform_deployed_agent_takes_no_address_from_the_caller() {
         json!({
             "name": "dummy-deployed",
             "url": "http://localhost:8000/",
-            "image": image,
+            "image": "nasiko/dummy-deployed:1.0.0",
         }),
     )
     .await;

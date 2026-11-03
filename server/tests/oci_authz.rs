@@ -27,27 +27,15 @@ async fn insert_user(db: &PgPool, username: &str) -> Uuid {
     .expect("insert test user")
 }
 
-async fn insert_superuser(db: &PgPool, username: &str) -> Uuid {
-    sqlx::query_scalar(
-        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $2, true) RETURNING id",
-    )
-    .bind(username)
-    .bind(format!("{username}@oci-authz-test.com"))
-    .fetch_one(db)
-    .await
-    .expect("insert test superuser")
-}
-
 async fn insert_agent(db: &PgPool, name: &str, owner_id: Uuid) {
-    let slug = nasiko_server::agents::image_name_slug(name);
-    let image = format!("nasiko/{}:1.0.0", slug);
-    sqlx::query("INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', $3)")
-        .bind(name)
-        .bind(owner_id)
-        .bind(image)
-        .execute(db)
-        .await
-        .expect("insert test agent");
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, version, image) VALUES ($1, $2, '1.0.0', 'img:1')",
+    )
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .expect("insert test agent");
 }
 
 async fn insert_manifest(db: &PgPool, repository: &str) {
@@ -169,7 +157,6 @@ async fn tags_list_allows_anyone_on_unclaimed_repo() {
 async fn tags_list_allows_superuser_on_any_repo() {
     let server = common::TestServer::start().await;
     let owner_id = insert_user(&server.db, "oci-owner3").await;
-    let admin_id = insert_superuser(&server.db, "admin").await;
     let agent_name = format!("oci-authz-agent-{}", Uuid::new_v4());
     insert_agent(&server.db, &agent_name, owner_id).await;
     insert_manifest(&server.db, &format!("nasiko/{agent_name}")).await;
@@ -178,7 +165,7 @@ async fn tags_list_allows_superuser_on_any_repo() {
         server
             .client
             .get(server.url(&format!("/v2/nasiko/{agent_name}/tags/list"))),
-        &admin_id.to_string(),
+        &Uuid::new_v4().to_string(),
         "admin",
     )
     .send()

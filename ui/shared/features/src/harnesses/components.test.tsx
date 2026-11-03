@@ -2,12 +2,6 @@
  * Harnesses components in isolation: Breakdown (CSV, empty/error, paging footer, cards),
  * Crumbs collapse, Trend's partial-day rule (QA ISSUE-004), panel states, Individual bits.
  */
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  RouterProvider,
-} from '@tanstack/react-router'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -27,16 +21,6 @@ const { Crumbs } = await import('./components/Crumbs')
 const { Trend } = await import('./components/Trend')
 const { HarnessPanels } = await import('./components/HarnessPanels')
 const { ConnectHelp, SessionsList, TopModels } = await import('./components/IndividualView')
-
-/** ConnectHelp links the CLI guide, so it renders under a router. */
-const inRouter = (ui: ReactNode) => (
-  <RouterProvider
-    router={createRouter({
-      routeTree: createRootRoute({ component: () => <>{ui}</> }),
-      history: createMemoryHistory({ initialEntries: ['/'] }),
-    })}
-  />
-)
 
 const T = (p: Partial<HarnessTotals> = {}): HarnessTotals => ({
   scope_devs: 4,
@@ -400,29 +384,22 @@ describe('Individual pieces', () => {
     expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
   })
 
-  it('connect help: commands for the viewer, a request line for anyone else', async () => {
-    const viewer = render(
-      inRouter(<ConnectHelp self name="Ada" harness="cursor" server="https://or.example" />),
+  it('connect help: commands for the viewer, a request line for anyone else', () => {
+    const { rerender } = render(
+      <ConnectHelp self name="Ada" harness="cursor" server="https://or.example" />,
     )
-    expect(await screen.findByText(/nasiko connect https:\/\/or\.example/)).toBeInTheDocument()
+    expect(screen.getByText(/nasiko connect https:\/\/or\.example/)).toBeInTheDocument()
     expect(screen.getByText(/nasiko agents install cursor/)).toBeInTheDocument()
-    // FR-11: a local coding agent needs the CLI, so the steps link its install guide.
-    expect(screen.getByRole('link', { name: 'Install the CLI' })).toHaveAttribute('href', '/cli')
-    viewer.unmount()
-    render(
-      inRouter(
-        <ConnectHelp self={false} name="Ada" harness="cursor" server="https://or.example" />,
-      ),
-    )
-    expect(await screen.findByText('Ask Ada to connect Cursor.')).toBeInTheDocument()
+    rerender(<ConnectHelp self={false} name="Ada" harness="cursor" server="https://or.example" />)
+    expect(screen.getByText('Ask Ada to connect Cursor.')).toBeInTheDocument()
   })
 
   it('Copy puts the three connect commands on the clipboard', async () => {
     const user = userEvent.setup()
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-    render(inRouter(<ConnectHelp self name="Ada" harness="codex" server="https://or.example" />))
-    await user.click(await screen.findByRole('button', { name: 'Copy' }))
+    render(<ConnectHelp self name="Ada" harness="codex" server="https://or.example" />)
+    await user.click(screen.getByRole('button', { name: 'Copy' }))
     expect(writeText).toHaveBeenCalledWith(
       'nasiko connect https://or.example\nnasiko auth login\nnasiko agents install codex',
     )

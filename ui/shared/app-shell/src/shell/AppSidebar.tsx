@@ -118,7 +118,6 @@ export function AppSidebar({
   const { edition, slots } = use(EditionContext)
   const layers = edition.layers
   const Brand = slots.sidebarBrand
-  const SidebarCard = slots.sidebarCard
   const { setOpenMobile, isMobile, state } = useSidebar()
   const rail = state === 'collapsed' && !isMobile
   const { panels, setTarget } = use(SidebarPanelContext)
@@ -239,11 +238,7 @@ export function AppSidebar({
       {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
           background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
       {/* {holds ? null : <WaitlistCard />} */}
-      {holds ? null : SidebarCard ? (
-        <SidebarCard />
-      ) : pathname === '/assessment' ? null : (
-        <AssessmentCard />
-      )}
+      {holds || pathname === '/assessment' ? null : <AssessmentCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
           <HelpRows pathname={pathname} onPick={pick} />

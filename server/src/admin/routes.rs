@@ -212,21 +212,7 @@ async fn deploy(
     let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: {
-            // Canonicalize (qualify) then validate - fixes R-123 unqualified-reference bypass
-            match crate::agents::canonicalize_and_validate_image_ref(
-                &state.db,
-                &state.config.agent_image_registry,
-                &req.image,
-                owner_id,
-                claims.is_superuser,
-            )
-            .await
-            {
-                Ok(qualified) => qualified,
-                Err((code, msg)) => return (code, msg).into_response(),
-            }
-        },
+        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
         ports,
         env_vars: env,
         min_replicas: bounds.min,

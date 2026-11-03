@@ -6,7 +6,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Bot, RotateCw, SearchX, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Label } from '@nasiko/ui/primitives/label'
 import {
@@ -70,10 +69,10 @@ export function CatalogPage({
 
   const all = q.agents
   const harnessCount = useMemo(() => all.filter(isHarness).length, [all])
-  // An edition that places agents (MT) lists the local ones by default: the whole fleet in one view (TM-5).
-  const { agentPlacement } = useSlots()
-  const showLocal = search.harnesses ?? agentPlacement
-  const pool = useMemo(() => (showLocal ? all : all.filter((a) => !isHarness(a))), [all, showLocal])
+  const pool = useMemo(
+    () => (search.harnesses ? all : all.filter((a) => !isHarness(a))),
+    [all, search.harnesses],
+  )
   const rated = fleet.summary?.byId
   const tags = useMemo(() => {
     if (pinnedTabs?.length) return pinnedTabs
@@ -219,12 +218,10 @@ export function CatalogPage({
           {harnessCount ? (
             <Label className="gap-2 text-xs font-normal text-muted-foreground">
               <Switch
-                checked={showLocal}
-                onCheckedChange={(on) =>
-                  setSearch({ harnesses: on === agentPlacement ? undefined : on })
-                }
+                checked={!!search.harnesses}
+                onCheckedChange={(on) => setSearch({ harnesses: on ? true : undefined })}
               />
-              {agentPlacement ? copy.localToggle(harnessCount) : copy.harnessesToggle(harnessCount)}
+              {copy.harnessesToggle(harnessCount)}
             </Label>
           ) : null}
         </div>
