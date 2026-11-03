@@ -1,6 +1,6 @@
 /**
- * The last 402 Payment Required any query or mutation got (queryClient.ts): the server refused because of the
- * account's plan. The core only records it. The page that made the call still shows the server's words inline, and an
+ * The last refusal any query or mutation got that paying or a plan change could resolve (queryClient.ts): a 402 Payment
+ * Required, or a 403 or 409 whose body lists next steps (`actions`). The core only records it. The page that made the call still shows the server's words inline, and an
  * edition that sells plans says what to do about it through its `shellNotice` slot. It ends with the session
  * (queryClient.ts clears it with the cache).
  */
@@ -17,8 +17,13 @@ export interface PaymentRequired {
 
 const store = createStore<{ last: PaymentRequired | null }>(() => ({ last: null }))
 
+/** A 403 (a quota) or 409 (a state conflict) is a plan refusal only when the server attached next steps to it. */
+const hasActions = (body: unknown) =>
+  !!body && typeof body === 'object' && Array.isArray((body as { actions?: unknown }).actions)
+
 export function notePaymentRequired(err: unknown) {
-  if (err instanceof ApiError && err.status === 402)
+  if (!(err instanceof ApiError)) return
+  if (err.status === 402 || ((err.status === 403 || err.status === 409) && hasActions(err.body)))
     store.setState({ last: { path: err.path, body: err.body, message: err.serverMessage } })
 }
 

@@ -29,6 +29,15 @@ describe('paymentRequired', () => {
     expect(result.current).toBeNull()
   })
 
+  it('records a 403 or 409 only when the server attached next steps', async () => {
+    const { result } = renderHook(() => usePaymentRequired())
+    await act(() => fail(new ApiError(409, { error: 'busy' }, '/api/x', 'x')).done)
+    expect(result.current).toBeNull()
+    const quota = { code: 'compute_quota_exceeded', error: 'Quota reached', actions: [] }
+    await act(() => fail(new ApiError(403, quota, '/api/agents/upload', 'x')).done)
+    expect(result.current?.body).toEqual(quota)
+  })
+
   it('ignores every other failure', async () => {
     const { result } = renderHook(() => usePaymentRequired())
     await act(() => fail(new ApiError(403, 'no', '/api/x', 'x')).done)
