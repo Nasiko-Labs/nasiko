@@ -337,24 +337,129 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     let traceparent: Option<&str> = synthesized_tp.as_deref().or(header_traceparent);
 
     let started = std::time::Instant::now();
-    let Some(result) = protocol::handle_request(
+
+    // For a `tools/call`, wrap the execution in an exported `execute_tool` span
+    // so the invocation surfaces in the trace timeline's Tool lane — the
+    // server-side counterpart of the coding-agent path, which synthesises the
+    // same span shape (`gen_ai.operation.name = "execute_tool"` + `tool.name`)
+    // from its ACP turn report (`coding_agent_otlp.rs`). The MCP path never
+    // emitted a span, so a tool call was recorded only as a `token_usage` row,
+    // never in Tempo. Only a real tool invocation gets a span —
+    // `tools/list`/`initialize`/`ping` do not. Model/provider are deliberately
+    // left unset so the read-path classifier buckets it as a tool, not an LLM.
+    // The span joins the caller's trace via the inbound traceparent (the same
+    // one `handle_request` forwards), so it nests under the agent-call subtree
+    // beside the LLM spans; with no traceparent (owner-fallback coding-agent
+    // row) it is a local child instead.
+    // Recording the tool's inputs/outputs on the span is gated by the same
+    // content flag the hop and LLM spans honour, so a deployment that opts out
+    // of content capture gets the Tool lane without the payloads.
+    let capture_content = state.config.otel_capture_content;
+    let tool_span = (method == "tools/call").then(|| {
+        let span = tracing::info_span!(
+            "execute_tool",
+            // The *exported* span name is tool-specific (`execute_tool <tool>`),
+            // while `gen_ai.operation.name` stays the generic `execute_tool` the
+            // Tool-lane classifier keys on. Retry/recovery detection
+            // (`unrecovered_error_spans`, and the UI's `unrecoveredErrors`)
+            // pairs an error span with a later success under the same parent by
+            // *name*, so a single shared name would let a failed tool be hidden
+            // by an unrelated tool that happened to succeed next. The
+            // coding-agent OTLP path already names its tool spans this way
+            // (`coding_agent_otlp.rs`).
+            otel.name = %tool_span_name(&tool_name),
+            otel.kind = "client",
+            otel.status_code = tracing::field::Empty,
+            gen_ai.operation.name = "execute_tool",
+            gen_ai.agent.id = %agent_id,
+            tool.name = %tool_name,
+            tool.success = tracing::field::Empty,
+            tool.arguments = tracing::field::Empty,
+            tool.result = tracing::field::Empty,
+            error.message = tracing::field::Empty,
+        );
+        // The arguments are known before the call, so record them now; the
+        // read path reads `tool.arguments` as the span's input. Use the real
+        // tool's arguments, unwrapping a `nasiko_call_tool` wrapper, to match
+        // the `tool.name` recorded above.
+        if capture_content
+            && let Some(args) = body.get("params").map(protocol::invoked_tool_arguments)
+        {
+            span.record(
+                "tool.arguments",
+                crate::coding_agent_otlp::bounded_json(&args).as_str(),
+            );
+        }
+        // Parent the tool span to the inbound trace ONLY when the flow is
+        // proven. `verified_flow_id` is `Some` exactly when this call's trace was
+        // verified — on the A2A path `flow_user` derived the trace id from this
+        // very `traceparent` and checked it against `flows`/`flow_participants`,
+        // and on the session path the signed claims did — so the header's trace
+        // is the caller's own. On the owner-fallback path it is `None` (a coding
+        // agent acting as its owner, or a foreign/dead trace id nobody proved);
+        // the header is unverified, so the span — and the tool arguments/results
+        // it may carry — must never join the trace it names.
+        //
+        // Detaching has to be explicit: the span is created inside the server's
+        // `request` span, which `TraceLayer` already adopted into the raw inbound
+        // `traceparent` (`oss/server/src/lib.rs`), so a contextual span inherits
+        // that remote trace at export unless its parent is overridden. Setting an
+        // empty context roots it in a trace of its own instead of a caller's.
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        span.set_parent(tool_span_parent(verified_flow_id.as_deref(), traceparent));
+        span
+    });
+
+    let request = protocol::handle_request(
         &state.mcp,
         user_id,
         agent_id,
         &body,
         traceparent,
         verified_flow_id.as_deref(),
-    )
-    .await
-    else {
+    );
+    let result = match &tool_span {
+        Some(span) => {
+            use tracing::Instrument as _;
+            request.instrument(span.clone()).await
+        }
+        None => request.await,
+    };
+    let Some(result) = result else {
         return (StatusCode::ACCEPTED, Json(json!({}))).into_response();
     };
 
     if method == "tools/call" {
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-        let success = result.get("error").is_none();
+        let success = tool_call_succeeded(&result);
+        if let Some(span) = &tool_span {
+            span.record("tool.success", success);
+            if !success {
+                span.record("otel.status_code", "ERROR");
+            }
+            // The output (or the error) is known now; the read path reads
+            // `tool.result`/`error.message` as the span's output. Mirrors the
+            // coding-agent tool span's shape.
+            if capture_content {
+                if let Some(output) = result.get("result") {
+                    span.record("tool.result", tool_result_for_span(output).as_str());
+                }
+                if let Some(error) = result.get("error") {
+                    span.record(
+                        "error.message",
+                        crate::coding_agent_otlp::bounded_json(error).as_str(),
+                    );
+                }
+            }
+        }
         record_tool_usage(
-            state, user_id, agent_id, &tool_name, latency_ms, success, None,
+            state,
+            user_id,
+            agent_id,
+            &tool_name,
+            latency_ms,
+            success,
+            verified_flow_id.as_deref(),
         );
 
         if result
@@ -517,7 +622,7 @@ fn synth_traceparent(flow_id: &str) -> String {
 /// `Err(denial)` arm above always needs both facts about the very same row at
 /// once. `is_local` is `coding_agent_integration_id IS NOT NULL`
 /// (`oss/migrations/0019_coding_agent_identity.sql`) or `discovered_on IS NOT
-/// NULL` (`oss/migrations/0065_discovered_agents.sql`) — deliberately the
+/// NULL` (`oss/migrations/0078_discovered_agents.sql`) — deliberately the
 /// columns themselves, never agent metadata or name — matching
 /// `is_coding_agent` and `is_discovered_agent` in
 /// `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
@@ -542,6 +647,108 @@ async fn agent_owner(
     .await
 }
 
+/// The largest tool payload recorded onto an `execute_tool` span. Well above the
+/// 2,000-char generic content cap (`coding_agent_otlp::bounded_json`) because the
+/// trace view only offers a JSON view when the *whole* value parses — a payload
+/// truncated mid-structure drops back to raw, unreadable text. Still bounded so
+/// one tool call cannot bloat the trace.
+const MAX_TOOL_CONTENT_CHARS: usize = 16_000;
+
+/// Render an MCP tool result for the span's `tool.result`. MCP wraps a tool's
+/// output in a `{ "content": [{ "type": "text", "text": … }] }` envelope, and
+/// the text is itself usually a JSON document — so recorded verbatim it reaches
+/// the trace view double-escaped (`{\"messages\":…}`) and, once truncated, no
+/// longer parses, which is why the Output pane shows raw text with no JSON view.
+/// Unwrap the text parts and parse them when they are JSON, so the real output
+/// is stored as structured JSON; non-text shapes (image parts, structured
+/// content) fall back to the result as-is. Bounded to `MAX_TOOL_CONTENT_CHARS`.
+fn tool_result_for_span(result: &Value) -> String {
+    let unwrapped = unwrap_tool_text(result);
+    let value = unwrapped.as_ref().unwrap_or(result);
+    crate::coding_agent_otlp::truncate_chars(
+        &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
+        MAX_TOOL_CONTENT_CHARS,
+    )
+}
+
+/// The text payload of a CallToolResult: its `text` content parts concatenated,
+/// parsed as JSON when the whole thing parses, else kept as a plain string.
+/// `None` when the result carries no text parts, so the caller keeps the raw
+/// result.
+fn unwrap_tool_text(result: &Value) -> Option<Value> {
+    let parts = result.get("content")?.as_array()?;
+    let text: String = parts
+        .iter()
+        .filter(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    Some(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
+}
+
+/// The OpenTelemetry parent context for a tool call's `execute_tool` span.
+///
+/// Returns the caller's remote trace context **only** when the flow was proven
+/// (`verified_flow_id` is `Some`); otherwise an empty context, which roots the
+/// span in its own trace. An unverified inbound `traceparent` — the owner-
+/// fallback path, where it may name another user's flow — is never adopted, so
+/// the tool span and its captured payloads cannot be stapled onto a trace the
+/// caller did not prove it belongs to. Returning an empty context (rather than
+/// leaving the span contextual) is what detaches it from the server `request`
+/// span that `TraceLayer` already parented to the raw header.
+fn tool_span_parent(
+    verified_flow_id: Option<&str>,
+    traceparent: Option<&str>,
+) -> opentelemetry::Context {
+    if verified_flow_id.is_some()
+        && let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent)
+    {
+        return cx;
+    }
+    opentelemetry::Context::new()
+}
+
+/// The exported name for a tool call's `execute_tool` span.
+///
+/// Tool-specific (`execute_tool gmail__send_email`) so retry/recovery detection,
+/// which pairs an error span with a later same-named success under the same
+/// parent, cannot treat an unrelated tool that succeeded next as a recovery of a
+/// tool that failed. Mirrors the coding-agent OTLP convention
+/// (`coding_agent_otlp.rs`). Falls back to the bare `execute_tool` when the tool
+/// name is missing, rather than leaving a trailing space.
+fn tool_span_name(tool_name: &str) -> String {
+    if tool_name.is_empty() {
+        "execute_tool".to_string()
+    } else {
+        format!("execute_tool {tool_name}")
+    }
+}
+
+/// Whether a `tools/call` JSON-RPC response reports success.
+///
+/// A tool call can fail in two independent shapes, and both must count as a
+/// failure or a failed call is exported and billed as a success:
+///
+/// - a top-level JSON-RPC `error` object — a transport/protocol failure the
+///   gateway itself produced, and
+/// - a tool-level failure, which MCP returns as a *successful* JSON-RPC
+///   response whose `result.isError` is `true` (the tool ran and reported its
+///   own error — the shape connector tools and the recovery-tool path use).
+///
+/// Checking only `error` silently loses the second kind, so the span records
+/// `tool.success = true` and the usage row `finish_reason = "ok"` for a call
+/// that actually failed.
+fn tool_call_succeeded(response: &Value) -> bool {
+    response.get("error").is_none()
+        && response
+            .get("result")
+            .and_then(|r| r.get("isError"))
+            .and_then(Value::as_bool)
+            != Some(true)
+}
+
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -549,7 +756,7 @@ fn record_tool_usage(
     tool_name: &str,
     latency_ms: i32,
     success: bool,
-    team_id: Option<&str>,
+    flow_id: Option<&str>,
 ) {
     state.genai_metrics.record_tool_call(
         latency_ms as f64 / 1000.0,
@@ -557,12 +764,21 @@ fn record_tool_usage(
         &agent_id.to_string(),
     );
 
-    let usage = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
+    // `session_id` carries the flow id (= trace id), exactly as the LLM rows do
+    // (`router/usage_meta.rs` stamps `.session_id(flow_id)`), so a tool call joins
+    // its turn in SQL the same way — via `token_usage.session_id = <trace_id>`.
+    // Only the server-proven `verified_flow_id` is used, never the raw inbound
+    // `traceparent`: an owner-fallback coding-agent row has no proven flow, so it
+    // stays unstamped rather than naming a turn it can't be shown to belong to.
+    let mut builder = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
         .agent_id(agent_id)
         .latency_ms(latency_ms)
         .finish_reason(if success { "ok" } else { "error" })
-        .metadata(json!({ "tool": tool_name, "success": success, "team_id": team_id }))
-        .build();
+        .metadata(json!({ "tool": tool_name, "success": success, "team_id": null }));
+    if let Some(flow_id) = flow_id {
+        builder = builder.session_id(flow_id);
+    }
+    let usage = builder.build();
 
     let tracker = state.usage_tracker.clone();
     tokio::spawn(async move {
@@ -570,4 +786,144 @@ fn record_tool_usage(
             tracing::warn!(error = %e, "failed to record mcp_tool_call usage");
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_result_unwraps_the_text_envelope_and_parses_inner_json() {
+        // MCP wraps the real JSON payload as a string inside a text content part.
+        let result = json!({
+            "content": [{ "type": "text", "text": "{\"messages\":[{\"id\":\"1\"}]}" }],
+            "isError": false
+        });
+        let rendered = tool_result_for_span(&result);
+        // Stored un-escaped and parseable, so the trace view offers a JSON view.
+        let parsed: Value = serde_json::from_str(&rendered).expect("parses as JSON");
+        assert_eq!(parsed, json!({ "messages": [{ "id": "1" }] }));
+    }
+
+    #[test]
+    fn tool_result_keeps_plain_text_when_the_part_is_not_json() {
+        let result = json!({ "content": [{ "type": "text", "text": "done" }] });
+        let rendered = tool_result_for_span(&result);
+        assert_eq!(
+            serde_json::from_str::<Value>(&rendered).unwrap(),
+            json!("done")
+        );
+    }
+
+    #[test]
+    fn tool_result_falls_back_to_the_raw_result_without_text_parts() {
+        // No text parts (e.g. an image part or structured content) → raw result.
+        let result = json!({ "content": [{ "type": "image", "data": "…" }] });
+        let rendered = tool_result_for_span(&result);
+        assert_eq!(serde_json::from_str::<Value>(&rendered).unwrap(), result);
+    }
+
+    #[test]
+    fn tool_result_is_bounded() {
+        let big = "x".repeat(MAX_TOOL_CONTENT_CHARS * 2);
+        let result = json!({ "content": [{ "type": "text", "text": big }] });
+        assert!(tool_result_for_span(&result).chars().count() <= MAX_TOOL_CONTENT_CHARS);
+    }
+
+    const SAMPLE_TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const SAMPLE_TRACE_ID: &str = "0af7651916cd43dd8448eb211c80319c";
+
+    #[test]
+    fn verified_flow_parents_the_tool_span_to_the_inbound_trace() {
+        use opentelemetry::trace::TraceContextExt as _;
+        let cx = tool_span_parent(Some(SAMPLE_TRACE_ID), Some(SAMPLE_TRACEPARENT));
+        let sc = cx.span().span_context().clone();
+        assert!(sc.is_valid(), "a verified call joins the caller's trace");
+        assert_eq!(sc.trace_id().to_string(), SAMPLE_TRACE_ID);
+    }
+
+    #[test]
+    fn unverified_traceparent_is_not_adopted_as_the_tool_span_parent() {
+        use opentelemetry::trace::TraceContextExt as _;
+        // Owner-fallback: no proven flow, though the header names a (foreign)
+        // trace. The span must detach to its own root, never join that trace.
+        let cx = tool_span_parent(None, Some(SAMPLE_TRACEPARENT));
+        assert!(
+            !cx.span().span_context().is_valid(),
+            "an unverified trace is never adopted as the parent"
+        );
+    }
+
+    #[test]
+    fn verified_flow_with_an_unusable_traceparent_detaches() {
+        use opentelemetry::trace::TraceContextExt as _;
+        // Defensive: proven flow but the header will not parse → own root, not a
+        // panic and not an adopted garbage context.
+        let cx = tool_span_parent(Some("flow-1"), Some("not-a-traceparent"));
+        assert!(!cx.span().span_context().is_valid());
+        // And with no header at all.
+        let cx = tool_span_parent(Some("flow-1"), None);
+        assert!(!cx.span().span_context().is_valid());
+    }
+
+    #[test]
+    fn tool_span_name_is_tool_specific() {
+        // Distinct tools get distinct exported span names, which is what keeps
+        // one tool's failure from being hidden by another's success in
+        // retry/recovery detection.
+        assert_eq!(
+            tool_span_name("gmail__send_email"),
+            "execute_tool gmail__send_email"
+        );
+        assert_ne!(
+            tool_span_name("gmail__send_email"),
+            tool_span_name("calendar__list_events")
+        );
+        // Prefix preserved so the name still reads as a tool execution.
+        assert!(tool_span_name("x").starts_with("execute_tool "));
+        // No trailing space when the tool name is missing.
+        assert_eq!(tool_span_name(""), "execute_tool");
+    }
+
+    #[test]
+    fn tool_level_iserror_is_a_failure_despite_no_jsonrpc_error() {
+        // MCP tool-level failure: a successful JSON-RPC response whose result
+        // carries `isError: true`. Checking only `error` would call this a
+        // success and export/record it as one.
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "quota exceeded" }], "isError": true }
+        });
+        assert!(!tool_call_succeeded(&response));
+    }
+
+    #[test]
+    fn top_level_jsonrpc_error_is_a_failure() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32000, "message": "boom" }
+        });
+        assert!(!tool_call_succeeded(&response));
+    }
+
+    #[test]
+    fn clean_result_is_a_success() {
+        // `isError: false` and no error → success.
+        let explicit = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "ok" }], "isError": false }
+        });
+        assert!(tool_call_succeeded(&explicit));
+        // A result with no `isError` field at all is also a success.
+        let implicit = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "ok" }] }
+        });
+        assert!(tool_call_succeeded(&implicit));
+    }
 }

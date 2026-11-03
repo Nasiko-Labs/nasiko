@@ -23,7 +23,6 @@ import { expireWatch, isWatching, shownStatus, startWatch, stepWatch, type Watch
 describe('status matrix', () => {
   it.each([
     ['running', 'running', ['restart', 'stop']],
-    ['parked', 'parked', ['start', 'stop']],
     ['deploying', 'deploying', ['stop']],
     ['pending', 'deploying', ['stop']],
     ['crashed', 'attention', ['restart', 'stop']],
@@ -285,31 +284,10 @@ describe('error table', () => {
     expect(errorCopy(err(status), context).message).toMatch(message)
   })
 
-  it('keeps the server reason behind Details when our copy names the cause, drops HTML, truncates long text', () => {
-    expect(errorCopy(err(403, 'bad owner'), 'manage').detail).toBe('bad owner')
-    expect(errorCopy(err(403, { error: 'not yours' }), 'manage').detail).toBe('not yours')
+  it('keeps short plain-text server detail, drops HTML, and truncates long text', () => {
+    expect(errorCopy(err(400, 'bad owner'), 'read').detail).toBe('bad owner')
     expect(errorCopy(err(502, '<html>gateway</html>'), 'read').detail).toBeNull()
-    expect(errorCopy(err(403, 'x'.repeat(500)), 'manage').detail!.length).toBeLessThan(210)
-  })
-
-  it('says the server reason instead of "something went wrong" when we have no words of our own', () => {
-    const plain = errorCopy(err(400, 'bad owner'), 'read')
-    expect(plain).toEqual({ message: 'Open Runtime said: bad owner.', detail: null })
-    // JSON bodies too, not only plain text.
-    expect(errorCopy(err(409, { message: 'AGENT_JWT_SECRET is not configured' })).message).toBe(
-      'Open Runtime said: AGENT_JWT_SECRET is not configured.',
-    )
-    // A bare "internal error" names no cause.
-    expect(errorCopy(err(500, 'internal error')).message).toBe(copy.somethingWrong)
-  })
-
-  it('a lifecycle 500 blames the container only when the server gave no other reason', () => {
-    expect(errorCopy(err(500, 'internal error'), 'lifecycle').message).toMatch(
-      /couldn't find this agent's container/,
-    )
-    expect(
-      errorCopy(err(500, { error: 'secret OPENAI_API_KEY not found' }), 'lifecycle').message,
-    ).toBe('Open Runtime said: secret OPENAI_API_KEY not found.')
+    expect(errorCopy(err(400, 'x'.repeat(500)), 'read').detail!.length).toBeLessThan(210)
   })
 
   it('a non-API error is "something went wrong" with its message', () => {

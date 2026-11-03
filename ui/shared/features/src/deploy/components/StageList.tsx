@@ -15,7 +15,7 @@ const SR_STATE: Record<Stage['state'], string> = {
   warning: copy.status.notRunning,
 }
 
-export function StageIcon({ state }: { state: Stage['state'] }) {
+function StageIcon({ state }: { state: Stage['state'] }) {
   const cls = 'size-4 shrink-0'
   switch (state) {
     case 'done':

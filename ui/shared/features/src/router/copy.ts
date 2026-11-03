@@ -21,8 +21,7 @@ export const copy = {
     },
     {
       title: 'A model is picked',
-      detail:
-        'An override or a pin wins; then a tier per request if the config has tier models, else its model.',
+      detail: 'An override or a pin wins; otherwise a tier per request.',
     },
     { title: 'The provider is called', detail: 'With your saved key, or the platform key.' },
     { title: 'Fallbacks if it fails', detail: 'Each fallback model is tried in order.' },
@@ -71,9 +70,6 @@ export const copy = {
   spendTip: `Metered by the router for the last ${SPEND_DAYS} days, calls billed to you. Calls billed to someone else don’t show here.`,
   colActions: 'Actions',
   changeRouting: 'Change routing',
-  /** Beside a disabled Change routing on a Cursor agent (the CLI's `llm-config attach` refuses it the same way). */
-  routingUnsupported:
-    "The LLM router doesn't support Cursor. Claude Code, Codex and OpenCode can be routed.",
   codingHarness: 'Coding harness',
   readingRouting: 'Reading routing…',
   couldntRead: 'Couldn’t read routing',
@@ -135,13 +131,6 @@ export const copy = {
   cliTiered: 'Tier models can’t be set from the CLI yet.',
   cliNoModel: 'This config has no model, so the CLI can’t create it yet.',
   copyCli: 'Copy CLI command',
-  // The routing sheet's CLI block (user request 2026-11-13): both commands, and what a change reaches.
-  cliAttachLabel: 'To attach a config from the CLI:',
-  cliDetachLabel: 'To detach it (back to your default config):',
-  copyCliAttach: 'Copy the attach command',
-  copyCliDetach: 'Copy the detach command',
-  cliAppliesTo: (seconds: number) =>
-    `Attaching or detaching applies to all of this agent's sessions, existing and new: its next model call uses it, within about ${seconds} seconds.`,
 
   // Providers
   providersTitle: 'Providers',
@@ -177,11 +166,8 @@ export const copy = {
   editorEdit: (name: string) => `Edit ${name}`,
   editorDuplicate: (name: string) => `Duplicate of ${name}`,
   fieldName: 'Name',
-  fieldNamePlaceholder: 'e.g. Team default',
   fieldProvider: 'Provider',
   fieldModel: 'Model',
-  modelPlaceholder: 'Pick or type a model',
-  tierPlaceholder: 'Optional, else the model above',
   modelHint: 'Required unless you set a tier model; with tiers it is the fallback model.',
   fieldKey: 'Key',
   keyUseSaved: 'Use a saved key',
@@ -191,9 +177,7 @@ export const copy = {
   secretsFailed: 'Couldn’t load your saved keys. You can still add a key or use the platform key.',
   secretName: 'Secret name',
   secretNameHint: 'Uppercase letters, digits and _ only.',
-  secretNamePlaceholder: 'OPENAI_API_KEY',
   keyValue: 'API key',
-  keyValuePlaceholder: 'Paste the API key',
   keyReplaces: (name: string) =>
     `Replaces the saved key ${name} for every config and agent that uses it.`,
   keyContainers: 'Saved keys are also available to all your agents’ containers.',
@@ -210,14 +194,12 @@ export const copy = {
   notInCatalog: 'Not in the catalog',
   advanced: 'Advanced',
   temperature: 'Temperature',
-  temperaturePlaceholder: 'e.g. 0.7',
   maxTokens: 'Max tokens',
-  maxTokensPlaceholder: 'e.g. 4096',
   pinModel: 'Pin model',
   pinModelHint: 'A pinned model turns tier routing and fallbacks off.',
   pinModelRequired: 'Choose the model to pin.',
   cantClear:
-    'Open Runtime can’t clear this field yet. Duplicate without this field, or use the CLI.',
+    'OpenRuntime can’t clear this field yet. Duplicate without this field, or use the CLI.',
   duplicateWithout: 'Duplicate without this field',
   missingKey: (name: string) => `Saved key ${name} not found: add it again`,
   providerGone: 'Provider no longer registered',
@@ -264,6 +246,9 @@ export const copy = {
   keepNotOffered: (model: string, provider: string) => `${model} isn’t offered by ${provider}`,
   keepAnyProvider: 'Applies to the provider each request names.',
   cantSeeOwnerConfigs: 'You can’t see this owner’s configs.',
+  requestFormat: 'Request format',
+  requestFormatWayOut: (agent: string) =>
+    `Change with nasiko llm-config attach ${agent} <config> --inbound-format <format>.`,
   checkHint: (by: string) =>
     `To check, start a new conversation after ${by}: ongoing ones may keep the old model.`,
   cantConfirm: 'This page can’t confirm routed calls yet.',
@@ -295,7 +280,6 @@ export const copy = {
   cpDescription: 'An endpoint the router can call, for every user’s configs.',
   cpEdit: (name: string) => `Edit ${name}`,
   cpName: 'Name',
-  cpNamePlaceholder: 'e.g. my-vllm',
   cpKind: 'Endpoint type',
   cpKinds: {
     openai: 'OpenAI-compatible',
@@ -305,7 +289,7 @@ export const copy = {
   cpKindHint: {
     openai: 'Speaks the OpenAI chat completions format.',
     'azure-openai':
-      'An Azure OpenAI resource. Open Runtime adds the deployment path and api-version.',
+      'An Azure OpenAI resource. OpenRuntime adds the deployment path and api-version.',
     'bedrock-converse': 'Bedrock Runtime’s Converse API, with a Bedrock API key.',
   },
   cpKindLocked: 'The endpoint type can’t change after registering. Add a new provider instead.',
@@ -321,7 +305,6 @@ export const copy = {
   cpKeyKeep: 'Leave empty to keep the saved key.',
   cpKeyNewHost: 'New host: enter the key again. The saved key isn’t sent to a different host.',
   cpDefaultModel: 'Default model',
-  cpDefaultModelPlaceholder: 'e.g. llama-3.1-70b-instruct',
   cpSavedNoModel: (name: string) =>
     `Saved ${name}, but its default model wasn’t set. Edit the provider to set it.`,
   cpSync: 'Sync the model catalog',
@@ -335,8 +318,8 @@ export const copy = {
     `Still used by: ${names}. Some may belong to other users; their owners must repoint them first.`,
 
   // Errors (errors.ts builds the entries)
-  errUnmapped: (text: string, status: number) => `Open Runtime said: ${text} (HTTP ${status})`,
-  errDown: 'Open Runtime isn’t answering.',
+  errUnmapped: (text: string, status: number) => `OpenRuntime said: ${text} (HTTP ${status})`,
+  errDown: 'OpenRuntime isn’t answering.',
   errDownFix: 'Check that nasiko-server is running, then retry.',
 } as const
 

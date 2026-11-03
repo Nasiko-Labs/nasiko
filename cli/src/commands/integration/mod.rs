@@ -5,17 +5,29 @@
 //! [`install`] registers an agent in the control plane (or reuses the one LLM
 //! routing already uses) and installs a hook that durably queues completed turns for delivery
 //! to the cluster and account reporting was installed for — not whichever is active later.
+//! `nasiko agents setup` installs every detected agent and imports the sessions they kept from
+//! before (`import`), newest first, reporting its progress to the server (`onboarding`).
 
 mod a2a;
 mod agents;
+mod background;
+mod backlog;
 mod catalog;
 mod control_plane;
+mod courier;
+mod import;
 mod launcher;
+mod ledger;
 mod model;
+mod onboarding;
+mod pace;
 mod queue;
 mod report;
+mod sanitize;
+mod setup;
 mod state;
 mod sync;
+mod windows;
 
 use anyhow::{Context, Result, bail};
 use nasiko_utils::term;
@@ -23,7 +35,10 @@ use std::path::Path;
 
 use agents::Agent;
 use catalog::Support;
+use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
+
+pub use setup::SetupOptions;
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
@@ -952,8 +967,148 @@ pub fn report(agent_id: &str) -> Result<()> {
     report::run(resolve(agent_id)?)
 }
 
-pub fn sync() -> Result<()> {
-    sync::run()
+/// Connects every detected coding agent to the active cluster and account, for `nasiko agents
+/// setup`. Running setup is the user's yes, so an agent declined at a login offer is connected
+/// too, and one reporting elsewhere is moved here with its content setting kept. One broken
+/// adapter must not block the others.
+pub(super) fn auto_install_detected() -> Result<()> {
+    let settings = IntegrationState::load()?;
+    let agents: Vec<_> = Agent::ALL
+        .iter()
+        .copied()
+        .filter(|agent| agent.spec().support == Support::Instrumented)
+        .filter(|agent| detect(*agent).is_present())
+        .collect();
+    if agents.is_empty() {
+        println!("No supported local coding agents detected.");
+        return Ok(());
+    }
+
+    let here = ReportingDestination::current()?;
+    println!("\nConfiguring detected coding agents for this account...");
+    let mut installed = 0usize;
+    for agent in agents {
+        let spec = agent.spec();
+        let reconnect = format!(
+            "{} connect {} --no-routing --reporting",
+            crate::commands::local_agents::cli_name(),
+            spec.id
+        );
+        let capture_content = match setup_step(settings.get(spec.id), &here) {
+            SetupStep::Keep => {
+                println!(
+                    "{} already reports sessions to {}.",
+                    spec.display_name, here.cluster_name
+                );
+                installed += 1;
+                continue;
+            }
+            SetupStep::Install => true,
+            SetupStep::Move {
+                from,
+                capture_content,
+            } => {
+                println!(
+                    "{} reports sessions to {from}; moving it to {}.",
+                    spec.display_name, here.cluster_name
+                );
+                capture_content
+            }
+        };
+        match install(InstallOptions {
+            agent_id: spec.id,
+            no_content: !capture_content,
+            agent_name: None,
+        }) {
+            Ok(()) => installed += 1,
+            Err(error) => term::print_warning(&format!(
+                "Automatic {} setup failed: {error:#}\n  Retry with: {}",
+                spec.display_name,
+                term::cyan_stderr(&reconnect)
+            )),
+        }
+    }
+    println!("Automatic coding-agent setup completed for {installed} agent(s).");
+    Ok(())
+}
+
+/// What `nasiko agents setup` does with one detected agent's reporting.
+#[derive(Debug, PartialEq, Eq)]
+enum SetupStep {
+    /// Nothing installed yet: install it here, with prompt and response text.
+    Install,
+    /// Already reporting to this cluster and account.
+    Keep,
+    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
+    /// here, keeping its content setting.
+    Move { from: String, capture_content: bool },
+}
+
+/// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
+/// cluster and account setup runs for.
+fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupStep {
+    let Some(state) = state else {
+        return SetupStep::Install;
+    };
+    let from = match &state.binding {
+        Some(binding) if ReportingDestination::from(binding).same_as(here) => {
+            return SetupStep::Keep;
+        }
+        Some(binding) => binding.cluster_name.clone(),
+        None => "an older install with no cluster recorded".to_string(),
+    };
+    SetupStep::Move {
+        from,
+        capture_content: state.capture_content,
+    }
+}
+
+/// `nasiko agents sync` — see [`setup::sync`].
+pub fn sync(retry_rejected: bool) -> Result<()> {
+    setup::sync(retry_rejected)
+}
+
+/// `nasiko agents setup` — see [`setup`].
+pub fn setup(options: SetupOptions) -> Result<()> {
+    setup::setup(options)
+}
+
+/// `nasiko agents import` — see [`setup`].
+pub fn import() -> Result<()> {
+    setup::import()
+}
+
+/// Imports the connected agents' past sessions in the background, each to where it reports now —
+/// see [`setup::start_background_import`].
+pub fn import_in_background() -> Result<()> {
+    setup::start_background_import()
+}
+
+/// `nasiko agents status` — see [`setup::status`].
+pub fn import_status() -> Result<()> {
+    setup::status()
+}
+
+/// `nasiko agents import-worker`, which `nasiko agents setup` starts in the background — see
+/// [`setup::import_worker`].
+pub fn import_worker() -> Result<()> {
+    setup::import_worker()
+}
+
+/// Every catalogued agent as a sync-report row: on this computer, and connected, as they stand now.
+fn agent_rows() -> Vec<AgentReport> {
+    let settings = IntegrationState::load().unwrap_or_default();
+    Agent::ALL
+        .iter()
+        .copied()
+        .map(|agent| {
+            onboarding::agent_row(
+                agent,
+                detect(agent).is_present(),
+                agent.is_instrumented() && settings.get(agent.spec().id).is_some(),
+            )
+        })
+        .collect()
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
@@ -1583,6 +1738,50 @@ mod tests {
                 principal_id: uuid::Uuid::nil(),
             }),
         }
+    }
+
+    fn signed_in_to(cluster_name: &str, cluster_url: &str) -> ReportingDestination {
+        ReportingDestination {
+            cluster_name: cluster_name.into(),
+            cluster_url: cluster_url.into(),
+            principal_id: uuid::Uuid::nil().to_string(),
+        }
+    }
+
+    #[test]
+    fn setup_moves_reporting_bound_to_another_cluster_here() {
+        let state = bound_state(7);
+
+        assert_eq!(
+            setup_step(None, &signed_in_to("cp", "https://cp.example")),
+            SetupStep::Install
+        );
+        assert_eq!(
+            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
+            SetupStep::Keep
+        );
+        assert_eq!(
+            setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
+            SetupStep::Move {
+                from: "cp".into(),
+                capture_content: true
+            }
+        );
+    }
+
+    #[test]
+    fn setup_moves_an_older_install_with_no_cluster_recorded() {
+        let mut state = bound_state(7);
+        state.binding = None;
+        state.capture_content = false;
+
+        assert_eq!(
+            setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
+            SetupStep::Move {
+                from: "an older install with no cluster recorded".into(),
+                capture_content: false
+            }
+        );
     }
 
     #[test]

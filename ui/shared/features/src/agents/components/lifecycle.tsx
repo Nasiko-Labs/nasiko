@@ -6,8 +6,6 @@
 import { Button } from '@nasiko/ui/primitives/button'
 import { copy } from '../copy'
 import { cn } from '@nasiko/ui/lib/utils'
-import { useGrants } from '../api'
-import { isSharedWithOthers } from '../grants'
 import { ACTION_LABEL, outcomeText, type LifecycleFlow } from '../lifecycleFlow'
 import { actionsFor, type DisplayStatus } from '../status'
 import { ErrorNote } from './bits'
@@ -47,12 +45,8 @@ export function LifecycleButtons({
         <Button
           key={a}
           size={size}
-          // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is (a parked one's too).
-          variant={
-            i === 0 && a !== 'stop' && display !== 'running' && display !== 'parked'
-              ? 'default'
-              : 'outline'
-          }
+          // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is.
+          variant={i === 0 && a !== 'stop' && display !== 'running' ? 'default' : 'outline'}
           className={cn(collapse && i > 0 && 'hidden sm:inline-flex')}
           disabled={flow.m.isPending || flow.w.watching}
           onClick={() => flow.run(a)}
@@ -73,26 +67,12 @@ export function LifecycleButtons({
 }
 
 export function StopDialog({ flow, name }: { flow: LifecycleFlow; name: string }) {
-  // Read only once the dialog opens; a failed read just leaves the warning out.
-  const grants = useGrants(flow.id, flow.stopOpen)
-  const shared = !!grants.data && isSharedWithOthers(grants.data)
   return (
     <ConfirmDialog
       open={flow.stopOpen}
       onOpenChange={flow.setStopOpen}
       title={copy.stopTitle(name)}
-      body={
-        shared ? (
-          <>
-            <span className="block">{copy.stopBody}</span>
-            <span role="note" className="mt-2 block text-warning">
-              {copy.stopSharedWarning}
-            </span>
-          </>
-        ) : (
-          copy.stopBody
-        )
-      }
+      body={copy.stopBody}
       confirmLabel={copy.stop}
       destructive
       pending={flow.m.isPending}

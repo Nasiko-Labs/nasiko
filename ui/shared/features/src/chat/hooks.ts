@@ -40,16 +40,12 @@ export function useDraft(userId: string, key: string) {
 
 /** One line saying which file was turned away and why (§7.7). */
 export function rejectedText(r: Rejected): string {
-  const kind = r.kind ?? 'other'
+  const perFile = () => copy.attachTooLarge(r.name, fmtBytes(tuning.ATTACHMENT_MAX_BYTES))
   switch (r.reason) {
     case 'too-many':
       return copy.attachTooMany(r.name, tuning.MAX_ATTACHMENTS)
     case 'too-large':
-      return copy.attachTooLarge(
-        r.name,
-        copy.attachKinds[kind],
-        fmtBytes(tuning.ATTACHMENT_LIMITS[kind]),
-      )
+      return perFile()
     case 'over-budget':
       return copy.attachOverBudget(r.name, fmtBytes(tuning.ATTACHMENTS_MAX_TOTAL_BYTES))
     case 'empty':

@@ -124,8 +124,10 @@ async fn materialize_receipt(
                 && c.cache_creation_tokens == 0),
         "token-bearing receipt has no materialization rows"
     );
-    super::trace_materializer::upsert_rows(db, sessions, &rows)
-        .await
-        .map_err(anyhow::Error::msg)?;
+    for row in rows {
+        super::trace_materializer::upsert_row(db, sessions, &row)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    }
     Ok(())
 }

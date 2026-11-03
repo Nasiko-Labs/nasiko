@@ -33,9 +33,7 @@ import { copy } from './copy'
 import type { DeployStarted } from './UploadTab'
 import { filterRepos, useGithubConnect } from './github'
 import { nameFromFile, nameProblem, uploadCommand } from './name'
-import { type DeploySearch, lockedName } from './search'
-import { LockedNameHint } from './components/LockedNameHint'
-import { ModelKeyNotice } from './components/ModelKeyNotice'
+import type { DeploySearch } from './search'
 import { Requirements } from './components/Requirements'
 import { parseVersion } from './version'
 
@@ -52,13 +50,10 @@ export function GithubTab({
   search,
   setSearch,
   onStarted,
-  keyNotice = false,
 }: {
   search: DeploySearch
   setSearch: (patch: Partial<DeploySearch>) => void
   onStarted?: (to: DeployStarted) => void
-  /** The Deploy page's model-key notice atop the side column. */
-  keyNotice?: boolean
 }) {
   const configured = useGithubConfigured()
   const on = configured.data === true
@@ -159,7 +154,7 @@ export function GithubTab({
   return (
     <div className="@container/github flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-4 @[768px]/github:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @[768px]/github:items-start">
-        <Card data-tour="deploy-github" className="gap-4 p-4">
+        <Card className="gap-4 p-4">
           {connection}
           {connected ? (
             <RepoPicker
@@ -171,8 +166,7 @@ export function GithubTab({
             />
           ) : null}
         </Card>
-        <div className="flex flex-col gap-4 @max-[768px]/github:order-first">
-          {keyNotice ? <ModelKeyNotice /> : null}
+        <div className="@max-[768px]/github:order-first">
           <Requirements
             items={RULES}
             advisory={false}
@@ -209,9 +203,7 @@ function RepoPicker({
   const [typedBranch, setTypedBranch] = useState<string | null>(null)
   const [typedName, setTypedName] = useState<string | null>(search.name ?? null)
   const branch = typedBranch ?? picked?.default_branch ?? ''
-  // A new version of an existing agent keeps its name, whichever repository is picked (`search.ts` `newVersion`).
-  const locked = lockedName(search)
-  const name = locked ?? typedName ?? (picked ? nameFromFile(picked.name) : '')
+  const name = typedName ?? (picked ? nameFromFile(picked.name) : '')
   const [touched, setTouched] = useState({ branch: false, name: !!search.name })
   const [pickError, setPickError] = useState(false)
 
@@ -394,7 +386,6 @@ function RepoPicker({
             <Input
               id={`${ids}-name`}
               value={name}
-              readOnly={locked !== null}
               placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -409,8 +400,6 @@ function RepoPicker({
               <p id={`${ids}-name-msg`} className="text-xs text-destructive">
                 {nameErr ?? serverNameErr}
               </p>
-            ) : locked ? (
-              <LockedNameHint id={`${ids}-name-msg`} />
             ) : (
               <FieldDescription id={`${ids}-name-msg`} className="text-xs">
                 {copy.deploy.nameHint}

@@ -17,7 +17,16 @@ import { copy, reason } from '../copy'
 import { labelOf, unusable } from '../logic'
 import { ConnectorRules, UnavailableRow } from './ConnectorRules'
 
-export function AgentMcpTab({ agentId, harness = false }: { agentId: string; harness?: boolean }) {
+/** `harness` (a coding harness) or `local` (an A2A agent found on a user's machine): calls with no flow, so no Ask. */
+export function AgentMcpTab({
+  agentId,
+  harness = false,
+  local = false,
+}: {
+  agentId: string
+  harness?: boolean
+  local?: boolean
+}) {
   const list = useAgentConnectors(agentId, true)
   // A failed catalog read just means no row is greyed: the agent list itself still works.
   const servers = useConnectors()
@@ -27,7 +36,7 @@ export function AgentMcpTab({ agentId, harness = false }: { agentId: string; har
   return (
     <Section title={copy.agentMcpTitle}>
       <p className="text-sm text-muted-foreground">
-        {harness ? copy.agentMcpSubHarness : copy.agentMcpSub}
+        {harness ? copy.agentMcpSubHarness : local ? copy.agentMcpSubLocal : copy.agentMcpSub}
       </p>
       {list.isPending || (servers.isPending && !servers.isError) ? (
         <PageLoader label={copy.loadingCatalog} inline className="min-h-64" />
@@ -73,7 +82,7 @@ export function AgentMcpTab({ agentId, harness = false }: { agentId: string; har
                     logs={owned.has(c.connector_id) || !!me?.is_superuser}
                   />
                 ) : (
-                  <ConnectorRules agentId={agentId} target={target} noAsk={harness} />
+                  <ConnectorRules agentId={agentId} target={target} noAsk={harness || local} />
                 )}
               </li>
             )

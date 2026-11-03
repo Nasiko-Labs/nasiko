@@ -35,14 +35,11 @@ export function ConnectControl({
   target,
   openPopup,
   size = 'sm',
-  iconOnly = false,
   className,
 }: {
   target: Connectable
   openPopup: (url: string | undefined) => void
   size?: 'sm' | 'xs'
-  /** Connect as a bare "+" (chat's app chips): the name stays "Connect <app>" for screen readers and the tooltip. */
-  iconOnly?: boolean
   className?: string
 }) {
   const connect = useConnect()
@@ -110,20 +107,14 @@ export function ConnectControl({
   return (
     <>
       <Button
-        size={iconOnly ? 'icon-xs' : size}
+        size={size}
         variant="outline"
-        className={cn(
-          'pointer-coarse:min-h-11',
-          iconOnly && 'rounded-full pointer-coarse:min-w-11',
-          className,
-        )}
+        className={cn('pointer-coarse:min-h-11', className)}
         aria-label={copy.connectNamed(target.label)}
-        title={iconOnly ? copy.connectNamed(target.label) : undefined}
         disabled={connect.isPending}
         onClick={start}
       >
-        <Plus aria-hidden />
-        {iconOnly ? null : ` ${copy.connect}`}
+        <Plus aria-hidden /> {copy.connect}
       </Button>
       {keyOpen ? (
         <KeyDialog

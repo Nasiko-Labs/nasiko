@@ -3,7 +3,7 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy as shell } from '@nasiko/app-core/shell/copy'
-import { DOCS_URL, EXPERT_CALL_URL, SUPPORT_MAIL_URL } from '@nasiko/app-core/links'
+import { DOCS_URL, EXPERT_CALL_URL } from '@nasiko/app-core/links'
 import { assessmentsMockState, configureMocks } from '@nasiko/mocks/handlers'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
@@ -86,8 +86,8 @@ describe('assessment', () => {
     expect(assessmentsMockState()).toEqual([])
   })
 
-  it('puts the help rows in the sidebar and the assessment banner above the top bar, the waitlist gone', async () => {
-    document.cookie = 'sidebar_state=true; path=/'
+  it('puts the help rows and the assessment card in the sidebar, the waitlist gone', async () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     renderApp('/')
     await screen.findByRole('navigation', { name: 'Main' })
     const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar"]')!
@@ -96,18 +96,15 @@ describe('assessment', () => {
       'href',
       DOCS_URL,
     )
-    expect(s.getByRole('link', { name: shell.help.issue })).toHaveAttribute(
+    expect(s.getByRole('link', { name: new RegExp(`^${shell.help.expert}`) })).toHaveAttribute(
       'href',
-      SUPPORT_MAIL_URL,
+      EXPERT_CALL_URL,
     )
     expect(s.getAllByRole('link', { name: shell.help.cli })[0]).toHaveAttribute('href', '/cli')
-    expect(s.queryByRole('link', { name: shell.assessment.cta })).toBeNull()
-    const banner = screen.getByRole('region', { name: shell.assessment.title })
-    expect(within(banner).getByRole('link', { name: shell.assessment.cta })).toHaveAttribute(
+    expect(s.getAllByRole('link', { name: shell.assessment.cta })[0]).toHaveAttribute(
       'href',
       '/assessment',
     )
     expect(s.queryByText(shell.waitlist.badge)).toBeNull()
-    document.cookie = 'sidebar_state=; path=/; max-age=0'
   })
 })

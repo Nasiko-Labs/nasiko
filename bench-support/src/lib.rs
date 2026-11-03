@@ -13,9 +13,7 @@
 
 pub mod coding_agent_import;
 pub mod config;
-pub mod harness_sessions;
 pub mod mock_llm;
 pub mod seed;
 pub mod server;
 pub mod sim_agent;
-pub mod simulated_sandbox;

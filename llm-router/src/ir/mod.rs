@@ -3,6 +3,7 @@
 
 pub mod chat;
 pub mod embeddings;
+pub mod parts;
 
 pub use chat::{
     CACHE_CONTROL, CacheCreationUsage, ChatChunk, ChatRequest, ChatResponse, Choice, ChunkChoice,
@@ -10,3 +11,6 @@ pub use chat::{
     Usage,
 };
 pub use embeddings::{Embedding, EmbeddingsRequest, EmbeddingsResponse};
+pub use parts::{
+    ContentPart, ContentView, DataSource, UnsupportedPart, parts_to_content_value, split_data_url,
+};

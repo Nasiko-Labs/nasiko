@@ -2,13 +2,6 @@
  * Harnesses components in isolation: Breakdown (CSV, empty/error, paging footer, cards),
  * Crumbs collapse, Trend's partial-day rule (QA ISSUE-004), panel states, Individual bits.
  */
-import {
-  createMemoryHistory,
-  createRootRoute,
-  createRouter,
-  RouterProvider,
-} from '@tanstack/react-router'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -28,19 +21,6 @@ const { Crumbs } = await import('./components/Crumbs')
 const { Trend } = await import('./components/Trend')
 const { HarnessPanels } = await import('./components/HarnessPanels')
 const { ConnectHelp, SessionsList, TopModels } = await import('./components/IndividualView')
-
-/** ConnectHelp links the CLI guide, so it renders under a router; its chat-history notice reads the server's policy,
- *  so under a query client too. */
-const inRouter = (ui: ReactNode) => (
-  <QueryClientProvider client={new QueryClient()}>
-    <RouterProvider
-      router={createRouter({
-        routeTree: createRootRoute({ component: () => <>{ui}</> }),
-        history: createMemoryHistory({ initialEntries: ['/'] }),
-      })}
-    />
-  </QueryClientProvider>
-)
 
 const T = (p: Partial<HarnessTotals> = {}): HarnessTotals => ({
   scope_devs: 4,
@@ -136,7 +116,7 @@ describe('Breakdown', () => {
       ),
     ).toBeInTheDocument()
     await user.click(
-      within(screen.getByLabelText('Metric')).getByRole('radio', { name: 'API value' }),
+      within(screen.getByLabelText('Metric')).getByRole('radio', { name: 'Est. cost' }),
     )
     expect(onMetric).toHaveBeenCalledWith('cost')
     rerender(<Breakdown {...base} team rows={rows} metric="cost" />)
@@ -158,7 +138,7 @@ describe('Breakdown', () => {
     const [name, body] = csv.calls[0]!
     expect(name).toBe('harnesses-2-of-5.csv')
     const lines = body.split(/\r?\n/)
-    expect(lines[0]).toContain('Claude Code Value at API prices (USD)')
+    expect(lines[0]).toContain('Claude Code Estimated cost (API list price, USD)')
     const ada = lines.find((l) => l.startsWith('"Ada"'))!
     // Claude cost column is blank for the mostly-unpriced developer; its unpriced count travels with it.
     expect(ada.split(',')[3]).toBe('""')
@@ -261,7 +241,7 @@ describe('Trend', () => {
     expect(screen.getByText(/Claude Code: 2 active/)).toBeInTheDocument()
   })
 
-  it('switches to API value; an empty series offers a wider window only when there is one', async () => {
+  it('switches to Est. cost; an empty series offers a wider window only when there is one', async () => {
     const onWiden = vi.fn()
     const { rerender } = render(
       <Trend
@@ -273,7 +253,7 @@ describe('Trend', () => {
       />,
     )
     await userEvent.click(
-      within(screen.getByLabelText('Trend metric')).getByRole('radio', { name: 'API value' }),
+      within(screen.getByLabelText('Trend metric')).getByRole('radio', { name: 'Est. cost' }),
     )
     expect(screen.getByText('Estimated cost per harness')).toBeInTheDocument()
     expect(screen.getByText(/Claude Code: \$0\.50\. Codex: no activity\./)).toBeInTheDocument()
@@ -404,29 +384,22 @@ describe('Individual pieces', () => {
     expect(screen.queryByRole('button', { name: /Show all/ })).toBeNull()
   })
 
-  it('connect help: commands for the viewer, a request line for anyone else', async () => {
-    const viewer = render(
-      inRouter(<ConnectHelp self name="Ada" harness="cursor" server="https://or.example" />),
+  it('connect help: commands for the viewer, a request line for anyone else', () => {
+    const { rerender } = render(
+      <ConnectHelp self name="Ada" harness="cursor" server="https://or.example" />,
     )
-    expect(await screen.findByText(/nasiko connect https:\/\/or\.example/)).toBeInTheDocument()
+    expect(screen.getByText(/nasiko connect https:\/\/or\.example/)).toBeInTheDocument()
     expect(screen.getByText(/nasiko agents install cursor/)).toBeInTheDocument()
-    // FR-11: a local coding agent needs the CLI, so the steps link its install guide.
-    expect(screen.getByRole('link', { name: 'Install the CLI' })).toHaveAttribute('href', '/cli')
-    viewer.unmount()
-    render(
-      inRouter(
-        <ConnectHelp self={false} name="Ada" harness="cursor" server="https://or.example" />,
-      ),
-    )
-    expect(await screen.findByText('Ask Ada to connect Cursor.')).toBeInTheDocument()
+    rerender(<ConnectHelp self={false} name="Ada" harness="cursor" server="https://or.example" />)
+    expect(screen.getByText('Ask Ada to connect Cursor.')).toBeInTheDocument()
   })
 
   it('Copy puts the three connect commands on the clipboard', async () => {
     const user = userEvent.setup()
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
-    render(inRouter(<ConnectHelp self name="Ada" harness="codex" server="https://or.example" />))
-    await user.click(await screen.findByRole('button', { name: 'Copy' }))
+    render(<ConnectHelp self name="Ada" harness="codex" server="https://or.example" />)
+    await user.click(screen.getByRole('button', { name: 'Copy' }))
     expect(writeText).toHaveBeenCalledWith(
       'nasiko connect https://or.example\nnasiko auth login\nnasiko agents install codex',
     )

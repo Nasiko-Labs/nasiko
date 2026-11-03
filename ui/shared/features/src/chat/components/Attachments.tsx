@@ -8,7 +8,6 @@
  * turns an agent's images into labelled links for the same reason).
  */
 import { FileAudio, FileText, FileVideo, ImageIcon, Paperclip, X } from 'lucide-react'
-import { apiUrl } from '@nasiko/data-access/client'
 import { Button } from '@nasiko/ui/primitives/button'
 import { fmtBytes } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
@@ -110,8 +109,7 @@ export function MessageAttachments({
 
 function Attachment({ file, pending }: { file: FilePart; pending: boolean }) {
   const kind = mediaKind(file.mime)
-  // Against the API base, not the page origin: the app and the API can be different hosts.
-  const src = apiUrl(fileUrl(file.id)).href
+  const src = fileUrl(file.id)
   const label = <Label name={file.name} size={file.size} />
   if (pending)
     return (

@@ -21,21 +21,14 @@ import {
 } from '@nasiko/ui/primitives/table'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
 import { AgentLinkTo, AgentMark } from '@nasiko/features/agents/components/bits'
-import { harnessIntegration, isHarness } from '@nasiko/features/agents/status'
+import { isHarness } from '@nasiko/features/agents/status'
 import type { Agent } from '@nasiko/features/agents/types'
 import { fmtInt, fmtLocalTime, fmtMoney } from '@nasiko/ui/lib/format'
 import { transitions } from '@nasiko/ui/lib/motion'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy } from '../copy'
 import { PREF_DEFAULTS, readOpen, writeOpen } from '../prefs'
-import {
-  groupAgentRows,
-  keySource,
-  matchesAgent,
-  routingSentence,
-  routingUnsupported,
-  type RowRead,
-} from '../routing'
+import { groupAgentRows, keySource, matchesAgent, routingSentence, type RowRead } from '../routing'
 import { AGENT_SEARCH_MIN, CONFIG_CACHE_SECONDS, DEFAULT_GROUP_MIN } from '../tuning'
 import type { AgentUsage } from '../types'
 import { KeySourceChip, LinkButton, SentenceText, SourceBadge } from './bits'
@@ -100,10 +93,9 @@ export function AgentsSection({
     writeOpen(PREF_DEFAULTS, !open)
   }
   // The sheet steps through the rows as shown: the visible group, then the folded one when open; rows whose
-  // routing didn't read can't be changed, so they're skipped, and so are harnesses the LLM router can't route
-  // (Cursor): their Change routing is off, and Previous/Next mustn't reach them either.
+  // routing didn't read can't be changed, so they're skipped.
   const order = [...shown, ...(open ? folded : [])]
-    .filter((r) => r.read.state === 'ok' && !routingUnsupported(harnessIntegration(r.agent)))
+    .filter((r) => r.read.state === 'ok')
     .map((r) => r.agent.id)
   const row = (r: AgentRow) => (
     <Row
@@ -257,7 +249,6 @@ function Row({
   const { agent, read } = row
   const name = agent.display_name || agent.name
   const harness = isHarness(agent)
-  const unsupported = routingUnsupported(harnessIntegration(agent))
   const config = read.state === 'ok' ? read.routing.llm_config : null
   return (
     <TableRow data-agent={agent.id} className={ROW}>
@@ -333,20 +324,11 @@ function Row({
           className="h-8 px-2 text-primary-text pointer-coarse:min-h-11"
           data-agent-id={agent.id}
           onClick={onChange}
-          disabled={read.state !== 'ok' || unsupported}
+          disabled={read.state !== 'ok'}
           aria-label={`${copy.changeRouting}: ${name}`}
-          aria-describedby={unsupported ? `routing-unsupported-${agent.id}` : undefined}
         >
           {copy.changeRouting}
         </Button>
-        {unsupported ? (
-          <span
-            id={`routing-unsupported-${agent.id}`}
-            className="block text-xs text-muted-foreground md:ml-auto md:max-w-48"
-          >
-            {copy.routingUnsupported}
-          </span>
-        ) : null}
       </TableCell>
     </TableRow>
   )
@@ -363,14 +345,14 @@ function SpendCell({ agentId, spend }: { agentId: string; spend: SpendState }) {
       </span>
     )
   const u = spend.byAgent.get(agentId)
-  if (!u || u.traces === 0) return <span>{copy.spendNone}</span>
+  if (!u || u.request_count === 0) return <span>{copy.spendNone}</span>
   // COALESCE(SUM(cost_usd), 0): calls with no price add $0, so $0 with calls means unpriced.
   const unpriced = u.total_cost_usd === 0
   return (
     <span>
       {copy.spendValue(
         `${fmtMoney(u.total_cost_usd)}${unpriced ? copy.unpricedMark : ''}`,
-        fmtInt(u.traces),
+        fmtInt(u.request_count),
       )}
     </span>
   )
@@ -403,8 +385,8 @@ function FoldedRow({
       return u
         ? {
             cost: t.cost + u.total_cost_usd,
-            calls: t.calls + u.traces,
-            unpriced: t.unpriced || (u.traces > 0 && u.total_cost_usd === 0),
+            calls: t.calls + u.request_count,
+            unpriced: t.unpriced || (u.request_count > 0 && u.total_cost_usd === 0),
           }
         : t
     },

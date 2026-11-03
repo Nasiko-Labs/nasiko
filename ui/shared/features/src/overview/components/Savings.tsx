@@ -27,7 +27,6 @@ import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
 import { fmtMoney, fmtPct, fmtTokens } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy as overviewCopy } from '../copy'
-import { savingsShown } from '../quiet'
 
 const copy = overviewCopy.savings
 
@@ -51,10 +50,11 @@ export function Savings({
   view: OptimisationView | undefined
   isPending: boolean
 }) {
-  // Nothing saved and nothing being wasted either: a brand-new workspace has no story here yet.
-  if (isPending || !savingsShown(view)) return null
+  if (isPending || !view) return null
 
   const saving = view.tokensSaved > 0
+  // Nothing saved and nothing being wasted either: a brand-new workspace has no story here yet.
+  if (!saving && view.unoptimisedSpend <= 0) return null
 
   return (
     <section

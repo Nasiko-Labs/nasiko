@@ -399,20 +399,18 @@ function FlowBody({
       )}
 
       {!lone && calls.length ? (
-        <div data-tour="flow-steps">
-          <Panel title={copy.steps.title} labelledBy="flow-steps" subtitle={copy.steps.subtitle}>
-            <Steps
-              calls={calls}
-              fanOuts={groups}
-              flowStartMs={startMs}
-              now={now}
-              traceLink={traceLink}
-              selected={selected}
-              onSelect={onStep}
-              answer={(c) => <AnswerRequest target={answerFor(c)} size="xs" />}
-            />
-          </Panel>
-        </div>
+        <Panel title={copy.steps.title} labelledBy="flow-steps" subtitle={copy.steps.subtitle}>
+          <Steps
+            calls={calls}
+            fanOuts={groups}
+            flowStartMs={startMs}
+            now={now}
+            traceLink={traceLink}
+            selected={selected}
+            onSelect={onStep}
+            answer={(c) => <AnswerRequest target={answerFor(c)} size="xs" />}
+          />
+        </Panel>
       ) : null}
     </Frame>
   )

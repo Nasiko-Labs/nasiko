@@ -135,6 +135,7 @@ export const agentConnectorsSchema = z.looseObject({
   connectors: z.array(
     z.looseObject({
       connector_id: z.string(),
+      provider_type: z.string().optional(),
       name: z.string(),
       display_name: nullableString,
       description: nullableString,

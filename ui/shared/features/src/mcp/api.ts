@@ -12,7 +12,7 @@ import {
 } from '@tanstack/react-query'
 import { createLimiter } from '@nasiko/features/observability/limiter'
 import { apiData, apiFetch, withQuery } from '@nasiko/data-access/client'
-import { isBuilding, rulesWith } from './logic'
+import { isAlwaysOn, isBuilding, rulesWith } from './logic'
 import {
   agentConnectorsSchema,
   agentToolsSchema,
@@ -196,6 +196,10 @@ export const useBuildLogs = (id: string, enabled: boolean, poll: boolean) =>
     select: (r) => r.data,
   })
 
+// Every reader (the MCP tab, the server's Agents tab, the hub's Tools card) sees an always-on server as enabled.
+const withAlwaysOn = (r: AgentConnectors) =>
+  r.connectors.map((c) => ({ ...c, enabled: c.enabled || isAlwaysOn(c), alwaysOn: isAlwaysOn(c) }))
+
 export const useAgentConnectors = (agentId: string, enabled: boolean) =>
   useQuery({
     queryKey: mcpKeys.agent(agentId),
@@ -205,7 +209,7 @@ export const useAgentConnectors = (agentId: string, enabled: boolean) =>
         schema: agentConnectorsSchema,
       }),
     enabled,
-    select: (r) => r.connectors,
+    select: withAlwaysOn,
   })
 
 // One read per connector until a batch read exists (M-5); this tab's own limiter.

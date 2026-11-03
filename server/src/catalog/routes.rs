@@ -455,6 +455,12 @@ pub(crate) async fn create(
         },
     };
 
+    let platform_deployed = body.image.as_deref().is_some_and(|i| !i.is_empty());
+    let url = match agent_url_to_store(&state, body.url.as_deref(), platform_deployed).await {
+        Ok(url) => url,
+        Err(refused) => return refused,
+    };
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -473,7 +479,7 @@ pub(crate) async fn create(
         .bind(&body.display_name)
         .bind(&body.description)
         .bind(owner_id)
-        .bind(&body.url)
+        .bind(&url)
         .bind(&body.icon_url)
         .bind(&body.version)
         .bind(&body.documentation_url)
@@ -576,54 +582,12 @@ pub(crate) async fn list(
     claims: Claims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
 
-    match list_agents(
-        &state,
-        user_id,
-        claims.is_superuser,
-        q.owner,
-        q.status.as_deref(),
-        q.limit,
-        q.offset,
-    )
-    .await
-    {
-        Ok(list) => Json(list).into_response(),
-        Err(e) => {
-            tracing::error!(%e, "list agents: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
-        }
-    }
-}
-
-pub async fn list_agents(
-    state: &AppState,
-    user_id: Uuid,
-    is_superuser: bool,
-    owner: Option<Uuid>,
-    status: Option<&str>,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<Agent>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
-    let offset = offset.max(0);
-
-    let (scope_user, org_granted): (Option<Uuid>, Vec<String>) = if is_superuser {
-        (None, Vec::new())
-    } else {
-        let identity = nasiko_auth::Identity {
-            user_id: user_id.to_string(),
-            username: String::new(),
-            is_superuser: false,
-        };
-        (
-            Some(user_id),
-            state.auth.org_granted_agent_ids(&identity).await,
-        )
+    let scope = match listing_scope(&state, &claims).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     let sql = format!(
@@ -638,18 +602,26 @@ pub async fn list_agents(
         access = agent_access_predicate("$3", "$6", "agents")
     );
 
-    let mut agents = sqlx::query_as::<_, Agent>(&sql)
-        .bind(owner)
-        .bind(status)
-        .bind(scope_user)
+    let agents = sqlx::query_as::<_, Agent>(&sql)
+        .bind(q.owner)
+        .bind(&q.status)
+        .bind(scope.user)
         .bind(limit)
         .bind(offset)
-        .bind(&org_granted)
+        .bind(&scope.org_granted)
         .fetch_all(&state.db)
-        .await?;
+        .await;
 
-    reconcile_running_status(state, &mut agents).await;
-    Ok(agents)
+    match agents {
+        Ok(mut list) => {
+            reconcile_running_status(&state, &mut list).await;
+            Json(list).into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "list agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
 }
 
 /// A container that crashed after its last deploy/restart call still reads
@@ -996,6 +968,59 @@ async fn record_version_change_if_needed(
     }
 }
 
+/// The `agents.url` to store for a create or update (NAS-1113).
+///
+/// The agent proxy, A2A dispatch and MAF forward to this address when the
+/// runtime does not know the agent, and relay the reply. A user-chosen
+/// address is therefore a way to make the server call anything it can reach,
+/// so:
+/// - an agent this platform deploys (it has an `image`) gets its address from
+///   the deploy, never from the caller: the requested `url` is dropped. The
+///   CLI sends its card's `url` (usually `http://localhost:8000/`) on create;
+///   it was never the address the agent is reached at.
+/// - an agent registered by URL must use `http(s)` and a host that resolves
+///   only to public addresses, unless the operator set
+///   `AGENT_ALLOW_PRIVATE_URLS`.
+///
+/// Not covered: a public hostname whose DNS later moves to a private address.
+/// That needs a connect-time check on the forwarding clients.
+async fn agent_url_to_store(
+    state: &AppState,
+    requested: Option<&str>,
+    platform_deployed: bool,
+) -> Result<Option<String>, Response> {
+    let Some(requested) = requested.filter(|u| !u.is_empty()) else {
+        return Ok(requested.map(str::to_owned));
+    };
+    if platform_deployed {
+        tracing::debug!(%requested, "ignoring url for a platform-deployed agent");
+        return Ok(None);
+    }
+    if state.config.agent_allow_private_urls {
+        return Ok(Some(requested.to_owned()));
+    }
+    match nasiko_mcp_gateway::net::check_public_url(requested).await {
+        Ok(()) => Ok(Some(requested.to_owned())),
+        Err(reason) => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "agent url refused: {reason}. An agent on a private address needs \
+                 AGENT_ALLOW_PRIVATE_URLS=true on the server."
+            ),
+        )
+            .into_response()),
+    }
+}
+
+/// Whether the agent has an image, i.e. this platform deploys it.
+async fn has_image(state: &AppState, id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar("SELECT COALESCE(image, '') <> '' FROM agents WHERE id = $1")
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await
+        .map(|has| has.unwrap_or(false))
+}
+
 /// Update an agent's catalog metadata. Owner-or-superuser only.
 #[utoipa::path(
     put,
@@ -1037,6 +1062,30 @@ pub(crate) async fn update(
                     .into_response();
             }
         },
+    };
+
+    let url = match body.url.as_deref() {
+        None | Some("") => body.url.clone(),
+        Some(requested) => {
+            let deploys_image =
+                body.activate_version && body.image.as_deref().is_some_and(|i| !i.is_empty());
+            let platform_deployed = if deploys_image {
+                true
+            } else {
+                match has_image(&state, id).await {
+                    Ok(has) => has,
+                    Err(e) => {
+                        tracing::error!(%e, %id, "update agent: image lookup");
+                        return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                            .into_response();
+                    }
+                }
+            };
+            match agent_url_to_store(&state, Some(requested), platform_deployed).await {
+                Ok(url) => url,
+                Err(refused) => return refused,
+            }
+        }
     };
 
     let mut tx = match state.db.begin().await {
@@ -1115,7 +1164,7 @@ pub(crate) async fn update(
     .bind(id)
     .bind(&body.display_name)
     .bind(&body.description)
-    .bind(&body.url)
+    .bind(&url)
     .bind(&body.icon_url)
     .bind(&agent_version)
     .bind(&body.documentation_url)
@@ -1164,142 +1213,11 @@ pub(crate) async fn update(
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct DeletedAgent {
+pub(crate) struct DeletedAgent {
     deleted: bool,
     agent_id: Uuid,
     containers_stopped: usize,
     runtime_errors: Vec<String>,
-}
-
-pub enum DeleteAgentOutcome {
-    Deleted(DeletedAgent),
-    Forbidden,
-    NotFound,
-    Error(sqlx::Error),
-}
-
-pub async fn delete_agent(
-    state: &AppState,
-    user_id: Uuid,
-    is_superuser: bool,
-    agent_id: Uuid,
-) -> DeleteAgentOutcome {
-    let claims = Claims {
-        sub: user_id.to_string(),
-        username: String::new(),
-        is_superuser,
-    };
-    if !crate::acl::can_manage_agent(state, &claims, agent_id).await {
-        return DeleteAgentOutcome::Forbidden;
-    }
-
-    // Claim the delete up front: one statement is both the existence check and
-    // the mutual exclusion, and it hands back the primary container name needed
-    // for teardown.
-    //
-    // This route soft-deletes, so `deleted_at IS NULL` is what makes a repeat
-    // delete 404 instead of re-stamping the row and reporting success forever.
-    // Doing it as a single `UPDATE ... RETURNING` rather than SELECT-then-UPDATE
-    // also means only the caller that actually flipped `deleted_at` proceeds —
-    // two concurrent deletes would otherwise both pass a separate SELECT and
-    // both run the whole container teardown below before one of them lost.
-    //
-    // Teardown therefore runs *after* the row is marked. A runtime failure
-    // still leaves the agent deleted, which is the pre-existing behavior: the
-    // errors are reported in `runtime_errors` rather than rolling the delete
-    // back.
-    let name: String = match sqlx::query_scalar(
-        "UPDATE agents SET deleted_at = NOW() \
-         WHERE id = $1 AND deleted_at IS NULL \
-         RETURNING name",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(n)) => n,
-        Ok(None) => return DeleteAgentOutcome::NotFound,
-        Err(e) => return DeleteAgentOutcome::Error(e),
-    };
-
-    // Tombstone the agent's credentials - a destroyed agent's leaked env must not
-    // keep authenticating at /api/mcp or the agent state API. Best-effort: the soft
-    // delete above already stands (both lookups also refuse a deleted agent), and the
-    // gateway's flow-participant check still bounds any residual credential to flows
-    // actively routed here.
-    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, agent_id).await {
-        tracing::warn!(%e, %agent_id, "delete agent: gateway token revoke failed");
-    }
-    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke_scoped(
-        &state.db,
-        agent_id,
-        nasiko_mcp_gateway::agent_tokens::TokenScope::State,
-    )
-    .await
-    {
-        tracing::warn!(%e, %agent_id, "delete agent: state token revoke failed");
-    }
-
-    // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
-    // FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
-    state.agent_deletion_hook.on_agent_deleted(agent_id).await;
-
-    // Every real deploy path keys the running container on the agent's UUID, never the
-    // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
-    // be tried, not just when an `agent_deployments` row happens to confirm it. Relying
-    // solely on that join left agents deployed before this row existed (or never tracked
-    // for any other reason) permanently un-removable: the name-keyed guess below found
-    // nothing, `destroy` no-op'd successfully, and `nasiko rm` reported success while the
-    // real container kept running.
-    //
-    // Collect distinct K8s workload names from non-stopped deployment rows too — for
-    // pre-UUID-keying legacy containers, `k8s_deployment_name` may be the only place the
-    // real identifier was recorded. `name` is kept as a last-resort fallback for
-    // containers created before UUID-keying existed at all.
-    let k8s_names: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
-         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
-    )
-    .bind(agent_id)
-    .fetch_all(&state.db)
-    .await
-    .unwrap_or_default();
-
-    let mut containers_to_stop: Vec<String> = vec![agent_id.to_string(), name.clone()];
-    for kn in k8s_names {
-        if !containers_to_stop.contains(&kn) {
-            containers_to_stop.push(kn);
-        }
-    }
-
-    // Tear down all identified containers before deleting DB records (best-effort).
-    let mut containers_stopped = 0usize;
-    let mut runtime_errors: Vec<String> = vec![];
-    for container_name in &containers_to_stop {
-        match state
-            .runtime
-            .destroy(&ContainerId::new(container_name))
-            .await
-        {
-            Ok(()) => {
-                containers_stopped += 1;
-            }
-            Err(e) => {
-                // Absent/already-stopped containers are expected; log but don't fail.
-                tracing::debug!(%e, %agent_id, container_name, "delete agent: runtime.destroy — absent or already stopped");
-                runtime_errors.push(format!("{container_name}: {e}"));
-            }
-        }
-    }
-
-    // The row was already marked by the claiming UPDATE above, so reaching here
-    // means this caller owns the delete — nothing left to decide.
-    DeleteAgentOutcome::Deleted(DeletedAgent {
-        deleted: true,
-        agent_id,
-        containers_stopped,
-        runtime_errors,
-    })
 }
 
 /// Delete an agent and tear down its running containers (best-effort).
@@ -1322,20 +1240,143 @@ pub(crate) async fn delete(
     claims: Claims,
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
+    if !crate::acl::can_manage_agent(&state, &claims, id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // Claim the delete up front: one statement is both the existence check and
+    // the mutual exclusion, and it hands back the primary container name needed
+    // for teardown.
+    //
+    // This route soft-deletes, so `deleted_at IS NULL` is what makes a repeat
+    // delete 404 instead of re-stamping the row and reporting success forever.
+    // Doing it as a single `UPDATE ... RETURNING` rather than SELECT-then-UPDATE
+    // also means only the caller that actually flipped `deleted_at` proceeds —
+    // two concurrent deletes would otherwise both pass a separate SELECT and
+    // both run the whole container teardown below before one of them lost.
+    //
+    // Teardown therefore runs *after* the row is marked. A runtime failure
+    // still leaves the agent deleted, which is the pre-existing behavior: the
+    // errors are reported in `runtime_errors` rather than rolling the delete
+    // back.
+    let name: String = match sqlx::query_scalar(
+        "UPDATE agents SET deleted_at = NOW() \
+         WHERE id = $1 AND deleted_at IS NULL \
+         RETURNING name",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(n)) => n,
+        Ok(None) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: claim soft delete");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
-    match delete_agent(&state, user_id, claims.is_superuser, id).await {
-        DeleteAgentOutcome::Deleted(deleted) => (StatusCode::OK, Json(deleted)).into_response(),
-        DeleteAgentOutcome::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        DeleteAgentOutcome::NotFound => StatusCode::NOT_FOUND.into_response(),
-        DeleteAgentOutcome::Error(e) => {
-            tracing::error!(%e, %id, "delete agent: claim soft delete");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+    // Tombstone the agent's credentials - a destroyed agent's leaked env must not
+    // keep authenticating at /api/mcp or the agent state API. Best-effort: the soft
+    // delete above already stands (both lookups also refuse a deleted agent), and the
+    // gateway's flow-participant check still bounds any residual credential to flows
+    // actively routed here.
+    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
+        tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
+    }
+    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke_scoped(
+        &state.db,
+        id,
+        nasiko_mcp_gateway::agent_tokens::TokenScope::State,
+    )
+    .await
+    {
+        tracing::warn!(%e, %id, "delete agent: state token revoke failed");
+    }
+
+    // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
+    // FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
+    state.agent_deletion_hook.on_agent_deleted(id).await;
+
+    // Every real deploy path keys the running container on the agent's UUID, never the
+    // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
+    // be tried, not just when an `agent_deployments` row happens to confirm it. Relying
+    // solely on that join left agents deployed before this row existed (or never tracked
+    // for any other reason) permanently un-removable: the name-keyed guess below found
+    // nothing, `destroy` no-op'd successfully, and `nasiko rm` reported success while the
+    // real container kept running.
+    //
+    // Collect distinct K8s workload names from non-stopped deployment rows too — for
+    // pre-UUID-keying legacy containers, `k8s_deployment_name` may be the only place the
+    // real identifier was recorded. `name` is kept as a last-resort fallback for
+    // containers created before UUID-keying existed at all.
+    let k8s_names: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
+         WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
+    )
+    .bind(id)
+    .fetch_all(&state.db)
+    .await
+    .unwrap_or_default();
+
+    let mut containers_to_stop: Vec<String> = vec![id.to_string(), name.clone()];
+    for kn in k8s_names {
+        if !containers_to_stop.contains(&kn) {
+            containers_to_stop.push(kn);
         }
     }
+
+    // Tear down all identified containers before deleting DB records (best-effort).
+    let mut containers_stopped = 0usize;
+    let mut runtime_errors: Vec<String> = vec![];
+    for container_name in &containers_to_stop {
+        match state
+            .runtime
+            .destroy(&ContainerId::new(container_name))
+            .await
+        {
+            Ok(()) => {
+                containers_stopped += 1;
+            }
+            Err(e) => {
+                // Absent/already-stopped containers are expected; log but don't fail.
+                tracing::debug!(%e, %id, container_name, "delete agent: runtime.destroy — absent or already stopped");
+                runtime_errors.push(format!("{container_name}: {e}"));
+            }
+        }
+    }
+
+    // Converge the deployment history on reality, the same agent-wide sweep a stop
+    // does (`admin::routes::record_lifecycle_status`). Not gated on `runtime_errors`:
+    // the name-keyed fallback above is absent for every UUID-keyed agent, so that list
+    // is almost never empty, and nothing of a deleted agent should still claim to run.
+    // Left alone, these rows list as `running` forever and EE's crash guardian keeps
+    // probing workloads that no longer exist.
+    if let Err(e) = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
+         WHERE agent_id = $1 AND status != 'stopped'",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%e, %id, "delete agent: mark deployments stopped");
+    }
+
+    // The row was already marked by the claiming UPDATE above, so reaching here
+    // means this caller owns the delete — nothing left to decide.
+    (
+        StatusCode::OK,
+        Json(DeletedAgent {
+            deleted: true,
+            agent_id: id,
+            containers_stopped,
+            runtime_errors,
+        }),
+    )
+        .into_response()
 }
 
 /// List an agent's build/version history.

@@ -11,8 +11,8 @@ use reqwest::StatusCode;
 use serde_json::{Value, json};
 use serial_test::serial;
 
-const DASHBOARD: &str = "https://app.nasiko.com";
-const SIBLING: &str = "https://acme.app.nasiko.com";
+const DASHBOARD: &str = "https://app.nasiko.dev";
+const SIBLING: &str = "https://acme.nasiko.dev";
 
 /// Creates the admin; returns their session token.
 async fn admin_token(server: &common::TestServer) -> String {

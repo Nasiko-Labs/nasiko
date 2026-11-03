@@ -13,7 +13,6 @@ import {
   END_KIND,
   UNCERTAIN,
   attemptKeyOf,
-  fileIdsOf,
   isLivePhase,
   sawTerminal,
   stepRouted,
@@ -145,7 +144,6 @@ export function createRouted(core: Core) {
               sessionId,
               text: t.userText,
               chatMode: 'routed',
-              fileIds: fileIdsOf(t),
             })
       res = await deps.dispatch(body, ctrl.signal)
       if (!isCurrent(sessionId, tid)) {

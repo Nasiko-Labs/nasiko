@@ -459,25 +459,7 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime, None)
-            .await
-    }
-
-    /// Same as [`start`](Self::start), with `entitlements` installed on the
-    /// server's MCP state - how a test plays an edition that restricts users'
-    /// tools (the OSS default is unrestricted).
-    #[allow(dead_code)]
-    pub async fn start_with_entitlements(
-        entitlements: Arc<dyn nasiko_mcp_gateway::ToolEntitlements>,
-    ) -> Self {
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            |_| {},
-            fake_runtime.clone(),
-            fake_runtime,
-            Some(entitlements),
-        )
-        .await
+        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime).await
     }
 
     /// Same as [`start_with`](Self::start_with), but lets the caller supply a
@@ -493,13 +475,8 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
     ) -> Self {
-        Self::start_with_runtime_and_handle(
-            configure,
-            runtime,
-            Arc::new(FakeRuntime::default()),
-            None,
-        )
-        .await
+        Self::start_with_runtime_and_handle(configure, runtime, Arc::new(FakeRuntime::default()))
+            .await
     }
 
     /// Like [`start_with_runtime`](Self::start_with_runtime), but binds `0.0.0.0`
@@ -593,7 +570,6 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
-        entitlements: Option<Arc<dyn nasiko_mcp_gateway::ToolEntitlements>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -638,11 +614,8 @@ impl TestServer {
         let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
             nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
         );
-        let mut state =
+        let state =
             AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
-        if let Some(entitlements) = entitlements {
-            state.mcp.entitlements = entitlements;
-        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -828,6 +801,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         ],
         registry_import_allowed_hosts: vec![],
         cors_allowed_origins: vec![],
+        // Tests register agents at loopback mock servers. The SSRF guard's own
+        // test (`agent_url_ssrf`) turns this off.
+        agent_allow_private_urls: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
@@ -883,6 +859,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_memory_init_image: "alpine:3.21".to_string(),
         mcp_toolcount_ttl_seconds: 3600,
         seed_toolkits: vec![],
+        seed_connectors: String::new(),
         mcp_tool_search_mode: "".to_string(),
         mcp_tool_search_tool_limit: 0,
         app_base_url: "".to_string(),

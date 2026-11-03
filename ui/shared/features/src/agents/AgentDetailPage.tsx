@@ -12,7 +12,6 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AgentTab } from '@nasiko/app-core/edition/edition'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
-import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import {
@@ -56,10 +55,9 @@ import { SettingsTab } from './detail/SettingsTab'
 import { VersionsTab } from './detail/VersionsTab'
 import { AgentBuildsTab } from '@nasiko/features/deploy/AgentBuildsTab'
 import { AgentMcpTab } from '@nasiko/features/mcp/components/AgentMcpTab'
-import { SharedMcpTab } from '@nasiko/features/mcp/components/SharedMcpTab'
 import { isUuid, type AgentView } from './normalize'
 import { DETAIL_TABS, type DetailTab } from './search'
-import { actionsFor, displayStatus, isHarness } from './status'
+import { actionsFor, displayStatus, isDiscovered, isHarness } from './status'
 import { shownStatus } from './watch'
 
 export function AgentDetailPage({ agentRef, tab }: { agentRef: string; tab?: string }) {
@@ -170,11 +168,10 @@ function ResolveByName({ name, tab }: { name: string; tab?: string }) {
 }
 
 function tabsFor(agent: AgentView): DetailTab[] {
-  // A coding harness has its own native MCP client and server config, so the platform's MCP
-  // Gateway tab (allow/block per connector) doesn't apply to it.
-  if (agent.isHarness) return ['overview', 'details']
-  // Someone it is shared with gets an MCP tab too: which servers they must connect themselves (SharedMcpTab).
-  return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'mcp', 'details']
+  // A harness is an ordinary agent id to the MCP gateway, so its manager gets the MCP tab too.
+  if (agent.isHarness)
+    return agent.canManage ? ['overview', 'mcp', 'details'] : ['overview', 'details']
+  return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'details']
 }
 
 /** The core's tabs with each layer tab after the one it names (or at the end); tabs naming the same one keep their order. */
@@ -292,39 +289,6 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
       {status.failed ? (
         <p className="text-xs text-muted-foreground">{copy.couldntRefresh}</p>
       ) : null}
-      {/* Someone it is shared with can't start it, so say who stopped it rather than offering Start. */}
-      {!agent.canManage && !agent.isHarness && display === 'stopped' ? (
-        <p role="status" className="text-sm text-muted-foreground">
-          {copy.stoppedByOwner}
-        </p>
-      ) : null}
-      {/* Under the header on every tab: what Parked means, and Start (in the header) or Always on for a manager. */}
-      {display === 'parked' ? (
-        // A note, not the primitive's `alert`: it explains a state, nothing just went wrong.
-        <Alert role="note">
-          <AlertTitle>{copy.parkedTitle}</AlertTitle>
-          <AlertDescription>
-            <p>
-              {copy.parkedBody}{' '}
-              {agent.canManage && agent.parkingPolicy === 'auto' && agent.residentAvailable ? (
-                <>
-                  {copy.parkedKeepRunning}{' '}
-                  <Button
-                    variant="link"
-                    className="h-auto p-0 align-baseline"
-                    onClick={() => setTab('settings')}
-                  >
-                    {copy.tabSettings}
-                  </Button>
-                  .
-                </>
-              ) : agent.canManage ? (
-                copy.parkedStart
-              ) : null}
-            </p>
-          </AlertDescription>
-        </Alert>
-      ) : null}
       <Tabs value={current} onValueChange={setTab}>
         <TabsList data-tour="agent-tabs" className="max-w-full justify-start overflow-x-auto">
           {tabs.map((t) => (
@@ -351,7 +315,6 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
               setTab('activity')
               setTailOpen(true)
             }}
-            onViewDetails={() => setTab('details')}
           />
           {agent.isHarness ? (
             <p className="pt-3 text-sm">
@@ -383,11 +346,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
         ) : null}
         {allowed.includes('mcp') ? (
           <TabsContent value="mcp" className="pt-3">
-            {agent.canManage ? (
-              <AgentMcpTab agentId={agent.id} harness={agent.isHarness} />
-            ) : (
-              <SharedMcpTab agentId={agent.id} />
-            )}
+            <AgentMcpTab agentId={agent.id} harness={agent.isHarness} local={isDiscovered(agent)} />
           </TabsContent>
         ) : null}
         {allowed.includes('access') ? (

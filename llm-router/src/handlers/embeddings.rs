@@ -177,6 +177,7 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
         }
@@ -235,6 +236,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 

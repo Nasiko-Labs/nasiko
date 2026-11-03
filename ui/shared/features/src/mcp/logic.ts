@@ -55,6 +55,13 @@ export interface Service {
 export const labelOf = (c: { name: string; display_name?: string | null }) =>
   c.display_name || c.name
 
+/**
+ * A platform-run (`system`) server is on for every agent: the gateway adds it to each agent's enabled set
+ * (`auto_enable`, `load_permission_context`) whatever the agent's access row says, so the agent list's
+ * `enabled: false` for one is wrong. Workspace is the only one today.
+ */
+export const isAlwaysOn = (c: { provider_type?: string }) => c.provider_type === 'system'
+
 /** Both kinds in one list, sorted by display name (legacy `#services`). */
 export function toServices(list: ConnectorList | undefined, toolkits: Toolkit[]): Service[] {
   const server = (c: Connector, shared: boolean): Service => ({
@@ -115,6 +122,12 @@ export function matchesQuery(s: Service, q: string): boolean {
   const term = q.trim().toLowerCase()
   if (!term) return true
   return [s.label, s.name, s.description ?? ''].join(' ').toLowerCase().includes(term)
+}
+
+/** A tool filter (a server's Overview, each server row on an agent): name or description, any case. */
+export function matchesTool(t: { name: string; description?: string | null }, q: string): boolean {
+  const term = q.trim().toLowerCase()
+  return !term || `${t.name} ${t.description ?? ''}`.toLowerCase().includes(term)
 }
 
 /** Custom servers only have a page; building and failed ones have no Connect (legacy card). */

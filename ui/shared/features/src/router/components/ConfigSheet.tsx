@@ -13,7 +13,6 @@ import { flushSync } from 'react-dom'
 import { Controller, useForm, useWatch, type Control, type UseFormRegister } from 'react-hook-form'
 import { z } from 'zod'
 import { Disclosure } from '@nasiko/ui/composites/disclosure'
-import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import {
@@ -256,7 +255,7 @@ function EditorForm({
   const [ackReplace, setAckReplace] = useState(false)
   const [done, setDone] = useState<null | { config: LlmConfig; affected: number }>(null)
   const [advanced, setAdvanced] = useState(
-    () => !!(form.tiers.some(Boolean) || form.temperature || form.maxTokens || form.pinned),
+    () => !!(form.temperature || form.maxTokens || form.pinned),
   )
   const ids = useId()
   const idx = useMemo(() => catalogIndex(catalog.data), [catalog.data])
@@ -453,7 +452,6 @@ function EditorForm({
           <FormField id={`${ids}-name`} label={copy.fieldName}>
             <Input
               id={`${ids}-name`}
-              placeholder={copy.fieldNamePlaceholder}
               {...register('name')}
               maxLength={200}
               aria-invalid={(!!touchedFields.name && !!errs.name) || error?.field === 'name'}
@@ -484,22 +482,17 @@ function EditorForm({
             {fieldError('provider')}
           </FormField>
           <FormField id={`${ids}-model`} label={copy.fieldModel} hint={copy.modelHint}>
-            <Controller
-              control={control}
-              name="model"
-              render={({ field }) => (
-                <SuggestInput
-                  id={`${ids}-model`}
-                  placeholder={copy.modelPlaceholder}
-                  suggestions={modelsFor(form.provider)}
-                  value={field.value}
-                  onValueChange={field.onChange}
-                  onBlur={field.onBlur}
-                  ref={field.ref}
-                  aria-invalid={!!touchedFields.model && !!errs.model}
-                />
-              )}
+            <Input
+              id={`${ids}-model`}
+              list={`${ids}-models`}
+              {...register('model')}
+              aria-invalid={!!touchedFields.model && !!errs.model}
             />
+            <datalist id={`${ids}-models`}>
+              {modelsFor(form.provider).map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
             {offCatalog(form.model) ? <Warn>{copy.notInCatalog}</Warn> : null}
             {blockedNote('model')}
             {fieldError('model')}
@@ -521,6 +514,19 @@ function EditorForm({
           {fieldError('secret')}
           {keyMaybeSaved ? <Warn>{copy.keyMaybeSaved}</Warn> : null}
 
+          <FieldSet className="gap-2">
+            <FieldLegend variant="label" className="mb-0">
+              {copy.tierSection}
+            </FieldLegend>
+            {TIERS.map((i) => (
+              <FormField key={i} id={`${ids}-t${i}`} label={copy.tierLabels[i]}>
+                <Input id={`${ids}-t${i}`} list={`${ids}-models`} {...register(`tiers.${i}`)} />
+                {offCatalog(form.tiers[i]) ? <Warn>{copy.notInCatalog}</Warn> : null}
+                {blockedNote(TIER_FIELDS[i])}
+              </FormField>
+            ))}
+          </FieldSet>
+
           <Fallbacks
             fallbacks={form.fallbacks}
             onChange={(next) => setValue('fallbacks', next, { shouldDirty: true })}
@@ -537,32 +543,6 @@ function EditorForm({
             open={advanced}
             onToggle={() => setAdvanced(!advanced)}
           >
-            <FieldSet className="gap-2">
-              <FieldLegend variant="label" className="mb-0">
-                {copy.tierSection}
-              </FieldLegend>
-              {TIERS.map((i) => (
-                <FormField key={i} id={`${ids}-t${i}`} label={copy.tierLabels[i]}>
-                  <Controller
-                    control={control}
-                    name={`tiers.${i}`}
-                    render={({ field }) => (
-                      <SuggestInput
-                        id={`${ids}-t${i}`}
-                        placeholder={copy.tierPlaceholder}
-                        suggestions={modelsFor(form.provider)}
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        onBlur={field.onBlur}
-                        ref={field.ref}
-                      />
-                    )}
-                  />
-                  {offCatalog(form.tiers[i]) ? <Warn>{copy.notInCatalog}</Warn> : null}
-                  {blockedNote(TIER_FIELDS[i])}
-                </FormField>
-              ))}
-            </FieldSet>
             <FormField id={`${ids}-temp`} label={copy.temperature}>
               <Input
                 id={`${ids}-temp`}
@@ -570,20 +550,12 @@ function EditorForm({
                 step="0.1"
                 min="0"
                 max="2"
-                placeholder={copy.temperaturePlaceholder}
                 {...register('temperature')}
               />
               {blockedNote('temperature')}
             </FormField>
             <FormField id={`${ids}-max`} label={copy.maxTokens}>
-              <Input
-                id={`${ids}-max`}
-                type="number"
-                step="1"
-                min="1"
-                placeholder={copy.maxTokensPlaceholder}
-                {...register('maxTokens')}
-              />
+              <Input id={`${ids}-max`} type="number" step="1" min="1" {...register('maxTokens')} />
               {blockedNote('max_tokens')}
             </FormField>
             <CheckField
@@ -595,21 +567,12 @@ function EditorForm({
             <p className="text-xs text-muted-foreground">{copy.pinModelHint}</p>
             {form.pinned || form.pinModel ? (
               <FormField id={`${ids}-pin`} label={copy.fieldModel}>
-                <Controller
-                  control={control}
-                  name="pinModel"
-                  render={({ field }) => (
-                    <SuggestInput
-                      id={`${ids}-pin`}
-                      suggestions={modelsFor(form.provider)}
-                      value={field.value}
-                      onValueChange={field.onChange}
-                      onBlur={field.onBlur}
-                      ref={field.ref}
-                      placeholder={form.model}
-                      aria-invalid={!!touchedFields.pinModel && !!errs.pinModel}
-                    />
-                  )}
+                <Input
+                  id={`${ids}-pin`}
+                  list={`${ids}-models`}
+                  {...register('pinModel')}
+                  placeholder={form.model}
+                  aria-invalid={!!touchedFields.pinModel && !!errs.pinModel}
                 />
                 {errs.pinModel ? <p className="text-xs text-destructive">{errs.pinModel}</p> : null}
                 {blockedNote('pinned_model')}
@@ -849,7 +812,6 @@ function KeyField({
               id={`${ids}-sname`}
               value={form.newKeyName}
               onChange={(e) => setKeyName(e.target.value.toUpperCase())}
-              placeholder={copy.secretNamePlaceholder}
               autoComplete="off"
               spellCheck={false}
             />
@@ -862,7 +824,6 @@ function KeyField({
             <Input
               id={`${ids}-svalue`}
               type="password"
-              placeholder={copy.keyValuePlaceholder}
               autoComplete="new-password"
               {...register('newKeyValue')}
               spellCheck={false}
@@ -991,20 +952,24 @@ function Fallbacks({
         </ol>
       ) : null}
       <div className="flex gap-2">
-        <SuggestInput
+        <Input
           aria-label={copy.addFallback}
-          className="flex-1"
-          suggestions={allModels}
+          list={`${ids}-all`}
           value={draft}
           placeholder={copy.fallbackPlaceholder}
-          onValueChange={setDraft}
+          onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            // Enter on a highlighted suggestion fills the field (the list's own Enter); otherwise it adds.
-            if (e.key !== 'Enter' || e.currentTarget.getAttribute('aria-activedescendant')) return
-            e.preventDefault()
-            addDraft()
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              addDraft()
+            }
           }}
         />
+        <datalist id={`${ids}-all`}>
+          {allModels.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
         <Button
           type="button"
           variant="outline"

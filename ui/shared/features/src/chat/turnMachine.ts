@@ -101,13 +101,6 @@ export interface LiveTurn {
 export const attemptKeyOf = (t: Pick<LiveTurn, 'id' | 'userMessageId' | 'attempt'>) =>
   `${t.userMessageId ?? t.id}:${t.attempt}`
 
-/**
- * This turn's attachment ids, or none while they are still local (§7.7). Run again re-sends the
- * same ids: the dispatch only reads those files, the user row that claimed them is already saved.
- */
-export const fileIdsOf = (t: Pick<LiveTurn, 'userFiles' | 'userFilesPending'>) =>
-  t.userFilesPending || !t.userFiles?.length ? undefined : t.userFiles.map((f) => f.id)
-
 /** One attempt's end, written once at its terminal state (NE-4). Outcome views read from here. */
 export interface TurnEnd {
   id: string

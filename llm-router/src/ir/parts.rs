@@ -63,35 +63,8 @@ impl std::error::Error for UnsupportedPart {}
 pub fn split_data_url(url: &str) -> Option<(&str, &str)> {
     let rest = url.strip_prefix("data:")?;
     let (header, data) = rest.split_once(',')?;
-    let at = header.len().checked_sub(BASE64_MARKER.len())?;
-    header
-        .get(at..)
-        .filter(|tail| tail.eq_ignore_ascii_case(BASE64_MARKER))
-        .map(|_| (&header[..at], data))
-}
-
-const BASE64_MARKER: &str = ";base64";
-
-fn normalize_media_type(declared: &str) -> String {
-    declared
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-}
-
-fn data_url_name(url: &str) -> Option<&str> {
-    let (header, _) = split_data_url(url)?;
-    header.split(';').skip(1).find_map(|param| {
-        let (key, value) = param.split_once('=')?;
-        let value = value.trim();
-        (["name", "filename"]
-            .iter()
-            .any(|k| key.trim().eq_ignore_ascii_case(k))
-            && !value.is_empty())
-        .then_some(value)
-    })
+    let media_type = header.strip_suffix(";base64")?;
+    Some((media_type, data))
 }
 
 /// Where a media part's bytes actually live.
@@ -107,13 +80,6 @@ pub enum DataSource {
 }
 
 impl DataSource {
-    pub fn from_inline(media_type: &str, data: &str) -> Self {
-        Self::Inline {
-            media_type: normalize_media_type(media_type),
-            data: data.to_string(),
-        }
-    }
-
     /// Parses an OpenAI-shaped URL field (`image_url.url`, `file.file_data`).
     ///
     /// `field` names the field in the error text so the caller can tell which part of a
@@ -121,17 +87,12 @@ impl DataSource {
     pub fn from_url_field(url: &str, field: &str) -> Result<Self, UnsupportedPart> {
         if url.starts_with("data:") {
             let (media_type, data) = split_data_url(url).ok_or_else(|| {
-                UnsupportedPart::new(format!(
-                    "invalid base64 data URL in {field}: expected data:<media type>;base64,<data>"
-                ))
+                UnsupportedPart::new(format!("invalid base64 data URL in {field}"))
             })?;
-            let source = Self::from_inline(media_type, data);
-            if source.media_type().is_some_and(str::is_empty) {
-                return Err(UnsupportedPart::new(format!(
-                    "invalid base64 data URL in {field}: no media type"
-                )));
-            }
-            Ok(source)
+            Ok(Self::Inline {
+                media_type: media_type.to_string(),
+                data: data.to_string(),
+            })
         } else if url.starts_with("http://") || url.starts_with("https://") {
             Ok(Self::Url(url.to_string()))
         } else {
@@ -232,7 +193,6 @@ impl ContentPart {
                         filename: file
                             .and_then(|v| v.get("filename"))
                             .and_then(Value::as_str)
-                            .or_else(|| data_url_name(file_data))
                             .map(str::to_string),
                     })
                 } else if file.and_then(|v| v.get("file_id")).is_some() {
@@ -431,73 +391,6 @@ mod tests {
         // How a bytes-only spoke (Gemini, Bedrock) refuses a URL it cannot fetch.
         assert_eq!(source.inline(), None);
         assert_eq!(source.media_type(), None);
-    }
-
-    #[test]
-    fn a_data_url_media_type_is_lowercased_and_stripped_of_parameters() {
-        for url in [
-            "data:Image/PNG;base64,AAAA",
-            "data: image/png ;base64,AAAA",
-            "data:image/png;charset=binary;base64,AAAA",
-            "data:image/png;BASE64,AAAA",
-        ] {
-            let source = DataSource::from_url_field(url, "image_url").unwrap();
-
-            assert_eq!(source.inline(), Some(("image/png", "AAAA")), "{url}");
-            assert_eq!(source.to_url_field(), "data:image/png;base64,AAAA", "{url}");
-        }
-    }
-
-    #[test]
-    fn a_data_url_name_parameter_becomes_the_filename_unless_one_is_given() {
-        let file = |part: Value| ContentPart::from_openai_part(&part).unwrap();
-        let named = file(json!({ "type": "file", "file": {
-            "file_data": "data:application/pdf;name=q3.pdf;base64,AAAA"
-        }}));
-        let explicit = file(json!({ "type": "file", "file": {
-            "file_data": "data:application/pdf;name=q3.pdf;base64,AAAA",
-            "filename": "report.pdf"
-        }}));
-
-        assert_eq!(
-            named,
-            ContentPart::File {
-                source: DataSource::Inline {
-                    media_type: "application/pdf".into(),
-                    data: "AAAA".into()
-                },
-                filename: Some("q3.pdf".into()),
-            }
-        );
-        assert!(
-            matches!(&explicit, ContentPart::File { filename: Some(f), .. } if f == "report.pdf"),
-            "{explicit:?}"
-        );
-    }
-
-    #[test]
-    fn a_data_url_that_is_not_base64_or_has_no_media_type_is_refused_by_name() {
-        let not_base64 =
-            DataSource::from_url_field("data:text/plain,hello", "file_data").unwrap_err();
-        let no_type = DataSource::from_url_field("data:;base64,AAAA", "image_url").unwrap_err();
-
-        assert!(
-            not_base64
-                .message()
-                .contains("expected data:<media type>;base64,<data>"),
-            "{not_base64}"
-        );
-        assert!(no_type.message().contains("no media type"), "{no_type}");
-    }
-
-    #[test]
-    fn a_data_url_header_with_multibyte_characters_is_refused_without_panicking() {
-        for url in ["data:éx23456,AAAA", "data:é,AAAA", "data:,AAAA"] {
-            assert!(
-                DataSource::from_url_field(url, "image_url").is_err(),
-                "{url}"
-            );
-        }
     }
 
     #[test]

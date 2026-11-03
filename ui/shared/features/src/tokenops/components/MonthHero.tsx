@@ -1,7 +1,7 @@
 /**
  * F1 — "Where am I this month?" (plan A1, A3, A6, A8, A11).
  *
- * The month the page's window ends in (month-to-date for this month, the whole month for a past one). Forecast is a band,
+ * Always month-to-date, independent of the page's time window. Forecast is a band,
  * hidden before 3 days. The calendar is a keyboard grid (arrow keys move a roving
  * focus, Enter opens a day) whose cells carry an aria-label with the value, so colour
  * is never the only signal.
@@ -37,7 +37,6 @@ import { Delta } from '@nasiko/ui/composites/delta'
 
 export function MonthHero({
   summary,
-  current = true,
   unpricedCalls,
   days,
   monthStart,
@@ -49,8 +48,6 @@ export function MonthHero({
   onRetry,
 }: {
   summary: MonthSummary | null
-  /** The month is this one: a past month has no forecast and is compared with the whole month before. */
-  current?: boolean
   /** This month's unpriced calls, or null when not known (only the MTD window reports it). */
   unpricedCalls: number | null
   days: SpendCalendarDay[] | undefined
@@ -72,7 +69,7 @@ export function MonthHero({
       <div className="flex flex-col gap-3 lg:col-span-5">
         <div className="flex items-center justify-between gap-2">
           <h2 id="month-hero-title" className="text-sm font-semibold">
-            {current ? 'This month' : 'Month'}{' '}
+            This month{' '}
             <span className="font-normal text-muted-foreground">
               · {fmtMonthYear(monthStart)} (UTC)
             </span>
@@ -95,46 +92,39 @@ export function MonthHero({
         ) : summary ? (
           <>
             <div>
-              <div className="text-xs text-muted-foreground">
-                {current ? 'Spend so far' : 'Spend'}
-              </div>
+              <div className="text-xs text-muted-foreground">Spend so far</div>
               <div className="text-3xl font-semibold tabular-nums" data-testid="mtd-spend">
                 {fmtMoneyFloor(summary.mtd, floor)}
               </div>
               <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {summary.vsLastMonthPct !== null ? (
                   <span className="inline-flex items-center gap-1">
-                    <Delta changePct={summary.vsLastMonthPct} polarity={POLARITY.spend} />{' '}
-                    {current ? 'vs same days last month' : 'vs the month before'} (
-                    {fmtMoney(summary.lastMonthSameDays)})
+                    <Delta changePct={summary.vsLastMonthPct} polarity={POLARITY.spend} /> vs same
+                    days last month ({fmtMoney(summary.lastMonthSameDays)})
                   </span>
                 ) : (
-                  <span>
-                    {current ? 'No spend in the same days last month' : 'No spend the month before'}
-                  </span>
+                  <span>No spend in the same days last month</span>
                 )}
-                {current ? <span>Last month total {fmtMoney(summary.lastMonthTotal)}</span> : null}
+                <span>Last month total {fmtMoney(summary.lastMonthTotal)}</span>
               </div>
             </div>
-            {current ? (
-              <div className="rounded-md bg-muted/60 p-3">
-                <div className="text-xs text-muted-foreground">Month-end at current pace</div>
-                {summary.show && summary.low !== null && summary.high !== null ? (
-                  <div className="text-lg font-semibold tabular-nums" data-testid="forecast">
-                    {fmtMoney(summary.low)} – {fmtMoney(summary.high)}
-                  </div>
-                ) : (
-                  <div className="text-sm text-muted-foreground" data-testid="forecast">
-                    Not enough data yet (available from day {FORECAST_MIN_DAYS} with spend)
-                  </div>
-                )}
-                <p className="mt-1 text-sm text-muted-foreground">
-                  The range uses the lower and higher of the median and mean daily spend, over{' '}
-                  {Math.floor(summary.elapsedDays)} completed days (
-                  {fmtPct((summary.elapsedDays / summary.daysInMonth) * 100)} of the month).
-                </p>
-              </div>
-            ) : null}
+            <div className="rounded-md bg-muted/60 p-3">
+              <div className="text-xs text-muted-foreground">Month-end at current pace</div>
+              {summary.show && summary.low !== null && summary.high !== null ? (
+                <div className="text-lg font-semibold tabular-nums" data-testid="forecast">
+                  {fmtMoney(summary.low)} – {fmtMoney(summary.high)}
+                </div>
+              ) : (
+                <div className="text-sm text-muted-foreground" data-testid="forecast">
+                  Not enough data yet (available from day {FORECAST_MIN_DAYS} with spend)
+                </div>
+              )}
+              <p className="mt-1 text-sm text-muted-foreground">
+                The range uses the lower and higher of the median and mean daily spend, over{' '}
+                {Math.floor(summary.elapsedDays)} completed days (
+                {fmtPct((summary.elapsedDays / summary.daysInMonth) * 100)} of the month).
+              </p>
+            </div>
             {floor ? (
               <Badge
                 variant="warning"

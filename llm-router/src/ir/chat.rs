@@ -51,6 +51,30 @@ impl ChatRequest {
         self.stream.unwrap_or(false)
     }
 
+    /// How many cache markers the request carries, on content parts, tool calls and tools.
+    pub fn cache_marker_count(&self) -> usize {
+        let parts = self
+            .messages
+            .iter()
+            .filter_map(|m| m.content.as_ref()?.as_array())
+            .flatten()
+            .filter(|part| part.get(CACHE_CONTROL).is_some())
+            .count();
+        let calls = self
+            .messages
+            .iter()
+            .flat_map(|m| m.tool_calls.iter().flatten())
+            .filter(|call| call.extra.contains_key(CACHE_CONTROL))
+            .count();
+        let tools = self
+            .tools
+            .iter()
+            .flatten()
+            .filter(|tool| tool.extra.contains_key(CACHE_CONTROL))
+            .count();
+        parts + calls + tools
+    }
+
     /// Remove every cache marker, for a provider whose API has no such field.
     pub fn strip_cache_markers(&mut self) {
         for message in &mut self.messages {
@@ -121,12 +145,13 @@ impl Message {
             .then_some(text_parts)
     }
 
-    /// The last cache marker on the content, for a provider that marks a whole tool result.
+    /// The last cache marker on the content, on any part (text or media), for a provider that
+    /// marks a whole tool result.
     pub fn last_cache_marker(&self) -> Option<&Value> {
-        self.marked_text_parts()?
-            .into_iter()
-            .rev()
-            .find_map(|p| p.get(CACHE_CONTROL))
+        let Some(Value::Array(parts)) = &self.content else {
+            return None;
+        };
+        parts.iter().rev().find_map(|p| p.get(CACHE_CONTROL))
     }
 }
 

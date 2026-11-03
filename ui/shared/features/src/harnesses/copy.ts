@@ -13,16 +13,15 @@ const reasonList = (reasons: readonly { reason: string; count: number }[]) =>
  */
 export const copy = {
   title: 'Coding harnesses',
-  subtitle: 'Coding harnesses connected to Open Runtime',
+  subtitle: 'Coding harnesses connected to OpenRuntime',
   loading: 'Loading harness usage',
   registered: 'Registered',
   registeredTip:
     'A harness is registered when its agent row exists: `nasiko agents install` creates it, and so does `nasiko connect`, `use` or `auth login` for every harness found on the machine. Uninstalling keeps the row, so registered can overstate real use.',
-  // Not "cost" (user 2026-11-06): a subscription seat pays a flat fee, so this was never spent.
-  estCost: 'API value',
+  estCost: 'Est. cost',
   estCostTip:
-    "Usage priced at each provider's published API rates (tokens × list price). Subscription seats are billed at a flat rate, so this is not invoiced spend.",
-  csvCostHeader: 'Value at API prices (USD)',
+    'Tokens × the model list price. Harness seats are usually billed per seat, so this is not an invoice.',
+  csvCostHeader: 'Estimated cost (API list price, USD)',
   unpriced: 'unpriced',
   unpricedTip: 'Most of these turns used a model with no price, so no cost is shown.',
   unpricedCount: (n: number) => `${n.toLocaleString('en-US')} unpriced`,
@@ -59,7 +58,7 @@ export const copy = {
   noDevelopersInScope: 'No developers in this scope.',
   notVisible: 'Not found or not visible.',
   notVisibleHint: "This usage doesn't exist, or it isn't shared with you.",
-  noHarnesses: 'No harnesses connected to Open Runtime yet.',
+  noHarnesses: 'No harnesses connected to OpenRuntime yet.',
   deltaUnavailable: 'Δ unavailable',
 
   // Onboarding (viewer only).
@@ -70,9 +69,6 @@ export const copy = {
   ],
   connectHint:
     'The harness must be installed on this machine. `nasiko auth login` registers every harness it finds; `agents install` is the fallback.',
-  // FR-11: a local coding agent needs the Nasiko CLI on that machine.
-  needsCli: 'These run in the Nasiko CLI.',
-  installCli: 'Install the CLI',
   askToConnect: (name: string, harness: string) => `Ask ${name} to connect ${harness}.`,
 
   // Coding-agent onboarding card (consent + discovery/import progress, reported by a local client).
@@ -85,6 +81,7 @@ export const copy = {
     findMyAgents: 'Find my agents',
     idle: 'Your coding agents are not being imported right now.',
     // Browser: running the command is the consent.
+    commandTitle: 'Bring in your coding agents',
     commandBody: 'To discover your coding agents and load your previous sessions, run:',
     command: 'nasiko agents setup',
     copyCommand: 'Copy command',
@@ -179,15 +176,6 @@ export const copy = {
     failed: (n: number, reason: string) =>
       `Couldn't change Token optimization for ${n === 1 ? 'one coding agent' : `${n} coding agents`}: ${reason}`,
   },
-  // What this server keeps of a coding agent's sessions (components/ChatHistoryNotice.tsx, from the server's own policy).
-  chatHistory: {
-    hostedTitle: 'Only usage is synced',
-    hostedBody:
-      "Nasiko syncs your coding agents' usage — tokens, cost, latency, models, tools and subagents — never their chat history. Prompts, responses and tool output stay on your computer.",
-    localTitle: 'Chat history can sync to this Nasiko',
-    localBody:
-      "This Nasiko keeps chat history, so `nasiko connect` asks whether to sync your coding agents' prompts, responses and tool output too. Say no to sync usage only — tokens, cost, latency, models, tools and subagents.",
-  },
   // Monitor's note while the desktop app imports coding agents (components/ImportNotice.tsx).
   importNotice: {
     title: 'Bringing in your coding agents',
@@ -207,7 +195,6 @@ export const copy = {
     body: "Point a coding harness on this computer at Nasiko's LLM router, with the LLM config you choose. Nothing is routed until you connect it.",
     listLabel: 'Coding harnesses on this computer',
     configLabel: (harness: string) => `LLM config for ${harness}`,
-    configPlaceholder: 'Pick an LLM config',
     configOption: (name: string, provider: string, model: string | null, isDefault: boolean) =>
       `${name}${isDefault ? ' (your default)' : ''} · ${provider}${model ? `/${model}` : ''}`,
     noConfigs: 'Add an LLM config on the LLM router page before routing a harness.',

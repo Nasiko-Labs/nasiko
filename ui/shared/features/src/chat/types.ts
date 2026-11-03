@@ -142,8 +142,6 @@ export interface UsageMeta {
   trace_id?: string
   input_tokens?: number
   output_tokens?: number
-  cache_read_tokens?: number
-  cache_creation_tokens?: number
   total_tokens?: number
   cost_usd?: number
   estimated?: boolean
@@ -175,8 +173,6 @@ export interface SaveMessageBody {
   usage?: {
     input_tokens?: number
     output_tokens?: number
-    cache_read_tokens?: number
-    cache_creation_tokens?: number
     model?: string
     duration_ms?: number
     cost_usd?: number

@@ -1,7 +1,7 @@
 /**
  * The coding-agent onboarding card (onboarding.ts). In the desktop app it asks first, then shows the desktop's own
- * run; in a browser it shows the setup guide's install and connect commands (running them is the consent), then the
- * runs local clients report. Phase changes are spoken through the card's one polite live region.
+ * run; in a browser it shows the command (running it is the consent), then the runs local clients report. Phase
+ * changes are spoken through the card's one polite live region.
  */
 import { useEffect, useRef } from 'react'
 import { AlertTriangle } from 'lucide-react'
@@ -10,12 +10,10 @@ import { useAnnounce } from '@nasiko/ui/composites/announce'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
-import { HarnessSetupHeading, HarnessSetupSteps } from '@nasiko/features/onboarding/HarnessSetup'
 import { copy as pageCopy } from '../copy'
 import type { AgentsOnboarding, CardView, DesktopControl } from '../onboarding'
 import { rejectedTurns, shownPhase, type SyncRun } from '../runs'
 import { RunBlock } from './AgentsOnboardingRun'
-import { ChatHistoryNotice } from './ChatHistoryNotice'
 import { HarnessOptimization } from './HarnessOptimization'
 
 const copy = pageCopy.agentsOnboarding
@@ -26,7 +24,6 @@ export function AgentsOnboardingCard({ onboarding }: { onboarding: AgentsOnboard
   return (
     <Announcer>
       <Card
-        data-tour="harnesses-connect"
         className="gap-5 p-5 md:p-6"
         render={
           <section aria-labelledby="agents-onboarding-title" data-testid="agents-onboarding" />
@@ -46,11 +43,8 @@ function CardBody({ view, onboarding }: { view: CardView; onboarding: AgentsOnbo
     case 'command':
       return (
         <>
-          <HarnessSetupHeading id="agents-onboarding-title" />
-          {/* The setup guide's own steps (onboarding/HarnessStep.tsx): `nasiko connect` signs in, then sets up the
-              coding agents, which reports the run this card follows. */}
-          <HarnessSetupSteps />
-          <ChatHistoryNotice />
+          <Title>{copy.commandTitle}</Title>
+          <Command />
         </>
       )
     case 'ask':
@@ -58,7 +52,6 @@ function CardBody({ view, onboarding }: { view: CardView; onboarding: AgentsOnbo
         <>
           <Title>{copy.title}</Title>
           <p className="max-w-[70ch] text-sm text-muted-foreground">{copy.body}</p>
-          <ChatHistoryNotice />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy} onClick={() => desktop?.act('start')}>
               {copy.yes}
@@ -140,7 +133,7 @@ function Title({ children }: { children: string }) {
   )
 }
 
-/** A failed run's CLI command with its Copy button: `nasiko agents setup` resumes the import. */
+/** The CLI command with its Copy button. */
 function Command() {
   return (
     <div className="flex flex-col gap-2 text-sm">
@@ -151,7 +144,6 @@ function Command() {
         </pre>
         <CopyButton text={copy.command} label={copy.copyCommand} />
       </div>
-      <ChatHistoryNotice />
     </div>
   )
 }

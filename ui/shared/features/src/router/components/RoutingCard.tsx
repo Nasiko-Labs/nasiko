@@ -11,21 +11,14 @@ import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { meQuery } from '@nasiko/data-access/auth'
 import { useAgentRouting, useCatalog, useConfigs } from '../api'
 import { copy } from '../copy'
-import { keySource, routingSentence, routingUnsupported } from '../routing'
+import { keySource, routingSentence } from '../routing'
 import { Announcer, KeySourceChip, SentenceText, SourceBadge } from './bits'
 import { RoutingSheet } from './RoutingSheet'
 
 export function RoutingCard({
   agent,
 }: {
-  agent: {
-    id: string
-    name: string
-    displayName: string
-    ownerId: string
-    /** The harness behind it, when it is one (`AgentView.integrationId`). */
-    integrationId?: string | null
-  }
+  agent: { id: string; name: string; displayName: string; ownerId: string }
 }) {
   const me = useQuery(meQuery).data
   const superuser = !!me?.is_superuser
@@ -53,21 +46,13 @@ function Card({
   sub,
   routing,
 }: {
-  agent: {
-    id: string
-    name: string
-    displayName: string
-    ownerId: string
-    /** The harness behind it, when it is one (`AgentView.integrationId`). */
-    integrationId?: string | null
-  }
+  agent: { id: string; name: string; displayName: string; ownerId: string }
   owner: boolean
   superuser: boolean
   sub?: string
   routing: ReturnType<typeof useAgentRouting>['data']
 }) {
   const [open, setOpen] = useState(false)
-  const unsupported = routingUnsupported(agent.integrationId ?? null)
   // Configs are the viewer's own, so they only help when the viewer owns the agent; both only matter once the sheet opens.
   const configs = useConfigs(owner && open)
   const catalog = useCatalog(open)
@@ -103,18 +88,11 @@ function Card({
             variant="ghost"
             className="ml-auto h-8 px-2 text-primary-text pointer-coarse:min-h-11"
             onClick={() => setOpen(true)}
-            disabled={unsupported}
-            aria-describedby={unsupported ? `routing-unsupported-${agent.id}` : undefined}
           >
             {copy.changeRouting}
           </Button>
         </div>
       )}
-      {unsupported ? (
-        <p id={`routing-unsupported-${agent.id}`} className="text-xs text-muted-foreground">
-          {copy.routingUnsupported}
-        </p>
-      ) : null}
       <RoutingSheet
         target={open ? agent : null}
         viewer={{ sub, superuser }}

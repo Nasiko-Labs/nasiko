@@ -1362,7 +1362,7 @@ fn routers_using_model(f: &Facts, model: &str) -> Vec<String> {
         .collect()
 }
 
-/// A custom provider Open Runtime can't reach to list its models: calls routed to it are likely
+/// A custom provider OpenRuntime can't reach to list its models: calls routed to it are likely
 /// failing the same way, so it is inferred (medium), not measured.
 fn provider_sync(f: &Facts, p: &super::load::ProviderFailure) -> Problem {
     let routers: Vec<_> = f
@@ -1387,7 +1387,7 @@ fn provider_sync(f: &Facts, p: &super::load::ProviderFailure) -> Problem {
         id: format!("provider-sync:{}", p.label),
         kind: Kind::Errors,
         tier: Tier::Worse,
-        title: format!("Open Runtime can't reach {}", p.display_name),
+        title: format!("OpenRuntime can't reach {}", p.display_name),
         why: "Its model list stopped refreshing; calls routed to it may fail the same way.".into(),
         metric: Metric::higher("Reachable", 0.0, 1.0, "", 1.0),
         trend: vec![0.0; TREND_DAYS],
@@ -1581,7 +1581,7 @@ fn link_chains(f: &Facts, problems: &mut [Problem]) -> Vec<Chain> {
         chained.extend(links);
     }
 
-    // A provider Open Runtime can't reach, and the failing agents routed to it.
+    // A provider OpenRuntime can't reach, and the failing agents routed to it.
     for p in &f.snap.provider_failures {
         let root = format!("provider-sync:{}", p.label);
         let Some(&r) = ids.get(&root) else { continue };

@@ -41,18 +41,11 @@ const PUBLIC = {
     // finds its chat past the rail's loaded pages.
     'recorded',
     'sessionLookup',
-    // Home's try-a-run card sends one real turn to the agent it offers.
-    'runOnce',
   ],
-  // The onboarding guide's Coding harnesses step shows the CLI installer the CLI guide does.
-  // Every guide that hands out the CLI connects it to this server first (`commands`).
-  cli: ['copy', 'commands'],
   deploy: [
     'AgentBuildsTab',
     'components/DeployAgentButton',
     'components/BuildToasts',
-    // The Marketplace install panel shows build logs with the same renderer as the Builds tab.
-    'components/BuildLogView',
     'copy',
     'follower',
     // The onboarding guide's Bring an agent step hosts the Deploy tabs themselves.
@@ -60,11 +53,6 @@ const PUBLIC = {
     'GithubTab',
     'RegistryTab',
     'search',
-    // Its prebuilt deploys show progress as the Registry tab's import does: stage icons and clock (NAS-1450).
-    'components/StageList',
-    // The guide follows the deploys its own tabs start, from the same in-flight state they show (NAS-1450).
-    'uploads',
-    'steps',
     // The agent hub's deploy markers (plans/feat-agent-centric.md eng): the agent's builds read and its record type.
     'api',
     'types',
@@ -86,19 +74,9 @@ const PUBLIC = {
   // The home's last change links a marker on the hub inside the hub's default window (PR2b).
   hub: ['components/HubTimeline', 'events', 'search'],
   // The agent hub's Tools card counts connectors and blocked tools (plans/feat-agent-centric.md PR1c).
-  mcp: [
-    'components/AgentMcpTab',
-    'components/SharedMcpTab',
-    'api',
-    // Chat's "Works with" row and reply Connect (chat/components/AgentApps.tsx) connect an app in place.
-    'components/ConnectControl',
-    'oauth',
-    'logic',
-    'types',
-  ],
+  mcp: ['components/AgentMcpTab', 'api'],
   narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
-  // Coding harnesses' empty state shows the guide's own harness step.
-  onboarding: ['api', 'GuideCard', 'GuideHost', 'HarnessSetup', 'index', 'logic', 'types'],
+  onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
   // The product tour (shared/features/src/tour): the shell's `_app` route mounts its host.
   tour: ['TourHost'],
   // Context optimization (plans/feat-context-optimization.md eng D1): its rules, copy, the trace's Optimization block
@@ -125,20 +103,8 @@ const PUBLIC = {
     'components/NeedsYou',
     'components/FirstRun',
     'components/SetupGuide',
-    // EE's Budget burn panel draws the Overview's quiet card when nothing is spent.
-    'components/Card',
   ],
-  // Agents word a 503 with `unconfigured` too, so only the missing trace store reads as a missing TEMPO_URL.
-  observability: [
-    'StateCard',
-    'tuning',
-    'types',
-    'spans',
-    'copy',
-    'sessions',
-    'limiter',
-    'unconfigured',
-  ],
+  observability: ['StateCard', 'tuning', 'types', 'spans', 'copy', 'sessions', 'limiter'],
   // Budgets (plans/feat-budget-burn.md eng D1) build their sheet from the router's generic sheet parts.
   router: [
     'components/RoutingCard',
@@ -196,8 +162,7 @@ const PUBLIC = {
   ],
   // The session ledger (PR1b) shares the session pages' breadcrumb.
   trace: ['api', 'Waterfall', 'Crumbs'],
-  // The Overview's setup steps ask whether any workflow exists (the list page's own query).
-  workflows: ['api'],
+  workflows: [],
 }
 
 /** Raw controls outside components/ui (Phase 1 guard): shadcn primitives or shared composites instead. */
@@ -239,7 +204,7 @@ const banned = [
   },
   {
     selector:
-      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD|NASIKO_[A-Z]+_COMPILED_IN)$/]",
+      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD)$/]",
     message: 'Read configuration through src/lib/env.ts, not import.meta.env.',
   },
   {

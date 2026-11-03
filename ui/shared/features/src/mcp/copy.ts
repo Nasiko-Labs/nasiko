@@ -278,6 +278,8 @@ export const copy = {
     'MCP servers this agent may use. Set each tool to allow, ask or block. Ask pauses the agent mid-task and asks you to approve that call before it runs.',
   agentMcpSubHarness:
     'MCP servers this coding harness may use. Set each tool to allow or block. Approval before a call isn’t available for coding harnesses yet.',
+  agentMcpSubLocal:
+    'MCP servers this agent may use from the machine it runs on. Set each tool to allow or block. Approval before a call isn’t available for agents running outside Nasiko yet.',
   noAgentServers: 'No MCP servers available',
   noAgentServersFix: 'Connect servers on the MCP servers page to make their tools available here.',
   openCatalog: 'Open MCP servers',
@@ -285,6 +287,7 @@ export const copy = {
   disable: (name: string) => `Disable ${name}`,
   expand: (name: string) => `Show tools for ${name}`,
   collapse: (name: string) => `Hide tools for ${name}`,
+  filterToolsOf: (name: string) => `Filter tools for ${name}`,
   summaryDisabled: 'Disabled',
   enabled: 'Enabled',
   summaryNoTools: 'No tools synced yet',
@@ -295,6 +298,9 @@ export const copy = {
   viewServer: 'View server',
   viewLogs: 'View build logs',
   disabledNote: 'This server is disabled for this agent. Tool rules apply once it is re-enabled.',
+  alwaysOn: 'Always on',
+  alwaysOnNote:
+    'The platform turns this server on for every agent, so it can’t be switched off. Its tools still follow the rules below.',
   noToolsYet: 'This server exposes no tools yet.',
   stanceFor: (tool: string) => `Tool access for ${tool}`,
   toolsFailed: "Couldn't load this server's tools",

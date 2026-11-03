@@ -23,7 +23,7 @@ export function useLifecycleFlow(id: string) {
         w.clear()
       },
     })
-  return { id, m, w, run, stopOpen, setStopOpen, confirmStop, stopped }
+  return { m, w, run, stopOpen, setStopOpen, confirmStop, stopped }
 }
 
 export type LifecycleFlow = ReturnType<typeof useLifecycleFlow>

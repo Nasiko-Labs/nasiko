@@ -38,6 +38,4 @@ nasiko-pricing = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true }
 rand = { workspace = true }
-rand_distr = { workspace = true }
-async-trait = { workspace = true }
 anyhow = { workspace = true }

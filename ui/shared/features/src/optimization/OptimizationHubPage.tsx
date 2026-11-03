@@ -222,12 +222,9 @@ export function OptimizationHubPage() {
               // R7C, C5: a bar picks its interval, pushed so Back undoes it.
               onSelect={(iso, size) => setSearch({ slice: sliceOf(iso, size) })}
             />
-            {/* Empty while nothing is off: hidden then, so the column's gap isn't doubled. */}
-            <div data-tour="optimization-attention" className="empty:hidden">
-              <NeedsAttention />
-            </div>
+            <NeedsAttention />
             <Reveal className="flex flex-col gap-6">
-              <RevealItem data-tour="optimization-by-agent">
+              <RevealItem>
                 <ByAgent
                   result={byAgent.data}
                   pending={byAgent.isPending}
@@ -246,7 +243,7 @@ export function OptimizationHubPage() {
               <RevealItem>
                 <Mechanisms win={win} period={period} superuser={superuser} enabled={ready} />
               </RevealItem>
-              <RevealItem data-tour="optimization-senders">
+              <RevealItem>
                 <BiggestSenders
                   result={top.data}
                   pending={top.isPending}

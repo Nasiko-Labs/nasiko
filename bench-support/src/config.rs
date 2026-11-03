@@ -19,7 +19,7 @@ pub fn redis_url() -> String {
     std::env::var("BENCH_REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into())
 }
 
-pub fn s3_endpoint() -> String {
+fn s3_endpoint() -> String {
     std::env::var("BENCH_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
@@ -97,9 +97,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_max_replicas: 1,
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
-        database_max_connections: 10,
         build_concurrency: 1,
-        build_push_rate_limit_per_minute: 600,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
         maf_worker_concurrency: 1,
         maf_heartbeat_secs: 20,
@@ -123,17 +121,11 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_registry_host: None,
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
-        agent_image_registry_aliases: Vec::new(),
         build_push_token: String::new(),
         agent_jwt_secret: String::new(),
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
-        seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
-        tiering_enabled: false,
-        tiering_interval_secs: 86400,
-        cold_path: String::new(),
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
         // real calls; Stage 1 is instead kept skipped by seeding fewer agents
@@ -141,7 +133,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         openai_api_key: Some("bench-dummy-key".into()),
         openai_base_url: Some(mock_llm_base_url.to_string()),
         openai_model: "mock-model".into(),
-        agent_platform_key_fallback: true,
         decomposer_api_url: None,
         decomposer_api_key: None,
         router_model: "mock-model".into(),
@@ -175,20 +166,10 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
-        sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
-        harness_sessions_enabled: true,
-        build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
-        session_idle_grace_secs: 120,
-        session_cpu_quiescent_millicores: 20,
-        session_reaper_interval_secs: 30,
-        agent_open_task_max_age_secs: 3600,
-        agent_park_idle_secs: 3600,
-        harness_image_prefix: "nasiko/harness-".to_string(),
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
         agent_state_max_body_bytes: 1_048_576,
         agent_state_rate_limit_per_minute: 600,
-        agent_peer_call_rate_limit_per_minute: 300,
         agent_state_list_bytes_budget: 8 * 1024 * 1024,
         github_client_id: None,
         github_client_secret: None,
@@ -212,7 +193,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         context_k_high: 20,
         embedding_model: "mock-embedding".into(),
         agent_call_timeout_secs: 600,
-        agent_startup_budget_secs: 120,
         github_callback_url: None,
         github_central_callback_url: None,
         docker_agent_network: None,
@@ -222,7 +202,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         cors_allowed_origins: vec![],
         // Bench agents are loopback mock servers.
         agent_allow_private_urls: true,
-        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
@@ -235,8 +214,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         admin_password: "bench-admin-password".into(),
         container_hours_poll_secs: 60,
         trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 180,
-        trace_usage_max_window_secs: 600,
-        trace_usage_batch_size: 8,
+        trace_usage_overlap_secs: 600,
+        trace_usage_batch_size: 50,
     }
 }

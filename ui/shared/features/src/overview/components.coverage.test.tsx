@@ -262,7 +262,6 @@ const spendData = (over: Partial<SpendData> = {}): SpendData => ({
   totals: { spend: 120, runs: 10, previous: null },
   totalsError: null,
   tokens: null,
-  toolCalls: null,
   days: [day('2026-09-28', 20), day('2026-09-29', 100)],
   stack: null,
   stackPending: false,
@@ -291,24 +290,8 @@ describe('Spend', () => {
     )
     expect(await screen.findByText(copy.spend.noSpendYet)).toBeInTheDocument()
     expect(screen.queryByRole('figure')).toBeNull()
-    // Its own quiet state (2026-11-06): what fills it and one step, not $0.00 and an empty table.
-    const quiet = screen.getByTestId('spend-quiet')
-    expect(quiet).toHaveTextContent(copy.cardQuiet.spend(30))
-    expect(within(quiet).getByRole('link', { name: copy.cardQuiet.spendAction })).toHaveAttribute(
-      'href',
-      '/workflows',
-    )
+    expect(screen.getByText(copy.spend.noDrivers(30))).toBeInTheDocument()
     unmount()
-    // The Overview's rule (user 2026-11-06): with nothing to show, the card isn't drawn at all.
-    const hidden = renderInRouter(
-      <>
-        <MonthBar spend={empty} />
-        <Spend now={Date.parse('2026-03-20T15:00:00Z')} spend={empty} hideEmpty />
-      </>,
-    )
-    await screen.findByText(copy.spend.noSpendYet)
-    expect(document.querySelector('[data-testid="overview-spend"]')).toBeNull()
-    hidden.unmount()
     renderInRouter(<MonthBar spend={spendData()} />)
     expect(await screen.findByTestId('overview-forecast')).toHaveTextContent(
       /^Forecast from day \d+$/,
@@ -448,24 +431,8 @@ describe('Coding harnesses', () => {
           connected: 2,
           activeDevs: 1,
           harnesses: [
-            {
-              id: 'claude-code',
-              cost: 12,
-              turns: 40,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: false,
-            },
-            {
-              id: 'mystery',
-              cost: 3,
-              turns: 9,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: true,
-            },
+            { id: 'claude-code', cost: 12, unpriced: false },
+            { id: 'mystery', cost: 3, unpriced: true },
           ],
         })}
         days={30}
@@ -490,24 +457,8 @@ describe('Coding harnesses', () => {
           connected: 2,
           ownOnly: true,
           harnesses: [
-            {
-              id: 'claude-code',
-              cost: 12,
-              turns: 40,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: false,
-            },
-            {
-              id: 'mystery',
-              cost: 3,
-              turns: 9,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: true,
-            },
+            { id: 'claude-code', cost: 12, unpriced: false },
+            { id: 'mystery', cost: 3, unpriced: true },
           ],
         })}
         days={30}
@@ -534,24 +485,8 @@ describe('Coding harnesses', () => {
           connected: 2,
           ownOnly: true,
           harnesses: [
-            {
-              id: 'claude-code',
-              cost: 12,
-              turns: 40,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: false,
-            },
-            {
-              id: 'mystery',
-              cost: 3,
-              turns: 9,
-              models: [],
-              subagentRuns: null,
-              tools: null,
-              unpriced: true,
-            },
+            { id: 'claude-code', cost: 12, unpriced: false },
+            { id: 'mystery', cost: 3, unpriced: true },
           ],
         })}
         days={30}

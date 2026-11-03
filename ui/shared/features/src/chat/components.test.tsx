@@ -382,17 +382,16 @@ describe('target resolution (§6.11)', () => {
     expect(chatKind({ agent_id: null, agent_url: null })).toBe('routed')
   })
 
-  it('the chooser offers running and parked A2A agents, never harnesses or stopped agents', () => {
+  it('the chooser offers running A2A agents only, never harnesses or stopped agents', () => {
     const a = (id: string, status: string, tags: string[] = []) =>
       ({ id, name: id, status, tags, skills: [] }) as unknown as Agent
     expect(
       chooserAgents([
         a('run', 'running'),
-        a('parked', 'parked'),
         a('stop', 'stopped'),
         a('harness', 'running', ['coding-agent']),
       ]).map((x) => x.id),
-    ).toEqual(['run', 'parked'])
+    ).toEqual(['run'])
     expect(chooserAgents(undefined)).toEqual([])
   })
 })

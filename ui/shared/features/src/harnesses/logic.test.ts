@@ -158,9 +158,11 @@ describe('narrative', () => {
     })
     expect(s).toHaveLength(2)
     expect(s[0]).toBe(
-      'In the last 30 days, 41 of 60 developers used a harness connected to Open Runtime; Claude Code leads with 31 active developers.',
+      'In the last 30 days, 41 of 60 developers used a harness connected to OpenRuntime; Claude Code leads with 31 active developers.',
     )
-    expect(s[1]).toBe('12 registered seats had no activity; usage worth $1,000.00 at API prices.')
+    expect(s[1]).toBe(
+      '12 registered seats had no activity; estimated cost $1,000.00 (API list price).',
+    )
   })
   it('drops the cost clause when everything is unpriced', () => {
     const s = harnessNarrative({
@@ -175,7 +177,7 @@ describe('narrative', () => {
         windowLabel: 'Last 7 days',
         res: res({ active_devs: 0, registered_devs: 0 }, []),
       }),
-    ).toEqual(['No harnesses connected to Open Runtime yet.'])
+    ).toEqual(['No harnesses connected to OpenRuntime yet.'])
     expect(
       harnessNarrative({
         windowLabel: 'Last 7 days',
@@ -204,7 +206,7 @@ describe('copy', () => {
     for (const n of [copy.serverMissing]) expect(n.action.length).toBeGreaterThan(0)
     // The OSS page says nothing about another edition (docs/lab-vs-react-migration-review.md §10.1).
     expect(JSON.stringify(copy)).not.toMatch(/Enterprise|edition/i)
-    expect(copy.csvCostHeader).toBe('Value at API prices (USD)')
+    expect(copy.csvCostHeader).toBe('Estimated cost (API list price, USD)')
   })
   it('keeps the route mock list equal to MOCK_VARIANTS', () => {
     expect([...HARNESS_MOCK_VARIANTS]).toEqual([...MOCK_VARIANTS])

@@ -326,7 +326,6 @@ function RenameTitle({
       <Input
         ref={input}
         aria-label={copy.titleLabel}
-        placeholder={copy.titlePlaceholder}
         value={value}
         maxLength={TITLE_MAX}
         onChange={(e) => setValue(e.target.value)}

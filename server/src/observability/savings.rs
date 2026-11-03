@@ -202,6 +202,9 @@ pub struct Coverage {
     pub unoptimized_spend_usd: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_unoptimized: Option<TopUnoptimized>,
+    /// Share of measured saved tokens whose chars-per-token was calibrated against real reported
+    /// usage rather than the fallback divisor.
+    pub calibrated_pct: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -287,6 +290,8 @@ struct LayerRow {
     saved_input: i64,
     saved_output: i64,
     saved_cost: f64,
+    calibrated: i64,
+    uncalibrated: i64,
     /// Saved tokens this layer could not put a price on — no LLM call in the flow, or no
     /// `model_pricing` row covering the model it used. Drives the note that keeps an unpriceable
     /// figure from reading as a free one.
@@ -302,8 +307,7 @@ struct LayerRow {
 /// multiply by; their rows carry tokens and `saved_cost_usd = 0`. The flow's first `token_usage` row
 /// names the model that then read the context they trimmed, which is the rate those tokens would
 /// have been billed at. Same join `context_savings.rs` already uses (`PRICE_JOIN` there), keyed on
-/// `flow_id` instead of `trace_id` — the same value under two names. The MCP gateway's tool-search
-/// rows are priced the same way: the gateway never sees a model either.
+/// `flow_id` instead of `trace_id` — the same value under two names.
 ///
 /// Rows that already carry a model are left alone: IP-1 priced itself at the **effective blended
 /// input rate**, which accounts for the cached prefix. Re-pricing those at list rate here would
@@ -314,7 +318,7 @@ struct LayerRow {
 /// it writes, so their `saved_output_tokens` is 0 and an output rate would multiply by nothing.
 pub(crate) const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
          SELECT (mp.input_price_per_1m / 1000000.0)::FLOAT8 AS rate \
-           FROM (SELECT trace_id AS session_id, started_at AS created_at, provider, model FROM trace_first_calls) tu \
+           FROM token_usage tu \
            JOIN model_pricing mp \
              ON mp.provider = tu.provider AND mp.model = tu.model \
             AND mp.effective_from <= ts.created_at \
@@ -331,6 +335,10 @@ pub(crate) const PRICE_JOIN: &str = " LEFT JOIN LATERAL ( \
 pub(crate) const PRICED_COST: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL \
          THEN ts.saved_input_tokens * COALESCE(price.rate, 0) \
          ELSE ts.saved_cost_usd END), 0)::FLOAT8";
+
+/// Saved tokens on rows that needed a resolved rate and did not get one.
+const UNPRICED_TOKENS: &str = "COALESCE(SUM(CASE WHEN ts.model IS NULL AND price.rate IS NULL \
+         THEN ts.saved_input_tokens + ts.saved_output_tokens ELSE 0 END), 0)::BIGINT";
 
 /// One row of the actual-spend aggregate, over the same window and filters.
 #[derive(sqlx::FromRow)]
@@ -420,40 +428,39 @@ async fn measured_by_layer(
     q: &SavingsQuery<'_>,
 ) -> Result<Vec<LayerRow>, sqlx::Error> {
     let mut qb = QueryBuilder::new(
-        // Hot rows priced live + tiered days with frozen cost (savings_spend, 0081).
-        "SELECT ss.layer, ss.program,
-                COALESCE(SUM(ss.saved_input_tokens), 0)::BIGINT  AS saved_input,
-                COALESCE(SUM(ss.saved_output_tokens), 0)::BIGINT AS saved_output,
-                COALESCE(SUM(ss.priced_cost_usd), 0)::FLOAT8     AS saved_cost,
-                COALESCE(SUM(ss.unpriced_tokens), 0)::BIGINT     AS unpriced
-           FROM savings_spend ss",
+        "SELECT ts.layer, ts.program,
+                COALESCE(SUM(ts.saved_input_tokens), 0)::BIGINT  AS saved_input,
+                COALESCE(SUM(ts.saved_output_tokens), 0)::BIGINT AS saved_output,
+                COALESCE(SUM(CASE WHEN NOT ts.token_estimated THEN ts.saved_input_tokens ELSE 0 END), 0)::BIGINT AS calibrated,
+                COALESCE(SUM(CASE WHEN ts.token_estimated     THEN ts.saved_input_tokens ELSE 0 END), 0)::BIGINT AS uncalibrated, ",
     );
-    push_filters(&mut qb, q, "ss.ts", "ss.agent_id");
+    qb.push(PRICED_COST).push(" AS saved_cost, ");
+    qb.push(UNPRICED_TOKENS).push(" AS unpriced ");
+    qb.push("FROM token_savings ts");
+    qb.push(PRICE_JOIN);
+    push_filters(&mut qb, q, "ts.created_at", "ts.agent_id");
     if let Some(session) = q.session_id {
-        qb.push(" AND ss.session_id = ").push_bind(session);
+        qb.push(" AND ts.session_id = ").push_bind(session);
     }
-    qb.push(" GROUP BY ss.layer, ss.program");
+    qb.push(" GROUP BY ts.layer, ts.program");
     qb.build_query_as().fetch_all(db).await
 }
 
 /// Actual billed spend over the same scope — the denominator of every percentage.
-///
-/// Tokens include cache reads and writes: `input_tokens` excludes them, while the saved tokens
-/// they are compared with do not.
 async fn actual_spend(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SpendRow, sqlx::Error> {
     let mut qb = QueryBuilder::new(
-        "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)::BIGINT AS tokens,
+        "SELECT COALESCE(SUM(total_tokens), 0)::BIGINT AS tokens,
                 COALESCE(SUM(cost_usd), 0)::FLOAT8     AS cost,
-                COALESCE(SUM(traces), 0)::BIGINT        AS calls
-         FROM trace_spend",
+                COUNT(*)::BIGINT                       AS calls
+         FROM token_usage",
     );
-    push_filters(&mut qb, q, "ts", "agent_id");
+    push_filters(&mut qb, q, "created_at", "agent_id");
     qb.build_query_as().fetch_one(db).await
 }
 
 /// Traffic each factor-derived layer was eligible to act on.
 ///
-/// Read from `trace_usage.metadata` (hot rows; the router merges each call's metadata in), where each layer already records what it decided per call —
+/// Read from `token_usage.metadata`, where each layer already records what it decided per call —
 /// `brevity.applied` is written on every call precisely so "it ran" and "it was skipped, and why"
 /// are both answerable after the fact.
 async fn eligible_for_factors(
@@ -465,10 +472,10 @@ async fn eligible_for_factors(
                 COALESCE(SUM(input_tokens), 0)::BIGINT  AS input_tokens,
                 COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
                 COALESCE(SUM(cost_usd), 0)::FLOAT8      AS cost
-         FROM (SELECT started_at AS ts, agent_id, user_id, provider, model, input_tokens, output_tokens, cost_usd
-                 FROM trace_usage WHERE metadata->'brevity'->>'applied' = 'true') b",
+         FROM token_usage",
     );
-    push_filters(&mut qb, q, "ts", "agent_id");
+    push_filters(&mut qb, q, "created_at", "agent_id");
+    qb.push(" AND metadata->'brevity'->>'applied' = 'true'");
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -507,10 +514,10 @@ async fn eligible_for_minimal_code(
         "SELECT COALESCE(SUM(tu.input_tokens), 0)::BIGINT  AS input_tokens,
                 COALESCE(SUM(tu.output_tokens), 0)::BIGINT AS output_tokens,
                 COALESCE(SUM(tu.cost_usd), 0)::FLOAT8      AS cost
-         FROM trace_spend tu
+         FROM token_usage tu
          JOIN agents a ON a.id = tu.agent_id AND a.minimal_code_enabled",
     );
-    push_filters(&mut qb, q, "tu.ts", "tu.agent_id");
+    push_filters(&mut qb, q, "tu.created_at", "tu.agent_id");
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -540,11 +547,11 @@ async fn eligible_for_prompt_comments(
         "SELECT COALESCE(SUM(tu.input_tokens), 0)::BIGINT  AS input_tokens,
                 COALESCE(SUM(tu.output_tokens), 0)::BIGINT AS output_tokens,
                 COALESCE(SUM(tu.cost_usd), 0)::FLOAT8      AS cost
-         FROM trace_spend tu
+         FROM token_usage tu
          JOIN agents a ON a.id = tu.agent_id
               AND COALESCE(a.metadata->'features'->>'prompt_comments', '') = 'enabled'",
     );
-    push_filters(&mut qb, q, "tu.ts", "tu.agent_id");
+    push_filters(&mut qb, q, "tu.created_at", "tu.agent_id");
 
     #[derive(sqlx::FromRow)]
     struct Row {
@@ -654,10 +661,6 @@ fn program_label(program: &str) -> &'static str {
         "pacms" => "Shorter chat history",
         "ponytail" => "Less code written",
         "prompt_comments" => "Leaner agent instructions",
-        // Compact signatures and tool search: both shrink the tool definitions the model reads.
-        "tool_lists" => "Smaller tool lists",
-        // Context an edition injects into the prompt, packed under a token budget.
-        "context_budget" => "Smaller injected context",
         _ => "Other",
     }
 }
@@ -678,13 +681,16 @@ async fn by_agent(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<AgentSavings>
     }
 
     let mut qb = QueryBuilder::new(
-        "WITH spend AS (SELECT agent_id, COALESCE(SUM(traces),0)::BIGINT AS calls, COALESCE(SUM(input_tokens),0)::BIGINT AS input_tokens, COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0)::BIGINT AS tokens, COALESCE(SUM(cost_usd),0)::FLOAT8 AS cost FROM trace_spend",
+        "WITH spend AS (SELECT agent_id, COUNT(*)::BIGINT AS calls, COALESCE(SUM(input_tokens),0)::BIGINT AS input_tokens, COALESCE(SUM(total_tokens),0)::BIGINT AS tokens, COALESCE(SUM(cost_usd),0)::FLOAT8 AS cost FROM token_usage",
     );
-    push_filters(&mut qb, q, "ts", "agent_id");
-    qb.push(" AND agent_id IS NOT NULL GROUP BY agent_id), sav AS (SELECT ss.agent_id, COALESCE(SUM(ss.saved_input_tokens),0)::BIGINT AS saved_input, COALESCE(SUM(ss.saved_output_tokens),0)::BIGINT AS saved_output, COALESCE(SUM(ss.priced_cost_usd),0)::FLOAT8 AS saved_cost FROM savings_spend ss");
-    push_filters(&mut qb, q, "ss.ts", "ss.agent_id");
+    push_filters(&mut qb, q, "created_at", "agent_id");
+    qb.push(" AND agent_id IS NOT NULL GROUP BY agent_id), sav AS (SELECT ts.agent_id, COALESCE(SUM(ts.saved_input_tokens),0)::BIGINT AS saved_input, COALESCE(SUM(ts.saved_output_tokens),0)::BIGINT AS saved_output, ");
+    qb.push(PRICED_COST)
+        .push(" AS saved_cost FROM token_savings ts");
+    qb.push(PRICE_JOIN);
+    push_filters(&mut qb, q, "ts.created_at", "ts.agent_id");
     qb.push(
-        " AND ss.agent_id IS NOT NULL GROUP BY ss.agent_id)
+        " AND ts.agent_id IS NOT NULL GROUP BY ts.agent_id)
          SELECT s.agent_id,
                 COALESCE(a.display_name, a.name) AS agent_name,
                 s.calls, s.input_tokens, s.tokens, s.cost,
@@ -741,7 +747,7 @@ async fn by_session(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<SessionSavi
     }
 
     let mut qb = QueryBuilder::new(
-        "WITH sav_hot AS (
+        "WITH sav AS (
            SELECT COALESCE(ts.session_id, tr.session_id) AS session_id,
                   MIN(ts.created_at) AS started_at,
                   COUNT(DISTINCT ts.flow_id)::BIGINT AS turn_count,
@@ -762,46 +768,11 @@ async fn by_session(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<SessionSavi
     }
     qb.push(
         " GROUP BY 1 HAVING COALESCE(ts.session_id, tr.session_id) IS NOT NULL),
-         sav_cold AS (
-           SELECT sf.session_id, MIN(sf.first_at) AS started_at,
-                  COUNT(DISTINCT sf.flow_id)::BIGINT AS turn_count,
-                  COALESCE(SUM(sf.saved_input_tokens),0)::BIGINT AS saved_input,
-                  COALESCE(SUM(sf.saved_output_tokens),0)::BIGINT AS saved_output,
-                  COALESCE(SUM(sf.priced_cost_usd),0)::FLOAT8 AS saved_cost
-             FROM savings_flows sf",
-    );
-    if q.provider.is_some() || q.model.is_some() {
-        qb.push(" WHERE false");
-    } else {
-        push_filters(&mut qb, q, "sf.first_at", "sf.agent_id");
-        if let Some(session) = q.session_id {
-            qb.push(" AND sf.session_id = ").push_bind(session);
-        }
-    }
-    qb.push(
-        " AND sf.session_id IS NOT NULL GROUP BY sf.session_id),
-         sav AS (
-           SELECT u.session_id, MIN(u.started_at) AS started_at,
-                  SUM(u.turn_count)::BIGINT AS turn_count,
-                  SUM(u.saved_input)::BIGINT AS saved_input,
-                  SUM(u.saved_output)::BIGINT AS saved_output,
-                  SUM(u.saved_cost)::FLOAT8 AS saved_cost,
-                  COALESCE((SELECT h.agent_names FROM sav_hot h WHERE h.session_id = u.session_id LIMIT 1), '{}'::text[]) AS agent_names
-             FROM (SELECT session_id, started_at, turn_count, saved_input, saved_output, saved_cost FROM sav_hot
-                   UNION ALL
-                   SELECT session_id, started_at, turn_count, saved_input, saved_output, saved_cost FROM sav_cold) u
-            GROUP BY u.session_id),
          spend AS (
            SELECT tu.session_id AS flow_id,
                   COALESCE(SUM(tu.total_tokens),0)::BIGINT AS tokens,
                   COALESCE(SUM(tu.cost_usd),0)::FLOAT8     AS cost
-           -- Hot trace_usage rows plus per-trace totals of tiered rows (trace_totals).
-           FROM (SELECT trace_id AS session_id, started_at AS created_at, agent_id, user_id, provider, model,
-                        (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::bigint AS total_tokens, cost_usd
-                   FROM trace_usage
-                 UNION ALL
-                 SELECT trace_id, first_at, NULL::uuid, user_id, NULL::text, model, tokens, cost_usd
-                   FROM trace_totals) tu",
+           FROM token_usage tu",
     );
     push_filters(&mut qb, q, "tu.created_at", "tu.agent_id");
     qb.push(
@@ -811,7 +782,7 @@ async fn by_session(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<SessionSavi
                 COALESCE(SUM(spend.tokens), 0)::BIGINT AS tokens,
                 COALESCE(SUM(spend.cost), 0)::FLOAT8   AS cost
          FROM sav
-         LEFT JOIN (SELECT trace_id, session_id FROM trace_usage UNION SELECT trace_id, session_id FROM trace_totals) tr2 ON tr2.session_id = sav.session_id
+         LEFT JOIN trace_usage tr2 ON tr2.session_id = sav.session_id
          LEFT JOIN spend ON spend.flow_id = tr2.trace_id
          GROUP BY sav.session_id, sav.started_at, sav.turn_count, sav.agent_names,
                   sav.saved_input, sav.saved_output, sav.saved_cost
@@ -845,6 +816,8 @@ async fn coverage(
     db: &PgPool,
     q: &SavingsQuery<'_>,
     calls_in_window: i64,
+    calibrated: i64,
+    uncalibrated: i64,
 ) -> Result<Coverage, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct Flags {
@@ -883,15 +856,15 @@ async fn coverage(
     let mut qb = QueryBuilder::new(
         "SELECT COALESCE(SUM(tu.cost_usd) FILTER (WHERE opt.on), 0)::FLOAT8     AS optimized_spend,
                 COALESCE(SUM(tu.cost_usd) FILTER (WHERE NOT opt.on), 0)::FLOAT8 AS unoptimized_spend,
-                COALESCE(SUM(tu.traces) FILTER (WHERE opt.on), 0)::BIGINT        AS enabled_calls
-         FROM trace_spend tu
+                COUNT(*) FILTER (WHERE opt.on)::BIGINT                          AS enabled_calls
+         FROM token_usage tu
          JOIN LATERAL (
            SELECT (a.compress_enabled OR a.minimal_code_enabled
                    OR COALESCE(a.metadata->'features'->>'prompt_comments','') = 'enabled') AS on
            FROM agents a WHERE a.id = tu.agent_id
          ) opt ON true",
     );
-    push_filters(&mut qb, q, "tu.ts", "tu.agent_id");
+    push_filters(&mut qb, q, "tu.created_at", "tu.agent_id");
     let split: SpendSplit = qb.build_query_as().fetch_one(db).await?;
 
     #[derive(sqlx::FromRow)]
@@ -904,15 +877,13 @@ async fn coverage(
     let mut qb = QueryBuilder::new(
         "SELECT tu.agent_id, COALESCE(a.display_name, a.name) AS agent_name,
                 COALESCE(SUM(tu.cost_usd), 0)::FLOAT8 AS spend_usd
-         FROM trace_spend tu
+         FROM token_usage tu
          JOIN agents a ON a.id = tu.agent_id
               AND NOT a.compress_enabled AND NOT a.minimal_code_enabled
               AND COALESCE(a.metadata->'features'->>'prompt_comments','') <> 'enabled'",
     );
-    push_filters(&mut qb, q, "tu.ts", "tu.agent_id");
-    // Not `agent_name`: `trace_spend` has a column of that name, which Postgres
-    // prefers over the output alias, and it isn't functionally dependent on a.id.
-    qb.push(" GROUP BY tu.agent_id, a.display_name, a.name ORDER BY spend_usd DESC LIMIT 1");
+    push_filters(&mut qb, q, "tu.created_at", "tu.agent_id");
+    qb.push(" GROUP BY tu.agent_id, agent_name ORDER BY spend_usd DESC LIMIT 1");
     let top: Option<TopRow> = qb.build_query_as().fetch_optional(db).await?;
 
     Ok(Coverage {
@@ -930,6 +901,7 @@ async fn coverage(
             agent_name: t.agent_name,
             spend_usd: t.spend_usd,
         }),
+        calibrated_pct: pct(calibrated as f64, (calibrated + uncalibrated) as f64),
     })
 }
 
@@ -937,6 +909,9 @@ async fn coverage(
 pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsData, sqlx::Error> {
     let measured = measured_by_layer(db, q).await?;
     let spend = actual_spend(db, q).await?;
+
+    let calibrated: i64 = measured.iter().map(|r| r.calibrated).sum();
+    let uncalibrated: i64 = measured.iter().map(|r| r.uncalibrated).sum();
 
     // Measured layers, grouped into their programs.
     //
@@ -1072,7 +1047,7 @@ pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsDat
             _ => by_session(db, q).await?,
         },
         by_program,
-        coverage: coverage(db, q, spend.calls).await?,
+        coverage: coverage(db, q, spend.calls, calibrated, uncalibrated).await?,
     })
 }
 
@@ -1194,10 +1169,10 @@ async fn tier_breakdown(
     let mut qb = QueryBuilder::new(
         "SELECT context_tier AS tier,
                 COALESCE(SUM(saved_input_tokens + saved_output_tokens), 0)::BIGINT AS saved_tokens,
-                COALESCE(SUM(raw_cost_usd), 0)::FLOAT8 AS saved_cost_usd
-         FROM savings_spend",
+                COALESCE(SUM(saved_cost_usd), 0)::FLOAT8 AS saved_cost_usd
+         FROM token_savings",
     );
-    push_filters(&mut qb, q, "ts", "agent_id");
+    push_filters(&mut qb, q, "created_at", "agent_id");
     qb.push(" AND context_tier IS NOT NULL GROUP BY context_tier ORDER BY saved_tokens DESC");
 
     let rows: Vec<Row> = qb.build_query_as().fetch_all(db).await?;
@@ -1374,8 +1349,6 @@ mod tests {
         assert_eq!(program_label("pacms"), "Shorter chat history");
         assert_eq!(program_label("caveman"), "Smaller prompts");
         assert_eq!(program_label("ponytail"), "Less code written");
-        assert_eq!(program_label("tool_lists"), "Smaller tool lists");
-        assert_eq!(program_label("context_budget"), "Smaller injected context");
     }
     // ── honesty of the zero/partial notes ────────────────────────────────────
 

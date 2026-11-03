@@ -76,7 +76,6 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
             )
             .into_response();
         }
-        crate::error_reporting::identify(&delegated.identity.user_id.to_string());
         req.extensions_mut()
             .insert(Claims::from(delegated.identity.clone()));
         req.extensions_mut().insert(super::delegate::Delegation {
@@ -100,7 +99,6 @@ pub async fn require_auth(State(state): State<AppState>, mut req: Request, next:
         req.extensions_mut()
             .insert(super::delegate::SessionJti(jti));
     }
-    crate::error_reporting::identify(&claims.sub);
     req.extensions_mut().insert(claims);
     next.run(req).await
 }

@@ -6,8 +6,15 @@ import { SETTINGS_FIELDS, type Settings, type SettingsField } from './types'
 
 // ─── workspace settings (oss/server/src/settings.rs) ────────────────────────
 
-/** The form holds every field as text; blanks are sent as null. */
+/** The form holds every field as text; numbers are sent as numbers, blanks as null. */
 export type SettingsValues = Record<SettingsField, string>
+
+const NUMERIC: ReadonlySet<SettingsField> = new Set([
+  'max_flow_depth',
+  'max_flow_fan_out',
+  'max_flow_tokens',
+  'flow_timeout_secs',
+])
 
 export const valuesOf = (s: Settings): SettingsValues =>
   Object.fromEntries(
@@ -23,17 +30,29 @@ export function settingsBody(
   fresh: Settings,
   values: SettingsValues,
   edited: ReadonlySet<SettingsField>,
-): Record<SettingsField, string | null> {
-  const body = {} as Record<SettingsField, string | null>
+): Record<SettingsField, string | number | null> {
+  const body = {} as Record<SettingsField, string | number | null>
   for (const k of SETTINGS_FIELDS) {
     if (!edited.has(k)) {
       body[k] = fresh[k] ?? null
       continue
     }
-    body[k] = values[k].trim() || null
+    const v = values[k].trim()
+    body[k] = !v ? null : NUMERIC.has(k) ? Number(v) : v
   }
   return body
 }
+
+/** A column's upper bound: INT, or BIGINT held as a safe JS integer. */
+export const INT_MAX = 2_147_483_647
+
+/** A whole number from 1 to `max`. */
+export const positiveIntProblem = (v: string, max: number): 'required' | 'invalid' | null =>
+  !v.trim()
+    ? 'required'
+    : /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= max
+      ? null
+      : 'invalid'
 
 /**
  * The OCI registry field: blank, or a host (optional port) with or without a scheme and path. The import allow list
@@ -95,9 +114,4 @@ export function ago(iso: string, now: number): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
-}
-
-/** Whether two selections hold the same names, in any order. */
-export function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  return a.size === b.size && [...a].every((x) => b.has(x))
 }

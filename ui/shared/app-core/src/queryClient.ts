@@ -10,9 +10,8 @@ import type { AnyRouter } from '@tanstack/react-router'
 import { isSigningOut } from '@nasiko/app-core/session'
 import { ApiError, isRetryable } from '@nasiko/data-access/client'
 import { isUnauthorized } from '@nasiko/data-access/detect'
-import { clearPaymentRequired, notePaymentRequired } from './paymentRequired'
 
-const resets = new Set<() => void>([clearPaymentRequired])
+const resets = new Set<() => void>()
 
 /**
  * Client state that belongs to the session, like the agents lifecycle watches (a zustand store),
@@ -87,17 +86,11 @@ export function createQueryClient(
       onError: (err, query) => {
         // A first-load /api/me 401 belongs to the _app route guard (no session yet ≠ expired);
         // once `me` has data, its 401 is an expiry like any other.
-        notePaymentRequired(err)
         if (query.queryKey[0] === 'me' && query.state.data === undefined) return
         expired(err)
       },
     }),
-    mutationCache: new MutationCache({
-      onError: (err) => {
-        notePaymentRequired(err)
-        expired(err)
-      },
-    }),
+    mutationCache: new MutationCache({ onError: (err) => expired(err) }),
   })
   return client
 }

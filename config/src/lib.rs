@@ -1,51 +1,7 @@
-use std::collections::BTreeMap;
-
-use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
+use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
 mod coding_agent_ingest;
-mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
-pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
-
-/// Model for a platform task call (selector, titles, capability generation, MCP
-/// descriptions): its own env var, else `DEFAULT_MODEL`, else empty. Empty lets the
-/// LLM router pick its resolved provider's default model, so no deployment ever
-/// sends a hard-coded model to a provider that cannot serve it.
-fn task_model(var: &str) -> String {
-    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
-}
-
-/// Pure core of [`task_model`]; blank values count as unset.
-fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
-    [own, default_model]
-        .into_iter()
-        .flatten()
-        .map(|m: String| m.trim().to_string())
-        .find(|m: &String| !m.is_empty())
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod task_model_tests {
-    use super::pick_task_model;
-
-    #[test]
-    fn own_var_wins() {
-        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
-        assert_eq!(m, "a");
-    }
-
-    #[test]
-    fn falls_back_to_default_model() {
-        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
-        assert_eq!(m, "gemini-3.8-flash");
-    }
-
-    #[test]
-    fn empty_when_nothing_set_so_the_router_picks() {
-        assert_eq!(pick_task_model(None, None), "");
-    }
-}
 
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
@@ -130,12 +86,6 @@ pub struct Config {
     /// Work that bakes the address into deployed agents, such as seeding,
     /// waits while the two are equal.
     pub agent_image_registry_placeholder: Option<String>,
-    /// Other hosts this control plane's registry answers on
-    /// (`AGENT_IMAGE_REGISTRY_ALIASES`, comma-separated): its names before a
-    /// rename. An image naming one of them is this registry's, so it is held to
-    /// the namespace rules, and at startup every stored reference to one is
-    /// moved to `agent_image_registry` (`agents::rehost`).
-    pub agent_image_registry_aliases: Vec<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -173,29 +123,9 @@ pub struct Config {
     /// `MEMORY_ENABLED=false`, where the route is never mounted at all).
     pub injection_proxy_token: String,
     pub seed_agents: Option<String>,
-    /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
-    /// agent name. Empty when unset; an invalid value fails startup.
-    pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
-    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
-    /// after `SEED_AGENTS`, as public workflows every user can run
-    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
-    pub seed_workflows: String,
-    /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
-    /// event rows older than 30 days from Postgres to Lance and deletes them
-    /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
-    pub tiering_enabled: bool,
-    /// `NASIKO_TIERING_INTERVAL_SECS` (default 24h = 86400s).
-    pub tiering_interval_secs: u64,
-    /// `NASIKO_COLD_PATH`: root of the Lance datasets (dir, `file://`, `s3://` or `gs://`).
-    /// Must be set explicitly when tiering is on (see [`validate_tiering`]).
-    pub cold_path: String,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub openai_model: String,
-    /// Whether agents get the platform's OpenAI API key as a fallback when they have no key of
-    /// their own. Default true for OSS backward compatibility. Set false to require agents to
-    /// bring their own keys.
-    pub agent_platform_key_fallback: bool,
     /// MAF "decompose one instruction into atomic sub-queries" service.
     /// `None` disables `/maf/workflow/from-instruction` (503).
     pub decomposer_api_url: Option<String>,
@@ -275,71 +205,13 @@ pub struct Config {
     pub hitl_resume_retry_delay_secs: u64,
     /// Coding-agent (ACP) session lifecycle tunables.
     ///
-    /// `coding_agent_idle_ttl_secs` is the idle threshold, measured from a session's
-    /// `last_turn_at`, after which the session reaper *considers* suspending it (the
-    /// reaper still requires the turn to have ended, the sandbox to be CPU-quiescent
-    /// for `session_idle_grace_secs`, and no outbound LLM/MCP call in flight).
-    /// **Default `900`** (15 minutes): long enough that a user pausing to read or
-    /// think resumes into a warm sandbox, short enough that an abandoned session
-    /// does not hold a sandbox for hours. **`0` disables suspension entirely**, so a
-    /// sandbox lives until its session is closed. A non-zero value must be at least
-    /// `session_idle_grace_secs`: the grace window is measured *inside* the idle
-    /// TTL (a session already idle for the whole TTL and found quiet is suspended at
-    /// once; a busy sample restarts the window), so a smaller TTL could never be
-    /// satisfied (see [`Config::validate_session_lifecycle`]).
+    /// `coding_agent_idle_ttl_secs` is how long a coding-agent container may sit
+    /// idle (no turn running) before it is torn down. **Default `0`** = stop
+    /// after every turn (no warm window) — the safe default until the cluster's
+    /// storage class and the agent's session-resume support are confirmed; a
+    /// positive value keeps the container warm for that many seconds so the next
+    /// turn skips cold start.
     pub coding_agent_idle_ttl_secs: i64,
-    /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod`, `shared-pod` or `harness-agent`. Docker is the OSS default and
-    /// needs no cluster; the others are implemented by enterprise crates and
-    /// selected at cluster create. An unknown value fails startup rather than
-    /// silently falling back, because running sessions on the wrong provider
-    /// changes isolation and cost.
-    pub sandbox_provider: SandboxProviderSetting,
-    /// Whether users can open coding sessions on this server, from `HARNESS_SESSIONS_ENABLED`
-    /// (**default `false`**). Off, startup creates no harness agents and hides (soft-deletes)
-    /// the ones an earlier start created, so no agent list, chat picker or registry offers them;
-    /// `GET /api/harnesses` is empty and `POST /api/sessions` is refused. On, startup restores
-    /// the hidden rows (same ids, so earlier sessions still resolve) and creates any missing.
-    /// Read once at startup: changing it takes a restart.
-    pub harness_sessions_enabled: bool,
-    /// Whether a successful agent build is followed by one smoke run of the image under gVisor,
-    /// from `BUILD_SANDBOX_SMOKE`: `off` (default) or `runsc`. The outcome sets
-    /// `agents.sandbox_compatible`; it never fails the build. Docker runtime only.
-    pub build_sandbox_smoke: BuildSandboxSmoke,
-    /// How long a session must stay CPU-quiescent after its last turn before the
-    /// reaper suspends it, from `SESSION_IDLE_GRACE_SECS`, default `120`. It
-    /// guards against suspending a sandbox that is still finishing background work
-    /// (a build, a test run) the moment a turn ends. Lives inside
-    /// `coding_agent_idle_ttl_secs`, which must be at least this when non-zero.
-    pub session_idle_grace_secs: u64,
-    /// CPU usage, in millicores, at or below which a sandbox counts as idle, from
-    /// `SESSION_CPU_QUIESCENT_MILLICORES`, default `20` (2% of one core): above
-    /// an idle shell and agent runtime, below any real work.
-    pub session_cpu_quiescent_millicores: u32,
-    /// How often the session reaper scans for idle sessions, from
-    /// `SESSION_REAPER_INTERVAL_SECS`, default `30`. Clamped to 5..=600: below 5s
-    /// the scan is churn, above 10 minutes it adds more latency to suspension than
-    /// the idle TTL itself.
-    pub session_reaper_interval_secs: u64,
-    /// How long the reaper keeps an open-task row (a non-terminal A2A task an agent returned)
-    /// before pruning it, from `AGENT_OPEN_TASK_MAX_AGE_SECS`, default `3600`, clamped to
-    /// 60..=86400. A row is never pruned younger than two hours, the longest an open pause holds
-    /// a workload park, so a lower value prunes at two hours. It does not change how long an open
-    /// task keeps its agent from being parked: that is the two hours alone.
-    pub agent_open_task_max_age_secs: u64,
-    /// How long a running framework agent whose parking policy is `auto` may go without a request
-    /// before the reaper scales its workload to zero (parks it), from `AGENT_PARK_IDLE_SECS`, the
-    /// one switch for agent parking: `0` turns it off (agents already parked still wake on their
-    /// next request). Unset is `3600`, raised to the floor below; any other set value must be at
-    /// least `AGENT_CALL_TIMEOUT_SECS` plus [`LAST_REQUEST_STAMP_THROTTLE_SECS`] plus one
-    /// `SESSION_REAPER_INTERVAL_SECS` or startup fails: a call on another replica is visible to the
-    /// reaper only through `agents.last_request_at`, which may be up to the throttle older than the
-    /// call, so a shorter window could park an agent under a call still inside its timeout.
-    pub agent_park_idle_secs: u64,
-    /// Registry prefix the platform-built harness images are published under, from
-    /// `HARNESS_IMAGE_PREFIX`, default `nasiko/harness-`. The catalog's image
-    /// names are `<prefix><harness>:<tag>`; override it to pull from a mirror.
-    pub harness_image_prefix: String,
     /// How long one turn's lock on a session is held before it lapses. A turn
     /// that runs longer must renew it (heartbeat); this only bounds how long a
     /// *dead* turn-owner can block the next turn.
@@ -369,10 +241,6 @@ pub struct Config {
     /// each server process, like the other limiters (`rate_limit.rs`), so the ceiling across
     /// several processes is this value times their number.
     pub agent_state_rate_limit_per_minute: u32,
-    /// Requests per minute one agent may make to its peers through `/api/agents/{id}/*`, counted
-    /// per calling agent. AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE, default 300, clamped 1-10000.
-    /// Over it gets a 429 with `Retry-After`. Counted in memory by each server process.
-    pub agent_peer_call_rate_limit_per_minute: u32,
     /// Most body bytes one agent state listing page carries. AGENT_STATE_LIST_BYTES_BUDGET,
     /// default 8 MiB, floored at 1. A page stops before the next row would pass it and hands back
     /// a cursor, so a short page is normal; a single row larger than it still lists, alone.
@@ -458,16 +326,8 @@ pub struct Config {
     /// calls, multi-step orchestration), so this is deliberately far above the
     /// shared `http_client` default, which stays short for embeddings, registry
     /// probes and OAuth. Read from `AGENT_CALL_TIMEOUT_SECS`, falling back to
-    /// the former `ROUTER_AGENT_TIMEOUT_SECS`. It also caps how long a coding turn
-    /// waits for a human approval (HITL), and must not exceed the session token's
-    /// one-hour lifetime, which would expire mid-wait (checked at startup).
+    /// the former `ROUTER_AGENT_TIMEOUT_SECS`.
     pub agent_call_timeout_secs: u64,
-    /// How long an agent may take to start and become reachable, from
-    /// `AGENT_STARTUP_BUDGET_SECS` (default 120, clamped to 10..=1800 with a warning). The
-    /// Kubernetes runtime's startup probe restarts a pod that has not opened its port by then,
-    /// and a call to a parked agent waits up to this long for the agent's workload to come back
-    /// (see [`Config::agent_wake_budget_secs`]).
-    pub agent_startup_budget_secs: u64,
     pub github_callback_url: Option<String>,
     /// Central OAuth callback relay URL (multi-tenant deployments): used as the
     /// GitHub `redirect_uri` for both authorize and token exchange instead of
@@ -483,7 +343,7 @@ pub struct Config {
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.com"
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
     pub registry_import_allowed_hosts: Vec<String>,
     /// Browser origins allowed to make cross-origin requests (comma-separated,
     /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
@@ -499,10 +359,6 @@ pub struct Config {
     /// Turn it on only where every such user is trusted, e.g. an on-prem
     /// install whose external agents live on internal hosts.
     pub agent_allow_private_urls: bool,
-    /// Whether every new message the platform hands an agent carries the current date and time
-    /// as its own text part (`AGENT_CONTEXT_CURRENT_TIME`, default on;
-    /// `nasiko_types::agent_clock`). Off sends agent messages exactly as before.
-    pub agent_current_time: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -532,10 +388,6 @@ pub struct Config {
     /// Overlap window in seconds: the materializer re-queries this far before
     /// the high-water mark to catch late-arriving spans and pricing corrections.
     pub trace_usage_overlap_secs: u64,
-    /// Longest window one materializer pass searches. Must exceed the overlap
-    /// (see [`validate_trace_usage_window`]): the excess is how far the cursor
-    /// moves per pass.
-    pub trace_usage_max_window_secs: u64,
     /// Max traces to fetch from Tempo per concurrent batch.
     pub trace_usage_batch_size: usize,
 
@@ -598,30 +450,16 @@ pub struct Config {
     /// through `AgentScaling` (OSS: one replica; EE: its per-agent autoscaling). Kept so a
     /// server and an install of different versions still agree on the key during an upgrade.
     pub agent_max_replicas: u32,
-    /// Connections in the server's Postgres pool, shared by every request and background
-    /// worker. DATABASE_MAX_CONNECTIONS, default 50, clamped to 1..=500. A turn costs about 20
-    /// round trips on the proxy hop and about 50 with the agent's own LLM, MCP and state calls,
-    /// so at 50 turns a second the pool carries about 2,500 a second. Keep it under Postgres's
-    /// own `max_connections` (100 by default), less what other clients use.
-    pub database_max_connections: u32,
     /// Number of agent/connector image builds the build worker runs
-    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=256: each
-    /// in-flight build is a `docker build` on this host (OSS) or a build on the
-    /// cluster's build backend (EE), so size it to what that backend holds, not
-    /// higher. An in-flight build mostly waits, which is why a high-rate cluster
-    /// needs more than 16. Set 1 to restore the old strictly-serial behavior.
+    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
+    /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
+    /// Job against one buildkitd (EE), so an unbounded value is a footgun, not
+    /// a feature. Set 1 to restore the old strictly-serial behavior.
     ///
     /// Two builds for the *same* agent or connector never overlap regardless of
     /// this value — the claim query skips a target that already has a build in
     /// flight (see `build_worker::claim_next_job`).
     pub build_concurrency: usize,
-    /// Requests per minute the in-cluster build service may make to the embedded `/v2`
-    /// registry, all builds together (they share one credential, `build-service`).
-    /// BUILD_PUSH_RATE_LIMIT_PER_MINUTE; unset is 600 times `build_concurrency`, clamped
-    /// 60-100000. One push is dozens of requests (a HEAD per layer, the uploads, the manifest),
-    /// so the per-identity OCI limit of 300 refused pushes once a few builds overlapped. Over
-    /// it a push gets a 429. Counted in memory by each server process.
-    pub build_push_rate_limit_per_minute: u32,
     /// Number of MAF workflow executions each server process runs concurrently.
     /// MAF_WORKER_CONCURRENCY, default 4. Clamped to 1..=32. An execution mostly
     /// waits on agents and LLMs, so the limit that matters is shared capacity, not
@@ -669,17 +507,11 @@ pub struct Config {
     /// `streamable_http`), `headers`, `description`, `display_name`,
     /// `logo_url`. Each is owned by the first superuser and shared publicly;
     /// one that already exists is not re-registered, but its public share is
-    /// re-asserted and its tool catalog re-synced every boot. Invalid JSON is
-    /// logged and ignored.
+    /// re-asserted every boot. Invalid JSON is logged and ignored.
     /// Static `headers` with `auth_type` `none` send one shared key for every
     /// user; an `oauth2` entry is registered and shared, and each user still
-    /// clicks Connect once. For a per-user key use `auth_type` `bearer` with no
-    /// `headers`: each user enters their own key in the UI; a `bearer`/`basic`
-    /// entry that also carries an `Authorization` header is refused at boot,
-    /// since users without a key would silently run on that shared one.
-    /// Holds API keys — deliver it as a secret. Example:
-    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart seeds exactly these by default).
+    /// clicks Connect once. Holds API keys — deliver it as a secret. Example:
+    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","headers":{"Authorization":"Bearer <key>"}},{"name":"Anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
@@ -774,38 +606,7 @@ fn coding_agent_otlp_fallback() -> Option<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        // Checked together first, so a first start names every missing variable at once.
-        let mut required = vec![
-            "DATABASE_URL",
-            "REDIS_URL",
-            "SECRETS_ENCRYPTION_KEY",
-            "ADMIN_PASSWORD",
-        ];
-        if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
-            required.push("S3_SECRET_KEY");
-        }
-        require_all(&required)?;
-        let tiering_enabled = env_bool("NASIKO_TIERING_ENABLED", false);
-        let tiering_interval_secs = std::env::var("NASIKO_TIERING_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.trim().parse::<u64>().ok())
-            .unwrap_or(24 * 3600);
-        let cold_path_set = std::env::var("NASIKO_COLD_PATH").ok();
-        validate_tiering(tiering_enabled, cold_path_set.as_deref()).map_err(anyhow::Error::msg)?;
-        let agent_call_timeout_secs = std::env::var("AGENT_CALL_TIMEOUT_SECS")
-            .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(600);
-        let session_reaper_interval_secs =
-            env_parse("SESSION_REAPER_INTERVAL_SECS", 30).clamp(5, 600);
-        let agent_park_idle_secs = parse_agent_park_idle_secs(
-            nonempty_env("AGENT_PARK_IDLE_SECS").as_deref(),
-            park_idle_floor_secs(agent_call_timeout_secs, session_reaper_interval_secs),
-        )
-        .map_err(anyhow::Error::msg)?;
-        let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
-        let config = Self {
+        Ok(Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
             delegation_audience: delegation_audience_from_env(),
@@ -842,10 +643,6 @@ impl Config {
                 .ok()
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty()),
-            agent_image_registry_aliases: registry_aliases(
-                &std::env::var("AGENT_IMAGE_REGISTRY_ALIASES").unwrap_or_default(),
-                &env_or("AGENT_IMAGE_REGISTRY", ""),
-            ),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -862,23 +659,14 @@ impl Config {
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
-            seed_agent_settings: parse_seed_agent_settings(
-                std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
-            )
-            .map_err(anyhow::Error::msg)?,
-            seed_workflows: env_or("SEED_WORKFLOWS", ""),
-            tiering_enabled,
-            tiering_interval_secs,
-            cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: task_model("OPENAI_MODEL"),
-            agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
+            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: task_model("ROUTER_MODEL"),
-            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
-            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
+            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
+            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
+            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
@@ -941,19 +729,7 @@ impl Config {
             hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
             hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
-            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 900),
-            sandbox_provider: sandbox_provider_from_env()?,
-            harness_sessions_enabled: env_bool("HARNESS_SESSIONS_ENABLED", false),
-            build_sandbox_smoke: env_or("BUILD_SANDBOX_SMOKE", "off")
-                .parse()
-                .map_err(anyhow::Error::msg)?,
-            session_idle_grace_secs: env_parse("SESSION_IDLE_GRACE_SECS", 120),
-            session_cpu_quiescent_millicores: env_parse("SESSION_CPU_QUIESCENT_MILLICORES", 20),
-            session_reaper_interval_secs,
-            agent_open_task_max_age_secs: env_parse("AGENT_OPEN_TASK_MAX_AGE_SECS", 3600)
-                .clamp(60, 86400),
-            agent_park_idle_secs,
-            harness_image_prefix: env_or("HARNESS_IMAGE_PREFIX", "nasiko/harness-"),
+            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
             coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
             coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
             hitl_lost_task_retries: env_parse("HITL_LOST_TASK_RETRIES", 3),
@@ -961,11 +737,6 @@ impl Config {
             agent_state_max_body_bytes: env_parse("AGENT_STATE_MAX_BODY_BYTES", 1_048_576).max(1),
             agent_state_rate_limit_per_minute: env_parse("AGENT_STATE_RATE_LIMIT_PER_MINUTE", 1200)
                 .max(1),
-            agent_peer_call_rate_limit_per_minute: env_parse(
-                "AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE",
-                300,
-            )
-            .clamp(1, 10_000),
             agent_state_list_bytes_budget: env_parse(
                 "AGENT_STATE_LIST_BYTES_BUDGET",
                 8 * 1024 * 1024,
@@ -1001,8 +772,11 @@ impl Config {
             context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
             context_k_high: env_parse("CONTEXT_K_HIGH", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
-            agent_call_timeout_secs,
-            agent_startup_budget_secs: agent_startup_budget_secs_from_env(),
+            agent_call_timeout_secs: std::env::var("AGENT_CALL_TIMEOUT_SECS")
+                .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
                 .ok()
@@ -1016,9 +790,8 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
             trace_usage_sync_secs: env_parse("TRACE_USAGE_SYNC_SECS", 120),
-            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 180),
-            trace_usage_max_window_secs: env_parse("TRACE_USAGE_MAX_WINDOW_SECS", 600),
-            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 8),
+            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 600),
+            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 50),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -1038,7 +811,6 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
-            agent_current_time: env_bool("AGENT_CONTEXT_CURRENT_TIME", true),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1091,13 +863,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
-            build_concurrency,
-            build_push_rate_limit_per_minute: env_parse(
-                "BUILD_PUSH_RATE_LIMIT_PER_MINUTE",
-                600 * build_concurrency as u32,
-            )
-            .clamp(60, 100_000),
+            build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
             maf_heartbeat_secs: env_parse("MAF_HEARTBEAT_SECS", 20).clamp(5, 120),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
@@ -1116,72 +882,7 @@ impl Config {
             mcp_tool_search_meta_limit: env_parse("MCP_TOOL_SEARCH_META_LIMIT", 10),
             mcp_gateway_instructions: env_or("MCP_GATEWAY_INSTRUCTIONS", ""),
             mcp_identity_signing_key: mcp_identity_signing_key(),
-        };
-        config
-            .validate_session_lifecycle()
-            .map_err(anyhow::Error::msg)?;
-        validate_trace_usage_window(
-            config.trace_usage_overlap_secs,
-            config.trace_usage_max_window_secs,
-        )
-        .map_err(anyhow::Error::msg)?;
-        Ok(config)
-    }
-
-    /// Fail fast if the idle TTL cannot contain the idle grace window. The reaper
-    /// measures `session_idle_grace_secs` of CPU quiescence *inside*
-    /// `coding_agent_idle_ttl_secs`, so a non-zero TTL below the grace could never
-    /// be satisfied and would silently disable suspension. `0` (suspension off) is
-    /// always valid. Also checks the lease/heartbeat pair, the call timeout against the session
-    /// token, and the agent park window against the call timeout.
-    pub fn validate_session_lifecycle(&self) -> Result<(), String> {
-        validate_idle_ttl_covers_grace(
-            self.coding_agent_idle_ttl_secs,
-            self.session_idle_grace_secs,
-        )?;
-        validate_heartbeat_within_lease(
-            self.coding_agent_turn_lease_secs,
-            self.coding_agent_lease_heartbeat_secs,
-        )?;
-        validate_call_timeout_within_session_token(self.agent_call_timeout_secs)?;
-        validate_park_idle_covers_a_call(
-            self.agent_park_idle_secs,
-            park_idle_floor_secs(
-                self.agent_call_timeout_secs,
-                self.session_reaper_interval_secs,
-            ),
-        )
-    }
-
-    /// Optional settings left unset that switch a feature off, each with what stops working.
-    /// Logged once at startup ([`Self::warn_unset_optional_keys`]) so the cause is on record
-    /// before the first request that needs it.
-    pub fn unset_optional_keys(&self) -> Vec<&'static str> {
-        let mut unset = Vec::new();
-        if self.agent_jwt_secret.trim().is_empty() {
-            unset.push("AGENT_JWT_SECRET unset: LLM gateway and coding sessions are disabled");
-        }
-        if self.agent_runtime == "kubernetes" && self.build_push_token.trim().is_empty() {
-            unset.push("BUILD_PUSH_TOKEN unset: in-cluster builds cannot push agent images");
-        }
-        if self
-            .openai_api_key
-            .as_deref()
-            .is_none_or(|k| k.trim().is_empty())
-        {
-            unset.push(
-                "OPENAI_API_KEY unset: no server LLM key, so routing and agent runs fail \
-                 until a user saves their own key",
-            );
-        }
-        unset
-    }
-
-    /// Log [`Self::unset_optional_keys`], one warning each.
-    pub fn warn_unset_optional_keys(&self) {
-        for problem in self.unset_optional_keys() {
-            tracing::warn!("{problem}");
-        }
+        })
     }
 
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
@@ -1194,89 +895,13 @@ impl Config {
     pub fn validate_secrets_key(&self) -> Result<(), String> {
         validate_secrets_key_format(&self.secrets_encryption_key)
     }
-
-    /// Whether the reaper parks idle agents: `AGENT_PARK_IDLE_SECS` is not `0`.
-    pub fn parks_agents(&self) -> bool {
-        self.agent_park_idle_secs > 0
-    }
-
-    /// How long a call waits for a parked agent to wake: the agent startup budget, held below the
-    /// agent call budget so a wake never outlasts the call that waits for it.
-    pub fn agent_wake_budget_secs(&self) -> u64 {
-        wake_budget_secs(self.agent_startup_budget_secs, self.agent_call_timeout_secs)
-    }
-}
-
-/// Stop startup over a configuration problem: one plain line per problem on stderr, then exit 1.
-/// A panic would print a thread name and a backtrace hint and read as a crash, not as a setting
-/// to fix.
-pub fn exit_invalid_config(problem: impl std::fmt::Display) -> ! {
-    let problem = problem.to_string();
-    tracing::error!(%problem, "configuration invalid");
-    eprintln!("error: configuration invalid:");
-    for line in problem.lines() {
-        eprintln!("  {line}");
-    }
-    std::process::exit(1)
-}
-
-/// Default `AGENT_STARTUP_BUDGET_SECS`.
-const DEFAULT_AGENT_STARTUP_BUDGET_SECS: u64 = 120;
-/// Accepted `AGENT_STARTUP_BUDGET_SECS`: a budget under 10 s restarts any agent that boots slowly,
-/// and one over 30 minutes hides a pod that will never start.
-const AGENT_STARTUP_BUDGET_SECS_RANGE: std::ops::RangeInclusive<u64> = 10..=1800;
-
-/// `AGENT_STARTUP_BUDGET_SECS`, with a malformed or out-of-range value replaced, and a warning
-/// rather than a silent fallback.
-fn agent_startup_budget_secs_from_env() -> u64 {
-    let raw = std::env::var("AGENT_STARTUP_BUDGET_SECS").ok();
-    let (secs, problem) = parse_agent_startup_budget(raw.as_deref());
-    if let Some(problem) = problem {
-        tracing::warn!(
-            key = "AGENT_STARTUP_BUDGET_SECS",
-            raw = raw.as_deref().unwrap_or(""),
-            secs,
-            "{problem}"
-        );
-    }
-    secs
-}
-
-fn parse_agent_startup_budget(raw: Option<&str>) -> (u64, Option<&'static str>) {
-    let Some(raw) = raw else {
-        return (DEFAULT_AGENT_STARTUP_BUDGET_SECS, None);
-    };
-    let Ok(parsed) = raw.trim().parse::<u64>() else {
-        return (
-            DEFAULT_AGENT_STARTUP_BUDGET_SECS,
-            Some("not a whole number, using the default"),
-        );
-    };
-    let clamped = parsed.clamp(
-        *AGENT_STARTUP_BUDGET_SECS_RANGE.start(),
-        *AGENT_STARTUP_BUDGET_SECS_RANGE.end(),
-    );
-    if clamped == parsed {
-        (parsed, None)
-    } else {
-        (clamped, Some("outside the accepted range, clamped"))
-    }
-}
-
-/// The startup budget, clamped to at least one second and to under the call budget. Clamped
-/// rather than refused at startup: a startup budget at or above the call timeout is valid for
-/// the runtime's own startup probe, it only cannot all be spent inside one call.
-fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
-    startup_budget_secs
-        .min(call_timeout_secs.saturating_sub(1))
-        .max(1)
 }
 
 /// Strips a trailing `/v1` (and any trailing slashes) from an OpenAI-compatible
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.app.nasiko.com` and typical deployment env files have it — so appending `/v1/whatever`
+/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
@@ -1286,170 +911,6 @@ fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
 pub fn openai_base_url_without_v1(base_url: &str) -> &str {
     let trimmed = base_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed)
-}
-
-/// Which provider runs coding-agent sandboxes. See [`Config::sandbox_provider`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SandboxProviderSetting {
-    Docker,
-    Pod,
-    SharedPod,
-    /// Each user's own harness agent runs every session of that user and harness.
-    HarnessAgent,
-}
-
-impl std::str::FromStr for SandboxProviderSetting {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "docker" => Ok(Self::Docker),
-            "pod" => Ok(Self::Pod),
-            "shared-pod" => Ok(Self::SharedPod),
-            "harness-agent" => Ok(Self::HarnessAgent),
-            _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, harness-agent, got {raw:?}"
-            )),
-        }
-    }
-}
-
-/// Whether builds smoke-run their image under gVisor. See [`Config::build_sandbox_smoke`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildSandboxSmoke {
-    Off,
-    Runsc,
-}
-
-impl std::str::FromStr for BuildSandboxSmoke {
-    type Err = String;
-
-    fn from_str(raw: &str) -> Result<Self, Self::Err> {
-        match raw.trim().to_ascii_lowercase().as_str() {
-            "off" => Ok(Self::Off),
-            "runsc" => Ok(Self::Runsc),
-            _ => Err(format!(
-                "BUILD_SANDBOX_SMOKE must be one of off, runsc, got {raw:?}"
-            )),
-        }
-    }
-}
-
-fn sandbox_provider_from_env() -> anyhow::Result<SandboxProviderSetting> {
-    env_or("SANDBOX_PROVIDER", "docker")
-        .parse()
-        .map_err(anyhow::Error::msg)
-}
-
-fn validate_idle_ttl_covers_grace(idle_ttl_secs: i64, grace_secs: u64) -> Result<(), String> {
-    if idle_ttl_secs != 0 && idle_ttl_secs < i64::try_from(grace_secs).unwrap_or(i64::MAX) {
-        return Err(format!(
-            "CODING_AGENT_IDLE_TTL_SECS ({idle_ttl_secs}) must be 0 (suspension off) or at least \
-             SESSION_IDLE_GRACE_SECS ({grace_secs}): the grace window is measured inside the idle TTL"
-        ));
-    }
-    Ok(())
-}
-
-/// A turn renews its lease every `heartbeat_secs`; at least two renewals must fit in one lease
-/// so a single late or lost heartbeat does not let a live turn's lock lapse mid-turn.
-fn validate_heartbeat_within_lease(lease_secs: i64, heartbeat_secs: u64) -> Result<(), String> {
-    let heartbeat = i64::try_from(heartbeat_secs).unwrap_or(i64::MAX);
-    if lease_secs <= 0 || heartbeat == 0 || heartbeat.saturating_mul(2) > lease_secs {
-        return Err(format!(
-            "CODING_AGENT_LEASE_HEARTBEAT_SECS ({heartbeat_secs}) must be positive and at most \
-             half of CODING_AGENT_TURN_LEASE_SECS ({lease_secs}), which must be positive: a live \
-             turn must renew its lease at least twice per lease"
-        ));
-    }
-    Ok(())
-}
-
-/// The lifetime of the session token a coding turn carries (`sessions::identity::
-/// SESSION_TOKEN_TTL_SECS`, kept equal by hand: this crate sits below the server).
-pub const SESSION_TOKEN_TTL_SECS: u64 = 3600;
-
-/// A turn waiting on a human approval waits up to `AGENT_CALL_TIMEOUT_SECS`, holding the session
-/// token it was started with; a longer wait would outlive the token.
-fn validate_call_timeout_within_session_token(call_timeout_secs: u64) -> Result<(), String> {
-    if call_timeout_secs > SESSION_TOKEN_TTL_SECS {
-        return Err(format!(
-            "AGENT_CALL_TIMEOUT_SECS ({call_timeout_secs}) must not exceed the session token \
-             lifetime ({SESSION_TOKEN_TTL_SECS}s, SESSION_TOKEN_TTL_SECS): a turn waiting on an \
-             approval would outlive its token"
-        ));
-    }
-    Ok(())
-}
-
-/// Default `AGENT_PARK_IDLE_SECS`: an agent nobody has called for an hour is parked.
-const DEFAULT_AGENT_PARK_IDLE_SECS: u64 = 3600;
-
-/// How often at most a served request writes its agent's `last_request_at`, in seconds: a request
-/// within this long of the last stamp leaves it unchanged. The one value both the stamp and the
-/// park window's floor read.
-pub const LAST_REQUEST_STAMP_THROTTLE_SECS: u64 = 60;
-
-/// The shortest park window that cannot park an agent under a call another replica is serving:
-/// that call began at most the stamp throttle after the `last_request_at` the reaper reads, runs
-/// for at most the call timeout, and the reaper looks once per interval.
-fn park_idle_floor_secs(call_timeout_secs: u64, reaper_interval_secs: u64) -> u64 {
-    call_timeout_secs
-        .saturating_add(LAST_REQUEST_STAMP_THROTTLE_SECS)
-        .saturating_add(reaper_interval_secs)
-}
-
-/// `AGENT_PARK_IDLE_SECS` as set, or, when unset, the default raised to `floor_secs`, so a long
-/// call timeout alone never fails startup. A set value is kept as written, for
-/// [`validate_park_idle_covers_a_call`] to judge.
-fn parse_agent_park_idle_secs(raw: Option<&str>, floor_secs: u64) -> Result<u64, String> {
-    match raw {
-        None => Ok(DEFAULT_AGENT_PARK_IDLE_SECS.max(floor_secs)),
-        Some(raw) => raw.trim().parse().map_err(|_| {
-            format!("AGENT_PARK_IDLE_SECS must be a whole number of seconds (got {raw:?})")
-        }),
-    }
-}
-
-/// `0` (parking off) always passes; any other window must cover `floor_secs`.
-fn validate_park_idle_covers_a_call(park_idle_secs: u64, floor_secs: u64) -> Result<(), String> {
-    if park_idle_secs != 0 && park_idle_secs < floor_secs {
-        return Err(format!(
-            "AGENT_PARK_IDLE_SECS ({park_idle_secs}) must be at least AGENT_CALL_TIMEOUT_SECS plus \
-             the {LAST_REQUEST_STAMP_THROTTLE_SECS}s last-request stamp throttle plus one \
-             SESSION_REAPER_INTERVAL_SECS ({floor_secs}), or 0 to turn agent parking off: a call on \
-             another replica is seen only through the agent's last request time, so a shorter \
-             window could park an agent under a call still inside its timeout"
-        ));
-    }
-    Ok(())
-}
-
-/// Each materializer pass searches `[cursor − overlap, cursor − overlap + window]`
-/// and moves the cursor to the window's end, so a window no longer than the
-/// overlap never moves the cursor past where it was.
-fn validate_trace_usage_window(overlap_secs: u64, max_window_secs: u64) -> Result<(), String> {
-    if max_window_secs <= overlap_secs {
-        return Err(format!(
-            "TRACE_USAGE_MAX_WINDOW_SECS ({max_window_secs}) must exceed TRACE_USAGE_OVERLAP_SECS \
-             ({overlap_secs}): the excess is how far the materializer advances per pass"
-        ));
-    }
-    Ok(())
-}
-
-/// Tiering deletes rows from Postgres once they are in the cold store, so the
-/// cold store must be a location the operator chose. The `./data/cold` default
-/// is fine for reads and manual runs, but with the daily job on it would put the
-/// only copy on whichever replica holds the lock, on disk that may not survive a
-/// restart and that other replicas cannot read.
-fn validate_tiering(enabled: bool, cold_path: Option<&str>) -> Result<(), String> {
-    if enabled && cold_path.is_none_or(|p| p.trim().is_empty()) {
-        return Err("NASIKO_TIERING_ENABLED=true requires NASIKO_COLD_PATH \
-                    (s3://<bucket>/<prefix>, gs://<bucket>/<prefix> or a durable shared directory)"
-            .into());
-    }
-    Ok(())
 }
 
 fn validate_secrets_key_format(key: &str) -> Result<(), String> {
@@ -1466,185 +927,19 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `AGENT_IMAGE_REGISTRY_ALIASES`: comma-separated, trimmed, empty entries and
-/// the registry's own host dropped (an image naming it is already this
-/// registry's, and rehosting it onto itself would be a pointless rewrite).
-fn registry_aliases(raw: &str, registry: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|alias| !alias.is_empty() && *alias != registry.trim())
-        .map(str::to_owned)
-        .collect()
-}
-
-#[cfg(test)]
-mod registry_alias_tests {
-    use super::registry_aliases;
-
-    #[test]
-    fn aliases_drop_blanks_and_the_registry_itself() {
-        assert_eq!(
-            registry_aliases(
-                " free.old.example , ,free.app.nasiko.com",
-                "free.app.nasiko.com"
-            ),
-            vec!["free.old.example"]
-        );
-        assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
-    fn tiering_requires_an_explicit_cold_path() {
-        assert!(super::validate_tiering(true, None).is_err());
-        assert!(super::validate_tiering(true, Some("  ")).is_err());
-        assert!(super::validate_tiering(true, Some("s3://b/cold")).is_ok());
-        assert!(super::validate_tiering(true, Some("gs://b/cold")).is_ok());
-        assert!(super::validate_tiering(false, None).is_ok());
-    }
-
-    #[test]
-    fn trace_usage_window_must_exceed_the_overlap() {
-        assert!(super::validate_trace_usage_window(180, 600).is_ok());
-        let err = super::validate_trace_usage_window(600, 600).unwrap_err();
-        assert!(err.contains("TRACE_USAGE_MAX_WINDOW_SECS"), "{err}");
-        assert!(super::validate_trace_usage_window(600, 300).is_err());
-    }
-
-    #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(
-            super::origin_of("https://acme.app.nasiko.com/app?x=1"),
-            Some("https://acme.app.nasiko.com".to_string())
+            super::origin_of("https://acme.nasiko.dev/app?x=1"),
+            Some("https://acme.nasiko.dev".to_string())
         );
-        assert_eq!(super::origin_of("acme.app.nasiko.com"), None);
+        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
         assert_eq!(super::origin_of("https:///app"), None);
     }
 
     use super::*;
-
-    #[test]
-    fn an_unset_startup_budget_is_the_default_silently() {
-        assert_eq!(parse_agent_startup_budget(None), (120, None));
-        assert_eq!(parse_agent_startup_budget(Some(" 300 ")), (300, None));
-    }
-
-    #[test]
-    fn an_out_of_range_startup_budget_is_clamped_with_a_warning() {
-        let (low, low_note) = parse_agent_startup_budget(Some("0"));
-        assert_eq!((low, low_note.is_some()), (10, true));
-        let (high, high_note) = parse_agent_startup_budget(Some("99999"));
-        assert_eq!((high, high_note.is_some()), (1800, true));
-    }
-
-    #[test]
-    fn a_malformed_startup_budget_is_the_default_with_a_warning() {
-        let (secs, note) = parse_agent_startup_budget(Some("two minutes"));
-        assert_eq!((secs, note.is_some()), (120, true));
-    }
-
-    #[test]
-    fn the_wake_budget_is_the_startup_budget_when_it_fits_in_a_call() {
-        assert_eq!(wake_budget_secs(120, 600), 120);
-        assert_eq!(wake_budget_secs(599, 600), 599);
-    }
-
-    #[test]
-    fn the_wake_budget_stays_under_the_call_budget() {
-        assert_eq!(wake_budget_secs(600, 600), 599);
-        assert_eq!(wake_budget_secs(1800, 600), 599);
-    }
-
-    #[test]
-    fn the_wake_budget_is_never_zero() {
-        assert_eq!(wake_budget_secs(0, 600), 1);
-        assert_eq!(wake_budget_secs(120, 1), 1);
-        assert_eq!(wake_budget_secs(120, 0), 1);
-    }
-
-    #[test]
-    fn sandbox_provider_parses_each_value_case_insensitively() {
-        for (raw, want) in [
-            ("docker", SandboxProviderSetting::Docker),
-            ("Pod", SandboxProviderSetting::Pod),
-            (" Shared-Pod ", SandboxProviderSetting::SharedPod),
-            ("harness-agent", SandboxProviderSetting::HarnessAgent),
-        ] {
-            assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
-        }
-    }
-
-    #[test]
-    fn unknown_sandbox_provider_names_key_and_allowed_values() {
-        let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
-        assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(
-            err.contains("docker, pod, shared-pod, harness-agent"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn build_sandbox_smoke_parses_off_and_runsc_and_rejects_the_rest() {
-        assert_eq!("off".parse(), Ok(BuildSandboxSmoke::Off));
-        assert_eq!(" RunSC ".parse(), Ok(BuildSandboxSmoke::Runsc));
-        let err = "gvisor".parse::<BuildSandboxSmoke>().unwrap_err();
-        assert!(err.contains("BUILD_SANDBOX_SMOKE"), "{err}");
-        assert!(err.contains("off, runsc"), "{err}");
-    }
-
-    #[test]
-    fn idle_ttl_below_grace_fails_with_explanation() {
-        let err = validate_idle_ttl_covers_grace(60, 120).unwrap_err();
-        assert!(err.contains("inside the idle TTL"), "{err}");
-    }
-
-    #[test]
-    fn idle_ttl_zero_or_at_least_grace_passes() {
-        assert!(validate_idle_ttl_covers_grace(0, 120).is_ok());
-        assert!(validate_idle_ttl_covers_grace(120, 120).is_ok());
-        assert!(validate_idle_ttl_covers_grace(900, 120).is_ok());
-    }
-
-    #[test]
-    fn the_park_window_floor_is_a_call_plus_the_stamp_throttle_plus_a_reaper_interval() {
-        assert_eq!(LAST_REQUEST_STAMP_THROTTLE_SECS, 60);
-        assert_eq!(park_idle_floor_secs(600, 30), 690);
-        assert_eq!(park_idle_floor_secs(u64::MAX, 30), u64::MAX);
-    }
-
-    #[test]
-    fn an_unset_park_window_is_an_hour_raised_to_the_floor() {
-        assert_eq!(parse_agent_park_idle_secs(None, 690), Ok(3600));
-        assert_eq!(parse_agent_park_idle_secs(None, 3690), Ok(3690));
-    }
-
-    #[test]
-    fn a_set_park_window_is_kept_as_written() {
-        assert_eq!(parse_agent_park_idle_secs(Some(" 900 "), 690), Ok(900));
-        assert_eq!(parse_agent_park_idle_secs(Some("60"), 690), Ok(60));
-        for bad in ["an hour", "-1", "1.5"] {
-            let err = parse_agent_park_idle_secs(Some(bad), 690).unwrap_err();
-            assert!(err.contains("AGENT_PARK_IDLE_SECS"), "{err}");
-        }
-    }
-
-    #[test]
-    fn a_park_window_below_the_floor_fails_startup() {
-        assert!(
-            validate_park_idle_covers_a_call(0, 690).is_ok(),
-            "0 turns parking off"
-        );
-        let err = validate_park_idle_covers_a_call(689, 690).unwrap_err();
-        assert!(err.contains("AGENT_PARK_IDLE_SECS (689)"), "{err}");
-        assert!(err.contains("AGENT_CALL_TIMEOUT_SECS"), "{err}");
-        assert!(err.contains("60s last-request stamp throttle"), "{err}");
-        assert!(err.contains("SESSION_REAPER_INTERVAL_SECS"), "{err}");
-        assert!(validate_park_idle_covers_a_call(690, 690).is_ok());
-        assert!(validate_park_idle_covers_a_call(3600, 690).is_ok());
-    }
 
     #[test]
     fn valid_32_byte_base64_key_passes() {
@@ -1673,7 +968,7 @@ mod tests {
 
     #[test]
     fn base_url_written_with_v1_is_stripped() {
-        // The cp.app.nasiko.com form — appending `/v1/audio/transcriptions` to the
+        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
         // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
         assert_eq!(
             openai_base_url_without_v1("https://api.openai.com/v1"),

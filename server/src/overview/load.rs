@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use super::{OverviewError, Range, Scope};
 use crate::catalog::routes::{agent_access_predicate, live_status};
+use crate::observability::savings::{PRICE_JOIN, PRICED_COST};
 use crate::state::AppState;
 
 /// The days the history slider and every trend cover, today included.
@@ -407,7 +408,6 @@ pub(super) async fn snapshot(
         }
     }
     let ids: Vec<Uuid> = agents.iter().map(|a| a.id).collect();
-    let usage = UsageScope::of(scope, &agents);
     let harness_ids: Vec<Uuid> = agents
         .iter()
         .filter(|a| a.is_harness())
@@ -421,28 +421,28 @@ pub(super) async fn snapshot(
     let (deployments, failed_builds, usage_range, usage_week, usage_prev_week, usage_month) = tokio::try_join!(
         deployments(db, &ids),
         failed_builds(db, &ids),
-        agent_usage(db, &usage, w.range),
-        agent_usage(db, &usage, w.week),
-        agent_usage(db, &usage, w.prev_week),
-        agent_usage(db, &usage, w.month),
+        agent_usage(db, &ids, w.range),
+        agent_usage(db, &ids, w.week),
+        agent_usage(db, &ids, w.prev_week),
+        agent_usage(db, &ids, w.month),
     )?;
     let (usage_daily, agent_models, models_range, models_week, models_prev_week, person_usage) = tokio::try_join!(
-        agent_daily(db, &usage, w.history),
-        agent_models(db, &usage, w.range),
-        model_usage(db, &usage, &harness_ids, w.range),
-        model_usage(db, &usage, &harness_ids, w.week),
-        model_usage(db, &usage, &harness_ids, w.prev_week),
+        agent_daily(db, &ids, w.history),
+        agent_models(db, &ids, w.range),
+        model_usage(db, &ids, &harness_ids, w.range),
+        model_usage(db, &ids, &harness_ids, w.week),
+        model_usage(db, &ids, &harness_ids, w.prev_week),
         person_usage(db, &ids, &person_ids, w.range),
     )?;
     let (working_on, sessions, expired_connections, enabled_access, raw_tool_calls, system_tools) =
         tokio::try_join!(
             working_on(db, &ids, &person_ids, w.now),
-            sessions(db, &agents, &usage, w.now),
+            sessions(db, &agents, w.now),
             expired_connections(db, scope.me),
             enabled_access(db, &ids),
             tool_calls(
-                state,
-                &usage,
+                db,
+                &ids,
                 Window {
                     from: w.earliest(),
                     to: w.now
@@ -466,11 +466,11 @@ pub(super) async fn snapshot(
         step_outcomes(db, &maf_ids, w.week),
     )?;
     let (spend_daily, saved_daily, compression, routed_spend, cache) = tokio::try_join!(
-        spend_daily(db, &usage, w.history),
-        saved_daily(db, scope, &usage, w.history),
-        compression_rate(db, &agents, &usage, w.month),
-        routed_spend(db, &usage, w.month),
-        cache_use(db, &usage, w.month),
+        spend_daily(db, &ids, w.history),
+        saved_daily(db, scope, &ids, w.history),
+        compression_rate(db, &agents, w.month),
+        routed_spend(db, &ids, w.month),
+        cache_use(db, &ids, w.month),
     )?;
 
     let tool_calls = attribute_tool_calls(raw_tool_calls, &connectors, &system_tools);
@@ -513,63 +513,6 @@ pub(super) async fn snapshot(
 }
 
 // ── What is visible ──────────────────────────────────────────────────────────
-
-/// Whose calls an agent's usage counts. On an agent someone the caller can see owns, every call;
-/// on any other agent the caller reaches (a public one, a shared one), only calls by people the
-/// caller can see. A superuser's scope owns every agent.
-///
-/// Summing every caller on a public agent showed a member other people's spend on it, and made
-/// each estate read cost as much as the whole platform's traffic on the public agents.
-pub(super) struct UsageScope {
-    owned: Vec<Uuid>,
-    shared: Vec<Uuid>,
-    people: Vec<Uuid>,
-}
-
-impl UsageScope {
-    fn of(scope: &Scope, agents: &[AgentRow]) -> Self {
-        let people = scope.visible_people.clone().unwrap_or_default();
-        let (owned, shared) = agents
-            .iter()
-            .partition::<Vec<&AgentRow>, _>(|a| scope.superuser || people.contains(&a.owner_id));
-        UsageScope {
-            owned: owned.iter().map(|a| a.id).collect(),
-            shared: shared.iter().map(|a| a.id).collect(),
-            people,
-        }
-    }
-
-    /// The same rule over only `keep`'s agents.
-    fn within(&self, keep: &[Uuid]) -> Self {
-        let pick = |ids: &[Uuid]| ids.iter().filter(|id| keep.contains(id)).copied().collect();
-        UsageScope {
-            owned: pick(&self.owned),
-            shared: pick(&self.shared),
-            people: self.people.clone(),
-        }
-    }
-
-    /// Whether a call by `user` on `agent` counts.
-    fn counts(&self, agent: Uuid, user: Uuid) -> bool {
-        self.owned.contains(&agent) || (self.shared.contains(&agent) && self.people.contains(&user))
-    }
-}
-
-/// [`UsageScope`]'s test in SQL, on the columns `{t}agent_id` and `{t}user_id`, bound as `$1`
-/// (owned), `$2` (shared) and `$3` (people) by [`bind_usage`].
-fn usage_where(t: &str) -> String {
-    format!("({t}agent_id = ANY($1) OR ({t}agent_id = ANY($2) AND {t}user_id = ANY($3)))")
-}
-
-fn bind_usage<'q, O>(
-    query: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
-    usage: &'q UsageScope,
-) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
-    query
-        .bind(&usage.owned)
-        .bind(&usage.shared)
-        .bind(&usage.people)
-}
 
 /// The people the caller may see: everyone for a superuser; otherwise themselves plus whoever
 /// the edition's org chart opens up (OSS has none — its user directory is superuser-only).
@@ -729,89 +672,78 @@ const USAGE_STATS: &str = "COUNT(*)::bigint AS runs, \
      COALESCE(SUM(cost_usd) FILTER (WHERE error_count > 0), 0)::float8 AS failed_spend, \
      percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::float8 AS p95_ms";
 
-async fn agent_usage(
-    db: &PgPool,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<AgentUsage>, sqlx::Error> {
+async fn agent_usage(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<AgentUsage>, sqlx::Error> {
     let sql = format!(
         "SELECT agent_id, {USAGE_STATS} FROM trace_usage \
-         WHERE {} AND started_at >= $4 AND started_at < $5 GROUP BY agent_id",
-        usage_where("")
+         WHERE agent_id = ANY($1) AND started_at >= $2 AND started_at < $3 GROUP BY agent_id"
     );
-    bind_usage(sqlx::query_as(&sql), usage)
+    sqlx::query_as(&sql)
+        .bind(ids)
         .bind(w.from)
         .bind(w.to)
         .fetch_all(db)
         .await
 }
 
-async fn agent_daily(
-    db: &PgPool,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<AgentDay>, sqlx::Error> {
-    let sql = format!(
+async fn agent_daily(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<AgentDay>, sqlx::Error> {
+    sqlx::query_as(
         "SELECT agent_id, (started_at AT TIME ZONE 'UTC')::date AS day, \
                 COALESCE(SUM(cost_usd), 0)::float8 AS spend, COUNT(*)::bigint AS runs, \
                 COUNT(*) FILTER (WHERE error_count IS NOT NULL)::bigint AS checked, \
                 COUNT(*) FILTER (WHERE error_count > 0)::bigint AS failed, \
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::float8 AS p95_ms \
-           FROM trace_usage WHERE {} AND started_at >= $4 AND started_at < $5 \
+           FROM trace_usage WHERE agent_id = ANY($1) AND started_at >= $2 AND started_at < $3 \
           GROUP BY 1, 2",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
 async fn agent_models(
     db: &PgPool,
-    usage: &UsageScope,
+    ids: &[Uuid],
     w: Window,
 ) -> Result<Vec<AgentModelRow>, sqlx::Error> {
-    let sql = format!(
-        "SELECT agent_id, model, SUM(traces)::bigint AS calls, COALESCE(SUM(cost_usd), 0)::float8 AS spend \
-           FROM trace_spend \
-          WHERE {} AND model IS NOT NULL AND ts >= $4 AND ts < $5 \
+    sqlx::query_as(
+        "SELECT agent_id, model, COUNT(*)::bigint AS calls, COALESCE(SUM(cost_usd), 0)::float8 AS spend \
+           FROM trace_usage \
+          WHERE agent_id = ANY($1) AND model IS NOT NULL AND started_at >= $2 AND started_at < $3 \
           GROUP BY 1, 2",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
 /// Calls and spend count every caller; latency counts agents only. A coding harness's trace is a
 /// whole turn (often minutes), not one model call, so its time would read as the model's.
 async fn model_usage(
     db: &PgPool,
-    usage: &UsageScope,
+    ids: &[Uuid],
     harnesses: &[Uuid],
     w: Window,
 ) -> Result<Vec<ModelUsage>, sqlx::Error> {
-    let sql = format!(
+    sqlx::query_as(
         "SELECT model, COALESCE(provider, 'unknown') AS provider, COUNT(*)::bigint AS calls, \
                 COALESCE(SUM(cost_usd), 0)::float8 AS spend, \
-                COUNT(*) FILTER (WHERE agent_id <> ALL($6))::bigint AS timed_calls, \
+                COUNT(*) FILTER (WHERE agent_id <> ALL($4))::bigint AS timed_calls, \
                 percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) \
-                    FILTER (WHERE agent_id <> ALL($6))::float8 AS p95_ms \
+                    FILTER (WHERE agent_id <> ALL($4))::float8 AS p95_ms \
            FROM trace_usage \
-          WHERE {} AND model IS NOT NULL AND started_at >= $4 AND started_at < $5 \
+          WHERE agent_id = ANY($1) AND model IS NOT NULL AND started_at >= $2 AND started_at < $3 \
           GROUP BY 1, 2",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .bind(harnesses)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .bind(harnesses)
+    .fetch_all(db)
+    .await
 }
 
 async fn person_usage(
@@ -861,7 +793,6 @@ async fn working_on(
 async fn sessions(
     db: &PgPool,
     agents: &[AgentRow],
-    usage: &UsageScope,
     now: DateTime<Utc>,
 ) -> Result<Vec<SessionRow>, sqlx::Error> {
     let harnesses: Vec<Uuid> = agents
@@ -869,8 +800,7 @@ async fn sessions(
         .filter(|a| a.is_harness())
         .map(|a| a.id)
         .collect();
-    let usage = usage.within(&harnesses);
-    let sql = format!(
+    sqlx::query_as(
         "SELECT agent_id, last_at, cost, latency_ms, failed FROM ( \
              SELECT agent_id, MAX(started_at) AS last_at, \
                     COALESCE(SUM(cost_usd), 0)::float8 AS cost, \
@@ -878,16 +808,15 @@ async fn sessions(
                     COALESCE(BOOL_OR(error_count > 0), false) AS failed, \
                     ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY MAX(started_at) DESC) AS n \
                FROM trace_usage \
-              WHERE {} AND session_id IS NOT NULL AND started_at >= $4 \
+              WHERE agent_id = ANY($1) AND session_id IS NOT NULL AND started_at >= $2 \
               GROUP BY agent_id, session_id) s \
-          WHERE n <= $5 ORDER BY agent_id, last_at",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), &usage)
-        .bind(now - Duration::days(SESSION_LOOKBACK_DAYS))
-        .bind(SESSIONS_PER_HARNESS)
-        .fetch_all(db)
-        .await
+          WHERE n <= $3 ORDER BY agent_id, last_at",
+    )
+    .bind(&harnesses)
+    .bind(now - Duration::days(SESSION_LOOKBACK_DAYS))
+    .bind(SESSIONS_PER_HARNESS)
+    .fetch_all(db)
+    .await
 }
 
 /// The caller's own connections that need signing in again.
@@ -921,76 +850,21 @@ struct RawToolCall {
     errors: i64,
 }
 
-/// Gateway tool calls per agent/tool/day. New calls are hot in `tool_calls`; calls recorded
-/// before 0082 are `mcp_tool_call` rows of the retired call log, drained to the cold
-/// `token_usage` dataset (0079), so both are read.
-async fn tool_calls(
-    state: &AppState,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<RawToolCall>, sqlx::Error> {
-    let mut out: Vec<RawToolCall> = tool_calls_hot(&state.db, usage, w).await?;
-    let filter = nasiko_event_store::UsageFilter {
-        operation_type: Some("mcp_tool_call".into()),
-        ..Default::default()
-    };
-    let range = nasiko_event_store::UsageRange {
-        from: w.from,
-        to: w.to,
-    };
-    let cold: Vec<nasiko_event_store::token_usage::TokenUsageRow> =
-        match state.event_store().cold_rows(&filter, range).await {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!(%e, "cold tool-call read failed; hot rows only");
-                Vec::new()
-            }
-        };
-    let mut agg: std::collections::HashMap<(Uuid, String, NaiveDate), (i64, i64)> =
-        std::collections::HashMap::new();
-    for r in cold {
-        let Some(agent_id) = r.agent_id.filter(|a| usage.counts(*a, r.user_id)) else {
-            continue;
-        };
-        let e = agg
-            .entry((agent_id, r.model, r.created_at.date_naive()))
-            .or_default();
-        e.0 += 1;
-        e.1 += i64::from(r.finish_reason.as_deref() == Some("error"));
-    }
-    out.extend(
-        agg.into_iter()
-            .map(|((agent_id, tool, day), (calls, errors))| RawToolCall {
-                agent_id,
-                tool,
-                day,
-                calls,
-                errors,
-            }),
-    );
-    Ok(out)
-}
-
-async fn tool_calls_hot(
-    db: &PgPool,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<RawToolCall>, sqlx::Error> {
-    let sql = format!(
-        "SELECT agent_id, tool_name AS tool, (started_at AT TIME ZONE 'UTC')::date AS day, \
+async fn tool_calls(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<RawToolCall>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT agent_id, model AS tool, (created_at AT TIME ZONE 'UTC')::date AS day, \
                 COUNT(*)::bigint AS calls, \
-                COUNT(*) FILTER (WHERE status = 'error')::bigint AS errors \
-           FROM tool_calls \
-          WHERE tool_kind = 'mcp' AND {} \
-            AND started_at >= $4 AND started_at < $5 \
+                COUNT(*) FILTER (WHERE finish_reason = 'error')::bigint AS errors \
+           FROM token_usage \
+          WHERE operation_type = 'mcp_tool_call' AND agent_id = ANY($1) \
+            AND created_at >= $2 AND created_at < $3 \
           GROUP BY 1, 2, 3",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
 /// Bare tool names a system connector serves (theirs carry no namespace prefix).
@@ -1052,9 +926,7 @@ fn attribute_tool_calls(
 
 async fn runs_daily(db: &PgPool, mafs: &[Uuid], w: Window) -> Result<Vec<RunDay>, sqlx::Error> {
     sqlx::query_as(
-        // A stopped run is left out of the failure rate's denominator: it neither succeeded nor failed.
-        "SELECT maf_id, (started_at AT TIME ZONE 'UTC')::date AS day, \
-                COUNT(*) FILTER (WHERE status <> 'stopped')::bigint AS runs, \
+        "SELECT maf_id, (started_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::bigint AS runs, \
                 COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed \
            FROM maf_executions \
           WHERE maf_id = ANY($1) AND started_at >= $2 AND started_at < $3 GROUP BY 1, 2",
@@ -1107,44 +979,39 @@ async fn step_outcomes(
     .await
 }
 
-async fn spend_daily(
-    db: &PgPool,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<DayAmount>, sqlx::Error> {
-    let sql = format!(
+async fn spend_daily(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<DayAmount>, sqlx::Error> {
+    sqlx::query_as(
         "SELECT (started_at AT TIME ZONE 'UTC')::date AS day, COALESCE(SUM(cost_usd), 0)::float8 AS amount \
-           FROM trace_usage WHERE {} AND started_at >= $4 AND started_at < $5 \
+           FROM trace_usage WHERE agent_id = ANY($1) AND started_at >= $2 AND started_at < $3 \
           GROUP BY 1",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
 /// What every measured layer saved per UTC day: the whole workspace for a superuser, otherwise the
-/// caller's own requests and the calls [`UsageScope`] counts (the savings endpoint's own pricing).
+/// caller's own requests and their visible agents' (the savings endpoint's own pricing).
 async fn saved_daily(
     db: &PgPool,
     scope: &Scope,
-    usage: &UsageScope,
+    ids: &[Uuid],
     w: Window,
 ) -> Result<Vec<DayAmount>, sqlx::Error> {
     let sql = format!(
-        "SELECT (ss.ts AT TIME ZONE 'UTC')::date AS day, COALESCE(SUM(ss.priced_cost_usd), 0)::FLOAT8 AS amount \
-           FROM savings_spend ss \
-          WHERE ss.ts >= $4 AND ss.ts < $5 \
-            AND ($6::uuid IS NULL OR ss.user_id = $6 OR {}) \
-          GROUP BY 1",
-        usage_where("ss.")
+        "SELECT (ts.created_at AT TIME ZONE 'UTC')::date AS day, {PRICED_COST} AS amount \
+           FROM token_savings ts {PRICE_JOIN} \
+          WHERE ts.created_at >= $1 AND ts.created_at < $2 \
+            AND ($3::uuid IS NULL OR ts.user_id = $3 OR ts.agent_id = ANY($4)) \
+          GROUP BY 1"
     );
-    bind_usage(sqlx::query_as(&sql), usage)
+    sqlx::query_as(&sql)
         .bind(w.from)
         .bind(w.to)
         .bind(scope.listing_user())
+        .bind(ids)
         .fetch_all(db)
         .await
 }
@@ -1154,7 +1021,6 @@ async fn saved_daily(
 async fn compression_rate(
     db: &PgPool,
     agents: &[AgentRow],
-    usage: &UsageScope,
     w: Window,
 ) -> Result<CompressionRate, sqlx::Error> {
     let on: Vec<Uuid> = agents
@@ -1162,18 +1028,16 @@ async fn compression_rate(
         .filter(|a| a.compress_enabled)
         .map(|a| a.id)
         .collect();
-    let usage = usage.within(&on);
     let sql = format!(
-        "SELECT COALESCE((SELECT SUM(ss.priced_cost_usd) FROM savings_spend ss \
-                           WHERE ss.layer = 'compress_payload' AND {} \
-                             AND ss.ts >= $4 AND ss.ts < $5), 0)::float8 AS saved, \
-                COALESCE((SELECT SUM(cost_usd) FROM trace_spend \
-                           WHERE {} \
-                             AND ts >= $4 AND ts < $5), 0)::float8 AS spend",
-        usage_where("ss."),
-        usage_where("")
+        "SELECT COALESCE((SELECT {PRICED_COST} FROM token_savings ts {PRICE_JOIN} \
+                           WHERE ts.layer = 'compress_payload' AND ts.agent_id = ANY($1) \
+                             AND ts.created_at >= $2 AND ts.created_at < $3), 0)::float8 AS saved, \
+                COALESCE((SELECT SUM(cost_usd) FROM token_usage \
+                           WHERE agent_id = ANY($1) AND operation_type <> 'mcp_tool_call' \
+                             AND created_at >= $2 AND created_at < $3), 0)::float8 AS spend"
     );
-    bind_usage(sqlx::query_as(&sql), &usage)
+    sqlx::query_as(&sql)
+        .bind(&on)
         .bind(w.from)
         .bind(w.to)
         .fetch_one(db)
@@ -1183,28 +1047,23 @@ async fn compression_rate(
 /// Each agent's spend through the LLM router (what payload compression applies to).
 async fn routed_spend(
     db: &PgPool,
-    usage: &UsageScope,
+    ids: &[Uuid],
     w: Window,
 ) -> Result<Vec<AgentAmount>, sqlx::Error> {
-    let sql = format!(
-        "SELECT agent_id, COALESCE(SUM(cost_usd), 0)::float8 AS amount FROM trace_spend \
-          WHERE {} \
-            AND ts >= $4 AND ts < $5 GROUP BY 1",
-        usage_where("")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    sqlx::query_as(
+        "SELECT agent_id, COALESCE(SUM(cost_usd), 0)::float8 AS amount FROM token_usage \
+          WHERE agent_id = ANY($1) AND operation_type <> 'mcp_tool_call' \
+            AND created_at >= $2 AND created_at < $3 GROUP BY 1",
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
-async fn cache_use(
-    db: &PgPool,
-    usage: &UsageScope,
-    w: Window,
-) -> Result<Vec<CacheRow>, sqlx::Error> {
-    let sql = format!(
+async fn cache_use(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<CacheRow>, sqlx::Error> {
+    sqlx::query_as(
         "SELECT u.agent_id, u.model, \
                 COALESCE(SUM(u.input_tokens), 0)::bigint AS input_tokens, \
                 COALESCE(SUM(u.cache_read_tokens), 0)::bigint AS cache_read_tokens, \
@@ -1213,16 +1072,15 @@ async fn cache_use(
            FROM trace_usage u \
            LEFT JOIN model_pricing p \
              ON p.provider = u.provider AND p.model = u.model AND p.effective_until IS NULL \
-          WHERE {} AND u.model IS NOT NULL \
-            AND u.started_at >= $4 AND u.started_at < $5 \
+          WHERE u.agent_id = ANY($1) AND u.model IS NOT NULL \
+            AND u.started_at >= $2 AND u.started_at < $3 \
           GROUP BY 1, 2",
-        usage_where("u.")
-    );
-    bind_usage(sqlx::query_as(&sql), usage)
-        .bind(w.from)
-        .bind(w.to)
-        .fetch_all(db)
-        .await
+    )
+    .bind(ids)
+    .bind(w.from)
+    .bind(w.to)
+    .fetch_all(db)
+    .await
 }
 
 #[cfg(test)]
@@ -1365,81 +1223,5 @@ mod tests {
         assert_eq!(days.len(), 14);
         assert_eq!(days.last().copied(), Some(now.date_naive()));
         assert_eq!(w.history.from.to_rfc3339(), "2026-10-08T00:00:00+00:00");
-    }
-
-    fn agent_owned_by(owner: Uuid) -> AgentRow {
-        AgentRow {
-            id: Uuid::new_v4(),
-            name: "agent".into(),
-            owner_id: owner,
-            status: "running".into(),
-            updated_at: Utc::now(),
-            router_id: None,
-            harness: None,
-            compress_enabled: false,
-        }
-    }
-
-    fn scope_of(me: Uuid, superuser: bool, visible: Option<Vec<Uuid>>) -> Scope {
-        Scope {
-            me,
-            superuser,
-            org_granted: Vec::new(),
-            visible_people: visible,
-        }
-    }
-
-    #[test]
-    fn a_member_counts_every_call_on_their_own_agent_and_only_their_own_on_a_public_one() {
-        let (me, stranger) = (Uuid::new_v4(), Uuid::new_v4());
-        let mine = agent_owned_by(me);
-        let public = agent_owned_by(stranger);
-        let usage = UsageScope::of(
-            &scope_of(me, false, Some(vec![me])),
-            &[mine.clone(), public.clone()],
-        );
-
-        assert!(usage.counts(mine.id, me));
-        assert!(usage.counts(mine.id, stranger), "anyone's call on my agent");
-        assert!(usage.counts(public.id, me));
-        assert!(
-            !usage.counts(public.id, stranger),
-            "a stranger's call on a public agent is theirs"
-        );
-    }
-
-    #[test]
-    fn a_manager_counts_every_call_on_agents_their_people_own() {
-        let (lead, report, outsider) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-        let reports_agent = agent_owned_by(report);
-        let usage = UsageScope::of(
-            &scope_of(lead, false, Some(vec![lead, report])),
-            std::slice::from_ref(&reports_agent),
-        );
-        assert!(usage.counts(reports_agent.id, outsider));
-    }
-
-    #[test]
-    fn a_superuser_counts_every_call_on_every_agent() {
-        let (admin, someone) = (Uuid::new_v4(), Uuid::new_v4());
-        let theirs = agent_owned_by(someone);
-        let usage = UsageScope::of(&scope_of(admin, true, None), std::slice::from_ref(&theirs));
-        assert!(usage.counts(theirs.id, someone));
-        assert!(usage.shared.is_empty());
-    }
-
-    #[test]
-    fn within_keeps_the_rule_for_the_agents_it_keeps() {
-        let (me, stranger) = (Uuid::new_v4(), Uuid::new_v4());
-        let mine = agent_owned_by(me);
-        let public = agent_owned_by(stranger);
-        let usage = UsageScope::of(
-            &scope_of(me, false, Some(vec![me])),
-            &[mine.clone(), public.clone()],
-        )
-        .within(&[public.id]);
-        assert!(!usage.counts(mine.id, me), "dropped");
-        assert!(usage.counts(public.id, me));
-        assert!(!usage.counts(public.id, stranger));
     }
 }

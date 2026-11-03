@@ -60,5 +60,4 @@ export const CHAT_PAGE_VARIANT_KEYS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
-  'transcribe-unconfigured',
 ] as const

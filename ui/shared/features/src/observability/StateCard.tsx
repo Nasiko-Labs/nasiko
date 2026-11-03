@@ -7,11 +7,10 @@ import { StateCard } from '@nasiko/ui/composites/state-card'
 import { Button } from '@nasiko/ui/primitives/button'
 import { ApiError } from '@nasiko/data-access/client'
 import { copy } from './copy'
-import { isObservabilityUnconfigured } from './unconfigured'
 
 export { StateCard }
 
-/** Map an observability error to its state (503 not configured, any other 503 unavailable, 500/502 store error, 403 no access, 404 neutral, proxy down). */
+/** Map an observability error to its state (503 not configured, 500/502 store error, 403 no access, 404 neutral, proxy down). */
 export function ErrorState({
   error,
   onRetry,
@@ -39,21 +38,12 @@ export function ErrorState({
   }
   if (api?.isForbidden)
     return <StateCard tone="warning" title={copy.noAccess} fix={copy.noAccessFix} />
-  if (isObservabilityUnconfigured(api))
+  if (api?.status === 503)
     return (
       <StateCard
         tone="warning"
         title={copy.notConfigured}
         fix={copy.notConfiguredFix}
-        action={retry}
-      />
-    )
-  if (api?.status === 503)
-    return (
-      <StateCard
-        tone="warning"
-        title={copy.unavailable}
-        fix={api.serverMessage ? `Server said: ${api.serverMessage}` : undefined}
         action={retry}
       />
     )

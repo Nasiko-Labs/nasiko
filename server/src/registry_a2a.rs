@@ -18,12 +18,11 @@
 //!   invalid token is a 401, never a silent fall back to the public view.
 //!
 //! Every entry's address is the agent proxy path, `/api/agents/{id}`, relative
-//! to this server — never a container address: a parked agent has none, a
-//! harness agent never will, and the proxy is where authentication, `agent_acl`
-//! and the wake-on-request happen. The runtime-internal address (a node IP, a
-//! pod address, `localhost`) is never returned: it let any caller map the
-//! private network, and calling it directly skipped the proxy's ACL, flow guard
-//! and tracing (NAS-1129).
+//! to this server. The runtime-internal address (a node IP, a pod address,
+//! `localhost`) is never returned: it let any caller map the private network,
+//! and calling it directly skipped the proxy's ACL, flow guard and tracing
+//! (NAS-1129). A caller that wants to call an agent goes through the proxy
+//! with a token the proxy accepts.
 
 use axum::{
     Json,
@@ -107,28 +106,24 @@ struct SkillRow {
     examples: Value,
 }
 
-/// The running or parked agents `viewer` may call, with their advertised skills.
+/// The running agents `viewer` may call, with their advertised skills.
 ///
 /// No viewer: public agents only (`is_public`, or a public grant). A viewer:
-/// every agent the edition's `can_access_agent` lets them call, which for a
-/// superuser is all of them. Parked agents are included — the proxy wakes them
-/// on the next call. A harness agent shows to someone other than its owner only
-/// when it is public, a platform catalog row: no grant reaches it
-/// (`nasiko_auth::sharing`), here or in `can_access_agent`.
+/// every running agent the edition's `can_access_agent` lets them call, which
+/// for a superuser is all of them.
 async fn discoverable_agents(
     state: &AppState,
     viewer: Option<&Claims>,
 ) -> Result<Vec<Value>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, AgentRow>(&format!(
+    let rows = sqlx::query_as::<_, AgentRow>(
         "SELECT a.id, a.name, a.description FROM agents a \
-         WHERE a.status IN ('running', 'parked') AND a.deleted_at IS NULL \
+         WHERE a.status = 'running' AND a.deleted_at IS NULL \
            AND NOT a.is_internal \
-           AND ($1 OR a.is_public OR ({grants_reach} AND EXISTS ( \
+           AND ($1 OR a.is_public OR EXISTS ( \
                 SELECT 1 FROM agent_grants g \
-                 WHERE g.agent_id = a.id AND g.grant_type = 'public' AND g.grantee_id = '*'))) \
+                 WHERE g.agent_id = a.id AND g.grant_type = 'public' AND g.grantee_id = '*')) \
          ORDER BY a.name",
-        grants_reach = nasiko_auth::sharing::grants_reach_sql("a"),
-    ))
+    )
     .bind(viewer.is_some())
     .fetch_all(&state.db)
     .await?;

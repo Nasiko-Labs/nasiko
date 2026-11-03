@@ -324,21 +324,7 @@ async function readUploadedFiles(
 
 /** The upload route's own limits (`chat/routes.rs`). */
 const MAX_FILES_PER_UPLOAD = 10
-const MIB = 1024 * 1024
-const TEXT_EXTENSIONS = ['.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.html']
-
-function uploadLimit(f: { name: string; type: string }): { bytes: number; label: string } {
-  if (f.type.startsWith('image/')) return { bytes: 25 * MIB, label: 'image' }
-  if (f.type === 'application/pdf') return { bytes: 25 * MIB, label: 'PDF' }
-  const textLike =
-    f.type.startsWith('text/') ||
-    ['application/json', 'application/xml', 'application/x-yaml', 'application/yaml'].includes(
-      f.type,
-    ) ||
-    TEXT_EXTENSIONS.some((ext) => f.name.toLowerCase().endsWith(ext))
-  if (textLike) return { bytes: MIB, label: 'text' }
-  return { bytes: 10 * MIB, label: 'other' }
-}
+const MAX_FILE_BYTES = 50 * 1024 * 1024
 
 const id = (prefix: string) =>
   `5eedc${prefix}-0000-4000-8000-${String(++counter).padStart(12, '0')}`
@@ -358,8 +344,6 @@ export const ensureChatSeed = (ctx: ChatMockContext) => seed(ctx)
 function seed(ctx: ChatMockContext) {
   if (seeded) return
   seeded = true
-  // A workspace fresh from setup (`try-run`, mocks/tryRun.ts) has had no chats yet.
-  if (ctx.hasVariant?.('try-run')) return
   const now = ctx.now()
   const running = ctx.agents().filter((a) => a.running)
   const a = running[0]
@@ -1302,7 +1286,7 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
     }),
 
     // POST messages: bare ChatMessage; cost_usd as a Decimal string (models.rs).
-    // POST /api/chat/sessions/{id}/files: multipart, max 10 files within per-type limits, rows unattached
+    // POST /api/chat/sessions/{id}/files: multipart, max 10 × 50 MB, rows unattached
     // (routes.rs::upload_files). A partial failure rolls the whole batch back, so this
     // either stores all of them or none.
     http.post('/api/chat/sessions/:id/files', async ({ params, request }) => {
@@ -1312,14 +1296,8 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       if (!c) return new HttpResponse(null, { status: 404 })
       const picked = await readUploadedFiles(request)
       if (picked.length > MAX_FILES_PER_UPLOAD) return text('too many files (max 10)', 400)
-      const over = picked.find((f) => f.size > uploadLimit(f).bytes)
-      if (over) {
-        const limit = uploadLimit(over)
-        return text(
-          `file '${over.name}' is over the ${limit.bytes / MIB} MB limit for ${limit.label} files`,
-          413,
-        )
-      }
+      const over = picked.find((f) => f.size > MAX_FILE_BYTES)
+      if (over) return text(`file '${over.name}' exceeds 50 MB limit`, 413)
       const rows = picked.map((f) => {
         const fileId = id('f')
         const mime = f.type || 'application/octet-stream'
@@ -1332,19 +1310,6 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
         return { id: fileId, filename: f.name, mime_type: mime, size_bytes: f.size }
       })
       return HttpResponse.json(rows, { status: 201 })
-    }),
-
-    // POST /api/transcribe (transcribe.rs): one multipart `file` → `{text}`; plain-text errors, 503 without a key.
-    http.post('/api/transcribe', async ({ request }) => {
-      const denied = guard()
-      if (denied) return denied
-      if (ctx.hasVariant?.('transcribe-unconfigured'))
-        return text(
-          'Transcription needs an OpenAI API key: add one in the setup guide or Settings → Secrets.',
-          503,
-        )
-      if (!(await readUploadedFiles(request)).length) return text('No audio file provided', 400)
-      return HttpResponse.json({ text: 'Hello from the mock microphone.' })
     }),
 
     // GET /api/chat/files/{id}/download: the real route redirects to presigned storage; a
@@ -1538,23 +1503,6 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       h.status = body.decision === 'reject' ? 'rejected' : 'resolved'
       h.human_response = response
       h.resolved_at = iso(ctx.now())
-      // The answer saved as a user row tagged with its request (router/hitl.rs resolve, hitl/mod.rs answer_text).
-      // ponytail: typed answers only; the server also saves "authorized"/"denied" for auth_required.
-      const answered = (response as { answer?: unknown; custom_answer?: unknown }) ?? {}
-      const answerText = Array.isArray(answered.answer)
-        ? [...answered.answer, ...(answered.custom_answer ? [answered.custom_answer] : [])].join(
-            '\n',
-          )
-        : typeof answered.answer === 'string'
-          ? answered.answer
-          : ''
-      if (answerText) {
-        const c = [...chats.values()].find((x) => x.hitl.includes(h))!
-        c.messages.push({
-          ...msg(c.row.session_id, 'user', answerText, ctx.now()),
-          metadata: { hitl_request_id: h.id },
-        })
-      }
       // The reconnect-refusal scenarios model an execution with no continuation to run.
       if (
         h.execution.origin === 'orchestrator' &&

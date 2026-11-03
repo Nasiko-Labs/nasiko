@@ -142,7 +142,7 @@ function HarnessRow({ harness, configs }: { harness: RoutedHarness; configs: Llm
               aria-label={copy.configLabel(harness.name)}
               className="w-64 max-w-full pointer-coarse:min-h-11"
             >
-              <SelectValue placeholder={copy.configPlaceholder} />
+              <SelectValue />
             </SelectTrigger>
             <SelectContent>
               {configs.map((c) => (

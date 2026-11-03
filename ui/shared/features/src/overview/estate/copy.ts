@@ -176,10 +176,6 @@ export const estateCopy = {
     since: (day: string) => `Since ${day}`,
     also: (kind: string) => `also ${kind.toLowerCase()}`,
     vsTarget: (cur: string, target: string) => [cur, `vs ${target} target`] as const,
-    trendLabel: (metric: string, first: string, last: string, target: string) =>
-      `${metric} over the last 10 days: from ${first} to ${last}, against a ${target} target`,
-    daysAgo: (n: number) => `${n} days ago`,
-    today: 'Today',
     whoNone: 'Nobody is on it yet',
     whoMe: 'You are on it',
     whoOther: (name: string) => `${name} is on it`,
@@ -213,7 +209,7 @@ export const estateCopy = {
       undo: 'Undo',
       failed: 'Couldn’t save that. Try again.',
     },
-    readOnly: 'Assigning needs a newer Open Runtime server.',
+    readOnly: 'Assigning needs a newer OpenRuntime server.',
   },
   filters: {
     team: 'Team',
@@ -310,7 +306,7 @@ export const estateCopy = {
     noCalls: 'No calls in the last 7 days.',
     agentStatus: 'Agent status',
     agentStatusMeta: (first: string, last: string) => `One square per day, ${first} to ${last}`,
-    needs: 'Needs your attention',
+    needs: 'Needs you',
     fleetHealth: 'Fleet health',
     recentSessions: 'Recent sessions',
     recentChats: 'Recent chats',
@@ -369,7 +365,7 @@ export const estateCopy = {
     fixedWhen: 'Fleet health rates it Healthy again',
     openAgent: 'Open the agent',
     person: (n: number) => `Person ${n}`,
-    note: 'A smaller map: this Open Runtime server doesn’t report teams, workflows, routing or tools yet.',
+    note: 'A smaller map: this OpenRuntime server doesn’t report teams, workflows, routing or tools yet.',
   },
   error: {
     title: 'Couldn’t load the map.',

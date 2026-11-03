@@ -96,7 +96,6 @@ export function subagentRows(parentId: string, parentStart: number, agentName: s
       num_traces: c.turns,
       status: 'ok',
       failed_flows: 0,
-      flow_count: 0,
       error_count: 0,
       start_time: iso(start),
       end_time: iso(end),

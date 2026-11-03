@@ -107,7 +107,7 @@ pub(super) async fn agent_name_fully_accessible(
 }
 
 /// Does this caller own the named agent (or, if several agents share the
-/// name across editions/soft-deletes, own every one of them)?
+/// name across editions/soft-deletes, own every live one of them)?
 ///
 /// Used to exempt an owner's own-agent read — Home's row for it, its Hub
 /// page, a `/tokenops` read filtered to it — from the default "your own
@@ -115,9 +115,6 @@ pub(super) async fn agent_name_fully_accessible(
 /// owning the agent is its own reason to see its full usage, same as being
 /// an admin is for everything else (bug found 2026-10-22 — a public agent's
 /// owner couldn't see how it was actually used, only their own calls to it).
-///
-/// Deleted agents count: spend rows are keyed by agent name and outlive the
-/// agent, so a name another owner once used still matches their spend.
 pub(super) async fn agent_name_owned_by_caller(
     state: &AppState,
     claims: &Claims,
@@ -126,32 +123,16 @@ pub(super) async fn agent_name_owned_by_caller(
     let Ok(caller_id) = claims.user_uuid() else {
         return false;
     };
-    let Ok(owner_ids) =
-        sqlx::query_scalar::<_, Option<Uuid>>("SELECT owner_id FROM agents WHERE name = $1")
-            .bind(agent_name)
-            .fetch_all(&state.db)
-            .await
+    let Ok(owner_ids) = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT owner_id FROM agents WHERE name = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_name)
+    .fetch_all(&state.db)
+    .await
     else {
         return false;
     };
     !owner_ids.is_empty() && owner_ids.iter().all(|o| *o == Some(caller_id))
-}
-
-/// [`agent_name_owned_by_caller`] for every name the caller's live agents bear: whether no
-/// one else has, or had, an agent by any of them.
-pub(super) async fn agent_names_owned_by_caller(state: &AppState, claims: &Claims) -> bool {
-    let Ok(caller_id) = claims.user_uuid() else {
-        return false;
-    };
-    sqlx::query_scalar(
-        "SELECT NOT EXISTS (SELECT 1 FROM agents mine JOIN agents other ON other.name = mine.name \
-         WHERE mine.owner_id = $1 AND mine.deleted_at IS NULL \
-           AND other.owner_id IS DISTINCT FROM $1)",
-    )
-    .bind(caller_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(false)
 }
 
 /// Same as [`agent_name_owned_by_caller`], for a caller that already resolved the agent's UUID
@@ -204,7 +185,6 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
     let finops_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/savings", get(handler::get_finops_savings))
-        .route("/finops/model-routing", get(handler::get_model_routing))
         .route("/finops/context-savings", get(handler::get_context_savings))
         .route(
             "/finops/context-savings/agents",
@@ -238,18 +218,12 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
         .route(
-            "/session/{session_id}/tool-calls",
-            get(handler::get_session_tool_calls),
-        )
-        .route(
             "/session/{session_id}/turns",
             get(handler::get_session_turns),
         )
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
         .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
-        // Superuser-only: one locked tiering run now (local/live lakehouse testing).
-        .route("/lakehouse/tier", post(handler::trigger_tiering))
         // Coding-harness usage (H-1). Any signed-in caller, narrowed inside the
         // handler: OSS answers only the caller's own level.
         .route(
@@ -526,19 +500,16 @@ struct Metrics {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    // A deleted agent's row stays for history; it is not an agent any more.
-    let agents_total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE deleted_at IS NULL")
+    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let agents_running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
             .fetch_one(&state.db)
             .await
             .unwrap_or(0);
-
-    let agents_running: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM agents WHERE status = 'running' AND deleted_at IS NULL",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
 
     let containers_total = state
         .runtime
@@ -569,13 +540,10 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         .await
         .unwrap_or(0);
 
-    let token_usage_total: i64 = sqlx::query_scalar(
-        // Hot trace_usage rows plus tiered trace_usage_daily rows.
-        "SELECT COALESCE(SUM(traces), 0)::bigint FROM trace_spend",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let token_usage_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_usage")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
 
     Json(Metrics {
         agents_total,
@@ -600,7 +568,7 @@ struct ReadinessCheck {
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let pg_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
-    let redis_ok = match state.redis.connection().await {
+    let redis_ok = match state.redis.get_multiplexed_async_connection().await {
         Ok(mut conn) => redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await

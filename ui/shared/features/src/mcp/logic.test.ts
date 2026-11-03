@@ -6,6 +6,7 @@ import {
   inView,
   isBuilding,
   matchesQuery,
+  matchesTool,
   nameFromFile,
   oauthPatch,
   registerBody,
@@ -97,6 +98,14 @@ describe('MCP logic (plans/feat-mcp.md)', () => {
     expect(tabCounts(all)).toEqual({ all: 3, available: 2, connected: 1 })
     expect(all.filter((s) => inTab(s, 'connected')).map((s) => s.id)).toEqual(['a'])
     expect(all.filter((s) => matchesQuery(s, '  SEARCH ')).map((s) => s.id)).toEqual(['a'])
+  })
+
+  it('matches a tool on its name or description, any case; a blank filter matches all', () => {
+    const tool = { name: 'get_page', description: 'Read one page as Markdown.' }
+    expect(matchesTool(tool, ' GET_')).toBe(true)
+    expect(matchesTool(tool, 'markdown')).toBe(true)
+    expect(matchesTool(tool, 'spaces')).toBe(false)
+    expect(matchesTool({ name: 'x', description: null }, '  ')).toBe(true)
   })
 
   it('polls only while an upload is pending or building', () => {

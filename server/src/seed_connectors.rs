@@ -4,15 +4,8 @@
 //! shared publicly, so every user sees it without registering it themselves.
 //! Seeding is idempotent: a connector the owner already has by that name is
 //! not re-registered (its stored config is left alone), but its public share
-//! is re-asserted and its tool catalog re-synced every boot. A failing entry
-//! is logged and skipped — a third-party MCP server being down must never
-//! block boot.
-//!
-//! A `bearer`/`basic` entry is a per-user credential connector: each user
-//! enters their own key in the UI. Such an entry that also carries a static
-//! `Authorization` header is refused, because the gateway falls back to static
-//! headers for a user with no credential of their own — every such user would
-//! silently run on the operator's key. Ship a shared key as `auth_type: none`.
+//! is re-asserted every boot. A failing entry is logged and skipped — a third-party MCP
+//! server being down must never block boot.
 
 use std::collections::HashMap;
 
@@ -22,7 +15,6 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 use nasiko_mcp_gateway::connectors::{self, NewConnectorInput, ShareTarget};
-use nasiko_mcp_gateway::permissions;
 
 /// One connector to seed. Field names match the register-connector API body.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -49,23 +41,6 @@ fn default_auth_type() -> String {
 
 fn default_transport() -> String {
     "streamable_http".to_string()
-}
-
-/// The header seeded per-user connectors carry their credential in. Seeds
-/// set no `credential_header_name`, so the gateway uses its default.
-const CREDENTIAL_HEADER: &str = "Authorization";
-
-/// The static header that would stand in for a missing per-user credential,
-/// if `spec` is a per-user (`bearer`/`basic`) connector that carries one.
-fn shared_credential_header(spec: &SeedConnectorSpec) -> Option<&str> {
-    if !matches!(spec.auth_type.as_str(), "bearer" | "basic") {
-        return None;
-    }
-    spec.headers
-        .as_ref()?
-        .keys()
-        .find(|name| name.eq_ignore_ascii_case(CREDENTIAL_HEADER))
-        .map(String::as_str)
 }
 
 /// Parse the `SEED_CONNECTORS` JSON array. Blank means nothing to seed;
@@ -122,14 +97,6 @@ async fn first_superuser(state: &AppState) -> Option<Uuid> {
 /// owner-only forever.
 async fn seed_one(state: &AppState, owner_id: Uuid, spec: SeedConnectorSpec) {
     let name = spec.name.clone();
-    if let Some(header) = shared_credential_header(&spec) {
-        warn!(
-            connector = %name, auth_type = %spec.auth_type, %header,
-            "seed connector is per-user but carries a static credential header, skipping \
-             (remove the header so users enter their own key, or use auth_type none for a shared key)"
-        );
-        return;
-    }
     let Some(connector_id) = find_or_register(state, owner_id, spec).await else {
         return;
     };
@@ -145,23 +112,6 @@ async fn seed_one(state: &AppState, owner_id: Uuid, spec: SeedConnectorSpec) {
         Ok(_) => info!(connector = %name, "seed connector registered and shared publicly"),
         Err(e) => {
             warn!(connector = %name, %e, "seed connector registered but sharing failed, retrying next boot")
-        }
-    }
-    sync_tools(state, owner_id, connector_id, &name).await;
-}
-
-/// Pull the connector's tool catalog now. Registering stores no tools, and
-/// `nasiko_search_tools` only finds tools in the catalog, so without this a
-/// seeded connector stays invisible to every agent until someone happens to
-/// open its tools page. The sync also rebuilds the search index, and running
-/// it here — in the boot task, not a request — means it cannot be cut short
-/// by a client disconnecting. Runs every boot, so a sync that failed before
-/// is retried. An OAuth connector with no credential yet syncs nothing.
-async fn sync_tools(state: &AppState, owner_id: Uuid, connector_id: Uuid, name: &str) {
-    match permissions::sync_connector_tools_by_id(&state.mcp, owner_id, connector_id).await {
-        Ok(()) => info!(connector = %name, "seed connector tools synced"),
-        Err(e) => {
-            warn!(connector = %name, %e, "seed connector tool sync failed, retrying next boot")
         }
     }
 }
@@ -268,47 +218,6 @@ mod tests {
         assert!(parse_seed_connectors("not json").is_empty());
         assert!(parse_seed_connectors(r#"{"name":"x","url":"y"}"#).is_empty());
         assert!(parse_seed_connectors(r#"[{"name":"missing-url"}]"#).is_empty());
-    }
-
-    fn spec(raw: &str) -> SeedConnectorSpec {
-        parse_seed_connectors(&format!("[{raw}]")).remove(0)
-    }
-
-    #[test]
-    fn per_user_connector_with_static_authorization_header_is_refused() {
-        let bearer = spec(
-            r#"{"name":"f","url":"https://f.example.com","auth_type":"bearer","headers":{"Authorization":"Bearer k"}}"#,
-        );
-        let basic = spec(
-            r#"{"name":"b","url":"https://b.example.com","auth_type":"basic","headers":{"authorization":"Basic k"}}"#,
-        );
-
-        assert_eq!(shared_credential_header(&bearer), Some("Authorization"));
-        assert_eq!(shared_credential_header(&basic), Some("authorization"));
-    }
-
-    #[test]
-    fn per_user_connector_without_a_credential_header_is_allowed() {
-        let bare = spec(r#"{"name":"f","url":"https://f.example.com","auth_type":"bearer"}"#);
-        let unrelated = spec(
-            r#"{"name":"f","url":"https://f.example.com","auth_type":"bearer","headers":{"X-Trace":"1"}}"#,
-        );
-
-        assert_eq!(shared_credential_header(&bare), None);
-        assert_eq!(shared_credential_header(&unrelated), None);
-    }
-
-    #[test]
-    fn shared_key_and_oauth_connectors_are_not_affected() {
-        let shared = spec(
-            r#"{"name":"f","url":"https://f.example.com","headers":{"Authorization":"Bearer k"}}"#,
-        );
-        let oauth = spec(
-            r#"{"name":"a","url":"https://a.example.com","auth_type":"oauth2","headers":{"Authorization":"x"}}"#,
-        );
-
-        assert_eq!(shared_credential_header(&shared), None);
-        assert_eq!(shared_credential_header(&oauth), None);
     }
 
     #[test]

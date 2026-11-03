@@ -31,12 +31,8 @@ pub struct InstallationBinding {
 pub struct AgentState {
     /// Name this agent is registered under in the control plane.
     pub agent_name: String,
-    /// Whether chat history (prompts, responses, tool output) is captured.
+    /// Whether prompt text may be attached to spans.
     pub capture_content: bool,
-    /// Whether that was agreed to with this CLI, for a control plane that keeps chat history: a
-    /// `capture_content` saved by an older CLI, under its default yes, doesn't count without it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub chat_history: bool,
     /// Version of the installed hook script.
     pub hook_version: u32,
     /// Immutable delivery destination selected by the explicit installation.
@@ -50,48 +46,13 @@ pub struct AgentState {
 pub struct IntegrationState {
     #[serde(default)]
     pub agents: HashMap<String, AgentState>,
-    /// Legacy: agents declined with no cluster recorded. A decline here once hid the offer on
-    /// every cluster, so moving to a new one never offered them; it is no longer read (each
-    /// is offered once more, then declined per cluster), only cleared, and kept so an older CLI
-    /// reading this file still parses it.
+    /// Agents whose user said no when session reporting was offered after logging in, so it
+    /// isn't offered again. Installing reporting (always an explicit request) clears the entry.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub declined: BTreeSet<String>,
-    /// Agents whose user said no to session reporting, per cluster and account ([`decline_key`]):
-    /// not offered again there after logging in, still offered on any other. Installing
-    /// reporting (always an explicit request) clears the agent's entries.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub declined_on: BTreeMap<String, BTreeSet<String>>,
-}
-
-/// Where a decline is kept: the cluster's URL (without a trailing slash) and the signed-in user.
-pub fn decline_key(cluster_url: &str, principal_id: &str) -> String {
-    format!("{}|{principal_id}", cluster_url.trim_end_matches('/'))
 }
 
 impl IntegrationState {
-    /// Whether `agent_id` was declined on the cluster and account `key`; never without a key.
-    pub fn is_declined(&self, agent_id: &str, key: Option<&str>) -> bool {
-        key.and_then(|key| self.declined_on.get(key))
-            .is_some_and(|ids| ids.contains(agent_id))
-    }
-
-    /// Records that reporting for `agent_id` was declined on `key`.
-    pub fn decline(&mut self, agent_id: &str, key: &str) {
-        self.declined_on
-            .entry(key.to_string())
-            .or_default()
-            .insert(agent_id.to_string());
-    }
-
-    /// Forgets every decline of `agent_id`, on any cluster (and the legacy one).
-    pub fn clear_declines(&mut self, agent_id: &str) {
-        self.declined.remove(agent_id);
-        for ids in self.declined_on.values_mut() {
-            ids.remove(agent_id);
-        }
-        self.declined_on.retain(|_, ids| !ids.is_empty());
-    }
-
     pub fn load() -> Result<Self> {
         let path = config_path();
         if !path.exists() {
@@ -409,56 +370,6 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_decline_holds_on_its_own_cluster_and_account_only() {
-        let free = decline_key("https://free.nasiko.dev/", "u1");
-        let paid = decline_key("https://mine.nasiko.dev", "u1");
-        let other_user = decline_key("https://free.nasiko.dev", "u2");
-        let mut state = IntegrationState::default();
-        state.decline("claude", &free);
-        // The trailing slash doesn't make it another cluster.
-        assert!(state.is_declined(
-            "claude",
-            Some(&decline_key("https://free.nasiko.dev", "u1"))
-        ));
-        assert!(!state.is_declined("claude", Some(&paid)));
-        assert!(!state.is_declined("claude", Some(&other_user)));
-        assert!(!state.is_declined("codex", Some(&free)));
-        // Without a login there is nothing to have declined on.
-        assert!(!state.is_declined("claude", None));
-    }
-
-    #[test]
-    fn a_legacy_decline_no_longer_hides_the_offer_and_installing_clears_every_decline() {
-        let free = decline_key("https://free.nasiko.dev", "u1");
-        let mut state = IntegrationState::default();
-        state.declined.insert("claude".into());
-        assert!(!state.is_declined("claude", Some(&free)));
-        state.decline("claude", &free);
-        state.decline("codex", &free);
-        state.clear_declines("claude");
-        assert!(state.declined.is_empty());
-        assert!(!state.is_declined("claude", Some(&free)));
-        assert!(state.is_declined("codex", Some(&free)));
-        state.clear_declines("codex");
-        assert!(state.declined_on.is_empty());
-    }
-
-    #[test]
-    fn declines_round_trip_and_an_older_file_still_parses() {
-        let old: IntegrationState =
-            serde_json::from_str(r#"{"agents":{},"declined":["claude"]}"#).unwrap();
-        assert!(old.declined.contains("claude") && old.declined_on.is_empty());
-        let mut state = IntegrationState::default();
-        state.decline("cursor", &decline_key("https://free.nasiko.dev", "u1"));
-        let back: IntegrationState =
-            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
-        assert!(back.is_declined(
-            "cursor",
-            Some(&decline_key("https://free.nasiko.dev", "u1"))
-        ));
-    }
 
     #[test]
     fn sanitises_a_traversing_session_id_into_one_filename() {

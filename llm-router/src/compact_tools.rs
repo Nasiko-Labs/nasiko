@@ -235,6 +235,7 @@ mod tests {
 
     fn resolved(compress_enabled: bool, is_coding_agent: bool) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             provider: "openai".into(),
             model: "gpt-4o-mini".into(),
             litellm_model: "openai/gpt-4o-mini".into(),

@@ -142,7 +142,7 @@ pub async fn exchange_assertion(
     };
 
     // Single use: the first exchange wins; a replay within the TTL is refused.
-    let mut conn = match state.redis.connection().await {
+    let mut conn = match state.redis.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "assertion exchange: redis unavailable (fail closed)");
@@ -253,8 +253,8 @@ mod tests {
     #[test]
     fn jwks_url_is_derived_from_the_configured_bff_url_only() {
         assert_eq!(
-            jwks_url("https://app.nasiko.com/"),
-            "https://app.nasiko.com/.well-known/nasiko-delegation-jwks.json"
+            jwks_url("https://nasiko.dev/"),
+            "https://nasiko.dev/.well-known/nasiko-delegation-jwks.json"
         );
     }
 }

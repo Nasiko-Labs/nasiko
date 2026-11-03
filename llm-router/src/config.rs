@@ -55,6 +55,15 @@ pub struct GatewayConfig {
     /// unset too; `LLM_ATTRIBUTION_WINDOW_SECS` still overrides both.
     pub attribution_window_secs: u64,
 
+    /// Longest a provider connection may go without receiving a byte before the call
+    /// fails. A read timeout, not a total one: it restarts on every chunk, so a stream
+    /// that keeps arriving is never cut, while a non-streaming call (silent until its
+    /// reply is ready) is bounded by it. It is also the deadline for the whole fallback
+    /// chain — every attempt and parameter-fix retry together, up to the first streamed
+    /// chunk — so fallbacks never multiply it. Default 300. Keep it below the calling
+    /// agent's own LLM-client timeout, or the agent retries while the router still waits.
+    pub provider_timeout_secs: u64,
+
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
     pub model_catalog_sync_interval_secs: u64,
@@ -186,6 +195,18 @@ pub struct GatewayConfig {
     /// without it.
     pub compact_tools_enabled: bool,
 
+    /// Add the router's own prompt-cache markers where the agent left slots free
+    /// (`TOKEN_CACHE_MARKERS`): on Anthropic, on Bedrock where the model caches, and on Claude
+    /// models through OpenRouter. Each adapter places its own, since providers differ in where a
+    /// marker may go. On OpenAI, which takes no markers, it sets `prompt_cache_key` to the agent
+    /// id on models before GPT-5.6; on OpenRouter it sets `session_id` to it, which keeps the
+    /// agent on one upstream provider.
+    ///
+    /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
+    /// call costs, never what the model sees. Off, the router sends only the agent's own markers
+    /// and key.
+    pub cache_markers_enabled: bool,
+
     /// Persist pre-compression originals so an agent can recover what was elided (IP-5).
     /// Defaults **on**; only ever writes a row when compression actually elided something, which
     /// requires the agent's switch, so an opted-out fleet stores nothing.
@@ -213,6 +234,7 @@ impl Default for GatewayConfig {
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
+            provider_timeout_secs: 300,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -244,6 +266,7 @@ impl Default for GatewayConfig {
             brevity_min_bytes: 0,
             brevity_holdout_pct: 5,
             compact_tools_enabled: false,
+            cache_markers_enabled: true,
             compress_recovery_enabled: true,
             compress_recovery_min_bytes: 8192,
             compress_recovery_ttl_secs: 86_400,
@@ -294,6 +317,16 @@ impl GatewayConfig {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(d.attribution_window_secs),
+            // Zero would fail every provider call on its first read.
+            provider_timeout_secs: parse_or_warn(
+                "LLM_PROVIDER_TIMEOUT_SECS",
+                |raw| match raw.trim().parse::<u64>() {
+                    Ok(0) => Err("must be at least 1".to_string()),
+                    Ok(secs) => Ok(secs),
+                    Err(e) => Err(e.to_string()),
+                },
+                d.provider_timeout_secs,
+            ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -365,6 +398,7 @@ impl GatewayConfig {
             )
             .min(100) as u8,
             compact_tools_enabled: env_flag("TOKEN_COMPACT_TOOLS", d.compact_tools_enabled),
+            cache_markers_enabled: env_flag("TOKEN_CACHE_MARKERS", d.cache_markers_enabled),
             compress_recovery_enabled: env_flag(
                 "TOKEN_COMPRESS_RECOVERY",
                 d.compress_recovery_enabled,
@@ -503,5 +537,18 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provider_timeout_defaults_to_300_and_rejects_zero() {
+        const KEY: &str = "LLM_PROVIDER_TIMEOUT_SECS";
+        unsafe { std::env::remove_var(KEY) };
+        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
+        unsafe { std::env::set_var(KEY, "45") };
+        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 45);
+        unsafe { std::env::set_var(KEY, "0") };
+        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
+        unsafe { std::env::remove_var(KEY) };
     }
 }

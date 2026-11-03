@@ -227,12 +227,7 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm">
           <Field className="gap-1">
             <FieldLabel htmlFor={`${ids}-n`}>{copy.cpName}</FieldLabel>
-            <Input
-              id={`${ids}-n`}
-              placeholder={copy.cpNamePlaceholder}
-              {...register('name')}
-              maxLength={100}
-            />
+            <Input id={`${ids}-n`} {...register('name')} maxLength={100} />
           </Field>
           <Field className="gap-1">
             <FieldLabel htmlFor={`${ids}-t`}>{copy.cpKind}</FieldLabel>
@@ -290,7 +285,6 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
             <Input
               id={`${ids}-k`}
               type="password"
-              placeholder={copy.keyValuePlaceholder}
               autoComplete="new-password"
               {...register('key')}
               spellCheck={false}
@@ -305,11 +299,7 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
           </Field>
           <Field className="gap-1">
             <FieldLabel htmlFor={`${ids}-m`}>{copy.cpDefaultModel}</FieldLabel>
-            <Input
-              id={`${ids}-m`}
-              placeholder={copy.cpDefaultModelPlaceholder}
-              {...register('defaultModel')}
-            />
+            <Input id={`${ids}-m`} {...register('defaultModel')} />
             {modelBlocked ? <Warn>{copy.cantClear}</Warn> : null}
           </Field>
           <Controller

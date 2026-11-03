@@ -3,16 +3,21 @@
 //! OpenRouter-specific behavior is the optional `HTTP-Referer`/`X-Title` attribution
 //! headers (app ranking on openrouter.ai; harmless to omit) and the model id, which is
 //! a full `vendor/model` string (e.g. `anthropic/claude-sonnet-4.6`) rather than a bare
-//! provider-native id.
+//! provider-native id. With `TOKEN_CACHE_MARKERS` on, a Claude model also gets the router's own
+//! cache markers in the slots the agent left free ([`add_cache_markers`]), and every model gets a
+//! `session_id` that pins the agent to one upstream provider ([`add_session_id`]).
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
-use crate::ir::{ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse};
+use crate::ir::{
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse,
+    Message,
+};
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
 pub struct OpenRouterProvider {
@@ -23,7 +28,13 @@ pub struct OpenRouterProvider {
     http_referer: String,
     /// Optional `X-Title` attribution header. Empty ⇒ omitted.
     x_title: String,
+    /// Add the router's own cache markers ([`add_cache_markers`]) and session id
+    /// ([`add_session_id`]).
+    cache_markers: bool,
 }
+
+/// OpenRouter accepts at most this many explicit `cache_control` breakpoints for Claude.
+const MAX_CACHE_MARKERS: usize = 4;
 
 impl OpenRouterProvider {
     pub fn new(http: reqwest::Client, base: String, http_referer: String, x_title: String) -> Self {
@@ -32,7 +43,31 @@ impl OpenRouterProvider {
             base,
             http_referer,
             x_title,
+            cache_markers: false,
         }
+    }
+
+    /// Fill the cache-marker slots an agent leaves free (`TOKEN_CACHE_MARKERS`).
+    pub fn with_cache_markers(mut self, enabled: bool) -> Self {
+        self.cache_markers = enabled;
+        self
+    }
+
+    /// The request as OpenRouter receives it: the resolved model and parameters, plus the
+    /// router's own cache markers and session id when they are on.
+    fn outbound(&self, req: &ChatRequest, cfg: &ResolvedConfig, stream: bool) -> ChatRequest {
+        let mut out = req.clone();
+        out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
+        out.temperature = cfg.temperature.or(req.temperature);
+        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
+            out.max_tokens = Some(mt);
+        }
+        out.stream = Some(stream);
+        if self.cache_markers {
+            add_cache_markers(&mut out);
+            add_session_id(&mut out, cfg);
+        }
+        out
     }
 
     /// 429 and 5xx are retryable (transient); other 4xx are request-shape errors.
@@ -66,13 +101,7 @@ impl ProviderClient for OpenRouterProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let mut out = req.clone();
-        out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
-        out.temperature = cfg.temperature.or(req.temperature);
-        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
-            out.max_tokens = Some(mt);
-        }
-        out.stream = Some(false);
+        let out = self.outbound(req, cfg, false);
 
         let resp = self
             .post("/chat/completions", &cfg.api_key)
@@ -100,13 +129,7 @@ impl ProviderClient for OpenRouterProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut out = req.clone();
-        out.model = Some(cfg.model.clone());
-        out.temperature = cfg.temperature.or(req.temperature);
-        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
-            out.max_tokens = Some(mt);
-        }
-        out.stream = Some(true);
+        let mut out = self.outbound(req, cfg, true);
         out.extra.insert(
             "stream_options".to_string(),
             json!({ "include_usage": true }),
@@ -204,6 +227,110 @@ impl ProviderClient for OpenRouterProvider {
     }
 }
 
+/// Add the router's own cache markers for a Claude model in the slots the agent left free:
+/// first the end of the conversation, ahead of brevity's trailing directive, then the end of the
+/// leading system messages. Each is a 5-minute marker. Other models cache on OpenRouter without
+/// markers, and Gemini keeps only the last one, so they get none.
+fn add_cache_markers(out: &mut ChatRequest) {
+    if !out
+        .model
+        .as_deref()
+        .is_some_and(|m| m.starts_with("anthropic/"))
+    {
+        return;
+    }
+    let mut free = MAX_CACHE_MARKERS.saturating_sub(out.cache_marker_count());
+    // A 5-minute marker may not come before a 1-hour one, and system comes before every turn,
+    // including a tool call's marker, which OpenRouter receives on the call itself.
+    let turns_hold_long_marker = out.messages.iter().any(|m| {
+        let parts = m
+            .content
+            .as_ref()
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        let calls = m
+            .tool_calls
+            .iter()
+            .flatten()
+            .filter_map(|call| call.extra.get(CACHE_CONTROL));
+        m.role != "system"
+            && parts
+                .map(|part| &part[CACHE_CONTROL])
+                .chain(calls)
+                .any(|marker| marker["ttl"] == "1h")
+    });
+
+    if free > 0
+        && let Some(last) = out
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|m| !crate::brevity::is_directive(m))
+        && mark_last_text(last)
+    {
+        free -= 1;
+    }
+    if free > 0
+        && !turns_hold_long_marker
+        && let Some(system) = out
+            .messages
+            .iter_mut()
+            .take_while(|m| m.role == "system" && !crate::brevity::is_directive(m))
+            .last()
+    {
+        mark_last_text(system);
+    }
+}
+
+/// The body field OpenRouter keys sticky routing by. It reads `prompt_cache_key` when this is
+/// absent.
+const SESSION_ID: &str = "session_id";
+const PROMPT_CACHE_KEY: &str = "prompt_cache_key";
+
+/// Pin the agent to one upstream provider, so its calls reach the cache the first one wrote.
+/// Without a key OpenRouter pins a conversation only after its first cache hit; with one it pins
+/// from the first call, for 10 minutes after the last. Z.ai's cache affinity also follows it. A
+/// manual `provider.order` would turn sticky routing off, so the router sends none. The agent's own
+/// `session_id` or `prompt_cache_key` wins.
+fn add_session_id(out: &mut ChatRequest, cfg: &ResolvedConfig) {
+    if cfg.agent_id.is_empty()
+        || out.extra.contains_key(SESSION_ID)
+        || out.extra.contains_key(PROMPT_CACHE_KEY)
+    {
+        return;
+    }
+    out.extra
+        .insert(SESSION_ID.to_string(), json!(cfg.agent_id));
+}
+
+/// Mark a message's last text, turning a string content into its one text part; `false` when it
+/// was marked already or has no text to mark.
+fn mark_last_text(m: &mut Message) -> bool {
+    if let Some(Value::String(text)) = &m.content
+        && !text.is_empty()
+    {
+        m.content = Some(json!([{ "type": "text", "text": text }]));
+    }
+    let Some(part) =
+        m.content
+            .as_mut()
+            .and_then(Value::as_array_mut)
+            .and_then(|parts| {
+                parts.iter_mut().rev().find(|p| {
+                    p["type"] == "text" && p["text"].as_str().is_some_and(|t| !t.is_empty())
+                })
+            })
+    else {
+        return false;
+    };
+    if part.get(CACHE_CONTROL).is_some() {
+        return false;
+    }
+    part[CACHE_CONTROL] = json!({ "type": "ephemeral" });
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +338,7 @@ mod tests {
 
     fn resolved(model: &str, temperature: Option<f64>) -> ResolvedConfig {
         ResolvedConfig {
+            agent_id: String::new(),
             compress_enabled: false,
             provider: "openrouter".into(),
             model: model.into(),
@@ -227,6 +355,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
         }
     }
 
@@ -469,5 +598,290 @@ mod tests {
             provider.droppable_param(&ProviderError::Transport("x".into())),
             None
         );
+    }
+
+    /// The body OpenRouter receives for `req` on `model` with `TOKEN_CACHE_MARKERS` on.
+    fn with_router_markers(req: &ChatRequest, model: &str) -> serde_json::Value {
+        let out = provider("http://x".into())
+            .with_cache_markers(true)
+            .outbound(req, &resolved(model, None), false);
+        serde_json::to_value(out).unwrap()
+    }
+
+    fn plain_request() -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": "Fix the failing test." }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn marked(text: &str) -> serde_json::Value {
+        json!([{ "type": "text", "text": text, "cache_control": { "type": "ephemeral" } }])
+    }
+
+    #[test]
+    fn the_router_marks_the_end_of_the_conversation_then_of_system_on_claude() {
+        let body = with_router_markers(&plain_request(), "anthropic/claude-haiku-5.5");
+
+        assert_eq!(
+            body["messages"][0]["content"],
+            marked("You are a coding agent.")
+        );
+        assert_eq!(
+            body["messages"][1]["content"],
+            marked("Fix the failing test.")
+        );
+    }
+
+    #[test]
+    fn without_the_flag_the_router_adds_no_marker() {
+        let out = provider("http://x".into()).outbound(
+            &plain_request(),
+            &resolved("anthropic/claude-haiku-5.5", None),
+            false,
+        );
+
+        assert_eq!(out.cache_marker_count(), 0);
+    }
+
+    #[test]
+    fn models_that_cache_without_markers_get_none_from_the_router() {
+        for model in [
+            "openai/gpt-5.5",
+            "google/gemini-2.5-pro",
+            "deepseek/deepseek-v3.2",
+            "z-ai/glm-5.3",
+        ] {
+            let body = with_router_markers(&plain_request(), model);
+
+            assert!(!body.to_string().contains("cache_control"), "{model}");
+        }
+    }
+
+    #[test]
+    fn the_routers_last_marker_goes_ahead_of_brevitys_directive() {
+        let cfg = crate::config::GatewayConfig {
+            brevity_enabled: true,
+            brevity_min_bytes: 0,
+            ..Default::default()
+        };
+        let brevity_on = ResolvedConfig {
+            compress_enabled: true,
+            ..resolved("anthropic/claude-haiku-5.5", None)
+        };
+        let mut req = plain_request();
+        crate::brevity::apply(&mut req, &cfg, &brevity_on, None).unwrap();
+
+        let body = with_router_markers(&req, "anthropic/claude-haiku-5.5");
+
+        assert_eq!(
+            body["messages"][1]["content"],
+            marked("Fix the failing test.")
+        );
+        assert_eq!(body["messages"][2]["content"], crate::brevity::DIRECTIVE);
+    }
+
+    #[test]
+    fn a_tool_result_ending_the_conversation_takes_the_last_marker() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "user", "content": "Fix the failing test." },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "toolu_1", "type": "function",
+                    "function": { "name": "read", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}" }
+            ]
+        }))
+        .unwrap();
+
+        let body = with_router_markers(&req, "anthropic/claude-haiku-5.5");
+
+        assert_eq!(body["messages"][2]["content"], marked("fn main() {}"));
+    }
+
+    #[test]
+    fn an_agent_holding_all_four_markers_gets_none_from_the_router() {
+        use crate::inbound::InboundParser;
+        let ephemeral = json!({ "type": "ephemeral" });
+        let req = crate::inbound::AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "tools": [{ "name": "read", "input_schema": { "type": "object" }, "cache_control": ephemeral }],
+                "messages": [
+                    { "role": "user", "content": [
+                        { "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }
+                    ]},
+                    { "role": "assistant", "content": [
+                        { "type": "tool_use", "id": "toolu_1", "name": "read", "input": {}, "cache_control": ephemeral }
+                    ]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}", "cache_control": ephemeral },
+                        { "type": "text", "text": "Then stop." }
+                    ]}
+                ]
+            }))
+            .unwrap();
+        let model = "anthropic/claude-haiku-5.5";
+        let without = provider("http://x".into()).outbound(&req, &resolved(model, None), false);
+
+        // Neither the end of the conversation nor system is marked, but a fifth is rejected.
+        let body = with_router_markers(&req, model);
+
+        assert_eq!(without.cache_marker_count(), MAX_CACHE_MARKERS);
+        assert_eq!(body, serde_json::to_value(without).unwrap());
+    }
+
+    #[test]
+    fn no_five_minute_system_marker_goes_ahead_of_an_agents_one_hour_marker() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "You are a coding agent." },
+                { "role": "user", "content": [{
+                    "type": "text", "text": "Read the repository map.",
+                    "cache_control": { "type": "ephemeral", "ttl": "1h" }
+                }]},
+                { "role": "assistant", "content": "Done." },
+                { "role": "user", "content": "Now fix the failing test." }
+            ]
+        }))
+        .unwrap();
+
+        let body = with_router_markers(&req, "anthropic/claude-haiku-5.5");
+
+        assert_eq!(body["messages"][0]["content"], "You are a coding agent.");
+        assert_eq!(
+            body["messages"][3]["content"],
+            marked("Now fix the failing test.")
+        );
+    }
+
+    #[test]
+    fn no_five_minute_system_marker_goes_ahead_of_an_agents_one_hour_tool_call_marker() {
+        use crate::inbound::InboundParser;
+        let req = crate::inbound::AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 1024,
+                "system": "You are a coding agent.",
+                "messages": [
+                    { "role": "user", "content": "Fix the failing test." },
+                    { "role": "assistant", "content": [{
+                        "type": "tool_use", "id": "toolu_1", "name": "read", "input": {},
+                        "cache_control": { "type": "ephemeral", "ttl": "1h" }
+                    }]},
+                    { "role": "user", "content": [
+                        { "type": "tool_result", "tool_use_id": "toolu_1", "content": "fn main() {}" }
+                    ]}
+                ]
+            }))
+            .unwrap();
+
+        let body = with_router_markers(&req, "anthropic/claude-haiku-5.5");
+
+        assert_eq!(body["messages"][0]["content"], "You are a coding agent.");
+        assert_eq!(body["messages"][3]["content"], marked("fn main() {}"));
+    }
+
+    const AGENT_ID: &str = "6f1c2a9e-0b7d-4e8a-9c21-7d4e5f6a8b90";
+
+    fn for_agent(model: &str) -> ResolvedConfig {
+        ResolvedConfig {
+            agent_id: AGENT_ID.into(),
+            ..resolved(model, None)
+        }
+    }
+
+    #[test]
+    fn the_router_pins_every_model_to_one_provider_by_the_agent_id() {
+        for model in [
+            "anthropic/claude-haiku-5.5",
+            "z-ai/glm-5.3",
+            "openai/gpt-5.5",
+        ] {
+            let out = provider("http://x".into())
+                .with_cache_markers(true)
+                .outbound(&plain_request(), &for_agent(model), false);
+
+            assert_eq!(out.extra[SESSION_ID], AGENT_ID, "{model}");
+        }
+    }
+
+    #[test]
+    fn an_agents_own_session_id_or_prompt_cache_key_wins() {
+        for (field, value) in [
+            (SESSION_ID, "agent-session"),
+            (PROMPT_CACHE_KEY, "agent-key"),
+        ] {
+            let mut req = plain_request();
+            req.extra.insert(field.into(), json!(value));
+
+            let out = provider("http://x".into())
+                .with_cache_markers(true)
+                .outbound(&req, &for_agent("z-ai/glm-5.3"), false);
+
+            assert_eq!(out.extra[field], value);
+            assert_eq!(out.extra.len(), 1, "{field}");
+        }
+    }
+
+    #[test]
+    fn no_session_id_without_the_flag_or_an_agent() {
+        let flag_off = provider("http://x".into()).outbound(
+            &plain_request(),
+            &for_agent("z-ai/glm-5.3"),
+            false,
+        );
+        let no_agent = provider("http://x".into())
+            .with_cache_markers(true)
+            .outbound(&plain_request(), &resolved("z-ai/glm-5.3", None), false);
+
+        assert!(!flag_off.extra.contains_key(SESSION_ID));
+        assert!(!no_agent.extra.contains_key(SESSION_ID));
+    }
+
+    #[tokio::test]
+    async fn the_default_gateway_config_sends_the_routers_markers_and_session_id() {
+        let mut server = mockito::Server::new_async().await;
+        let m = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "session_id": AGENT_ID,
+                "messages": [
+                    { "role": "system", "content": marked("You are a coding agent.") },
+                    { "role": "user", "content": marked("Fix the failing test.") }
+                ]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "gen-1", "object": "chat.completion", "model": "anthropic/claude-haiku-5.5",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let cfg = crate::config::GatewayConfig {
+            openrouter_api_base: server.url(),
+            ..Default::default()
+        };
+        let provider =
+            crate::providers::provider_for("openrouter", None, &reqwest::Client::new(), &cfg)
+                .unwrap();
+
+        provider
+            .chat(&plain_request(), &for_agent("anthropic/claude-haiku-5.5"))
+            .await
+            .unwrap();
+
+        m.assert_async().await;
     }
 }
