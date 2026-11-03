@@ -338,6 +338,92 @@ async fn session_detail_returns_404_for_another_users_session() {
 
 #[tokio::test]
 #[serial]
+async fn session_and_trace_detail_fall_back_to_receipts_when_tempo_has_nothing() {
+    // Tempo answers, but holds nothing: a session whose turns never crossed the proxy.
+    let mut tempo = mockito::Server::new_async().await;
+    tempo
+        .mock("GET", mockito::Matcher::Regex("^/api/search".into()))
+        .with_status(200)
+        .with_body(r#"{"traces":[]}"#)
+        .create_async()
+        .await;
+    tempo
+        .mock("GET", mockito::Matcher::Regex("^/api/traces/".into()))
+        .with_status(404)
+        .create_async()
+        .await;
+    let tempo_url = tempo.url();
+    let server = common::TestServer::start_with(move |config| {
+        config.loki_url = tempo_url.clone();
+        config.tempo_url = tempo_url;
+        config.observability_enabled = true;
+    })
+    .await;
+    let _admin = init_admin(&server).await;
+    let owner = seed_user(&server, "receipt-owner").await;
+    let stranger = seed_user(&server, "receipt-stranger").await;
+    let agent = seed_agent(&server, owner, "receipt-agent").await;
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ('rcpt-session', $1, $2, 'From receipts')",
+    )
+    .bind(owner)
+    .bind(agent)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO trace_usage (trace_id, agent_name, session_id, cost_usd, prompt_cost_usd, \
+                                  completion_cost_usd, latency_ms, started_at) \
+         VALUES ('0af7651916cd43dd8448eb211c80319c', 'receipt-agent', 'rcpt-session', 0.5, 0.2, 0.3, 1500, now())",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let get = |path: &str, user: Uuid, name: &str| {
+        server
+            .client
+            .get(server.url(path))
+            .bearer_auth(common::sign_token(&user.to_string(), name, false, "member"))
+            .send()
+    };
+    let session = get(
+        "/api/observability/session/rcpt-session",
+        owner,
+        "receipt-owner",
+    )
+    .await
+    .unwrap();
+    assert_eq!(session.status(), 200);
+    let body: Value = session.json().await.unwrap();
+    assert_eq!(body["data"]["session"]["title"], "From receipts");
+    assert_eq!(body["data"]["session"]["traces"], json!([]));
+
+    let trace_path = "/api/observability/trace/0af7651916cd43dd8448eb211c80319c";
+    let trace = get(trace_path, owner, "receipt-owner").await.unwrap();
+    assert_eq!(trace.status(), 200);
+    let body: Value = trace.json().await.unwrap();
+    assert_eq!(body["data"]["trace"]["project_session_id"], "rcpt-session");
+    assert_eq!(body["data"]["trace"]["num_spans"], 0);
+    assert_eq!(body["data"]["trace"]["cost_summary"]["total"]["cost"], 0.5);
+
+    // The fallback is authorized like the real thing.
+    let denied = get(trace_path, stranger, "receipt-stranger").await.unwrap();
+    assert_eq!(denied.status(), 404);
+    let unknown = get(
+        "/api/observability/trace/ffffffffffffffffffffffffffffffff",
+        owner,
+        "receipt-owner",
+    )
+    .await
+    .unwrap();
+    assert_eq!(unknown.status(), 404);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn agent_stats_and_logs_return_404_for_inaccessible_agent() {
     let server = common::TestServer::start().await;
     let _admin = init_admin(&server).await;
