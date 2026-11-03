@@ -352,6 +352,16 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     let tool_span = (method == "tools/call").then(|| {
         let span = tracing::info_span!(
             "execute_tool",
+            // The *exported* span name is tool-specific (`execute_tool <tool>`),
+            // while `gen_ai.operation.name` stays the generic `execute_tool` the
+            // Tool-lane classifier keys on. Retry/recovery detection
+            // (`unrecovered_error_spans`, and the UI's `unrecoveredErrors`)
+            // pairs an error span with a later success under the same parent by
+            // *name*, so a single shared name would let a failed tool be hidden
+            // by an unrelated tool that happened to succeed next. The
+            // coding-agent OTLP path already names its tool spans this way
+            // (`coding_agent_otlp.rs`).
+            otel.name = %tool_span_name(&tool_name),
             otel.kind = "client",
             otel.status_code = tracing::field::Empty,
             gen_ai.operation.name = "execute_tool",
@@ -374,10 +384,23 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
                 crate::coding_agent_otlp::bounded_json(&args).as_str(),
             );
         }
-        if let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent) {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            span.set_parent(cx);
-        }
+        // Parent the tool span to the inbound trace ONLY when the flow is
+        // proven. `verified_flow_id` is `Some` exactly when this call's trace was
+        // verified — on the A2A path `flow_user` derived the trace id from this
+        // very `traceparent` and checked it against `flows`/`flow_participants`,
+        // and on the session path the signed claims did — so the header's trace
+        // is the caller's own. On the owner-fallback path it is `None` (a coding
+        // agent acting as its owner, or a foreign/dead trace id nobody proved);
+        // the header is unverified, so the span — and the tool arguments/results
+        // it may carry — must never join the trace it names.
+        //
+        // Detaching has to be explicit: the span is created inside the server's
+        // `request` span, which `TraceLayer` already adopted into the raw inbound
+        // `traceparent` (`oss/server/src/lib.rs`), so a contextual span inherits
+        // that remote trace at export unless its parent is overridden. Setting an
+        // empty context roots it in a trace of its own instead of a caller's.
+        use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+        span.set_parent(tool_span_parent(verified_flow_id.as_deref(), traceparent));
         span
     });
 
@@ -402,7 +425,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
 
     if method == "tools/call" {
         let latency_ms = started.elapsed().as_millis().min(i32::MAX as u128) as i32;
-        let success = result.get("error").is_none();
+        let success = tool_call_succeeded(&result);
         if let Some(span) = &tool_span {
             span.record("tool.success", success);
             if !success {
@@ -656,6 +679,67 @@ fn unwrap_tool_text(result: &Value) -> Option<Value> {
     Some(serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text)))
 }
 
+/// The OpenTelemetry parent context for a tool call's `execute_tool` span.
+///
+/// Returns the caller's remote trace context **only** when the flow was proven
+/// (`verified_flow_id` is `Some`); otherwise an empty context, which roots the
+/// span in its own trace. An unverified inbound `traceparent` — the owner-
+/// fallback path, where it may name another user's flow — is never adopted, so
+/// the tool span and its captured payloads cannot be stapled onto a trace the
+/// caller did not prove it belongs to. Returning an empty context (rather than
+/// leaving the span contextual) is what detaches it from the server `request`
+/// span that `TraceLayer` already parented to the raw header.
+fn tool_span_parent(
+    verified_flow_id: Option<&str>,
+    traceparent: Option<&str>,
+) -> opentelemetry::Context {
+    if verified_flow_id.is_some()
+        && let Some(cx) = traceparent.and_then(crate::telemetry::remote_context_from_traceparent)
+    {
+        return cx;
+    }
+    opentelemetry::Context::new()
+}
+
+/// The exported name for a tool call's `execute_tool` span.
+///
+/// Tool-specific (`execute_tool gmail__send_email`) so retry/recovery detection,
+/// which pairs an error span with a later same-named success under the same
+/// parent, cannot treat an unrelated tool that succeeded next as a recovery of a
+/// tool that failed. Mirrors the coding-agent OTLP convention
+/// (`coding_agent_otlp.rs`). Falls back to the bare `execute_tool` when the tool
+/// name is missing, rather than leaving a trailing space.
+fn tool_span_name(tool_name: &str) -> String {
+    if tool_name.is_empty() {
+        "execute_tool".to_string()
+    } else {
+        format!("execute_tool {tool_name}")
+    }
+}
+
+/// Whether a `tools/call` JSON-RPC response reports success.
+///
+/// A tool call can fail in two independent shapes, and both must count as a
+/// failure or a failed call is exported and billed as a success:
+///
+/// - a top-level JSON-RPC `error` object — a transport/protocol failure the
+///   gateway itself produced, and
+/// - a tool-level failure, which MCP returns as a *successful* JSON-RPC
+///   response whose `result.isError` is `true` (the tool ran and reported its
+///   own error — the shape connector tools and the recovery-tool path use).
+///
+/// Checking only `error` silently loses the second kind, so the span records
+/// `tool.success = true` and the usage row `finish_reason = "ok"` for a call
+/// that actually failed.
+fn tool_call_succeeded(response: &Value) -> bool {
+    response.get("error").is_none()
+        && response
+            .get("result")
+            .and_then(|r| r.get("isError"))
+            .and_then(Value::as_bool)
+            != Some(true)
+}
+
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -736,5 +820,101 @@ mod tests {
         let big = "x".repeat(MAX_TOOL_CONTENT_CHARS * 2);
         let result = json!({ "content": [{ "type": "text", "text": big }] });
         assert!(tool_result_for_span(&result).chars().count() <= MAX_TOOL_CONTENT_CHARS);
+    }
+
+    const SAMPLE_TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    const SAMPLE_TRACE_ID: &str = "0af7651916cd43dd8448eb211c80319c";
+
+    #[test]
+    fn verified_flow_parents_the_tool_span_to_the_inbound_trace() {
+        use opentelemetry::trace::TraceContextExt as _;
+        let cx = tool_span_parent(Some(SAMPLE_TRACE_ID), Some(SAMPLE_TRACEPARENT));
+        let sc = cx.span().span_context().clone();
+        assert!(sc.is_valid(), "a verified call joins the caller's trace");
+        assert_eq!(sc.trace_id().to_string(), SAMPLE_TRACE_ID);
+    }
+
+    #[test]
+    fn unverified_traceparent_is_not_adopted_as_the_tool_span_parent() {
+        use opentelemetry::trace::TraceContextExt as _;
+        // Owner-fallback: no proven flow, though the header names a (foreign)
+        // trace. The span must detach to its own root, never join that trace.
+        let cx = tool_span_parent(None, Some(SAMPLE_TRACEPARENT));
+        assert!(
+            !cx.span().span_context().is_valid(),
+            "an unverified trace is never adopted as the parent"
+        );
+    }
+
+    #[test]
+    fn verified_flow_with_an_unusable_traceparent_detaches() {
+        use opentelemetry::trace::TraceContextExt as _;
+        // Defensive: proven flow but the header will not parse → own root, not a
+        // panic and not an adopted garbage context.
+        let cx = tool_span_parent(Some("flow-1"), Some("not-a-traceparent"));
+        assert!(!cx.span().span_context().is_valid());
+        // And with no header at all.
+        let cx = tool_span_parent(Some("flow-1"), None);
+        assert!(!cx.span().span_context().is_valid());
+    }
+
+    #[test]
+    fn tool_span_name_is_tool_specific() {
+        // Distinct tools get distinct exported span names, which is what keeps
+        // one tool's failure from being hidden by another's success in
+        // retry/recovery detection.
+        assert_eq!(
+            tool_span_name("gmail__send_email"),
+            "execute_tool gmail__send_email"
+        );
+        assert_ne!(
+            tool_span_name("gmail__send_email"),
+            tool_span_name("calendar__list_events")
+        );
+        // Prefix preserved so the name still reads as a tool execution.
+        assert!(tool_span_name("x").starts_with("execute_tool "));
+        // No trailing space when the tool name is missing.
+        assert_eq!(tool_span_name(""), "execute_tool");
+    }
+
+    #[test]
+    fn tool_level_iserror_is_a_failure_despite_no_jsonrpc_error() {
+        // MCP tool-level failure: a successful JSON-RPC response whose result
+        // carries `isError: true`. Checking only `error` would call this a
+        // success and export/record it as one.
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "quota exceeded" }], "isError": true }
+        });
+        assert!(!tool_call_succeeded(&response));
+    }
+
+    #[test]
+    fn top_level_jsonrpc_error_is_a_failure() {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": { "code": -32000, "message": "boom" }
+        });
+        assert!(!tool_call_succeeded(&response));
+    }
+
+    #[test]
+    fn clean_result_is_a_success() {
+        // `isError: false` and no error → success.
+        let explicit = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "ok" }], "isError": false }
+        });
+        assert!(tool_call_succeeded(&explicit));
+        // A result with no `isError` field at all is also a success.
+        let implicit = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "content": [{ "type": "text", "text": "ok" }] }
+        });
+        assert!(tool_call_succeeded(&implicit));
     }
 }

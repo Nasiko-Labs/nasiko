@@ -308,6 +308,27 @@ pub fn is_router_llm_span(span: &Span) -> bool {
     span.attributes.contains_key("gen_ai.agent.id")
 }
 
+/// Whether a span records a tool execution rather than an LLM call.
+///
+/// Both tool spans the platform emits set `gen_ai.operation.name =
+/// "execute_tool"` — the MCP gateway's `execute_tool` span and the coding-agent
+/// OTLP tool span; `"call_tool"` is the older GenAI-semconv spelling and
+/// `openinference.span.kind = "TOOL"` the OpenInference one. A tool span may
+/// also carry `gen_ai.agent.id` (the MCP gateway stamps it for attribution), so
+/// it is **not** exclusive with [`is_router_llm_span`]; callers that must treat
+/// tool calls apart from LLM calls check this first.
+pub fn is_tool_span(span: &Span) -> bool {
+    span.attributes
+        .get("gen_ai.operation.name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == "execute_tool" || s == "call_tool")
+        || span
+            .attributes
+            .get("openinference.span.kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("tool"))
+}
+
 /// How each LLM-router span relates to the agent span for the same call.
 pub struct RouterSpanLinks<'a> {
     /// Router span id → service name of the agent whose call it served.
@@ -737,6 +758,36 @@ mod link_router_spans_tests {
     }
 
     #[test]
+    fn is_tool_span_recognises_the_tool_operation_spellings() {
+        assert!(is_tool_span(&span(
+            "a",
+            None,
+            "svc",
+            &[("gen_ai.operation.name", "execute_tool")]
+        )));
+        assert!(is_tool_span(&span(
+            "b",
+            None,
+            "svc",
+            &[("gen_ai.operation.name", "call_tool")]
+        )));
+        assert!(is_tool_span(&span(
+            "c",
+            None,
+            "svc",
+            &[("openinference.span.kind", "TOOL")]
+        )));
+        // An LLM/router span (chat op, or just a model) is not a tool span,
+        // even though it carries gen_ai.agent.id.
+        assert!(!is_tool_span(&span(
+            "d",
+            None,
+            "svc",
+            &[("gen_ai.operation.name", "chat"), ("gen_ai.agent.id", "x")]
+        )));
+    }
+
+    #[test]
     fn unlinkable_router_span_is_attributed_by_gen_ai_agent_id() {
         // A coding agent (e.g. OpenCode) emits no spans of its own, so the router's
         // span is the only token-bearing one and has no agent-span ancestor. It must
@@ -946,6 +997,57 @@ mod unrecovered_error_tests {
                 span("b", Some("p2"), "call", 10, 10, false),
             ]),
             1
+        );
+    }
+
+    #[test]
+    fn a_failed_tool_is_not_recovered_by_a_different_tool_succeeding_next() {
+        // The MCP tool-span regression: two different tools under one turn's
+        // parent, the first failing and an unrelated one succeeding after it.
+        // Tool spans must carry tool-specific names (`execute_tool <tool>`), or
+        // this reads as a recovered retry and the failure disappears.
+        assert_eq!(
+            count(&[
+                span(
+                    "a",
+                    Some("turn"),
+                    "execute_tool gmail__send_email",
+                    0,
+                    10,
+                    true
+                ),
+                span(
+                    "b",
+                    Some("turn"),
+                    "execute_tool calendar__list_events",
+                    10,
+                    10,
+                    false
+                ),
+            ]),
+            1
+        );
+        // A real retry of the *same* tool still recovers.
+        assert_eq!(
+            count(&[
+                span(
+                    "a",
+                    Some("turn"),
+                    "execute_tool gmail__send_email",
+                    0,
+                    10,
+                    true
+                ),
+                span(
+                    "b",
+                    Some("turn"),
+                    "execute_tool gmail__send_email",
+                    10,
+                    10,
+                    false
+                ),
+            ]),
+            0
         );
     }
 

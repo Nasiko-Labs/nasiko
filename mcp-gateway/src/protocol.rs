@@ -522,10 +522,10 @@ pub fn invoked_tool_name(params: &Value) -> &str {
 /// object out of a borrowed tree.
 pub fn invoked_tool_arguments(params: &Value) -> Value {
     let outer = params.get("name").and_then(Value::as_str).unwrap_or("");
-    if outer == CALL_TOOL_META {
-        if let Ok((_, inner)) = parse_call_tool_target(params.get("arguments")) {
-            return inner;
-        }
+    if outer == CALL_TOOL_META
+        && let Ok((_, inner)) = parse_call_tool_target(params.get("arguments"))
+    {
+        return inner;
     }
     params
         .get("arguments")
