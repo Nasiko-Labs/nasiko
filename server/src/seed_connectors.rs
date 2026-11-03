@@ -3,7 +3,8 @@
 //! Each entry is registered as a connector owned by the first superuser and
 //! shared publicly, so every user sees it without registering it themselves.
 //! Seeding is idempotent: a connector the owner already has by that name is
-//! left alone. A failing entry is logged and skipped — a third-party MCP
+//! not re-registered (its stored config is left alone), but its public share
+//! is re-asserted every boot. A failing entry is logged and skipped — a third-party MCP
 //! server being down must never block boot.
 
 use std::collections::HashMap;
@@ -89,38 +90,55 @@ async fn first_superuser(state: &AppState) -> Option<Uuid> {
     .flatten()
 }
 
+/// Register the connector unless it already exists, then make sure it is
+/// shared publicly. The share runs for an existing connector too — it is an
+/// upsert — so a connector whose share failed, or whose boot died between
+/// register and share, is repaired on the next boot instead of staying
+/// owner-only forever.
 async fn seed_one(state: &AppState, owner_id: Uuid, spec: SeedConnectorSpec) {
     let name = spec.name.clone();
-    match nasiko_mcp_gateway::repo::get_owned_connector_by_name(&state.db, owner_id, &name).await {
-        Ok(Some(_)) => {
-            info!(connector = %name, "connector already registered, skipping");
-            return;
-        }
-        Ok(None) => {}
-        Err(e) => {
-            warn!(connector = %name, %e, "failed to look up seed connector, skipping");
-            return;
-        }
-    }
-    let connector =
-        match connectors::register_connector(&state.mcp, owner_id, into_input(spec)).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(connector = %name, %e, "failed to seed connector");
-                return;
-            }
-        };
+    let Some(connector_id) = find_or_register(state, owner_id, spec).await else {
+        return;
+    };
     match connectors::share_connector(
         &state.mcp,
         owner_id,
         true,
-        connector.id,
+        connector_id,
         ShareTarget::Public,
     )
     .await
     {
-        Ok(_) => info!(connector = %name, "seeded connector and shared it publicly"),
-        Err(e) => warn!(connector = %name, %e, "seeded connector but failed to share it"),
+        Ok(_) => info!(connector = %name, "seed connector registered and shared publicly"),
+        Err(e) => {
+            warn!(connector = %name, %e, "seed connector registered but sharing failed, retrying next boot")
+        }
+    }
+}
+
+async fn find_or_register(
+    state: &AppState,
+    owner_id: Uuid,
+    spec: SeedConnectorSpec,
+) -> Option<Uuid> {
+    let name = spec.name.clone();
+    match nasiko_mcp_gateway::repo::get_owned_connector_by_name(&state.db, owner_id, &name).await {
+        Ok(Some(existing)) => {
+            info!(connector = %name, "connector already registered, not re-registering");
+            return Some(existing.id);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            warn!(connector = %name, %e, "failed to look up seed connector, skipping");
+            return None;
+        }
+    }
+    match connectors::register_connector(&state.mcp, owner_id, into_input(spec)).await {
+        Ok(c) => Some(c.id),
+        Err(e) => {
+            warn!(connector = %name, %e, "failed to seed connector");
+            None
+        }
     }
 }
 
