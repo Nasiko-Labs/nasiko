@@ -327,6 +327,33 @@ async fn restricted_bulk_put_merges_and_rejects() {
 
 #[tokio::test]
 #[serial]
+async fn restricted_bulk_put_refused_on_one_connector_writes_none() {
+    let f = setup().await;
+    assert_eq!(f.put_rules(&[(f.c2, TOOL_A, "ask")]).await, 200);
+    f.restrict(HashMap::from([
+        (f.c1, only(&[TOOL_A])),
+        (f.c2, ToolSet::All),
+    ]))
+    .await;
+    // Connectors are written in no fixed order, so try a few times: whichever comes
+    // first, the refused rule on c1 must stop the allowed one on c2 too.
+    for _ in 0..8 {
+        assert_eq!(
+            f.put_rules(&[(f.c2, TOOL_A, "block"), (f.c1, TOOL_B, "allow")])
+                .await,
+            403
+        );
+        assert_eq!(
+            f.stored_rules(f.c2).await,
+            HashMap::from([(TOOL_A.into(), "ask".into())]),
+            "c2 must not change"
+        );
+    }
+    f.server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn restricted_with_all_keeps_replace_behaviour() {
     let f = setup().await;
     assert_eq!(

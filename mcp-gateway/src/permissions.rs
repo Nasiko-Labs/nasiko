@@ -914,7 +914,8 @@ pub async fn bulk_update_tools(
             .insert(rule.tool_pattern.clone(), rule.stance.clone());
     }
 
-    let mut applied: Vec<Value> = Vec::new();
+    // Check every connector before writing any, so a refused save changes nothing.
+    let mut writes: Vec<(Uuid, bool, Vec<ToolRule>, Vec<ToolRule>)> = Vec::new();
     for (connector_id, patterns) in by_connector {
         if !state
             .authorizer
@@ -941,6 +942,22 @@ pub async fn bulk_update_tools(
         } else {
             tool_rules.clone()
         };
+        writes.push((connector_id, enabled, stored_rules, tool_rules));
+    }
+
+    let written = write_tool_rules(state, agent_id, writes).await;
+    // Also after a failed write: earlier connectors may already have changed.
+    invalidate_permission_cache(state, agent_id).await;
+    Ok(json!({ "rules": written? }))
+}
+
+async fn write_tool_rules(
+    state: &McpState,
+    agent_id: Uuid,
+    writes: Vec<(Uuid, bool, Vec<ToolRule>, Vec<ToolRule>)>,
+) -> Result<Vec<Value>> {
+    let mut applied: Vec<Value> = Vec::new();
+    for (connector_id, enabled, stored_rules, tool_rules) in writes {
         let rules_json = serde_json::to_value(&stored_rules)?;
         repo::upsert_agent_connector_access(
             &state.db,
@@ -954,9 +971,7 @@ pub async fn bulk_update_tools(
             applied.push(json!({ "connector_id": connector_id, "tool_pattern": tr.pattern, "stance": tr.stance }));
         }
     }
-
-    invalidate_permission_cache(state, agent_id).await;
-    Ok(json!({ "rules": applied }))
+    Ok(applied)
 }
 
 /// The rules to store for a filtered caller: their `incoming` rules (each
