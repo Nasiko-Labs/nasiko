@@ -335,6 +335,42 @@ async fn disable_connector_persists_and_lists() {
 
 #[tokio::test]
 #[serial]
+async fn enabling_a_never_synced_connector_fills_its_tool_catalog() {
+    let server = common::TestServer::start().await;
+    // The fixture registers the connector through the real route, which never
+    // fetches tools — the catalog starts empty.
+    let fx = setup_fixture(&server).await;
+    let count = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM mcp_connector_tools WHERE connector_id = $1",
+        )
+        .bind(fx.connector_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    assert_eq!(count().await, 0, "registration must not sync the catalog");
+
+    // Only the toggle — no tool-list read, exactly what the CLI's
+    // `mcp agent tools enable` sends.
+    fx.set_connector_enabled(&server, true).await;
+
+    // The sync runs off the request; poll for it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while count().await < 3 && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        count().await,
+        3,
+        "enabling must sync all 3 stub tools into the catalog search reads"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn tool_rules_bulk_update_list_and_reset() {
     let server = common::TestServer::start().await;
     let (admin_id, admin_uuid) = init_admin(&server).await;

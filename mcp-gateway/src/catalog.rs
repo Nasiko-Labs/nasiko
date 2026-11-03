@@ -291,6 +291,7 @@ pub async fn delete_composio_connector(state: &McpState, connector_id: Uuid) -> 
     match connector {
         Some(c) if c.is_composio() => {
             repo::delete_connector(&state.db, connector_id).await?;
+            crate::permissions::refresh_search_index(state.search_index.as_ref(), &state.db).await;
             Ok(())
         }
         _ => Err(McpError::NotFound(format!(

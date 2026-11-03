@@ -365,7 +365,32 @@ pub async fn set_connector_access_view(
     )
     .await?;
     invalidate_permission_cache(state, agent_id).await;
+    if enabled {
+        tokio::spawn(sync_catalog_after_enable(
+            state.clone(),
+            user_id,
+            connector_id,
+        ));
+    }
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
+}
+
+/// Fill a never-synced connector's tool catalog when it is enabled on an agent.
+/// Search finds a connector's tools only once they are in the catalog, and
+/// enabling (`nasiko mcp agent tools enable`) is often the only step a caller
+/// takes — nothing else guarantees the tool list is ever opened. Runs off the
+/// request, since a live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the
+/// toggle is already saved, so an unreachable backend only logs, and the tool
+/// list view retries the sync on its next read.
+async fn sync_catalog_after_enable(state: McpState, user_id: Uuid, connector_id: Uuid) {
+    let synced = match repo::list_connector_tools(&state.db, connector_id).await {
+        Ok(catalog) if !catalog.is_empty() => return,
+        Ok(_) => sync_connector_tools(&state, user_id, connector_id).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = synced {
+        tracing::warn!(%connector_id, error = %e, "tool catalog sync on connector enable failed");
+    }
 }
 
 /// `GET /agents/{id}/connectors/{connector_id}/tools` — tools for a connector
@@ -590,12 +615,12 @@ pub async fn sync_connector_tools_by_id(
 }
 
 /// Rebuild the tool search index after `mcp_connector_tools` changed, so
-/// `nasiko_search_tools` can find the new tools without a server restart.
+/// `nasiko_search_tools` sees the change without a server restart.
 /// Never fails the caller: the catalog write already succeeded, and an
 /// embedding outage must not turn a connector sync into an error.
-async fn refresh_search_index(index: &dyn ToolSearchIndex, db: &sqlx::PgPool) {
+pub(crate) async fn refresh_search_index(index: &dyn ToolSearchIndex, db: &sqlx::PgPool) {
     if let Err(e) = index.rebuild(db).await {
-        tracing::warn!(error = %e, "search index rebuild after tool sync failed");
+        tracing::warn!(error = %e, "search index rebuild after tool catalog change failed");
     }
 }
 
