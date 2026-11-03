@@ -750,7 +750,6 @@ function recordedSessionRow(r: ChatSessionRow, agentName: string): SessionSummar
     num_traces: turns || null,
     status: turns ? 'ok' : null,
     failed_flows: 0,
-    flow_count: 0,
     start_time: r.created_at,
     end_time: end,
     duration_ms: turns ? Date.parse(end) - Date.parse(r.created_at) : null,
@@ -2766,6 +2765,8 @@ export const mockCtx = {
   variant,
   superuser,
   viewer,
+  /** Who /api/me says is signed in (an edition may pin it): the `sub` a self-only route compares against. */
+  sessionUser,
   harnessSeed: getHarnessSeed,
   /** The harness seed as the current variant changes it (`all-unpriced`, `no-activity`). */
   harnessData,
