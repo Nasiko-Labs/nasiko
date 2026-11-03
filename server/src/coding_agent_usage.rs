@@ -79,9 +79,9 @@ pub(crate) async fn turn_usage_row(
         output_tokens: sum(|call| call.output_tokens),
         cache_read_tokens: sum(|call| call.cache_read_tokens),
         cache_creation_tokens: sum(|call| call.cache_creation_tokens),
-        // The read-back counts only `call_tool` spans; the exporter emits a
-        // coding-agent tool as `execute_tool`, so it has always written 0 here.
-        tool_call_count: 0,
+        // The exporter emits every tool call as one `execute_tool` span, which
+        // the read-back counts.
+        tool_call_count: u32::try_from(event.turn.tool_calls.len()).unwrap_or(u32::MAX),
         cost_estimated: cost.estimated,
         cost_usd: cost.total_usd,
         prompt_cost_usd: cost.prompt_usd,
