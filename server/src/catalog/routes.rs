@@ -455,24 +455,6 @@ pub(crate) async fn create(
         },
     };
 
-    // Canonicalize and validate the image reference before storing - fixes R-123
-    let validated_image = if let Some(ref image) = body.image {
-        match crate::agents::canonicalize_and_validate_image_ref(
-            &state.db,
-            &state.config.agent_image_registry,
-            image,
-            owner_id,
-            claims.is_superuser,
-        )
-        .await
-        {
-            Ok(img) => Some(img),
-            Err((code, msg)) => return (code, msg).into_response(),
-        }
-    } else {
-        None
-    };
-
     let platform_deployed = body.image.as_deref().is_some_and(|i| !i.is_empty());
     let url = match agent_url_to_store(&state, body.url.as_deref(), platform_deployed).await {
         Ok(url) => url,
@@ -505,7 +487,7 @@ pub(crate) async fn create(
         .bind(skills)
         .bind(&tags)
         .bind(meta)
-        .bind(&validated_image)
+        .bind(&body.image)
         .bind(minimal_code_enabled)
         .bind(workload_kind.as_db_str())
         .bind(body.hitl_enabled)
@@ -1157,42 +1139,6 @@ pub(crate) async fn update(
         (None, None)
     };
 
-    // Canonicalize and validate image namespace when activating a version - fixes R-123
-    let validated_image = if let Some(image) = agent_image {
-        // Query owner_id inside the transaction - fixes R-123.reply-2 fail-open
-        let owner_id: Uuid = match sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await
-        {
-            Ok(Some(id)) => id,
-            Ok(None) => {
-                // Agent not found - should not happen since can_manage_agent passed
-                return (StatusCode::NOT_FOUND, "agent not found").into_response();
-            }
-            Err(e) => {
-                tracing::error!(%e, %id, "update agent: owner lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-                    .into_response();
-            }
-        };
-
-        match crate::agents::canonicalize_and_validate_image_ref(
-            &state.db,
-            &state.config.agent_image_registry,
-            &image,
-            owner_id,
-            claims.is_superuser,
-        )
-        .await
-        {
-            Ok(qualified) => Some(qualified),
-            Err((code, msg)) => return (code, msg).into_response(),
-        }
-    } else {
-        None
-    };
-
     let result = sqlx::query_as::<_, Agent>(
         r#"UPDATE agents SET
              display_name = COALESCE($2, display_name),
@@ -1231,7 +1177,7 @@ pub(crate) async fn update(
     .bind(&merged_tags)
     .bind(&body.metadata)
     .bind(&body.status)
-    .bind(&validated_image)
+    .bind(&agent_image)
     .bind(body.minimal_code_enabled)
     .bind(body.compress_enabled)
     .bind(workload_kind)
@@ -1400,6 +1346,23 @@ pub(crate) async fn delete(
                 runtime_errors.push(format!("{container_name}: {e}"));
             }
         }
+    }
+
+    // Converge the deployment history on reality, the same agent-wide sweep a stop
+    // does (`admin::routes::record_lifecycle_status`). Not gated on `runtime_errors`:
+    // the name-keyed fallback above is absent for every UUID-keyed agent, so that list
+    // is almost never empty, and nothing of a deleted agent should still claim to run.
+    // Left alone, these rows list as `running` forever and EE's crash guardian keeps
+    // probing workloads that no longer exist.
+    if let Err(e) = sqlx::query(
+        "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
+         WHERE agent_id = $1 AND status != 'stopped'",
+    )
+    .bind(id)
+    .execute(&state.db)
+    .await
+    {
+        tracing::error!(%e, %id, "delete agent: mark deployments stopped");
     }
 
     // The row was already marked by the claiming UPDATE above, so reaching here
@@ -1735,21 +1698,9 @@ pub(crate) struct UserSearchQuery {
 /// User search. Field boosts: username×3.0, display_name×2.5, email×1.5.
 /// Scoring: exact (100×boost) > prefix (90×boost) > contains (70×boost).
 /// Minimum query length: 2 chars. Sort: score DESC, username ASC.
-/// Email is returned only for the caller themself (to prevent enumeration).
-#[derive(Serialize, ToSchema)]
+/// Returns all matching users (no limit).
+#[derive(Serialize, ToSchema, sqlx::FromRow)]
 pub(crate) struct UserSearchResult {
-    id: Uuid,
-    username: String,
-    display_name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    email: Option<String>,
-    role: Option<String>,
-    score: f64,
-}
-
-/// Internal row from the search query, before filtering email.
-#[derive(sqlx::FromRow)]
-struct UserSearchRow {
     id: Uuid,
     username: String,
     display_name: String,
@@ -1829,7 +1780,7 @@ pub(crate) async fn search_users(
            LIMIT 50"#
     );
 
-    let result = sqlx::query_as::<_, UserSearchRow>(&sql)
+    let result = sqlx::query_as::<_, UserSearchResult>(&sql)
         .bind(escape_like(&q))
         .bind(&visible_ids)
         .bind(&q)
@@ -1837,25 +1788,7 @@ pub(crate) async fn search_users(
         .await;
 
     match result {
-        Ok(rows) => {
-            // Filter email: only return it for the caller themself.
-            let caller_id = claims.user_uuid().ok();
-            let users: Vec<UserSearchResult> = rows
-                .into_iter()
-                .map(|row| UserSearchResult {
-                    id: row.id,
-                    username: row.username,
-                    display_name: row.display_name,
-                    email: if Some(row.id) == caller_id {
-                        Some(row.email)
-                    } else {
-                        None
-                    },
-                    role: row.role,
-                    score: row.score,
-                })
-                .collect();
-
+        Ok(users) => {
             let total = users.len();
             Json(serde_json::json!({
                 "data": users,
