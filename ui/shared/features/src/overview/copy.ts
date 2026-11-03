@@ -216,6 +216,7 @@ export const copy = {
     failed: 'Failed',
     ok: 'Succeeded',
     running: 'Running',
+    timed_out: 'Timed out',
     unchecked: 'Not checked',
     none: 'No sessions in the last 7 days.',
     traceStore: 'Sessions need the trace store.',

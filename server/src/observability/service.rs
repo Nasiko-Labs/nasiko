@@ -464,7 +464,7 @@ pub struct SessionSummary {
     pub trace_latency_ms_p50: Option<f64>,
     pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
-    /// `running` | `ok` | `failed`, derived from the session's flow rows — the
+    /// `running` | `ok` | `failed` | `timed_out`, derived from the session's flow rows — the
     /// outcome recorded at the proxy. `null` when the session has no recorded
     /// flow, which is "unknown", never "ok".
     pub status: Option<String>,

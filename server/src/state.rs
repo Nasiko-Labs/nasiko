@@ -212,8 +212,8 @@ impl AppState {
         let resource_stats = crate::observability::resources::build_provider(&config, db.clone());
 
         // Shared client for short, bounded calls: embeddings, registry probes,
-        // OAuth. Agent hops are *not* short, and go through `agent_client`
-        // instead; LLM provider calls go through the router's own client.
+        // OAuth, provider requests. Agent hops are *not* short, and go through
+        // `agent_client` instead.
         let http_client = reqwest::Client::builder()
             .pool_max_idle_per_host(20)
             .timeout(std::time::Duration::from_secs(60))
@@ -487,6 +487,15 @@ impl AppState {
             state.config.agent_state_ttl_days,
         ));
 
+        // Closes flows whose request died mid-flight, so their sessions stop reading as running.
+        tokio::spawn(crate::flow_sweeper::run(
+            state.db.clone(),
+            crate::flow_sweeper::stale_after(
+                state.config.flow_timeout_secs,
+                state.config.agent_call_timeout_secs,
+            ),
+        ));
+
         // Retires the seeded brevity factor once the holdout has enough samples. Cheap (one
         // grouped scan) and idempotent, so it rides the same process as the other workers rather
         // than needing a scheduler.
@@ -516,13 +525,6 @@ impl AppState {
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
-        });
-
-        // Separate task: a slow third-party MCP server must not wait behind,
-        // or delay, the agent and toolkit seeding above.
-        let state = self.clone();
-        tokio::spawn(async move {
-            crate::seed_connectors::seed_connectors_if_configured(&state).await;
         });
 
         // Covers e.g. a tenant cluster restore, which recreates the database

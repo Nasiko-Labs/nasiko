@@ -3,7 +3,7 @@
  * from the same checks Needs you uses (the newest 25, eng review R7). Tempo errors say the trace store is needed.
  */
 import { Link } from '@tanstack/react-router'
-import { CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleDashed, Timer } from 'lucide-react'
 import { useRef } from 'react'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { asButton } from '@nasiko/ui/primitives/button'
@@ -28,6 +28,7 @@ const MARK: Partial<Record<Status, { Icon: typeof CircleCheck; tone: string; lab
   failed: { Icon: CircleAlert, tone: 'text-destructive', label: copy.sessions.failed },
   ok: { Icon: CircleCheck, tone: 'text-success', label: copy.sessions.ok },
   running: { Icon: CircleDashed, tone: 'text-muted-foreground', label: copy.sessions.running },
+  timed_out: { Icon: Timer, tone: 'text-warning', label: copy.sessions.timed_out },
 }
 const TRACE_STORE = new Set([500, 502, 503])
 

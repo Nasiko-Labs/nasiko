@@ -16,6 +16,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   failed: '✕ failed',
   ok: '✓ ok',
   running: '• running',
+  timed_out: '⏱ timed out',
   unchecked: '— unchecked',
   unknown: '? unknown',
   checking: '… checking',

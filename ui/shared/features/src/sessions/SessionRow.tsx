@@ -32,6 +32,7 @@ const STATUS_TONE: Record<Status, string> = {
   failed: 'text-destructive',
   ok: 'text-success',
   running: 'text-muted-foreground',
+  timed_out: 'text-warning',
   unchecked: 'text-muted-foreground',
   unknown: 'text-muted-foreground',
   checking: 'text-muted-foreground',
