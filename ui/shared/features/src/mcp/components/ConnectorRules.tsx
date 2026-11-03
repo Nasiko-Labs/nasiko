@@ -1,15 +1,17 @@
 /**
  * One MCP server on one agent (plans/feat-mcp.md §5.1, legacy agent page MCP card): mark, name, a summary ("3 of 5 tools
- * allowed · 1 ask first"), an Enabled switch, and when expanded each tool with Allow / Ask / Block. A stance click saves
- * at once (`useSetStance`: optimistic, rolled back with a toast). The agent's MCP tab lists one per server; the
- * server's Agents tab shows the one for the picked agent. `noAsk` (coding harnesses) hides Ask: a harness call has no
- * flow, so the gateway answers Ask with TOOL_ASK and stores no request to approve (nasiko-cloud-rs PR #631 reverted
- * f5cb65e7); a tool already on Ask keeps the item so its stance shows.
+ * allowed · 1 ask first"), an Enabled switch (an "Always on" badge for a platform-run server), and when expanded each
+ * tool with Allow / Ask / Block. A stance click saves at once (`useSetStance`: optimistic, rolled back with a toast).
+ * The agent's MCP tab lists one per server; the server's Agents tab shows the one for the picked agent. `noAsk`
+ * (coding harnesses) hides Ask: a harness call has no flow, so the gateway answers Ask with TOOL_ASK and stores no
+ * request to approve (nasiko-cloud-rs PR #631 reverted f5cb65e7); a tool already on Ask keeps the item so its stance
+ * shows.
  */
 import { Link } from '@tanstack/react-router'
-import { ChevronDown, RotateCw } from 'lucide-react'
+import { ChevronDown, Lock, RotateCw } from 'lucide-react'
 import { useState } from 'react'
 import { toast } from 'sonner'
+import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import {
   Collapsible,
@@ -33,6 +35,8 @@ export interface RuleTarget {
   label: string
   logoUrl?: string | null
   enabled: boolean
+  /** A platform-run server (`isAlwaysOn`): a locked badge instead of the switch; its tool rules still apply. */
+  alwaysOn?: boolean
 }
 
 export function ConnectorRules({
@@ -93,21 +97,29 @@ export function ConnectorRules({
             <Skeleton className="mt-1 h-3 w-32" />
           )}
         </div>
-        <Switch
-          checked={enabled}
-          disabled={access.isPending}
-          aria-label={enabled ? copy.disable(target.label) : copy.enable(target.label)}
-          onCheckedChange={(v) =>
-            access.mutate(
-              { connectorId: target.connectorId, enabled: v },
-              { onError: (e) => toast.error(copy.accessFailed(reason(e))) },
-            )
-          }
-        />
+        {target.alwaysOn ? (
+          <Badge variant="outline">
+            <Lock aria-hidden /> {copy.alwaysOn}
+          </Badge>
+        ) : (
+          <Switch
+            checked={enabled}
+            disabled={access.isPending}
+            aria-label={enabled ? copy.disable(target.label) : copy.enable(target.label)}
+            onCheckedChange={(v) =>
+              access.mutate(
+                { connectorId: target.connectorId, enabled: v },
+                { onError: (e) => toast.error(copy.accessFailed(reason(e))) },
+              )
+            }
+          />
+        )}
       </div>
       <CollapsibleContent className="border-t border-border p-3">
-        {!enabled ? (
-          <p className="mb-2 text-xs text-muted-foreground">{copy.disabledNote}</p>
+        {target.alwaysOn || !enabled ? (
+          <p className="mb-2 text-xs text-muted-foreground">
+            {target.alwaysOn ? copy.alwaysOnNote : copy.disabledNote}
+          </p>
         ) : null}
         {tools.isPending ? (
           <Skeleton className="h-16" />

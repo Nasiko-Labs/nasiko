@@ -296,6 +296,9 @@ export const copy = {
   viewServer: 'View server',
   viewLogs: 'View build logs',
   disabledNote: 'This server is disabled for this agent. Tool rules apply once it is re-enabled.',
+  alwaysOn: 'Always on',
+  alwaysOnNote:
+    'The platform turns this server on for every agent, so it can’t be switched off. Its tools still follow the rules below.',
   noToolsYet: 'This server exposes no tools yet.',
   stanceFor: (tool: string) => `Tool access for ${tool}`,
   toolsFailed: "Couldn't load this server's tools",

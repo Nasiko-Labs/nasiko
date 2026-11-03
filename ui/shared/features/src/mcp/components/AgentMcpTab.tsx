@@ -61,6 +61,7 @@ export function AgentMcpTab({ agentId, harness = false }: { agentId: string; har
               label: labelOf(c),
               logoUrl: c.logo_url,
               enabled: c.enabled,
+              alwaysOn: c.alwaysOn,
             }
             const status = notReady.get(c.connector_id)
             return (

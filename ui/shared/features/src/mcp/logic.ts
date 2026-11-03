@@ -55,6 +55,13 @@ export interface Service {
 export const labelOf = (c: { name: string; display_name?: string | null }) =>
   c.display_name || c.name
 
+/**
+ * A platform-run (`system`) server is on for every agent: the gateway adds it to each agent's enabled set
+ * (`auto_enable`, `load_permission_context`) whatever the agent's access row says, so the agent list's
+ * `enabled: false` for one is wrong. Workspace is the only one today.
+ */
+export const isAlwaysOn = (c: { provider_type?: string }) => c.provider_type === 'system'
+
 /** Both kinds in one list, sorted by display name (legacy `#services`). */
 export function toServices(list: ConnectorList | undefined, toolkits: Toolkit[]): Service[] {
   const server = (c: Connector, shared: boolean): Service => ({

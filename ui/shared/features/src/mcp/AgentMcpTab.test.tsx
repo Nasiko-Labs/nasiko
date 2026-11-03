@@ -53,6 +53,23 @@ describe("Agent detail's MCP tab (plans/feat-mcp.md §5.2)", () => {
     )
   })
 
+  it('shows a platform-run server as always on, whatever its access row says', async () => {
+    const agent = seededAgent()
+    const docs = mcpMockState().connectors.find((c) => c.name === 'docs-search')!
+    // The seed has no `system` server (Workspace, EE's only one), so one stands in, switched off in its row.
+    Object.assign(docs, { provider: 'system' })
+    mcpMockState().access.get(`${agent}:${docs.id}`)!.enabled = false
+    renderApp(`/agents/${agent}?tab=mcp`)
+    expect(await screen.findByText(copy.alwaysOn, {}, T)).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: copy.enable('Docs search') })).toBeNull()
+    expect(screen.queryByRole('switch', { name: copy.disable('Docs search') })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: copy.expand('Docs search') }))
+    expect(await screen.findByText(copy.alwaysOnNote, {}, T)).toBeInTheDocument()
+    // Its tool rules still apply at the gateway, so they stay editable.
+    const group = await screen.findByRole('radiogroup', { name: copy.stanceFor('get_page') }, T)
+    expect(within(group).getByRole('radio', { name: STANCE.block.label })).toBeEnabled()
+  })
+
   it('rolls a stance back when the save fails', async () => {
     server.use(
       http.put('/api/mcp/agents/:id/tools', () =>

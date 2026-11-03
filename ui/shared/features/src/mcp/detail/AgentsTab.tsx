@@ -139,6 +139,7 @@ function PickedAccess({
         label: agent.display_name || agent.name,
         logoUrl: agent.icon_url,
         enabled: row.enabled,
+        alwaysOn: row.alwaysOn,
       }}
       defaultOpen
     />
