@@ -9,6 +9,10 @@
 //! Every write happens on its own task: [`TurnRecorder::record`] is called on the routed
 //! request's path and returns at once, so recording never adds latency to the agent's call. A
 //! failed write is logged and dropped, like usage logging.
+//!
+//! Each turn is also tied to the trace of its call (the router's `gen_ai.chat` span), in
+//! `session_traces` and on the reply's row, as the agent proxy ties a proxied call: that is how
+//! Sessions finds a session's traces when no span carries a `session.id`.
 
 use nasiko_llm_router::turns::{RecordedTurn, TurnRecorder};
 use sqlx::PgPool;
@@ -31,12 +35,25 @@ impl DiscoveredAgentSessions {
 impl TurnRecorder for DiscoveredAgentSessions {
     fn record(&self, turn: RecordedTurn) {
         let db = self.db.clone();
+        let trace_id = trace_id_of(&turn.span);
         tokio::spawn(async move {
-            if let Err(error) = persist(&db, &turn).await {
+            if let Err(error) = persist(&db, &turn, trace_id.as_deref()).await {
                 tracing::warn!(%error, agent_id = %turn.agent_id, "discovered-agent turn not recorded");
             }
         });
     }
+}
+
+/// The id of the trace `span` belongs to, when it is recorded at all (`None` without an
+/// OpenTelemetry layer, as in tests).
+fn trace_id_of(span: &tracing::Span) -> Option<String> {
+    use opentelemetry::trace::TraceContextExt as _;
+    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+    let context = span.context();
+    let span_context = context.span().span_context().clone();
+    span_context
+        .is_valid()
+        .then(|| span_context.trace_id().to_string())
 }
 
 /// The session a discovered agent's turns go to: one per agent, stable across restarts.
@@ -45,7 +62,7 @@ pub fn session_id_for(agent_id: Uuid) -> String {
     Uuid::new_v5(&NAMESPACE, agent_id.as_bytes()).to_string()
 }
 
-async fn persist(db: &PgPool, turn: &RecordedTurn) -> anyhow::Result<()> {
+async fn persist(db: &PgPool, turn: &RecordedTurn, trace_id: Option<&str>) -> anyhow::Result<()> {
     let agent_id: Uuid = turn.agent_id.parse()?;
     let owner_id: Uuid = turn.owner_id.parse()?;
     let session_id = session_id_for(agent_id);
@@ -76,11 +93,23 @@ async fn persist(db: &PgPool, turn: &RecordedTurn) -> anyhow::Result<()> {
             duration_ms: Some(saturating_i32(turn.latency_ms)),
             cost_usd: None,
             estimated: None,
-            trace_id: None,
+            trace_id: trace_id.map(str::to_string),
         }),
         assistant_metadata: None,
     };
     persist_external_turn(&mut tx, &session_id, &external, turn.started_at, true).await?;
+    if let Some(trace_id) = trace_id {
+        sqlx::query(
+            "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
+             SELECT $1, $2, a.id, a.name FROM agents a WHERE a.id = $3 \
+             ON CONFLICT (session_id, trace_id) DO NOTHING",
+        )
+        .bind(&session_id)
+        .bind(trace_id)
+        .bind(agent_id)
+        .execute(&mut *tx)
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -92,6 +121,28 @@ fn saturating_i32(value: i64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_turn_is_tied_to_the_trace_of_its_request() {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder().build();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_opentelemetry::OpenTelemetryLayer::new(provider.tracer("test")),
+        );
+        tracing::subscriber::with_default(subscriber, || {
+            let request = tracing::info_span!("request");
+            let trace_id = trace_id_of(&request).expect("a recorded span has a trace");
+            assert_eq!(trace_id.len(), 32);
+            assert!(trace_id.chars().all(|c| c.is_ascii_hexdigit()));
+            // The call's own span (here a child) is in the same trace.
+            let call = tracing::info_span!(parent: &request, "gen_ai.chat");
+            assert_eq!(trace_id_of(&call).as_deref(), Some(trace_id.as_str()));
+        });
+        // Without an OpenTelemetry layer there is no trace to tie it to.
+        assert_eq!(trace_id_of(&tracing::info_span!("untraced")), None);
+    }
 
     #[test]
     fn each_agent_has_one_stable_session() {

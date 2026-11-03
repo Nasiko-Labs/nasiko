@@ -26,7 +26,7 @@ use nasiko_session_token::{
 };
 
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_jwt;
+use crate::auth::verify_agent_token;
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
@@ -34,6 +34,7 @@ use crate::providers::{ProviderError, fallback};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
+use crate::turns::{self, StreamedReply, TurnRecorder, TurnStart};
 use crate::usage::{self, UsageRecord};
 
 #[derive(Clone)]
@@ -43,9 +44,6 @@ pub(crate) struct RoutedRequest {
     pub resolved: crate::resolver::ResolvedConfig,
     pub flow_id: Option<String>,
     pub attribution_source: Option<routing::attribution::AttributionSource>,
-    /// What payload compression did to this request, for its usage rows. Set by the Responses
-    /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
-    pub compression: crate::compress::Ledger,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -157,46 +155,35 @@ pub(crate) async fn authenticate_caller(
         }
     }
 
-    let (agent_id, owner_id) = verify_agent_identity(ctx, store, authz).await?;
-    Ok(AuthedCaller::Agent { agent_id, owner_id })
+    let agent = verify_agent_token(authz, &ctx.cfg)?;
+    refuse_revoked_agent_token(store, &agent).await?;
+    Ok(AuthedCaller::Agent {
+        agent_id: agent.agent_id,
+        owner_id: agent.owner_id,
+    })
 }
 
-/// Verify an agent-identity token and check its `owner_id` claim is still the
-/// agent's owner.
-///
-/// The token is minted at deploy time and lives in the container until the
-/// next deploy. Ownership can change in between (`PUT /api/agents/{id}/owner`),
-/// and the owner decides whose provider keys pay for the call. Trusting the
-/// claim let the new owner's agent spend the previous owner's keys; switching
-/// silently to the new owner would let anyone still holding the old token
-/// spend the new owner's. So a stale token is refused until a redeploy mints a
-/// fresh one. A deleted agent is refused too. A token with no owner claim
-/// already takes the platform-key path and is left as it is.
-pub(crate) async fn verify_agent_identity(
-    ctx: &LlmRouterCtx,
+/// Refuse an agent-identity token its owner revoked (`DELETE /api/agents/{id}/llm-token`, as
+/// `nasiko disconnect` does for a discovered agent). Fails closed: a store error denies the
+/// request rather than letting a possibly revoked key through.
+pub(crate) async fn refuse_revoked_agent_token(
     store: &dyn RegistryStore,
-    authorization: Option<&str>,
-) -> Result<(String, String), GatewayError> {
-    let (agent_id, owner_id) = verify_agent_jwt(authorization, &ctx.cfg)?;
-    let id = uuid::Uuid::parse_str(&agent_id)
-        .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
-    let current_owner = store
-        .fetch_agent_owner(id)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "llm-router: agent owner lookup failed — failing closed");
-            GatewayError::Forbidden("identity store unavailable".into())
-        })?
-        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))?
-        .to_string();
-    if !owner_id.is_empty() && owner_id != current_owner {
-        tracing::warn!(%agent_id, token_owner = %owner_id, %current_owner, "llm-router: agent token predates an ownership change");
-        return Err(GatewayError::Forbidden(
-            "the agent's owner changed since it was deployed; redeploy it to refresh its credentials"
-                .into(),
+    agent: &crate::auth::VerifiedAgent,
+) -> Result<(), GatewayError> {
+    let Ok(agent_uuid) = uuid::Uuid::parse_str(&agent.agent_id) else {
+        // Not an agent id at all: resolving it fails later with NoRegistryEntry.
+        return Ok(());
+    };
+    let revoked_at = store.agent_tokens_revoked_at(agent_uuid).await.map_err(|e| {
+        tracing::error!(error = %e, "llm-router: agent-token revocation check failed — failing closed");
+        GatewayError::Forbidden("identity store unavailable".into())
+    })?;
+    if crate::auth::is_revoked(agent.issued_at, revoked_at) {
+        return Err(GatewayError::InvalidToken(
+            "revoked by the agent's owner".into(),
         ));
     }
-    Ok((agent_id, owner_id))
+    Ok(())
 }
 
 /// True if this session token's `jti` has been revoked. Fails closed (a store
@@ -222,7 +209,7 @@ pub(crate) async fn lookup_agent_owner(
     agent_id: &str,
 ) -> Result<String, GatewayError> {
     let id = uuid::Uuid::parse_str(agent_id)
-        .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
+        .map_err(|_| GatewayError::Forbidden("session token agent_id is not a UUID".into()))?;
     let owner: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
@@ -235,7 +222,7 @@ pub(crate) async fn lookup_agent_owner(
     })?;
     owner
         .map(|u| u.to_string())
-        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))
+        .ok_or_else(|| GatewayError::Forbidden("agent not found for session token".into()))
 }
 
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
@@ -355,8 +342,20 @@ async fn chat_core(
         resolved,
         flow_id,
         attribution_source,
-        compression: _,
     } = routed;
+    // A discovered agent's call is also a turn of its conversation (see `crate::turns`). Read
+    // the user message before compression can rewrite the request.
+    // In a tool loop the latest user message is the question every call of the loop repeats,
+    // so a call answering tool results is recorded as that instead.
+    let turn = resolved.is_discovered_agent.then(|| TurnStart {
+        user_text: if routing::is_tool_continuation(&req.messages) {
+            turns::TOOL_RESULTS.to_string()
+        } else {
+            routing::latest_user_query(&req.messages).unwrap_or_default()
+        },
+        started_at: chrono::Utc::now(),
+        span: tracing::Span::current(),
+    });
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
     // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
@@ -376,12 +375,12 @@ async fn chat_core(
         "compress: policy for this request"
     );
 
-    let recovery = crate::compress::Recovery::for_request(
-        ctx.cfg.compress_recovery_enabled,
-        ctx.cfg.compress_recovery_min_bytes,
-        flow_id.as_deref(),
-        &req,
-    );
+    let recovery = ctx
+        .cfg
+        .compress_recovery_enabled
+        .then_some(crate::compress::Recovery {
+            min_bytes: ctx.cfg.compress_recovery_min_bytes,
+        });
 
     let compression = crate::compress::apply(&mut req, &compress_policy, recovery);
     if compression.messages_touched > 0 {
@@ -541,6 +540,7 @@ async fn chat_core(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            turn,
         });
     }
 
@@ -596,6 +596,15 @@ async fn chat_core(
     llm_span.record("gen_ai.response.model", model.as_str());
     record_span_usage(&llm_span, resp.usage.as_ref());
 
+    if let Some(turn) = turn {
+        ctx.turn_recorder.record(turn.finish(
+            (agent_id.clone(), owner_id.clone()),
+            turns::reply_text(&resp),
+            model.clone(),
+            resp.usage.as_ref(),
+            latency_ms,
+        ));
+    }
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
@@ -643,7 +652,9 @@ pub(crate) async fn resolve_routed_request(
     // traceparent lookup is a permanent dead end for it (see that fn's doc comment), which
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
-    // itself instead for these agents.
+    // itself instead for these agents. An A2A agent the CLI discovered on a user's machine is
+    // in the same position (Nasiko never calls it, so no flow exists), and its calls are
+    // likewise billed to its owner rather than refused for a missing traceparent.
     let (boundary, flow_id, billed_user_id, attribution_source, query) =
         if let Some(s) = session.as_ref() {
             // Session-bound coding agent: the signed token names the user and flow
@@ -661,7 +672,7 @@ pub(crate) async fn resolve_routed_request(
                 None,
                 signals.query,
             )
-        } else if resolved.is_coding_agent {
+        } else if resolved.is_coding_agent || resolved.is_discovered_agent {
             (
                 BoundarySignals::for_coding_agent(
                     &agent_id,
@@ -761,7 +772,6 @@ pub(crate) async fn resolve_routed_request(
         resolved,
         flow_id,
         attribution_source,
-        compression: crate::compress::Ledger::default(),
     })
 }
 
@@ -833,6 +843,9 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Set for a discovered agent: its reply is gathered as it streams and recorded as a turn
+    /// when the stream ends.
+    turn: Option<TurnStart>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -857,8 +870,12 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        turn,
     } = args;
-    let state = Arc::new(Mutex::new(StreamState::default()));
+    let state = Arc::new(Mutex::new(StreamState {
+        reply: turn.is_some().then(StreamedReply::default),
+        ..StreamState::default()
+    }));
     let guard = UsageGuard {
         db: ctx.db.clone(),
         pricing: ctx.pricing.clone(),
@@ -876,6 +893,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         brevity_metadata,
         compress_bytes,
         request_bytes,
+        turn: turn.map(|turn| (ctx.turn_recorder.clone(), turn)),
     };
 
     let body_stream = async_stream::stream! {
@@ -897,6 +915,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                         }
                         if let Some(fr) = chunk.choices.first().and_then(|c| c.finish_reason.clone()) {
                             st.finish_reason = Some(fr);
+                        }
+                        if let (Some(reply), Some(choice)) = (st.reply.as_mut(), chunk.choices.first()) {
+                            reply.push(choice.delta.content.as_deref(), choice.delta.tool_calls.as_deref());
                         }
                     }
                     for frame in renderer.render(chunk) {
@@ -926,6 +947,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
 struct StreamState {
     usage: Option<Usage>,
     finish_reason: Option<String>,
+    /// The reply so far, when the call is recorded as a turn.
+    reply: Option<StreamedReply>,
 }
 
 /// Writes the streaming usage row when dropped (stream completion or client disconnect).
@@ -948,6 +971,8 @@ struct UsageGuard {
     /// `Copy`, so unlike the two above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Taken in `drop`: the recorder and start of a discovered agent's turn.
+    turn: Option<(Arc<dyn TurnRecorder>, TurnStart)>,
 }
 
 impl Drop for UsageGuard {
@@ -956,6 +981,15 @@ impl Drop for UsageGuard {
         let brevity_metadata = self.brevity_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
+        if let (Some((recorder, turn)), Some(reply)) = (self.turn.take(), st.reply.as_ref()) {
+            recorder.record(turn.finish(
+                (self.agent_id.clone(), self.owner_id.clone()),
+                reply.text(),
+                self.model.clone(),
+                st.usage.as_ref(),
+                self.started.elapsed().as_millis() as i64,
+            ));
+        }
         usage::spawn_log(
             self.db.clone(),
             self.pricing.clone(),
@@ -1112,8 +1146,10 @@ mod tests {
                         .unwrap(),
                     ),
                     finish_reason: None,
+                    reply: None,
                 })),
                 flow_id: None,
+                turn: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
                 // ran, so there is nothing for the guard to credit.
                 compress_bytes: None,
@@ -1139,6 +1175,7 @@ mod tests {
     struct Store {
         config: Option<LLMConfig>,
         is_coding_agent: bool,
+        is_discovered_agent: bool,
         compress_enabled: bool,
     }
     #[async_trait]
@@ -1151,11 +1188,9 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
+                is_discovered_agent: self.is_discovered_agent,
                 compress_enabled: self.compress_enabled,
             }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
         }
         async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
             Ok(None)
@@ -1227,6 +1262,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 
@@ -1334,6 +1370,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled,
         };
         chat_core(
@@ -1432,6 +1469,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
@@ -1478,6 +1516,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         // Anthropic Messages request shape: top-level system + max_tokens.
@@ -1534,6 +1573,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         // Gemini Messages request shape: systemInstruction + contents.
@@ -1580,6 +1620,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
@@ -1605,12 +1646,212 @@ mod tests {
         assert!(body.trim_end().ends_with("data: [DONE]"));
     }
 
+    /// Keeps every turn it is given, for tests to read back.
+    #[derive(Clone, Default)]
+    struct CapturedTurns(Arc<std::sync::Mutex<Vec<crate::turns::RecordedTurn>>>);
+
+    impl crate::turns::TurnRecorder for CapturedTurns {
+        fn record(&self, turn: crate::turns::RecordedTurn) {
+            self.0.lock().unwrap().push(turn);
+        }
+    }
+
+    fn store_for(is_discovered_agent: bool) -> Store {
+        Store {
+            config: None,
+            is_coding_agent: false,
+            is_discovered_agent,
+            compress_enabled: false,
+        }
+    }
+
+    /// A conversation whose latest user message is the one a turn is recorded under.
+    fn conversation(stream: bool) -> Value {
+        json!({
+            "model": "gpt-4o", "stream": stream,
+            "messages": [
+                { "role": "system", "content": "be brief" },
+                { "role": "user", "content": "earlier question" },
+                { "role": "assistant", "content": "earlier answer" },
+                { "role": "user", "content": "plan my day" }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_call_is_recorded_as_a_turn() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "finish_reason": "stop",
+                                  "message": { "role": "assistant", "content": "start with email" } }],
+                    "usage": { "prompt_tokens": 30, "completion_tokens": 4, "total_tokens": 34 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].agent_id, AGENT);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].model, "gpt-4o");
+        assert_eq!(
+            (recorded[0].input_tokens, recorded[0].output_tokens),
+            (Some(30), Some(4))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_streamed_reply_is_recorded_once_the_stream_ends() {
+        let mut server = mockito::Server::new_async().await;
+        let sse = concat!(
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"start \"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"with email\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":4,\"total_tokens\":34}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        let resp = chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(true),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        // Nothing is recorded while the reply streams; the agent's response is not held for it.
+        assert!(turns.0.lock().unwrap().is_empty());
+        let body = body_string(resp).await;
+        assert!(body.contains("with email"));
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].output_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn a_call_answering_tool_results_is_recorded_as_such() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "done" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [
+                { "role": "user", "content": "plan my day" },
+                { "role": "assistant", "content": null, "tool_calls": [
+                    { "id": "c1", "type": "function", "function": { "name": "calendar", "arguments": "{}" } }
+                ] },
+                { "role": "tool", "tool_call_id": "c1", "content": "3 meetings" }
+            ]
+        });
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded[0].user_text, crate::turns::TOOL_RESULTS);
+        assert_eq!(recorded[0].assistant_text, "done");
+    }
+
+    #[tokio::test]
+    async fn only_discovered_agents_calls_are_recorded() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(false),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(turns.0.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn missing_auth_is_401_before_any_provider_call() {
         let ctx = ctx_with("http://unused".into());
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [] });
@@ -1663,6 +1904,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let mut headers = HeaderMap::new();
@@ -1716,6 +1958,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: true,
+            is_discovered_agent: false,
         };
         let routed = resolve_routed_request(
             &ctx,
@@ -1766,6 +2009,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let result = resolve_routed_request(
@@ -1790,6 +2034,135 @@ mod tests {
             panic!("expected strict attribution to reject the request");
         };
         assert!(matches!(error, GatewayError::Forbidden(_)));
+    }
+
+    /// An agent whose owner revoked its LLM keys at `revoked_at` (Unix seconds).
+    struct Revoked {
+        revoked_at: Result<Option<u64>, ()>,
+    }
+    #[async_trait]
+    impl RegistryStore for Revoked {
+        async fn fetch_llm_config(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn agent_tokens_revoked_at(&self, _: Uuid) -> Result<Option<u64>, sqlx::Error> {
+            self.revoked_at.map_err(|()| sqlx::Error::PoolTimedOut)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_revoked_agent_key_is_refused_and_a_newer_one_accepted() {
+        let agent = |issued_at| crate::auth::VerifiedAgent {
+            agent_id: AGENT.into(),
+            owner_id: OWNER.into(),
+            issued_at: Some(issued_at),
+        };
+        let revoked = Revoked {
+            revoked_at: Ok(Some(1_000)),
+        };
+        let err = refuse_revoked_agent_token(&revoked, &agent(900))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err}");
+        assert!(
+            refuse_revoked_agent_token(&revoked, &agent(1_001))
+                .await
+                .is_ok()
+        );
+        let never = Revoked {
+            revoked_at: Ok(None),
+        };
+        assert!(
+            refuse_revoked_agent_token(&never, &agent(900))
+                .await
+                .is_ok()
+        );
+        // The store can't answer: refused rather than letting a revoked key through.
+        let down = Revoked {
+            revoked_at: Err(()),
+        };
+        let err = refuse_revoked_agent_token(&down, &agent(900))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::Forbidden(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn discovered_agent_with_no_traceparent_is_billed_to_its_owner() {
+        // An A2A agent the CLI discovered runs on the user's machine and is never called
+        // through Nasiko, so it never has a traceparent. Its calls are accepted and billed to
+        // its owner, while it stays an ordinary agent for everything coding agents skip.
+        let ctx = ctx_with("http://unused".into());
+        let store = Store {
+            config: Some(LLMConfig {
+                provider: "openai".into(),
+                model: Some("static-configured-model".into()),
+                fallback_models: vec![],
+                temperature: None,
+                max_tokens: None,
+                api_key_secret_name: None,
+                pinned: false,
+                pinned_model: None,
+                tier1_model: None,
+                tier2_model: None,
+                tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
+            }),
+            is_coding_agent: false,
+            is_discovered_agent: true,
+            compress_enabled: false,
+        };
+        let routed = resolve_routed_request(
+            &ctx,
+            &store,
+            &HeaderMap::new(),
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint {
+                provider: Some("openai"),
+                model: None,
+            },
+            RequestSignals {
+                query: Some("summarise the latest research".into()),
+                turn_ordinal: 1,
+                is_tool_continuation: false,
+            },
+            None,
+        )
+        .await
+        .expect("a discovered agent's call is accepted");
+        assert_eq!(routed.owner_id, OWNER);
+        assert_eq!(routed.flow_id, None);
+        assert!(routed.resolved.is_discovered_agent);
+        assert!(!routed.resolved.is_coding_agent);
     }
 
     #[tokio::test]
@@ -1817,6 +2190,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
@@ -1888,6 +2262,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: true,
         };
         let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, format, None)
@@ -1994,310 +2369,5 @@ mod tests {
         assert_eq!(block["name"], "get_weather");
         assert_eq!(block["input"], json!({"city": "Pune"}));
         assert_eq!(out["stop_reason"], "tool_use");
-    }
-
-    // ── cache markers: an agent's own markers reach the wire ──────────────────────────────
-    //
-    // The adapters' unit tests cover each translation. These cover what sits between an
-    // Anthropic-SDK agent and the provider: resolution, compression, brevity and the fallback
-    // chain, any of which could drop or misplace a marker.
-
-    /// [`Store`] plus one registered custom provider, for a destination such as Bedrock.
-    struct WithCustomProvider {
-        inner: Store,
-        custom: crate::resolver::CustomProvider,
-    }
-    #[async_trait]
-    impl RegistryStore for WithCustomProvider {
-        async fn fetch_llm_config(
-            &self,
-            agent: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            self.inner.fetch_llm_config(agent).await
-        }
-        async fn fetch_agent_owner(&self, agent: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            self.inner.fetch_agent_owner(agent).await
-        }
-        async fn fetch_user_secret(
-            &self,
-            owner: Uuid,
-            name: &str,
-        ) -> Result<Option<String>, sqlx::Error> {
-            self.inner.fetch_user_secret(owner, name).await
-        }
-        async fn fetch_live_flow(
-            &self,
-            trace: &str,
-            agent: Uuid,
-            window: i64,
-        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
-            self.inner.fetch_live_flow(trace, agent, window).await
-        }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            Ok(Some(self.custom.clone()))
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
-            self.inner.fetch_org_embedding_default().await
-        }
-    }
-
-    /// Mocks one provider route answering `status` + `reply`, recording every body it is sent.
-    async fn capturing_mock(
-        server: &mut mockito::ServerGuard,
-        path: impl Into<mockito::Matcher>,
-        status: usize,
-        reply: Value,
-    ) -> (mockito::Mock, Arc<Mutex<Vec<Value>>>) {
-        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
-        let capture = Arc::clone(&seen);
-        let reply = reply.to_string();
-        let mock = server
-            .mock("POST", path)
-            .with_status(status)
-            .with_header("content-type", "application/json")
-            .with_body_from_request(move |request| {
-                let body = request.body().map(Vec::as_slice).unwrap_or_default();
-                capture
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(serde_json::from_slice(body).unwrap_or(Value::Null));
-                reply.clone().into_bytes()
-            })
-            .create_async()
-            .await;
-        (mock, seen)
-    }
-
-    fn sent(seen: &Arc<Mutex<Vec<Value>>>) -> Value {
-        let bodies = seen.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(bodies.len(), 1, "expected exactly one provider call");
-        bodies[0].clone()
-    }
-
-    fn anthropic_reply() -> Value {
-        json!({
-            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
-            "content": [{ "type": "text", "text": "ok" }], "stop_reason": "end_turn",
-            "usage": { "input_tokens": 5, "output_tokens": 2 }
-        })
-    }
-
-    fn ephemeral() -> Value {
-        json!({ "type": "ephemeral" })
-    }
-
-    /// An Anthropic-SDK agent mid tool loop, marked on its system prompt, its tool and the
-    /// latest tool result: where agents such as Claude Code put their markers.
-    fn marked_tool_loop(tool_result: &str) -> Value {
-        json!({
-            "model": "claude-haiku-5-5",
-            "max_tokens": 256,
-            "system": [
-                { "type": "text", "text": "You are a coding agent." },
-                { "type": "text", "text": "Repository map.", "cache_control": ephemeral() }
-            ],
-            "tools": [{ "name": "read_logs", "input_schema": { "type": "object" }, "cache_control": ephemeral() }],
-            "messages": [
-                { "role": "user", "content": "why did the deploy fail?" },
-                { "role": "assistant", "content": [
-                    { "type": "tool_use", "id": "toolu_1", "name": "read_logs", "input": {} }
-                ]},
-                { "role": "user", "content": [
-                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": tool_result, "cache_control": ephemeral() }
-                ]}
-            ]
-        })
-    }
-
-    /// `ctx_with` pointed at a mocked Anthropic API, with a platform key for it.
-    fn anthropic_ctx(base: String) -> LlmRouterCtx {
-        let mut ctx = ctx_with(base.clone());
-        ctx.cfg = Arc::new(GatewayConfig {
-            anthropic_api_base: base,
-            platform_anthropic_api_key: "sk-ant-platform".into(),
-            ..(*ctx.cfg).clone()
-        });
-        ctx
-    }
-
-    fn anthropic_store(fallback_models: Vec<String>) -> Store {
-        Store {
-            config: Some(LLMConfig {
-                provider: "anthropic".into(),
-                model: Some("claude-haiku-5-5".into()),
-                fallback_models,
-                ..openai_config()
-            }),
-            is_coding_agent: false,
-            compress_enabled: true,
-        }
-    }
-
-    #[tokio::test]
-    async fn an_anthropic_agents_markers_reach_anthropic_with_compression_on() {
-        let mut server = mockito::Server::new_async().await;
-        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
-
-        let ctx = anthropic_ctx(server.url());
-        chat_core(
-            &ctx,
-            &anthropic_store(vec![]),
-            &auth_headers(&token()),
-            marked_tool_loop(&noisy_tool_result()),
-            InboundFormat::Anthropic,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let body = sent(&seen);
-        assert_eq!(
-            body["system"],
-            json!([
-                { "type": "text", "text": "You are a coding agent." },
-                { "type": "text", "text": "Repository map.", "cache_control": ephemeral() }
-            ])
-        );
-        assert_eq!(body["tools"][0]["cache_control"], ephemeral());
-        let result = &body["messages"][2]["content"][0];
-        assert_eq!(result["cache_control"], ephemeral());
-        assert!(
-            result["content"].as_str().unwrap().contains("lines elided"),
-            "the marked tool result was not compressed: {result}"
-        );
-    }
-
-    #[tokio::test]
-    async fn brevity_lands_after_the_agents_last_marker() {
-        let mut server = mockito::Server::new_async().await;
-        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
-
-        let mut ctx = anthropic_ctx(server.url());
-        ctx.cfg = Arc::new(GatewayConfig {
-            brevity_enabled: true,
-            brevity_min_bytes: 0,
-            brevity_holdout_pct: 0,
-            ..(*ctx.cfg).clone()
-        });
-        chat_core(
-            &ctx,
-            &anthropic_store(vec![]),
-            &auth_headers(&token()),
-            json!({
-                "model": "claude-haiku-5-5",
-                "max_tokens": 256,
-                "system": [{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() }],
-                "messages": [{ "role": "user", "content": [
-                    { "type": "text", "text": "Summarise the repository.", "cache_control": ephemeral() }
-                ]}]
-            }),
-            InboundFormat::Anthropic,
-            None,
-        )
-        .await
-        .unwrap();
-
-        // In `system` it would precede the user turn's marker, and every turn that skips brevity
-        // would miss the cache from there on.
-        let body = sent(&seen);
-        assert_eq!(
-            body["system"],
-            json!([{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral() }])
-        );
-        assert_eq!(
-            body["messages"][0]["content"],
-            json!([
-                { "type": "text", "text": "Summarise the repository.", "cache_control": ephemeral() },
-                { "type": "text", "text": crate::brevity::DIRECTIVE }
-            ])
-        );
-    }
-
-    #[tokio::test]
-    async fn an_anthropic_agents_markers_become_cache_points_on_bedrock() {
-        let mut server = mockito::Server::new_async().await;
-        let reply = json!({
-            "output": { "message": { "role": "assistant", "content": [{ "text": "ok" }] } },
-            "stopReason": "end_turn",
-            "usage": { "inputTokens": 5, "outputTokens": 2, "totalTokens": 7 }
-        });
-        let path = mockito::Matcher::Regex(r"^/model/[^/]+/converse$".into());
-        let (_mock, seen) = capturing_mock(&mut server, path, 200, reply).await;
-
-        let ctx = ctx_with(server.url());
-        let store = WithCustomProvider {
-            inner: Store {
-                config: Some(LLMConfig {
-                    provider: "aws-bedrock".into(),
-                    model: Some("us.anthropic.claude-haiku-5-5".into()),
-                    ..openai_config()
-                }),
-                is_coding_agent: false,
-                compress_enabled: true,
-            },
-            custom: crate::resolver::CustomProvider {
-                base_url: server.url(),
-                dialect: crate::providers::ProviderDialect::BedrockConverse,
-                api_key: "bedrock-key".into(),
-                default_model: None,
-            },
-        };
-        chat_core(
-            &ctx,
-            &store,
-            &auth_headers(&token()),
-            marked_tool_loop("fn main() {}"),
-            InboundFormat::Anthropic,
-            None,
-        )
-        .await
-        .unwrap();
-
-        let body = sent(&seen);
-        let cache_point = json!({ "cachePoint": { "type": "default" } });
-        assert_eq!(
-            body["system"],
-            json!([{ "text": "You are a coding agent." }, { "text": "Repository map." }, cache_point])
-        );
-        assert_eq!(body["toolConfig"]["tools"][1], cache_point);
-        assert_eq!(body["messages"][2]["content"][1], cache_point);
-        assert!(!body.to_string().contains("cache_control"));
-    }
-
-    #[tokio::test]
-    async fn a_fallback_from_anthropic_to_openai_sends_openai_no_markers() {
-        let mut server = mockito::Server::new_async().await;
-        let overloaded = json!({ "type": "error", "error": { "type": "overloaded_error", "message": "Overloaded" } });
-        let (_anthropic, to_anthropic) =
-            capturing_mock(&mut server, "/messages", 529, overloaded).await;
-        let openai_reply = json!({
-            "id": "chatcmpl-f", "object": "chat.completion", "model": "gpt-4o-mini",
-            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-            "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
-        });
-        let (_openai, to_openai) =
-            capturing_mock(&mut server, "/chat/completions", 200, openai_reply).await;
-
-        let ctx = anthropic_ctx(server.url());
-        chat_core(
-            &ctx,
-            &anthropic_store(vec!["openai/gpt-4o-mini".into()]),
-            &auth_headers(&token()),
-            marked_tool_loop("fn main() {}"),
-            InboundFormat::Anthropic,
-            None,
-        )
-        .await
-        .unwrap();
-
-        assert!(sent(&to_anthropic).to_string().contains("cache_control"));
-        let fallback = sent(&to_openai).to_string();
-        assert!(!fallback.contains("cache_control"), "{fallback}");
-        assert!(fallback.contains("Repository map."));
     }
 }

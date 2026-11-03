@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 use crate::ir::{ChatResponse, ToolCallDelta, Usage};
 
 /// One routed call, as a turn of the calling agent's conversation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct RecordedTurn {
     pub agent_id: String,
     pub owner_id: String,
@@ -27,6 +27,9 @@ pub struct RecordedTurn {
     pub output_tokens: Option<i64>,
     pub latency_ms: i64,
     pub started_at: DateTime<Utc>,
+    /// The request's span: the trace its `gen_ai.chat` span belongs to, so the host can tie
+    /// the turn to that trace (the router itself stays free of OpenTelemetry types).
+    pub span: tracing::Span,
 }
 
 /// Where turns go. Implementations return immediately and do their work on their own task.
@@ -49,6 +52,8 @@ pub const TOOL_RESULTS: &str = "[tool results]";
 pub(crate) struct TurnStart {
     pub user_text: String,
     pub started_at: DateTime<Utc>,
+    /// Taken when the request arrives: a streamed turn finishes after the request's span.
+    pub span: tracing::Span,
 }
 
 impl TurnStart {
@@ -71,6 +76,7 @@ impl TurnStart {
             output_tokens: usage.and_then(|u| u.completion_tokens),
             latency_ms,
             started_at: self.started_at,
+            span: self.span,
         }
     }
 }
