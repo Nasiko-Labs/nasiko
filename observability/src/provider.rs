@@ -13,7 +13,7 @@ use crate::pricing::{CostBreakdown, CostRequest, compute_cost};
 use crate::tempo::{TempoClient, TraceSearchResult};
 use crate::types::{
     AgentFinOps, AgentStats, Session, SessionDetails, Span, SpanDetails, TokenUsage, TraceDetails,
-    TraceSummary, extract_usage_attrs, is_router_llm_span, latency_percentiles,
+    TraceSummary, extract_usage_attrs, is_router_llm_span, is_tool_span, latency_percentiles,
 };
 
 // ---------------------------------------------------------------------------
@@ -373,6 +373,223 @@ impl TempoLokiProvider {
     pub fn with_session_resolver(mut self, resolver: Arc<dyn SessionIdResolver>) -> Self {
         self.session_resolver = resolver;
         self
+    }
+
+    /// Aggregate an already-fetched trace into one `TraceUsageRow` per agent.
+    ///
+    /// Split out from `extract_trace_usage` — which only fetches the trace and
+    /// calls this — so the span→row aggregation (the part FinOps reads) can be
+    /// tested without a live Tempo. Pricing still goes through `self.cost`, so
+    /// behaviour is identical to the inline version.
+    async fn aggregate_trace_usage(
+        &self,
+        trace: &TraceDetails,
+    ) -> Vec<crate::types::TraceUsageRow> {
+        let trace_id = trace.trace_id.as_str();
+
+        // Session ID from span attributes (shared across all agents in the trace).
+        let session_id = trace.spans.iter().find_map(|s| {
+            s.attributes
+                .get("session.id")
+                .and_then(|v| v.as_str())
+                .filter(|sid| !sid.is_empty())
+                .map(|sid| sid.to_string())
+        });
+
+        let started_at = trace.started_at.unwrap_or_else(Utc::now);
+        let latency_ms = trace.duration_ms.map(|d| d as i64);
+
+        // Group token-bearing and tool-call spans by agent (service_name).
+        // Each agent that made LLM calls or tool calls in this trace gets its
+        // own row — a multi-agent trace produces multiple rows.
+        #[derive(Default)]
+        struct AgentAcc {
+            input: u64,
+            output: u64,
+            cache_read: u64,
+            cache_creation: u64,
+            model: Option<String>,
+            /// Provider label off the span, so an agent's spend is costed
+            /// against the book of whoever actually served the call.
+            provider: Option<String>,
+            mixed_model: bool,
+            mixed_provider: bool,
+            cost: CostBreakdown,
+            tool_calls: u32,
+        }
+
+        let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
+        // Deduplicated like every other aggregator here: Tempo can return a
+        // span more than once (a re-export, or a batch replayed), and this is
+        // the function that materializes `trace_usage`, so a duplicate would
+        // double-count tokens and cost on every FinOps figure while the
+        // session view — which does dedup — stayed right. Done once up front
+        // because the attribution pass below walks the span set as well.
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut spans: Vec<&crate::types::Span> = Vec::new();
+        for span in &trace.spans {
+            if seen.insert(span.span_id.as_str()) {
+                spans.push(span);
+            }
+        }
+        // Pair each LLM-router span with the agent span for the same call, so the
+        // call is counted once and priced against the model that actually served
+        // it. Shared with the session view's aggregation (`TraceDetails`), which
+        // must reach the same totals — `cost_path_differential` is the gate on that.
+        let links = crate::types::link_router_spans(&trace.spans);
+        let (attributed, excluded) = (links.attributed, links.excluded);
+
+        for span in spans.iter().copied() {
+            let u = extract_usage_attrs(&span.attributes);
+            let (inp, out, model) = (u.input, u.output, u.model.clone());
+            let (cr, cc) = (u.cache_read, u.cache_creation);
+            // Tool spans carry no tokens, model, provider or cost — only a
+            // tool-call count — so they take no part in this token/model/
+            // provider/cost accumulation. Letting a model-less tool span through
+            // wipes a real model/provider label off its agent's row the moment
+            // one follows an LLM span in the same bucket, and books a $0 cost row
+            // besides. They are tallied (and attributed) in their own pass below.
+            if is_tool_span(span) {
+                continue;
+            }
+            if inp == 0 && out == 0 && cr == 0 && cc == 0 {
+                continue;
+            }
+            // The router already booked this call, with the model that actually
+            // served it. Counting the agent's copy too would double the tokens.
+            if excluded.contains(span.span_id.as_str()) {
+                continue;
+            }
+            // A router span is booked against the agent it served, never against
+            // the control plane; one we could not attribute is dropped above.
+            let name = if is_router_llm_span(span) {
+                match attributed.get(span.span_id.as_str()) {
+                    Some(agent) => *agent,
+                    None => continue,
+                }
+            } else {
+                span.service_name.as_str()
+            };
+            if name.is_empty() {
+                continue;
+            }
+            let acc = by_agent.entry(name.to_string()).or_insert(AgentAcc {
+                provider: span_provider(span).map(str::to_owned),
+                ..Default::default()
+            });
+            acc.input += inp;
+            acc.output += out;
+            acc.cache_read += cr;
+            acc.cache_creation += cc;
+            if acc.model.is_none() && !acc.mixed_model {
+                acc.model = model.clone();
+            } else if acc.model != model {
+                acc.model = None;
+                acc.mixed_model = true;
+            }
+            let provider = span_provider(span).map(str::to_owned);
+            if acc.provider != provider {
+                acc.provider = None;
+                acc.mixed_provider = true;
+            }
+            acc.cost.add_assign(
+                self.cost(CostRequest::from_usage(
+                    span_provider(span),
+                    u.model.as_deref(),
+                    span.started_at,
+                    &u,
+                ))
+                .await,
+            );
+        }
+
+        // Tool calls: counted (and attributed) in their own pass so they never
+        // perturb the token/model/provider/cost accumulation above. A tool span
+        // is booked against the agent the router-pairing resolved for it,
+        // falling back to the `gen_ai.agent.id` it stamped when no cross-service
+        // ancestor is in the trace — never dropped, or the Tool-lane count the
+        // materializer writes disagrees with the tool spans in Tempo. An agent
+        // seen only through tool calls gets a tool-only row (zero tokens).
+        for span in spans.iter().copied() {
+            if !is_tool_span(span) {
+                continue;
+            }
+            let Some(name) = tool_span_agent(span, &attributed) else {
+                continue;
+            };
+            if name.is_empty() {
+                continue;
+            }
+            by_agent.entry(name.to_string()).or_default().tool_calls += 1;
+        }
+
+        // Unrecovered error spans (SE-3), attributed to the agent that emitted
+        // them. Computed here because the span tree is already in hand — the
+        // materializer otherwise throws it away after pulling tokens and cost.
+        //
+        // Only agents that already have a row are annotated. An agent whose
+        // spans are *all* errors — it failed before making any LLM or tool call
+        // — contributes no row and so no count. Creating a zero-token row for it
+        // would put a synthetic agent into `trace_usage`, which every FinOps
+        // figure aggregates, to carry a secondary signal; the session's own
+        // status comes from `flows` and is exact regardless.
+        let mut errors_by_agent: HashMap<&str, u32> = HashMap::new();
+        for span_id in crate::types::unrecovered_error_spans(&spans) {
+            if let Some(span) = spans.iter().find(|s| s.span_id == span_id) {
+                // A failed tool call is attributed exactly as the tool-count
+                // pass attributes it (so the error lands on the same row),
+                // including the `gen_ai.agent.id` fallback — a tool span is a
+                // router span by `gen_ai.agent.id`, so the plain router branch
+                // would drop it when the pairing could not attribute it.
+                let name = if is_tool_span(span) {
+                    match tool_span_agent(span, &attributed) {
+                        Some(agent) => agent,
+                        None => continue,
+                    }
+                } else if is_router_llm_span(span) {
+                    match attributed.get(span.span_id.as_str()) {
+                        Some(agent) => *agent,
+                        None => continue,
+                    }
+                } else {
+                    span.service_name.as_str()
+                };
+                *errors_by_agent.entry(name).or_insert(0) += 1;
+            }
+        }
+
+        let mut rows = Vec::with_capacity(by_agent.len());
+        for (agent_name, acc) in by_agent {
+            let cost = acc.cost;
+            let error_count = errors_by_agent
+                .get(agent_name.as_str())
+                .copied()
+                .unwrap_or(0);
+            rows.push(crate::types::TraceUsageRow {
+                trace_id: trace_id.to_string(),
+                agent_name,
+                session_id: session_id.clone(),
+                model: acc.model,
+                provider: if acc.mixed_provider {
+                    None
+                } else {
+                    acc.provider
+                },
+                input_tokens: acc.input,
+                output_tokens: acc.output,
+                cache_read_tokens: acc.cache_read,
+                cache_creation_tokens: acc.cache_creation,
+                tool_call_count: acc.tool_calls,
+                cost_estimated: cost.estimated,
+                cost_usd: cost.total_usd,
+                prompt_cost_usd: cost.prompt_usd,
+                completion_cost_usd: cost.completion_usd,
+                latency_ms,
+                started_at,
+                error_count,
+            });
+        }
+        rows
     }
 
     async fn search_traces(
@@ -1380,193 +1597,7 @@ impl ObservabilityProvider for TempoLokiProvider {
         trace_id: &str,
     ) -> Result<Vec<crate::types::TraceUsageRow>, ObservabilityError> {
         let trace = self.tempo.get_trace(trace_id).await?;
-        let trace_id = trace.trace_id.as_str();
-
-        // Session ID from span attributes (shared across all agents in the trace).
-        let session_id = trace.spans.iter().find_map(|s| {
-            s.attributes
-                .get("session.id")
-                .and_then(|v| v.as_str())
-                .filter(|sid| !sid.is_empty())
-                .map(|sid| sid.to_string())
-        });
-
-        let started_at = trace.started_at.unwrap_or_else(Utc::now);
-        let latency_ms = trace.duration_ms.map(|d| d as i64);
-
-        // Group token-bearing and tool-call spans by agent (service_name).
-        // Each agent that made LLM calls or tool calls in this trace gets its
-        // own row — a multi-agent trace produces multiple rows.
-        struct AgentAcc {
-            input: u64,
-            output: u64,
-            cache_read: u64,
-            cache_creation: u64,
-            model: Option<String>,
-            /// Provider label off the span, so an agent's spend is costed
-            /// against the book of whoever actually served the call.
-            provider: Option<String>,
-            mixed_model: bool,
-            mixed_provider: bool,
-            cost: CostBreakdown,
-            tool_calls: u32,
-        }
-
-        let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
-        // Deduplicated like every other aggregator here: Tempo can return a
-        // span more than once (a re-export, or a batch replayed), and this is
-        // the function that materializes `trace_usage`, so a duplicate would
-        // double-count tokens and cost on every FinOps figure while the
-        // session view — which does dedup — stayed right. Done once up front
-        // because the attribution pass below walks the span set as well.
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut spans: Vec<&crate::types::Span> = Vec::new();
-        for span in &trace.spans {
-            if seen.insert(span.span_id.as_str()) {
-                spans.push(span);
-            }
-        }
-        // Pair each LLM-router span with the agent span for the same call, so the
-        // call is counted once and priced against the model that actually served
-        // it. Shared with the session view's aggregation (`TraceDetails`), which
-        // must reach the same totals — `cost_path_differential` is the gate on that.
-        let links = crate::types::link_router_spans(&trace.spans);
-        let (attributed, excluded) = (links.attributed, links.excluded);
-        let superseded_tools = crate::types::superseded_tool_spans(&trace.spans);
-
-        for span in spans.iter().copied() {
-            let u = extract_usage_attrs(&span.attributes);
-            let (inp, out, model) = (u.input, u.output, u.model.clone());
-            let (cr, cc) = (u.cache_read, u.cache_creation);
-            // A tool the agent's own span reports is dropped when the gateway's
-            // span for the same call is in the trace.
-            let is_tool_call = crate::types::is_tool_span(span)
-                && !superseded_tools.contains(span.span_id.as_str());
-            if inp == 0 && out == 0 && cr == 0 && cc == 0 && !is_tool_call {
-                continue;
-            }
-            // The router already booked this call, with the model that actually
-            // served it. Counting the agent's copy too would double the tokens.
-            if excluded.contains(span.span_id.as_str()) && !is_tool_call {
-                continue;
-            }
-            // A router span is booked against the agent it served, never against
-            // the control plane; one we could not attribute is dropped above.
-            let name = if is_router_llm_span(span) {
-                match attributed.get(span.span_id.as_str()) {
-                    Some(agent) => *agent,
-                    None => continue,
-                }
-            } else {
-                crate::types::gateway_tool_agent(span).unwrap_or(span.service_name.as_str())
-            };
-            if name.is_empty() {
-                continue;
-            }
-            let acc = by_agent.entry(name.to_string()).or_insert(AgentAcc {
-                input: 0,
-                output: 0,
-                cache_read: 0,
-                cache_creation: 0,
-                model: None,
-                provider: None,
-                mixed_model: false,
-                mixed_provider: false,
-                cost: CostBreakdown::default(),
-                tool_calls: 0,
-            });
-            acc.input += inp;
-            acc.output += out;
-            acc.cache_read += cr;
-            acc.cache_creation += cc;
-            // A tool span carries no model, provider or cost of its own, so it
-            // must not read as a second model or provider.
-            if inp + out + cr + cc > 0 {
-                if acc.model.is_none() && !acc.mixed_model {
-                    acc.model = model.clone();
-                } else if acc.model != model {
-                    acc.model = None;
-                    acc.mixed_model = true;
-                }
-                let provider = span_provider(span).map(str::to_owned);
-                if acc.provider.is_none() && !acc.mixed_provider {
-                    acc.provider = provider;
-                } else if acc.provider != provider {
-                    acc.provider = None;
-                    acc.mixed_provider = true;
-                }
-                acc.cost.add_assign(
-                    self.cost(CostRequest::from_usage(
-                        span_provider(span),
-                        u.model.as_deref(),
-                        span.started_at,
-                        &u,
-                    ))
-                    .await,
-                );
-            }
-            if is_tool_call {
-                acc.tool_calls += 1;
-            }
-        }
-
-        // Unrecovered error spans (SE-3), attributed to the agent that emitted
-        // them. Computed here because the span tree is already in hand — the
-        // materializer otherwise throws it away after pulling tokens and cost.
-        //
-        // Only agents that already have a row are annotated. An agent whose
-        // spans are *all* errors — it failed before making any LLM or tool call
-        // — contributes no row and so no count. Creating a zero-token row for it
-        // would put a synthetic agent into `trace_usage`, which every FinOps
-        // figure aggregates, to carry a secondary signal; the session's own
-        // status comes from `flows` and is exact regardless.
-        let mut errors_by_agent: HashMap<&str, u32> = HashMap::new();
-        for span_id in crate::types::unrecovered_error_spans(&spans) {
-            if let Some(span) = spans.iter().find(|s| s.span_id == span_id) {
-                let name = if is_router_llm_span(span) {
-                    match attributed.get(span.span_id.as_str()) {
-                        Some(agent) => *agent,
-                        None => continue,
-                    }
-                } else {
-                    crate::types::gateway_tool_agent(span).unwrap_or(span.service_name.as_str())
-                };
-                *errors_by_agent.entry(name).or_insert(0) += 1;
-            }
-        }
-
-        let mut rows = Vec::with_capacity(by_agent.len());
-        for (agent_name, acc) in by_agent {
-            let cost = acc.cost;
-            let error_count = errors_by_agent
-                .get(agent_name.as_str())
-                .copied()
-                .unwrap_or(0);
-            rows.push(crate::types::TraceUsageRow {
-                trace_id: trace_id.to_string(),
-                agent_name,
-                session_id: session_id.clone(),
-                model: acc.model,
-                provider: if acc.mixed_provider {
-                    None
-                } else {
-                    acc.provider
-                },
-                input_tokens: acc.input,
-                output_tokens: acc.output,
-                cache_read_tokens: acc.cache_read,
-                cache_creation_tokens: acc.cache_creation,
-                tool_call_count: acc.tool_calls,
-                cost_estimated: cost.estimated,
-                cost_usd: cost.total_usd,
-                prompt_cost_usd: cost.prompt_usd,
-                completion_cost_usd: cost.completion_usd,
-                latency_ms,
-                started_at,
-                error_count,
-            });
-        }
-        Ok(rows)
+        Ok(self.aggregate_trace_usage(&trace).await)
     }
 
     async fn search_user_traces(
@@ -1607,6 +1638,25 @@ pub fn span_provider(span: &Span) -> Option<&str> {
         .find_map(|key| span.attributes.get(*key))
         .and_then(|v| v.as_str())
         .filter(|label| !label.is_empty())
+}
+
+/// The agent a tool span is booked against.
+///
+/// The service name the router-pairing resolved for it (its cross-service
+/// ancestor), else the `gen_ai.agent.id` the MCP gateway stamped on it. The
+/// fallback keeps a tool call attributed when no ancestor is in the trace rather
+/// than dropping it — a tool span is a router span by `gen_ai.agent.id`, so the
+/// plain `is_router_llm_span` path would `continue` past an unpaired one. Both
+/// the tool-count pass and the error attribution use this, so a failed tool call
+/// lands on the same row its count does.
+fn tool_span_agent<'a>(span: &'a Span, attributed: &HashMap<&'a str, &'a str>) -> Option<&'a str> {
+    if let Some(agent) = attributed.get(span.span_id.as_str()) {
+        return Some(agent);
+    }
+    span.attributes
+        .get("gen_ai.agent.id")
+        .and_then(|v| v.as_str())
+        .filter(|id| !id.is_empty())
 }
 
 /// Root span: one whose parent is absent from the trace.
@@ -1703,6 +1753,122 @@ mod tests {
             serde_json::json!(usage.0 + usage.1 + usage.2 + usage.3),
         );
         span
+    }
+
+    /// An MCP `execute_tool` span, the way the gateway emits one: its own
+    /// (control-plane) service, `gen_ai.operation.name = execute_tool`, and the
+    /// agent id stamped for attribution. No tokens, model or provider.
+    fn tool_span(span_id: &str, parent: Option<&str>, tool: &str, agent_id: &str) -> Span {
+        let mut span = trace_with_sessions(&[(span_id, None)]).spans.remove(0);
+        span.parent_span_id = parent.map(str::to_owned);
+        span.service_name = "nasiko-cp".into();
+        span.name = format!("execute_tool {tool}");
+        span.attributes.insert(
+            "gen_ai.operation.name".into(),
+            serde_json::json!("execute_tool"),
+        );
+        span.attributes
+            .insert("gen_ai.agent.id".into(), serde_json::json!(agent_id));
+        span.attributes
+            .insert("tool.name".into(), serde_json::json!(tool));
+        span
+    }
+
+    fn offline_provider() -> TempoLokiProvider {
+        TempoLokiProvider::new(
+            "http://tempo.invalid".into(),
+            "http://loki.invalid".into(),
+            std::sync::Arc::new(test_engine()),
+        )
+    }
+
+    fn trace_of(spans: Vec<Span>) -> TraceDetails {
+        TraceDetails {
+            trace_id: "t".into(),
+            spans,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_span_does_not_wipe_its_agents_model_or_provider() {
+        // #2: a model-less tool span in the same agent bucket as an LLM span must
+        // not blank the row's model/provider. The old loop ran the tool span
+        // through the label accumulator, wiping both the moment it followed the
+        // LLM span. Realistic topology: the agent's turn span is the parent, with
+        // the LLM call and the tool call as siblings under it (the tool span's
+        // router-pairing resolves to the agent's service via that parent).
+        let mut turn = trace_with_sessions(&[("turn", None)]).spans.remove(0);
+        turn.service_name = "agent-x".into();
+        turn.name = "agent.turn".into();
+        let mut llm = model_span("llm", Some("turn"), "gpt-4o", (100, 50, 0, 0));
+        llm.service_name = "agent-x".into();
+        llm.attributes
+            .insert("gen_ai.provider.name".into(), serde_json::json!("openai"));
+        let tool = tool_span("tool", Some("turn"), "gmail__send_email", "agent-uuid");
+
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![turn, llm, tool]))
+            .await;
+
+        assert_eq!(rows.len(), 1, "one row for the single agent");
+        let row = &rows[0];
+        assert_eq!(row.agent_name, "agent-x");
+        assert_eq!(row.model.as_deref(), Some("gpt-4o"), "model not wiped");
+        assert_eq!(
+            row.provider.as_deref(),
+            Some("openai"),
+            "provider not wiped"
+        );
+        assert_eq!(row.tool_call_count, 1);
+        assert_eq!((row.input_tokens, row.output_tokens), (100, 50));
+    }
+
+    #[tokio::test]
+    async fn a_tool_only_agent_still_gets_a_row() {
+        // #4: an agent seen only through a tool call (no LLM span) is attributed
+        // via the stamped gen_ai.agent.id, not dropped.
+        let tool = tool_span("tool", None, "gmail__send_email", "agent-uuid");
+
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![tool]))
+            .await;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent_name, "agent-uuid");
+        assert_eq!(rows[0].tool_call_count, 1);
+        assert_eq!(rows[0].input_tokens, 0);
+        assert_eq!(rows[0].cost_usd, 0.0);
+    }
+
+    #[tokio::test]
+    async fn a_tool_span_excluded_by_router_dedup_is_still_counted() {
+        // #4, the exact drop case: the tool span has no cross-service ancestor
+        // AND another service reports usage, so `link_router_spans` puts it in
+        // `excluded`. The old loop then hit `None => continue` and lost it. It
+        // must still be counted, attributed by its stamped agent id.
+        let mut other = model_span("other-llm", None, "gpt-4o", (10, 5, 0, 0));
+        other.service_name = "other-agent".into();
+        let tool = tool_span("tool", None, "gmail__send_email", "agent-uuid");
+
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![other, tool]))
+            .await;
+
+        let tool_row = rows
+            .iter()
+            .find(|r| r.tool_call_count == 1)
+            .expect("the tool call was not dropped");
+        assert_eq!(tool_row.agent_name, "agent-uuid");
+        // The other agent's LLM row is unaffected and carries no tool call.
+        let other_row = rows
+            .iter()
+            .find(|r| r.agent_name == "other-agent")
+            .expect("other agent row");
+        assert_eq!(other_row.tool_call_count, 0);
+        assert_eq!(other_row.model.as_deref(), Some("gpt-4o"));
     }
 
     #[tokio::test]
@@ -2323,77 +2489,6 @@ mod tests {
     /// attributes on the span — enough for `token_totals()`/`extract_token_attrs`
     /// to resolve real numbers, matching the real Tempo wire shape exactly
     /// (verified against `tempo.rs`'s `OtlpTraceResponse`/`OtlpSpan` structs).
-    fn otlp_tool_span(
-        span_id: &str,
-        parent: Option<&str>,
-        attributes: &[(&str, &str)],
-    ) -> serde_json::Value {
-        let attributes: Vec<_> = attributes
-            .iter()
-            .map(|(k, v)| serde_json::json!({"key": k, "value": {"stringValue": v}}))
-            .collect();
-        let mut span = serde_json::json!({
-            "spanId": span_id,
-            "name": "execute_tool",
-            "kind": "SPAN_KIND_SERVER",
-            "startTimeUnixNano": "1700000000000000000",
-            "attributes": attributes,
-        });
-        if let Some(parent) = parent {
-            span["parentSpanId"] = parent.into();
-        }
-        span
-    }
-
-    fn otlp_batch(service: &str, span: serde_json::Value) -> serde_json::Value {
-        serde_json::json!({
-            "resource": {"attributes": [
-                {"key": "service.name", "value": {"stringValue": service}},
-            ]},
-            "scopeSpans": [{"spans": [span]}],
-        })
-    }
-
-    #[tokio::test]
-    async fn a_gateway_tool_span_is_counted_once_and_credited_to_the_calling_agent() {
-        let mut server = mockito::Server::new_async().await;
-        // The agent's SDK reports its own tool span, and the gateway's span for the same
-        // call is its direct child, emitted by the control plane's service.
-        let agent_span = otlp_tool_span(
-            "AAAAAAAAAAE=",
-            None,
-            &[("gen_ai.operation.name", "execute_tool")],
-        );
-        let gateway_span = otlp_tool_span(
-            "AAAAAAAAAAI=",
-            Some("AAAAAAAAAAE="),
-            &[
-                ("gen_ai.operation.name", "execute_tool"),
-                ("mcp.method.name", "tools/call"),
-                ("agent.id", "agent-1"),
-            ],
-        );
-        let body = serde_json::json!({
-            "batches": [otlp_batch("agent-1", agent_span), otlp_batch("nasiko", gateway_span)],
-        });
-        let _trace = server
-            .mock("GET", mockito::Matcher::Regex(r"^/api/traces/.*$".into()))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(body.to_string())
-            .create_async()
-            .await;
-
-        let rows = provider_against(&server.url())
-            .extract_trace_usage("0af7651916cd43dd8448eb211c80319c")
-            .await
-            .unwrap();
-
-        assert_eq!(rows.len(), 1, "nothing is credited to the control plane");
-        assert_eq!(rows[0].agent_name, "agent-1");
-        assert_eq!(rows[0].tool_call_count, 1, "counted once, not twice");
-    }
-
     fn otlp_trace_json(
         service_name: &str,
         start_time_unix_nano: &str,
