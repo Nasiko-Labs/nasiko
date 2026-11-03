@@ -17,6 +17,7 @@ use crate::cache;
 use crate::error::{McpError, Result};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::repo;
+use crate::search::ToolSearchIndex;
 use crate::state::McpState;
 use crate::types::Stance;
 
@@ -364,7 +365,32 @@ pub async fn set_connector_access_view(
     )
     .await?;
     invalidate_permission_cache(state, agent_id).await;
+    if enabled {
+        tokio::spawn(sync_catalog_after_enable(
+            state.clone(),
+            user_id,
+            connector_id,
+        ));
+    }
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
+}
+
+/// Fill a never-synced connector's tool catalog when it is enabled on an agent.
+/// Search finds a connector's tools only once they are in the catalog, and
+/// enabling (`nasiko mcp agent tools enable`) is often the only step a caller
+/// takes — nothing else guarantees the tool list is ever opened. Runs off the
+/// request, since a live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the
+/// toggle is already saved, so an unreachable backend only logs, and the tool
+/// list view retries the sync on its next read.
+async fn sync_catalog_after_enable(state: McpState, user_id: Uuid, connector_id: Uuid) {
+    let synced = match repo::list_connector_tools(&state.db, connector_id).await {
+        Ok(catalog) if !catalog.is_empty() => return,
+        Ok(_) => sync_connector_tools(&state, user_id, connector_id).await,
+        Err(e) => Err(e),
+    };
+    if let Err(e) = synced {
+        tracing::warn!(%connector_id, error = %e, "tool catalog sync on connector enable failed");
+    }
 }
 
 /// `GET /agents/{id}/connectors/{connector_id}/tools` — tools for a connector
@@ -578,17 +604,24 @@ fn is_markdown_heading_line(line: &str) -> bool {
 }
 
 /// Public entry point for eager tool sync (e.g. after OAuth callback).
-/// Rebuilds the search index after sync so new/changed tools are discoverable.
+/// `sync_connector_tools` itself rebuilds the search index, so new/changed
+/// tools are discoverable as soon as this returns.
 pub async fn sync_connector_tools_by_id(
     state: &McpState,
     user_id: Uuid,
     connector_id: Uuid,
 ) -> Result<()> {
-    sync_connector_tools(state, user_id, connector_id).await?;
-    if let Err(e) = state.search_index.rebuild(&state.db).await {
-        tracing::warn!(error = %e, "search index rebuild after tool sync failed");
+    sync_connector_tools(state, user_id, connector_id).await
+}
+
+/// Rebuild the tool search index after `mcp_connector_tools` changed, so
+/// `nasiko_search_tools` sees the change without a server restart.
+/// Never fails the caller: the catalog write already succeeded, and an
+/// embedding outage must not turn a connector sync into an error.
+pub(crate) async fn refresh_search_index(index: &dyn ToolSearchIndex, db: &sqlx::PgPool) {
+    if let Err(e) = index.rebuild(db).await {
+        tracing::warn!(error = %e, "search index rebuild after tool catalog change failed");
     }
-    Ok(())
 }
 
 /// Sync a connector's tool catalog from its live backend into `mcp_connector_tools`.
@@ -691,6 +724,7 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
             &crate::catalog::toolcount_cache_key(connector_id),
         )
         .await;
+        refresh_search_index(state.search_index.as_ref(), &state.db).await;
     }
     Ok(())
 }
@@ -1264,5 +1298,61 @@ mod tests {
         let out = summarize_description(&desc, 100);
         assert!(out.chars().count() <= 101);
         assert!(out.ends_with('…'));
+    }
+
+    // ─── refresh_search_index ─────────────────────────────────────────────────
+
+    /// Counts `rebuild` calls; optionally fails them, like an embedding outage.
+    struct CountingIndex {
+        rebuilds: std::sync::atomic::AtomicUsize,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSearchIndex for CountingIndex {
+        async fn search_tools(
+            &self,
+            _query: &str,
+            _accessible_connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+            _limit: usize,
+        ) -> Vec<crate::search::ToolMatch> {
+            Vec::new()
+        }
+
+        async fn rebuild(&self, _db: &sqlx::PgPool) -> Result<()> {
+            self.rebuilds
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                return Err(McpError::Internal("embedding API down".into()));
+            }
+            Ok(())
+        }
+    }
+
+    fn lazy_pool() -> sqlx::PgPool {
+        sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
+            .expect("lazy pool construction must not touch the network")
+    }
+
+    #[tokio::test]
+    async fn refresh_search_index_requests_a_rebuild() {
+        let index = CountingIndex {
+            rebuilds: Default::default(),
+            fail: false,
+        };
+        refresh_search_index(&index, &lazy_pool()).await;
+        assert_eq!(index.rebuilds.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn refresh_search_index_swallows_rebuild_failure() {
+        let index = CountingIndex {
+            rebuilds: Default::default(),
+            fail: true,
+        };
+        // Returns `()` — a failed rebuild must never fail the tool sync.
+        refresh_search_index(&index, &lazy_pool()).await;
+        assert_eq!(index.rebuilds.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

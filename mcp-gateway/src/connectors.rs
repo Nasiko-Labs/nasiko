@@ -913,6 +913,8 @@ pub async fn delete_connector(state: &McpState, connector: &McpConnector) -> Res
     for aid in agent_ids {
         permissions::invalidate_permission_cache(state, aid).await;
     }
+    // The cascade removed its tool rows; drop them from the in-memory index too.
+    permissions::refresh_search_index(state.search_index.as_ref(), &state.db).await;
     tracing::info!(name = %connector.name, "deleted mcp connector");
     Ok(())
 }

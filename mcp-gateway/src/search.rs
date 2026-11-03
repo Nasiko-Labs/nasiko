@@ -100,6 +100,7 @@ struct Bm25Inner {
 /// Flat BM25 keyword search over all `mcp_connector_tools`.
 pub struct Bm25SearchIndex {
     inner: RwLock<Bm25Inner>,
+    rebuild_lock: tokio::sync::Mutex<()>,
 }
 
 impl Default for Bm25SearchIndex {
@@ -117,6 +118,7 @@ impl Bm25SearchIndex {
                 df: HashMap::new(),
                 avgdl: 1.0,
             }),
+            rebuild_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -229,6 +231,7 @@ impl ToolSearchIndex for Bm25SearchIndex {
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
+        let _serialized = self.rebuild_lock.lock().await;
         let tools = load_all_tools(db).await?;
         let tool_count = tools.len();
         self.index(tools);
@@ -338,6 +341,7 @@ struct SemanticInner {
 /// over the same tools when the query cannot be embedded.
 pub struct SemanticSearchIndex {
     inner: RwLock<SemanticInner>,
+    rebuild_lock: tokio::sync::Mutex<()>,
     bm25: Bm25SearchIndex,
     client: EmbeddingClient,
     redis: redis::Client,
@@ -355,6 +359,7 @@ impl SemanticSearchIndex {
                 tools: Vec::new(),
                 embeddings: Vec::new(),
             }),
+            rebuild_lock: tokio::sync::Mutex::new(()),
             bm25: Bm25SearchIndex::new(),
             client: EmbeddingClient {
                 http,
@@ -457,6 +462,10 @@ impl ToolSearchIndex for SemanticSearchIndex {
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
+        // Every catalog write now rebuilds, so rebuilds can overlap. Unserialized,
+        // one that read the table before another's write could finish last and
+        // install the older tool set, dropping the newer connector's tools.
+        let _serialized = self.rebuild_lock.lock().await;
         let tools = load_all_tools(db).await?;
         self.bm25.index(tools.clone());
         if tools.is_empty() {
