@@ -256,11 +256,10 @@ pub enum AuthError {
     /// Uniqueness / state conflict. Maps to 409.
     #[error("conflict: {0}")]
     Conflict(String),
-    /// Refused for a policy reason distinct from bad credentials — e.g. an
-    /// enterprise capacity/entitlement gate declining to auto-provision a
-    /// new user (no active license, or already at a seat cap). The payload
-    /// is a caller-facing reason code, never raw internal detail — same
-    /// convention as `Conflict`.
+    /// Refused for a policy reason distinct from bad credentials, e.g. a
+    /// capacity gate declining to auto-provision a new user. The payload is
+    /// a caller-facing reason code, never raw internal detail (the same
+    /// convention as `Conflict`).
     #[error("forbidden: {0}")]
     Forbidden(String),
     /// A backend/database failure — must surface as 500, NEVER as 401. Previously

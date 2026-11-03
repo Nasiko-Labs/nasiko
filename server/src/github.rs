@@ -439,17 +439,15 @@ async fn github_callback_login(
         .await
     {
         Ok(r) => r,
-        // An enterprise capacity/license gate (installed by `ee/auth`'s
-        // `EeAuthService`, if configured — absent in plain OSS) declined to
-        // provision a new user. `reason` is a caller-facing code (e.g.
-        // "license_required"), not raw internal detail, so it's safe to
-        // carry straight into the redirect the same way OIDC's own
-        // preflight does for the identical condition.
+        // A capacity gate declined to provision a new user. `reason` is a
+        // caller-facing code, not raw internal detail, so it's safe to carry
+        // straight into the redirect the same way OIDC's own preflight does
+        // for the identical condition.
         Err(nasiko_auth::AuthError::Forbidden(reason)) => {
             tracing::info!(
                 github_login = %github_user.login,
                 reason,
-                "GitHub SSO login refused by a capacity/entitlement gate"
+                "GitHub SSO login refused by a capacity gate"
             );
             return login_error_redirect(&state, &reason);
         }

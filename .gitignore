@@ -37,10 +37,6 @@ uv.lock
 .mcp.json
 values.json
 
-# nasiko-licensor keygen output — the private half belongs in the vault,
-# never in git. Only the derived public key (ee/server/keys/*.pub) is committed.
-/.licensing-keys/
-
 # Local-only MCP planning/research docs — not pushed to remote
 /mcp_upload_flow_docs/
 /docs/MCP_GITHUB_IMPORT_UI_GAP_ANALYSIS.md

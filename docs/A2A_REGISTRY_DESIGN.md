@@ -244,30 +244,9 @@ A2A-Version: 1.0
 
 ### Authentication and Access Control
 
-The registry endpoint (`/a2a/v1`) **respects authentication when provided**, but remains functional for unauthenticated callers with reduced visibility:
-
-- **Anonymous callers** (no Authorization header) see only public agents (`is_public = true`)
-- **Authenticated agents** (sending `Authorization: Bearer <MCP_GATEWAY_TOKEN>`) see what their owner may access:
-  - Agents owned by the same user
-  - Public agents
-  - Agents granted to the user via `agent_grants`
-  - In Enterprise Edition: agents granted to the user's team or department via organization grants
-
-Agents are deployed with the `MCP_GATEWAY_TOKEN` environment variable injected by the control plane (`oss/server/src/agents/deploy_env.rs`). When querying the registry, agents should include this token:
-
-```http
-POST /a2a/v1
-Authorization: Bearer <MCP_GATEWAY_TOKEN>
-Content-Type: application/json
-
-{
-  "jsonrpc": "2.0",
-  "method": "SendMessage",
-  ...
-}
-```
-
-**Migration note:** Third-party agents that relied on unauthenticated discovery seeing all agents must now send the `MCP_GATEWAY_TOKEN` to see private agents. The platform's own agents (`assistant-agent`, `react-agent`) include the token automatically when the environment variable is present.
+- **No token:** the registry lists public agents only.
+- **A session token:** it lists the agents that caller may call through the agent proxy, decided by the same check the proxy uses. An invalid token is a 401, never a quiet fall back to the public view.
+- Every entry's address is the agent proxy path, `/api/agents/{id}`, never a container address, so a call made from the list goes through the proxy's access check, flow guard and tracing (`oss/server/src/registry_a2a.rs`).
 
 ## End-to-End: Every Path is A2A
 
