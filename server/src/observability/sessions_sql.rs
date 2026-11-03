@@ -174,7 +174,8 @@ struct Row {
     running_flow_count: Option<i64>,
     /// Coding-agent receipts, one per turn; 0 for every other session.
     turn_count: Option<i64>,
-    failed_turn_count: Option<i64>,
+    /// Whether the session's latest coding-agent turn ended with an erroring tool call.
+    last_turn_failed: Option<bool>,
     turn_tokens: Option<i64>,
     turn_cost: Option<f64>,
     turn_started: Option<DateTime<Utc>>,
@@ -196,11 +197,12 @@ struct Row {
 /// separately as `error_count`, and the two are never mixed.
 ///
 /// A coding-agent turn is the same kind of record — written at ingest, exact —
-/// so its outcome counts too: a turn with an erroring tool call fails the
-/// session, and any recorded turn makes it known. Mirrored by
-/// [`status_predicate`].
+/// so its outcome counts too, and any recorded turn makes the status known. Only
+/// the latest turn decides failure: an erroring tool call in an earlier turn was
+/// followed by more work, so the agent recovered and the session is not failed.
+/// Mirrored by [`status_predicate`].
 fn derive_status(row: &Row) -> Option<&'static str> {
-    let failed = row.failed_flow_count.unwrap_or(0) + row.failed_turn_count.unwrap_or(0);
+    let failed = row.failed_flow_count.unwrap_or(0) + i64::from(row.last_turn_failed == Some(true));
     let running = row.running_flow_count.unwrap_or(0);
     let total = row.flow_count.unwrap_or(0) + row.turn_count.unwrap_or(0);
     if failed > 0 {
@@ -295,8 +297,11 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
     // every filter below negates exactly what `derive_status` counts.
     const FAILED: &str = "(EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status = 'failed') \
-             OR EXISTS (SELECT 1 FROM coding_agent_telemetry_events e \
-                      WHERE e.session_id = s.session_id AND e.turn_tool_errors > 0))";
+             OR COALESCE((SELECT e.turn_tool_errors > 0 \
+                            FROM coding_agent_telemetry_events e \
+                           WHERE e.session_id = s.session_id \
+                           ORDER BY e.turn_started_at DESC NULLS LAST, e.received_at DESC \
+                           LIMIT 1), FALSE))";
     match status {
         None => "TRUE".into(),
         Some(StatusFilter::Failed) => FAILED.into(),
@@ -378,7 +383,7 @@ SELECT p.session_id,
        fl.failed_flow_count,
        fl.running_flow_count,
        ct.turn_count,
-       ct.failed_turn_count,
+       ct.last_turn_failed,
        ct.turn_tokens,
        ct.turn_started,
        ct.turn_ended,
@@ -450,7 +455,13 @@ SELECT p.session_id,
         -- One row per turn: event ids are derived from the turn, but a client
         -- that minted two for one turn must not count it twice.
         SELECT count(*)::bigint AS turn_count,
-               count(*) FILTER (WHERE r.turn_tool_errors > 0)::bigint AS failed_turn_count,
+               -- Only the latest turn decides failure (see `derive_status`). Same
+               -- ordering as `status_predicate`, so the badge and the filter agree.
+               (SELECT e.turn_tool_errors > 0
+                  FROM coding_agent_telemetry_events e
+                 WHERE e.session_id = p.session_id
+                 ORDER BY e.turn_started_at DESC NULLS LAST, e.received_at DESC
+                 LIMIT 1) AS last_turn_failed,
                -- LEAST ignores NULL, so an all-NULL sum (receipts the backfill has not
                -- reached) would read as the cap; keep it NULL instead.
                CASE WHEN count(r.turn_tokens) = 0 THEN NULL
@@ -589,7 +600,7 @@ mod tests {
             failed_flow_count: Some(failed),
             running_flow_count: Some(running),
             turn_count: Some(0),
-            failed_turn_count: Some(0),
+            last_turn_failed: Some(false),
             turn_tokens: None,
             turn_cost: None,
             turn_started: None,
@@ -604,18 +615,27 @@ mod tests {
         }
     }
 
-    fn coding_row(turns: i64, failed_turns: i64) -> Row {
+    fn coding_row(turns: i64, last_turn_failed: bool) -> Row {
         Row {
             turn_count: Some(turns),
-            failed_turn_count: Some(failed_turns),
+            last_turn_failed: Some(last_turn_failed),
             ..row(0, 0, 0)
         }
     }
 
     #[test]
     fn coding_session_status_comes_from_its_turns() {
-        assert_eq!(derive_status(&coding_row(3, 0)), Some("ok"));
-        assert_eq!(derive_status(&coding_row(3, 1)), Some("failed"));
+        assert_eq!(derive_status(&coding_row(3, false)), Some("ok"));
+        assert_eq!(derive_status(&coding_row(3, true)), Some("failed"));
+    }
+
+    #[test]
+    fn a_failed_flow_still_fails_a_session_whose_last_turn_is_clean() {
+        let row = Row {
+            failed_flow_count: Some(1),
+            ..coding_row(3, false)
+        };
+        assert_eq!(derive_status(&row), Some("failed"));
     }
 
     #[test]
@@ -632,7 +652,7 @@ mod tests {
             turn_cost: Some(1.25),
             turn_started: Some(start),
             turn_ended: Some(end),
-            ..coding_row(4, 0)
+            ..coding_row(4, false)
         }
         .into_summary();
         assert_eq!(summary.num_traces, Some(4));
@@ -645,7 +665,7 @@ mod tests {
     fn coding_session_falls_back_to_traced_cost_when_turns_are_unpriced() {
         let summary = Row {
             total_cost: Some(0.5),
-            ..coding_row(2, 0)
+            ..coding_row(2, false)
         }
         .into_summary();
         assert_eq!(summary.cost_summary.total.cost, Some(0.5));
@@ -766,7 +786,7 @@ mod tests {
             subagent_turns: Some(5),
             subagent_tokens: Some(700),
             subagent_cost: Some(3.5),
-            ..coding_row(1, 0)
+            ..coding_row(1, false)
         }
         .into_summary();
         assert_eq!(summary.token_usage.total, Some(100));
