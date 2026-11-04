@@ -1681,6 +1681,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_empty_gemini_turn_reaches_a_provider_that_accepts_one() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "messages": [{ "role": "user", "content": "" }]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-e", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let resp = chat_core(
+            &ctx_with(server.url()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers(&token()),
+            json!({ "contents": [{ "role": "user", "parts": [] }] }),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+        upstream.assert_async().await;
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
     async fn a_bad_token_in_x_goog_api_key_is_refused_before_any_provider_call() {
         let err = chat_core(
             &ctx_with("http://unused".into()),

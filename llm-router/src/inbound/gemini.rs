@@ -149,9 +149,7 @@ impl InboundParser for GeminiInbound {
                     let content = parts_to_content_value(&user_parts);
                     oa_messages.push(json!({ "role": "user", "content": content }));
                 } else if !had_fr {
-                    return Err(GatewayError::BadRequest(
-                        "user message cannot be empty".to_string(),
-                    ));
+                    oa_messages.push(json!({ "role": "user", "content": "" }));
                 }
             }
         }
@@ -764,6 +762,37 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_user_turn_is_forwarded_for_the_provider_to_judge() {
+        for turn in [
+            json!({ "role": "user", "parts": [] }),
+            json!({ "role": "user" }),
+            json!({ "role": "user", "parts": [{ "text": "" }] }),
+        ] {
+            let req = GeminiInbound
+                .parse_chat(json!({ "contents": [turn.clone()] }))
+                .unwrap();
+
+            assert_eq!(req.messages.len(), 1, "{turn}");
+            assert_eq!(req.messages[0].role, "user", "{turn}");
+            assert_eq!(req.messages[0].content, Some(json!("")), "{turn}");
+        }
+    }
+
+    #[test]
+    fn a_turn_of_only_function_responses_adds_no_empty_user_message() {
+        let req = GeminiInbound
+            .parse_chat(json!({ "contents": [
+                { "role": "user", "parts": [{ "text": "Read it." }] },
+                { "role": "model", "parts": [{ "functionCall": { "name": "read_file", "args": {} } }] },
+                { "role": "user", "parts": [{ "functionResponse": { "name": "read_file", "response": { "text": "7781" } } }] }
+            ]}))
+            .unwrap();
+
+        let roles: Vec<&str> = req.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool"]);
+    }
+
+    #[test]
     fn an_inline_data_mime_type_is_normalized_before_it_is_mapped() {
         let req = GeminiInbound
             .parse_chat(json!({
@@ -898,16 +927,5 @@ mod tests {
             }))
             .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
-
-        // empty user message
-        let err_empty = GeminiInbound
-            .parse_chat(json!({
-                "contents": [{
-                    "role": "user",
-                    "parts": []
-                }]
-            }))
-            .unwrap_err();
-        assert!(matches!(err_empty, GatewayError::BadRequest(_)));
     }
 }
