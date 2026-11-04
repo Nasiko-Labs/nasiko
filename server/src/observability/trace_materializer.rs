@@ -178,7 +178,7 @@ async fn materialize_once(
 /// Shared idempotent write path for window scans and receipt-driven recovery.
 ///
 /// Rows are merged by the agent they resolve to before anything is written: the
-/// gateway attributes a tool call to the agent's UUID while the agent's own spans
+/// gateway credits a tool call to the agent's UUID while the agent's own spans
 /// carry its name, and both resolve to the same `(trace_id, agent_name)` key,
 /// where a plain upsert of each would overwrite the other's tokens or tool count.
 pub(crate) async fn upsert_rows(

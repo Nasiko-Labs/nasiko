@@ -9,7 +9,6 @@
 
 use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, request::Parts};
-use nasiko_utils::image::strip_image_to_repo;
 
 use crate::OciState;
 use crate::error::{OciError, Result};
@@ -170,121 +169,93 @@ impl<S: Send + Sync> FromRequestParts<S> for Writer {
     }
 }
 
-/// Parse an OCI repository path into namespace type and slug.
+/// The repository component an image name is pushed under, as a SQL
+/// expression over the text expression `$name`.
 ///
-/// Returns `Ok(Owner(uuid, slug))` for `u-{32 lowercase hex}/{slug}`,
-/// `Ok(Legacy(slug))` for `nasiko/{slug}`, or an error for malformed paths.
-fn parse_repository_path(repo: &str) -> Result<RepoNamespace> {
-    if let Some(rest) = repo.strip_prefix("u-") {
-        let parts: Vec<&str> = rest.splitn(2, '/').collect();
-        if parts.len() != 2 {
-            return Err(OciError::BadRequest(format!(
-                "invalid owner namespace: expected u-{{uuid}}/{{name}}, got '{}'",
-                repo
-            )));
-        }
-        let hex = parts[0];
-        if hex.len() != 32
-            || !hex
-                .chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        {
-            return Err(OciError::BadRequest(format!(
-                "invalid owner namespace: uuid must be 32 lowercase hex chars, got '{}'",
-                hex
-            )));
-        }
-        let uuid = uuid::Uuid::parse_str(hex).map_err(|_| {
-            OciError::BadRequest(format!(
-                "invalid owner namespace: '{}' is not a valid UUID",
-                hex
-            ))
-        })?;
-        Ok(RepoNamespace::Owner(uuid, parts[1].to_string()))
-    } else if let Some(slug) = repo.strip_prefix("nasiko/") {
-        Ok(RepoNamespace::Legacy(slug.to_string()))
-    } else {
-        Err(OciError::BadRequest(format!(
-            "unknown namespace in repository path '{}'",
-            repo
-        )))
-    }
-}
-
-/// Repository namespace type.
-#[derive(Debug, Clone)]
-enum RepoNamespace {
-    /// Per-owner namespace: `u-{uuid}/{slug}`
-    Owner(uuid::Uuid, String),
-    /// Legacy namespace: `nasiko/{slug}`
-    Legacy(String),
-}
-
-/// Compute owners(R) - the set of owner_ids of live agents whose stored
-/// `agents.image` (with registry host and tag stripped) equals repository R,
-/// and of uploaded MCP connectors whose successful build image is R.
-/// Narrows candidates in SQL via substring search, then confirms exact match
-/// in Rust to avoid LIKE wildcard issues with `_` in names.
-async fn owners_of_repository(state: &OciState, repo: &str) -> Result<Vec<uuid::Uuid>> {
-    // Narrow in SQL: image must contain the repo path as a substring.
-    // strpos returns >0 when found (1-indexed), 0 when not found.
-    // This filters out most rows before pulling into Rust, without false
-    // positives from LIKE wildcards treating `_` as single-char match.
-    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT owner_id, image FROM agents WHERE deleted_at IS NULL AND strpos(image, $1) > 0",
+/// It must equal `nasiko_server::agents::image_name_slug` (lowercase, spaces
+/// to `-`, drop everything outside `[a-z0-9_-]`, trim `-`, empty → `agent`):
+/// agents push to `nasiko/<slug of name>` and uploaded MCP connectors to
+/// `nasiko/<slug of "mcp-" + name>`. The server's `oci_repo_ownership` test
+/// compares the two over sample names, so a change to one fails it.
+fn repo_slug_sql(name: &str) -> String {
+    format!(
+        "COALESCE(NULLIF(btrim(regexp_replace(replace(lower({name}), ' ', '-'), \
+         '[^a-z0-9_-]', '', 'g'), '-'), ''), 'agent')"
     )
-    .bind(repo)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(OciError::Database)?;
-
-    let mut owner_ids = Vec::new();
-    for (owner_id, image) in rows {
-        // An external image with the same path is not an owner of the platform repository.
-        if let Some(platform_repo) = nasiko_utils::image::platform_repository_from_image(
-            &image,
-            &state.platform_registry_host,
-        ) && platform_repo == repo
-            && !owner_ids.contains(&owner_id)
-        {
-            owner_ids.push(owner_id);
-        }
-    }
-
-    let connector_rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT c.owner_id, b.image_tag \
-         FROM mcp_connectors c \
-         JOIN mcp_connector_builds b ON b.connector_id = c.id \
-         WHERE b.status = 'success' AND b.image_tag IS NOT NULL AND strpos(b.image_tag, $1) > 0",
-    )
-    .bind(repo)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(OciError::Database)?;
-
-    for (owner_id, image_tag) in connector_rows {
-        if let Some(platform_repo) = nasiko_utils::image::platform_repository_from_image(
-            &image_tag,
-            &state.platform_registry_host,
-        ) && platform_repo == repo
-            && !owner_ids.contains(&owner_id)
-        {
-            owner_ids.push(owner_id);
-        }
-    }
-
-    Ok(owner_ids)
 }
 
-/// Check write access - sessions checked via their namespace, BuildService unrestricted.
-/// OSS has no agent grants, so ownership is the only check.
+/// Every owner whose agent or uploaded MCP connector pushes to `repo`, as
+/// `(does every one of them equal the caller, is there any)`.
+///
+/// The repository is named after the agent or connector name, not its id
+/// (see [`repo_slug_sql`]), and names are unique only per owner, so several
+/// owners can map to one repository. The caller owns it only when *all* of
+/// them are the caller: a repository two owners share cannot say whose image
+/// a tag holds, so neither may write it (NAS-1112). Comparing the real
+/// repository name matters too: an exact `agents.name = repo` match missed
+/// every name with uppercase or spaces and every connector, and an unmatched
+/// repository counted as unclaimed, which anyone may push to.
+async fn repo_claim_status(
+    state: &OciState,
+    caller: &CallerIdentity,
+    repo: &str,
+) -> Result<(bool, bool)> {
+    let Ok(caller_uuid) = caller.user_id.parse::<uuid::Uuid>() else {
+        return Ok((false, false));
+    };
+    let query = format!(
+        r#"WITH claimants AS (
+             SELECT owner_id FROM agents
+              WHERE deleted_at IS NULL AND {agent} = $1
+             UNION ALL
+             SELECT owner_id FROM mcp_connectors
+              WHERE source_kind = 'uploaded_build' AND {connector} = $1
+           )
+           SELECT COALESCE(bool_and(owner_id IS NOT DISTINCT FROM $2), false) AS owns,
+                  EXISTS(SELECT 1 FROM claimants) AS claimed
+             FROM claimants"#,
+        agent = repo_slug_sql("name"),
+        connector = repo_slug_sql("'mcp-' || name"),
+    );
+    sqlx::query_as(&query)
+        .bind(repo)
+        .bind(caller_uuid)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(OciError::Database)
+}
+
+/// Enforce that `caller` may operate on `repo` (the agent-name path segment).
+///
+/// Policy: superusers may always proceed. Otherwise, if any agent or uploaded
+/// MCP connector already pushes to this repository, the caller must own every
+/// one of them (see [`repo_claim_status`]). If none does yet, the request is
+/// allowed through — the CLI pushes an image
+/// *before* registering the agent (`oss/cli/src/commands/push.rs`), so a
+/// brand-new repo name has no owner to check against yet. This means a
+/// not-yet-registered name is first-come-first-served until an agent claims
+/// it; closing that narrower race is tracked separately (see MIGRATION plan,
+/// Phase A3 follow-up) and is a materially smaller blast radius than the
+/// "any authenticated stranger can read/delete any existing agent's image"
+/// gap this closes.
+///
+/// Use [`check_repo_delete_access`] instead for destructive operations.
 pub async fn check_repo_access(
     state: &OciState,
     caller: &CallerIdentity,
     repo: &str,
 ) -> Result<()> {
-    // Kept for back-compat but delegates to write-access logic
-    check_write_access(state, &Writer::Session(caller.clone()), repo).await
+    if caller.is_superuser {
+        return Ok(());
+    }
+    let (owns, claimed) = repo_claim_status(state, caller, repo).await?;
+    if owns || !claimed {
+        Ok(())
+    } else {
+        Err(OciError::Forbidden(format!(
+            "not permitted to access repository '{repo}'"
+        )))
+    }
 }
 
 /// An agent name may carry capitals but an OCI repository name may not, so the
@@ -293,192 +264,68 @@ fn repo_names_match(agent_name: &str, repo: &str) -> bool {
     agent_name.eq_ignore_ascii_case(repo)
 }
 
-/// Enforce read access per namespace (coordinator rules 2, 4, 5).
+/// Enforce that `caller` may read `repo` — the [`Caller`]-accepting
+/// counterpart of [`check_repo_access`], used by the read-only manifest/blob/
+/// tags handlers. A [`Caller::Session`] goes through the exact same policy
+/// as `check_repo_access`; a [`Caller::PullOnly`] is granted access only if
+/// `repo` is literally the current name of the agent its credential is
+/// bound to — no ownership/superuser concept applies, since the credential
+/// is scoped to one agent by construction, not one user.
 pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) -> Result<()> {
     match caller {
-        Caller::BuildService => Ok(()),
-        Caller::Session(identity) => {
-            if identity.is_superuser {
-                return Ok(());
-            }
-            let caller_uuid = identity
-                .user_id
-                .parse::<uuid::Uuid>()
-                .map_err(|_| OciError::Forbidden("invalid user id".to_string()))?;
-
-            match parse_repository_path(repo)? {
-                RepoNamespace::Owner(uuid, _slug) => {
-                    if uuid == caller_uuid {
-                        Ok(())
-                    } else {
-                        Err(OciError::Forbidden(format!(
-                            "not permitted to access repository '{}'",
-                            repo
-                        )))
-                    }
-                }
-                RepoNamespace::Legacy(_slug) => {
-                    let owners = owners_of_repository(state, repo).await?;
-                    if owners.is_empty() || (owners.len() == 1 && owners[0] == caller_uuid) {
-                        Ok(())
-                    } else {
-                        Err(OciError::Forbidden(format!(
-                            "not permitted to access repository '{}'",
-                            repo
-                        )))
-                    }
-                }
-            }
-        }
+        Caller::Session(identity) => check_repo_access(state, identity, repo).await,
         Caller::PullOnly(pull) => {
-            let bound_image: Option<String> =
-                sqlx::query_scalar("SELECT image FROM agents WHERE id = $1 AND deleted_at IS NULL")
-                    .bind(pull.agent_id)
-                    .fetch_optional(&state.pool)
-                    .await
-                    .map_err(OciError::Database)?;
-
-            let Some(image_ref) = bound_image.as_deref() else {
-                // Connector: its first pull happens before the build is marked successful, so
-                // pending and building builds count too.
-                let connector_data: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
-                    "SELECT c.owner_id, b.image_tag \
-                     FROM mcp_connectors c \
-                     LEFT JOIN mcp_connector_builds b \
-                       ON b.connector_id = c.id \
-                       AND b.status IN ('pending', 'building', 'success') \
-                       AND b.image_tag IS NOT NULL \
-                     WHERE c.id = $1 \
-                     ORDER BY b.created_at DESC \
-                     LIMIT 1",
-                )
+            // Check agents first, then fall back to MCP connectors — the
+            // credential's `agent_id` column is effectively a workload_id
+            // that can reference either table.
+            // Compared as the repository the workload's image is pushed to
+            // ([`repo_slug_sql`]), not its display name: an agent named
+            // "General Assistant" pulls from `nasiko/general-assistant`.
+            let bound_repo: Option<String> = sqlx::query_scalar(&format!(
+                "SELECT {} FROM agents WHERE id = $1 AND deleted_at IS NULL",
+                repo_slug_sql("name")
+            ))
+            .bind(pull.agent_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(OciError::Database)?;
+            let bound_repo = match bound_repo {
+                Some(name) => Some(name),
+                None => sqlx::query_scalar(&format!(
+                    "SELECT {} FROM mcp_connectors WHERE id = $1",
+                    repo_slug_sql("'mcp-' || name")
+                ))
                 .bind(pull.agent_id)
                 .fetch_optional(&state.pool)
                 .await
-                .map_err(OciError::Database)?;
-
-                if let Some((owner_id, Some(image))) = connector_data {
-                    let bound_repo = strip_image_to_repo(&image);
-                    // Check the repository matches
-                    if bound_repo != repo {
-                        return Err(OciError::Forbidden(format!(
-                            "not permitted to access repository '{}' (bound to '{}')",
-                            repo, bound_repo
-                        )));
-                    }
-                    // Check the namespace matches the connector's owner
-                    match nasiko_utils::image::parse_owner_namespace(repo) {
-                        Ok(Some((ns_owner, _))) => {
-                            if ns_owner != owner_id {
-                                return Err(OciError::Forbidden(
-                                    "repository namespace does not match connector owner"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                        Ok(None) => {
-                            // Legacy nasiko/ namespace - allow for backward compat
-                        }
-                        Err(_) => {
-                            return Err(OciError::Forbidden(format!(
-                                "invalid namespace in repository '{}'",
-                                repo
-                            )));
-                        }
-                    }
-                    return Ok(());
-                } else {
-                    return Err(OciError::Forbidden(
-                        "no build found for connector or connector not found".to_string(),
-                    ));
-                }
+                .map_err(OciError::Database)?,
             };
-
-            // Agent case: the bound image must be this platform repository, in the owner's namespace.
-            let bound_repo = nasiko_utils::image::platform_repository_from_image(
-                image_ref,
-                &state.platform_registry_host,
-            );
-            if !bound_repo.is_some_and(|bound| repo_names_match(bound, repo)) {
-                return Err(OciError::Forbidden(format!(
-                    "not permitted to access repository '{}'",
-                    repo
-                )));
+            if bound_repo
+                .as_deref()
+                .is_some_and(|bound| repo_names_match(bound, repo))
+            {
+                Ok(())
+            } else {
+                Err(OciError::Forbidden(format!(
+                    "not permitted to access repository '{repo}'"
+                )))
             }
-
-            // Also verify the namespace matches the agent's owner
-            let agent_owner: uuid::Uuid =
-                sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
-                    .bind(pull.agent_id)
-                    .fetch_one(&state.pool)
-                    .await
-                    .map_err(OciError::Database)?;
-
-            match nasiko_utils::image::parse_owner_namespace(repo) {
-                Ok(Some((ns_owner, _))) => {
-                    if ns_owner != agent_owner {
-                        return Err(OciError::Forbidden(
-                            "repository namespace does not match agent owner".to_string(),
-                        ));
-                    }
-                }
-                Ok(None) => {
-                    // Legacy nasiko/ namespace - allow for backward compat
-                }
-                Err(_) => {
-                    return Err(OciError::Forbidden(format!(
-                        "invalid namespace in repository '{}'",
-                        repo
-                    )));
-                }
-            }
-            Ok(())
         }
+        // Trusted, server-orchestrated infrastructure — no per-repo restriction.
+        Caller::BuildService => Ok(()),
     }
 }
 
-/// Enforce write access per namespace (coordinator rules 3, 4).
+/// Enforce that `writer` may push to `repo` — the [`Writer`]-accepting
+/// counterpart of [`check_repo_access`], used by the blob-upload and
+/// manifest-put handlers. A [`Writer::Session`] goes through the exact same
+/// policy as `check_repo_access` (zero change to the existing JWT-based
+/// interactive/CLI push path); `Writer::BuildService` is unrestricted, same
+/// reasoning as [`Caller::BuildService`] above.
 pub async fn check_write_access(state: &OciState, writer: &Writer, repo: &str) -> Result<()> {
     match writer {
+        Writer::Session(identity) => check_repo_access(state, identity, repo).await,
         Writer::BuildService => Ok(()),
-        Writer::Session(identity) => {
-            if identity.is_superuser {
-                return Ok(());
-            }
-            let caller_uuid = identity
-                .user_id
-                .parse::<uuid::Uuid>()
-                .map_err(|_| OciError::Forbidden("invalid user id".to_string()))?;
-
-            match parse_repository_path(repo)? {
-                RepoNamespace::Owner(uuid, _slug) => {
-                    if uuid == caller_uuid {
-                        Ok(())
-                    } else {
-                        Err(OciError::Forbidden(format!(
-                            "not permitted to write to repository '{}'",
-                            repo
-                        )))
-                    }
-                }
-                RepoNamespace::Legacy(_slug) => {
-                    let owners = owners_of_repository(state, repo).await?;
-                    if owners.is_empty() {
-                        Err(OciError::Forbidden(format!(
-                            "legacy repository '{}' is unclaimed - use your own namespace instead",
-                            repo
-                        )))
-                    } else if owners.len() == 1 && owners[0] == caller_uuid {
-                        Ok(())
-                    } else {
-                        Err(OciError::Forbidden(format!(
-                            "not permitted to write to repository '{}'",
-                            repo
-                        )))
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -499,110 +346,13 @@ pub async fn check_repo_delete_access(
     if caller.is_superuser {
         return Ok(());
     }
-    let caller_uuid = caller
-        .user_id
-        .parse::<uuid::Uuid>()
-        .map_err(|_| OciError::Forbidden("invalid user id".to_string()))?;
-
-    match parse_repository_path(repo)? {
-        RepoNamespace::Owner(uuid, _) => {
-            if uuid == caller_uuid {
-                Ok(())
-            } else {
-                Err(OciError::Forbidden(format!(
-                    "not permitted to delete from repository '{}'",
-                    repo
-                )))
-            }
-        }
-        RepoNamespace::Legacy(_) => {
-            let owners = owners_of_repository(state, repo).await?;
-            if owners.len() == 1 && owners[0] == caller_uuid {
-                Ok(())
-            } else {
-                Err(OciError::Forbidden(format!(
-                    "not permitted to delete from repository '{}'",
-                    repo
-                )))
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod namespace_tests {
-    use super::*;
-
-    #[test]
-    fn parse_owner_namespace_valid() {
-        let uuid_str = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4";
-        let repo = format!("u-{}/my-agent", uuid_str);
-        let result = parse_repository_path(&repo);
-        assert!(result.is_ok());
-        match result.unwrap() {
-            RepoNamespace::Owner(uuid, slug) => {
-                assert_eq!(uuid.as_simple().to_string(), uuid_str);
-                assert_eq!(slug, "my-agent");
-            }
-            _ => panic!("expected Owner namespace"),
-        }
-    }
-
-    #[test]
-    fn parse_owner_namespace_uppercase_rejected() {
-        let repo = "u-A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4/agent";
-        assert!(parse_repository_path(repo).is_err());
-    }
-
-    #[test]
-    fn parse_owner_namespace_wrong_length() {
-        let repo = "u-short/agent";
-        assert!(parse_repository_path(repo).is_err());
-    }
-
-    #[test]
-    fn parse_legacy_namespace() {
-        let repo = "nasiko/code-reviewer";
-        let result = parse_repository_path(repo);
-        assert!(result.is_ok());
-        match result.unwrap() {
-            RepoNamespace::Legacy(slug) => {
-                assert_eq!(slug, "code-reviewer");
-            }
-            _ => panic!("expected Legacy namespace"),
-        }
-    }
-
-    #[test]
-    fn parse_unknown_namespace() {
-        let repo = "unknown/agent";
-        assert!(parse_repository_path(repo).is_err());
-    }
-
-    #[test]
-    fn strip_image_to_repo_bare() {
-        assert_eq!(strip_image_to_repo("u-abc123/agent:1.0"), "u-abc123/agent");
-    }
-
-    #[test]
-    fn strip_image_to_repo_with_registry() {
-        assert_eq!(
-            strip_image_to_repo("registry.io/u-abc123/agent:1.0"),
-            "u-abc123/agent"
-        );
-    }
-
-    #[test]
-    fn strip_image_to_repo_legacy() {
-        assert_eq!(
-            strip_image_to_repo("nasiko/code-reviewer:latest"),
-            "nasiko/code-reviewer"
-        );
-    }
-
-    #[test]
-    fn strip_image_to_repo_no_tag() {
-        assert_eq!(strip_image_to_repo("u-abc123/agent"), "u-abc123/agent");
+    let (owns, _claimed) = repo_claim_status(state, caller, repo).await?;
+    if owns {
+        Ok(())
+    } else {
+        Err(OciError::Forbidden(format!(
+            "not permitted to delete from repository '{repo}'"
+        )))
     }
 }
 
