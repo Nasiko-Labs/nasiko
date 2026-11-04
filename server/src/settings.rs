@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
             "/settings/context-tiers",
             get(get_context_tiers).put(update_context_tiers),
         )
+        .merge(crate::composio_settings::router())
         .merge(write_settings)
 }
 

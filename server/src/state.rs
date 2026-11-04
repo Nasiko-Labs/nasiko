@@ -521,6 +521,9 @@ impl AppState {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
 
+        // Before the seeding below, which needs the key to register toolkits.
+        crate::composio_settings::apply_stored_key(self).await;
+
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
