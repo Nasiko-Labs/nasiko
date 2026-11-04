@@ -27,7 +27,6 @@ import {
 } from '@nasiko/ui/primitives/select'
 import { ApiError } from '@nasiko/data-access/client'
 import { useSaveSettings, useSettings } from './api'
-import { ComposioSection } from './ComposioSection'
 import { SettingRow, SettingRows } from './components/SettingRow'
 import { copy } from './copy'
 import {
@@ -62,8 +61,6 @@ const FIELDS: Record<CoreSection, Spec[]> = {
     { key: 'flow_timeout_secs', kind: 'number', max: INT_MAX },
   ],
   registry: [{ key: 'registry_url', kind: 'url' }],
-  // Its own form and Save (ComposioSection), not part of this one.
-  mcp: [],
 }
 
 const sectionOf = (k: SettingsField): CoreSection =>
@@ -111,8 +108,7 @@ export function SettingsPage({
   return (
     <div className="flex flex-col gap-6">
       {layer ? <layer.Section /> : <PageHeader title={head.label} description={head.sub} />}
-      {!layer && section === 'mcp' ? <ComposioSection /> : null}
-      <div hidden={!!layer || section === 'mcp'}>
+      <div hidden={!!layer}>
         {settings.isPending ? (
           <PageLoader label={copy.loading} />
         ) : settings.isError ? (

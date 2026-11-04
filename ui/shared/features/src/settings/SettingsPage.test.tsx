@@ -30,14 +30,7 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
         .map((l) => l.textContent),
       // Workspace → Optimization tiers: plans/feat-context-optimization.md (eng E4). Appearance and Password moved to
       // the account menu's /account (intended nav changes).
-    ).toEqual([
-      'General',
-      'Flow limits',
-      'Optimization tiers',
-      'Registry',
-      'MCP toolkits',
-      'Secrets',
-    ])
+    ).toEqual(['General', 'Flow limits', 'Optimization tiers', 'Registry', 'Secrets'])
     expect(within(nav).getByRole('link', { name: 'General' })).toHaveAttribute(
       'aria-current',
       'page',
