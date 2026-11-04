@@ -308,6 +308,27 @@ pub fn is_router_llm_span(span: &Span) -> bool {
     span.attributes.contains_key("gen_ai.agent.id")
 }
 
+/// Whether a span records a tool execution rather than an LLM call.
+///
+/// Both tool spans the platform emits set `gen_ai.operation.name =
+/// "execute_tool"` — the MCP gateway's `execute_tool` span and the coding-agent
+/// OTLP tool span; `"call_tool"` is the older GenAI-semconv spelling and
+/// `openinference.span.kind = "TOOL"` the OpenInference one. A tool span may
+/// also carry `gen_ai.agent.id` (the MCP gateway stamps it for attribution), so
+/// it is **not** exclusive with [`is_router_llm_span`]; callers that must treat
+/// tool calls apart from LLM calls check this first.
+pub fn is_tool_span(span: &Span) -> bool {
+    span.attributes
+        .get("gen_ai.operation.name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == "execute_tool" || s == "call_tool")
+        || span
+            .attributes
+            .get("openinference.span.kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("tool"))
+}
+
 /// How each LLM-router span relates to the agent span for the same call.
 pub struct RouterSpanLinks<'a> {
     /// Router span id → service name of the agent whose call it served.
