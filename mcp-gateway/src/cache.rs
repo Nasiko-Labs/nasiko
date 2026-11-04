@@ -81,3 +81,31 @@ pub async fn delete(client: &redis::Client, key: &str) {
         tracing::warn!(error = %e, key, "redis DEL failed");
     }
 }
+
+/// Delete every key starting with `prefix`. Errors are logged and swallowed.
+pub async fn delete_prefix(client: &redis::Client, prefix: &str) {
+    let mut conn = match client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, prefix, "redis unavailable (cache delete) — skipping");
+            return;
+        }
+    };
+    let mut keys: Vec<String> = Vec::new();
+    match conn.scan_match::<_, String>(format!("{prefix}*")).await {
+        Ok(mut iter) => {
+            while let Some(key) = iter.next_item().await {
+                keys.push(key);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, prefix, "redis SCAN failed");
+            return;
+        }
+    }
+    for key in keys {
+        if let Err(e) = conn.del::<_, ()>(&key).await {
+            tracing::warn!(error = %e, key, "redis DEL failed");
+        }
+    }
+}

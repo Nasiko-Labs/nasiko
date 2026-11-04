@@ -46,8 +46,16 @@ struct CachedComposioSession {
     toolkits: Vec<String>,
 }
 
+const SESSION_CACHE_PREFIX: &str = "mcp:session:";
+
 fn session_cache_key(user_id: Uuid) -> String {
-    format!("mcp:session:{user_id}")
+    format!("{SESSION_CACHE_PREFIX}{user_id}")
+}
+
+/// Drop every user's cached Composio session. A new key belongs to a different Composio
+/// project, so a session cached under the old one would keep being served until its TTL.
+pub async fn clear_session_cache(redis: &redis::Client) {
+    cache::delete_prefix(redis, SESSION_CACHE_PREFIX).await;
 }
 
 /// Remove the Composio API-key header (case-insensitively) before caching.
@@ -134,7 +142,7 @@ async fn resolve_composio_backend(
     accounts: &ConnectedAccounts,
     toolkits: &[String],
 ) -> Result<Option<MCPServerConfig>> {
-    let Some(provider) = &state.providers.composio else {
+    let Some(provider) = state.providers.composio.get() else {
         return Ok(None);
     };
     if accounts.is_empty() {
@@ -149,12 +157,12 @@ async fn resolve_composio_backend(
         return Ok(Some(composio_config(
             cached.mcp_url,
             cached.mcp_headers,
-            &state.config.composio_api_key,
+            &state.providers.composio.api_key(),
         )));
     }
 
     // Slow/cold path: reuse / patch / create the upstream session.
-    let session = match resolve_upstream(state, provider, user_id, accounts).await {
+    let session = match resolve_upstream(state, &provider, user_id, accounts).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(%user_id, error = %e, "composio session resolution failed — omitting composio backend this cycle");
@@ -178,7 +186,7 @@ async fn resolve_composio_backend(
     Ok(Some(composio_config(
         session.mcp_url,
         session.mcp_headers,
-        &state.config.composio_api_key,
+        &state.providers.composio.api_key(),
     )))
 }
 
