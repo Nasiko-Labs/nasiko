@@ -28,6 +28,7 @@ pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
 pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
+pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
 pub mod flow_sweeper;
