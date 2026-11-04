@@ -33,10 +33,11 @@ export function SetupGuideButton({ className }: { className?: string }) {
   )
 }
 
+/** Each tick, its row's words and the step it opens: the model and the agent share the Key and agent step. */
 const ROWS = [
-  ['role', copy.steps.role],
-  ['model', copy.steps.model],
-  ['agent', copy.steps.agent],
+  ['role', copy.steps.role, 'role'],
+  ['model', copy.card.model, 'start'],
+  ['agent', copy.card.agent, 'start'],
 ] as const
 
 export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
@@ -59,7 +60,7 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
       </div>
       {/* Each row opens the guide at its own step; the button below opens it at the first one not done. */}
       <ul className="-mx-2 flex max-w-xl flex-col">
-        {ROWS.map(([id, s]) => (
+        {ROWS.map(([id, s, step]) => (
           <li key={id}>
             <Button
               variant="ghost"
@@ -67,7 +68,7 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
                 'h-auto w-full justify-start gap-3 px-2 py-1 text-left font-normal whitespace-normal',
                 buttonClassName,
               )}
-              onClick={() => openGuide(id)}
+              onClick={() => openGuide(step)}
             >
               <span
                 aria-hidden

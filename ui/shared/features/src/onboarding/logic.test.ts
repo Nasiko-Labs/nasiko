@@ -14,15 +14,15 @@ import {
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
-  it('has the six steps in order', () => {
-    expect(STEPS).toEqual(['welcome', 'role', 'model', 'agent', 'optimize', 'ready'])
+  it('has the five steps in order, the model key and the first agent as one', () => {
+    expect(STEPS).toEqual(['welcome', 'role', 'start', 'optimize', 'ready'])
   })
 
   it('skips the optimize step when resuming, because it completes nothing', () => {
     // It configures nothing by itself: stopping a returning user on a page they have already read
     // would be a step backwards, while a first run still walks through it linearly.
     expect(firstOpenStep({ role: true, model: true, agent: true })).toBe('ready')
-    expect(firstOpenStep({ role: true, model: true, agent: false })).toBe('agent')
+    expect(firstOpenStep({ role: true, model: true, agent: false })).toBe('start')
   })
 
   it('opens a nav page for every persona', () => {
@@ -30,6 +30,8 @@ describe('onboarding logic', () => {
     for (const p of PERSONAS) expect(paths).toContain(opensFor(p))
     expect(opensFor('data_analyst')).toBe('/tokenops')
     expect(opensFor('leadership')).toBe('/')
+    // Connecting a local coding harness comes later, never as a persona's first page.
+    for (const p of PERSONAS) expect(opensFor(p)).not.toBe('/harnesses')
   })
 
   it('is due only for a known first-time user who has not skipped', () => {
@@ -46,13 +48,13 @@ describe('onboarding logic', () => {
       agent: false,
     })
     expect(firstOpenStep(ticks({ persona: null, configs: 2, agents: 1 }))).toBe('role')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 0, agents: 1 }))).toBe('model')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 0 }))).toBe('agent')
+    expect(firstOpenStep(ticks({ persona: 'sre', configs: 0, agents: 1 }))).toBe('start')
+    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 0 }))).toBe('start')
     expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 1 }))).toBe('ready')
   })
 
   it('estimates minutes left like the prototype', () => {
-    expect([1, 2, 3, 4, 5, 6].map(minutesLeft)).toEqual([3, 3, 2, 2, 1, 0])
+    expect([1, 2, 3, 4, 5].map(minutesLeft)).toEqual([3, 3, 2, 2, 0])
   })
 
   it('keeps the skip flag under the drafts prefix', () => {

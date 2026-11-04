@@ -1,40 +1,58 @@
 /**
- * Step 4: the Deploy page's own Upload, GitHub and Registry tabs. A started deploy stays in the guide (`onStarted`);
- * the background follower toasts when its build finishes (plans/feat-deploy.md eng R8).
+ * The Key and agent step's second half: agents already running, to chat with once there is a key (Chat waits for it:
+ * Nasiko provides no credits), then the Deploy page's own Upload, GitHub and Registry tabs. A started deploy stays in the guide (`onStarted`); the background follower toasts
+ * when its build finishes (plans/feat-deploy.md eng R8).
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { ChevronRight, CircleCheck } from 'lucide-react'
+import { Bot, ChevronRight, CircleCheck, KeyRound } from 'lucide-react'
 import { useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
-import { withButtonStyle } from '@nasiko/ui/primitives/button'
+import { Button, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { exampleTexts } from '@nasiko/features/agents/normalize'
+import { isHarness } from '@nasiko/features/agents/status'
+import type { Agent } from '@nasiko/features/agents/types'
 import { GithubTab } from '@nasiko/features/deploy/GithubTab'
 import { RegistryTab } from '@nasiko/features/deploy/RegistryTab'
 import type { DeploySearch } from '@nasiko/features/deploy/search'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
 import { copy } from './copy'
-import { StepHeading } from './parts'
+import { SectionHeading } from './parts'
+
+/** Enough to choose from without scrolling the guide. */
+const MAX_RUNNING = 4
 
 export function AgentStep({
   started,
   onStarted,
+  hasKey,
+  onChat,
   onLeave,
 }: {
   started: DeployStarted | null
+  /** The user has a model key (connected above, or an LLM config already): until then Chat is off. */
+  hasKey: boolean
   onStarted: (to: DeployStarted) => void
+  /** Chat with a running agent: the guide closes and Chat opens on it. */
+  onChat: (agentId: string) => void
   /** Following a link out of the guide closes it first. */
   onLeave: () => void
 }) {
   const me = useQuery(meQuery).data
+  const dir = useAgentsDirectory()
+  const running = (dir.data ?? [])
+    .filter((a) => a.status === 'running' && !isHarness(a))
+    .slice(0, MAX_RUNNING)
   // The Deploy page keeps the GitHub tab's picks in its URL; inside the guide they are local.
   const [search, setSearchState] = useState<DeploySearch>({ method: 'github' })
   const setSearch = (patch: Partial<DeploySearch>) => setSearchState((s) => ({ ...s, ...patch }))
   return (
-    <div className="flex flex-col gap-6">
-      <StepHeading title={copy.agent.title} intro={copy.agent.intro} />
+    <section className="flex flex-col gap-4">
+      <SectionHeading title={copy.agent.title} intro={copy.agent.intro} />
       {started ? (
         <Alert role="status">
           <CircleCheck aria-hidden />
@@ -59,18 +77,31 @@ export function AgentStep({
             )}
           </AlertDescription>
         </Alert>
-      ) : !me ? (
+      ) : !me || dir.isPending ? (
         <Skeleton className="h-48 w-full" />
       ) : (
-        <Tabs defaultValue="upload" className="gap-4">
+        // Running agents first: chatting with one is the quickest start. A failed list just leaves the deploy tabs.
+        <Tabs defaultValue={running.length ? 'try' : 'upload'} className="gap-4">
           {/* Sticks to the top of the guide's scrolling body (px-6 py-8 md:px-10, so -top-8), as on the Deploy page. */}
           <div className="sticky -top-8 z-20 -mx-6 bg-background px-6 py-2 md:-mx-10 md:px-10">
             <TabsList>
+              {running.length ? <TabsTrigger value="try">{copy.agent.try}</TabsTrigger> : null}
               <TabsTrigger value="upload">{copy.agent.upload}</TabsTrigger>
               <TabsTrigger value="github">{copy.agent.github}</TabsTrigger>
               <TabsTrigger value="registry">{copy.agent.registry}</TabsTrigger>
             </TabsList>
           </div>
+          {running.length ? (
+            <TabsContent value="try" className="flex flex-col gap-3">
+              {hasKey ? null : (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <KeyRound aria-hidden className="size-4 shrink-0" />
+                  {copy.agent.needsKey}
+                </p>
+              )}
+              <Running agents={running} hasKey={hasKey} onChat={onChat} />
+            </TabsContent>
+          ) : null}
           <TabsContent value="upload">
             <UploadTab userId={me.sub} prefill={{}} onStarted={onStarted} />
           </TabsContent>
@@ -91,6 +122,53 @@ export function AgentStep({
           </span>
         ))}
       </div>
-    </div>
+    </section>
+  )
+}
+
+/** Each running agent with its first skill example. */
+function Running({
+  agents,
+  hasKey,
+  onChat,
+}: {
+  agents: readonly Agent[]
+  hasKey: boolean
+  onChat: (agentId: string) => void
+}) {
+  return (
+    <ul aria-label={copy.agent.tryLabel} className="grid gap-3 sm:grid-cols-2">
+      {agents.map((a) => {
+        const name = a.display_name?.trim() || a.name
+        const example = a.skills.flatMap(exampleTexts)[0]
+        return (
+          <li key={a.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
+            <div className="flex items-start gap-3">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                <Bot aria-hidden className="size-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium">{name}</p>
+                <p className="line-clamp-2 text-xs text-muted-foreground">
+                  {example ? `“${example}”` : copy.agent.noExample}
+                </p>
+              </div>
+            </div>
+            <div className="mt-auto flex justify-end">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!hasKey}
+                aria-label={copy.agent.chatWith(name)}
+                onClick={() => onChat(a.id)}
+              >
+                {copy.agent.chat}
+              </Button>
+            </div>
+          </li>
+        )
+      })}
+    </ul>
   )
 }

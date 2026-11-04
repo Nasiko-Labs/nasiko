@@ -2,17 +2,19 @@
 import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
 import type { Onboarding, Persona } from './types'
 
-export const STEPS = ['welcome', 'role', 'model', 'agent', 'optimize', 'ready'] as const
+/** `start` is one step for the model key and the first agent: the key first, since Nasiko provides no model credits and
+ *  no agent answers without one. */
+export const STEPS = ['welcome', 'role', 'start', 'optimize', 'ready'] as const
 export type StepId = (typeof STEPS)[number]
 
-/** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. */
-export type PersonaPage =
-  '/' | '/agents' | '/router' | '/tokenops' | '/harnesses' | '/chat' | '/sessions'
+/** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. Nobody is sent to
+ *  Coding harnesses: connecting a local harness comes after a first chat, not during setup. */
+export type PersonaPage = '/' | '/agents' | '/router' | '/tokenops' | '/chat' | '/sessions'
 const OPENS: Record<Persona, PersonaPage> = {
   developer: '/agents',
   platform_engineer: '/router',
   finance: '/tokenops',
-  engineering_manager: '/harnesses',
+  engineering_manager: '/tokenops',
   product_manager: '/chat',
   data_analyst: '/tokenops',
   support_lead: '/chat',
@@ -45,8 +47,7 @@ export function ticks(v: { persona: Persona | null; configs: number; agents: num
  */
 export function firstOpenStep(t: Ticks): StepId {
   if (!t.role) return 'role'
-  if (!t.model) return 'model'
-  if (!t.agent) return 'agent'
+  if (!t.model || !t.agent) return 'start'
   return 'ready'
 }
 

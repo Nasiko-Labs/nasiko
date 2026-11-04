@@ -601,8 +601,8 @@
       background-color: var(--showcase-glow-4);
     }
   }
-  /* The onboarding guide's Welcome step (our take on Aceternity's Tracing Beam): a beam crosses the four stages every
-     4 s and each stage's icon lights as it passes (its own negative animation-delay). Both still under reduced motion. */
+  /* The router's "How routing works" (our take on Aceternity's Tracing Beam): a beam crosses the steps every 4 s and
+     each step's icon lights as it passes (its own negative animation-delay). Both still under reduced motion. */
   --animate-beam: beam 4s linear infinite;
   @keyframes beam {
     from {

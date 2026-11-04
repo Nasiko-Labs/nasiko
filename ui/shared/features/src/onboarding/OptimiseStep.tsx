@@ -1,5 +1,5 @@
 /**
- * Guide step 5: the optimisation switches, and where to find them.
+ * Guide step 4: the optimisation switches and the router's tier models, where to find them, and what they saved.
  *
  * It exists because nothing else in the product tells a new user these are there — they live one
  * tab deep on an agent, every one is off by default, and the difference between having them on and
@@ -16,7 +16,13 @@ import { copy as guideCopy } from './copy'
 
 const copy = guideCopy.optimise
 
-export function OptimiseStep({ onOpenAgents }: { onOpenAgents: () => void }) {
+export function OptimiseStep({
+  onOpenAgents,
+  onSavings,
+}: {
+  onOpenAgents: () => void
+  onSavings: () => void
+}) {
   return (
     <div className="flex flex-col gap-6">
       <StepHeading title={copy.title} intro={copy.intro} />
@@ -45,9 +51,14 @@ export function OptimiseStep({ onOpenAgents }: { onOpenAgents: () => void }) {
         {copy.beta}
       </p>
 
-      <Button type="button" variant="outline" className="self-start" onClick={onOpenAgents}>
-        {copy.cta}
-      </Button>
+      <div className="flex flex-wrap gap-2">
+        <Button type="button" variant="outline" onClick={onOpenAgents}>
+          {copy.cta}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onSavings}>
+          {copy.savings}
+        </Button>
+      </div>
     </div>
   )
 }
