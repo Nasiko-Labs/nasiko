@@ -161,7 +161,7 @@ impl TestDb {
                 capture_content: false,
             },
             providers: Providers {
-                composio: Default::default(),
+                composio: None,
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer,

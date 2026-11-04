@@ -300,19 +300,6 @@ pub async fn list_composio_connectors(db: &PgPool) -> Result<Vec<McpConnector>> 
     Ok(rows)
 }
 
-/// Show or hide a platform Composio toolkit. The row stays, so connected accounts and
-/// permission rules survive a hide; a hidden toolkit just stops being offered or served.
-pub async fn set_composio_active(db: &PgPool, id: Uuid, active: bool) -> Result<()> {
-    sqlx::query(
-        "UPDATE mcp_connectors SET is_active = $2 WHERE id = $1 AND provider_type = 'composio'",
-    )
-    .bind(id)
-    .bind(active)
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 /// A user-owned connector by name (used for collision checks / auto-register).
 pub async fn get_owned_connector_by_name(
     db: &PgPool,
@@ -354,7 +341,7 @@ pub async fn get_owned_connector_by_url(
 pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
-           WHERE (c.provider_type = 'composio' AND COALESCE(c.is_active, true))
+           WHERE c.provider_type = 'composio'
               OR c.owner_id = $1
               OR EXISTS (
                    SELECT 1 FROM mcp_connector_grants g
@@ -461,8 +448,7 @@ pub async fn can_access_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid
         r#"SELECT EXISTS (
              SELECT 1 FROM mcp_connectors c
              WHERE c.id = $2 AND (
-                 (c.provider_type = 'composio' AND COALESCE(c.is_active, true))
-                 OR c.owner_id = $1
+                 c.provider_type = 'composio' OR c.owner_id = $1
                  OR EXISTS (
                       SELECT 1 FROM mcp_connector_grants g
                       WHERE g.connector_id = c.id
@@ -832,7 +818,6 @@ pub async fn list_active_composio_connections(
            FROM mcp_user_connections uc
            JOIN mcp_connectors c ON c.id = uc.connector_id
            WHERE uc.user_id = $1 AND c.provider_type = 'composio'
-             AND COALESCE(c.is_active, true)
              AND uc.status = 'ACTIVE' AND uc.connected_account_id IS NOT NULL"#,
     )
     .bind(user_id)

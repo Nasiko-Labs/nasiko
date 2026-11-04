@@ -633,7 +633,7 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
     // (name, description, input_schema) — schema is only ever used as
     // LLM-fallback signal below, never persisted.
     let mut tools: Vec<(String, Option<String>, Option<Value>)> = if connector.is_composio() {
-        match state.providers.composio.get() {
+        match &state.providers.composio {
             Some(p) => p
                 .list_toolkit_tools(&connector.name)
                 .await?

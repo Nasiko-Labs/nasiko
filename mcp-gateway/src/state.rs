@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use crate::authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 use crate::config::{McpConfig, ToolSearchMode};
 use crate::endpoint_refresh::{EndpointRefresher, NoopEndpointRefresher};
-use crate::provider::{ComposioBackend, ComposioProvider, Providers};
+use crate::provider::Providers;
 use crate::search::ToolSearchIndex;
 
 #[derive(Clone)]
@@ -48,20 +48,6 @@ pub struct McpState {
 }
 
 impl McpState {
-    /// Point the Composio backend at `api_key`, or switch it off with `None`. Every clone
-    /// of this state shares the one slot, so the change is live at once.
-    pub fn set_composio_key(&self, api_key: Option<String>) {
-        let backend = api_key.map(|key| ComposioBackend {
-            provider: Arc::new(ComposioProvider::new(
-                self.http_client.clone(),
-                key.clone(),
-                self.config.composio_base_url.clone(),
-            )),
-            api_key: Some(key),
-        });
-        self.providers.composio.replace(backend);
-    }
-
     /// Build gateway state from the server's shared handles and platform config.
     pub fn new(
         db: PgPool,

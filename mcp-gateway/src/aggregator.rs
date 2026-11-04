@@ -253,7 +253,7 @@ mod tests {
                 capture_content: false,
             },
             providers: Providers {
-                composio: Default::default(),
+                composio: None,
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
