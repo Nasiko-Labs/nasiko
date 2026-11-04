@@ -232,8 +232,11 @@ pub(crate) async fn validate_image_ref(
         Some(registry)
     };
 
-    // If hosts differ, it's external - allow it
-    if image_host != our_registry {
+    // If hosts differ, it's external - allow it. With no registry configured, a
+    // hostless reference outside the platform namespaces names a Docker Hub image.
+    if image_host != our_registry
+        || (our_registry.is_none() && !repo.starts_with("u-") && !repo.starts_with("nasiko/"))
+    {
         return Ok(());
     }
 
@@ -327,7 +330,7 @@ pub(crate) async fn validate_image_ref(
 /// Qualifies images in the platform namespaces: `nasiko/` (legacy) and
 /// `u-{32 lowercase hex}/` (per-owner). An arbitrary third-party reference
 /// (e.g. `nginx:latest`) is left untouched.
-pub fn qualify_deploy_image(registry: &str, image: &str) -> String {
+pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
     if registry.is_empty() {
         return image.to_string();
     }
