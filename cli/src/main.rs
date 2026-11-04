@@ -101,7 +101,8 @@ Examples:
   nasiko connect claude                set up Claude Code, asking about each part
   nasiko connect codex --config team -y
   nasiko connect cursor --reporting    Cursor supports session reporting only
-  nasiko connect https://cp.example.com --name prod";
+  nasiko connect https://cp.example.com --name prod
+  nasiko connect prod --url https://cp.example.com --login=false";
 
 #[derive(Subcommand)]
 #[command(subcommand_help_heading = "Commands")]
@@ -145,12 +146,25 @@ enum CpCommands {
     /// Register a CP by URL, or connect local coding agents
     #[command(after_help = CONNECT_HELP)]
     Connect {
-        /// Control-plane URL, or a coding agent: claude, codex, opencode, cursor.
-        /// Omit to pick from the coding agents installed on this machine
+        /// Control-plane name (with --url), control-plane URL, or a coding agent: claude, codex,
+        /// opencode, cursor. Omit to pick from the coding agents installed on this machine
         target: Option<String>,
-        /// Name for a control plane registered by URL
+        /// Control-plane URL to register
+        #[arg(long, short = 'u')]
+        url: Option<String>,
+        /// Control-plane name when TARGET is a URL (defaults to the URL's first label)
         #[arg(long)]
         name: Option<String>,
+        /// Log in after registering; pass --login=false to only register
+        /// (a bare `--login` still means true).
+        #[arg(
+            long = "login",
+            default_value_t = true,
+            action = clap::ArgAction::Set,
+            num_args = 0..=1,
+            default_missing_value = "true"
+        )]
+        do_login: bool,
         #[command(flatten)]
         coding_agent: ConnectOptions,
     },
@@ -277,24 +291,23 @@ fn main() -> Result<()> {
             CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect {
                 target,
+                url,
                 name,
+                do_login,
                 coding_agent,
-            } => match target.as_deref() {
-                Some(url) if !local_agents::is_coding_agent(url) => {
-                    if coding_agent.is_set() {
-                        anyhow::bail!(
-                            "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
-                        );
-                    }
-                    commands::cluster::connect(url, name.as_deref())
+            } => {
+                let agent_target = target.as_deref().is_none_or(local_agents::is_coding_agent);
+                if agent_target && url.is_none() && name.is_none() {
+                    return local_agents::connect(target.as_deref(), &coding_agent);
                 }
-                agent => {
-                    if name.is_some() {
-                        anyhow::bail!("--name applies only when connecting a control-plane URL");
-                    }
-                    local_agents::connect(agent, &coding_agent)
+                if coding_agent.is_set() {
+                    anyhow::bail!(
+                        "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
+                    );
                 }
-            },
+                let (url, name) = commands::cluster::control_plane_to_register(target, url, name)?;
+                commands::cluster::connect(&url, name.as_deref(), do_login)
+            }
             CpCommands::Disconnect { target, options } => {
                 local_agents::disconnect(target.as_deref(), &options)
             }
@@ -490,6 +503,38 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn parses_connect_like_nasiko_ee() {
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "connect",
+            "prod",
+            "--url",
+            "https://cp.example.com",
+            "--login=false",
+        ])
+        .unwrap();
+        let Commands::Cp(CpCommands::Connect {
+            target,
+            url,
+            do_login,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected connect command");
+        };
+        assert_eq!(target.as_deref(), Some("prod"));
+        assert_eq!(url.as_deref(), Some("https://cp.example.com"));
+        assert!(!do_login);
+
+        let cli =
+            Cli::try_parse_from(["nasiko", "connect", "-u", "https://cp.example.com"]).unwrap();
+        let Commands::Cp(CpCommands::Connect { do_login, .. }) = cli.command else {
+            panic!("expected connect command");
+        };
+        assert!(do_login, "login is on unless --login=false");
     }
 
     #[test]
