@@ -295,10 +295,7 @@ fn anthropic_source(
                 .get("data")
                 .and_then(Value::as_str)
                 .ok_or_else(|| GatewayError::BadRequest(format!("base64 {kind} missing data")))?;
-            Ok(DataSource::Inline {
-                media_type: media_type.to_string(),
-                data: data.to_string(),
-            })
+            Ok(DataSource::from_inline(media_type, data))
         }
         "url" => {
             let url = source
@@ -1092,6 +1089,38 @@ mod tests {
         assert_eq!(parts[0]["text"], "What is this?");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
+    }
+
+    #[test]
+    fn a_base64_source_media_type_is_normalized() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        { "type": "image", "source": { "type": "base64", "media_type": "Image/PNG", "data": "iVBORw0KGgo=" } },
+                        { "type": "document", "source": { "type": "base64", "media_type": "application/pdf;name=q3.pdf", "data": "JVBERi0xLjQK" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        let parts = req.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            parts[0]["image_url"]["url"],
+            "data:image/png;base64,iVBORw0KGgo="
+        );
+        assert_eq!(
+            parts[1]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0xLjQK"
+        );
     }
 
     #[test]

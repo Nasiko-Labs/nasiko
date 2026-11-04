@@ -131,12 +131,10 @@ impl InboundParser for GeminiInbound {
                         let data = inline.get("data").and_then(Value::as_str).ok_or_else(|| {
                             GatewayError::BadRequest("inlineData missing data".to_string())
                         })?;
-                        let source = DataSource::Inline {
-                            media_type: mime_type.to_string(),
-                            data: data.to_string(),
-                        };
+                        let source = DataSource::from_inline(mime_type, data);
+                        let mime_type = source.media_type().unwrap_or_default().to_owned();
 
-                        user_parts.push(gemini_inline_part(mime_type, source)?);
+                        user_parts.push(gemini_inline_part(&mime_type, source)?);
                     } else if part.get("fileData").is_some() {
                         return Err(GatewayError::BadRequest(
                             "unsupported content part type: 'fileData'".to_string(),
@@ -726,6 +724,33 @@ mod tests {
         assert_eq!(
             content_parts[1]["image_url"]["url"],
             "data:image/jpeg;base64,abc123base64"
+        );
+    }
+
+    #[test]
+    fn an_inline_data_mime_type_is_normalized_before_it_is_mapped() {
+        let req = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "inlineData": { "mimeType": "Image/PNG", "data": "QUJD" } },
+                        { "inlineData": { "mimeType": "application/pdf; name=q3.pdf", "data": "QUJD" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        let parts = req.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(
+            parts[1]["file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
         );
     }
 

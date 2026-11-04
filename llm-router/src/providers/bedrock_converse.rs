@@ -2597,6 +2597,22 @@ mod tests {
     }
 
     #[test]
+    fn a_mixed_case_data_url_media_type_maps_to_its_bedrock_format() {
+        let body = converse_body(
+            json!({ "messages": [{ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "data:Image/PNG;base64,iVBORw0KGgo=" } },
+                { "type": "file", "file": { "file_data": "data:application/pdf;name=q3.pdf;base64,JVBERi0=" } }
+            ]}]}),
+            CLAUDE,
+        );
+
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0], png_block());
+        assert_eq!(content[1]["document"]["format"], "pdf");
+        assert_eq!(content[1]["document"]["name"], "q3 pdf");
+    }
+
+    #[test]
     fn content_with_nothing_but_empty_text_keeps_its_one_empty_block() {
         for content in [json!(""), json!([{ "type": "text", "text": "" }])] {
             let body = converse_body(
