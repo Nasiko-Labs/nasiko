@@ -12,8 +12,8 @@ use std::time::Instant;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::Value;
@@ -113,6 +113,12 @@ pub(crate) enum AuthedCaller {
     Session(SessionClaims),
 }
 
+const CREDENTIAL_HEADERS: [HeaderName; 3] = [
+    AUTHORIZATION,
+    HeaderName::from_static("x-api-key"),
+    HeaderName::from_static("x-goog-api-key"),
+];
+
 /// Authenticate the caller, preferring a coding-agent session token and falling
 /// back to the agent-identity token.
 ///
@@ -124,18 +130,9 @@ pub(crate) async fn authenticate_caller(
     store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
-    let authz = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        // Anthropic-format clients (e.g. Claude Code) authenticate with
-        // `x-api-key`, not `Authorization: Bearer` — so a coding agent using the
-        // Anthropic SDK carries its session token there. Accept it as a fallback;
-        // `verify_session_token` tolerates a raw token with no `Bearer` prefix.
-        .or_else(|| {
-            headers
-                .get("x-api-key")
-                .and_then(|value| value.to_str().ok())
-        });
+    let authz = CREDENTIAL_HEADERS
+        .into_iter()
+        .find_map(|name| headers.get(name).and_then(|value| value.to_str().ok()));
 
     if !ctx.cfg.agent_jwt_secret.is_empty()
         && let Some(raw) = authz
@@ -1627,6 +1624,95 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::MissingAuthHeader));
+    }
+
+    fn gemini_sdk_headers(key: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-goog-api-key", key.parse().unwrap());
+        h.insert(TRACEPARENT_HEADER, TRACEPARENT.parse().unwrap());
+        h
+    }
+
+    fn gemini_hi() -> Value {
+        json!({ "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] })
+    }
+
+    fn store_pinned_to_openai() -> Store {
+        Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gemini_sdks_x_goog_api_key_header_authenticates_and_is_not_forwarded() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .match_header("x-goog-api-key", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-g", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let resp = chat_core(
+            &ctx_with(server.url()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers(&token()),
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+        upstream.assert_async().await;
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_bad_token_in_x_goog_api_key_is_refused_before_any_provider_call() {
+        let err = chat_core(
+            &ctx_with("http://unused".into()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers("not-a-token"),
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn authorization_wins_over_x_goog_api_key() {
+        let mut headers = gemini_sdk_headers(&token());
+        headers.insert(AUTHORIZATION, "Bearer not-a-token".parse().unwrap());
+
+        let err = chat_core(
+            &ctx_with("http://unused".into()),
+            &store_pinned_to_openai(),
+            &headers,
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
     }
 
     #[test]
