@@ -16,6 +16,7 @@ use crate::reranker::Reranker;
 use crate::selector::AgentSelector;
 use crate::selector::ConversationMessage;
 use crate::types::{AgentCard, RouteRequest, RouteResult, RouterLogEntry};
+use crate::user_key;
 use crate::vector_store::{TextEmbeddingCache, VectorStore};
 
 // ── Trait ─────────────────────────────────────────────────────────────────────
@@ -61,7 +62,8 @@ impl Default for RouterConfig {
 
 pub struct OssRoutingEngine {
     config: RouterConfig,
-    selector: AgentSelector,
+    http_client: Client,
+    router_model: String,
     api_key: String,
     base_url: String,
     embedding_model: String,
@@ -81,11 +83,10 @@ impl OssRoutingEngine {
         router_model: String,
         embedding_model: String,
     ) -> Self {
-        let provider = LLMProvider::new(http_client, api_key.clone(), base_url.clone());
-        let selector = AgentSelector::new(provider, router_model);
         Self {
             config,
-            selector,
+            http_client,
+            router_model,
             api_key,
             base_url,
             embedding_model,
@@ -127,8 +128,10 @@ impl RoutingEngine for OssRoutingEngine {
         // Fetch available agents + conversation history in parallel. History
         // is selected per the caller's own stored strategy and budget tier —
         // see `context_selection::fetch_for_user`.
+        // The key a user saved from the UI wins over the server's own.
+        let api_key = user_key::openai_key(pool, req.user_id, &self.api_key).await;
         let history_store = VectorStore::for_embedding(
-            self.api_key.clone(),
+            api_key.clone(),
             self.base_url.clone(),
             self.embedding_model.clone(),
             Arc::clone(&self.history_embedding_cache),
@@ -175,7 +178,7 @@ impl RoutingEngine for OssRoutingEngine {
             tracing::info!("routing_engine: stage 1 (shortlist) — building vector store");
             VectorStore::build(
                 agents.clone(),
-                self.api_key.clone(),
+                api_key.clone(),
                 self.base_url.clone(),
                 self.embedding_model.clone(),
                 pool,
@@ -227,8 +230,11 @@ impl RoutingEngine for OssRoutingEngine {
             })
             .collect();
 
-        let (selected_agent, fallback_used, reasoning, selector_usage) = match self
-            .selector
+        let selector = AgentSelector::new(
+            LLMProvider::new(self.http_client.clone(), api_key, self.base_url.clone()),
+            self.router_model.clone(),
+        );
+        let (selected_agent, fallback_used, reasoning, selector_usage) = match selector
             .select_agent(&req.query, &history_msgs, &summaries, policy)
             .await
         {

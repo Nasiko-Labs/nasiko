@@ -31,7 +31,6 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
-pub mod error_reporting;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -177,11 +176,11 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Spawn the MAF worker — requires an OpenAI API key for prompt generation,
-    // extraction, and final output synthesis. Degrades gracefully rather than
-    // panicking: MAF routes still work (create/list/run) without a key, jobs
-    // just queue in Redis unprocessed until one is configured.
-    if let Some(api_key) = state.config.openai_api_key.clone() {
+    // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
+    // output synthesis: the one the execution's owner saved from the UI, else the server's
+    // `OPENAI_API_KEY`. With neither, an execution fails with the provider's error.
+    {
+        let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
@@ -222,10 +221,6 @@ where
             worker_config,
             state.hitl_store.clone(),
             state.maf_executor.clone(),
-        );
-    } else {
-        tracing::warn!(
-            "OPENAI_API_KEY not set — MAF worker not started; MAF executions will queue but not run"
         );
     }
 
@@ -495,11 +490,6 @@ where
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())
         .merge(registry_routes)
-        // Public: the UI's error-reporting settings and its Sentry tunnel (off unless configured).
-        .merge(error_reporting::router(
-            error_reporting::current_config(),
-            state.http_client.clone(),
-        ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
@@ -545,9 +535,6 @@ where
                 span
             },
         ))
-        // Outermost, so the request's Sentry transaction is the parent of the span above. A
-        // pass-through unless this server reports to Sentry (see `error_reporting`).
-        .layer(middleware::from_fn(error_reporting::trace_requests))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error

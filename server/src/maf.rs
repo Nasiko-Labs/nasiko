@@ -2397,13 +2397,16 @@ async fn generate_maf(
         return bad_request("description is required");
     }
 
-    // Build LLM client from config — require an API key
-    let api_key = match &state.config.openai_api_key {
-        Some(k) => k.clone(),
+    // The caller's saved key, else the server's; one of them is required.
+    let api_key = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+        .await
+        .or_else(|| state.config.openai_api_key.clone())
+    {
+        Some(k) => k,
         None => {
             return err_json(
                 StatusCode::SERVICE_UNAVAILABLE,
-                "OPENAI_API_KEY is not configured on this server",
+                "No OpenAI API key: add one in the setup guide or Settings → Secrets",
             );
         }
     };

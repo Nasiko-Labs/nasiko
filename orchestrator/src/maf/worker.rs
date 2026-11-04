@@ -576,13 +576,18 @@ async fn process_job(
     // half-updated after a panic — everything panic could interrupt is either `Copy` (`db`,
     // `execution_id`, `user_id`), a fresh owned value about to be dropped and replaced with an
     // `Err`, or (`&mut conn`, this task's own) untouched by the executor itself.
+    // The key the execution's owner saved from the UI wins over the worker's own.
+    let owner_llm = match crate::user_key::saved_openai_key(db, user_id).await {
+        Some(key) => llm.with_api_key(key),
+        None => llm.clone(),
+    };
     let ctx = MafRunContext {
         client: &agent_calls.client,
         agent_calls: &agent_calls.meter,
         outbound: agent_calls.outbound.as_ref(),
         db,
         flow_guard,
-        llm,
+        llm: &owner_llm,
         execution_id,
         user_id,
     };
