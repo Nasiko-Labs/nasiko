@@ -37,3 +37,32 @@ export const SETTINGS_FIELDS = [
 ] as const satisfies readonly (keyof Settings)[]
 
 export type SettingsField = (typeof SETTINGS_FIELDS)[number]
+
+/**
+ * `GET/PUT /api/settings/composio` (`oss/server/src/composio_settings.rs`): not in the OpenAPI spec. The key itself is
+ * never returned, only whether one is in effect and where it comes from.
+ */
+export const composioSchema = z.looseObject({
+  api_key_configured: z.boolean(),
+  key_source: z.enum(['ui', 'env', 'none']),
+  toolkits: z.array(
+    z.looseObject({
+      toolkit: z.string(),
+      display_name: z.string(),
+      description: text,
+      logo_url: text,
+      enabled: z.boolean(),
+    }),
+  ),
+  /** Ticked toolkits Composio refused to register. */
+  failed: z.array(z.looseObject({ toolkit: z.string(), error: z.string() })),
+})
+export type ComposioSettings = z.infer<typeof composioSchema>
+export type ComposioToolkit = ComposioSettings['toolkits'][number]
+
+/** `ComposioSettingsUpdate`: every field optional; leaving one out keeps what is stored. */
+export interface ComposioUpdate {
+  api_key?: string
+  clear_api_key?: boolean
+  toolkits?: string[]
+}
