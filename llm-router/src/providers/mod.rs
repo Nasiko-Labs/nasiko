@@ -40,7 +40,8 @@ pub fn provider_for(
         "openai" => Ok(Box::new(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
                 .with_max_tools(cfg.openai_max_tools)
-                .with_cache_key(cfg.cache_markers_enabled),
+                .with_cache_key(cfg.cache_markers_enabled)
+                .with_document_urls_refused(true),
         )),
         "anthropic" => Ok(Box::new(
             AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())

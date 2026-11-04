@@ -36,6 +36,7 @@ pub struct OpenAiProvider {
     max_tools: usize,
     /// Key the prompt cache by the agent ([`add_cache_key`]).
     cache_key: bool,
+    refuse_document_urls: bool,
 }
 
 impl OpenAiProvider {
@@ -54,7 +55,31 @@ impl OpenAiProvider {
             // anywhere else keeps forwarding exactly what the caller sent.
             max_tools: 0,
             cache_key: false,
+            refuse_document_urls: false,
         }
+    }
+
+    pub fn with_document_urls_refused(mut self, refused: bool) -> Self {
+        self.refuse_document_urls = refused;
+        self
+    }
+
+    fn check_documents(&self, req: &ChatRequest) -> Result<(), ProviderError> {
+        let by_url = self.refuse_document_urls
+            && req
+                .messages
+                .iter()
+                .filter_map(|m| m.content.as_ref()?.as_array())
+                .flatten()
+                .filter(|part| part["type"] == "file")
+                .filter_map(|part| part["file"]["file_data"].as_str())
+                .any(|data| data.starts_with("http://") || data.starts_with("https://"));
+        if by_url {
+            return Err(ProviderError::Rejected(
+                "OpenAI does not accept this input: a document given by URL; send its bytes as a base64 data URL in file.file_data".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Cap the tool array this endpoint will accept (`0` = uncapped).
@@ -384,6 +409,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
+        self.check_documents(req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
         out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
@@ -434,6 +460,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
+        self.check_documents(req)?;
         let mut out = req.clone();
         out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
@@ -1066,6 +1093,102 @@ mod tests {
             .unwrap();
 
         m.assert_async().await;
+    }
+
+    fn document_request(file_data: &str) -> ChatRequest {
+        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "What does it say?" },
+            { "type": "file", "file": { "file_data": file_data, "filename": "q3.pdf" } }
+        ]}]}))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn openai_refuses_a_document_given_by_url_by_name_before_any_call() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .expect(0)
+            .create_async()
+            .await;
+        let provider = OpenAiProvider::new(reqwest::Client::new(), server.url())
+            .with_document_urls_refused(true);
+
+        for url in ["https://example.com/q3.pdf", "http://example.com/q3.pdf"] {
+            let chat = provider
+                .chat(&document_request(url), &resolved("gpt-4o", None))
+                .await
+                .unwrap_err();
+            let stream = provider
+                .chat_stream(&document_request(url), &resolved("gpt-4o", None))
+                .await
+                .err()
+                .unwrap();
+
+            for err in [chat, stream] {
+                assert!(
+                    matches!(&err, ProviderError::Rejected(msg) if msg.contains("a document given by URL")),
+                    "{err:?}"
+                );
+            }
+        }
+        upstream.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn openai_still_takes_inline_documents_and_image_urls() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ok_completion())
+            .expect(2)
+            .create_async()
+            .await;
+        let provider = OpenAiProvider::new(reqwest::Client::new(), server.url())
+            .with_document_urls_refused(true);
+        let image_by_url: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
+            ]}]}))
+            .unwrap();
+
+        provider
+            .chat(
+                &document_request("data:application/pdf;base64,JVBERi0="),
+                &resolved("gpt-4o", None),
+            )
+            .await
+            .unwrap();
+        provider
+            .chat(&image_by_url, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        upstream.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn an_openai_compatible_endpoint_that_was_not_told_to_refuse_forwards_document_urls() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ok_completion())
+            .create_async()
+            .await;
+
+        OpenAiProvider::new(reqwest::Client::new(), server.url())
+            .chat(
+                &document_request("https://example.com/q3.pdf"),
+                &resolved("gpt-4o", None),
+            )
+            .await
+            .unwrap();
+
+        upstream.assert_async().await;
     }
 
     #[tokio::test]
