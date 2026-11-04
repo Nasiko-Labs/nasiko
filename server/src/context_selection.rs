@@ -594,7 +594,7 @@ pub(crate) async fn context_preview(
     .flatten()
     .unwrap_or_default();
 
-    let store = state.history_vector_store();
+    let store = state.history_vector_store(user_id).await;
     let preview = nasiko_orchestrator::preview(
         &state.db,
         &session_id,

@@ -258,7 +258,7 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store();
+    let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
         user_id,
@@ -691,7 +691,9 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+            .await
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),

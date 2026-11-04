@@ -1094,7 +1094,7 @@ async fn ensure_chat_session(
         // agents, which an inline `WHERE id = $1` does not.
         let compress_history =
             nasiko_orchestrator::agent_compression_enabled(&state.db, agent_id).await;
-        let history_store = state.history_vector_store();
+        let history_store = state.history_vector_store(user_id).await;
         // A direct chat: this agent's own switch decides history compression.
         let history = context_selection::fetch_for_user(
             &state.db,

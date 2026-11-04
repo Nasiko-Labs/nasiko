@@ -127,10 +127,12 @@ impl AppState {
     /// The embedding client the chat handlers hand to
     /// `context_selection::fetch_for_user`. Built per call (it is a thin
     /// handle over the shared `history_embedding_cache`, not a connection),
-    /// so the two call sites don't each re-derive the provider settings.
-    pub fn history_vector_store(&self) -> VectorStore {
+    /// so the call sites don't each re-derive the provider settings. Embeds with the key `user_id`
+    /// saved from the UI when there is one, else the server's.
+    pub async fn history_vector_store(&self, user_id: uuid::Uuid) -> VectorStore {
+        let server_key = self.config.openai_api_key.as_deref().unwrap_or_default();
         VectorStore::for_embedding(
-            self.config.openai_api_key.clone().unwrap_or_default(),
+            nasiko_orchestrator::user_key::openai_key(&self.db, user_id, server_key).await,
             self.config
                 .openai_base_url
                 .clone()
