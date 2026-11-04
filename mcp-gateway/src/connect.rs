@@ -333,7 +333,7 @@ pub async fn list_connections_view(state: &McpState, user_id: Uuid) -> Result<Va
         .collect();
 
     // Best-effort sync of pending composio connections.
-    if let Some(provider) = &state.providers.composio {
+    if let Some(provider) = state.providers.composio.get() {
         for conn in repo::list_user_connections(&state.db, user_id, None).await? {
             if conn.status != "INITIATED" {
                 continue;
@@ -402,7 +402,7 @@ pub async fn disconnect(
     // Best-effort Composio token revoke.
     let mut composio_revoked = false;
     if let (Some(provider), Some(account_id)) = (
-        &state.providers.composio,
+        state.providers.composio.get(),
         connection.connected_account_id.as_deref(),
     ) {
         composio_revoked = provider
@@ -479,7 +479,7 @@ pub async fn handle_composio_callback(
     let Some(auth_config_id) = connector.auth_config_id.as_deref() else {
         return CallbackOutcome::Message("Connector is not a Composio connector.".to_string());
     };
-    let Some(provider) = &state.providers.composio else {
+    let Some(provider) = state.providers.composio.get() else {
         return CallbackOutcome::Message("Composio is not configured.".to_string());
     };
 

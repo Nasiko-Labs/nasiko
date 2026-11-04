@@ -18,7 +18,7 @@ use serde::de::DeserializeOwned;
 /// Fetch and deserialize a JSON value. Returns `None` on miss, deserialize
 /// failure, or any Redis error (logged) — callers treat all three as "recompute".
 pub async fn get_json<T: DeserializeOwned>(client: &redis::Client, key: &str) -> Option<T> {
-    let mut conn = match nasiko_redis_conn::connection(client).await {
+    let mut conn = match client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache get) — treating as miss");
@@ -56,7 +56,7 @@ pub async fn set_json_ex<T: Serialize>(
             return;
         }
     };
-    let mut conn = match nasiko_redis_conn::connection(client).await {
+    let mut conn = match client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache set) — skipping write");
@@ -70,7 +70,7 @@ pub async fn set_json_ex<T: Serialize>(
 
 /// Delete a key. Errors are logged and swallowed.
 pub async fn delete(client: &redis::Client, key: &str) {
-    let mut conn = match nasiko_redis_conn::connection(client).await {
+    let mut conn = match client.get_multiplexed_async_connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache delete) — skipping");
@@ -79,5 +79,33 @@ pub async fn delete(client: &redis::Client, key: &str) {
     };
     if let Err(e) = conn.del::<_, ()>(key).await {
         tracing::warn!(error = %e, key, "redis DEL failed");
+    }
+}
+
+/// Delete every key starting with `prefix`. Errors are logged and swallowed.
+pub async fn delete_prefix(client: &redis::Client, prefix: &str) {
+    let mut conn = match client.get_multiplexed_async_connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, prefix, "redis unavailable (cache delete) — skipping");
+            return;
+        }
+    };
+    let mut keys: Vec<String> = Vec::new();
+    match conn.scan_match::<_, String>(format!("{prefix}*")).await {
+        Ok(mut iter) => {
+            while let Some(key) = iter.next_item().await {
+                keys.push(key);
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, prefix, "redis SCAN failed");
+            return;
+        }
+    }
+    for key in keys {
+        if let Err(e) = conn.del::<_, ()>(&key).await {
+            tracing::warn!(error = %e, key, "redis DEL failed");
+        }
     }
 }

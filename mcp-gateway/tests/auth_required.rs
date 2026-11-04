@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use nasiko_mcp_gateway::OssConnectorAuthorizer;
 use nasiko_mcp_gateway::permissions::PermissionContext;
 use nasiko_mcp_gateway::protocol::handle_tools_call;
-use nasiko_mcp_gateway::provider::ComposioProvider;
+use nasiko_mcp_gateway::provider::{ComposioProvider, ComposioSlot};
 use nasiko_mcp_gateway::session::ResolvedSession;
 use nasiko_mcp_gateway::types::{
     ConnectorUnusable, MCPServerConfig, ServerType, UnusableConnector, codes,
@@ -334,11 +334,14 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
     // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
     // out would forbid that impl from running.
     let mut state = db.state.clone();
-    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
-        reqwest::Client::new(),
-        "test-composio-key".to_string(),
-        status_backend.url(),
-    )));
+    state.providers.composio = ComposioSlot::new(
+        std::sync::Arc::new(ComposioProvider::new(
+            reqwest::Client::new(),
+            "test-composio-key".to_string(),
+            status_backend.url(),
+        )),
+        None,
+    );
 
     let resolved = composio_session(
         &toolcall_backend.url(),
@@ -432,11 +435,14 @@ async fn composio_tool_call_failure_with_active_connection_passes_through_unchan
     // Cloned, not moved: `TestDb` now drops its scratch database in `Drop`, and moving a field
     // out would forbid that impl from running.
     let mut state = db.state.clone();
-    state.providers.composio = Some(std::sync::Arc::new(ComposioProvider::new(
-        reqwest::Client::new(),
-        "test-composio-key".to_string(),
-        status_backend.url(),
-    )));
+    state.providers.composio = ComposioSlot::new(
+        std::sync::Arc::new(ComposioProvider::new(
+            reqwest::Client::new(),
+            "test-composio-key".to_string(),
+            status_backend.url(),
+        )),
+        None,
+    );
 
     let resolved = composio_session(
         &toolcall_backend.url(),

@@ -1430,7 +1430,7 @@ async fn detect_composio_auth_required(
     verified_flow_id: Option<&str>,
     original_response: Value,
 ) -> Value {
-    let Some(provider) = &state.providers.composio else {
+    let Some(provider) = state.providers.composio.get() else {
         return original_response;
     };
     let Ok(Some(connector)) = crate::repo::get_connector_by_id(&state.db, connector_id).await
@@ -2052,7 +2052,7 @@ mod tests {
                 capture_content: false,
             },
             providers: Providers {
-                composio: None,
+                composio: Default::default(),
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),

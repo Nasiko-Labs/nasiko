@@ -709,7 +709,7 @@ async fn register_agent(
     .await
 }
 
-fn toolkit_description(toolkit: &str) -> Option<&'static str> {
+pub(crate) fn toolkit_description(toolkit: &str) -> Option<&'static str> {
     Some(match toolkit {
         "slack" => "Send messages, read channels, and manage threads in Slack.",
         "gmail" => "Read, send, and manage emails in Gmail.",
@@ -741,7 +741,7 @@ fn toolkit_description(toolkit: &str) -> Option<&'static str> {
     })
 }
 
-fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
+pub(crate) fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
     // simple-icons on jsdelivr CDN — monochrome SVGs, always available.
     Some(match toolkit {
         "slack" => "https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/slack.svg",
@@ -776,27 +776,66 @@ fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
     })
 }
 
+/// The Composio toolkits an admin can switch on from Settings — the ones with a
+/// description and logo above.
+pub(crate) const KNOWN_TOOLKITS: &[&str] = &[
+    "slack",
+    "gmail",
+    "github",
+    "notion",
+    "jira",
+    "linear",
+    "asana",
+    "trello",
+    "discord",
+    "dropbox",
+    "salesforce",
+    "hubspot",
+    "zendesk",
+    "intercom",
+    "stripe",
+    "airtable",
+    "clickup",
+    "monday",
+    "gitlab",
+    "pagerduty",
+    "sentry",
+    "confluence",
+    "bitbucket",
+    "googlecalendar",
+    "googledrive",
+    "googlesheets",
+];
+
 /// Auto-register Composio toolkits from `SEED_TOOLKITS` config.
 /// Runs once at boot — skips toolkits that already exist in the DB.
-/// Requires `COMPOSIO_API_KEY` to be set; silently skips otherwise.
+/// Needs a Composio key (`COMPOSIO_API_KEY` or one saved in Settings); skips otherwise.
 pub async fn seed_toolkits_if_configured(state: &AppState) {
     if state.config.seed_toolkits.is_empty() {
         info!("SEED_TOOLKITS not set, skipping toolkit seeding");
         return;
     }
-    if state.config.composio_api_key.is_none() {
+    if state.mcp.providers.composio.get().is_none() {
         warn!(
-            "SEED_TOOLKITS is set but COMPOSIO_API_KEY is not — \
-             cannot register Composio toolkits without an API key"
+            "SEED_TOOLKITS is set but no Composio API key is configured — \
+             cannot register Composio toolkits without one"
         );
         return;
     }
-
-    let toolkits = &state.config.seed_toolkits;
     info!(
-        count = toolkits.len(),
+        count = state.config.seed_toolkits.len(),
         "SEED_TOOLKITS configured, registering"
     );
+    register_toolkits(state, &state.config.seed_toolkits).await;
+}
+
+/// Register `toolkits` as platform Composio connectors and sync their tools; ones
+/// already registered are skipped. Returns `(toolkit, error)` for each that failed.
+pub(crate) async fn register_toolkits(
+    state: &AppState,
+    toolkits: &[String],
+) -> Vec<(String, String)> {
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     // Phase 1: register each toolkit connector (fast, one API call each).
     let mut newly_seeded: HashMap<String, Uuid> = HashMap::new();
@@ -836,7 +875,10 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
                     newly_seeded.insert(toolkit, cid);
                 }
             }
-            Err(e) => warn!(toolkit = %toolkit, %e, "failed to seed composio toolkit"),
+            Err(e) => {
+                warn!(toolkit = %toolkit, %e, "failed to seed composio toolkit");
+                failed.push((toolkit, e.to_string()));
+            }
         }
     }
 
@@ -845,10 +887,10 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
     // missed tools — e.g. gmail has 63 tools but only 23 were synced.  The v3.1
     // per-toolkit endpoint returns only that toolkit's tools, no cap risk.
     if newly_seeded.is_empty() {
-        return;
+        return failed;
     }
-    let Some(provider) = &state.mcp.providers.composio else {
-        return;
+    let Some(provider) = state.mcp.providers.composio.get() else {
+        return failed;
     };
     info!(
         count = newly_seeded.len(),
@@ -919,6 +961,7 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
     if let Err(e) = state.mcp.search_index.rebuild(&state.db).await {
         warn!(%e, "search index rebuild after seed failed");
     }
+    failed
 }
 
 #[cfg(test)]
