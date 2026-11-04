@@ -50,7 +50,7 @@
     { "id": "agents.users", "editions": ["oss", "ee"], "feature": "agents", "method": "GET", "path": "/api/users", "query": { "limit": "200" } },
     { "id": "agents.search-users", "feature": "agents", "method": "GET", "path": "/api/search/users", "query": { "q": "adm" } },
     { "id": "agents.settings", "feature": "agents", "method": "GET", "path": "/api/settings" },
-    { "id": "sessions.list", "feature": "sessions", "method": "GET", "path": "/api/observability/session/list", "query": { "start_time": "{sessionsStart}", "limit": "25" }, "traces": true },
+    { "id": "sessions.list", "feature": "sessions", "method": "GET", "path": "/api/observability/session/list", "query": { "start_time": "{sessionsStart}", "limit": "25" }, "traces": true, "allow": [{ "path": "$.data.sessions[].flow_count", "reason": "served on every row since nasiko-cloud-rs f2edc15c4 (observability/service.rs SessionSummary.flow_count, for Sessions' Open Flow link); the 2026-10-13 fixtures predate it. TODO: re-record (npm run record:live -- --only sessions)", "since": "2026-11-04" }] },
     { "id": "sessions.detail", "feature": "sessions", "method": "GET", "path": "/api/observability/session/{session0}", "traces": true },
     { "id": "sessions.trace", "feature": "sessions", "method": "GET", "path": "/api/observability/trace/{trace0}", "traces": true, "map_paths": ["$.data.trace.span_lookup"] },
     { "id": "sessions.trace-coding", "feature": "sessions", "method": "GET", "path": "/api/observability/trace/{traceCoding}", "traces": true, "map_paths": ["$.data.trace.span_lookup"] },
