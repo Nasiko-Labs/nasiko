@@ -70,30 +70,6 @@ export interface GranteeKind {
   Section: ComponentType<{ agentId: string }>
 }
 
-/**
- * A tab a layer adds to an agent's detail page. It shows once `query` answers and `shown` agrees with the answer; a
- * read that fails shows it too, and the tab reports the failure itself. Build it with `agentTab()`, which pairs the
- * query's data type with `shown`.
- */
-export interface AgentTab<T = unknown> {
-  /** Its `?tab=` value: unique among the core's tabs and every layer's. */
-  key: string
-  label: string
-  /**
-   * The core tab it follows (e.g. `activity`), after any earlier layer tab that follows it too; the end of the list
-   * when absent or that tab isn't shown.
-   */
-  after?: string
-  /** Whether this viewer may see it at all (the core's manage-only tabs go by `canManage`). */
-  visible: (agent: { canManage: boolean; isHarness: boolean }) => boolean
-  /** Its probe; it gets the agent too, for a layer whose own rule goes beyond `canManage`. */
-  query: (agentId: string, agent: { canManage: boolean; isHarness: boolean }) => SlotQuery<T>
-  shown: (data: T) => boolean
-  Tab: ComponentType<{ agentId: string }>
-}
-
-export const agentTab = <T>(t: AgentTab<T>) => t as unknown as AgentTab
-
 /** Who else an MCP server can be shared with, besides users (EE: org units). */
 interface ConnectorGranteeKind {
   key: string
@@ -104,6 +80,7 @@ interface ConnectorGranteeKind {
 
 /** A section a layer adds to Settings' in-page nav (EE: Single sign-on), at `/settings?section=<key>`. */
 export interface SettingsSection {
+  /** A later layer's section with the same key replaces this one, where it stands. */
   key: string
   label: string
   /** Which nav group it sits in; Security sections come before Secrets. */
@@ -126,8 +103,13 @@ export interface PersonalSettingsLink {
   label: string
   /** The layer's own route, e.g. `/settings/memory` — not `/settings?section=`. */
   to: string
-  /** The layer's own check that the page exists on this server; the link is listed once it answers true. */
-  available?: (userId: string) => SlotQuery<boolean>
+}
+
+/** A tab a layer adds to Access control, after the edition's own (MT: Invites). Its page is the layer's own route. */
+export interface AccessSection {
+  label: string
+  /** The layer's own route, e.g. `/access/invites`; it frames itself as an Access control page. */
+  to: string
 }
 
 /**
@@ -369,8 +351,6 @@ export interface Slots {
   harnessOrgScope: HarnessOrgScope | null
   homeOrgScope: HomeOrgScope | null
   granteeKinds: GranteeKind[]
-  /** Tabs a layer adds to an agent's detail page. */
-  agentTabs: AgentTab[]
   connectorGranteeKinds: ConnectorGranteeKind[]
   settingsSections: SettingsSection[]
   personalSettingsLinks: PersonalSettingsLink[]
@@ -385,6 +365,24 @@ export interface Slots {
    * item), which shrinks to its icon in the rail.
    */
   sidebarBrand: ComponentType | null
+  /**
+   * Takes the free-assessment card's place above the sidebar footer (MT: the plan and credits). Hidden like it while a
+   * page's panel holds the sidebar; it draws its own collapsed-rail form.
+   */
+  sidebarCard: ComponentType | null
+  /**
+   * A layer's notices above the top bar on every page (MT: the plan's trial, grace and balance banners, and what a
+   * 402 Payment Required means, from `paymentRequired.ts`).
+   */
+  shellNotice: ComponentType | null
+  /**
+   * Agents say where they run (MT: Local for a coding harness on a member's machine, Cloud for the rest), and the
+   * Agents catalog lists the local ones by default, so an admin sees the whole fleet in one view (TM-5, FR-4).
+   */
+  agentPlacement: boolean
+  /** Takes "Create user"'s place on Access control → Users (MT: a way to its Invites tab, where people are invited). */
+  userInvites: ComponentType | null
+  accessSections: AccessSection[]
   shellEnd: ComponentType<{ path: string }> | null
   /**
    * Wraps the page in a split with a panel of its own. While the panel shows beside the page, it sets
@@ -453,7 +451,6 @@ export const OSS_SLOTS: Slots = {
   harnessOrgScope: null,
   homeOrgScope: null,
   granteeKinds: [],
-  agentTabs: [],
   connectorGranteeKinds: [],
   settingsSections: [],
   personalSettingsLinks: [],
@@ -462,6 +459,11 @@ export const OSS_SLOTS: Slots = {
   tokenopsOrgUnitFilter: null,
   topbarStart: null,
   sidebarBrand: null,
+  sidebarCard: null,
+  shellNotice: null,
+  agentPlacement: false,
+  userInvites: null,
+  accessSections: [],
   shellEnd: null,
   shellSplit: null,
   optimizationWorkspace: null,
@@ -499,22 +501,29 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
   const out: Slots = {
     ...OSS_SLOTS,
     granteeKinds: [],
-    agentTabs: [],
     connectorGranteeKinds: [],
     settingsSections: [],
     personalSettingsLinks: [],
+    accessSections: [],
     tours: [],
   }
   for (const layer of layers) {
     const s = layer.slots ?? {}
     if (s.granteeKinds) out.granteeKinds = [...out.granteeKinds, ...s.granteeKinds]
-    if (s.agentTabs) out.agentTabs = [...out.agentTabs, ...s.agentTabs]
     if (s.connectorGranteeKinds)
       out.connectorGranteeKinds = [...out.connectorGranteeKinds, ...s.connectorGranteeKinds]
-    if (s.settingsSections) out.settingsSections = [...out.settingsSections, ...s.settingsSections]
+    if (s.settingsSections) {
+      // A later layer's section with an earlier one's key takes its place, where it stood.
+      const own = s.settingsSections
+      out.settingsSections = [
+        ...out.settingsSections.map((x) => own.find((y) => y.key === x.key) ?? x),
+        ...own.filter((y) => !out.settingsSections.some((x) => x.key === y.key)),
+      ]
+    }
     if (s.personalSettingsLinks)
       out.personalSettingsLinks = [...out.personalSettingsLinks, ...s.personalSettingsLinks]
     if (s.tours) out.tours = [...out.tours, ...s.tours]
+    if (s.accessSections) out.accessSections = [...out.accessSections, ...s.accessSections]
     if (s.harnessOrgScope !== undefined) out.harnessOrgScope = s.harnessOrgScope
     if (s.loginMethods !== undefined) out.loginMethods = s.loginMethods
     if (s.passwordSignIn !== undefined) out.passwordSignIn = s.passwordSignIn
@@ -522,6 +531,10 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.tokenopsOrgUnitFilter !== undefined) out.tokenopsOrgUnitFilter = s.tokenopsOrgUnitFilter
     if (s.topbarStart !== undefined) out.topbarStart = s.topbarStart
     if (s.sidebarBrand !== undefined) out.sidebarBrand = s.sidebarBrand
+    if (s.sidebarCard !== undefined) out.sidebarCard = s.sidebarCard
+    if (s.shellNotice !== undefined) out.shellNotice = s.shellNotice
+    if (s.agentPlacement !== undefined) out.agentPlacement = s.agentPlacement
+    if (s.userInvites !== undefined) out.userInvites = s.userInvites
     if (s.shellEnd !== undefined) out.shellEnd = s.shellEnd
     if (s.shellSplit !== undefined) out.shellSplit = s.shellSplit
     if (s.optimizationWorkspace !== undefined) out.optimizationWorkspace = s.optimizationWorkspace
