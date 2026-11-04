@@ -29,7 +29,8 @@
 //! cargo test -p nasiko-llm-router --test provider_translation -- --ignored --nocapture
 //! ```
 //!
-//! A pair whose keys are absent prints a SKIP line and passes. Each pair also dumps a
+//! A pair whose keys are absent fails as NOT RUN, and a pair fails when any translated call
+//! errors; the answers themselves are only reported. Each pair also dumps a
 //! JSON report to `target/provider_translation_report/{x}_to_{y}.json` (override the
 //! directory with `NASIKO_TRANSLATION_REPORT_DIR`).
 //!
@@ -758,7 +759,7 @@ fn dump_json(client: Provider, backend: Provider, cases: &[CaseReport]) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// For one directed pair (client X ≠ backend Y): over every scenario, produce the
-/// three results, print them, and dump the JSON report. Report-only — always passes.
+/// three results, print them, and dump the JSON report. Fails when a translated call errors.
 async fn run_pair(client: Provider, backend: Provider) {
     assert!(
         client != backend,
@@ -766,14 +767,13 @@ async fn run_pair(client: Provider, backend: Provider) {
     );
 
     let (Some(x_key), Some(y_key)) = (client.api_key(), backend.api_key()) else {
-        eprintln!(
-            "SKIP {} → {}: set both {} and {} to run this comparison",
+        panic!(
+            "NOT RUN {} → {}: set both {} and {} to run this comparison",
             client.label(),
             backend.label(),
             client.key_env(),
             backend.key_env(),
         );
-        return;
     };
 
     let cfg = GatewayConfig::from_env();
@@ -854,6 +854,25 @@ async fn run_pair(client: Provider, backend: Provider) {
     }
 
     dump_json(client, backend, &cases);
+
+    let failed: Vec<String> = cases
+        .iter()
+        .filter(|case| !case.translated.ok)
+        .map(|case| {
+            format!(
+                "{}: {}",
+                case.scenario,
+                case.translated.error.as_deref().unwrap_or("<unknown>")
+            )
+        })
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "{} → {} translated calls failed:\n{}",
+        client.label(),
+        backend.label(),
+        failed.join("\n")
+    );
 }
 
 fn env_or(key: &str, default: &str) -> String {
