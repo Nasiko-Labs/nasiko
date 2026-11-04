@@ -144,7 +144,7 @@ fn mcp_state(db: PgPool) -> McpState {
             capture_content: false,
         },
         providers: Providers {
-            composio: None,
+            composio: Default::default(),
             mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
         },
         authorizer: Arc::new(AllowAllAuthorizer),

@@ -116,6 +116,7 @@ import {
   type DeployState,
   type MockBuild,
 } from './deploy'
+import { composioHandlers, resetComposioMock } from './composio'
 import { buildMcpState, mcpHandlers, type McpState } from './mcp'
 import { optimizationHandlers, resetOptimizationMock } from './optimization'
 import { buildWorkflowsState, workflowHandlers, type WorkflowsState } from './workflows'
@@ -611,6 +612,7 @@ export function resetAgentsMock() {
   workflowsState = null
   flowsState = null
   settingsRow = null
+  resetComposioMock()
   secretValues = new Map()
   mockPassword = null
   onboardingRow = ONBOARDED
@@ -1984,6 +1986,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       )
       return HttpResponse.json(settingsRow)
     }),
+    ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],
 }
 

@@ -161,7 +161,7 @@ impl TestDb {
                 capture_content: false,
             },
             providers: Providers {
-                composio: None,
+                composio: Default::default(),
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer,
@@ -182,6 +182,7 @@ impl TestDb {
 
     /// Seed a `chat_sessions` + `session_traces` row so `trace_id` resolves to `session_id` (the
     /// A2A contextId) via `session::resolve_context_id`.
+    #[allow(dead_code)] // `hidden_toolkit.rs` refuses before any HITL row, so has no trace to seed
     pub async fn seed_session_trace(&self, session_id: &str, trace_id: &str) {
         sqlx::query(
             "INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 'test session')",

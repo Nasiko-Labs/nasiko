@@ -28,6 +28,7 @@ pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
 pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
+pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
 pub mod flow_sweeper;
@@ -329,10 +330,7 @@ where
         .route("/me", get(me))
         .merge(router::router_routes(a2a_limiter))
         .merge(agent_deploy_routes)
-        .nest(
-            "/agents",
-            agents::user_routes().merge(agents::capability_routes()),
-        )
+        .nest("/agents", agents::user_routes())
         .merge(catalog::router())
         .merge(container_routes)
         .merge(pool_routes)
@@ -397,11 +395,7 @@ where
         .nest("/api", agent_state::router(&state))
         .with_state(state.clone());
 
-    let oci_state = nasiko_oci::OciState::new(
-        state.db.clone(),
-        state.oci_storage.clone(),
-        state.config.agent_image_registry.clone(),
-    );
+    let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
