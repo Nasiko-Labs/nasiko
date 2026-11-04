@@ -3,6 +3,8 @@
 //! OAuth, and per-agent tool permissions.
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use serde_json::Value;
@@ -190,22 +192,85 @@ pub fn connect(
     let resp = resp.get("data").cloned().unwrap_or(Value::Null);
 
     let name = s(&resp, "name");
+    let connector_id = s(&resp, "connector_id");
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("connected") => println!(
-            "Connected to '{name}' (connector {}).",
-            s(&resp, "connector_id")
-        ),
-        Some("initiated") => println!(
-            "Composio authorization started for '{name}'.\n\nOpen this URL to finish connecting:\n\n  {}\n",
-            s(&resp, "oauth_url")
-        ),
-        Some("oauth_required") => println!(
-            "Authorization required for '{name}'.\n\nOpen this URL to finish connecting:\n\n  {}\n",
-            s(&resp, "authorization_url")
-        ),
+        Some("connected") => println!("Connected to '{name}' (connector {connector_id})."),
+        Some("initiated") => {
+            println!("Composio authorization started for '{name}'.");
+            finish_in_browser(&client, name, connector_id, s(&resp, "oauth_url"))?;
+        }
+        Some("oauth_required") => {
+            println!("Authorization required for '{name}'.");
+            finish_in_browser(&client, name, connector_id, s(&resp, "authorization_url"))?;
+        }
         other => println!("{}", other.unwrap_or("done")),
     }
     Ok(())
+}
+
+/// How long `connect` waits for the browser sign-in. Composio drops an unfinished link after
+/// ten minutes, so waiting longer could only end in a timeout.
+const SIGN_IN_WAIT: Duration = Duration::from_secs(10 * 60);
+const SIGN_IN_POLL: Duration = Duration::from_secs(2);
+
+/// Prints the sign-in URL, then — on a terminal — opens it and waits until the server marks
+/// the connection active. Without a terminal it only prints the URL, so a script never blocks
+/// on a sign-in nobody is there to do.
+fn finish_in_browser(client: &Client, name: &str, connector_id: &str, url: &str) -> Result<()> {
+    println!("\nOpen this URL to finish connecting:\n\n  {url}\n");
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    crate::util::open_browser(url);
+    eprintln!("Opened your browser. Waiting for you to finish signing in (Ctrl-C to stop)...");
+    wait_for_connection(client, connector_id, SIGN_IN_WAIT, SIGN_IN_POLL)?;
+    println!("Connected to '{name}' (connector {connector_id}).");
+    Ok(())
+}
+
+/// Polls the caller's connections until `connector_id` is `ACTIVE`. Listing them is also what
+/// makes the server re-check a pending Composio link, so the poll itself advances the status.
+fn wait_for_connection(
+    client: &Client,
+    connector_id: &str,
+    wait: Duration,
+    poll: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match connection_status(client, connector_id)?.as_deref() {
+            Some("ACTIVE") => return Ok(()),
+            Some("EXPIRED") => bail!(
+                "the sign-in for connector {connector_id} failed or expired; run the command again"
+            ),
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "stopped waiting after {} minutes; once you've signed in, check with `{} mcp connections`",
+                wait.as_secs() / 60,
+                crate::commands::local_agents::cli_name()
+            );
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// The caller's connection status for one connector, or `None` while it has none.
+fn connection_status(client: &Client, connector_id: &str) -> Result<Option<String>> {
+    let resp: Value = client.get_json("/mcp/connections")?;
+    let status = resp
+        .pointer("/data/connections")
+        .and_then(|v| v.as_array())
+        .and_then(|connections| {
+            connections
+                .iter()
+                .find(|c| c.get("connector_id").and_then(|v| v.as_str()) == Some(connector_id))
+        })
+        .and_then(|c| c.get("status"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    Ok(status)
 }
 
 pub fn connections(json: bool) -> Result<()> {
@@ -1997,6 +2062,44 @@ mod tests {
         let path = std::env::temp_dir().join(name);
         std::fs::write(&path, b"not a real zip, just bytes for the multipart body").unwrap();
         path
+    }
+
+    fn mock_connection_status(server: &mut mockito::Server, status: &str) -> mockito::Mock {
+        server
+            .mock("GET", "/api/mcp/connections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"data":{{"connections":[{{"connector_id":"other","status":"ACTIVE"}},{{"connector_id":"c-1","status":"{status}"}}],"total":2}}}}"#
+            ))
+            .create()
+    }
+
+    #[test]
+    fn wait_for_connection_returns_once_active() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "ACTIVE");
+        let client = Client::for_test(&server.url(), None);
+        wait_for_connection(&client, "c-1", Duration::ZERO, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn wait_for_connection_fails_on_expired() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "EXPIRED");
+        let client = Client::for_test(&server.url(), None);
+        let err = wait_for_connection(&client, "c-1", Duration::from_secs(60), Duration::ZERO)
+            .unwrap_err();
+        assert!(err.to_string().contains("failed or expired"), "{err}");
+    }
+
+    #[test]
+    fn wait_for_connection_times_out_while_pending() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "INITIATED");
+        let client = Client::for_test(&server.url(), None);
+        let err = wait_for_connection(&client, "c-1", Duration::ZERO, Duration::ZERO).unwrap_err();
+        assert!(err.to_string().contains("stopped waiting"), "{err}");
     }
 
     #[test]

@@ -59,6 +59,19 @@ pub fn dir_references_mcp_gateway(dir: &Path) -> bool {
     false
 }
 
+/// Opens `url` in the default browser. Best effort: when nothing opens, the caller has already
+/// printed the URL to open by hand.
+pub fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+}
+
 /// Resolves the container CLI binary to shell out to. Honors `NASIKO_CONTAINER_CLI`
 /// if set, otherwise prefers `docker` and falls back to `podman` when `docker` isn't
 /// on PATH (e.g. podman-only dev setups without the podman-docker compat shim).
@@ -267,8 +280,6 @@ pub fn title_case(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
-
-pub use nasiko_utils::image::image_name_slug;
 
 #[cfg(test)]
 mod tests {
