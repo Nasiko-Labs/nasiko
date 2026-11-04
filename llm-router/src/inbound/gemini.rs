@@ -360,11 +360,20 @@ fn gemini_finish_reason(finish_reason: &str) -> &'static str {
 }
 
 fn usage_metadata(u: &Usage) -> Value {
-    json!({
+    let u = u.clone().into_cache_inclusive();
+    let mut metadata = json!({
         "promptTokenCount": u.prompt_tokens.unwrap_or(0),
         "candidatesTokenCount": u.completion_tokens.unwrap_or(0),
         "totalTokenCount": u.total_tokens.unwrap_or(0),
-    })
+    });
+    if let Some(cached) = u
+        .prompt_tokens_details
+        .and_then(|d| d.cached_tokens)
+        .filter(|&n| n > 0)
+    {
+        metadata["cachedContentTokenCount"] = json!(cached);
+    }
+    metadata
 }
 
 // ── IR stream → Gemini SSE (stateful for tool accumulation) ──────────────────
@@ -567,6 +576,33 @@ mod tests {
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
         assert_eq!(v["usageMetadata"]["promptTokenCount"], 5);
         assert_eq!(v["usageMetadata"]["totalTokenCount"], 7);
+        assert!(v["usageMetadata"].get("cachedContentTokenCount").is_none());
+    }
+
+    #[test]
+    fn a_reply_served_from_cache_reports_gemini_usage_with_the_cached_count() {
+        for usage in [
+            json!({ "prompt_tokens": 4, "completion_tokens": 75, "total_tokens": 79,
+                    "cache_read_input_tokens": 10431 }),
+            json!({ "prompt_tokens": 10435, "completion_tokens": 75, "total_tokens": 10510,
+                    "prompt_tokens_details": { "cached_tokens": 10431 } }),
+        ] {
+            let resp: ChatResponse = serde_json::from_value(json!({
+                "id": "chatcmpl-1", "object": "chat.completion", "model": "m",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                "usage": usage.clone()
+            }))
+            .unwrap();
+
+            let v = GeminiInbound.render_chat_response(resp);
+
+            assert_eq!(
+                v["usageMetadata"],
+                json!({ "promptTokenCount": 10435, "candidatesTokenCount": 75,
+                        "totalTokenCount": 10510, "cachedContentTokenCount": 10431 }),
+                "{usage}"
+            );
+        }
     }
 
     #[test]
