@@ -47,6 +47,13 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// Called just before forwarding a request to an agent container. OSS default is a no-op
+    /// (`NoAgentWake`); the EE composition root installs the real implementation through this
+    /// cell (`SwappableAgentWake::install`, not a plain reassignment) for the same reason
+    /// `prompt_context` does - the HITL resume dispatcher forwards to agents too, and holds an
+    /// `AppState` clone taken before that root runs. See that field's doc comment and the
+    /// `agent_wake` module docs.
+    pub agent_wake: Arc<crate::agent_wake::SwappableAgentWake>,
     /// What the MAF worker runs each queued workflow through. OSS wires
     /// `LinearMafExecutor` (steps in array order); the EE composition root
     /// replaces it before the app is built, the same way it replaces
@@ -127,12 +134,10 @@ impl AppState {
     /// The embedding client the chat handlers hand to
     /// `context_selection::fetch_for_user`. Built per call (it is a thin
     /// handle over the shared `history_embedding_cache`, not a connection),
-    /// so the call sites don't each re-derive the provider settings. Embeds with the key `user_id`
-    /// saved from the UI when there is one, else the server's.
-    pub async fn history_vector_store(&self, user_id: uuid::Uuid) -> VectorStore {
-        let server_key = self.config.openai_api_key.as_deref().unwrap_or_default();
+    /// so the two call sites don't each re-derive the provider settings.
+    pub fn history_vector_store(&self) -> VectorStore {
         VectorStore::for_embedding(
-            nasiko_orchestrator::user_key::openai_key(&self.db, user_id, server_key).await,
+            self.config.openai_api_key.clone().unwrap_or_default(),
             self.config
                 .openai_base_url
                 .clone()
@@ -234,6 +239,9 @@ impl AppState {
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
             Arc::new(crate::spend_gate::NoSpendGate);
+        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
+            crate::agent_wake::NoAgentWake,
+        )));
         let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
             Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
         let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
@@ -359,6 +367,7 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
+            agent_wake,
             maf_executor,
             maf_policy,
             prompt_context,
@@ -522,10 +531,6 @@ impl AppState {
         {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
-
-        // Before the seeding below, which needs the key to register toolkits.
-        crate::composio_settings::apply_stored_key(self).await;
-        tokio::spawn(crate::composio_settings::watch_stored_key(self.clone()));
 
         let state = self.clone();
         tokio::spawn(async move {

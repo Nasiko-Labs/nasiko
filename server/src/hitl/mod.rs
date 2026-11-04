@@ -26,6 +26,7 @@ use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::agent_wake::AgentWake;
 use crate::hitl::continuation::ContinuationGuard;
 use crate::hitl::lost_task::is_task_not_found;
 use crate::router::a2a_dispatch::{
@@ -370,6 +371,16 @@ async fn deliver(state: AppState, row: HitlRequest) {
             return;
         }
     };
+    if let Err(msg) = state.agent_wake.before_forward(row.agent_id).await {
+        fail_resume(
+            &state,
+            &row,
+            &format!("agent '{agent_name}' cannot be reached: {msg}"),
+            RETRYABLE,
+        )
+        .await;
+        return;
+    }
 
     // Reuse the original flow if it was stashed in `resume_state` at pause time — the
     // agent's OTel auto-instrumentation already carries this trace_id on every outbound

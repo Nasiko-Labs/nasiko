@@ -11,6 +11,7 @@ use nasiko_types::agent_call::{AgentCallMeter, UnmeteredCall};
 
 use nasiko_flow::{FlowContext, FlowGuard};
 
+use crate::agent_wake::AgentWake;
 use crate::spend_gate::SpendGate;
 
 /// Edition-aware per-agent access check — the single entry point handlers should use.
@@ -172,6 +173,8 @@ pub struct CpCallGuard {
     pub user_id: Uuid,
     pub chat_session_id: String,
     pub agent_calls: Arc<dyn AgentCallMeter>,
+    /// Asked just before each call that passes the flow checks.
+    pub agent_wake: Arc<dyn AgentWake>,
 }
 
 impl CpCallGuard {
@@ -185,6 +188,7 @@ impl CpCallGuard {
         user_id: Uuid,
         chat_session_id: String,
         agent_calls: Arc<dyn AgentCallMeter>,
+        agent_wake: Arc<dyn AgentWake>,
     ) -> Arc<Self> {
         Arc::new(Self {
             db,
@@ -195,6 +199,7 @@ impl CpCallGuard {
             user_id,
             chat_session_id,
             agent_calls,
+            agent_wake,
         })
     }
 }
@@ -227,6 +232,12 @@ impl CallGuard for CpCallGuard {
             // Flow guard: depth, cycle, fan-out, token budget, timeout (all in Redis)
             if let Err(rejection) = self.flow_guard.check(&ctx, &target).await {
                 return Err(rejection.to_string());
+            }
+
+            // After the checks and before `record_invocation`: a refused call spends no fan-out
+            // or depth budget. A target that does not resolve has no UUID to ask about.
+            if let Ok(id) = &target_id {
+                self.agent_wake.before_forward(*id).await?;
             }
 
             if let Err(rejection) = self.flow_guard.record_invocation(&ctx, &target).await {

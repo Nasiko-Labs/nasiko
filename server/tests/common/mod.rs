@@ -459,7 +459,23 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime).await
+        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime, None)
+            .await
+    }
+
+    /// Same as [`start`](Self::start), with `agent_wake` installed on the app's `AppState`.
+    #[allow(dead_code)]
+    pub async fn start_with_agent_wake(
+        agent_wake: Arc<dyn nasiko_server::agent_wake::AgentWake>,
+    ) -> Self {
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        Self::start_with_runtime_and_handle(
+            |_| {},
+            fake_runtime.clone(),
+            fake_runtime,
+            Some(agent_wake),
+        )
+        .await
     }
 
     /// Same as [`start_with`](Self::start_with), but lets the caller supply a
@@ -475,8 +491,13 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
     ) -> Self {
-        Self::start_with_runtime_and_handle(configure, runtime, Arc::new(FakeRuntime::default()))
-            .await
+        Self::start_with_runtime_and_handle(
+            configure,
+            runtime,
+            Arc::new(FakeRuntime::default()),
+            None,
+        )
+        .await
     }
 
     /// Like [`start_with_runtime`](Self::start_with_runtime), but binds `0.0.0.0`
@@ -570,6 +591,7 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
+        agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -616,6 +638,9 @@ impl TestServer {
         );
         let state =
             AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
+        if let Some(agent_wake) = agent_wake {
+            state.agent_wake.install(agent_wake);
+        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();

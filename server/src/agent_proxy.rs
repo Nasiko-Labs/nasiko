@@ -10,6 +10,7 @@ use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
 use nasiko_orchestrator::{ContextTiers, context_selection};
 use uuid::Uuid;
 
+use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
@@ -177,6 +178,10 @@ pub async fn agent_proxy(
     let (agent_base, forward_headers) = if coding_target.is_some() {
         (String::new(), Vec::new())
     } else {
+        if let Err(msg) = state.agent_wake.before_forward(agent_id).await {
+            tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
         match state
             .runtime
             .forwarding_endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
@@ -1094,7 +1099,7 @@ async fn ensure_chat_session(
         // agents, which an inline `WHERE id = $1` does not.
         let compress_history =
             nasiko_orchestrator::agent_compression_enabled(&state.db, agent_id).await;
-        let history_store = state.history_vector_store(user_id).await;
+        let history_store = state.history_vector_store();
         // A direct chat: this agent's own switch decides history compression.
         let history = context_selection::fetch_for_user(
             &state.db,
