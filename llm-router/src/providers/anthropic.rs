@@ -424,6 +424,11 @@ fn has_media(parts: &[ContentPart]) -> bool {
     parts.iter().any(|p| !matches!(p, ContentPart::Text(_)))
 }
 
+fn without_empty_text(mut blocks: Vec<Value>) -> Vec<Value> {
+    blocks.retain(|block| block.get("text").and_then(Value::as_str) != Some(""));
+    blocks
+}
+
 /// [`anthropic_blocks`] for `m`'s parts, each block keeping the cache marker its part carried.
 fn marked_anthropic_blocks(
     m: &Message,
@@ -437,6 +442,10 @@ fn marked_anthropic_blocks(
                 block[CACHE_CONTROL] = marker.clone();
             }
         }
+    }
+    let blocks = without_empty_text(blocks);
+    if blocks.is_empty() {
+        return Err(empty_user_content());
     }
     Ok(blocks)
 }
@@ -463,7 +472,7 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value
                 // keeps one marker, on the whole result, so its own blocks go unmarked.
                 let content = match m.content_view().map_err(unsupported)? {
                     ContentView::Parts(parts) if has_media(&parts) => {
-                        Value::Array(anthropic_blocks(&parts)?)
+                        Value::Array(without_empty_text(anthropic_blocks(&parts)?))
                     }
                     _ => json!(m.text().unwrap_or_default()),
                 };
@@ -597,7 +606,7 @@ fn system_field(system_messages: &[&Message]) -> Option<Value> {
                 .collect(),
         })
         .collect();
-    Some(json!(blocks))
+    (!blocks.is_empty()).then(|| json!(blocks))
 }
 
 /// One Anthropic text block per text part, each keeping its cache marker; `None` when no part
@@ -614,7 +623,7 @@ fn marked_text_blocks(m: &Message) -> Option<Vec<Value>> {
             block
         })
         .collect();
-    Some(blocks)
+    Some(without_empty_text(blocks))
 }
 
 fn assistant_to_anthropic(m: &Message) -> Value {
@@ -1734,6 +1743,109 @@ mod tests {
             body["messages"][0]["content"],
             json!([{ "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }])
         );
+    }
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+
+    fn anthropic_body(request: Value) -> Result<Value, ProviderError> {
+        let ir: ChatRequest = serde_json::from_value(request).unwrap();
+        to_anthropic_request(&ir, &resolved())
+    }
+
+    fn image_block() -> Value {
+        json!({ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } })
+    }
+
+    #[test]
+    fn an_empty_text_part_beside_an_image_is_left_out() {
+        let body = anthropic_body(json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "" },
+            { "type": "image_url", "image_url": { "url": PNG } }
+        ]}]}))
+        .unwrap();
+
+        assert_eq!(body["messages"][0]["content"], json!([image_block()]));
+    }
+
+    #[test]
+    fn an_empty_text_part_leaves_with_its_cache_marker_and_real_text_keeps_its_own() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let body = anthropic_body(json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "What colours?", "cache_control": ephemeral },
+            { "type": "text", "text": "", "cache_control": ephemeral },
+            { "type": "image_url", "image_url": { "url": PNG } },
+            { "type": "text", "text": "Be brief." }
+        ]}]}))
+        .unwrap();
+
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([
+                { "type": "text", "text": "What colours?", "cache_control": ephemeral },
+                image_block(),
+                { "type": "text", "text": "Be brief." }
+            ])
+        );
+    }
+
+    #[test]
+    fn an_empty_text_part_inside_a_tool_result_with_an_image_is_left_out() {
+        let body = anthropic_body(json!({ "messages": [
+            { "role": "user", "content": "Read the chart." },
+            { "role": "assistant", "content": null, "tool_calls": [{
+                "id": "toolu_1", "type": "function",
+                "function": { "name": "read_file", "arguments": "{}" }
+            }]},
+            { "role": "tool", "tool_call_id": "toolu_1", "content": [
+                { "type": "text", "text": "" },
+                { "type": "image_url", "image_url": { "url": PNG } }
+            ]}
+        ]}))
+        .unwrap();
+
+        assert_eq!(
+            body["messages"][2]["content"][0]["content"],
+            json!([image_block()])
+        );
+    }
+
+    #[test]
+    fn a_user_turn_of_only_empty_text_is_refused_by_name() {
+        let err = anthropic_body(json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "", "cache_control": { "type": "ephemeral" } }
+        ]}]}))
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, ProviderError::Rejected(msg) if msg.contains("empty")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_marked_system_prompt_drops_empty_text_and_an_all_empty_one_is_not_sent() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        let kept = anthropic_body(json!({ "messages": [
+            { "role": "system", "content": [
+                { "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral },
+                { "type": "text", "text": "" }
+            ]},
+            { "role": "user", "content": "hi" }
+        ]}))
+        .unwrap();
+        let none = anthropic_body(json!({ "messages": [
+            { "role": "system", "content": [
+                { "type": "text", "text": "", "cache_control": ephemeral }
+            ]},
+            { "role": "user", "content": "hi" }
+        ]}))
+        .unwrap();
+
+        assert_eq!(
+            kept["system"],
+            json!([{ "type": "text", "text": "You are a coding agent.", "cache_control": ephemeral }])
+        );
+        assert!(none.get("system").is_none(), "{none}");
     }
 
     #[test]
