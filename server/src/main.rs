@@ -67,6 +67,11 @@ async fn main() {
     // builds its rediss:// config through the process-default provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
+    // First, so a panic anywhere in startup is reported too. Held until `main` returns.
+    let _error_reporting = nasiko_server::error_reporting::init(
+        nasiko_server::error_reporting::ErrorReportingConfig::from_env(),
+        "oss",
+    );
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 

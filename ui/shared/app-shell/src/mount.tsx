@@ -11,6 +11,8 @@ import { initTheme } from '@nasiko/app-core/shell/theme'
 import { env } from '@nasiko/app-core/env'
 import { installStaleBuildDetection } from '@nasiko/app-core/staleBuild'
 import { createQueryClient } from '@nasiko/app-core/queryClient'
+import { captureEarlyErrors, reactRootErrorHandlers } from '@nasiko/app-shell/errorReporting/queue'
+import { startErrorReporting } from '@nasiko/app-shell/errorReporting/start'
 
 const loadMotionFeatures = () => import('@nasiko/ui/lib/motionFeatures').then((m) => m.default)
 
@@ -19,6 +21,8 @@ const loadMotionFeatures = () => import('@nasiko/ui/lib/motionFeatures').then((m
  * edition its `src/edition.ts` declares. The route tree is the edition's own (`@edition/routeTree.gen`).
  */
 export async function mount(edition: Edition) {
+  // Before anything else can throw: held until the error-reporting SDK starts (or reporting turns out to be off).
+  captureEarlyErrors()
   // A holder, since the query client is built before the router it redirects with.
   const routerRef: { current?: AnyRouter } = {}
   const queryClient = createQueryClient(() => routerRef.current)
@@ -56,7 +60,7 @@ export async function mount(edition: Edition) {
   }
   const root = document.getElementById('root')
   if (!root) throw new Error('index.html has no #root element')
-  createRoot(root).render(
+  createRoot(root, reactRootErrorHandlers).render(
     <StrictMode>
       <EditionProvider edition={edition}>
         <QueryClientProvider client={queryClient}>
@@ -75,4 +79,5 @@ export async function mount(edition: Edition) {
       </EditionProvider>
     </StrictMode>,
   )
+  startErrorReporting(routerRef.current, edition.id)
 }

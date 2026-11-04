@@ -7,6 +7,7 @@
  * VITE_NASIKO_LEGACY_UI_URL     http(s) URL    where trace links open (the existing nasiko UI)
  * VITE_NASIKO_WAITLIST_URL      http(s) URL    the Nasiko waitlist page the OSS app links to (default https://nasiko-waitlist.vercel.app);
  *                                              `off` (any non-URL) hides every waitlist link, as the desktop app's build does
+ * VITE_NASIKO_RELEASE           string         this bundle's release name for error reports (vite.shared.ts sets it at build time)
  * NASIKO_API_URL                (vite.config.ts) proxy target for /api — server-side only
  */
 type ApiMode = 'mock' | 'live'
@@ -220,6 +221,16 @@ export function validHttpUrl(value: string): string | null {
 }
 
 export const env = readEnv()
+
+/**
+ * The release error reports name, which their stack traces are matched against (the source maps uploaded for this
+ * build carry the same name, scripts/sentry-sourcemaps.ts). Null in the dev server, which reports nothing.
+ */
+function readRelease(env: RawEnv = import.meta.env): string | null {
+  return String(env.VITE_NASIKO_RELEASE ?? '').trim() || null
+}
+
+export const uiRelease = readRelease()
 
 /**
  * A preview section may render (plans/feat-agent-centric.md eng, preview policy): true only in full mock mode or when

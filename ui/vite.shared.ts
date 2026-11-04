@@ -2,6 +2,7 @@
  * The one Vite config every edition builds from (docs/lab-vs-react-migration-review.md §10.6). Published with the
  * core: it never names a private edition. Each edition's own vite.config.ts passes its layers in.
  */
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -285,6 +286,43 @@ function bootGuard(): Plugin {
   }
 }
 
+/**
+ * The release name error reports carry (`VITE_NASIKO_RELEASE`, read by `shared/app-core/src/env.ts`): set it to pin one,
+ * else `nasiko-ui@<VERSION>-<commit>` (just the version where there is no git, as in the Docker build). The build
+ * writes it to `dist/.vite/sentry-release.txt` (a dotfile folder, never embedded or served) so the source-map upload
+ * (scripts/sentry-sourcemaps.ts) files the maps under the same name.
+ */
+function errorReportingRelease(env: Record<string, string>): Plugin {
+  let out = ''
+  const release = env.VITE_NASIKO_RELEASE?.trim() || defaultRelease()
+  return {
+    name: 'nasiko:error-reporting-release',
+    apply: 'build',
+    config: () => ({ define: { 'import.meta.env.VITE_NASIKO_RELEASE': JSON.stringify(release) } }),
+    configResolved(c) {
+      out = c.build.outDir
+    },
+    closeBundle() {
+      mkdirSync(join(out, '.vite'), { recursive: true })
+      writeFileSync(join(out, '.vite', 'sentry-release.txt'), `${release}\n`)
+    },
+  }
+}
+
+function defaultRelease(): string {
+  const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim()
+  try {
+    const commit = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return `nasiko-ui@${version}-${commit}`
+  } catch {
+    return `nasiko-ui@${version}`
+  }
+}
+
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
   const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
@@ -353,6 +391,7 @@ export function nasikoApp(o: AppOptions): UserConfig {
       zodJitless(),
       bootGuard(),
       cspHashes(),
+      errorReportingRelease(env),
     ],
     resolve: {
       alias: {
@@ -375,8 +414,11 @@ export function nasikoApp(o: AppOptions): UserConfig {
       emptyOutDir: true,
       // scripts/check-budgets.ts reads it (dist/.vite/manifest.json; not served, the Rust embed skips dotfiles).
       manifest: true,
-      // Off in every edition (Vite's default, made explicit): a map would publish private EE source under /assets.
-      sourcemap: false,
+      // Off in every edition: a map would publish private EE source under /assets. The one exception is a release
+      // build that uploads them to Sentry (NASIKO_SOURCEMAPS=hidden): `hidden` writes the maps without the
+      // `sourceMappingURL` comment, and scripts/sentry-sourcemaps.ts uploads, then deletes, every one of them before
+      // the bundle is embedded (the servers' build.rs refuses a release build that still has one).
+      sourcemap: env.NASIKO_SOURCEMAPS === 'hidden' ? 'hidden' : false,
       rolldownOptions: {
         output: {
           // visx (+ d3) is most of the chart pages' weight; its own chunk keeps it cacheable across page changes.

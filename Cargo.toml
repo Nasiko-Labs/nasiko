@@ -140,6 +140,11 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # ─── Observability ──────────────────────────────────────────────────────────
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Error and crash reporting to Sentry, off unless SENTRY_DSN is set (oss/server/src/error_reporting/).
+# ureq + rustls: the HTTP stack and TLS the workspace already locks, instead of the default
+# reqwest 0.13 + native-tls. `tower-axum-matched-path` names transactions by route template, so a
+# credential in a path (`/api/mcp/s/{token}`) never becomes a transaction name.
+sentry = { version = "0.49.3", default-features = false, features = ["backtrace", "contexts", "panic", "tracing", "tower", "tower-http", "tower-axum-matched-path", "ureq", "rustls"] }
 
 # ─── AWS ────────────────────────────────────────────────────────────────────
 aws-sdk-s3 = "1"

@@ -102,6 +102,7 @@ impl TelemetryConfig {
 
 /// Initialize OpenTelemetry tracing + metrics pipeline.
 /// If no OTLP endpoint is configured, only local tracing-subscriber is set up.
+/// Call `error_reporting::init` first: its Sentry layer joins here only if it is on.
 pub fn init_telemetry(config: &TelemetryConfig) {
     let resource = Resource::builder()
         .with_attributes([
@@ -127,11 +128,13 @@ pub fn init_telemetry(config: &TelemetryConfig) {
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer().compact())
             .with(otel_layer)
+            .with(crate::error_reporting::tracing_layer())
             .init();
     } else {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer().compact())
+            .with(crate::error_reporting::tracing_layer())
             .init();
     }
 }
