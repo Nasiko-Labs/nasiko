@@ -510,11 +510,8 @@ impl TempoLokiProvider {
         // ancestor is in the trace — never dropped, or the Tool-lane count the
         // materializer writes disagrees with the tool spans in Tempo. An agent
         // seen only through tool calls gets a tool-only row (zero tokens).
-        // An agent-side tool span whose direct child is the gateway's span for the
-        // same call is left out: the gateway's span counts it, once.
-        let superseded = crate::types::superseded_tool_spans(&trace.spans);
         for span in spans.iter().copied() {
-            if !is_tool_span(span) || superseded.contains(span.span_id.as_str()) {
+            if !is_tool_span(span) {
                 continue;
             }
             let Some(name) = tool_span_agent(span, &attributed) else {
@@ -545,10 +542,6 @@ impl TempoLokiProvider {
                 // router span by `gen_ai.agent.id`, so the plain router branch
                 // would drop it when the pairing could not attribute it.
                 let name = if is_tool_span(span) {
-                    // The gateway's span carries this call's error too.
-                    if superseded.contains(span.span_id.as_str()) {
-                        continue;
-                    }
                     match tool_span_agent(span, &attributed) {
                         Some(agent) => agent,
                         None => continue,
@@ -1649,20 +1642,14 @@ pub fn span_provider(span: &Span) -> Option<&str> {
 
 /// The agent a tool span is booked against.
 ///
-/// A span the MCP gateway emitted names its caller in `agent.id`
-/// ([`crate::types::gateway_tool_agent`]); that comes first, because the span's
-/// own service is the control plane's. Otherwise the service name the
-/// router-pairing resolved for it (its cross-service ancestor), else the
-/// `gen_ai.agent.id` stamped on it. The fallback keeps a tool call attributed
-/// when no ancestor is in the trace rather than dropping it — a tool span is a
-/// router span by `gen_ai.agent.id`, so the plain `is_router_llm_span` path
-/// would `continue` past an unpaired one. Both the tool-count pass and the error
-/// attribution use this, so a failed tool call lands on the same row its count
-/// does.
+/// The service name the router-pairing resolved for it (its cross-service
+/// ancestor), else the `gen_ai.agent.id` the MCP gateway stamped on it. The
+/// fallback keeps a tool call attributed when no ancestor is in the trace rather
+/// than dropping it — a tool span is a router span by `gen_ai.agent.id`, so the
+/// plain `is_router_llm_span` path would `continue` past an unpaired one. Both
+/// the tool-count pass and the error attribution use this, so a failed tool call
+/// lands on the same row its count does.
 fn tool_span_agent<'a>(span: &'a Span, attributed: &HashMap<&'a str, &'a str>) -> Option<&'a str> {
-    if let Some(agent) = crate::types::gateway_tool_agent(span) {
-        return Some(agent);
-    }
     if let Some(agent) = attributed.get(span.span_id.as_str()) {
         return Some(agent);
     }

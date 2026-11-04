@@ -511,13 +511,8 @@ pub struct Config {
     /// logged and ignored.
     /// Static `headers` with `auth_type` `none` send one shared key for every
     /// user; an `oauth2` entry is registered and shared, and each user still
-    /// clicks Connect once. For a per-user key use `auth_type` `bearer` with no
-    /// `headers`: each user enters their own key in the UI; a `bearer`/`basic`
-    /// entry that also carries an `Authorization` header is refused at boot,
-    /// since users without a key would silently run on that shared one.
-    /// Holds API keys — deliver it as a secret. Example:
-    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart seeds exactly these by default).
+    /// clicks Connect once. Holds API keys — deliver it as a secret. Example:
+    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","headers":{"Authorization":"Bearer <key>"}},{"name":"Anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
