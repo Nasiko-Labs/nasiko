@@ -72,6 +72,7 @@ pub enum StatusFilter {
     Failed,
     Ok,
     Running,
+    TimedOut,
 }
 
 impl StatusFilter {
@@ -80,8 +81,9 @@ impl StatusFilter {
             "failed" => Ok(Self::Failed),
             "ok" => Ok(Self::Ok),
             "running" => Ok(Self::Running),
+            "timed_out" => Ok(Self::TimedOut),
             other => Err(ObservabilityError::BadRequest(format!(
-                "status '{other}' is not one of: failed, ok, running"
+                "status '{other}' is not one of: failed, ok, running, timed_out"
             ))),
         }
     }
@@ -172,6 +174,7 @@ struct Row {
     flow_count: Option<i64>,
     failed_flow_count: Option<i64>,
     running_flow_count: Option<i64>,
+    timed_out_flow_count: Option<i64>,
     /// Coding-agent receipts, one per turn; 0 for every other session.
     turn_count: Option<i64>,
     /// Whether the session's latest coding-agent turn ended with an erroring tool call.
@@ -203,10 +206,13 @@ struct Row {
 /// Mirrored by [`status_predicate`].
 fn derive_status(row: &Row) -> Option<&'static str> {
     let failed = row.failed_flow_count.unwrap_or(0) + i64::from(row.last_turn_failed == Some(true));
+    let timed_out = row.timed_out_flow_count.unwrap_or(0);
     let running = row.running_flow_count.unwrap_or(0);
     let total = row.flow_count.unwrap_or(0) + row.turn_count.unwrap_or(0);
     if failed > 0 {
         Some("failed")
+    } else if timed_out > 0 {
+        Some("timed_out")
     } else if running > 0 {
         Some("running")
     } else if total > 0 {
@@ -302,16 +308,21 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
                            WHERE e.session_id = s.session_id \
                            ORDER BY e.turn_started_at DESC NULLS LAST, e.received_at DESC \
                            LIMIT 1), FALSE))";
+    // A flow the sweeper closed after its request died (`flow_sweeper`). It reads
+    // below 'failed' and above 'running'.
+    const TIMED_OUT: &str = "EXISTS (SELECT 1 FROM flows f \
+                      WHERE f.session_id = s.session_id AND f.status = 'timed_out')";
     match status {
         None => "TRUE".into(),
         Some(StatusFilter::Failed) => FAILED.into(),
-        // 'failed' wins over 'running' in `derive_status`, so the filter has to
-        // exclude it — otherwise a `status=running` page lists rows whose own
-        // badge reads "failed".
+        Some(StatusFilter::TimedOut) => format!("{TIMED_OUT} AND NOT {FAILED}"),
+        // 'failed' and 'timed_out' win over 'running' in `derive_status`, so the
+        // filter has to exclude them — otherwise a `status=running` page lists
+        // rows whose own badge reads something else.
         Some(StatusFilter::Running) => format!(
             "EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
+             AND NOT {FAILED} AND NOT {TIMED_OUT}"
         ),
         // "ok" is "has a flow or a coding-agent turn, and nothing unfinished
         // or failed".
@@ -321,7 +332,7 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
                           WHERE e.session_id = s.session_id)) \
              AND NOT EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
+             AND NOT {FAILED} AND NOT {TIMED_OUT}"
         ),
     }
 }
@@ -382,6 +393,7 @@ SELECT p.session_id,
        fl.flow_count,
        fl.failed_flow_count,
        fl.running_flow_count,
+       fl.timed_out_flow_count,
        ct.turn_count,
        ct.last_turn_failed,
        ct.turn_tokens,
@@ -445,7 +457,8 @@ SELECT p.session_id,
   LEFT JOIN LATERAL (
         SELECT count(*)::bigint AS flow_count,
                count(*) FILTER (WHERE f.status = 'failed')::bigint AS failed_flow_count,
-               count(*) FILTER (WHERE f.status IN ('running','paused'))::bigint AS running_flow_count
+               count(*) FILTER (WHERE f.status IN ('running','paused'))::bigint AS running_flow_count,
+               count(*) FILTER (WHERE f.status = 'timed_out')::bigint AS timed_out_flow_count
           FROM flows f
          WHERE f.session_id = p.session_id
   ) fl ON TRUE
@@ -599,6 +612,7 @@ mod tests {
             flow_count: Some(flow),
             failed_flow_count: Some(failed),
             running_flow_count: Some(running),
+            timed_out_flow_count: Some(0),
             turn_count: Some(0),
             last_turn_failed: Some(false),
             turn_tokens: None,
@@ -627,6 +641,39 @@ mod tests {
     fn coding_session_status_comes_from_its_turns() {
         assert_eq!(derive_status(&coding_row(3, false)), Some("ok"));
         assert_eq!(derive_status(&coding_row(3, true)), Some("failed"));
+    }
+
+    #[test]
+    fn a_timed_out_flow_reads_below_failed_and_above_running() {
+        let timed_out = Row {
+            timed_out_flow_count: Some(1),
+            running_flow_count: Some(1),
+            ..row(2, 0, 1)
+        };
+        assert_eq!(derive_status(&timed_out), Some("timed_out"));
+        let failed_too = Row {
+            failed_flow_count: Some(1),
+            ..timed_out
+        };
+        assert_eq!(derive_status(&failed_too), Some("failed"));
+    }
+
+    #[test]
+    fn timed_out_filter_agrees_with_the_badge() {
+        assert_eq!(
+            StatusFilter::parse("timed_out").unwrap(),
+            StatusFilter::TimedOut
+        );
+        let timed_out = status_predicate(Some(StatusFilter::TimedOut));
+        assert!(timed_out.contains("f.status = 'timed_out'"));
+        assert!(timed_out.contains("AND NOT (EXISTS"));
+        for filter in [StatusFilter::Running, StatusFilter::Ok] {
+            let p = status_predicate(Some(filter));
+            assert!(
+                p.contains("AND NOT EXISTS") && p.contains("f.status = 'timed_out'"),
+                "{p}"
+            );
+        }
     }
 
     #[test]

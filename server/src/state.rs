@@ -487,6 +487,15 @@ impl AppState {
             state.config.agent_state_ttl_days,
         ));
 
+        // Closes flows whose request died mid-flight, so their sessions stop reading as running.
+        tokio::spawn(crate::flow_sweeper::run(
+            state.db.clone(),
+            crate::flow_sweeper::stale_after(
+                state.config.flow_timeout_secs,
+                state.config.agent_call_timeout_secs,
+            ),
+        ));
+
         // Retires the seeded brevity factor once the holdout has enough samples. Cheap (one
         // grouped scan) and idempotent, so it rides the same process as the other workers rather
         // than needing a scheduler.

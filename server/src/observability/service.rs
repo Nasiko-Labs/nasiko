@@ -465,7 +465,7 @@ pub struct SessionSummary {
     pub trace_latency_ms_p50: Option<f64>,
     pub trace_latency_ms_p99: Option<f64>,
     pub cost_summary: SimpleCostSummary,
-    /// `running` | `ok` | `failed`, derived from the session's flow rows — the
+    /// `running` | `ok` | `failed` | `timed_out`, derived from the session's flow rows — the
     /// outcome recorded at the proxy. `null` when the session has no recorded
     /// flow, which is "unknown", never "ok".
     pub status: Option<String>,
@@ -514,6 +514,39 @@ pub struct Pagination {
 }
 
 // session/{session_id}
+
+/// What the Postgres receipts say a session consumed, for the detail page when
+/// the trace store has no trace for it. The caller has authorized `session_id`.
+#[derive(Debug, sqlx::FromRow)]
+struct ReceiptTotals {
+    pub turns: Option<i64>,
+    pub tokens: Option<i64>,
+    pub cost: Option<f64>,
+}
+
+async fn session_receipt_totals(
+    db: &PgPool,
+    session_id: &str,
+) -> Result<ReceiptTotals, ObservabilityError> {
+    sqlx::query_as(&format!(
+        "SELECT k.turns, k.tokens, k.cost FROM ({}) k",
+        super::subagents_sql::coding_totals("$1")
+    ))
+    .bind(session_id)
+    .fetch_one(db)
+    .await
+    .map_err(|e| ObservabilityError::Internal(e.to_string()))
+}
+
+/// One trace's `trace_usage` rows, summed, for the detail page's fallback.
+#[derive(sqlx::FromRow)]
+struct UsageRow {
+    session_id: Option<String>,
+    total: f64,
+    prompt: f64,
+    completion: f64,
+    latency_ms: Option<i64>,
+}
 
 #[derive(Serialize, ToSchema)]
 pub struct SessionDetailResponse {
@@ -1716,8 +1749,19 @@ impl ObservabilityService {
         // than to today. Otherwise an old session that still exists in
         // Postgres can never find its historical traces.
         let (title, start, end) = self.session_window(session_id).await;
-        let details = self.provider.get_session(session_id, start, end).await?;
         let lineage = super::subagents_sql::session_lineage(&self.db, session_id).await?;
+        let details = match self.provider.get_session(session_id, start, end).await {
+            Ok(details) => details,
+            // The session is in Postgres (it was just authorized) but the trace
+            // store holds nothing for it: its turns never crossed the proxy. The
+            // list is served from the same receipts, so the page must be too.
+            Err(ObservabilityError::NotFound(_)) => {
+                return self
+                    .session_from_receipts(session_id, title, agent_name, lineage)
+                    .await;
+            }
+            Err(other) => return Err(other),
+        };
 
         let trace_entries: Vec<TraceEntry> = details
             .traces
@@ -1837,6 +1881,117 @@ impl ObservabilityService {
         })
     }
 
+    /// A session detail with no traces, totalled from the receipts. The token
+    /// and cost breakdowns are not recorded there, so `metrics_complete` is
+    /// false and only the totals are filled.
+    async fn session_from_receipts(
+        &self,
+        session_id: &str,
+        title: Option<String>,
+        agent_name: Option<String>,
+        lineage: super::subagents_sql::SessionLineage,
+    ) -> Result<SessionDetailResponse, ObservabilityError> {
+        let totals = session_receipt_totals(&self.db, session_id).await?;
+        let tokens = u64::try_from(totals.tokens.unwrap_or(0).max(0)).unwrap_or(0);
+        let zero = || CostWithTokens {
+            cost: 0.0,
+            tokens: 0,
+        };
+        Ok(SessionDetailResponse {
+            data: SessionDetailData {
+                session: SessionDetail {
+                    id: session_id.to_string(),
+                    session_id: session_id.to_string(),
+                    title,
+                    agent_name,
+                    num_traces: usize::try_from(totals.turns.unwrap_or(0).max(0)).unwrap_or(0),
+                    token_usage: TokenUsageSummary { total: None },
+                    cost_summary: FullCostSummary {
+                        total: CostWithTokens {
+                            cost: totals.cost.unwrap_or(0.0),
+                            tokens,
+                        },
+                        prompt: zero(),
+                        completion: zero(),
+                        cache_read: zero(),
+                        cache_creation: zero(),
+                    },
+                    latency_p50: None,
+                    latency_p99: None,
+                    latency_avg: None,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
+                    metrics_complete: false,
+                    parent_session_id: lineage.parent_session_id,
+                    spawn_tool_call_id: lineage.spawn_tool_call_id,
+                    subagent_type: lineage.subagent_type,
+                    subagents: lineage.subagents,
+                    traces: vec![],
+                    pagination: Pagination {
+                        end_cursor: None,
+                        has_next_page: false,
+                    },
+                },
+            },
+        })
+    }
+
+    /// A trace the trace store does not hold, described from its `trace_usage`
+    /// row: no spans, but the session, cost and latency the server recorded.
+    /// `None` when the server recorded nothing for it either.
+    async fn trace_from_usage(
+        &self,
+        trace_id: &str,
+        user_id: &str,
+        is_superuser: bool,
+    ) -> Result<Option<TraceDetailResponse>, ObservabilityError> {
+        let row: Option<UsageRow> = sqlx::query_as(
+            r#"SELECT max(session_id) AS session_id,
+                      COALESCE(sum(cost_usd), 0)::float8 AS total,
+                      COALESCE(sum(prompt_cost_usd), 0)::float8 AS prompt,
+                      COALESCE(sum(completion_cost_usd), 0)::float8 AS completion,
+                      max(latency_ms) AS latency_ms
+                 FROM trace_usage WHERE trace_id = $1
+               HAVING count(*) > 0"#,
+        )
+        .bind(trace_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        let Some(UsageRow {
+            session_id: Some(session_id),
+            total,
+            prompt,
+            completion,
+            latency_ms,
+        }) = row
+        else {
+            return Ok(None);
+        };
+        self.authorize_session(&session_id, user_id, is_superuser, "trace")
+            .await?;
+        Ok(Some(TraceDetailResponse {
+            data: TraceDetailData {
+                trace: TraceDetail {
+                    id: trace_id.to_string(),
+                    project_session_id: Some(session_id),
+                    num_spans: 0,
+                    latency_ms: latency_ms.map(|ms| ms as f64),
+                    cost_summary: NestedCostSummary {
+                        total: CostOnly { cost: total },
+                        prompt: CostOnly { cost: prompt },
+                        completion: CostOnly { cost: completion },
+                        cache_read: CostOnly { cost: 0.0 },
+                        cache_creation: CostOnly { cost: 0.0 },
+                    },
+                    root_spans: RootSpansWrapper { edges: vec![] },
+                    spans: vec![],
+                    span_lookup: HashMap::new(),
+                },
+            },
+        }))
+    }
+
     // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
@@ -1845,16 +2000,18 @@ impl ObservabilityService {
         user_id: &str,
         is_superuser: bool,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
-        let mut trace = self
-            .provider
-            .get_trace(trace_id)
-            .await
-            .map_err(|e| match e {
-                ObservabilityError::NotFound(_) => {
-                    ObservabilityError::NotFound("trace not found".into())
-                }
-                other => other,
-            })?;
+        let mut trace = match self.provider.get_trace(trace_id).await {
+            Ok(trace) => trace,
+            // Not in the trace store: a turn that never crossed the proxy has
+            // only the row the server wrote at ingest.
+            Err(ObservabilityError::NotFound(_)) => {
+                return self
+                    .trace_from_usage(trace_id, user_id, is_superuser)
+                    .await?
+                    .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()));
+            }
+            Err(other) => return Err(other),
+        };
         let mut seen_spans = HashSet::new();
         trace
             .spans

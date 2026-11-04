@@ -87,7 +87,7 @@ pub struct SessionListParams {
     /// Keyset cursor on `(created_at, session_id)` — the `end_cursor` of the
     /// previous page.
     pub cursor: Option<String>,
-    /// `failed` | `ok` | `running`. Filtered in SQL, so `matching_count` counts
+    /// `failed` | `ok` | `running` | `timed_out`. Filtered in SQL, so `matching_count` counts
     /// every match in the window rather than the rows on this page.
     pub status: Option<String>,
     /// Sort order. Only `created_at` (the default) is supported; see the

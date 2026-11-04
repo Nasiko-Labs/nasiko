@@ -30,6 +30,7 @@ pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
 pub mod context_selection;
 pub mod embedding_change;
+pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
 pub mod hitl;

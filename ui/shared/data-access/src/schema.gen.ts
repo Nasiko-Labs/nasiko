@@ -8329,7 +8329,7 @@ export interface operations {
                  */
                 cursor?: string | null;
                 /**
-                 * @description `failed` | `ok` | `running`. Filtered in SQL, so `matching_count` counts
+                 * @description `failed` | `ok` | `running` | `timed_out`. Filtered in SQL, so `matching_count` counts
                  *     every match in the window rather than the rows on this page.
                  */
                 status?: string | null;
