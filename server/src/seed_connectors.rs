@@ -4,9 +4,8 @@
 //! shared publicly, so every user sees it without registering it themselves.
 //! Seeding is idempotent: a connector the owner already has by that name is
 //! not re-registered (its stored config is left alone), but its public share
-//! is re-asserted and its tool catalog re-synced every boot. A failing entry
-//! is logged and skipped — a third-party MCP server being down must never
-//! block boot.
+//! is re-asserted every boot. A failing entry is logged and skipped — a third-party MCP
+//! server being down must never block boot.
 
 use std::collections::HashMap;
 
@@ -16,7 +15,6 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 use nasiko_mcp_gateway::connectors::{self, NewConnectorInput, ShareTarget};
-use nasiko_mcp_gateway::permissions;
 
 /// One connector to seed. Field names match the register-connector API body.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -114,23 +112,6 @@ async fn seed_one(state: &AppState, owner_id: Uuid, spec: SeedConnectorSpec) {
         Ok(_) => info!(connector = %name, "seed connector registered and shared publicly"),
         Err(e) => {
             warn!(connector = %name, %e, "seed connector registered but sharing failed, retrying next boot")
-        }
-    }
-    sync_tools(state, owner_id, connector_id, &name).await;
-}
-
-/// Pull the connector's tool catalog now. Registering stores no tools, and
-/// `nasiko_search_tools` only finds tools in the catalog, so without this a
-/// seeded connector stays invisible to every agent until someone happens to
-/// open its tools page. The sync also rebuilds the search index, and running
-/// it here — in the boot task, not a request — means it cannot be cut short
-/// by a client disconnecting. Runs every boot, so a sync that failed before
-/// is retried. An OAuth connector with no credential yet syncs nothing.
-async fn sync_tools(state: &AppState, owner_id: Uuid, connector_id: Uuid, name: &str) {
-    match permissions::sync_connector_tools_by_id(&state.mcp, owner_id, connector_id).await {
-        Ok(()) => info!(connector = %name, "seed connector tools synced"),
-        Err(e) => {
-            warn!(connector = %name, %e, "seed connector tool sync failed, retrying next boot")
         }
     }
 }

@@ -6,6 +6,7 @@
 //! enforcement happens here at `tools/call` via slug→connector resolution.
 
 use serde_json::{Value, json};
+use tracing::{Instrument as _, Span};
 use uuid::Uuid;
 
 use crate::aggregator;
@@ -15,6 +16,7 @@ use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
+use crate::tool_span;
 use crate::types::{
     ConnectorUnusable, LATEST_PROTOCOL_VERSION, MCPServerConfig, SUPPORTED_PROTOCOL_VERSIONS,
     ServerType, codes,
@@ -631,6 +633,62 @@ pub async fn handle_tools_call(
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
+    let tool = invoked_tool_name(params);
+    let entry = if params.get("name").and_then(Value::as_str) == Some(CALL_TOOL_META) {
+        "nasiko_call_tool"
+    } else {
+        "direct"
+    };
+    let span = tool_span::tool_call_span(
+        tool,
+        entry,
+        req_id,
+        perms.agent_id,
+        verified_flow_id.and(traceparent),
+        matches!(tool, SEARCH_TOOLS_META | RECOVER_COMPRESSED_META),
+    );
+    if state.config.capture_content {
+        let arguments = match params.get("name").and_then(Value::as_str) {
+            Some(CALL_TOOL_META) => parse_call_tool_target(params.get("arguments"))
+                .map(|(_, inner)| inner)
+                .unwrap_or_else(|_| json!({})),
+            _ => params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        };
+        tool_span::record_arguments(&span, &arguments);
+    }
+    let response = handle_tools_call_inner(
+        state,
+        user_id,
+        req_id,
+        params,
+        resolved,
+        perms,
+        traceparent,
+        verified_flow_id,
+    )
+    .instrument(span.clone())
+    .await;
+    tool_span::record_outcome(&span, &response);
+    if state.config.capture_content {
+        tool_span::record_result(&span, &response);
+    }
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_tools_call_inner(
+    state: &McpState,
+    user_id: Uuid,
+    req_id: &Value,
+    params: &Value,
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
+    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
+) -> Value {
     let outer_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     // ── nasiko_call_tool meta-tool: the fixed-menu executor ──────────────
@@ -1228,8 +1286,12 @@ async fn call_routed_tool(
     };
 
     tracing::info!(tool = %tool_name, forwarded_as = %forward_name, kind = ?server.kind, "routing tool call");
+    tool_span::record_server(&Span::current(), server);
 
-    match state
+    let backend = tool_span::backend_span(server, &forward_name, 1);
+    let backend_traceparent =
+        tool_span::outbound_traceparent(outbound_traceparent.is_some(), &backend);
+    let first_attempt = state
         .providers
         .mcp
         .call_tool(
@@ -1238,10 +1300,14 @@ async fn call_routed_tool(
             &forward_name,
             &forward_args,
             DEFAULT_CALL_TIMEOUT,
-            outbound_traceparent,
+            backend_traceparent.as_deref(),
         )
-        .await
-    {
+        .instrument(backend.clone())
+        .await;
+    if first_attempt.is_err() {
+        tool_span::record_backend_failure(&backend);
+    }
+    match first_attempt {
         Ok(response) if server.kind == ServerType::Composio && response.get("error").is_some() => {
             match resolved
                 .toolkit_to_connector
@@ -1290,7 +1356,10 @@ async fn call_routed_tool(
                 tracing::info!(server = %server.name, connector_id = %server.connector_id, "endpoint stale — retrying tool call against refreshed address");
                 let mut refreshed = server.clone();
                 refreshed.url = new_url;
-                match state
+                let retry = tool_span::backend_span(&refreshed, &original, 2);
+                let retry_traceparent =
+                    tool_span::outbound_traceparent(outbound_traceparent.is_some(), &retry);
+                let second_attempt = state
                     .providers
                     .mcp
                     .call_tool(
@@ -1299,10 +1368,14 @@ async fn call_routed_tool(
                         &original,
                         &arguments,
                         DEFAULT_CALL_TIMEOUT,
-                        outbound_traceparent,
+                        retry_traceparent.as_deref(),
                     )
-                    .await
-                {
+                    .instrument(retry.clone())
+                    .await;
+                if second_attempt.is_err() {
+                    tool_span::record_backend_failure(&retry);
+                }
+                match second_attempt {
                     Ok(response) => return response,
                     Err(e2) => {
                         tracing::warn!(server = %server.name, tool = %original, error = %e2, "backend tool call failed again after endpoint refresh");
@@ -1976,6 +2049,7 @@ mod tests {
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
+                capture_content: false,
             },
             providers: Providers {
                 composio: None,
@@ -2173,6 +2247,191 @@ mod tests {
             .await;
         let url = format!("http://localhost:{}/mcp", server.socket_address().port());
         (server, url)
+    }
+
+    type CapturedSpans = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    struct FieldVisitor<'a>(&'a mut Vec<(String, String)>);
+
+    impl tracing::field::Visit for FieldVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .push((field.name().to_string(), format!("{value:?}")));
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    /// Collects every span's name and fields, including ones recorded after creation.
+    struct CaptureLayer(CapturedSpans);
+
+    impl<S> tracing_subscriber::Layer<S> for CaptureLayer
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            attrs.record(&mut FieldVisitor(&mut fields));
+            let mut spans = self.0.lock().unwrap();
+            spans.push((attrs.metadata().name().to_string(), fields));
+            let index = spans.len() - 1;
+            ctx.span(id).unwrap().extensions_mut().insert(index);
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let index = *ctx.span(id).unwrap().extensions().get::<usize>().unwrap();
+            let mut fields = Vec::new();
+            values.record(&mut FieldVisitor(&mut fields));
+            self.0.lock().unwrap()[index].1.extend(fields);
+        }
+    }
+
+    fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        fields
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_emits_an_execute_tool_span_with_one_backend_span_per_attempt() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let (_guard, fresh_url) = spawn_ok_backend().await;
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        state.endpoint_refresher = std::sync::Arc::new(FakeRefresher(fresh_url));
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, true);
+        let p = perms(&[cid], vec![]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(7),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let calls: Vec<_> = spans.iter().filter(|(n, _)| n == "execute_tool").collect();
+        let backends: Vec<_> = spans.iter().filter(|(n, _)| n == "mcp.backend").collect();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0].1;
+        assert_eq!(field(call, "gen_ai.operation.name"), Some("execute_tool"));
+        assert_eq!(field(call, "mcp.method.name"), Some("tools/call"));
+        assert_eq!(field(call, "gen_ai.tool.name"), Some(tool.as_str()));
+        assert_eq!(
+            field(call, "agent.id"),
+            Some(p.agent_id.to_string().as_str())
+        );
+        assert_eq!(field(call, "nasiko.mcp.entry"), Some("direct"));
+        assert_eq!(field(call, "nasiko.mcp.server_kind"), Some("uploaded"));
+        assert_eq!(field(call, "nasiko.mcp.outcome"), Some("ok"));
+        assert_eq!(field(call, "otel.status_code"), None);
+
+        assert_eq!(backends.len(), 2, "the refused attempt and the retry");
+        assert_eq!(field(&backends[0].1, "attempt"), Some("1"));
+        assert_eq!(field(&backends[0].1, "otel.status_code"), Some("ERROR"));
+        assert_eq!(field(&backends[1].1, "attempt"), Some("2"));
+        assert_eq!(field(&backends[1].1, "otel.status_code"), None);
+    }
+
+    async fn arguments_recorded_on_a_nasiko_call_tool_call(capture: bool) -> Option<String> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let mut state = test_state();
+        state.config.capture_content = capture;
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", Uuid::new_v4(), true);
+        let p = perms(&[], vec![]);
+        let inner = json!({ "name": "nope__tool", "arguments": { "query": "needle" } });
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": CALL_TOOL_META, "arguments": inner }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let call = &spans.iter().find(|(n, _)| n == "execute_tool").unwrap().1;
+        field(call, "tool.arguments").map(str::to_owned)
+    }
+
+    #[tokio::test]
+    async fn the_inner_arguments_are_recorded_when_content_capture_is_on() {
+        assert_eq!(
+            arguments_recorded_on_a_nasiko_call_tool_call(true)
+                .await
+                .as_deref(),
+            Some(r#"{"query":"needle"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn no_arguments_are_recorded_when_content_capture_is_off() {
+        assert_eq!(
+            arguments_recorded_on_a_nasiko_call_tool_call(false).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unroutable_call_is_recorded_as_an_error_span() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let state = test_state();
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", Uuid::new_v4(), true);
+        let p = perms(&[], vec![]);
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": "nope__tool", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let call = &spans.iter().find(|(n, _)| n == "execute_tool").unwrap().1;
+        assert_eq!(field(call, "nasiko.mcp.outcome"), Some("invalid_params"));
+        assert_eq!(field(call, "otel.status_code"), Some("ERROR"));
+        assert_eq!(field(call, "error.type"), Some("invalid_params"));
     }
 
     // ── Step 13: endpoint self-heal on connection failure ────────────────────

@@ -2489,6 +2489,77 @@ mod tests {
     /// attributes on the span — enough for `token_totals()`/`extract_token_attrs`
     /// to resolve real numbers, matching the real Tempo wire shape exactly
     /// (verified against `tempo.rs`'s `OtlpTraceResponse`/`OtlpSpan` structs).
+    fn otlp_tool_span(
+        span_id: &str,
+        parent: Option<&str>,
+        attributes: &[(&str, &str)],
+    ) -> serde_json::Value {
+        let attributes: Vec<_> = attributes
+            .iter()
+            .map(|(k, v)| serde_json::json!({"key": k, "value": {"stringValue": v}}))
+            .collect();
+        let mut span = serde_json::json!({
+            "spanId": span_id,
+            "name": "execute_tool",
+            "kind": "SPAN_KIND_SERVER",
+            "startTimeUnixNano": "1700000000000000000",
+            "attributes": attributes,
+        });
+        if let Some(parent) = parent {
+            span["parentSpanId"] = parent.into();
+        }
+        span
+    }
+
+    fn otlp_batch(service: &str, span: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "resource": {"attributes": [
+                {"key": "service.name", "value": {"stringValue": service}},
+            ]},
+            "scopeSpans": [{"spans": [span]}],
+        })
+    }
+
+    #[tokio::test]
+    async fn a_gateway_tool_span_is_counted_once_and_credited_to_the_calling_agent() {
+        let mut server = mockito::Server::new_async().await;
+        // The agent's SDK reports its own tool span, and the gateway's span for the same
+        // call is its direct child, emitted by the control plane's service.
+        let agent_span = otlp_tool_span(
+            "AAAAAAAAAAE=",
+            None,
+            &[("gen_ai.operation.name", "execute_tool")],
+        );
+        let gateway_span = otlp_tool_span(
+            "AAAAAAAAAAI=",
+            Some("AAAAAAAAAAE="),
+            &[
+                ("gen_ai.operation.name", "execute_tool"),
+                ("mcp.method.name", "tools/call"),
+                ("agent.id", "agent-1"),
+            ],
+        );
+        let body = serde_json::json!({
+            "batches": [otlp_batch("agent-1", agent_span), otlp_batch("nasiko", gateway_span)],
+        });
+        let _trace = server
+            .mock("GET", mockito::Matcher::Regex(r"^/api/traces/.*$".into()))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body.to_string())
+            .create_async()
+            .await;
+
+        let rows = provider_against(&server.url())
+            .extract_trace_usage("0af7651916cd43dd8448eb211c80319c")
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 1, "nothing is credited to the control plane");
+        assert_eq!(rows[0].agent_name, "agent-1");
+        assert_eq!(rows[0].tool_call_count, 1, "counted once, not twice");
+    }
+
     fn otlp_trace_json(
         service_name: &str,
         start_time_unix_nano: &str,

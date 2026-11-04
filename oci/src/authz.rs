@@ -258,6 +258,12 @@ pub async fn check_repo_access(
     }
 }
 
+/// An agent name may carry capitals but an OCI repository name may not, so the
+/// image is addressed by the lowercased name and the two compare case-insensitively.
+fn repo_names_match(agent_name: &str, repo: &str) -> bool {
+    agent_name.eq_ignore_ascii_case(repo)
+}
+
 /// Enforce that `caller` may read `repo` — the [`Caller`]-accepting
 /// counterpart of [`check_repo_access`], used by the read-only manifest/blob/
 /// tags handlers. A [`Caller::Session`] goes through the exact same policy
@@ -294,7 +300,10 @@ pub async fn check_pull_access(state: &OciState, caller: &Caller, repo: &str) ->
                 .await
                 .map_err(OciError::Database)?,
             };
-            if bound_repo.as_deref() == Some(repo) {
+            if bound_repo
+                .as_deref()
+                .is_some_and(|bound| repo_names_match(bound, repo))
+            {
                 Ok(())
             } else {
                 Err(OciError::Forbidden(format!(
@@ -344,5 +353,22 @@ pub async fn check_repo_delete_access(
         Err(OciError::Forbidden(format!(
             "not permitted to delete from repository '{repo}'"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repo_names_match;
+
+    #[test]
+    fn a_capitalised_agent_name_matches_its_lowercase_repository() {
+        assert!(repo_names_match("Calendar-Agent", "calendar-agent"));
+        assert!(repo_names_match("translator", "translator"));
+    }
+
+    #[test]
+    fn a_different_name_never_matches() {
+        assert!(!repo_names_match("Calendar-Agent", "email-agent"));
+        assert!(!repo_names_match("calendar-agent-1", "calendar-agent"));
     }
 }
