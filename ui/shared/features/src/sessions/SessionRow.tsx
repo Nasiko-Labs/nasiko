@@ -266,7 +266,7 @@ function RowDetail({
         {/* Only while this detail is open (v1c §5.10). */}
         <OpenChatLink sessionId={s.session_id} className="mt-1 w-fit" />
         {/* The session's latest request, as a flow (plans/feat-flows.md F19). */}
-        {latest ? (
+        {latest && s.flow_count > 0 ? (
           <OpenFlowLink
             flowId={latest}
             latest={(d.data?.traces.length ?? 0) > 1}

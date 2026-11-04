@@ -1191,6 +1191,10 @@ async fn session_list_totals_a_coding_session_from_its_turns() {
     assert_eq!(row["start_time"], "2023-11-14T22:13:20.000Z");
     assert_eq!(row["status"], "ok");
     assert_eq!(row["failed_flows"], 0);
+    assert_eq!(
+        row["flow_count"], 0,
+        "a coding-agent session never crossed the proxy"
+    );
 
     server.cleanup().await;
 }

@@ -271,6 +271,7 @@ impl Row {
             },
             status: status.map(str::to_owned),
             failed_flows: self.failed_flow_count.unwrap_or(0) as u32,
+            flow_count: u32::try_from(self.flow_count.unwrap_or(0).max(0)).unwrap_or(u32::MAX),
             // `null` while no trace in this session has been materialized yet:
             // "not yet known", never "zero errors". A materialized trace with no
             // unrecovered error span reports 0.

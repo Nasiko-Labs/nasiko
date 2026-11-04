@@ -3655,6 +3655,12 @@ export interface components {
              */
             failed_flows: number;
             first_input?: string | null;
+            /**
+             * Format: int32
+             * @description Requests the proxy recorded for this session. `0` for a session that
+             *     never crossed it, which has no flow to open.
+             */
+            flow_count: number;
             id: string;
             last_output?: string | null;
             /** Format: int32 */

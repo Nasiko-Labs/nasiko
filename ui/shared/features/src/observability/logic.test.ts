@@ -36,6 +36,7 @@ const row = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({
   agent_id: 'seed-a',
   status: 'ok',
   failed_flows: 0,
+  flow_count: 0,
   error_count: 0,
   num_traces: 1,
   start_time: '2026-03-11T10:00:00.000Z',

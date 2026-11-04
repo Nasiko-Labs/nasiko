@@ -471,6 +471,9 @@ pub struct SessionSummary {
     pub status: Option<String>,
     /// Requests in this session that ended in an error.
     pub failed_flows: u32,
+    /// Requests the proxy recorded for this session. `0` for a session that
+    /// never crossed it, which has no flow to open.
+    pub flow_count: u32,
     /// Unrecovered error spans across the session's traces (the SE-3 rule).
     /// `null` while none of them has been materialized yet -- "not yet known",
     /// never "zero".

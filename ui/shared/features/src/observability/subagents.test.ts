@@ -10,6 +10,7 @@ const row = (extra: Record<string, unknown> = {}) =>
     session_annotations: [],
     session_annotation_summaries: [],
     failed_flows: 0,
+    flow_count: 0,
     num_traces: 3,
     start_time: '2026-10-20T10:00:00.000Z',
     duration_ms: 60_000,
