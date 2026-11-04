@@ -448,7 +448,12 @@ fn reverse_stop_reason(finish_reason: &str) -> &'static str {
 
 /// Present our completion id as an Anthropic-style `msg_…` id.
 fn anthropic_msg_id(id: &str) -> String {
-    format!("msg_{}", id.trim_start_matches("chatcmpl-"))
+    let id = id.trim_start_matches("chatcmpl-");
+    if id.starts_with("msg_") {
+        id.to_string()
+    } else {
+        format!("msg_{id}")
+    }
 }
 
 /// Frame one Anthropic SSE event: an `event:` line plus a `data:` line whose payload
@@ -1089,6 +1094,18 @@ mod tests {
         assert_eq!(parts[0]["text"], "What is this?");
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "https://example.com/cat.png");
+    }
+
+    #[test]
+    fn a_reply_id_carries_the_msg_prefix_exactly_once() {
+        for (id, expected) in [
+            ("chatcmpl-msg_011CghUGgzcD", "msg_011CghUGgzcD"),
+            ("msg_011CghUGgzcD", "msg_011CghUGgzcD"),
+            ("chatcmpl-abc123", "msg_abc123"),
+            ("abc123", "msg_abc123"),
+        ] {
+            assert_eq!(anthropic_msg_id(id), expected, "{id}");
+        }
     }
 
     #[test]

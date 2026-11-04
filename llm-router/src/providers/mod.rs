@@ -114,7 +114,7 @@ pub async fn execute_embeddings_once(
     )?;
     match provider.embeddings(req, resolved).await {
         Ok(resp) => {
-            tracing::info!(
+            tracing::debug!(
                 target: "nasiko::llm_router::provider",
                 op = "embeddings",
                 provider = %resolved.provider,

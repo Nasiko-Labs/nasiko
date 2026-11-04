@@ -229,11 +229,11 @@ fn log_request(op: &str, attempt: &ResolvedConfig, i: usize, total: usize) {
     );
 }
 
-/// Log the response body returned by the upstream LLM. `info!` so it shows at the
-/// default log level; bodies can be large, so filter this target down to `warn` if
-/// it gets noisy (`RUST_LOG=nasiko::llm_router::provider=warn`).
+/// Log the response body returned by the upstream LLM. `debug!`: a body is model output
+/// written for the user, and can be large, so it stays out of the default log level
+/// (`RUST_LOG=nasiko::llm_router::provider=debug` shows it).
 fn log_response<T: serde::Serialize>(op: &str, attempt: &ResolvedConfig, resp: &T) {
-    tracing::info!(
+    tracing::debug!(
         target: "nasiko::llm_router::provider",
         op,
         provider = %attempt.provider,
