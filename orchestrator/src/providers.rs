@@ -34,6 +34,12 @@ impl LLMProvider {
         Self::new(client, api_key, base_url)
     }
 
+    /// The same endpoint with another key, for a caller who saved their own.
+    pub fn with_api_key(mut self, api_key: String) -> Self {
+        self.api_key = api_key;
+        self
+    }
+
     /// Streaming chat completion — returns a pinned stream of parsed chunks.
     pub async fn chat_completion_stream(
         &self,

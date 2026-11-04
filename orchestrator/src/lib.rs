@@ -1,4 +1,4 @@
-pub mod agent_registry;
+mod agent_registry;
 pub mod context_selection;
 pub mod engine;
 pub mod error;
@@ -12,6 +12,7 @@ pub mod reranker;
 pub mod selector;
 pub mod session_history;
 pub mod types;
+pub mod user_key;
 pub mod vector_store;
 
 pub use context_selection::{

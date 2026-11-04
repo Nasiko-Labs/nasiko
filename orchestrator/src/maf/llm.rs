@@ -97,6 +97,14 @@ pub struct LlmUsage {
 }
 
 impl LlmClient {
+    /// The same client spending `api_key`, for a user who saved their own.
+    pub fn with_api_key(&self, api_key: String) -> Self {
+        Self {
+            api_key,
+            ..self.clone()
+        }
+    }
+
     pub fn new(
         http: reqwest::Client,
         api_key: String,
