@@ -2,6 +2,9 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
+# Three binaries share this package (the server and two demo seeders); `cargo run -p nasiko-server`
+# means the server, as `default-run` does for nasiko-server-ee.
+default-run = "nasiko-server"
 
 [lib]
 path = "src/lib.rs"
