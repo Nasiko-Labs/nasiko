@@ -139,6 +139,48 @@ export const copy = {
     general: { label: 'General', sub: 'Routing defaults and platform behavior.' },
     limits: { label: 'Flow limits', sub: 'Cascade guards applied to every inter-agent call.' },
     registry: { label: 'Registry', sub: 'External OCI registry used for agent images.' },
+    mcp: {
+      label: 'MCP toolkits',
+      sub: 'The Composio key and which toolkits people can connect to.',
+    },
+  },
+
+  // Settings → Workspace → MCP toolkits (`?section=mcp`): the Composio key and the toolkit picker.
+  composio: {
+    loadWhat: 'MCP toolkit settings',
+    loading: 'Loading MCP toolkit settings',
+    key: {
+      label: 'Composio API key',
+      placeholderSet: 'Type a new key to replace it',
+      placeholderUnset: 'ak_…',
+      status: {
+        ui: 'A key saved here is in use. It is encrypted and never shown again.',
+        env: 'The key from the server’s COMPOSIO_API_KEY setting is in use. Save one here to override it.',
+        none: 'No key yet. Add one to offer Composio toolkits.',
+      },
+      removeUi: 'Remove saved key',
+      keepUi: 'Keep saved key',
+      removing:
+        'The saved key will be removed on save. The server’s COMPOSIO_API_KEY, if set, applies again.',
+      differentProject:
+        'A key from a different Composio project does not carry over the toolkits already registered: switch them off and on again to register them with the new key.',
+    },
+    toolkits: {
+      label: 'Toolkits',
+      hint: 'Tick the toolkits people can connect to. Unticking hides one without deleting it, so connections and permissions come back if you tick it again.',
+      searchLabel: 'Search toolkits',
+      searchPlaceholder: 'Search toolkits',
+      selectAll: 'Select all',
+      clear: 'Clear',
+      count: (on: number, total: number) => `${on} of ${total} on`,
+      none: 'No toolkit matches.',
+      needsKey: 'Add a Composio API key before switching toolkits on.',
+    },
+    saved: 'MCP toolkit settings saved',
+    savedPartly: (failed: number) =>
+      `Saved, but ${failed} toolkit${failed === 1 ? '' : 's'} could not be registered.`,
+    failedTitle: 'Could not register',
+    saveFailed: (reason: string) => `Could not save MCP toolkit settings: ${reason}`,
   },
 
   fields: {

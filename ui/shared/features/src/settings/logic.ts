@@ -115,3 +115,8 @@ export function ago(iso: string, now: number): string {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`
   return `${Math.floor(s / 86400)}d ago`
 }
+
+/** Whether two selections hold the same names, in any order. */
+export function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  return a.size === b.size && [...a].every((x) => b.has(x))
+}

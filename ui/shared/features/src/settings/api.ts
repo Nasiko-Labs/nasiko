@@ -9,7 +9,14 @@ import { routerKeys } from '@nasiko/features/router/api'
 import type { SecretEntry } from '@nasiko/features/router/types'
 import { apiData, apiFetch } from '@nasiko/data-access/client'
 import { settingsBody, type SettingsValues } from './logic'
-import { settingsSchema, type Settings, type SettingsField } from './types'
+import {
+  composioSchema,
+  settingsSchema,
+  type ComposioSettings,
+  type ComposioUpdate,
+  type Settings,
+  type SettingsField,
+} from './types'
 
 const settingsQuery = {
   queryKey: ['settings'] as const,
@@ -68,4 +75,35 @@ export function useSecretWrites() {
           .value,
     }),
   }
+}
+
+const composioQuery = {
+  queryKey: ['settings', 'composio'] as const,
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    apiFetch<ComposioSettings>('/api/settings/composio', { signal, schema: composioSchema }),
+}
+
+export const useComposioSettings = () => useQuery(composioQuery)
+
+// Switching on a toolkit that is not registered yet is a round trip to Composio each, so a long selection outlasts
+// apiFetch's 30 s deadline; the server finishes the work whether or not this request is still waiting.
+const COMPOSIO_SAVE_TIMEOUT_MS = 180_000
+
+export function useSaveComposio() {
+  const qc = useQueryClient()
+  return useMutation({
+    // Carries the key: nothing of it may stay in the cache.
+    gcTime: 0,
+    mutationFn: (update: ComposioUpdate) =>
+      apiFetch<ComposioSettings>('/api/settings/composio', {
+        ...json('PUT', update),
+        timeout: COMPOSIO_SAVE_TIMEOUT_MS,
+        schema: composioSchema,
+      }),
+    onSuccess: (saved) => {
+      qc.setQueryData(composioQuery.queryKey, saved)
+      // The MCP catalog lists what was just switched on or off.
+      void qc.invalidateQueries({ queryKey: ['mcp'] })
+    },
+  })
 }

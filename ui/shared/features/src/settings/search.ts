@@ -2,7 +2,7 @@ import { z } from 'zod/mini'
 import { opt } from '@nasiko/ui/lib/search'
 
 /** The core's workspace sections, in nav order (legacy settings-page.js TABS); a layer adds its own keys. */
-export const CORE_SECTIONS = ['general', 'limits', 'registry'] as const
+export const CORE_SECTIONS = ['general', 'limits', 'registry', 'mcp'] as const
 export type CoreSection = (typeof CORE_SECTIONS)[number]
 
 /**
