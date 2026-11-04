@@ -227,7 +227,7 @@ pub(crate) async fn get_agent_deployment(
 /// call this once a runtime deploy/restart has actually succeeded.
 async fn revert_starting_status(state: &AppState, deployment_id: Uuid, original_status: &str) {
     if let Err(e) =
-        sqlx::query("UPDATE agent_deployments SET status = $2, updated_at = now() WHERE id = $1")
+        sqlx::query("UPDATE agent_deployments SET status = $2::deployment_status, updated_at = now() WHERE id = $1")
             .bind(deployment_id)
             .bind(original_status)
             .execute(&state.db)

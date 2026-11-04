@@ -212,7 +212,21 @@ async fn deploy(
     let mut spec = DeploymentSpec {
         container_id,
         name: req.name.clone(),
-        image: crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image),
+        image: {
+            // Canonicalize (qualify) then validate - fixes R-123 unqualified-reference bypass
+            match crate::agents::canonicalize_and_validate_image_ref(
+                &state.db,
+                &state.config.agent_image_registry,
+                &req.image,
+                owner_id,
+                claims.is_superuser,
+            )
+            .await
+            {
+                Ok(qualified) => qualified,
+                Err((code, msg)) => return (code, msg).into_response(),
+            }
+        },
         ports,
         env_vars: env,
         min_replicas: bounds.min,
@@ -888,16 +902,16 @@ async fn record_lifecycle_status(state: &AppState, name: &str, status: &str) {
     //   is stale by definition and this converges it on reality — including rows
     //   orphaned `running` by an earlier crash.
     let sql = if status == "stopped" {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
-         WHERE agent_id = $1 AND status != $2"
+        "UPDATE agent_deployments SET status = $2::deployment_status, updated_at = now()
+         WHERE agent_id = $1 AND status != $2::deployment_status"
     } else {
-        "UPDATE agent_deployments SET status = $2, updated_at = now()
+        "UPDATE agent_deployments SET status = $2::deployment_status, updated_at = now()
          WHERE id = (
              SELECT id FROM agent_deployments
              WHERE agent_id = $1
              ORDER BY created_at DESC
              LIMIT 1
-         ) AND status != $2"
+         ) AND status != $2::deployment_status"
     };
     if let Err(e) = sqlx::query(sql)
         .bind(agent_id)
