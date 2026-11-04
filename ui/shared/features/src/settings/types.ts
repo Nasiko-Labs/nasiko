@@ -45,6 +45,8 @@ export type SettingsField = (typeof SETTINGS_FIELDS)[number]
 export const composioSchema = z.looseObject({
   api_key_configured: z.boolean(),
   key_source: z.enum(['ui', 'env', 'none']),
+  /** A key was saved here but no longer decrypts, so the server is ignoring it. */
+  stored_key_unreadable: z.boolean(),
   toolkits: z.array(
     z.looseObject({
       toolkit: z.string(),

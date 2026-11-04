@@ -103,6 +103,10 @@ pub trait ToolProvider: Send + Sync {
         scopes: Option<&[String]>,
     ) -> Result<AuthConfigCreated>;
 
+    /// Whether `auth_config_id` exists in the project this provider's key belongs to.
+    /// `false` after a key from a different project is saved.
+    async fn auth_config_exists(&self, auth_config_id: &str) -> Result<bool>;
+
     /// Initiate a user OAuth connection (Tool Router link). Returns the browser
     /// redirect URL + status.
     async fn initiate_connection(
@@ -180,6 +184,12 @@ impl ComposioSlot {
     /// The current provider, or `None` while no key is configured.
     pub fn get(&self) -> Option<Arc<dyn ToolProvider>> {
         self.read().as_ref().map(|b| Arc::clone(&b.provider))
+    }
+
+    /// The current provider and its key, read together so a concurrent swap can't pair
+    /// one key's provider with the other key.
+    pub fn backend(&self) -> Option<ComposioBackend> {
+        self.read().clone()
     }
 
     /// The key the current provider authenticates with.

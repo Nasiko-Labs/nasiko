@@ -54,6 +54,7 @@ function view() {
   return {
     api_key_configured: state.keySaved,
     key_source: state.keySaved ? 'ui' : 'none',
+    stored_key_unreadable: false,
     toolkits: TOOLKITS.map(([toolkit, description]) => ({
       toolkit,
       display_name: display(toolkit),

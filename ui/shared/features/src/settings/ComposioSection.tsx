@@ -142,6 +142,9 @@ function ComposioForm({ settings, onSaved }: { settings: ComposioSettings; onSav
           hint={
             <>
               <p>{removeKey ? c.key.removing : c.key.status[settings.key_source]}</p>
+              {settings.stored_key_unreadable && !removeKey ? (
+                <p className="mt-1 text-destructive">{c.key.unreadable}</p>
+              ) : null}
               {typed !== '' && settings.api_key_configured ? (
                 <p className="mt-1">{c.key.differentProject}</p>
               ) : null}
@@ -162,7 +165,7 @@ function ComposioForm({ settings, onSaved }: { settings: ComposioSettings; onSav
               disabled={removeKey}
               onChange={(e) => setKeyDraft(e.target.value)}
             />
-            {settings.key_source === 'ui' ? (
+            {settings.key_source === 'ui' || settings.stored_key_unreadable ? (
               <Button
                 type="button"
                 variant="ghost"

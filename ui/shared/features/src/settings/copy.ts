@@ -162,8 +162,10 @@ export const copy = {
       keepUi: 'Keep saved key',
       removing:
         'The saved key will be removed on save. The server’s COMPOSIO_API_KEY, if set, applies again.',
+      unreadable:
+        'A key was saved here but can no longer be decrypted, so it is being ignored. Save it again, or remove it.',
       differentProject:
-        'A key from a different Composio project does not carry over the toolkits already registered: switch them off and on again to register them with the new key.',
+        'A key from a different Composio project moves the registered toolkits into that project, and people who connected them will need to connect again.',
     },
     toolkits: {
       label: 'Toolkits',

@@ -44,6 +44,18 @@ struct CachedComposioSession {
     mcp_url: String,
     mcp_headers: HashMap<String, String>,
     toolkits: Vec<String>,
+    /// [`key_fingerprint`] of the key the session was made under. A session from another
+    /// key belongs to another Composio project, and replicas switch keys at slightly
+    /// different times, so a mismatch is a miss rather than trusting the cache clear.
+    #[serde(default)]
+    key_fingerprint: String,
+}
+
+/// A short, non-reversible tag for a Composio key, safe to store beside a cached session.
+fn key_fingerprint(api_key: Option<&str>) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(api_key.unwrap_or_default().as_bytes());
+    hex::encode(&digest[..8])
 }
 
 const SESSION_CACHE_PREFIX: &str = "mcp:session:";
@@ -142,27 +154,30 @@ async fn resolve_composio_backend(
     accounts: &ConnectedAccounts,
     toolkits: &[String],
 ) -> Result<Option<MCPServerConfig>> {
-    let Some(provider) = state.providers.composio.get() else {
+    let Some(backend) = state.providers.composio.backend() else {
         return Ok(None);
     };
     if accounts.is_empty() {
         return Ok(None);
     }
+    let fingerprint = key_fingerprint(backend.api_key.as_deref());
 
-    // Fast path: cached session with matching toolkits, no Composio call.
+    // Fast path: cached session with matching toolkits, made under the current key,
+    // no Composio call.
     let key = session_cache_key(user_id);
     if let Some(cached) = cache::get_json::<CachedComposioSession>(&state.redis, &key).await
         && cached.toolkits == toolkits
+        && cached.key_fingerprint == fingerprint
     {
         return Ok(Some(composio_config(
             cached.mcp_url,
             cached.mcp_headers,
-            &state.providers.composio.api_key(),
+            &backend.api_key,
         )));
     }
 
     // Slow/cold path: reuse / patch / create the upstream session.
-    let session = match resolve_upstream(state, &provider, user_id, accounts).await {
+    let session = match resolve_upstream(state, &backend.provider, user_id, accounts).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(%user_id, error = %e, "composio session resolution failed — omitting composio backend this cycle");
@@ -178,6 +193,7 @@ async fn resolve_composio_backend(
             mcp_url: session.mcp_url.clone(),
             mcp_headers: strip_cached_secret(&session.mcp_headers),
             toolkits: toolkits.to_vec(),
+            key_fingerprint: fingerprint,
         },
         state.config.session_ttl_seconds,
     )
@@ -186,7 +202,7 @@ async fn resolve_composio_backend(
     Ok(Some(composio_config(
         session.mcp_url,
         session.mcp_headers,
-        &state.providers.composio.api_key(),
+        &backend.api_key,
     )))
 }
 
@@ -362,6 +378,21 @@ mod tests {
     }
 
     #[test]
+    fn a_session_cached_under_another_key_is_not_reused() {
+        let old = key_fingerprint(Some("ak_old_project"));
+        assert_ne!(old, key_fingerprint(Some("ak_new_project")));
+        assert_eq!(old, key_fingerprint(Some("ak_old_project")));
+        assert!(!old.contains("ak_old_project"));
+
+        // An entry written before the fingerprint existed matches no key.
+        let legacy: CachedComposioSession = serde_json::from_str(
+            r#"{"session_id":"s","mcp_url":"u","mcp_headers":{},"toolkits":[]}"#,
+        )
+        .unwrap();
+        assert_ne!(legacy.key_fingerprint, old);
+    }
+
+    #[test]
     fn cached_composio_session_round_trip_never_reintroduces_the_secret() {
         // Simulates exactly what `cache::set_json_ex` / `get_json` do (JSON
         // serialize, store, deserialize) for the struct that's actually
@@ -378,6 +409,7 @@ mod tests {
             mcp_url: "https://mcp.composio/x".to_string(),
             mcp_headers: stripped,
             toolkits: vec!["gmail".to_string()],
+            key_fingerprint: key_fingerprint(Some("ak_master_secret")),
         };
         let json = serde_json::to_string(&cached).unwrap();
         assert!(

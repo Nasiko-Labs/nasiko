@@ -5,6 +5,8 @@
 //! for this agent. Composio meta-tools are never filtered at list; per-toolkit
 //! enforcement happens here at `tools/call` via slug→connector resolution.
 
+use std::collections::HashSet;
+
 use serde_json::{Value, json};
 use tracing::{Instrument as _, Span};
 use uuid::Uuid;
@@ -924,6 +926,17 @@ async fn call_routed_tool(
             if let Ok(Some(connector)) =
                 crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
             {
+                // A toolkit switched off in Settings can't be connected, so asking the
+                // user to authenticate it would be a dead end.
+                if !connector.active() {
+                    return err(
+                        req_id,
+                        codes::TOOL_BLOCKED,
+                        format!(
+                            "Tool '{tool_name}' belongs to a toolkit an admin has switched off."
+                        ),
+                    );
+                }
                 // `Err` (a transient DB blip) and `Ok(None)` (genuinely no connection row) are
                 // distinct outcomes — collapsing them via `.ok().flatten()` used to treat a
                 // momentary DB error as "not connected," filing a spurious `auth_required` pause
@@ -977,6 +990,7 @@ async fn call_routed_tool(
                     if let Ok(Some(connector)) =
                         crate::repo::get_connector_by_id(&state.db, connector_id).await
                         && connector.is_composio()
+                        && connector.active()
                     {
                         candidates.push(connector);
                     }
@@ -1065,6 +1079,28 @@ async fn call_routed_tool(
         }
     }
 
+    // ── Composio toolkit switched off in Settings ───────────────────────────
+    // Hiding a toolkit drops it from `toolkit_to_connector`, but the user's account stays
+    // connected on Composio's side and the session resolves accounts by user id, so a
+    // call naming a hidden toolkit would otherwise skip `perms.decide` below and run.
+    let mut hidden = HiddenToolkits::new(state, resolved);
+    if server.kind == ServerType::Composio && !tool_name.starts_with("COMPOSIO_") {
+        match hidden
+            .contains(&toolkit_from_composio_slug(tool_name))
+            .await
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Tool '{tool_name}' belongs to a toolkit an admin has switched off."),
+                );
+            }
+            Err(e) => return hidden_check_failed(req_id, &e),
+        }
+    }
+
     // ── Composio DIRECT tool call: enforce per-toolkit permission ───────────
     // A direct toolkit tool (e.g. GMAIL_SEND_EMAIL) resolves to its connector and
     // is subject to the same decide() as any other tool. Previously only the two
@@ -1134,11 +1170,17 @@ async fn call_routed_tool(
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
-        let blocked: Vec<String> = requested
-            .iter()
-            .filter(|tk| connector_disabled(resolved, perms, tk))
-            .cloned()
-            .collect();
+        let mut blocked: Vec<String> = Vec::new();
+        for tk in &requested {
+            let off = connector_disabled(resolved, perms, tk)
+                || match hidden.contains(tk).await {
+                    Ok(hidden) => hidden,
+                    Err(e) => return hidden_check_failed(req_id, &e),
+                };
+            if off {
+                blocked.push(tk.clone());
+            }
+        }
         if !blocked.is_empty() {
             let allowed: Vec<String> = requested
                 .iter()
@@ -1201,7 +1243,11 @@ async fn call_routed_tool(
                     }
                     ToolAccess::Allowed => allowed.push(t.clone()),
                 },
-                None => allowed.push(t.clone()),
+                None => match hidden.contains(&toolkit).await {
+                    Ok(true) => blocked_slugs.push(slug.to_string()),
+                    Ok(false) => allowed.push(t.clone()),
+                    Err(e) => return hidden_check_failed(req_id, &e),
+                },
             }
         }
 
@@ -1819,6 +1865,49 @@ async fn ask_with_hitl_request(
 /// indicates the address itself is stale.
 fn is_connection_level_failure(e: &McpError) -> bool {
     matches!(e, McpError::Http(re) if re.is_connect() || re.is_timeout())
+}
+
+/// The Composio toolkits switched off in Settings, read at most once per call and only for
+/// a toolkit outside the user's connected set — a hidden toolkit is never in it
+/// (`repo::list_active_composio_connections`), so connected toolkits need no lookup.
+struct HiddenToolkits<'a> {
+    state: &'a McpState,
+    resolved: &'a ResolvedSession,
+    loaded: Option<HashSet<String>>,
+}
+
+impl<'a> HiddenToolkits<'a> {
+    fn new(state: &'a McpState, resolved: &'a ResolvedSession) -> Self {
+        Self {
+            state,
+            resolved,
+            loaded: None,
+        }
+    }
+
+    async fn contains(&mut self, toolkit: &str) -> crate::error::Result<bool> {
+        let toolkit = toolkit.to_ascii_lowercase();
+        if self.resolved.toolkit_to_connector.contains_key(&toolkit) {
+            return Ok(false);
+        }
+        if self.loaded.is_none() {
+            self.loaded = Some(crate::repo::list_hidden_composio_toolkits(&self.state.db).await?);
+        }
+        Ok(self
+            .loaded
+            .as_ref()
+            .is_some_and(|hidden| hidden.contains(&toolkit)))
+    }
+}
+
+/// A call that names a toolkit the gateway couldn't check is refused, never forwarded.
+fn hidden_check_failed(req_id: &Value, e: &McpError) -> Value {
+    tracing::warn!(error = %e, "could not read hidden composio toolkits — refusing the call");
+    err(
+        req_id,
+        codes::INTERNAL_ERROR,
+        "Could not check whether this toolkit is switched on.",
+    )
 }
 
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.

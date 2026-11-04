@@ -2,9 +2,12 @@
 //!
 //! The key used to come only from `COMPOSIO_API_KEY` and the toolkits only from
 //! `SEED_TOOLKITS`, both read at boot. A key saved here wins over the env value and takes
-//! effect at once (the gateway's Composio backend is a shared, swappable slot); clearing it
-//! falls back to the env value. Switching a toolkit off hides it rather than deleting it,
-//! so users' connected accounts and agents' permission rules survive switching it back on.
+//! effect at once on the replica that saved it (the gateway's Composio backend is a shared,
+//! swappable slot) and within [`KEY_REFRESH_INTERVAL`] on the others; clearing it falls back
+//! to the env value. A key from a different Composio project moves the registered toolkits
+//! into that project, and their users reconnect. Switching a toolkit off hides it rather
+//! than deleting it, so users' connected accounts and agents' permission rules survive
+//! switching it back on; the gateway refuses its tools while it is hidden.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -50,6 +53,8 @@ pub struct ComposioSettings {
     /// Whether a key is in effect, never the key itself.
     pub api_key_configured: bool,
     pub key_source: KeySource,
+    /// A key was saved here but can no longer be decrypted, so it is being ignored.
+    pub stored_key_unreadable: bool,
     pub toolkits: Vec<ToolkitState>,
     /// Toolkits that were ticked but could not be registered with Composio.
     pub failed: Vec<ToolkitFailure>,
@@ -94,33 +99,85 @@ async fn stored_key(db: &sqlx::PgPool) -> Result<Option<String>, sqlx::Error> {
         .map(Option::flatten)
 }
 
-fn decrypt(encrypted: &str) -> Option<String> {
-    match nasiko_secrets::SecretsCrypto::for_platform_settings().decrypt(encrypted) {
-        Ok(key) => Some(key),
-        Err(e) => {
-            tracing::warn!(%e, "stored Composio API key could not be decrypted");
-            None
+/// The key saved from this page, as the settings row holds it.
+#[derive(Debug, PartialEq, Eq)]
+enum StoredKey {
+    Absent,
+    Readable(String),
+    /// Saved, but it no longer decrypts (e.g. `SECRETS_ENCRYPTION_KEY` was rotated), so it
+    /// is ignored and the env key, if any, applies.
+    Unreadable,
+}
+
+impl StoredKey {
+    fn from_encrypted(encrypted: Option<&str>) -> Self {
+        let Some(encrypted) = encrypted else {
+            return Self::Absent;
+        };
+        match nasiko_secrets::SecretsCrypto::for_platform_settings().decrypt(encrypted) {
+            Ok(key) => Self::Readable(key),
+            Err(_) => Self::Unreadable,
         }
     }
 }
 
 /// The key the gateway should use: the one saved here, else `COMPOSIO_API_KEY`.
-fn effective_key(stored: Option<&str>, env: Option<&str>) -> Option<String> {
-    stored.or(env).map(str::to_string)
+fn effective_key(stored: &StoredKey, env: Option<&str>) -> Option<String> {
+    match stored {
+        StoredKey::Readable(key) => Some(key.clone()),
+        StoredKey::Absent | StoredKey::Unreadable => env.map(str::to_string),
+    }
 }
 
-/// Point the gateway at the key saved in Settings, if there is one. Called once at boot,
-/// before toolkit seeding, so a UI-only key works with `SEED_TOOLKITS`.
-pub async fn apply_stored_key(state: &AppState) {
+/// Where the key in effect comes from — the same rule as [`effective_key`].
+fn key_source(stored: &StoredKey, env: Option<&str>) -> KeySource {
+    match (stored, env) {
+        (StoredKey::Readable(_), _) => KeySource::Ui,
+        (_, Some(_)) => KeySource::Env,
+        (_, None) => KeySource::None,
+    }
+}
+
+/// How often each process re-reads the saved key. Only the replica that served the PUT
+/// switches at once; every other one catches up within this window.
+const KEY_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Point this process's gateway at the key in effect, if it isn't already.
+async fn refresh_key(state: &AppState) {
     let stored = match stored_key(&state.db).await {
-        Ok(stored) => stored.as_deref().and_then(decrypt),
+        Ok(stored) => StoredKey::from_encrypted(stored.as_deref()),
         Err(e) => {
             tracing::warn!(%e, "could not read the stored Composio API key");
             return;
         }
     };
-    if let Some(key) = effective_key(stored.as_deref(), state.config.composio_api_key.as_deref()) {
-        state.mcp.set_composio_key(Some(key));
+    let key = effective_key(&stored, state.config.composio_api_key.as_deref());
+    if key != state.mcp.providers.composio.api_key() {
+        if stored == StoredKey::Unreadable {
+            tracing::warn!("stored Composio API key could not be decrypted; ignoring it");
+        }
+        tracing::info!(
+            configured = key.is_some(),
+            "Composio API key changed; switching"
+        );
+        state.mcp.set_composio_key(key);
+    }
+}
+
+/// Point the gateway at the key saved in Settings, if there is one. Called once at boot,
+/// before toolkit seeding, so a UI-only key works with `SEED_TOOLKITS`.
+pub async fn apply_stored_key(state: &AppState) {
+    refresh_key(state).await;
+}
+
+/// Keep following the saved key, so a change made through another replica reaches this
+/// one without a restart.
+pub async fn watch_stored_key(state: AppState) {
+    let mut interval = tokio::time::interval(KEY_REFRESH_INTERVAL);
+    interval.tick().await; // the first tick fires at once; boot already applied the key
+    loop {
+        interval.tick().await;
+        refresh_key(&state).await;
     }
 }
 
@@ -174,16 +231,12 @@ async fn current(
     let registered = repo::list_composio_connectors(&state.db)
         .await
         .map_err(|e| internal("composio settings: list toolkits", e))?;
-    let key_source = if stored.is_some() {
-        KeySource::Ui
-    } else if state.config.composio_api_key.is_some() {
-        KeySource::Env
-    } else {
-        KeySource::None
-    };
+    let stored = StoredKey::from_encrypted(stored.as_deref());
+    let key_source = key_source(&stored, state.config.composio_api_key.as_deref());
     Ok(ComposioSettings {
         api_key_configured: key_source != KeySource::None,
         key_source,
+        stored_key_unreadable: stored == StoredKey::Unreadable,
         toolkits: toolkit_states(&registered),
         failed,
     })
@@ -248,6 +301,65 @@ async fn apply_selection(
         .collect())
 }
 
+/// After the key changes, give every registered toolkit an auth config in the project the
+/// new key belongs to. One the project already knows (the same project, a rotated key) is
+/// left alone. Any other is re-created there and its users' connections are expired, since
+/// their accounts live in the old project, so they reconnect. Returns the toolkits that
+/// could not be moved.
+async fn move_toolkits_to_current_project(
+    state: &AppState,
+    registered: &[McpConnector],
+) -> Vec<ToolkitFailure> {
+    let Some(provider) = state.mcp.providers.composio.get() else {
+        return Vec::new();
+    };
+    let mut failed = Vec::new();
+    for connector in registered {
+        let fail = |error: String| ToolkitFailure {
+            toolkit: connector.name.clone(),
+            error,
+        };
+        let known = match connector.auth_config_id.as_deref() {
+            Some(id) => provider.auth_config_exists(id).await,
+            None => Ok(false),
+        };
+        match known {
+            Ok(true) => continue,
+            Ok(false) => {}
+            Err(e) => {
+                failed.push(fail(format!("could not check it under the new key: {e}")));
+                continue;
+            }
+        }
+        if !connector.use_composio_managed.unwrap_or(true) {
+            failed.push(fail(
+                "it uses its own OAuth app, which can't be re-created from here; \
+                 register it again with that app"
+                    .to_string(),
+            ));
+            continue;
+        }
+        let created = match provider
+            .create_auth_config(&connector.name, true, None, None, None)
+            .await
+        {
+            Ok(created) => created,
+            Err(e) => {
+                failed.push(fail(e.to_string()));
+                continue;
+            }
+        };
+        if let Err(e) =
+            repo::rebind_composio_connector(&state.db, connector.id, &created.auth_config_id).await
+        {
+            failed.push(fail(e.to_string()));
+            continue;
+        }
+        tracing::info!(toolkit = %connector.name, "moved composio toolkit to the new key's project");
+    }
+    failed
+}
+
 async fn update_composio(
     State(state): State<AppState>,
     claims: Claims,
@@ -284,6 +396,8 @@ async fn update_composio(
         Ok(stored) => stored,
         Err(e) => return internal("composio settings: read key", e),
     };
+    let env_key = state.config.composio_api_key.as_deref();
+    let key_before = effective_key(&StoredKey::from_encrypted(stored.as_deref()), env_key);
     let stored_after = if body.clear_api_key {
         None
     } else if let Some(key) = new_key {
@@ -291,10 +405,7 @@ async fn update_composio(
     } else {
         stored.clone()
     };
-    let key_after = effective_key(
-        stored_after.as_deref().and_then(decrypt).as_deref(),
-        state.config.composio_api_key.as_deref(),
-    );
+    let key_after = effective_key(&StoredKey::from_encrypted(stored_after.as_deref()), env_key);
     if wanted.as_ref().is_some_and(|w| !w.is_empty()) && key_after.is_none() {
         return bad_request(
             "composio_not_configured",
@@ -315,26 +426,28 @@ async fn update_composio(
         }
     }
     if key_after != state.mcp.providers.composio.api_key() {
-        state.mcp.set_composio_key(key_after);
+        state.mcp.set_composio_key(key_after.clone());
         nasiko_mcp_gateway::session::clear_session_cache(&state.mcp.redis).await;
     }
+    let key_changed = key_after.is_some() && key_after != key_before;
 
-    // Registering a toolkit is a round trip to Composio each; run it to completion even if
-    // the browser gives up waiting, so a dropped request cannot leave the set half-applied.
-    let failed = match wanted {
-        Some(wanted) => {
-            let task_state = state.clone();
-            let task =
-                tokio::spawn(
-                    async move { apply_selection(&task_state, &registered, &wanted).await },
-                );
-            match task.await {
-                Ok(Ok(failed)) => failed,
-                Ok(Err(e)) => return internal("composio settings: apply toolkits", e),
-                Err(e) => return internal("composio settings: apply toolkits", e),
-            }
+    // Each toolkit is a round trip to Composio; run them to completion even if the browser
+    // gives up waiting, so a dropped request cannot leave the change half-applied.
+    let task_state = state.clone();
+    let task = tokio::spawn(async move {
+        let mut failed = Vec::new();
+        if key_changed {
+            failed.extend(move_toolkits_to_current_project(&task_state, &registered).await);
         }
-        None => Vec::new(),
+        if let Some(wanted) = wanted {
+            failed.extend(apply_selection(&task_state, &registered, &wanted).await?);
+        }
+        Ok::<_, nasiko_mcp_gateway::error::McpError>(failed)
+    });
+    let failed = match task.await {
+        Ok(Ok(failed)) => failed,
+        Ok(Err(e)) => return internal("composio settings: apply toolkits", e),
+        Err(e) => return internal("composio settings: apply toolkits", e),
     };
 
     match current(&state, failed).await {
@@ -349,12 +462,27 @@ mod tests {
 
     #[test]
     fn a_saved_key_beats_the_env_key() {
+        let saved = StoredKey::Readable("saved".into());
+        assert_eq!(effective_key(&saved, Some("env")).as_deref(), Some("saved"));
+        assert_eq!(key_source(&saved, Some("env")), KeySource::Ui);
         assert_eq!(
-            effective_key(Some("saved"), Some("env")).as_deref(),
-            Some("saved")
+            effective_key(&StoredKey::Absent, Some("env")).as_deref(),
+            Some("env")
         );
-        assert_eq!(effective_key(None, Some("env")).as_deref(), Some("env"));
-        assert_eq!(effective_key(None, None), None);
+        assert_eq!(effective_key(&StoredKey::Absent, None), None);
+        assert_eq!(key_source(&StoredKey::Absent, None), KeySource::None);
+    }
+
+    #[test]
+    fn a_saved_key_that_no_longer_decrypts_is_reported_as_not_in_effect() {
+        let unreadable = StoredKey::Unreadable;
+        assert_eq!(
+            effective_key(&unreadable, Some("env")).as_deref(),
+            Some("env")
+        );
+        assert_eq!(key_source(&unreadable, Some("env")), KeySource::Env);
+        assert_eq!(effective_key(&unreadable, None), None);
+        assert_eq!(key_source(&unreadable, None), KeySource::None);
     }
 
     #[test]
@@ -385,6 +513,7 @@ mod tests {
         let json = serde_json::to_value(ComposioSettings {
             api_key_configured: true,
             key_source: KeySource::Ui,
+            stored_key_unreadable: false,
             toolkits: vec![],
             failed: vec![],
         })

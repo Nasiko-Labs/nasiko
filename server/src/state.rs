@@ -523,6 +523,7 @@ impl AppState {
 
         // Before the seeding below, which needs the key to register toolkits.
         crate::composio_settings::apply_stored_key(self).await;
+        tokio::spawn(crate::composio_settings::watch_stored_key(self.clone()));
 
         let state = self.clone();
         tokio::spawn(async move {

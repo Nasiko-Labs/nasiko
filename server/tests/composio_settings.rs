@@ -192,10 +192,150 @@ async fn the_key_is_stored_encrypted_and_never_returned() {
     server.cleanup().await;
 }
 
+/// A server whose Composio calls go to `composio` instead of the real API.
+async fn start_against(composio: &mockito::ServerGuard) -> common::TestServer {
+    let url = composio.url();
+    common::TestServer::start_with(|c| c.composio_base_url = url).await
+}
+
+/// Every auth config the stub is asked about exists (a key from the same project).
+async fn auth_configs_exist(composio: &mut mockito::ServerGuard) -> mockito::Mock {
+    composio
+        .mock(
+            "GET",
+            mockito::Matcher::Regex("^/api/v3/auth_configs/.+".into()),
+        )
+        .with_status(200)
+        .with_body(r#"{"id":"ac_known"}"#)
+        .create_async()
+        .await
+}
+
+async fn seed_gmail_with_a_connected_user(server: &common::TestServer, user: &str) -> Uuid {
+    let gmail: Uuid = sqlx::query_scalar(
+        "INSERT INTO mcp_connectors (provider_type, name, auth_config_id, use_composio_managed) \
+         VALUES ('composio', 'gmail', 'ac_old_project', true) RETURNING id",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO mcp_user_connections (user_id, connector_id, status, connected_account_id) \
+         VALUES ($1, $2, 'ACTIVE', 'ca_old_project')",
+    )
+    .bind(Uuid::parse_str(user).unwrap())
+    .bind(gmail)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    gmail
+}
+
+async fn gmail_binding(server: &common::TestServer, gmail: Uuid) -> (String, String) {
+    sqlx::query_as(
+        "SELECT c.auth_config_id, uc.status FROM mcp_connectors c \
+         JOIN mcp_user_connections uc ON uc.connector_id = c.id WHERE c.id = $1",
+    )
+    .bind(gmail)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_key_from_another_project_moves_the_toolkits_and_users_reconnect() {
+    let mut composio = mockito::Server::new_async().await;
+    let _unknown = composio
+        .mock("GET", "/api/v3/auth_configs/ac_old_project")
+        .with_status(404)
+        .create_async()
+        .await;
+    let created = composio
+        .mock("POST", "/api/v3/auth_configs")
+        .with_status(200)
+        .with_body(r#"{"auth_config":{"id":"ac_new_project"}}"#)
+        .create_async()
+        .await;
+    let server = start_against(&composio).await;
+    let admin = init_admin(&server).await;
+    let gmail = seed_gmail_with_a_connected_user(&server, &admin).await;
+
+    let (status, settings) = put(&server, &admin, json!({"api_key": "ak_new_project"})).await;
+
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["failed"], json!([]));
+    created.assert_async().await;
+    assert_eq!(
+        gmail_binding(&server, gmail).await,
+        ("ac_new_project".to_string(), "EXPIRED".to_string())
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_rotated_key_in_the_same_project_keeps_everyone_connected() {
+    let mut composio = mockito::Server::new_async().await;
+    let _known = auth_configs_exist(&mut composio).await;
+    let not_created = composio
+        .mock("POST", "/api/v3/auth_configs")
+        .expect(0)
+        .create_async()
+        .await;
+    let server = start_against(&composio).await;
+    let admin = init_admin(&server).await;
+    let gmail = seed_gmail_with_a_connected_user(&server, &admin).await;
+
+    let (status, settings) = put(&server, &admin, json!({"api_key": "ak_rotated"})).await;
+
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!(settings["failed"], json!([]));
+    not_created.assert_async().await;
+    assert_eq!(
+        gmail_binding(&server, gmail).await,
+        ("ac_old_project".to_string(), "ACTIVE".to_string())
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_saved_key_that_no_longer_decrypts_is_reported_and_can_be_removed() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    sqlx::query(
+        "INSERT INTO settings (id, composio_api_key_encrypted) VALUES (1, 'not-a-ciphertext') \
+         ON CONFLICT (id) DO UPDATE SET composio_api_key_encrypted = EXCLUDED.composio_api_key_encrypted",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let settings = get(&server, &admin).await;
+    assert_eq!(settings["api_key_configured"], false);
+    assert_eq!(settings["key_source"], "none");
+    assert_eq!(settings["stored_key_unreadable"], true);
+
+    let (status, body) = put(&server, &admin, json!({"toolkits": ["slack"]})).await;
+    assert_eq!(status, 400);
+    assert_eq!(body["code"], "composio_not_configured");
+
+    let (status, cleared) = put(&server, &admin, json!({"clear_api_key": true})).await;
+    assert_eq!(status, 200);
+    assert_eq!(cleared["stored_key_unreadable"], false);
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn switching_a_toolkit_off_hides_it_and_back_on_restores_it() {
-    let server = common::TestServer::start().await;
+    let mut composio = mockito::Server::new_async().await;
+    let _known = auth_configs_exist(&mut composio).await;
+    let server = start_against(&composio).await;
     let admin = init_admin(&server).await;
     let slack: Uuid = sqlx::query_scalar(
         "INSERT INTO mcp_connectors (provider_type, name, auth_config_id) \

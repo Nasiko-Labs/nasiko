@@ -5,7 +5,7 @@
 //! strings (already encrypted by the caller). Row structs deliberately do NOT
 //! derive `Serialize`, so a route can never accidentally serialize a secret.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -310,6 +310,39 @@ pub async fn set_composio_active(db: &PgPool, id: Uuid, active: bool) -> Result<
     .bind(active)
     .execute(db)
     .await?;
+    Ok(())
+}
+
+/// The toolkit slugs (lowercase) of the platform Composio toolkits switched off in
+/// Settings. A user's account on a hidden toolkit stays connected on Composio's side, so
+/// every Composio call path has to refuse these explicitly.
+pub async fn list_hidden_composio_toolkits(db: &PgPool) -> Result<HashSet<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT lower(name) FROM mcp_connectors \
+         WHERE provider_type = 'composio' AND is_active = false",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Point a platform Composio toolkit at a new auth config (one in the project a newly
+/// saved key belongs to) and expire its users' connections, whose accounts live in the
+/// old project, so each user reconnects against the new one.
+pub async fn rebind_composio_connector(db: &PgPool, id: Uuid, auth_config_id: &str) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "UPDATE mcp_connectors SET auth_config_id = $2 WHERE id = $1 AND provider_type = 'composio'",
+    )
+    .bind(id)
+    .bind(auth_config_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE mcp_user_connections SET status = 'EXPIRED' WHERE connector_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok(())
 }
 

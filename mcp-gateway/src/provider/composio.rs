@@ -215,6 +215,14 @@ impl ToolProvider for ComposioProvider {
         Ok(AuthConfigCreated { auth_config_id })
     }
 
+    async fn auth_config_exists(&self, auth_config_id: &str) -> Result<bool> {
+        let path = format!("/api/v3/auth_configs/{auth_config_id}");
+        Ok(self
+            .get_json_opt(&path, &[], DEFAULT_TIMEOUT)
+            .await?
+            .is_some())
+    }
+
     async fn initiate_connection(
         &self,
         user_id: &str,
