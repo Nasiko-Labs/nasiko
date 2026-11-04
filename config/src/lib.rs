@@ -507,7 +507,8 @@ pub struct Config {
     /// `streamable_http`), `headers`, `description`, `display_name`,
     /// `logo_url`. Each is owned by the first superuser and shared publicly;
     /// one that already exists is not re-registered, but its public share is
-    /// re-asserted every boot. Invalid JSON is logged and ignored.
+    /// re-asserted and its tool catalog re-synced every boot. Invalid JSON is
+    /// logged and ignored.
     /// Static `headers` with `auth_type` `none` send one shared key for every
     /// user; an `oauth2` entry is registered and shared, and each user still
     /// clicks Connect once. Holds API keys — deliver it as a secret. Example:
