@@ -3593,13 +3593,18 @@ impl ObservabilityService {
     pub async fn get_finops_insights(
         &self,
         payload: &InsightsRequest,
+        user_id: uuid::Uuid,
     ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
         let base_url = self
             .config
             .openai_base_url
             .as_deref()
             .unwrap_or("https://api.openai.com/v1");
-        let api_key = self.config.openai_api_key.as_deref().unwrap_or_default();
+        let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
+        let api_key = saved_key
+            .as_deref()
+            .or(self.config.openai_api_key.as_deref())
+            .unwrap_or_default();
 
         let prompt = format!(
             r#"You are a FinOps analyst reviewing AI agent usage metrics for the last 30 days.

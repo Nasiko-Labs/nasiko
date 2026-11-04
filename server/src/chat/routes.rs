@@ -434,7 +434,7 @@ async fn create_session(
     // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
         Some(prompt) if !prompt.is_empty() => {
-            crate::titling::title_from_prompt(&state, prompt).await
+            crate::titling::title_from_prompt(&state, user_id, prompt).await
         }
         _ => "New chat".to_string(),
     };

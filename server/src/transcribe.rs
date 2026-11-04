@@ -10,12 +10,19 @@ pub struct TranscriptionResponse {
 
 async fn transcribe(
     State(state): State<AppState>,
+    claims: crate::auth::Claims,
     mut multipart: Multipart,
 ) -> Result<Json<TranscriptionResponse>, (axum::http::StatusCode, String)> {
-    let api_key = state.config.openai_api_key.as_deref().ok_or((
-        axum::http::StatusCode::SERVICE_UNAVAILABLE,
-        "Transcription not configured".into(),
-    ))?;
+    let user_id = claims
+        .user_uuid()
+        .map_err(|(status, msg)| (status, msg.to_string()))?;
+    let api_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+        .await
+        .or_else(|| state.config.openai_api_key.clone())
+        .ok_or((
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Transcription not configured".into(),
+        ))?;
 
     let base_url = state
         .config

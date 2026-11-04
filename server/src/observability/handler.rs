@@ -950,10 +950,14 @@ pub async fn get_finops_attributions(
 #[instrument(skip(state, body))]
 pub async fn get_finops_insights(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Json(body): Json<InsightsRequest>,
 ) -> impl IntoResponse {
-    match svc(&state).get_finops_insights(&body).await {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    match svc(&state).get_finops_insights(&body, user_id).await {
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }

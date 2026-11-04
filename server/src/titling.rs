@@ -7,7 +7,8 @@
 //! title is attached to.
 
 use nasiko_orchestrator::models::{ChatCompletionRequest, ChatMessage as LlmMessage};
-use nasiko_orchestrator::providers::{LLMProvider, ProviderError};
+use nasiko_orchestrator::providers::ProviderError;
+use uuid::Uuid;
 
 use crate::state::AppState;
 
@@ -22,8 +23,8 @@ pub const MAX_TITLE_CHARS: usize = 80;
 /// empty-prompt default (e.g. "New chat", "New view"), since that default is
 /// context-specific and this function's contract is "given real text, title
 /// it."
-pub async fn title_from_prompt(state: &AppState, prompt: &str) -> String {
-    match generate_title(state, prompt).await {
+pub async fn title_from_prompt(state: &AppState, user_id: Uuid, prompt: &str) -> String {
+    match generate_title(state, user_id, prompt).await {
         Ok(title) if !title.is_empty() => title,
         Ok(_) => truncate_title(prompt),
         Err(e) => {
@@ -34,8 +35,14 @@ pub async fn title_from_prompt(state: &AppState, prompt: &str) -> String {
 }
 
 /// Single non-streaming LLM call that summarizes `prompt` into a title.
-async fn generate_title(state: &AppState, prompt: &str) -> Result<String, ProviderError> {
-    let provider = LLMProvider::from_env(state.http_client.clone());
+async fn generate_title(
+    state: &AppState,
+    user_id: Uuid,
+    prompt: &str,
+) -> Result<String, ProviderError> {
+    let provider =
+        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
+            .await;
 
     let request = ChatCompletionRequest {
         // Reuse the cheap task model already configured for capability

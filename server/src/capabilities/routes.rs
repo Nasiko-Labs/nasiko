@@ -10,7 +10,6 @@ use uuid::Uuid;
 
 use crate::auth::Claims;
 use crate::state::AppState;
-use nasiko_orchestrator::providers::LLMProvider;
 
 use super::generator::{CapabilityGenerator, GeneratedCard, GeneratorError};
 
@@ -36,10 +35,14 @@ struct GenerateResponse {
 
 async fn generate(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Json(body): Json<GenerateRequest>,
 ) -> impl IntoResponse {
-    let generator = make_generator(&state);
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    let generator = make_generator(&state, user_id).await;
     let agent_name = body.agent_name.as_deref().unwrap_or("unnamed-agent");
 
     match generator
@@ -106,7 +109,7 @@ async fn generate_and_apply(
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let generator = make_generator(&state);
+    let generator = make_generator(&state, owner_id).await;
 
     let (card, _result) = match generator.generate(&source_code, &agent_name, None).await {
         Ok(r) => r,
@@ -230,8 +233,10 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
     Ok(combined)
 }
 
-fn make_generator(state: &AppState) -> CapabilityGenerator {
-    let provider = LLMProvider::from_env(state.http_client.clone());
+async fn make_generator(state: &AppState, user_id: Uuid) -> CapabilityGenerator {
+    let provider =
+        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
+            .await;
     // `state.config.capability_generator_model` is already loaded via
     // `env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini")`
     // (oss/config/src/lib.rs) — read that resolved config value instead of

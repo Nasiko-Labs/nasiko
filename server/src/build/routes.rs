@@ -771,7 +771,21 @@ pub async fn auto_generate_capabilities_pub(
         None => return,
     };
 
-    let provider = LLMProvider::from_env(http_client.clone());
+    let owner: Option<Uuid> = sqlx::query_scalar(
+        "SELECT owner_id FROM agents WHERE name = $1 AND deleted_at IS NULL \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent_name)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let provider = match owner {
+        Some(owner) => {
+            nasiko_orchestrator::user_key::llm_provider(db, http_client.clone(), owner).await
+        }
+        None => LLMProvider::from_env(http_client.clone()),
+    };
     // Caller passes `state.config.capability_generator_model` (already
     // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —
     // see `capabilities/routes.rs::make_generator` for the same fix; this

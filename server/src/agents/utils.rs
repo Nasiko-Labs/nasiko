@@ -106,27 +106,31 @@ pub(crate) async fn fetch_and_apply_agent_card(
 /// doesn't have to do it lazily on the next `route()` call. Best-effort —
 /// failures are logged and never block the deploy/update flow.
 ///
-/// Reads `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`EMBEDDING_MODEL` straight from
-/// the environment rather than threading `Config` through every deploy path
-/// (seed / upload / update / rollback) that reaches this function — same
-/// env-driven approach `nasiko_config::Config` itself uses for these fields.
+/// Reads `OPENAI_BASE_URL`/`EMBEDDING_MODEL` straight from the environment
+/// rather than threading `Config` through every deploy path (seed / upload /
+/// update / rollback) that reaches this function — same env-driven approach
+/// `nasiko_config::Config` itself uses for these fields. The key is the
+/// owner's saved one, else `OPENAI_API_KEY`.
 async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
-    let Ok(api_key) = std::env::var("OPENAI_API_KEY") else {
-        return;
-    };
     let base_url =
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model =
         std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
 
-    let row: Option<(String, Option<String>, Vec<String>)> =
-        sqlx::query_as("SELECT name, description, tags FROM agents WHERE id = $1")
+    let row: Option<(String, Option<String>, Vec<String>, Uuid)> =
+        sqlx::query_as("SELECT name, description, tags, owner_id FROM agents WHERE id = $1")
             .bind(agent_id)
             .fetch_optional(db)
             .await
             .unwrap_or(None);
 
-    let Some((name, description, tags)) = row else {
+    let Some((name, description, tags, owner_id)) = row else {
+        return;
+    };
+    let Some(api_key) = nasiko_orchestrator::user_key::saved_openai_key(db, owner_id)
+        .await
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+    else {
         return;
     };
 
