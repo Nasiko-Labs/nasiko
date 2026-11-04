@@ -1218,7 +1218,7 @@ fn add_cache_points(body: &mut Value, caching: CacheSupport) {
     }
     if free > 0
         && !turns_hold_long_point
-        && let Some(system) = body["system"].as_array_mut()
+        && let Some(system) = body.get_mut("system").and_then(Value::as_array_mut)
         && system
             .last()
             .and_then(|block| block["text"].as_str())
@@ -2498,6 +2498,25 @@ mod tests {
                 json!([{ "text": "You are a coding agent." }, cache_point()]),
                 "{model}"
             );
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([{ "text": "Fix the failing test." }, cache_point()]),
+                "{model}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_a_system_prompt_is_sent_without_a_system_field() {
+        let request: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test." }]
+        }))
+        .unwrap();
+
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&request, model);
+
+            assert!(body.get("system").is_none(), "{model}");
             assert_eq!(
                 body["messages"][0]["content"],
                 json!([{ "text": "Fix the failing test." }, cache_point()]),

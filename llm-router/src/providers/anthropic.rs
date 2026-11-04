@@ -725,7 +725,7 @@ fn turn_blocks(body: &Value) -> impl Iterator<Item = &Value> {
 /// directive and anything Anthropic won't mark. A string content becomes its one text block.
 fn last_cacheable_block(messages: &mut Value) -> Option<&mut Value> {
     let turn = messages.as_array_mut()?.last_mut()?;
-    as_blocks(&mut turn["content"])?
+    as_blocks(turn.get_mut("content")?)?
         .iter_mut()
         .rev()
         .find(|block| match block["type"].as_str() {
@@ -740,7 +740,7 @@ fn last_cacheable_block(messages: &mut Value) -> Option<&mut Value> {
 /// The last `system` block, unless it carries brevity's directive (it falls back there when the
 /// last turn is not the user's): a marker after it would cache a prefix the next turn drops.
 fn last_system_block(body: &mut Value) -> Option<&mut Value> {
-    let last = as_blocks(&mut body["system"])?.last_mut()?;
+    let last = as_blocks(body.get_mut("system")?)?.last_mut()?;
     let text = last["text"].as_str()?;
     (!text.is_empty() && !text.ends_with(crate::brevity::DIRECTIVE)).then_some(last)
 }
@@ -1734,6 +1734,40 @@ mod tests {
             body["messages"][0]["content"],
             json!([{ "type": "text", "text": "Fix the failing test.", "cache_control": ephemeral }])
         );
+    }
+
+    #[test]
+    fn a_request_without_a_system_prompt_is_sent_without_a_system_field() {
+        let image = "data:image/png;base64,iVBORw0KGgo=";
+        let requests = [
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            json!({ "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "What colours?" },
+                { "type": "image_url", "image_url": { "url": image } }
+            ]}]}),
+            json!({
+                "tools": [{ "type": "function", "function": {
+                    "name": "read", "parameters": { "type": "object" }
+                }}],
+                "messages": [
+                    { "role": "user", "content": "Fix the failing test." },
+                    { "role": "assistant", "content": null, "tool_calls": [{
+                        "id": "toolu_1", "type": "function",
+                        "function": { "name": "read", "arguments": "{}" }
+                    }]},
+                    { "role": "tool", "tool_call_id": "toolu_1", "content": "fn main() {}" }
+                ]
+            }),
+        ];
+
+        for request in requests {
+            let ir: ChatRequest = serde_json::from_value(request.clone()).unwrap();
+
+            let body = with_router_markers(&ir);
+
+            assert!(body.get("system").is_none(), "{request}");
+            assert_eq!(count_cache_markers(&body), 1, "{request}");
+        }
     }
 
     #[test]
