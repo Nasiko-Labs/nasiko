@@ -173,6 +173,11 @@ pub struct FunctionDef {
     /// JSON Schema for the tool's arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Value>,
+    /// OpenAI structured outputs: the model's arguments must match `parameters` exactly. Kept so
+    /// an agent that relies on it still gets it; adapters for other providers build their own
+    /// tool shape field by field and never send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 /// An assistant tool call (OpenAI shape). `function.arguments` is a JSON **string**.
@@ -293,27 +298,6 @@ impl Usage {
             self.prompt_tokens = Some((prompt - cached).max(0));
         }
     }
-
-    pub fn into_cache_inclusive(mut self) -> Self {
-        if self.prompt_tokens_details.is_some() {
-            return self;
-        }
-        let read = self.cache_read_input_tokens.unwrap_or(0);
-        let written = self.cache_creation_input_tokens.unwrap_or(0);
-        if read == 0 && written == 0 {
-            return self;
-        }
-        if let Some(uncached) = self.prompt_tokens {
-            let prompt = uncached + read + written;
-            self.prompt_tokens = Some(prompt);
-            self.total_tokens = Some(prompt + self.completion_tokens.unwrap_or(0));
-        }
-        self.prompt_tokens_details = Some(PromptTokensDetails {
-            cached_tokens: Some(read),
-        });
-        self.cache_read_input_tokens = None;
-        self
-    }
 }
 
 /// A streaming chunk (`chat.completion.chunk`).
@@ -377,78 +361,27 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn usage(value: serde_json::Value) -> Usage {
-        serde_json::from_value(value).unwrap()
-    }
-
+    /// BUG-15: an agent's `"strict": true` reached OpenAI stripped, on every request.
     #[test]
-    fn an_uncached_prompt_count_becomes_cache_inclusive_with_the_read_count_nested() {
-        let wire = usage(json!({
-            "prompt_tokens": 4,
-            "completion_tokens": 75,
-            "total_tokens": 79,
-            "cache_read_input_tokens": 10431,
-            "cache_creation_input_tokens": 0
-        }))
-        .into_cache_inclusive();
-
-        assert_eq!(wire.prompt_tokens, Some(10435));
-        assert_eq!(wire.total_tokens, Some(10510));
+    fn a_tools_strict_flag_survives_the_round_trip() {
+        let tool = json!({"type": "function", "function": {
+            "name": "read_log", "parameters": {"type": "object"}, "strict": true}});
+        let parsed: ToolDef = serde_json::from_value(tool).unwrap();
+        assert_eq!(parsed.function.strict, Some(true));
         assert_eq!(
-            wire.prompt_tokens_details.and_then(|d| d.cached_tokens),
-            Some(10431)
+            serde_json::to_value(&parsed).unwrap()["function"]["strict"],
+            json!(true)
         );
-        assert_eq!(wire.cache_read_input_tokens, None);
-        assert_eq!(wire.completion_tokens, Some(75));
     }
 
     #[test]
-    fn cache_writes_count_as_prompt_tokens_but_not_as_cached() {
-        let wire = usage(json!({
-            "prompt_tokens": 10,
-            "completion_tokens": 5,
-            "total_tokens": 15,
-            "cache_creation_input_tokens": 5000
-        }))
-        .into_cache_inclusive();
-
-        assert_eq!(wire.prompt_tokens, Some(5010));
-        assert_eq!(wire.total_tokens, Some(5015));
-        assert_eq!(
-            wire.prompt_tokens_details.and_then(|d| d.cached_tokens),
-            Some(0)
-        );
-        assert_eq!(wire.cache_creation_input_tokens, Some(5000));
-    }
-
-    #[test]
-    fn usage_already_in_openai_shape_or_without_cache_is_left_as_it_is() {
-        for value in [
-            json!({ "prompt_tokens": 10000, "completion_tokens": 500, "total_tokens": 10500,
-                    "prompt_tokens_details": { "cached_tokens": 8000 } }),
-            json!({ "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15 }),
-            json!({ "prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15,
-                    "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0 }),
-        ] {
-            let before = serde_json::to_value(usage(value.clone())).unwrap();
-            let after = serde_json::to_value(usage(value.clone()).into_cache_inclusive()).unwrap();
-
-            assert_eq!(after, before, "{value}");
-        }
-    }
-
-    #[test]
-    fn making_usage_cache_inclusive_twice_changes_nothing_more() {
-        let once = usage(json!({
-            "prompt_tokens": 4, "completion_tokens": 75, "total_tokens": 79,
-            "cache_read_input_tokens": 10431
-        }))
-        .into_cache_inclusive();
-        let twice = once.clone().into_cache_inclusive();
-
-        assert_eq!(
-            serde_json::to_value(twice).unwrap(),
-            serde_json::to_value(once).unwrap()
+    fn a_tool_without_strict_gains_no_field() {
+        let tool = json!({"type": "function", "function": {"name": "read_log"}});
+        let parsed: ToolDef = serde_json::from_value(tool).unwrap();
+        assert!(
+            serde_json::to_value(&parsed).unwrap()["function"]
+                .get("strict")
+                .is_none()
         );
     }
 

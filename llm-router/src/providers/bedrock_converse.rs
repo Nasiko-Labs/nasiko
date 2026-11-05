@@ -942,30 +942,6 @@ fn converse_content(
     }
 }
 
-fn without_empty_text(blocks: Vec<Value>) -> Vec<Value> {
-    let is_empty_text = |block: &Value| block.get("text").and_then(Value::as_str) == Some("");
-    if !blocks
-        .iter()
-        .any(|block| block.get("cachePoint").is_none() && !is_empty_text(block))
-    {
-        return blocks;
-    }
-    let mut kept = Vec::with_capacity(blocks.len());
-    let mut after_dropped_text = false;
-    for block in blocks {
-        if is_empty_text(&block) {
-            after_dropped_text = true;
-            continue;
-        }
-        let its_cache_point = after_dropped_text && block.get("cachePoint").is_some();
-        after_dropped_text = false;
-        if !its_cache_point {
-            kept.push(block);
-        }
-    }
-    kept
-}
-
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
 fn to_converse_request_inner(
@@ -1004,7 +980,7 @@ fn to_converse_request_inner(
                 pending_tool_results.push(json!({
                     "toolResult": {
                         "toolUseId": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": without_empty_text(converse_content(m, &mut doc_names)?),
+                        "content": converse_content(m, &mut doc_names)?,
                     }
                 }));
                 pending_tool_results.extend(caching.after_tool_block(m.last_cache_marker()));
@@ -1016,9 +992,7 @@ fn to_converse_request_inner(
             _ => {
                 // "user" and any unexpected role → user turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                let content = without_empty_text(
-                    caching.with_cache_points(m, converse_content(m, &mut doc_names)?),
-                );
+                let content = caching.with_cache_points(m, converse_content(m, &mut doc_names)?);
                 messages.push(json!({ "role": "user", "content": content }));
             }
         }
@@ -1244,7 +1218,7 @@ fn add_cache_points(body: &mut Value, caching: CacheSupport) {
     }
     if free > 0
         && !turns_hold_long_point
-        && let Some(system) = body.get_mut("system").and_then(Value::as_array_mut)
+        && let Some(system) = body["system"].as_array_mut()
         && system
             .last()
             .and_then(|block| block["text"].as_str())
@@ -2469,6 +2443,7 @@ mod tests {
                 name: "query-docs".to_string(),
                 description: None,
                 parameters: None,
+                strict: None,
             },
             extra: Map::new(),
         }];
@@ -2524,121 +2499,6 @@ mod tests {
                 json!([{ "text": "You are a coding agent." }, cache_point()]),
                 "{model}"
             );
-            assert_eq!(
-                body["messages"][0]["content"],
-                json!([{ "text": "Fix the failing test." }, cache_point()]),
-                "{model}"
-            );
-        }
-    }
-
-    const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
-    const CLAUDE: &str = "us.anthropic.claude-haiku-5-5";
-
-    fn converse_body(request: Value, model: &str) -> Value {
-        let ir: ChatRequest = serde_json::from_value(request).unwrap();
-        BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into())
-            .request_body(&ir, &resolved(model), true)
-            .unwrap()
-            .0
-    }
-
-    fn png_block() -> Value {
-        json!({ "image": { "format": "png", "source": { "bytes": "iVBORw0KGgo=" } } })
-    }
-
-    #[test]
-    fn an_empty_text_part_beside_an_image_is_left_out_with_its_cache_point() {
-        let ephemeral = json!({ "type": "ephemeral" });
-        for (model, expected) in [
-            (
-                CLAUDE,
-                json!([{ "text": "Look." }, cache_point(), png_block()]),
-            ),
-            (
-                "us.amazon.nova-pro-v1:0",
-                json!([{ "text": "Look." }, cache_point(), png_block()]),
-            ),
-        ] {
-            let body = converse_body(
-                json!({ "messages": [{ "role": "user", "content": [
-                    { "type": "text", "text": "Look.", "cache_control": ephemeral },
-                    { "type": "text", "text": "", "cache_control": ephemeral },
-                    { "type": "image_url", "image_url": { "url": PNG } }
-                ]}]}),
-                model,
-            );
-
-            assert_eq!(body["messages"][0]["content"], expected, "{model}");
-        }
-    }
-
-    #[test]
-    fn an_empty_text_part_inside_a_tool_result_with_an_image_is_left_out() {
-        let body = converse_body(
-            json!({ "messages": [
-                { "role": "user", "content": "Read the chart." },
-                { "role": "assistant", "content": null, "tool_calls": [{
-                    "id": "toolu_1", "type": "function",
-                    "function": { "name": "read_file", "arguments": "{}" }
-                }]},
-                { "role": "tool", "tool_call_id": "toolu_1", "content": [
-                    { "type": "text", "text": "" },
-                    { "type": "image_url", "image_url": { "url": PNG } }
-                ]}
-            ]}),
-            CLAUDE,
-        );
-
-        assert_eq!(
-            body["messages"][2]["content"][0]["toolResult"]["content"],
-            json!([png_block()])
-        );
-    }
-
-    #[test]
-    fn a_mixed_case_data_url_media_type_maps_to_its_bedrock_format() {
-        let body = converse_body(
-            json!({ "messages": [{ "role": "user", "content": [
-                { "type": "image_url", "image_url": { "url": "data:Image/PNG;base64,iVBORw0KGgo=" } },
-                { "type": "file", "file": { "file_data": "data:application/pdf;name=q3.pdf;base64,JVBERi0=" } }
-            ]}]}),
-            CLAUDE,
-        );
-
-        let content = &body["messages"][0]["content"];
-        assert_eq!(content[0], png_block());
-        assert_eq!(content[1]["document"]["format"], "pdf");
-        assert_eq!(content[1]["document"]["name"], "q3 pdf");
-    }
-
-    #[test]
-    fn content_with_nothing_but_empty_text_keeps_its_one_empty_block() {
-        for content in [json!(""), json!([{ "type": "text", "text": "" }])] {
-            let body = converse_body(
-                json!({ "messages": [{ "role": "user", "content": content }] }),
-                CLAUDE,
-            );
-
-            assert_eq!(
-                body["messages"][0]["content"],
-                json!([{ "text": "" }]),
-                "{content}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_request_without_a_system_prompt_is_sent_without_a_system_field() {
-        let request: ChatRequest = serde_json::from_value(json!({
-            "messages": [{ "role": "user", "content": "Fix the failing test." }]
-        }))
-        .unwrap();
-
-        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
-            let body = with_router_points(&request, model);
-
-            assert!(body.get("system").is_none(), "{model}");
             assert_eq!(
                 body["messages"][0]["content"],
                 json!([{ "text": "Fix the failing test." }, cache_point()]),

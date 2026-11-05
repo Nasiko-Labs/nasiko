@@ -240,6 +240,7 @@ mod tests {
                 name: "search".into(),
                 description: None,
                 parameters: None,
+                strict: None,
             },
             extra: Default::default(),
         }

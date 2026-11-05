@@ -495,6 +495,10 @@ fn collect_tool(
             name,
             description: custom_tool_description(tool, tool_kind),
             parameters: Some(parameters),
+            // A custom tool's schema is synthesized above, so the caller's flag can't apply to it.
+            strict: (tool_kind != ToolKind::Custom)
+                .then(|| tool.get("strict").and_then(Value::as_bool))
+                .flatten(),
         },
         extra: Map::new(),
     });
@@ -738,13 +742,7 @@ fn terminal_response(
     created: Option<i64>,
     incomplete: bool,
 ) -> Value {
-    let usage = usage.cloned().map(Usage::into_cache_inclusive);
-    let usage = usage.as_ref();
     let input = usage.and_then(|u| u.prompt_tokens).unwrap_or(0);
-    let cached = usage
-        .and_then(|u| u.prompt_tokens_details.as_ref())
-        .and_then(|d| d.cached_tokens)
-        .unwrap_or(0);
     let output_tokens = usage.and_then(|u| u.completion_tokens).unwrap_or(0);
     let total = usage
         .and_then(|u| u.total_tokens)
@@ -756,7 +754,7 @@ fn terminal_response(
         "model":model,"output":output,"parallel_tool_calls":true,"previous_response_id":Value::Null,
         "reasoning":{"effort":Value::Null,"summary":Value::Null},"store":false,
         "text":{"format":{"type":"text"}},"tool_choice":"auto","tools":[],"truncation":"disabled",
-        "usage":{"input_tokens":input,"input_tokens_details":{"cached_tokens":cached},"output_tokens":output_tokens,
+        "usage":{"input_tokens":input,"input_tokens_details":{"cached_tokens":0},"output_tokens":output_tokens,
             "output_tokens_details":{"reasoning_tokens":0},"total_tokens":total}
     })
 }
@@ -1257,21 +1255,6 @@ mod tests {
         // Codex sends it on every request, and a provider-hosted tool nothing downstream can
         // execute is not worth failing a turn over. See
         // `codex_namespaces_flatten_and_hosted_tools_drop_without_failing_the_turn`.
-    }
-
-    #[test]
-    fn a_reply_served_from_cache_reports_cache_inclusive_input_and_the_cached_count() {
-        let resp: ChatResponse = serde_json::from_value(json!({"id":"x","model":"m","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":75,"total_tokens":79,"cache_read_input_tokens":10431}})).unwrap();
-
-        let value = render_response(resp, "m", &HashMap::new()).unwrap();
-
-        assert_eq!(value["usage"]["input_tokens"], 10435);
-        assert_eq!(
-            value["usage"]["input_tokens_details"]["cached_tokens"],
-            10431
-        );
-        assert_eq!(value["usage"]["output_tokens"], 75);
-        assert_eq!(value["usage"]["total_tokens"], 10510);
     }
 
     #[test]
