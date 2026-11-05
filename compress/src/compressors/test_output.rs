@@ -31,7 +31,7 @@ pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
     if dropped < MIN_DROPPED {
         return None;
     }
-    Some(render(&lines, &keep, policy))
+    Some(render(input, &lines, &keep, policy))
 }
 
 /// One passing test (unittest/Django verbose `test_x (mod.Case) ... ok`, Django migration
