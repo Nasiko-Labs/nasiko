@@ -60,7 +60,7 @@ export function AppShell({
   const [choice, setChoice] = useState(readSidebarCookie)
   const open = choice ?? false
   const [bannerShown, dismissBanner] = useAssessmentBanner()
-  // Not on the assessment page itself, nor where a layer's sidebar card takes the assessment's place (MT: the plan).
+  // Not on the assessment page itself, nor where a layer's sidebar card takes the assessment's place.
   const banner = bannerShown && !slots.sidebarCard && pathname !== '/assessment'
   // The drill-in slot (sidebarPanel.ts): the sidebar hands out `target`, a page's SidebarPanel portals into it.
   const [target, setTarget] = useState<HTMLElement | null>(null)

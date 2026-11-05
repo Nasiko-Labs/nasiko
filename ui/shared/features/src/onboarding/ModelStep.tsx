@@ -1,5 +1,5 @@
 /**
- * The Agent and key step's second half (BYOK: Nasiko provides no credits): pick a built-in provider and save its key as
+ * The Agent and key step's second half (bring your own key: every model call is billed to it): pick a built-in provider and save its key as
  * the caller's default LLM config, through the router's own `useSaveConfig` (key hygiene as there: the mutation keeps
  * nothing and resets on unmount; the key is never read back). "Where do I get a key?" above the field opens the steps.
  */

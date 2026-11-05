@@ -102,7 +102,7 @@ export const copy = {
   start: {
     title: 'Bring an agent, then add your key',
     intro:
-      'Nasiko provides no model credits: every agent calls the model with your own provider key, through the gateway that meters every token.',
+      'Every agent calls the model with your own provider key, through the gateway that meters every token, so the key is the one thing you need.',
   },
   model: {
     title: '2. Your model key',

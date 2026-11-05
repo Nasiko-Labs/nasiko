@@ -1,8 +1,8 @@
 /** Pure onboarding rules (plan Task 1): the step model, where each persona lands, and the home's Setup guide ticks. */
 import type { Onboarding, Persona } from './types'
 
-/** `start` is one step for the first agent and the model key (Nasiko provides no model credits, so Continue waits for the
- *  key); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready). */
+/** `start` is one step for the first agent and the model key (every model call is billed to the user's own key, so Continue
+ *  waits for one); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready). */
 export const STEPS = ['welcome', 'role', 'start', 'harness'] as const
 export type StepId = (typeof STEPS)[number]
 

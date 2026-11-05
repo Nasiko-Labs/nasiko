@@ -1,6 +1,6 @@
 /**
  * The Agent and key step's first half: agents already running, to chat with once there is a key (Chat waits for it:
- * Nasiko provides no credits), then the Deploy page's own Registry, GitHub and Upload tabs (that order, user request
+ * every model call is billed to the user's own key), then the Deploy page's own Registry, GitHub and Upload tabs (that order, user request
  * 2026-11-05). A started deploy stays in the guide (`onStarted`); the background follower toasts
  * when its build finishes (plans/feat-deploy.md eng R8).
  */

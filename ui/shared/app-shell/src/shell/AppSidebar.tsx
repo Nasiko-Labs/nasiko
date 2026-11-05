@@ -238,7 +238,7 @@ export function AppSidebar({
         />
       ) : null}
       {/* {holds ? null : <WaitlistCard />} */}
-      {/* A layer's card above the footer (MT: the plan), hidden while a page's panel holds the sidebar. The core's own
+      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. The core's own
           assessment is a banner above the top bar now (AppShell), and gives way to this card. */}
       {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
