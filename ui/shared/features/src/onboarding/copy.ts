@@ -170,10 +170,8 @@ export const copy = {
       'Claude Code, Codex, Cursor and the rest report every session to Nasiko: what it cost, which models it used, and the sessions you had before today.',
     steps: {
       install: 'Install the CLI',
-      connect: 'Connect it to this cluster',
       signIn: 'Sign in',
       signInSso: 'Sign in with your company account',
-      setup: 'Find your coding harnesses and import past sessions',
     },
     copy: (what: string) => `Copy: ${what}`,
     after: 'Your next session in any of them shows up in Coding harnesses, next to your agents.',

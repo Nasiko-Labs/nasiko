@@ -1,6 +1,6 @@
 /**
- * The guide's last step (user request 2026-11-05, in place of Spend less and Ready): the CLI's four commands that bring
- * a developer's coding harnesses and their past sessions into Coding harnesses. The installer is the CLI guide's own;
+ * The guide's last step (user request 2026-11-05, in place of Spend less and Ready): the two CLI commands that bring a
+ * developer's coding harnesses into Coding harnesses, install and sign in (user review 2026-11-05: the rest dropped). The installer is the CLI guide's own;
  * the sign-in asks for SSO only where this edition signs in through another method (the `loginMethods` slot).
  */
 import { Bot, MessageSquare, SquareTerminal } from 'lucide-react'
@@ -20,10 +20,6 @@ const CHOICES = [
   { to: '/agents', icon: Bot, key: 'agents' },
 ] as const
 
-/** This server's address for `nasiko connect`, as the CLI guide gives it. */
-const clusterUrl = () =>
-  /^https?:$/.test(window.location.protocol) ? window.location.origin : 'https://<your-cluster>'
-
 export function HarnessStep({
   onOpen,
 }: {
@@ -33,11 +29,9 @@ export function HarnessStep({
   const sso = !!useSlots().loginMethods
   const steps = [
     { label: copy.steps.install, command: cliCopy.install.unixCommand },
-    { label: copy.steps.connect, command: `nasiko connect ${clusterUrl()}` },
     sso
       ? { label: copy.steps.signInSso, command: 'nasiko auth login --sso' }
       : { label: copy.steps.signIn, command: 'nasiko auth login' },
-    { label: copy.steps.setup, command: 'nasiko agents setup' },
   ]
   return (
     <div className="flex flex-col gap-6">

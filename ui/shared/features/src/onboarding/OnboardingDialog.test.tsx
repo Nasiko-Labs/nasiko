@@ -175,14 +175,12 @@ describe('first-run guide', () => {
     // The seed user's model config counts as their key, so Continue comes on once it loads.
     await advance(user)
     await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // Install, connect, sign in (no SSO in this edition), then import the harnesses and their past sessions.
-    for (const command of [
-      /curl -fsSL https:\/\/registry\.nasiko\.dev\/r\/nasiko\/install \| bash/,
-      /^nasiko connect /,
-      /^nasiko auth login$/,
-      /^nasiko agents setup$/,
+    // Install, then sign in (no SSO in this edition); nothing else.
+    const commands = screen.getAllByText(/^(curl|nasiko) /).map((c) => c.textContent)
+    expect(commands).toEqual([
+      'curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash',
+      'nasiko auth login',
     ])
-      expect(screen.getByText(command)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Skip guide' })).toBeNull()
     // More ways on than the harnesses.
     expect(
