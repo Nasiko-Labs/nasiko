@@ -1,8 +1,9 @@
 /**
  * The Overview headline (plans/feat-overview.md §10): at most two templated sentences, each backed by a card below.
  * - Money: from the fleet-wide calendar, so it says "The fleet has spent", never "You've spent" (eng review R2).
- * - Attention: from Needs you's counts. A clause whose data is missing is left out, and "Nothing needs you" is only
- *   said when every Needs-you source answered with nothing (design review 5A): never while loading or after a failure.
+ * - Attention: from Needs your attention's counts. A clause whose data is missing is left out, and "Nothing needs your
+ *   attention" is only said when every source answered with nothing (design review 5A): never while loading or after a
+ *   failure.
  */
 import { copy } from '@nasiko/features/overview/copy'
 import { fmtMoney } from '@nasiko/ui/lib/format'
@@ -23,6 +24,10 @@ export interface OverviewNarrativeInput {
   otherCount: number
   /** Every Needs-you source answered with nothing. */
   empty: boolean
+  /** Setup steps listed under the alerts: an all-clear then says "nothing urgent", as the card does. */
+  setupCount?: number
+  /** Watch agents promoted into the empty inbox: the same "nothing urgent". */
+  watchCount?: number
 }
 
 export interface OverviewNarrative {
@@ -50,7 +55,8 @@ export function overviewNarrative(i: OverviewNarrativeInput): OverviewNarrative 
   }
 
   let attention: string | null = null
-  if (i.empty) attention = copy.needs.nothing
+  if (i.empty)
+    attention = i.setupCount || i.watchCount ? copy.needs.nothingUrgent : copy.needs.nothing
   else {
     const parts: string[] = []
     if (i.actionCount) parts.push(`${plural(i.actionCount, 'agent needs', 'agents need')} action`)

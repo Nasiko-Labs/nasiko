@@ -65,11 +65,34 @@ export interface RecentSession {
   cost_usd: number
 }
 
+export interface HarnessModel {
+  model: string
+  turns: number
+  tokens: number
+  cost_usd: number
+}
+
+export interface HarnessTool {
+  name: string
+  calls: number
+  failed: number
+}
+
 export interface UsageResponse {
   scope: UsageScope
   window: { start_time: string; end_time: string; range?: '24h' | '7d' | '30d' }
   totals: HarnessTotals
-  by_harness: (HarnessTotals & { harness: HarnessId; top_models: string[] })[]
+  by_harness: (HarnessTotals & {
+    harness: HarnessId
+    top_models: string[]
+    /** Every model with turns in the window, turns desc, at most 10 (`HarnessEntry.models`, 2026-11-05; absent on
+     *  older servers). Mixed-model turns have no model and aren't counted. */
+    models?: HarnessModel[]
+    /** Subagent (child) sessions started in the window (`HarnessEntry.subagent_runs`; absent on older servers). */
+    subagent_runs?: number
+    /** Tool calls in the window by tool name, calls desc, at most 10 (`HarnessEntry.tools`; absent on older servers). */
+    tools?: HarnessTool[]
+  })[]
   /** Children of the scope; empty at the Individual level. */
   rows: UsageRow[]
   /** Distinct developers who appear in two or more `rows` (the parent totals count them once). */

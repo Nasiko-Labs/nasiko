@@ -9,9 +9,11 @@ import {
   uniqueByName,
   type AgentHealthInput,
 } from './health'
-import { mergeNeeds } from './needs'
+import { mergeNeeds, watchSummary } from './needs'
 import { rangeWindow } from './api'
 import { stackSpend } from './stack'
+import { quietTiles } from './quiet'
+import { harnessDetails, type HarnessLine, type HarnessSummary, type Spend } from './api'
 
 const NOW = Date.parse('2026-09-29T12:00:00Z')
 const H = 3_600_000
@@ -247,7 +249,16 @@ describe('mergeNeeds (design 5A, eng R5)', () => {
       waitingCount: 0,
       actionCount: 0,
     })
-    expect(mergeNeeds({ ...none, budgets: { state: 'absent' } }).empty).toBe(true)
+    expect(mergeNeeds({ ...none, budgets: { state: 'absent' } })).toMatchObject({
+      empty: true,
+      // The all-clear vouches only for what answered: an absent source isn't listed.
+      checked: ['requests', 'agents', 'sessions'],
+    })
+    expect(mergeNeeds({ ...none, agents: { ...ok([]), incomplete: true } }).checked).toEqual([
+      'requests',
+      'budgets',
+      'sessions',
+    ])
     expect(mergeNeeds({ ...none, requests: { state: 'failed' } })).toMatchObject({
       empty: false,
       failed: ['requests'],
@@ -340,7 +351,18 @@ describe('overviewNarrative (§10, eng R2)', () => {
     expect(
       overviewNarrative({ month, actionCount: 0, waitingCount: 0, otherCount: 0, empty: true })
         .attention,
-    ).toBe('Nothing needs you right now.')
+    ).toBe('Nothing needs your attention right now.')
+    // Setup steps listed under the all-clear: the headline says "nothing urgent", as the card does.
+    expect(
+      overviewNarrative({
+        month,
+        actionCount: 0,
+        waitingCount: 0,
+        otherCount: 0,
+        empty: true,
+        setupCount: 2,
+      }).attention,
+    ).toBe('Nothing urgent needs your attention.')
     expect(
       overviewNarrative({
         month: { ...month, mtd: 0 },
@@ -395,5 +417,200 @@ describe('the page range', () => {
     const w = rangeWindow('90d', now)
     expect(w.params.start_time).toBe('2026-07-04T00:00:00.000Z')
     expect(w.params.end_time).toBe('2026-10-01T15:30:00.000Z')
+  })
+})
+
+describe('quietTiles (2026-11-05)', () => {
+  const spend = (over: Partial<Spend> = {}) =>
+    ({
+      totals: { spend: 2, runs: 10, previous: null },
+      totalsError: null,
+      tokens: { total: 900, changePct: null, input: 600, output: 300 },
+      driversError: null,
+      unpriced: false,
+      ...over,
+    }) as Spend
+  const harnesses = (over: Partial<HarnessSummary> = {}) =>
+    ({
+      isPending: false,
+      error: null,
+      notVisible: false,
+      connected: 1,
+      harnesses: [
+        {
+          id: 'claude-code',
+          cost: 3,
+          turns: 12,
+          models: [],
+          subagentRuns: null,
+          tools: null,
+          unpriced: false,
+        },
+      ],
+      ...over,
+    }) as HarnessSummary
+  const zeroActivity = { totals: { spend: 0, runs: 0, previous: { spend: 4, runs: 9 } } }
+  const zeroTokens = { tokens: { total: 0, changePct: null, input: 0, output: 0 } }
+
+  it('keeps every tile with a figure, and folds spend, tokens and runs into one item when all three are zero', () => {
+    expect(quietTiles(spend(), harnesses())).toEqual({
+      tiles: ['spend', 'tokens', 'runs', 'harnesses'],
+      quiet: [],
+      settled: true,
+    })
+    expect(quietTiles(spend({ ...zeroActivity, ...zeroTokens }), harnesses())).toMatchObject({
+      tiles: ['harnesses'],
+      quiet: [{ id: 'activity', before: 4 }],
+    })
+  })
+
+  it('names each quiet tile on its own when only some are zero, with why spend reads zero', () => {
+    expect(
+      quietTiles(
+        spend({ totals: { spend: 0, runs: 10, previous: null }, unpriced: true, ...zeroTokens }),
+        harnesses(),
+      ).quiet,
+    ).toEqual([{ id: 'spend', unpriced: true }, { id: 'tokens' }])
+  })
+
+  it('tells none connected from connected but idle', () => {
+    expect(quietTiles(spend(), harnesses({ connected: 0, harnesses: [] })).quiet).toEqual([
+      { id: 'harnesses', connected: 0 },
+    ])
+    const idle = harnesses({
+      connected: 2,
+      harnesses: [
+        {
+          id: 'claude-code',
+          cost: 0,
+          turns: 0,
+          models: [],
+          subagentRuns: null,
+          tools: null,
+          unpriced: false,
+        },
+        {
+          id: 'codex',
+          cost: null,
+          turns: 0,
+          models: [],
+          subagentRuns: null,
+          tools: null,
+          unpriced: false,
+        },
+      ],
+    })
+    expect(quietTiles(spend(), idle).quiet).toEqual([{ id: 'harnesses', connected: 2 }])
+  })
+
+  it('never calls a loading, failed or hidden tile quiet, and is unsettled while one loads', () => {
+    const loading = quietTiles(
+      spend({ totals: null, tokens: null }),
+      harnesses({ isPending: true }),
+    )
+    expect(loading).toMatchObject({
+      tiles: ['spend', 'tokens', 'runs', 'harnesses'],
+      settled: false,
+    })
+    const failed = quietTiles(
+      spend({
+        totals: null,
+        totalsError: new Error('x'),
+        tokens: null,
+        driversError: new Error('y'),
+      }),
+      harnesses({ notVisible: true, connected: 0, harnesses: [] }),
+    )
+    expect(failed).toMatchObject({ quiet: [], settled: true })
+  })
+})
+
+describe('watchSummary (2026-11-05)', () => {
+  const agent = (...reasons: [dimension: 'cost' | 'activity' | 'latency', text: string][]) => ({
+    reasons: reasons.map(([dimension, text]) => ({ dimension, text })),
+  })
+  it('says a shared reason as is, and counts mixed ones by what they are about', () => {
+    expect(watchSummary([])).toBeNull()
+    const idle = agent(['activity', 'idle 7 days while deployed'])
+    expect(watchSummary([idle])).toEqual({ count: 1, detail: 'idle 7 days while deployed' })
+    expect(watchSummary([idle, idle, idle])).toEqual({
+      count: 3,
+      detail: 'All idle 7 days while deployed',
+    })
+    expect(
+      watchSummary([
+        idle,
+        agent(['activity', 'activity ↓ 80% vs last week']),
+        agent(['cost', 'cost ↑ 60% vs last week'], ['latency', 'p95 latency ↑ 70% vs last week']),
+      ]),
+    ).toEqual({ count: 3, detail: '1 costing more · 2 quieter' })
+  })
+})
+
+describe('harnessDetails (2026-11-06)', () => {
+  const line = (over: Partial<HarnessLine>): HarnessLine => ({
+    id: 'claude-code',
+    cost: 1,
+    turns: 10,
+    models: [],
+    subagentRuns: null,
+    tools: null,
+    unpriced: false,
+    ...over,
+  })
+  it('shares models across harnesses, sums subagent runs by harness and merges tools by name', () => {
+    const d = harnessDetails([
+      line({
+        models: [
+          { name: 'opus', turns: 70 },
+          { name: 'sonnet', turns: 10 },
+          { name: 'a', turns: 5 },
+          { name: 'b', turns: 3 },
+          { name: 'c', turns: 2 },
+        ],
+        subagentRuns: 12,
+        tools: [
+          { name: 'Bash', calls: 50, failed: 5 },
+          { name: 'Edit', calls: 20, failed: 0 },
+        ],
+      }),
+      line({
+        id: 'codex',
+        models: [{ name: 'sonnet', turns: 10 }],
+        subagentRuns: 0,
+        tools: [{ name: 'Bash', calls: 30, failed: 0 }],
+      }),
+    ])
+    expect(d.models.map((m) => [m.name, m.share])).toEqual([
+      ['opus', 70],
+      ['sonnet', 20],
+      ['a', 5],
+      ['b', 3],
+    ])
+    expect(d.otherModels).toEqual({ count: 1, share: 2 })
+    expect(d.namesOnly).toBeNull()
+    // Zero-run harnesses are left out of the breakdown, not the total.
+    expect(d.subagentRuns).toBe(12)
+    expect(d.subagentsBy).toEqual([{ harness: 'claude-code', runs: 12 }])
+    expect(d.tools).toEqual([
+      { name: 'Bash', calls: 80, share: 80 },
+      { name: 'Edit', calls: 20, share: 20 },
+    ])
+    expect(d.toolCalls).toBe(100)
+    expect(d.failedPct).toBe(5)
+  })
+  it('falls back to the busiest harness’s first model, with no share, when the server sends names only', () => {
+    const d = harnessDetails([
+      line({ turns: 5, models: [{ name: 'gpt', turns: null }] }),
+      line({ id: 'codex', turns: 50, models: [{ name: 'codex-1', turns: null }] }),
+    ])
+    expect(d).toMatchObject({
+      models: [],
+      otherModels: null,
+      namesOnly: { name: 'codex-1', harness: 'codex' },
+      subagentRuns: null,
+      tools: [],
+      failedPct: null,
+    })
   })
 })

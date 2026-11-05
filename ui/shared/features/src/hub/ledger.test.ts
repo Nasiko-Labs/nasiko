@@ -315,7 +315,7 @@ describe('preview records (AH-7)', () => {
 describe('CSV (X4)', () => {
   const labels = () => ({
     ...copy.ledger.csv,
-    cost: 'Est. cost (API list price)',
+    cost: 'Value at API prices',
     notReported: 'not reported',
   })
   const l = buildLedger(
@@ -354,7 +354,7 @@ describe('CSV (X4)', () => {
 
   it('has the agreed columns, with the harness cost basis, cache tokens and coverage', () => {
     expect(lines[0]).toBe(
-      '"turn","time (UTC)","tool names","tokens in","of which cache reads","of which cache writes","tokens out","Est. cost (API list price)","context tokens","memory tokens","controls applied","source","coverage"',
+      '"turn","time (UTC)","tool names","tokens in","of which cache reads","of which cache writes","tokens out","Value at API prices","context tokens","memory tokens","controls applied","source","coverage"',
     )
   })
 

@@ -52,3 +52,5 @@ export const CHECKED_TICK_MS = 30_000
 export const RETURN_REFRESH_MS = 60_000
 /** Links to Sessions open on the Overview's own 7-day window: a 30-day window runs past Tempo's 7-day search limit (QA ISSUE-003). */
 export const LAST_WEEK = { preset: '7d' } as const
+/** "Did you know?" turns to the next tip after this long (paused on hover or focus, never under reduced motion). */
+export const TIP_ROTATE_MS = 6_000

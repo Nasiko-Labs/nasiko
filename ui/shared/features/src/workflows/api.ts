@@ -9,6 +9,9 @@ import { apiData, apiFetch, withQuery } from '@nasiko/data-access/client'
 import { isExecActive } from './logic'
 import type { DraftSort, WorkflowSort } from './search'
 import { LIST_LIMIT, RUNS_LIMIT, RUN_POLL_MS } from './tuning'
+
+/** The list's page size: a full page means there may be more (the Overview says "100+"). */
+export { LIST_LIMIT as WORKFLOW_LIST_LIMIT }
 import {
   executionListSchema,
   executionSchema,

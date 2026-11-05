@@ -60,7 +60,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   overview: [
     {
       title: 'Home',
-      body: 'Your fleet at a glance: what it costs, what needs you and how healthy each agent is.',
+      body: 'Your fleet at a glance: what it costs, what needs your attention and how healthy each agent is.',
     },
     {
       target: 'overview-views',
@@ -94,8 +94,8 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     },
     {
       target: 'overview-needs',
-      title: 'Needs you',
-      body: 'Agents that need action, requests waiting for your answer and failed sessions, worst first.',
+      title: 'Needs your attention',
+      body: 'Agents that need action, requests waiting for your answer and failed sessions, worst first, then what is left to set up.',
     },
     {
       target: 'overview-health',

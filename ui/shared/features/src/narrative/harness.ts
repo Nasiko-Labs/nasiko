@@ -1,7 +1,7 @@
 /**
  * Harnesses summary: at most 2 sentences (plan §6, G10, V2, V7), templated, never LLM.
  *   1. Adoption: "{active} of {scope_devs} developers used a harness connected to OpenRuntime".
- *   2. Idle seats, then estimated cost (API list price). The cost clause is dropped when
+ *   2. Idle seats, then the usage's value at API prices. The cost clause is dropped when
  *      every harness is mostly unpriced; no share is claimed for a mostly-unpriced harness.
  * The Individual level speaks to one account ("You used 2 of your 3 connected harnesses").
  */
@@ -31,7 +31,7 @@ export function harnessNarrative(i: HarnessNarrativeInput): string[] {
   const partial = ran.some((h) => h.unpriced_calls > 0)
   const known = ran.reduce((n, h) => n + h.cost_usd, 0)
   const costClause = ran.some((h) => !mostlyUnpriced(h))
-    ? `estimated cost ${partial ? 'at least ' : ''}${fmtMoney(known)} (API list price${partial ? '; some turns unpriced' : ''})`
+    ? `usage worth ${partial ? 'at least ' : ''}${fmtMoney(known)} at API prices${partial ? ' (some turns unpriced)' : ''}`
     : ''
 
   if (i.individual) {

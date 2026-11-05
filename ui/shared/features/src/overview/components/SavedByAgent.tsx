@@ -5,13 +5,14 @@
  */
 import { Link } from '@tanstack/react-router'
 import { useRef } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { TrendingDown } from 'lucide-react'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { seriesAt } from '@nasiko/ui/lib/chart'
 import { fmtTokens } from '@nasiko/ui/lib/format'
 import type { SavedByAgent as SavedByAgentData } from '../api'
 import { copy } from '../copy'
 import { SAVED_BARS } from '../tuning'
-import { Card, CardError, CardSkeleton, TOUCH } from './Card'
+import { Card, CardError, CardQuiet, CardSkeleton, TOUCH } from './Card'
 
 const SAVED = seriesAt(1)
 const ROW = 'grid grid-cols-[minmax(0,9rem)_minmax(0,1fr)_auto] items-center gap-3 text-sm'
@@ -40,7 +41,21 @@ export function SavedByAgent({ data, className }: { data: SavedByAgentData; clas
       ) : !rows ? (
         <CardError what={copy.saved.what} onRetry={data.retry} titleRef={titleRef} />
       ) : !bars.length ? (
-        <EmptyState title={copy.saved.none} className="py-6 md:py-6" />
+        <CardQuiet
+          Icon={TrendingDown}
+          title={copy.cardQuiet.saved}
+          detail={copy.cardQuiet.savedDetail}
+          action={
+            <Link
+              to="/optimization"
+              search={{} as never}
+              {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+            >
+              {copy.cardQuiet.savedAction}
+            </Link>
+          }
+          testId="saved-quiet"
+        />
       ) : (
         <div className="flex flex-col gap-2">
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0" aria-label={copy.saved.title}>

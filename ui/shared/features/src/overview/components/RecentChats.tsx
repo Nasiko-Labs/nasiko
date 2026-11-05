@@ -5,7 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { useRef } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { MessageSquare } from 'lucide-react'
 import { asButton } from '@nasiko/ui/primitives/button'
 import { relTime } from '@nasiko/features/agents/format'
 import { displayStatus } from '@nasiko/features/agents/status'
@@ -15,7 +15,7 @@ import { chatIdentity } from '@nasiko/features/chat/identity'
 import { cn } from '@nasiko/ui/lib/utils'
 import { copy } from '../copy'
 import { RECENT_SESSION_ROWS } from '../tuning'
-import { Card, CardError, CardSkeleton, TOUCH } from './Card'
+import { Card, CardError, CardQuiet, CardSkeleton, TOUCH } from './Card'
 
 const DOT = {
   running: 'bg-success',
@@ -58,14 +58,16 @@ export function RecentChats({
           titleRef={titleRef}
         />
       ) : !rows.length ? (
-        <EmptyState
+        <CardQuiet
+          Icon={MessageSquare}
           title={copy.chats.none}
+          detail={copy.cardQuiet.chatsDetail}
           action={
             <Link to="/chat" {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}>
-              {copy.chats.start}
+              {copy.quiet.startChat}
             </Link>
           }
-          className="py-6 md:py-6"
+          testId="chats-quiet"
         />
       ) : (
         <ul className="divide-y divide-border">
@@ -73,7 +75,7 @@ export function RecentChats({
             <li
               key={row.session_id}
               data-testid="recent-chat"
-              className="flex min-h-11 items-center gap-3 py-2 text-sm"
+              className="flex min-h-11 items-center gap-4 py-2 text-sm"
             >
               <span
                 aria-hidden
@@ -94,7 +96,7 @@ export function RecentChats({
               <span className="hidden max-w-[40%] shrink-0 truncate text-xs text-muted-foreground @[360px]/card:inline">
                 {who.name}
               </span>
-              <span className="w-20 shrink-0 text-right text-xs text-muted-foreground tabular-nums">
+              <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted-foreground tabular-nums">
                 {relTime(row.updated_at ?? row.created_at, now)}
               </span>
             </li>

@@ -306,7 +306,7 @@ export const estateCopy = {
     noCalls: 'No calls in the last 7 days.',
     agentStatus: 'Agent status',
     agentStatusMeta: (first: string, last: string) => `One square per day, ${first} to ${last}`,
-    needs: 'Needs you',
+    needs: 'Needs your attention',
     fleetHealth: 'Fleet health',
     recentSessions: 'Recent sessions',
     recentChats: 'Recent chats',

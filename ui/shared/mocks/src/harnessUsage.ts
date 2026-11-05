@@ -266,16 +266,32 @@ export function build(
   const ids = new Set(users.map((u) => u.id))
   const mine = cur.filter((s) => ids.has(s.user_id))
   const byHarness = harnesses.map((h) => {
-    const models = new Map<string, number>()
+    const models = new Map<string, { turns: number; tokens: number; cost_usd: number }>()
+    let sessions = 0
+    let turns = 0
     for (const s of mine)
-      if (s.harness === h) models.set(s.model, (models.get(s.model) ?? 0) + s.turns)
+      if (s.harness === h) {
+        const m = models.get(s.model) ?? { turns: 0, tokens: 0, cost_usd: 0 }
+        models.set(s.model, {
+          turns: m.turns + s.turns,
+          tokens: m.tokens + s.tokens,
+          cost_usd: m.cost_usd + s.cost_usd,
+        })
+        sessions++
+        turns += s.turns
+      }
+    const ranked = [...models.entries()]
+      .sort((a, b) => b[1].turns - a[1].turns || a[0].localeCompare(b[0]))
+      .slice(0, 10)
     return {
       ...totalsFor(seed, users, cur, prev, h),
       harness: h,
-      top_models: [...models.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 2)
-        .map(([m]) => m),
+      top_models: ranked.slice(0, 2).map(([m]) => m),
+      models: ranked.map(([model, m]) => ({ model, ...m })),
+      // The seed records neither subagents nor tool names: both are derived from the window's own sessions and turns
+      // (fixed ratios, so every read agrees), in the shape coding_agents.rs `HarnessEntry` sends.
+      subagent_runs: Math.round(sessions * (SUBAGENT_RATE[h] ?? 0)),
+      tools: toolsFor(turns),
     }
   })
   const series = new Map<
@@ -365,3 +381,19 @@ export function fleetUnpriced(seed: HarnessSeed, start: number, end: number): nu
     .filter((s) => s.ts >= start && s.ts < end)
     .reduce((n, s) => n + s.unpriced_turns, 0)
 }
+
+/** Subagent runs per session, by harness (the harnesses that spawn them). */
+const SUBAGENT_RATE: Record<string, number> = { claude: 0.6, codex: 0.2, opencode: 0.3 }
+/** A coding session's tool mix: calls per turn and the share that failed. */
+const TOOL_MIX: readonly [name: string, perTurn: number, failRate: number][] = [
+  ['Bash', 1.1, 0.06],
+  ['Edit', 0.7, 0.02],
+  ['Read', 0.6, 0],
+  ['Grep', 0.3, 0],
+  ['Write', 0.2, 0.01],
+]
+const toolsFor = (turns: number) =>
+  TOOL_MIX.map(([name, perTurn, failRate]) => {
+    const calls = Math.round(turns * perTurn)
+    return { name, calls, failed: Math.round(calls * failRate) }
+  }).filter((t) => t.calls > 0)

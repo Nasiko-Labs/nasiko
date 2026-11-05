@@ -8,9 +8,9 @@
  * showed ("14 of 19 running · 1 deploying · 2 crashed or failed"), so the summary's tiles can carry money and tokens.
  */
 import { Link } from '@tanstack/react-router'
-import { CircleCheck, TriangleAlert } from 'lucide-react'
+import { Bot, CircleCheck, TriangleAlert } from 'lucide-react'
 import { useRef } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
+import { asButton } from '@nasiko/ui/primitives/button'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@nasiko/ui/primitives/tooltip'
 import { displayStatus, isHarness, type DisplayStatus } from '@nasiko/features/agents/status'
@@ -20,7 +20,7 @@ import type { FleetHealth as FleetHealthData } from '../api'
 import { copy } from '../copy'
 import type { Rating } from '../health'
 import { HEALTH_LIST_ROWS } from '../tuning'
-import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
+import { Card, CardError, CardQuiet, CardSkeleton, SourceFailed, TOUCH } from './Card'
 
 const ORDER: readonly Rating[] = ['healthy', 'watch', 'action', 'unknown']
 /** Status tokens, never the accent (design review 12A). */
@@ -138,9 +138,21 @@ export function FleetHealth({ fleet, className }: { fleet: FleetHealthData; clas
           {total > 0 && rated === 0 ? (
             // Nothing rated: no agent is deployed (else the cost-data line above says why). QA ISSUE-004.
             fleet.deployedCount === 0 ? (
-              <div data-testid="health-none-deployed">
-                <EmptyState title={copy.health.noneDeployed} className="py-6 md:py-6" />
-              </div>
+              <CardQuiet
+                Icon={Bot}
+                title={copy.cardQuiet.health}
+                detail={copy.cardQuiet.healthDetail}
+                action={
+                  <Link
+                    to="/agents"
+                    search={{} as never}
+                    {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+                  >
+                    {copy.cardQuiet.healthAction}
+                  </Link>
+                }
+                testId="health-none-deployed"
+              />
             ) : null
           ) : (
             <div>

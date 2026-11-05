@@ -105,7 +105,7 @@ export function Trend({
             Active devs
           </ToggleGroupItem>
           <ToggleGroupItem value="cost" className="px-2.5 text-xs">
-            Est. cost
+            API value
           </ToggleGroupItem>
         </ToggleGroup>
       }

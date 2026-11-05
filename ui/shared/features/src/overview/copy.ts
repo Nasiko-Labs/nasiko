@@ -71,6 +71,7 @@ export const copy = {
     runs: 'Agent runs',
     perDay: (n: string) => `${n} per day`,
     perRun: (cost: string) => `${cost} per run`,
+    toolCalls: (n: string) => `${n} tool calls`,
     tokens: 'Tokens',
     tokensInput: (pct: string) => `input ${pct}`,
     tokensOutput: (pct: string) => `output ${pct}`,
@@ -92,6 +93,115 @@ export const copy = {
     devs: (n: number) => `${n} developer${n === 1 ? '' : 's'}`,
     yourUsage: 'your usage',
   },
+  /** A summary tile with nothing in the range says what would fill it, never a bare zero (quiet.ts). */
+  quiet: {
+    activityLabel: 'Spend · Tokens · Agent runs',
+    activity: (days: number) => `No agent activity in the last ${days} days`,
+    activityDetail:
+      'Chat with an agent or run a workflow: what it spends, the tokens it uses and each run show up here.',
+    activityBefore: (amount: string, days: number) =>
+      `The ${days} days before spent ${amount}. Chat with an agent or run a workflow to pick it back up.`,
+    startChat: 'Start a chat',
+    spendUnpriced: 'No priced spend',
+    spendUnpricedDetail:
+      'The runs in this range used models with no list price, so their cost reads as zero.',
+    spendNone: (days: number) => `No spend in the last ${days} days`,
+    spendNoneDetail: 'Agents ran, but none of their calls had a cost.',
+    tokens: 'No tokens reported',
+    tokensDetail:
+      'Agents ran, but sent no token counts. Agents report them in their OpenTelemetry GenAI spans.',
+    runs: (days: number) => `No agent runs in the last ${days} days`,
+    runsDetail: 'Chat with an agent or run a workflow to see runs and cost per run here.',
+    seeTokenops: 'Open TokenOps',
+    seeSessions: 'Open Sessions',
+    harnessesNone: 'No coding harnesses connected',
+    harnessesNoneDetail:
+      "Connect Claude Code or Codex to see your team's coding-agent spend next to your agents'.",
+    harnessesIdle: (days: number) => `No coding sessions in the last ${days} days`,
+    harnessesIdleDetail: (n: number) =>
+      `${n} connected. Cost and models show up after the next session.`,
+    connect: 'Connect',
+    openHarnesses: 'Open Coding harnesses',
+  },
+  /** Each lower card's own quiet state (2026-11-06): what would fill it and the one step that does (Card.tsx
+   *  `CardQuiet`). The actions differ on purpose, so an empty page never offers the same button five times. */
+  cardQuiet: {
+    spend: (days: number) => `No spend in the last ${days} days`,
+    spendDetail:
+      "Spend by agent and by day shows up here after an agent's first priced model call.",
+    spendBefore: (amount: string, days: number) =>
+      `The ${days} days before spent ${amount}. Run something to pick it back up.`,
+    spendAction: 'Run a workflow',
+    sessionsDetail: 'Each conversation with an agent is a session, with its trace, cost and steps.',
+    sessionsAction: 'Ask the Orchestrator',
+    saved: 'No tokens saved in this range',
+    savedDetail:
+      'Token optimization trims the chat history and tool output agents re-send. Turn it on for an agent to see what it saves.',
+    savedAction: 'Turn on optimization',
+    chatsDetail: 'Ask a question and the Orchestrator picks the agent to answer it.',
+    health: 'No agent is running yet',
+    healthDetail:
+      "Start or deploy one and it's rated here on reliability, cost, activity and latency.",
+    healthAction: 'Open Agents',
+  },
+  /** What the coding harnesses ran (components/HarnessActivity.tsx, 2026-11-06). */
+  activity: {
+    title: 'Coding harness activity',
+    meta: (days: number) => `last ${days} days`,
+    what: 'coding harness activity',
+    models: 'Models',
+    modelsNote: 'share of turns',
+    otherModels: (n: number) => `Other (${n})`,
+    namesOnly: (harness: string, model: string) => `${harness} mostly runs ${model}`,
+    subagents: 'Subagents',
+    subagentsNote: 'runs spawned by a session',
+    tools: 'Tools',
+    toolsNote: 'share of calls',
+    calls: (n: string) => `${n} tool calls`,
+    failed: (pct: string) => `${pct} failed`,
+  },
+  /** "Did you know": one tip at a time, in the lead card when its savings band is empty (DidYouKnow.tsx). */
+  tips: {
+    title: 'Did you know?',
+    next: 'Next tip',
+    items: [
+      {
+        text: 'Ask the Orchestrator anything: it picks the agent best suited to each question by meaning, not keywords.',
+        link: 'Ask the Orchestrator',
+        to: '/chat',
+      },
+      {
+        text: 'Workflows chain agents into one repeatable run, and pause for your approval when a step needs it.',
+        link: 'Open Workflows',
+        to: '/workflows',
+      },
+      {
+        text: 'Every agent call is traced: Sessions shows each hop with its tokens, cost and latency.',
+        link: 'Open Sessions',
+        to: '/sessions',
+      },
+      {
+        text: 'Flows draw a multi-agent request as one timeline, with call depth, fan-out and timeouts enforced on every hop.',
+        link: 'Open Flows',
+        to: '/flows',
+      },
+      {
+        text: 'The LLM router gives every agent one key per provider, so you can swap models without a redeploy.',
+        link: 'Open LLM router',
+        to: '/router',
+      },
+      {
+        text: 'Connect an MCP server once and share its tools with any agent, with Allow, Ask or Block per tool.',
+        link: 'Open MCP servers',
+        to: '/mcp',
+      },
+      {
+        text: 'Token optimization trims the chat history and tool output agents re-send, with no code changes.',
+        link: 'Open Optimization',
+        to: '/optimization',
+      },
+    ],
+  },
   saved: {
     title: 'Saved tokens by agent',
     link: 'TokenOps',
@@ -110,8 +220,8 @@ export const copy = {
     start: 'Start one',
   },
   needs: {
-    title: 'Needs you',
-    what: 'what needs you',
+    title: 'Needs your attention',
+    what: 'what needs your attention',
     waiting: 'Waiting for you',
     checked: (ago: string) => `Checked ${ago}`,
     /** The header's counts by severity, in severity order. */
@@ -120,7 +230,59 @@ export const copy = {
       watch: (n: number) => `${n} to watch`,
       waiting: (n: number) => `${n} waiting`,
     } satisfies Record<Severity, (n: number) => string>,
-    nothing: 'Nothing needs you right now.',
+    nothing: 'Nothing needs your attention right now.',
+    /** All clear, with agents to watch or setup steps listed under it: "nothing" would contradict them. */
+    nothingUrgent: 'Nothing urgent needs your attention.',
+    /** Watch agents, promoted into an otherwise empty inbox (they live in Fleet health otherwise). */
+    watch: (n: number) => `${n} agent${n === 1 ? '' : 's'} to watch`,
+    /** Every one of them for the same reason ("idle 7 days while deployed"). */
+    watchSame: (n: number, reason: string) => (n === 1 ? reason : `All ${reason}`),
+    /** Mixed reasons, counted by what they're about. */
+    watchBy: {
+      reliability: (n: number) => `${n} less reliable`,
+      cost: (n: number) => `${n} costing more`,
+      activity: (n: number) => `${n} quieter`,
+      latency: (n: number) => `${n} slower`,
+    },
+    reviewWatch: 'Review',
+    reviewWatchLabel: 'Review: the agents to watch',
+    /** What the all-clear vouches for: one line per source that answered with nothing. */
+    clear: {
+      requests: 'No requests waiting for you',
+      agents: 'No agents need action',
+      budgets: 'No budgets at risk',
+      sessions: 'No failed sessions in the last 7 days',
+    } satisfies Record<SourceId, string>,
+    setupTitle: 'Setup',
+    setupCount: (n: number) => `${n} to set up`,
+    /** Setup items: a step while the thing isn't set up (`title`, `detail`, `action`); once it is, its name, how many
+     *  exist and where to manage them (`doneTitle`, `done`, `manage`). */
+    setup: {
+      router: {
+        title: 'Add an LLM router config',
+        detail: 'One key per provider for every agent; swap models without a redeploy.',
+        action: 'Add',
+        doneTitle: 'LLM router',
+        done: (n: string, one: boolean) => `${n} config${one ? '' : 's'} ready`,
+        manage: 'Manage',
+      },
+      workflows: {
+        title: 'Create a workflow',
+        detail: 'Chain agents into one repeatable run that pauses for your approval.',
+        action: 'Create',
+        doneTitle: 'Workflows',
+        done: (n: string, one: boolean) => `${n} workflow${one ? '' : 's'} deployed`,
+        manage: 'Open',
+      },
+      mcp: {
+        title: 'Connect an MCP server',
+        detail: 'Give your agents tools, with Allow, Ask or Block per tool.',
+        action: 'Connect',
+        doneTitle: 'MCP servers',
+        done: (n: string, one: boolean) => `${n} server${one ? '' : 's'} connected`,
+        manage: 'Manage',
+      },
+    },
     more: (n: number) => `${n} more below: scroll the list`,
     source: {
       requests: 'waiting requests',
@@ -198,11 +360,12 @@ export const copy = {
     noneYet: 'No coding harnesses yet',
     connect: 'Connect one',
     connected: (n: number) => `${n} coding harness${n === 1 ? '' : 'es'} connected`,
-    lineCost: (cost: string, days: number) =>
-      `${cost} est. cost (API list price), last ${days} days`,
+    lineCost: (cost: string, days: number) => `${cost} at API prices, last ${days} days`,
     open: 'Open Coding harnesses',
     unpriced: 'unpriced',
-    costNote: (days: number) => `Est. cost (API list price), last ${days} days`,
+    // Not "cost" (user 2026-11-06): a subscription seat pays a flat fee, so this was never spent.
+    costNote: (days: number) =>
+      `Value at API prices, last ${days} days. Subscription seats are billed at a flat rate.`,
   },
   sessions: {
     title: 'Recent sessions',
@@ -326,7 +489,6 @@ export const copy = {
     link: 'Agents',
     what: 'the agent list',
     costWhat: 'cost data (cost ratings read Unknown)',
-    noneDeployed: 'No agent is deployed yet, so there is nothing to rate.',
     noWatch: 'No agents to watch.',
     colAgent: 'Agent',
     colRating: 'Rating',

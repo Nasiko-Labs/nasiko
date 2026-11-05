@@ -185,6 +185,66 @@ describe('components', () => {
     expect(readRailView('u1')).toBe('waiting')
   })
 
+  it('an all-clear names what it checked, and says "nothing urgent" above setup steps (2026-11-05)', async () => {
+    const data: NeedsYouData = {
+      needs: mergeNeeds({
+        requests: { state: 'ok', value: { chats: [], outside: 0 } },
+        agents: { state: 'ok', value: [] },
+        budgets: { state: 'absent' },
+        sessions: { state: 'ok', value: { failed: 0, agents: [] } },
+      }),
+      lastChecked: 0,
+      retry: retries(),
+      sessions: {} as NeedsYouData['sessions'],
+      waiting: {} as NeedsYouData['waiting'],
+    }
+    const { unmount } = renderInRouter(<NeedsYou data={data} now={0} userId="u1" />)
+    const clear = await screen.findByTestId('needs-empty')
+    expect(clear).toHaveTextContent(copy.needs.nothing)
+    // Budgets are absent on this server: the all-clear doesn't vouch for them.
+    for (const id of ['requests', 'agents', 'sessions'] as const)
+      expect(clear).toHaveTextContent(copy.needs.clear[id])
+    expect(clear).not.toHaveTextContent(copy.needs.clear.budgets)
+    expect(screen.queryByTestId('needs-setup')).toBeNull()
+    unmount()
+    renderInRouter(
+      <NeedsYou data={data} now={0} userId="u1" setup={[{ id: 'workflows', count: 0 }]} />,
+    )
+    expect(await screen.findByTestId('needs-empty')).toHaveTextContent(copy.needs.nothingUrgent)
+    const step = within(screen.getByTestId('needs-setup')).getByRole('link', {
+      name: copy.needs.setup.workflows.action,
+    })
+    expect(step).toHaveAttribute('href', '/workflows/new')
+    expect(step).toHaveAccessibleDescription(copy.needs.setup.workflows.title)
+  })
+
+  it('promotes Watch agents into an otherwise empty inbox (2026-11-05)', async () => {
+    const data: NeedsYouData = {
+      needs: mergeNeeds({
+        requests: { state: 'ok', value: { chats: [], outside: 0 } },
+        agents: { state: 'ok', value: [] },
+        budgets: { state: 'absent' },
+        sessions: { state: 'ok', value: { failed: 0, agents: [] } },
+      }),
+      lastChecked: 0,
+      retry: retries(),
+      sessions: {} as NeedsYouData['sessions'],
+      waiting: {} as NeedsYouData['waiting'],
+    }
+    const watch = { count: 18, detail: 'All idle 7 days while deployed' }
+    renderInRouter(<NeedsYou data={data} now={0} userId="u1" watch={watch} />)
+    const card = await screen.findByTestId('overview-needs')
+    // Not urgent, so the all-clear stays, saying "nothing urgent", with the row under it.
+    expect(within(card).getByTestId('needs-empty')).toHaveTextContent(copy.needs.nothingUrgent)
+    expect(card).toHaveTextContent(copy.needs.watch(18))
+    expect(card).toHaveTextContent(watch.detail)
+    expect(card).toHaveTextContent(copy.needs.count.watch(18))
+    expect(within(card).getByRole('link', { name: copy.needs.reviewWatchLabel })).toHaveAttribute(
+      'href',
+      '/agents?health=watch',
+    )
+  })
+
   it("sends an old spike to TokenOps' day panel, a recent one to Sessions", async () => {
     const at = Date.parse('2026-09-29T12:00:00Z')
     const spend = (date: string): SpendData => ({
@@ -205,6 +265,7 @@ describe('components', () => {
       totals: { spend: 120, runs: 10, previous: null },
       totalsError: null,
       tokens: null,
+      toolCalls: null,
       days: [],
       stack: null,
       stackPending: false,

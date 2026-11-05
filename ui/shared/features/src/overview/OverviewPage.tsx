@@ -52,10 +52,12 @@ import {
   useNeedsYou,
   useOverviewSavings,
   useSavedByAgent,
+  useSetupSteps,
   useSpend,
 } from './api'
 import { FirstRunHero, FirstRunPreview } from './components/FirstRun'
 import { FleetHealth } from './components/FleetHealth'
+import { HarnessActivity } from './components/HarnessActivity'
 import { NeedsYou } from './components/NeedsYou'
 import { usePausedFlows } from '@nasiko/features/flows/paused'
 import { QuickActions } from './components/QuickActions'
@@ -71,6 +73,7 @@ import { copy } from './copy'
 import { useEstate, useProblemAction } from './estate/api'
 import { estateCopy } from './estate/copy'
 import type { ProblemPatch } from './estate/types'
+import { watchSummary } from './needs'
 import { useEstateView } from './estate/useEstateView'
 import { formatSel, parseSel, type Selection } from './map/selection'
 import type { ProblemActions } from './panel/ProblemCard'
@@ -227,6 +230,7 @@ function HeaderActions({
 // row per item (its tiles start at 900 px of card). Budget burn and Spend span the row; then Recent sessions (7) beside
 // Saved tokens by agent (5), and Recent chats (7) beside Quick actions (5): pairs of about the same height, so neither
 // card in a row is left half empty.
+// 2026-11-06: Coding harness activity spans the row right under Needs your attention and Fleet health.
 const PLACE = {
   needs: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-8',
   health: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-4',
@@ -236,6 +240,7 @@ const PLACE = {
   saved: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5',
   chats: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7',
   actions: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5',
+  harness: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12',
 } as const
 
 export function OverviewPage({
@@ -316,6 +321,7 @@ function Overview({
   const savings = useOverviewSavings(now, range, ready)
   const savedByAgent = useSavedByAgent(now, range, fleet, ready && !firstRun)
   const needsYou = useNeedsYou(now, me, fleet, ready)
+  const setup = useSetupSteps(ready && !firstRun)
   const harnesses = useHarnessSummary(now, me, range)
   // The Recent chats card's own query (same key): first paint waits for it too.
   const chats = useChatSessions()
@@ -329,6 +335,8 @@ function Overview({
     unitLabel: null,
   })
   const { needs } = needsYou
+  // Watch agents for an otherwise empty inbox (user 2026-11-05: Fleet health keeps them otherwise).
+  const watch = fleet.summary ? watchSummary(fleet.summary.watch) : null
   // Read only when there are requests to link (plans/feat-flows.md O2, amended 2026-10-06).
   const pausedFlows = usePausedFlows(needs.rows.some((r) => r.kind === 'request'))
   const narrative = useMemo(
@@ -340,8 +348,10 @@ function Overview({
         waitingCount: needs.waitingCount,
         otherCount: needs.rows.filter((r) => r.kind === 'budget' || r.kind === 'sessions').length,
         empty: needs.empty,
+        setupCount: setup.left,
+        watchCount: watch?.count,
       }),
-    [spend.summary, spend.unpriced, needs],
+    [spend.summary, spend.unpriced, needs, setup.left, watch?.count],
   )
 
   // `list` was the village's List view; its list is the Map's System card now, so an old link opens the Map. Without
@@ -450,6 +460,9 @@ function Overview({
       (spend.isPending ||
         (!spend.totals && !spend.totalsError) ||
         needsYou.sessions.recent.isPending ||
+        setup.isPending ||
+        // The lead card's foot is the savings band or a tip: waiting for it means the two never swap.
+        savings.isPending ||
         !persona.settled ||
         burn.pending ||
         chats.isPending))
@@ -557,10 +570,19 @@ function Overview({
           now={now.getTime()}
           userId={me.sub}
           pausedFlows={pausedFlows}
+          setup={setup.items}
+          watch={watch}
           className={PLACE.needs}
         />
         <FleetHealth fleet={fleet} className={PLACE.health} />
+        {/* The coding harnesses' behaviour, beside the money the Harnesses tile shows (2026-11-06), right under the
+            inbox and fleet health (user 2026-11-06: too important to sit under Spend). A server without
+            the harness usage endpoint (own usage only) or nothing visible at the landing scope has none to show. */}
+        {harnesses.ownOnly || harnesses.notVisible ? null : (
+          <HarnessActivity data={harnesses} days={days} className={PLACE.harness} />
+        )}
         {burn.node ? <div className={PLACE.burn}>{burn.node}</div> : null}
+        {/* Every card below draws its own quiet state (2026-11-06): none steps out, so the grid never reflows. */}
         <Spend spend={spend} now={now.getTime()} className={PLACE.spend} />
         <RecentSessions
           sessions={needsYou.sessions}

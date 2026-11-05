@@ -425,7 +425,8 @@ function onboardingSeed(base: HarnessSeed): HarnessSeed {
 const variantSeeds = new Map<string, HarnessSeed>()
 function harnessData(): HarnessSeed {
   const base = onboardingSeed(getHarnessSeed())
-  const v = variant()
+  // `no-activity` combines with `no-spend` (`?mock=no-spend,no-activity`): the Overview with nothing at all to show.
+  const v = hasVariant('no-activity') ? 'no-activity' : variant()
   if (v !== 'all-unpriced' && v !== 'no-activity') return base
   const hit = variantSeeds.get(v)
   if (hit && hit.anchor === base.anchor) return hit
@@ -467,7 +468,7 @@ const getFinopsSeed = (): Seed => {
   const hs = getHarnessSeed()
   if (!finops || finops.seed !== base || finops.hs !== hs)
     finops = { seed: base, hs, merged: withHarnessTurns(base, hs) }
-  if (variant() === 'no-spend') return (finops.empty ??= { ...finops.merged, traces: [] })
+  if (hasVariant('no-spend')) return (finops.empty ??= { ...finops.merged, traces: [] })
   return finops.merged
 }
 // Deploy: builds and uploads derived from the agents state, rebuilt with it (plans/feat-deploy.md §9).
@@ -1476,6 +1477,36 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
         // page's Mechanisms counts follow the same switches as its other blocks. The rest is the fixed sample.
         const s = savings()
+        // `no-spend` has no traces, so nothing was optimized and nothing could be: zero, so the Overview's lead card
+        // shows its "Did you know?" instead of the band.
+        if (hasVariant('no-spend'))
+          return {
+            ...s,
+            total: {
+              ...s.total,
+              saved_tokens: 0,
+              saved_input_tokens: 0,
+              saved_output_tokens: 0,
+              saved_cost_usd: 0,
+              actual_tokens: 0,
+              actual_cost_usd: 0,
+              baseline_tokens: 0,
+              baseline_cost_usd: 0,
+              token_reduction_pct: null,
+              cost_reduction_pct: null,
+            },
+            by_program: [],
+            by_agent: [],
+            by_session: [],
+            coverage: {
+              ...s.coverage,
+              calls_in_window: 0,
+              calls_with_any_layer_enabled: 0,
+              optimized_spend_usd: 0,
+              unoptimized_spend_usd: 0,
+              calibrated_pct: null,
+            },
+          }
         const live = getAgents().agents.filter((a) => !a.deleted)
         const comments = (a: (typeof live)[number]) =>
           (a.metadata?.features as Record<string, unknown> | undefined)?.prompt_comments ===

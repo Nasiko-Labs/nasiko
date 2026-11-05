@@ -2,7 +2,8 @@
  * The KPI tiles: Spend, Tokens and Agent runs over the page's range (the fourth, Harnesses used, is `Harnesses.tsx`).
  * Each label links to the page that owns the number. Spend and runs come from the fleet-wide timeseries (the same
  * series as the Spend chart), cost per run from the same totals, tokens from the dashboard's KPIs and the savings read.
- * The month line is the summary card's `MonthBar`; the agents' run states are Fleet health's first line.
+ * The month line is the summary card's `MonthBar`; the agents' run states are Fleet health's first line. Agent runs adds
+ * the range's tool calls (the dashboard's `total_tool_calls`, harness turns' tools included).
  * Sparklines are decorative: the figures above them carry the numbers.
  */
 import { Link } from '@tanstack/react-router'
@@ -203,6 +204,20 @@ export function RunsTile({ spend }: { spend: Spend }) {
               ) : null}
             </>
           ) : null}
+        </p>
+      ) : null}
+      {/* The dashboard's own count (ACL-scoped, as Tokens): no per-run ratio, the runs above are fleet-wide. */}
+      {spend.toolCalls && spend.toolCalls.total > 0 ? (
+        <p
+          className="flex flex-wrap items-baseline gap-x-1.5 text-xs text-muted-foreground tabular-nums"
+          data-testid="kpi-tool-calls"
+        >
+          {copy.kpi.toolCalls(fmtInt(spend.toolCalls.total))}
+          <Delta
+            changePct={spend.toolCalls.changePct}
+            polarity={POLARITY.operations}
+            current={spend.toolCalls.total}
+          />
         </p>
       ) : null}
       <Spark

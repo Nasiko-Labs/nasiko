@@ -160,9 +160,7 @@ describe('narrative', () => {
     expect(s[0]).toBe(
       'In the last 30 days, 41 of 60 developers used a harness connected to OpenRuntime; Claude Code leads with 31 active developers.',
     )
-    expect(s[1]).toBe(
-      '12 registered seats had no activity; estimated cost $1,000.00 (API list price).',
-    )
+    expect(s[1]).toBe('12 registered seats had no activity; usage worth $1,000.00 at API prices.')
   })
   it('drops the cost clause when everything is unpriced', () => {
     const s = harnessNarrative({
@@ -206,7 +204,7 @@ describe('copy', () => {
     for (const n of [copy.serverMissing]) expect(n.action.length).toBeGreaterThan(0)
     // The OSS page says nothing about another edition (docs/lab-vs-react-migration-review.md §10.1).
     expect(JSON.stringify(copy)).not.toMatch(/Enterprise|edition/i)
-    expect(copy.csvCostHeader).toBe('Estimated cost (API list price, USD)')
+    expect(copy.csvCostHeader).toBe('Value at API prices (USD)')
   })
   it('keeps the route mock list equal to MOCK_VARIANTS', () => {
     expect([...HARNESS_MOCK_VARIANTS]).toEqual([...MOCK_VARIANTS])
