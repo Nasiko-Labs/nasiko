@@ -111,6 +111,7 @@ use crate::state::AppState;
         crate::observability::handler::get_finops_attributions,
         crate::observability::handler::get_finops_insights,
         crate::observability::handler::get_agent_hours,
+        crate::observability::coding_agents::get_coding_agent_usage,
         // CX-1: the `/api/me/*` preference routes and `/api/settings/context-tiers` predate the
         // OpenAPI rollout and were never annotated, so the UI has always typed them by hand.
         crate::context_selection::get_context_strategy,
@@ -280,6 +281,16 @@ use crate::state::AppState;
         crate::observability::service::AgentHoursRow,
         crate::observability::service::AgentHoursBucket,
         crate::observability::service::AgentHoursBucketAgent,
+        crate::observability::coding_agents::UsageEnvelope,
+        crate::observability::coding_agents::UsageResponse,
+        crate::observability::coding_agents::UsageScope,
+        crate::observability::coding_agents::UsageWindow,
+        crate::observability::coding_agents::HarnessTotals,
+        crate::observability::coding_agents::HarnessEntry,
+        crate::observability::coding_agents::HarnessModel,
+        crate::observability::coding_agents::HarnessTool,
+        crate::observability::coding_agents::SeriesPoint,
+        crate::observability::coding_agents::RecentSession,
         crate::observability::logs::LogLine,
         crate::coding_agent_onboarding::SyncClient,
         crate::coding_agent_onboarding::SyncPhase,
@@ -353,5 +364,6 @@ mod tests {
         assert!(json.contains("/api/observability/session/list"));
         assert!(json.contains("/api/mcp/connectors"));
         assert!(json.contains("/api/usage/summary"));
+        assert!(json.contains("/api/observability/coding-agents/usage"));
     }
 }
