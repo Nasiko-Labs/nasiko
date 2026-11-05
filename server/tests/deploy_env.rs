@@ -5,7 +5,7 @@
 //! address and credential. Not driven here, because each needs a real network or Docker daemon:
 //! the GitHub clone worker arm (a live GitHub tarball download; it calls the same
 //! `deploy_env::build` as the legacy clone arm tested below) and the registry import
-//! (`docker pull`).
+//! (a live registry's manifest).
 //!
 //! Requires infra (Postgres, Redis, S3 - see TEST_PG_URL / TEST_REDIS_URL / TEST_S3_ENDPOINT):
 //!   cargo test -p nasiko-server --test deploy_env -- --test-threads=1

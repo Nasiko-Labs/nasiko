@@ -212,20 +212,9 @@ pub(crate) async fn build_and_deploy(
 ) -> Result<ImportResult, (StatusCode, String)> {
     let image_tag = crate::agents::build_image_tag(
         &state.config.agent_image_registry,
-        owner_id,
         &meta.name,
         &meta.version,
     );
-
-    // Validate image namespace
-    crate::agents::validate_image_ref(
-        &state.db,
-        &state.config.agent_image_registry,
-        &image_tag,
-        owner_id,
-        false, // Import is deployer-gated, but still validate non-superusers
-    )
-    .await?;
 
     // Verify Dockerfile exists
     if !source_dir.join("Dockerfile").exists() {
@@ -805,8 +794,8 @@ fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusC
 }
 
 /// Import an agent from an OCI registry: a source-tarball layer is built and
-/// deployed like `/import/upload`; a plain container image is pulled and
-/// deployed directly.
+/// deployed like `/import/upload`; a plain container image is deployed
+/// directly, pulled by the runtime.
 #[utoipa::path(
     post,
     path = "/api/import/registry",
@@ -818,7 +807,6 @@ fn validate_registry_host(host: &str, allowed: &[String]) -> Result<(), (StatusC
         (status = 403, description = "Registry import disabled or host not allowed"),
         (status = 422, description = "Registry host not in the allowed list"),
         (status = 502, description = "Registry unreachable or returned an error"),
-        (status = 504, description = "docker pull timed out"),
     ),
 )]
 pub(crate) async fn import_registry(
@@ -1007,39 +995,11 @@ pub(crate) async fn import_registry(
             Err((code, msg)) => (code, msg).into_response(),
         }
     } else {
-        // Container image: pull via docker and deploy directly
-        let image_ref = format!(
-            "{}/{}",
-            registry_url
-                .trim_start_matches("https://")
-                .trim_start_matches("http://"),
-            repo
-        );
-        let image_with_tag = format!("{}:{}", image_ref, tag);
-
-        // Use docker pull to fetch the image, bounded by a timeout so a hung/slow
-        // registry can't block the handler indefinitely (CAT-5; mirrors the
-        // git-clone path which already wraps in tokio::time::timeout).
-        const PULL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-        let pull_fut = tokio::process::Command::new("docker")
-            .args(["pull", &image_with_tag])
-            .output();
-
-        match tokio::time::timeout(PULL_TIMEOUT, pull_fut).await {
-            Err(_) => {
-                return (StatusCode::GATEWAY_TIMEOUT, "docker pull timed out").into_response();
-            }
-            Ok(Ok(output)) if !output.status.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                tracing::error!(%stderr, %image_with_tag, "import_registry: docker pull failed");
-                return (StatusCode::BAD_GATEWAY, "docker pull failed").into_response();
-            }
-            Ok(Err(e)) => {
-                tracing::error!(%e, "import_registry: docker pull spawn error");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
-            Ok(Ok(_)) => {}
-        }
+        // Container image: deployed straight from the reference. The manifest
+        // fetched above proves it exists, and the runtime pulls it itself
+        // (Docker's daemon on create, Kubernetes' kubelet), so the server needs
+        // no `docker` binary of its own: a server image without one imports too.
+        let image_with_tag = format!("{host}/{repo}:{tag}");
 
         // Derive agent name from repo
         let agent_name = repo.rsplit('/').next().unwrap_or("agent").to_string();
