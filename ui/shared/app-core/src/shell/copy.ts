@@ -1,6 +1,5 @@
 /** Every user-facing string of the app shell (sidebar, theme menu, sign out). */
 export const copy = {
-  brand: 'Nasiko',
   brandTooltip: '',
   navLabel: 'Main',
   // The drill-in panel's way back (Chat, Settings): it reads "Back"; its name (and tooltip) says where to: the page
@@ -109,13 +108,11 @@ export const copy = {
     title: 'Get a free TokenOps assessment',
     line: "Tell us how your agents run. We'll show where the tokens go.",
     cta: 'Request assessment',
-    dismiss: 'Dismiss the assessment card',
   },
   // The sidebar footer's help rows, above the account (AppSidebar.tsx HelpRows).
   help: {
     docs: 'How to use',
     cli: 'CLI guide',
-    assessment: 'Free TokenOps assessment',
     expert: 'Talk to an expert',
     newTab: '(opens in a new tab)',
   },

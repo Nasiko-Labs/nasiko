@@ -9,7 +9,6 @@ import {
   ArrowLeft,
   BookOpen,
   CalendarClock,
-  ClipboardCheck,
   CircleAlert,
   CircleUser,
   Compass,
@@ -69,7 +68,7 @@ import { askForTour } from '@nasiko/app-core/tour'
 import { cn } from '@nasiko/ui/lib/utils'
 import { pickShared, withoutWindow } from '@nasiko/app-core/shell/context'
 import { copy } from '@nasiko/app-core/shell/copy'
-import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
+import { NasikoLockup, NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 import {
   activeItem,
   backIndex,
@@ -90,9 +89,9 @@ import {
   type Theme,
 } from '@nasiko/app-core/shell/theme'
 import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
-// The waitlist card gave way to the free-assessment banner above the top bar (AssessmentCta.tsx); WaitlistCta.tsx stays
-// for now.
+// The waitlist card gave way to the free-assessment card (user request 2026-10-22); WaitlistCta.tsx stays for now.
 // import { WaitlistCard } from './WaitlistCta'
+import { AssessmentCard } from './AssessmentCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
 const CHECKING_DELAY_MS = 1_000
@@ -185,10 +184,9 @@ export function AppSidebar({
                     {/* A plain link: TanStack's Link would mark it aria-current on /, doubling the nav's Home item
                       (§3 rule 4: one current item). */}
 
-                    <NasikoMark className="size-4 shrink-0 text-logo" />
-                    <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
-                      <span className="truncate font-semibold">{copy.brand}</span>
-                    </span>
+                    {/* h-4: the mark stays the rail's 16 px size. `!` beats the button's `[&>svg]:size-4`, which would
+                      squeeze the whole lockup into a 16 px square. */}
+                    <NasikoLockup className="h-4! w-auto! shrink-0" />
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>
@@ -237,13 +235,17 @@ export function AppSidebar({
           className="flex min-h-0 flex-1 flex-col"
         />
       ) : null}
+      {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
+          background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
       {/* {holds ? null : <WaitlistCard />} */}
-      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. The core's own
-          assessment is a banner above the top bar now (AppShell), and gives way to this card. */}
-      {holds || !SidebarCard ? null : <SidebarCard />}
+      {holds ? null : SidebarCard ? (
+        <SidebarCard />
+      ) : pathname === '/assessment' ? null : (
+        <AssessmentCard />
+      )}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} assessment={!SidebarCard} />
+          <HelpRows pathname={pathname} onPick={pick} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -437,16 +439,7 @@ function NavGroups({
 }
 
 /** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({
-  pathname,
-  onPick,
-  assessment,
-}: {
-  pathname: string
-  onPick(): void
-  /** The assessment row; off where a layer's card takes the assessment's place. */
-  assessment: boolean
-}) {
+function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
@@ -489,28 +482,6 @@ function HelpRows({
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
-      {/* Here whenever the banner could be, so the assessment stays one click away after it is dismissed. */}
-      {assessment ? (
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            isActive={pathname === '/assessment'}
-            tooltip={copy.help.assessment}
-            className={cn(ROW, ACTIVE_ROW)}
-            render={
-              <Link
-                to="/assessment"
-                onClick={() => {
-                  onPick()
-                  setOpenMobile(false)
-                }}
-              />
-            }
-          >
-            <ClipboardCheck aria-hidden />
-            <span className={LABEL}>{copy.help.assessment}</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      ) : null}
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
     </>
   )
