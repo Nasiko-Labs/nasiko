@@ -86,6 +86,17 @@ pub trait DelegationPolicy: Debug + Send + Sync {
         Ok(())
     }
 
+    /// What to tell the model after `check_tool_call` refused one of its calls to an agent,
+    /// beyond the reason itself. `prior_refusals` is how many times this agent has already been
+    /// refused or failed in this request (0 for the first).
+    ///
+    /// `None` keeps the loop's own wording, which tells the model not to retry. A policy whose
+    /// refusal is a judgement the model may reasonably revisit (a confidence score) can invite
+    /// one more attempt here, and return `None` for the next so the loop's limit takes over.
+    fn refusal_guidance(&self, _prior_refusals: usize) -> Option<String> {
+        None
+    }
+
     /// A score to report alongside a call the policy allowed through.
     ///
     /// Carried on [`crate::OrchestratorEvent::ToolCall`] so a permitted call is
