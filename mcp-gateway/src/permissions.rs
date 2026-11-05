@@ -748,8 +748,9 @@ pub struct ToolRuleInput {
     pub stance: String,
 }
 
-/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates
-/// + dedupes each connector's rules, and upserts (preserving `enabled`).
+/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates and dedupes
+/// each connector's rules, and upserts them, preserving `enabled`. An agent with no access row
+/// yet gets one that is not enabled: setting a rule is not enabling.
 pub async fn bulk_update_tools(
     state: &McpState,
     user_id: Uuid,
@@ -787,7 +788,7 @@ pub async fn bulk_update_tools(
         let enabled = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
             .await?
             .map(|r| r.enabled)
-            .unwrap_or(true);
+            .unwrap_or(false);
         let tool_rules: Vec<ToolRule> = patterns
             .iter()
             .map(|(p, s)| ToolRule {
