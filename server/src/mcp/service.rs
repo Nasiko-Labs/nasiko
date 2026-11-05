@@ -70,7 +70,17 @@ pub mod connect {
     use nasiko_mcp_gateway::oauth::CallbackOutcome;
 
     pub async fn connect(s: &AppState, user: Uuid, input: ConnectInput) -> R<ConnectOutcome> {
-        connect::connect_service(&s.mcp, user, input).await
+        let outcome = connect::connect_service(&s.mcp, user, input).await?;
+        // The connector list counts synced tools, so fill an empty catalog now rather than
+        // leaving it at 0 until an agent first loads the connector.
+        if let ConnectOutcome::Connected { connector_id, .. } = &outcome {
+            tokio::spawn(nasiko_mcp_gateway::permissions::sync_catalog_if_empty(
+                s.mcp.clone(),
+                user,
+                *connector_id,
+            ));
+        }
+        Ok(outcome)
     }
     pub async fn list_connections(s: &AppState, user: Uuid) -> R<Value> {
         connect::list_connections_view(&s.mcp, user).await
