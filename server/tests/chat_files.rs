@@ -124,7 +124,92 @@ async fn send_message_with_files(
     (status, body)
 }
 
+struct StorageDown;
+
+#[async_trait::async_trait]
+impl nasiko_runtime::BlobStore for StorageDown {
+    async fn put_blob(
+        &self,
+        _: &str,
+        _: bytes::Bytes,
+    ) -> Result<i64, nasiko_runtime::BlobStoreError> {
+        Err(down())
+    }
+    async fn get_blob(&self, _: &str) -> Result<bytes::Bytes, nasiko_runtime::BlobStoreError> {
+        Err(down())
+    }
+    async fn delete_blob(&self, _: &str) -> Result<(), nasiko_runtime::BlobStoreError> {
+        Err(down())
+    }
+    async fn blob_exists(&self, _: &str) -> bool {
+        false
+    }
+    async fn blob_size(&self, _: &str) -> Result<i64, nasiko_runtime::BlobStoreError> {
+        Err(down())
+    }
+    async fn presigned_get_url(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> Result<String, nasiko_runtime::BlobStoreError> {
+        Err(down())
+    }
+    async fn ensure_bucket(&self, _: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+fn down() -> nasiko_runtime::BlobStoreError {
+    nasiko_runtime::BlobStoreError::Backend("connection refused".into())
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn an_upload_while_storage_is_down_is_a_503_that_says_so_and_stores_nothing() {
+    let server = common::TestServer::start_with_storage(std::sync::Arc::new(StorageDown)).await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+    let form = reqwest::multipart::Form::new()
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(b"one".to_vec()).file_name("one.txt"),
+        )
+        .part(
+            "file",
+            reqwest::multipart::Part::bytes(b"two".to_vec()).file_name("two.txt"),
+        );
+
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{sid}/files"))),
+        uid,
+        "u",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(res.status().as_u16(), 503);
+    assert_eq!(
+        res.text().await.unwrap(),
+        "file storage is unavailable; try again"
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_message_files WHERE session_id = $1")
+            .bind(sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(rows, 0, "a failed upload leaves no file rows");
+
+    server.cleanup().await;
+}
 
 #[tokio::test]
 #[serial]

@@ -1528,7 +1528,11 @@ async fn upload_files(
         if let Err(e) = state.oci_storage.put_blob(&storage_key, data).await {
             tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed; rolling back previous uploads");
             cleanup_uploaded(&state, &uploaded).await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "file storage is unavailable; try again",
+            )
+                .into_response();
         }
 
         let record = sqlx::query_as::<_, ChatMessageFile>(

@@ -463,17 +463,14 @@ impl TestServer {
             .await
     }
 
-    /// Same as [`start`](Self::start), with `agent_wake` installed on the app's `AppState`.
     #[allow(dead_code)]
-    pub async fn start_with_agent_wake(
-        agent_wake: Arc<dyn nasiko_server::agent_wake::AgentWake>,
-    ) -> Self {
+    pub async fn start_with_storage(oci_storage: Arc<dyn nasiko_runtime::BlobStore>) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
         Self::start_with_runtime_and_handle(
             |_| {},
             fake_runtime.clone(),
             fake_runtime,
-            Some(agent_wake),
+            Some(oci_storage),
         )
         .await
     }
@@ -591,7 +588,7 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
-        agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
+        oci_storage: Option<Arc<dyn nasiko_runtime::BlobStore>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -633,14 +630,14 @@ impl TestServer {
 
         // Integration tests run against the S3-compatible store `just infra`
         // brings up, which is also the only backend this edition ships.
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-        );
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = match oci_storage {
+            Some(storage) => storage,
+            None => Arc::new(
+                nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
+            ),
+        };
         let state =
             AppState::from_config_with_db(config, auth, runtime, oci_storage, db.clone()).await;
-        if let Some(agent_wake) = agent_wake {
-            state.agent_wake.install(agent_wake);
-        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
