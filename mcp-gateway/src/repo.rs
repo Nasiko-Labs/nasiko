@@ -889,8 +889,8 @@ pub struct AgentConsumer {
 }
 
 /// Agents with an explicit `mcp_agent_connector_access` row for this connector.
-/// This table is the single source of truth: rows are seeded on connect
-/// (auto-grant) and removed on explicit revoke. Querying only this table
+/// This table is the single source of truth: a row is written when someone enables the
+/// connector for the agent and removed on explicit revoke. Querying only this table
 /// ensures that an explicitly removed agent stays removed even if its owner
 /// still has an active connection.
 pub async fn list_configured_agent_consumers(

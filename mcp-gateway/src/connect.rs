@@ -72,12 +72,7 @@ pub async fn connect_service(
     }
 
     if connector.is_composio() {
-        let outcome =
-            composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await?;
-        if matches!(outcome, ConnectOutcome::Connected { .. }) {
-            grant_user_agents_access(&state.db, user_id, connector.id).await;
-        }
-        return Ok(outcome);
+        return composio_connect(state, user_id, &connector, input.redirect_url.as_deref()).await;
     }
 
     let outcome = match connector.auth_type.as_deref().unwrap_or("none") {
@@ -123,53 +118,7 @@ pub async fn connect_service(
         }
     };
 
-    // Auto-grant all the user's agents access to this connector on connect.
-    if let ConnectOutcome::Connected { connector_id, .. } = &outcome {
-        grant_user_agents_access(&state.db, user_id, *connector_id).await;
-    }
-
     Ok(outcome)
-}
-
-/// Auto-grant all of `user_id`'s non-deleted agents access to `connector_id`.
-/// Best-effort: failures are logged, never block the connect response.
-///
-/// Preserves any existing enabled/tool_rules state per agent — this runs on
-/// every successful `connect` (including reconnecting/refreshing credentials
-/// on an already-connected connector), so it must not silently re-enable a
-/// connector someone disabled for one of their agents, or wipe block/ask
-/// rules they'd configured. Only a genuinely first-time grant (no existing
-/// row for that agent) gets the enabled-by-default, no-rules starting state.
-pub async fn grant_user_agents_access(db: &sqlx::PgPool, user_id: Uuid, connector_id: Uuid) {
-    let agent_ids: Vec<Uuid> = match sqlx::query_scalar::<_, Uuid>(
-        "SELECT id FROM agents WHERE owner_id = $1 AND deleted_at IS NULL",
-    )
-    .bind(user_id)
-    .fetch_all(db)
-    .await
-    {
-        Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!(%user_id, %connector_id, %e, "failed to list agents for auto-grant");
-            return;
-        }
-    };
-    for agent_id in agent_ids {
-        let existing = repo::get_agent_connector_access_row(db, agent_id, connector_id)
-            .await
-            .ok()
-            .flatten();
-        let enabled = existing.as_ref().map(|r| r.enabled).unwrap_or(true);
-        let tool_rules = existing
-            .map(|r| r.tool_rules)
-            .unwrap_or_else(|| serde_json::json!([]));
-        if let Err(e) =
-            repo::upsert_agent_connector_access(db, agent_id, connector_id, enabled, &tool_rules)
-                .await
-        {
-            tracing::warn!(%agent_id, %connector_id, %e, "failed to auto-grant agent connector access");
-        }
-    }
 }
 
 /// Remove all of `user_id`'s agents' access rows for `connector_id` on disconnect.
@@ -244,7 +193,7 @@ async fn resolve_target(
 /// Composio OAuth connect: reuse an active/pending connection or initiate a new one.
 /// `pub(crate)`: also called directly by `protocol.rs`'s `handle_auth_required` to mint a
 /// real, clickable re-auth link for an inline HITL pause, without `connect_service`'s extra
-/// `can_access_connector` re-check / `grant_user_agents_access` side effects — the caller
+/// `can_access_connector` re-check — the caller
 /// there already knows the connector is real and already reachable by this call.
 pub(crate) async fn composio_connect(
     state: &McpState,
@@ -493,7 +442,6 @@ pub async fn handle_composio_callback(
                 let _ =
                     repo::update_connection_account_id(&state.db, connection.id, account_id).await;
             }
-            grant_user_agents_access(&state.db, user_id, connector_id).await;
             session::invalidate_session_cache(state, user_id).await;
             // Same auto-resolve hook as the generic OAuth2 callback
             // (`oauth.rs::handle_callback`) — a Composio connector going
