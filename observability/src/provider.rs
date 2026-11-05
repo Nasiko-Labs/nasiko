@@ -416,6 +416,8 @@ impl TempoLokiProvider {
             mixed_provider: bool,
             cost: CostBreakdown,
             tool_calls: u32,
+            /// Tool calls the model asked for, as the LLM router saw them in its replies.
+            requested_tool_calls: u32,
         }
 
         let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
@@ -481,6 +483,9 @@ impl TempoLokiProvider {
             acc.output += out;
             acc.cache_read += cr;
             acc.cache_creation += cc;
+            if is_router_llm_span(span) {
+                acc.requested_tool_calls += requested_tool_calls(span);
+            }
             if acc.model.is_none() && !acc.mixed_model {
                 acc.model = model.clone();
             } else if acc.model != model {
@@ -586,7 +591,10 @@ impl TempoLokiProvider {
                 output_tokens: acc.output,
                 cache_read_tokens: acc.cache_read,
                 cache_creation_tokens: acc.cache_creation,
-                tool_call_count: acc.tool_calls,
+                // An agent that runs its own tools emits no tool spans; the router still saw
+                // the model ask for them. The larger of the two, not the sum: a gateway tool
+                // has both a request and a span.
+                tool_call_count: acc.tool_calls.max(acc.requested_tool_calls),
                 cost_estimated: cost.estimated,
                 cost_usd: cost.total_usd,
                 prompt_cost_usd: cost.prompt_usd,
@@ -1632,6 +1640,19 @@ impl ObservabilityProvider for TempoLokiProvider {
     }
 }
 
+/// Tool calls the model asked for in the reply this LLM-router span covers
+/// (`nasiko.response.tool_calls`), 0 when the router recorded none.
+fn requested_tool_calls(span: &crate::types::Span) -> u32 {
+    span.attributes
+        .get("nasiko.response.tool_calls")
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+        })
+        .and_then(|n| u32::try_from(n).ok())
+        .unwrap_or(0)
+}
+
 /// The provider that served a span, as the GenAI semconv reports it.
 ///
 /// `gen_ai.provider.name` is the current attribute; `gen_ai.system` is the older
@@ -1803,6 +1824,47 @@ mod tests {
             ended_at: None,
             duration_ms: None,
         }
+    }
+
+    /// A router span for an agent that runs its own tools: it carries the agent id the router
+    /// stamped and the number of tools the model asked for in that reply.
+    fn router_span_asking_for(id: &str, agent_id: &str, tool_calls: u32) -> Span {
+        let mut span = model_span(id, None, "gpt-4.1-mini", (1_600, 40, 0, 0));
+        span.service_name = "nasiko-cp".into();
+        span.attributes
+            .insert("gen_ai.agent.id".into(), serde_json::json!(agent_id));
+        span.attributes.insert(
+            "nasiko.response.tool_calls".into(),
+            serde_json::json!(tool_calls),
+        );
+        span
+    }
+
+    /// BUG-12: the CRM agent runs `list_deals` itself, so no tool span exists; the router saw
+    /// the model ask for it twice across two replies.
+    #[tokio::test]
+    async fn tool_calls_the_router_saw_are_counted_without_tool_spans() {
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![
+                router_span_asking_for("r1", "agent-uuid", 1),
+                router_span_asking_for("r2", "agent-uuid", 1),
+            ]))
+            .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tool_call_count, 2);
+    }
+
+    /// A gateway tool has both the model's request and the gateway's span: counted once.
+    #[tokio::test]
+    async fn a_requested_tool_with_a_gateway_span_is_counted_once() {
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![
+                router_span_asking_for("r1", "agent-uuid", 1),
+                tool_span("tool", None, "gmail__send_email", "agent-uuid"),
+            ]))
+            .await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tool_call_count, 1);
     }
 
     #[tokio::test]

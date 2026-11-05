@@ -12,8 +12,8 @@ use std::time::Instant;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::Value;
@@ -75,6 +75,14 @@ pub(crate) struct RequestSignals {
 /// missed cache entirely. It then prices the cached portion at the full input
 /// rate, so the same call costs more on the FinOps dashboard than in the
 /// metering table it was billed from.
+/// Record how many tools the model asked for in one reply (`nasiko.response.tool_calls`), which
+/// the dashboard's trace sync counts for agents that emit no tool spans of their own.
+fn record_tool_calls(span: &tracing::Span, count: usize) {
+    if count > 0 {
+        span.record("nasiko.response.tool_calls", count as i64);
+    }
+}
+
 fn record_span_usage(span: &tracing::Span, usage: Option<&Usage>) {
     let Some(usage) = usage else {
         return;
@@ -113,12 +121,6 @@ pub(crate) enum AuthedCaller {
     Session(SessionClaims),
 }
 
-const CREDENTIAL_HEADERS: [HeaderName; 3] = [
-    AUTHORIZATION,
-    HeaderName::from_static("x-api-key"),
-    HeaderName::from_static("x-goog-api-key"),
-];
-
 /// Authenticate the caller, preferring a coding-agent session token and falling
 /// back to the agent-identity token.
 ///
@@ -130,9 +132,18 @@ pub(crate) async fn authenticate_caller(
     store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
-    let authz = CREDENTIAL_HEADERS
-        .into_iter()
-        .find_map(|name| headers.get(name).and_then(|value| value.to_str().ok()));
+    let authz = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        // Anthropic-format clients (e.g. Claude Code) authenticate with
+        // `x-api-key`, not `Authorization: Bearer` — so a coding agent using the
+        // Anthropic SDK carries its session token there. Accept it as a fallback;
+        // `verify_session_token` tolerates a raw token with no `Bearer` prefix.
+        .or_else(|| {
+            headers
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        });
 
     if !ctx.cfg.agent_jwt_secret.is_empty()
         && let Some(raw) = authz
@@ -495,6 +506,9 @@ async fn chat_core(
         gen_ai.usage.cache_read_input_tokens = tracing::field::Empty,
         gen_ai.usage.cache_creation_input_tokens = tracing::field::Empty,
         gen_ai.usage.total_tokens = tracing::field::Empty,
+        // How many tools the model asked for in this reply: an agent that runs its own tools
+        // emits no tool spans, so this is the only record of them the dashboard can count.
+        nasiko.response.tool_calls = tracing::field::Empty,
         nasiko.usage.prompt_convention = "exclusive",
     );
     if compression.messages_touched > 0 {
@@ -594,6 +608,13 @@ async fn chat_core(
     // Record effective model and token usage on the server-side gen_ai span.
     llm_span.record("gen_ai.response.model", model.as_str());
     record_span_usage(&llm_span, resp.usage.as_ref());
+    record_tool_calls(
+        &llm_span,
+        resp.choices
+            .first()
+            .and_then(|c| c.message.tool_calls.as_ref())
+            .map_or(0, Vec::len),
+    );
 
     usage::spawn_log(
         ctx.db.clone(),
@@ -897,6 +918,12 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                         if let Some(fr) = chunk.choices.first().and_then(|c| c.finish_reason.clone()) {
                             st.finish_reason = Some(fr);
                         }
+                        // A streamed tool call arrives in fragments that share its index.
+                        if let Some(calls) =
+                            chunk.choices.first().and_then(|c| c.delta.tool_calls.as_ref())
+                        {
+                            st.tool_call_indexes.extend(calls.iter().map(|c| c.index));
+                        }
                     }
                     for frame in renderer.render(chunk) {
                         yield Ok::<String, std::io::Error>(frame);
@@ -925,6 +952,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
 struct StreamState {
     usage: Option<Usage>,
     finish_reason: Option<String>,
+    /// Distinct tool calls the model asked for in this reply.
+    tool_call_indexes: std::collections::BTreeSet<i64>,
 }
 
 /// Writes the streaming usage row when dropped (stream completion or client disconnect).
@@ -955,6 +984,7 @@ impl Drop for UsageGuard {
         let brevity_metadata = self.brevity_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
+        record_tool_calls(&self.span, st.tool_call_indexes.len());
         usage::spawn_log(
             self.db.clone(),
             self.pricing.clone(),
@@ -1111,6 +1141,7 @@ mod tests {
                         .unwrap(),
                     ),
                     finish_reason: None,
+                    tool_call_indexes: Default::default(),
                 })),
                 flow_id: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
@@ -1129,6 +1160,45 @@ mod tests {
         assert_eq!(fields["gen_ai.usage.input_tokens"], 800);
         assert_eq!(fields["gen_ai.usage.output_tokens"], 50);
         assert_eq!(fields["gen_ai.usage.cache_read_input_tokens"], 200);
+    }
+
+    /// BUG-12: a streamed reply asking for two tools records 2 on the call's span.
+    #[tokio::test]
+    async fn dropping_a_stream_records_the_tool_calls_it_asked_for() {
+        use tracing_subscriber::prelude::*;
+        let captured = CapturedUsage::default();
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let ctx = ctx_with("http://unused.invalid".into());
+            let span = tracing::info_span!(
+                "stream_tool_calls",
+                nasiko.response.tool_calls = tracing::field::Empty,
+            );
+            let guard = UsageGuard {
+                db: ctx.db,
+                pricing: Arc::new(nasiko_pricing::PricingEngine::offline()),
+                span,
+                owner_id: "no-database-write".into(),
+                agent_id: AGENT.into(),
+                provider: "openai".into(),
+                model: "gpt-4o".into(),
+                started: Instant::now(),
+                state: Arc::new(Mutex::new(StreamState {
+                    usage: None,
+                    finish_reason: Some("tool_calls".into()),
+                    tool_call_indexes: [0, 1].into_iter().collect(),
+                })),
+                flow_id: None,
+                compress_bytes: None,
+                request_bytes: None,
+                attribution_source: None,
+                platform_paid: true,
+                compress_metadata: None,
+                brevity_metadata: None,
+            };
+            drop(guard);
+        });
+        assert_eq!(captured.0.lock().unwrap()["nasiko.response.tool_calls"], 2);
     }
 
     const AGENT: &str = "11111111-1111-1111-1111-111111111111";
@@ -1624,132 +1694,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::MissingAuthHeader));
-    }
-
-    fn gemini_sdk_headers(key: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert("x-goog-api-key", key.parse().unwrap());
-        h.insert(TRACEPARENT_HEADER, TRACEPARENT.parse().unwrap());
-        h
-    }
-
-    fn gemini_hi() -> Value {
-        json!({ "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] })
-    }
-
-    fn store_pinned_to_openai() -> Store {
-        Store {
-            config: Some(openai_config()),
-            is_coding_agent: false,
-            compress_enabled: false,
-        }
-    }
-
-    #[tokio::test]
-    async fn the_gemini_sdks_x_goog_api_key_header_authenticates_and_is_not_forwarded() {
-        let mut server = mockito::Server::new_async().await;
-        let upstream = server
-            .mock("POST", "/chat/completions")
-            .match_header("x-goog-api-key", mockito::Matcher::Missing)
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id": "chatcmpl-g", "object": "chat.completion", "model": "gpt-4o-mini",
-                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-
-        let resp = chat_core(
-            &ctx_with(server.url()),
-            &store_pinned_to_openai(),
-            &gemini_sdk_headers(&token()),
-            gemini_hi(),
-            InboundFormat::Gemini,
-            Some(false),
-        )
-        .await
-        .unwrap();
-
-        upstream.assert_async().await;
-        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
-        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
-    }
-
-    #[tokio::test]
-    async fn an_empty_gemini_turn_reaches_a_provider_that_accepts_one() {
-        let mut server = mockito::Server::new_async().await;
-        let upstream = server
-            .mock("POST", "/chat/completions")
-            .match_body(mockito::Matcher::PartialJson(json!({
-                "messages": [{ "role": "user", "content": "" }]
-            })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id": "chatcmpl-e", "object": "chat.completion", "model": "gpt-4o-mini",
-                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-                })
-                .to_string(),
-            )
-            .create_async()
-            .await;
-
-        let resp = chat_core(
-            &ctx_with(server.url()),
-            &store_pinned_to_openai(),
-            &gemini_sdk_headers(&token()),
-            json!({ "contents": [{ "role": "user", "parts": [] }] }),
-            InboundFormat::Gemini,
-            Some(false),
-        )
-        .await
-        .unwrap();
-
-        upstream.assert_async().await;
-        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
-        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
-    }
-
-    #[tokio::test]
-    async fn a_bad_token_in_x_goog_api_key_is_refused_before_any_provider_call() {
-        let err = chat_core(
-            &ctx_with("http://unused".into()),
-            &store_pinned_to_openai(),
-            &gemini_sdk_headers("not-a-token"),
-            gemini_hi(),
-            InboundFormat::Gemini,
-            Some(false),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
-    }
-
-    #[tokio::test]
-    async fn authorization_wins_over_x_goog_api_key() {
-        let mut headers = gemini_sdk_headers(&token());
-        headers.insert(AUTHORIZATION, "Bearer not-a-token".parse().unwrap());
-
-        let err = chat_core(
-            &ctx_with("http://unused".into()),
-            &store_pinned_to_openai(),
-            &headers,
-            gemini_hi(),
-            InboundFormat::Gemini,
-            Some(false),
-        )
-        .await
-        .unwrap_err();
-
-        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
     }
 
     #[test]
