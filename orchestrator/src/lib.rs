@@ -1,4 +1,4 @@
-mod agent_registry;
+pub mod agent_registry;
 pub mod context_selection;
 pub mod engine;
 pub mod error;

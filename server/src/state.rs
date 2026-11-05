@@ -47,6 +47,13 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// Called just before forwarding a request to an agent container. OSS default is a no-op
+    /// (`NoAgentWake`); the EE composition root installs the real implementation through this
+    /// cell (`SwappableAgentWake::install`, not a plain reassignment) for the same reason
+    /// `prompt_context` does - the HITL resume dispatcher forwards to agents too, and holds an
+    /// `AppState` clone taken before that root runs. See that field's doc comment and the
+    /// `agent_wake` module docs.
+    pub agent_wake: Arc<crate::agent_wake::SwappableAgentWake>,
     /// What the MAF worker runs each queued workflow through. OSS wires
     /// `LinearMafExecutor` (steps in array order); the EE composition root
     /// replaces it before the app is built, the same way it replaces
@@ -234,6 +241,9 @@ impl AppState {
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
             Arc::new(crate::spend_gate::NoSpendGate);
+        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
+            crate::agent_wake::NoAgentWake,
+        )));
         let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
             Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
         let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
@@ -359,6 +369,7 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
+            agent_wake,
             maf_executor,
             maf_policy,
             prompt_context,

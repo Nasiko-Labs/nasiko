@@ -12,6 +12,7 @@ pub mod agent_lifecycle;
 pub mod agent_proxy;
 pub mod agent_scaling;
 pub mod agent_state;
+pub mod agent_wake;
 pub mod agents;
 pub mod assessment;
 pub mod auth;
@@ -31,7 +32,6 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
-pub mod error_reporting;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -327,7 +327,10 @@ where
         .route("/me", get(me))
         .merge(router::router_routes(a2a_limiter))
         .merge(agent_deploy_routes)
-        .nest("/agents", agents::user_routes())
+        .nest(
+            "/agents",
+            agents::user_routes().merge(agents::capability_routes()),
+        )
         .merge(catalog::router())
         .merge(container_routes)
         .merge(pool_routes)
@@ -392,7 +395,11 @@ where
         .nest("/api", agent_state::router(&state))
         .with_state(state.clone());
 
-    let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    let oci_state = nasiko_oci::OciState::new(
+        state.db.clone(),
+        state.oci_storage.clone(),
+        state.config.agent_image_registry.clone(),
+    );
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
@@ -491,11 +498,6 @@ where
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())
         .merge(registry_routes)
-        // Public: the UI's error-reporting settings and its Sentry tunnel (off unless configured).
-        .merge(error_reporting::router(
-            error_reporting::current_config(),
-            state.http_client.clone(),
-        ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
@@ -541,9 +543,6 @@ where
                 span
             },
         ))
-        // Outermost, so the request's Sentry transaction is the parent of the span above. A
-        // pass-through unless this server reports to Sentry (see `error_reporting`).
-        .layer(middleware::from_fn(error_reporting::trace_requests))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error

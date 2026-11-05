@@ -281,6 +281,8 @@ pub fn title_case(s: &str) -> String {
         .join(" ")
 }
 
+pub use nasiko_utils::image::image_name_slug;
+
 #[cfg(test)]
 mod tests {
     use super::*;
