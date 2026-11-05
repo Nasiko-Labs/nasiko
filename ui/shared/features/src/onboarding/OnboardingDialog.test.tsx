@@ -234,7 +234,7 @@ describe('first-run guide', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('keeps Chat and Continue off until the user has a key', async () => {
+  it('keeps Chat off until the user has a key, while Continue turns on after the hold anyway', async () => {
     firstTime()
     server.use(
       http.get('*/api/llm-configs', () =>
@@ -252,10 +252,11 @@ describe('first-run guide', () => {
     for (const b of within(running).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeDisabled()
     }
-    // Nothing past this step works without a key, so there is no skipping it.
     expect(screen.queryByRole('button', { name: 'Skip this step' })).toBeNull()
+    // No key is no reason to stay (user request 2026-11-06): Continue waits out the hold, then turns on.
     off(screen.getByRole('button', { name: /continue/i }))
-    // A key connected here turns Chat and Continue on.
+    await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
+    // A key connected here turns Chat on.
     await user.click(screen.getByRole('radio', { name: /anthropic/i }))
     await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-test')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
@@ -265,7 +266,7 @@ describe('first-run guide', () => {
     for (const b of within(again).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeEnabled()
     }
-    await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
+    on(screen.getByRole('button', { name: /continue/i }))
   })
 
   it("says where to get a key, linking the provider's keys page", async () => {
