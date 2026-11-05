@@ -69,6 +69,9 @@ export const copy = {
   ],
   connectHint:
     'The harness must be installed on this machine. `nasiko auth login` registers every harness it finds; `agents install` is the fallback.',
+  // FR-11: a local coding agent needs the Nasiko CLI on that machine.
+  needsCli: 'These run in the Nasiko CLI.',
+  installCli: 'Install the CLI',
   askToConnect: (name: string, harness: string) => `Ask ${name} to connect ${harness}.`,
 
   // Coding-agent onboarding card (consent + discovery/import progress, reported by a local client).
