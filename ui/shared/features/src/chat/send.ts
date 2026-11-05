@@ -81,6 +81,9 @@ function usageBody(s: TurnState): SaveMessageBody['usage'] | undefined {
   const out: NonNullable<SaveMessageBody['usage']> = {}
   if (u?.input_tokens !== undefined) out.input_tokens = u.input_tokens
   if (u?.output_tokens !== undefined) out.output_tokens = u.output_tokens
+  // Saved so a reloaded reply counts its cached prompt tokens, as the live stream does.
+  if (u?.cache_read_tokens !== undefined) out.cache_read_tokens = u.cache_read_tokens
+  if (u?.cache_creation_tokens !== undefined) out.cache_creation_tokens = u.cache_creation_tokens
   if (u?.model) out.model = u.model
   if (u?.duration_ms !== undefined) out.duration_ms = Math.round(u.duration_ms)
   if (u?.cost_usd !== undefined) out.cost_usd = u.cost_usd
