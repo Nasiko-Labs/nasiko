@@ -42,6 +42,8 @@ const PUBLIC = {
     'recorded',
     'sessionLookup',
   ],
+  // The onboarding guide's Coding harnesses step shows the CLI installer the CLI guide does.
+  cli: ['copy'],
   deploy: [
     'AgentBuildsTab',
     'components/DeployAgentButton',

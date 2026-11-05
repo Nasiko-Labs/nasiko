@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   BookOpen,
   CalendarClock,
+  ClipboardCheck,
   CircleAlert,
   CircleUser,
   Compass,
@@ -89,9 +90,9 @@ import {
   type Theme,
 } from '@nasiko/app-core/shell/theme'
 import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
-// The waitlist card gave way to the free-assessment card (user request 2026-10-22); WaitlistCta.tsx stays for now.
+// The waitlist card gave way to the free-assessment banner above the top bar (AssessmentCta.tsx); WaitlistCta.tsx stays
+// for now.
 // import { WaitlistCard } from './WaitlistCta'
-import { AssessmentCard } from './AssessmentCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
 const CHECKING_DELAY_MS = 1_000
@@ -235,17 +236,13 @@ export function AppSidebar({
           className="flex min-h-0 flex-1 flex-col"
         />
       ) : null}
-      {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
-          background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
       {/* {holds ? null : <WaitlistCard />} */}
-      {holds ? null : SidebarCard ? (
-        <SidebarCard />
-      ) : pathname === '/assessment' ? null : (
-        <AssessmentCard />
-      )}
+      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. The core's own
+          assessment is a banner above the top bar now (AppShell), and gives way to this card. */}
+      {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} />
+          <HelpRows pathname={pathname} onPick={pick} assessment={!SidebarCard} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -439,7 +436,16 @@ function NavGroups({
 }
 
 /** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
+function HelpRows({
+  pathname,
+  onPick,
+  assessment,
+}: {
+  pathname: string
+  onPick(): void
+  /** The assessment row; off where a layer's card takes the assessment's place. */
+  assessment: boolean
+}) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
@@ -482,6 +488,28 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
+      {/* Here whenever the banner could be, so the assessment stays one click away after it is dismissed. */}
+      {assessment ? (
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname === '/assessment'}
+            tooltip={copy.help.assessment}
+            className={cn(ROW, ACTIVE_ROW)}
+            render={
+              <Link
+                to="/assessment"
+                onClick={() => {
+                  onPick()
+                  setOpenMobile(false)
+                }}
+              />
+            }
+          >
+            <ClipboardCheck aria-hidden />
+            <span className={LABEL}>{copy.help.assessment}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ) : null}
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
     </>
   )
