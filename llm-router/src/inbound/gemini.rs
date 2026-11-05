@@ -231,7 +231,7 @@ impl InboundParser for GeminiInbound {
         if let Some(u) = usage {
             out["usageMetadata"] = usage_metadata(&u);
         }
-        out
+        with_identity(out, &resp.id, &resp.model)
     }
 
     fn chat_stream_renderer(&self) -> Box<dyn ChatStreamRenderer> {
@@ -374,6 +374,16 @@ fn usage_metadata(u: &Usage) -> Value {
     metadata
 }
 
+fn with_identity(mut event: Value, id: &str, model: &str) -> Value {
+    if !model.is_empty() {
+        event["modelVersion"] = json!(model);
+    }
+    if !id.is_empty() {
+        event["responseId"] = json!(id);
+    }
+    event
+}
+
 // ── IR stream → Gemini SSE (stateful for tool accumulation) ──────────────────
 
 struct ToolAccum {
@@ -391,6 +401,8 @@ struct GeminiStreamRenderer {
     tool_pos: HashMap<i64, usize>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
+    id: String,
+    model: String,
 }
 
 impl ChatStreamRenderer for GeminiStreamRenderer {
@@ -400,6 +412,12 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
         if let Some(u) = &chunk.usage {
             self.usage = Some(u.clone());
         }
+        if !chunk.id.is_empty() {
+            self.id = chunk.id;
+        }
+        if !chunk.model.is_empty() {
+            self.model = chunk.model;
+        }
 
         if let Some(choice) = chunk.choices.first() {
             let delta = &choice.delta;
@@ -407,9 +425,13 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
             if let Some(text) = &delta.content
                 && !text.is_empty()
             {
-                let event = json!({
-                    "candidates": [{ "content": { "role": "model", "parts": [{ "text": text }] } }]
-                });
+                let event = with_identity(
+                    json!({
+                        "candidates": [{ "content": { "role": "model", "parts": [{ "text": text }] } }]
+                    }),
+                    &self.id,
+                    &self.model,
+                );
                 out.push(format!("data: {event}\n\n"));
             }
 
@@ -465,6 +487,7 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
         if let Some(u) = &self.usage {
             event["usageMetadata"] = usage_metadata(u);
         }
+        let event = with_identity(event, &self.id, &self.model);
         vec![format!("data: {event}\n\n")]
     }
 }
@@ -619,6 +642,63 @@ mod tests {
         assert_eq!(fc["args"]["text"], "hi");
         // Gemini reports STOP even for tool calls.
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
+    }
+
+    #[test]
+    fn a_reply_names_the_model_that_answered_and_its_response_id() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "id": "msg_01abc", "object": "chat.completion", "model": "claude-haiku-5-5",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+
+        let v = GeminiInbound.render_chat_response(resp);
+
+        assert_eq!(v["modelVersion"], "claude-haiku-5-5");
+        assert_eq!(v["responseId"], "msg_01abc");
+    }
+
+    #[test]
+    fn a_reply_without_an_id_or_model_carries_neither_field() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "id": "", "object": "chat.completion", "model": "",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+
+        let v = GeminiInbound.render_chat_response(resp);
+
+        assert!(v.get("modelVersion").is_none(), "{v}");
+        assert!(v.get("responseId").is_none(), "{v}");
+    }
+
+    #[test]
+    fn every_stream_event_names_the_model_and_response_id() {
+        let mut r = GeminiInbound.chat_stream_renderer();
+        let mut blank = text_chunk("");
+        blank.id = String::new();
+        blank.model = String::new();
+
+        let events: Vec<Value> = [
+            r.render(text_chunk("Hel")),
+            r.render(blank.clone()),
+            r.render({
+                let mut later = blank;
+                later.choices[0].delta.content = Some("lo".into());
+                later
+            }),
+            r.finish(),
+        ]
+        .concat()
+        .iter()
+        .map(|frame| serde_json::from_str(frame.trim().strip_prefix("data: ").unwrap()).unwrap())
+        .collect();
+
+        assert_eq!(events.len(), 3, "{events:?}");
+        for event in &events {
+            assert_eq!(event["modelVersion"], "gemini-1.5-pro", "{event}");
+            assert_eq!(event["responseId"], "chatcmpl-s", "{event}");
+        }
     }
 
     // ── streaming renderer (IR chunks → Gemini SSE) ───────────────────────────
