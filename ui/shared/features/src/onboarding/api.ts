@@ -77,7 +77,7 @@ function writeSkipped(sub: string) {
 /** Storage blocked: remember the skip for this page load at least. */
 const memorySkips = new Set<string>()
 
-/** Whether the guide takes over `/` now, and how to skip it for this session. */
+/** Whether the guide takes over `/` now (first-time and never opened by itself before), and how to record that it was. */
 export function useGuide() {
   const me = useQuery(meQuery).data
   const onboarding = useOnboarding()

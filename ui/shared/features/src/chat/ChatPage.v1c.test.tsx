@@ -459,27 +459,22 @@ describe('the rail (test 11)', () => {
     expect(within(rail).getByRole('radio', { name: 'Recorded (2)' })).toBeInTheDocument()
   })
 
-  it('with no sidebar cookie, /chat keeps the open sidebar and puts its history there, writing nothing (E1)', async () => {
-    const width = window.innerWidth
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
-    try {
-      const { router } = renderApp('/agents')
-      const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')
-      await waitFor(() => expect(sidebar()?.getAttribute('data-state')).toBe('expanded'))
-      await router.navigate({ to: '/chat' })
-      // One sidebar: the history is its drill-in panel, not a second column beside it.
-      const newChat = await within(sidebar()!).findByRole('link', { name: copy.newChat })
-      expect(newChat).toBeInTheDocument()
-      expect(sidebar()?.getAttribute('data-state')).toBe('expanded')
-      expect(screen.getAllByRole('link', { name: copy.newChat })).toHaveLength(1)
-      await router.navigate({ to: '/agents' })
-      await waitFor(() =>
-        expect(within(sidebar()!).queryByRole('link', { name: copy.newChat })).toBeNull(),
-      )
-      expect(document.cookie).not.toMatch(/sidebar_state=/)
-    } finally {
-      Object.defineProperty(window, 'innerWidth', { configurable: true, value: width })
-    }
+  it('/chat keeps the open sidebar and puts its history there (E1)', async () => {
+    // The sidebar starts as the rail (user request 2026-11-05); a stored choice opens it.
+    document.cookie = 'sidebar_state=true; path=/'
+    const { router } = renderApp('/agents')
+    const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')
+    await waitFor(() => expect(sidebar()?.getAttribute('data-state')).toBe('expanded'))
+    await router.navigate({ to: '/chat' })
+    // One sidebar: the history is its drill-in panel, not a second column beside it.
+    const newChat = await within(sidebar()!).findByRole('link', { name: copy.newChat })
+    expect(newChat).toBeInTheDocument()
+    expect(sidebar()?.getAttribute('data-state')).toBe('expanded')
+    expect(screen.getAllByRole('link', { name: copy.newChat })).toHaveLength(1)
+    await router.navigate({ to: '/agents' })
+    await waitFor(() =>
+      expect(within(sidebar()!).queryByRole('link', { name: copy.newChat })).toBeNull(),
+    )
   })
 
   it('a sidebar cookie wins on /chat, and a user toggle writes it', async () => {

@@ -1,15 +1,16 @@
 /**
- * The first-run guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §2-§3, the Key and agent step from
- * 2026-11-04-quick-onboarding-design.md): a first-time user gets it on `/` with Home hidden; the persona saves on
- * Continue; one step saves a default config and opens a running agent in Chat; skipping lasts the session; Ready leads
- * with Chat and Agents.
+ * The first-run guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §2-§3, the Agent and key step from
+ * 2026-11-04-quick-onboarding-design.md): a first-time user gets it on `/` with Home hidden; each step's Continue waits a
+ * moment; the persona saves on Continue; one step opens a running agent in Chat and saves a default config; skipping
+ * lasts the session; the Coding harnesses step finishes on the role's page.
  */
-import { screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { clearUploads } from '@nasiko/features/deploy/uploads'
+import { clearStoredDrafts } from '@nasiko/app-core/draftKeys'
 import { copy as shellCopy } from '@nasiko/app-core/shell/copy'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
@@ -17,6 +18,12 @@ import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, server } from '@nasiko/testing/setup'
 import { skipKey } from './logic'
+
+// The real 5 s hold would make every flow slow: 2 s still proves the countdown and outlasts a click under a loaded run.
+vi.mock('./logic', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./logic')>()),
+  CONTINUE_HOLD_SECONDS: 2,
+}))
 
 setupPinnedSeed()
 afterEach(() => clearUploads())
@@ -30,6 +37,15 @@ const firstTime = () =>
 // The open guide is modal: Base UI hides the rest of the page from the accessibility tree.
 const nav = () => screen.getByRole('navigation', { name: shellCopy.navLabel, hidden: true })
 const guide = () => screen.findByRole('dialog', { name: /welcome to nasiko/i })
+/** The primary button stays focusable while off, so it says so with aria-disabled. */
+const off = (b: HTMLElement) => expect(b).toHaveAttribute('aria-disabled', 'true')
+const on = (b: HTMLElement) => expect(b).not.toHaveAttribute('aria-disabled', 'true')
+/** The step's primary button (Get started, Continue or Finish), once its wait is over. */
+async function advance(user: UserEvent, name: RegExp = /continue/i) {
+  const button = screen.getByRole('button', { name })
+  await waitFor(() => on(button))
+  await user.click(button)
+}
 
 describe('first-run guide', () => {
   it('stands in for Home and hides its nav item', async () => {
@@ -37,11 +53,41 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     expect(within(nav()).queryByRole('link', { name: 'Home', hidden: true })).toBeNull()
-    // Home was the first group's only item: Fleet opens the nav, without a header (PR3 review).
-    expect(within(nav()).getByRole('link', { name: 'Agents', hidden: true })).toBeInTheDocument()
-    expect(within(nav()).queryByText(shellCopy.nav.fleet)).toBeNull()
+    // Chat still opens the nav, so Fleet keeps its header.
+    expect(within(nav()).getByRole('link', { name: 'Chat', hidden: true })).toBeInTheDocument()
+    expect(within(nav()).getByText(shellCopy.nav.fleet)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Setup guide', hidden: true })).toBeNull()
     await waitFor(() => expect(screen.getByRole('button', { name: /get started/i })).toHaveFocus())
+  })
+
+  it('holds only the Agent and key step, counting down in the label', async () => {
+    firstTime()
+    const user = userEvent.setup()
+    renderApp('/')
+    await guide()
+    // OpenRuntime's narrative and its four stages come before the capabilities.
+    const stages = screen.getByRole('list', { name: 'How work flows through OpenRuntime' })
+    expect(
+      within(stages)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([
+      expect.stringMatching(/^Connect01/),
+      expect.stringMatching(/^Build02/),
+      expect.stringMatching(/^Run03/),
+      expect.stringMatching(/^Govern04/),
+    ])
+    // Welcome and Role don't hold.
+    on(screen.getByRole('button', { name: /get started/i }))
+    await user.click(screen.getByRole('button', { name: /get started/i }))
+    fireEvent.click(screen.getByRole('radio', { name: /developer/i }))
+    on(screen.getByRole('button', { name: /continue/i }))
+    await user.click(screen.getByRole('button', { name: /continue/i }))
+    // The seed user has a key, so only the hold keeps it off.
+    const held = await screen.findByRole('button', { name: /^Continue \(\d\)$/ })
+    off(held)
+    await waitFor(() => expect(held).toHaveAccessibleName('Continue'))
+    on(held)
   })
 
   it('saves the role on Continue and moves to the Key and agent step', async () => {
@@ -50,12 +96,11 @@ describe('first-run guide', () => {
     const rec = recordRequestBodies()
     renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
-    const cont = screen.getByRole('button', { name: /continue/i })
-    expect(cont).toBeDisabled()
+    await advance(user, /get started/i)
+    off(screen.getByRole('button', { name: /continue/i }))
     await user.click(screen.getByRole('radio', { name: /finops \/ finance/i }))
-    await user.click(cont)
-    await screen.findByRole('heading', { name: '1. Your model key' })
+    await advance(user)
+    await screen.findByRole('heading', { name: '2. Your model key' })
     await rec.flush()
     const patch = rec.requests.find(
       (r) => r.method === 'PATCH' && r.url.pathname === '/api/me/onboarding',
@@ -69,9 +114,9 @@ describe('first-run guide', () => {
     const rec = recordRequestBodies()
     renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await advance(user)
     await user.click(await screen.findByRole('radio', { name: /anthropic/i }))
     await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-test')
     // The eye shows the pasted key, as on the login page.
@@ -92,6 +137,19 @@ describe('first-run guide', () => {
     })
   })
 
+  it('opens on its own only once, finished or not: a new sign-in does not bring it back', async () => {
+    firstTime()
+    renderApp('/')
+    await guide()
+    expect(localStorage.getItem(skipKey(ADMIN_ID))).toBe('1')
+    cleanup()
+    // Sign-out clears drafts; the flag isn't one. Still first-time on the server, but the guide stays shut.
+    clearStoredDrafts()
+    renderApp('/')
+    expect(await screen.findByRole('button', { name: 'Setup guide' })).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('skips for the session: Home and its nav item come back', async () => {
     firstTime()
     const user = userEvent.setup()
@@ -105,29 +163,38 @@ describe('first-run guide', () => {
     expect(localStorage.getItem(skipKey(ADMIN_ID))).toBe('1')
   })
 
-  it("ends on Ready and opens the role's page", async () => {
+  it("ends on the coding harnesses and finishes on the role's page", async () => {
     firstTime()
     const user = userEvent.setup()
     const { router } = renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /sre/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    await screen.findByRole('heading', { name: '1. Your model key' })
+    await advance(user)
+    await screen.findByRole('heading', { name: '2. Your model key' })
     // The seed user's model config counts as their key, so Continue comes on once it loads.
-    await waitFor(() => expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    // Spend less: informational, so its opt-out is worded as a decision, not as skipping a task.
-    await screen.findByRole('heading', { name: 'Cut what your agents spend' })
-    await user.click(screen.getByRole('button', { name: 'I will do this later' }))
-    await screen.findByRole('heading', { name: 'Your workspace is ready' })
-    expect(screen.getByText('SRE / On-call')).toBeInTheDocument()
-    // A key from before the guide is the model, not a skipped step.
-    expect(screen.getAllByText('Skipped')).toHaveLength(1)
-    // Chat and Agents lead; the role's own page follows.
-    expect(screen.getByRole('button', { name: /chat with an agent/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /open agents/i })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /open sessions/i }))
+    await advance(user)
+    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
+    // Install, connect, sign in (no SSO in this edition), then import the harnesses and their past sessions.
+    for (const command of [
+      /curl -fsSL https:\/\/registry\.nasiko\.dev\/r\/nasiko\/install \| bash/,
+      /^nasiko connect /,
+      /^nasiko auth login$/,
+      /^nasiko agents setup$/,
+    ])
+      expect(screen.getByText(command)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Skip guide' })).toBeNull()
+    // More ways on than the harnesses.
+    expect(
+      within(screen.getByRole('heading', { name: 'Or jump straight in' }).parentElement!)
+        .getAllByRole('button')
+        .map((b) => b.textContent),
+    ).toEqual([
+      expect.stringMatching(/^Open Coding harnesses/),
+      expect.stringMatching(/^Chat with an agent/),
+      expect.stringMatching(/^Open Agents/),
+    ])
+    await advance(user, /finish/i)
     await waitFor(() => expect(router.state.location.pathname).toBe('/sessions'))
     expect(screen.queryByRole('dialog')).toBeNull()
   })
@@ -137,10 +204,10 @@ describe('first-run guide', () => {
     const user = userEvent.setup()
     const { router } = renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    await screen.findByRole('heading', { name: '2. Your first agent' })
+    await advance(user)
+    await screen.findByRole('heading', { name: '1. Your first agent' })
     await user.click(await screen.findByRole('tab', { name: 'Registry' }))
     await user.type(
       await screen.findByRole('textbox', { name: deployCopy.registry.reference }),
@@ -149,59 +216,19 @@ describe('first-run guide', () => {
     await user.click(screen.getByRole('button', { name: deployCopy.registry.submit }))
     expect(await screen.findByText(/Your agent is on its way/)).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/')
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    await screen.findByRole('heading', { name: 'Cut what your agents spend' })
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    expect(await screen.findByText('Building')).toBeInTheDocument()
   })
 
-  it('teaches the optimization switches and says where each one lives', async () => {
-    // The only place in the product that tells a new user these exist: they are one tab deep on an
-    // agent and every one is off by default, so a feature nobody discovers may as well not ship.
+  it('opens a running agent in Chat straight from the Agent and key step', async () => {
     firstTime()
     const user = userEvent.setup()
     const { router } = renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
-    await user.click(screen.getByRole('radio', { name: /sre/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    await screen.findByRole('heading', { name: '1. Your model key' })
-    // The seed user's model config counts as their key, so Continue comes on once it loads.
-    await waitFor(() => expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled())
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-
-    const step = await screen.findByRole('heading', { name: 'Cut what your agents spend' })
-    expect(step).toBeInTheDocument()
-    // Each switch is named for what it trims, with the path to find it.
-    for (const name of [
-      'Smaller prompts',
-      'Shorter chat history',
-      'Less code written',
-      'A smaller model when it will do',
-    ]) {
-      expect(screen.getByText(name)).toBeInTheDocument()
-    }
-    expect(screen.getByText(/Agent → Settings → Token optimization/)).toBeInTheDocument()
-    expect(screen.getByText(/Optimization → Your settings/)).toBeInTheDocument()
-    expect(screen.getByText(/LLM router → Configs → Tier models/)).toBeInTheDocument()
-    expect(screen.getByText(/Try one on a single agent first/)).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: 'Open agent settings' }))
-    await waitFor(() => expect(router.state.location.pathname).toBe('/agents'))
-    expect(screen.queryByRole('dialog')).toBeNull()
-  })
-
-  it('opens a running agent in Chat straight from the Key and agent step', async () => {
-    firstTime()
-    const user = userEvent.setup()
-    const { router } = renderApp('/')
-    await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /product manager/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await advance(user)
     // The seed user already has a model config, so Chat is on.
     const running = await screen.findByRole('list', { name: 'Agents running now' })
-    expect(screen.queryByText(/Add your key above to chat/)).toBeNull()
+    expect(screen.queryByText(/Add your key below to chat/)).toBeNull()
     const [first] = within(running).getAllByRole('button', { name: /^Chat with / })
     await user.click(first!)
     await waitFor(() => expect(router.state.location.pathname).toBe('/chat'))
@@ -219,28 +246,28 @@ describe('first-run guide', () => {
     const user = userEvent.setup()
     renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await advance(user)
     const running = await screen.findByRole('list', { name: 'Agents running now' })
-    expect(screen.getByText(/Add your key above to chat/)).toBeInTheDocument()
+    expect(screen.getByText(/Add your key below to chat/)).toBeInTheDocument()
     for (const b of within(running).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeDisabled()
     }
     // Nothing past this step works without a key, so there is no skipping it.
     expect(screen.queryByRole('button', { name: 'Skip this step' })).toBeNull()
-    expect(screen.getByRole('button', { name: /continue/i })).toBeDisabled()
+    off(screen.getByRole('button', { name: /continue/i }))
     // A key connected here turns Chat and Continue on.
     await user.click(screen.getByRole('radio', { name: /anthropic/i }))
     await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-test')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
     await screen.findByText(/Connected · Anthropic/)
-    expect(screen.queryByText(/Add your key above to chat/)).toBeNull()
+    expect(screen.queryByText(/Add your key below to chat/)).toBeNull()
     const again = screen.getByRole('list', { name: 'Agents running now' })
     for (const b of within(again).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeEnabled()
     }
-    expect(screen.getByRole('button', { name: /continue/i })).toBeEnabled()
+    await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
   })
 
   it("says where to get a key, linking the provider's keys page", async () => {
@@ -248,9 +275,9 @@ describe('first-run guide', () => {
     const user = userEvent.setup()
     renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
+    await advance(user)
     await user.click(await screen.findByRole('radio', { name: /anthropic/i }))
     await user.click(screen.getByRole('button', { name: 'Where do I get a key?' }))
     expect(
@@ -265,13 +292,19 @@ describe('first-run guide', () => {
     const user = userEvent.setup()
     renderApp('/')
     await guide()
-    await user.click(screen.getByRole('button', { name: /get started/i }))
+    await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
-    await user.click(screen.getByRole('button', { name: /continue/i }))
-    expect(await screen.findByRole('tab', { name: 'Upload a zip' })).toHaveAttribute(
+    await advance(user)
+    // Registry, GitHub, then Upload a zip; the first is open.
+    expect(await screen.findByRole('tab', { name: 'Registry' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Registry',
+      'GitHub',
+      'Upload a zip',
+    ])
     expect(screen.queryByRole('tab', { name: 'Running now' })).toBeNull()
   })
 

@@ -14,15 +14,17 @@ import {
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
-  it('has the five steps in order, the model key and the first agent as one', () => {
-    expect(STEPS).toEqual(['welcome', 'role', 'start', 'optimize', 'ready'])
+  it('has the four steps in order, the first agent and the model key as one', () => {
+    expect(STEPS).toEqual(['welcome', 'role', 'start', 'harness'])
   })
 
-  it('skips the optimize step when resuming, because it completes nothing', () => {
-    // It configures nothing by itself: stopping a returning user on a page they have already read
-    // would be a step backwards, while a first run still walks through it linearly.
-    expect(firstOpenStep({ role: true, model: true, agent: true })).toBe('ready')
+  it('resumes at the coding harnesses once everything is done', () => {
+    expect(firstOpenStep({ role: true, model: true, agent: true })).toBe('harness')
     expect(firstOpenStep({ role: true, model: true, agent: false })).toBe('start')
+  })
+
+  it('counts down two minutes', () => {
+    expect(STEPS.map((_, i) => minutesLeft(i + 1))).toEqual([2, 2, 1, 0])
   })
 
   it('opens a nav page for every persona', () => {
@@ -50,15 +52,11 @@ describe('onboarding logic', () => {
     expect(firstOpenStep(ticks({ persona: null, configs: 2, agents: 1 }))).toBe('role')
     expect(firstOpenStep(ticks({ persona: 'sre', configs: 0, agents: 1 }))).toBe('start')
     expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 0 }))).toBe('start')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 1 }))).toBe('ready')
+    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 1 }))).toBe('harness')
   })
 
-  it('estimates minutes left like the prototype', () => {
-    expect([1, 2, 3, 4, 5].map(minutesLeft)).toEqual([3, 3, 2, 2, 0])
-  })
-
-  it('keeps the skip flag under the drafts prefix', () => {
-    expect(skipKey('u1').startsWith(DRAFT_PREFIX)).toBe(true)
+  it('keeps the shown flag outside the drafts prefix, so sign-out keeps it', () => {
+    expect(skipKey('u1').startsWith(DRAFT_PREFIX)).toBe(false)
   })
 
   it('offers the built-in providers the catalog prices, Gemini through its google entries', () => {

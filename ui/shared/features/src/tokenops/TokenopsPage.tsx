@@ -146,6 +146,12 @@ export function TokenopsPage({
   const lastMonth = utcMonthStart(now, -1)
   const calThis = useCalendar(monthKey(thisMonth), filters, ready)
   const calLast = useCalendar(monthKey(lastMonth), filters, ready)
+  // The month card follows the window: the month it ends in (user report 2026-11-05: picking Last month left the card
+  // on this month). On this month the keys are the same as above, so nothing is read twice.
+  const heroMonth = utcMonthStart(new Date(Math.min(now.getTime(), win.end.getTime() - 1)))
+  const heroCurrent = monthKey(heroMonth) === monthKey(thisMonth)
+  const calHero = useCalendar(monthKey(heroMonth), filters, ready)
+  const calHeroPrev = useCalendar(monthKey(utcMonthStart(heroMonth, -1)), filters, ready)
   const day = useDay(search.day, filters, ready)
   const providers = useProviders(ready)
   // CX-V3 (proposed): history selection's savings, the /optimization lead's read under the same key.
@@ -200,6 +206,17 @@ export function TokenopsPage({
         : null,
     [calPending, calThis.data, calLast.data, now],
   )
+  const heroPending =
+    calHero.isPending ||
+    calHeroPrev.isPending ||
+    otherMonth(calHero, monthKey(heroMonth)) ||
+    otherMonth(calHeroPrev, monthKey(utcMonthStart(heroMonth, -1)))
+  // A past month is summarised as of its last instant: all of it elapsed, nothing left to forecast.
+  const heroAsOf = heroCurrent ? now.getTime() : utcMonthStart(heroMonth, 1).getTime()
+  const heroSummary =
+    !heroPending && calHero.data && calHeroPrev.data
+      ? summarizeMonth(calHero.data.days, calHeroPrev.data.days, new Date(heroAsOf))
+      : null
   // One page loader until the first paint's reads settle (data or error: a failed read renders its panel's error), in
   // place of the panels' skeletons. Latched: a later window or filter change keeps the panels' own loading states.
   const coldPending =
@@ -569,22 +586,23 @@ export function TokenopsPage({
               {/* `layout`: when the day panel opens above, the month glides down instead of jumping. */}
               <m.div layout="position" transition={transitions.disclosure}>
                 <MonthHero
-                  summary={summary}
+                  summary={heroSummary}
+                  current={heroCurrent}
                   unpricedCalls={
                     win.preset === 'mtd' && noFilters && dash.data && !dash.isPlaceholderData
                       ? unpriced
                       : null
                   }
-                  days={calPending ? undefined : calThis.data?.days}
-                  monthStart={thisMonth}
+                  days={heroPending ? undefined : calHero.data?.days}
+                  monthStart={heroMonth}
                   today={today}
                   selectedDay={search.day}
                   onSelectDay={openDay}
-                  loading={calPending}
-                  error={calThis.error ?? calLast.error}
+                  loading={heroPending}
+                  error={calHero.error ?? calHeroPrev.error}
                   onRetry={() => {
-                    void calThis.refetch()
-                    void calLast.refetch()
+                    void calHero.refetch()
+                    void calHeroPrev.refetch()
                   }}
                 />
               </m.div>

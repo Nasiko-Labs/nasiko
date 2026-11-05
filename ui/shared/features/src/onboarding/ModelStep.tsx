@@ -1,5 +1,5 @@
 /**
- * The Key and agent step's first half (BYOK: Nasiko provides no credits): pick a built-in provider and save its key as
+ * The Agent and key step's second half (BYOK: Nasiko provides no credits): pick a built-in provider and save its key as
  * the caller's default LLM config, through the router's own `useSaveConfig` (key hygiene as there: the mutation keeps
  * nothing and resets on unmount; the key is never read back). "Where do I get a key?" above the field opens the steps.
  */
@@ -30,6 +30,7 @@ import { ApiError } from '@nasiko/data-access/client'
 import { copy } from './copy'
 import { guideProviders, providerName } from './logic'
 import { SectionHeading } from './parts'
+import { ProviderIcon } from './ProviderIcon'
 
 export function ModelStep({
   connected,
@@ -111,6 +112,9 @@ export function ModelStep({
                 className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
               >
                 <RadioGroupItem id={`${ids}-${p.provider}`} value={p.provider} />
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <ProviderIcon provider={p.provider} className="size-4" />
+                </span>
                 <span className="min-w-0">
                   <span className="block text-sm font-medium">{providerName(p.provider)}</span>
                   <span className="block text-xs text-muted-foreground">

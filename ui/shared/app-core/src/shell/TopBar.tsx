@@ -27,11 +27,14 @@ export function ShellTopBar({
   item,
   pathname,
   bare = false,
+  banner,
   children,
 }: {
   item: TopBarSlot['item']
   pathname: string
   bare?: boolean
+  /** A strip stuck above the bar (the shell's assessment banner); `--topbar-h` must include its height. */
+  banner?: ReactNode
   /** The page area: it reads the slot. */
   children: ReactNode
 }) {
@@ -41,40 +44,44 @@ export function ShellTopBar({
   const [claims, setClaims] = useState(0)
   return (
     <TopBarContext value={{ crumbs, actions, stepper, claims, setClaims, item }}>
-      {/* `@container`: a page's bar contents size by the bar (Chat's chip and totals did by the pane). */}
-      <header
-        data-slot="topbar"
-        className={cn(
-          '@container sticky top-0 z-30 flex h-(--topbar-h) shrink-0 items-center gap-2 border-b border-border bg-background px-2 md:px-4',
-          bare && 'md:hidden',
-        )}
-      >
-        <SidebarTrigger
-          data-tour="app-menu"
-          aria-label={copy.openMenu}
-          className="size-11 md:hidden"
-        />
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          {claims === 0 && item ? (
-            <Crumbs
-              group={item.group}
-              items={[pathname === item.to ? item.label : <Link to={item.to}>{item.label}</Link>]}
-            />
-          ) : null}
-          <div ref={setCrumbs} className="contents" />
-        </div>
-        <div
-          data-tour="page-actions"
-          ref={setActions}
-          className="flex shrink-0 items-center gap-1.5 empty:hidden"
-        />
-        <TourButton />
-        <div
-          data-tour="page-stepper"
-          ref={setStepper}
-          className="flex shrink-0 items-center border-l border-border pl-2 empty:hidden"
-        />
-      </header>
+      {/* One sticky block: the banner, then the bar. `@container`: a page's bar contents size by the bar (Chat's chip
+          and totals did by the pane). */}
+      <div className="sticky top-0 z-30 shrink-0">
+        {banner}
+        <header
+          data-slot="topbar"
+          className={cn(
+            '@container flex h-13 items-center gap-2 border-b border-border bg-background px-2 md:px-4',
+            bare && 'md:hidden',
+          )}
+        >
+          <SidebarTrigger
+            data-tour="app-menu"
+            aria-label={copy.openMenu}
+            className="size-11 md:hidden"
+          />
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {claims === 0 && item ? (
+              <Crumbs
+                group={item.group}
+                items={[pathname === item.to ? item.label : <Link to={item.to}>{item.label}</Link>]}
+              />
+            ) : null}
+            <div ref={setCrumbs} className="contents" />
+          </div>
+          <div
+            data-tour="page-actions"
+            ref={setActions}
+            className="flex shrink-0 items-center gap-1.5 empty:hidden"
+          />
+          <TourButton />
+          <div
+            data-tour="page-stepper"
+            ref={setStepper}
+            className="flex shrink-0 items-center border-l border-border pl-2 empty:hidden"
+          />
+        </header>
+      </div>
       {children}
     </TopBarContext>
   )

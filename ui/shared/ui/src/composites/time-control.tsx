@@ -111,8 +111,13 @@ export function CustomRange({
         type="date"
         className="h-8 w-36"
         value={from ?? ''}
-        max={to ?? today}
-        onChange={(e) => onChange({ preset: 'custom', from: e.target.value, to })}
+        // Not capped at To: a picker capped there greys out every later month (user report 2026-11-05). A From past
+        // To moves To up to it instead, as a To before From moves From.
+        max={today}
+        onChange={(e) => {
+          const next = e.target.value
+          onChange({ preset: 'custom', from: next, to: to && next > to ? next : to })
+        }}
       />
       <span aria-hidden>–</span>
       <label className="sr-only" htmlFor="tw-to">
@@ -123,9 +128,11 @@ export function CustomRange({
         type="date"
         className="h-8 w-36"
         value={to ?? ''}
-        min={from}
         max={today}
-        onChange={(e) => onChange({ preset: 'custom', from, to: e.target.value })}
+        onChange={(e) => {
+          const next = e.target.value
+          onChange({ preset: 'custom', from: from && next && next < from ? next : from, to: next })
+        }}
         aria-invalid={invalid || undefined}
         aria-describedby={invalid ? 'tw-invalid' : undefined}
       />

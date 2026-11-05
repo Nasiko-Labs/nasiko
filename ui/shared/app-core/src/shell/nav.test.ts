@@ -46,9 +46,9 @@ describe('nav items', () => {
     ])
     expect(NAV_ITEMS.map((n) => n.label)).toEqual([
       'Home',
+      'Chat',
       'Agents',
       'Workflows',
-      'Chat',
       'Coding harnesses',
       'Sessions',
       'Flows',

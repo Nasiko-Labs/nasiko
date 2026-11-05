@@ -64,8 +64,9 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: readonly NavItem[] = [
-  // plans/feat-agent-centric.md PR3: Home alone opens the nav; Chat sits in Fleet beside the agents it talks to.
+  // Home, then Chat on its own, ahead of Fleet (user request 2026-11-05).
   { to: '/', label: copy.nav.home, icon: House, group: 'work', shared: false },
+  { to: '/chat', label: copy.nav.chat, icon: MessageSquare, group: 'work', shared: false },
   // plans/feat-deploy.md §3: Deploy and Builds are Agents' sub-pages (its sub-nav and "Deploy an agent").
   {
     to: '/agents',
@@ -77,7 +78,6 @@ export const NAV_ITEMS: readonly NavItem[] = [
   },
   // plans/feat-workflows.md §1: Drafts and Runs are its sub-pages (/workflows/*).
   { to: '/workflows', label: copy.nav.workflows, icon: Workflow, group: 'fleet', shared: false },
-  { to: '/chat', label: copy.nav.chat, icon: MessageSquare, group: 'fleet', shared: false },
   {
     to: '/harnesses',
     label: copy.nav.harnesses,

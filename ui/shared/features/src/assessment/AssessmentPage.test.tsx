@@ -86,8 +86,8 @@ describe('assessment', () => {
     expect(assessmentsMockState()).toEqual([])
   })
 
-  it('puts the help rows and the assessment card in the sidebar, the waitlist gone', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+  it('puts the help rows in the sidebar and the assessment banner above the top bar, the waitlist gone', async () => {
+    document.cookie = 'sidebar_state=true; path=/'
     renderApp('/')
     await screen.findByRole('navigation', { name: 'Main' })
     const sidebar = document.querySelector<HTMLElement>('[data-slot="sidebar"]')!
@@ -101,10 +101,13 @@ describe('assessment', () => {
       EXPERT_CALL_URL,
     )
     expect(s.getAllByRole('link', { name: shell.help.cli })[0]).toHaveAttribute('href', '/cli')
-    expect(s.getAllByRole('link', { name: shell.assessment.cta })[0]).toHaveAttribute(
+    expect(s.queryByRole('link', { name: shell.assessment.cta })).toBeNull()
+    const banner = screen.getByRole('region', { name: shell.assessment.title })
+    expect(within(banner).getByRole('link', { name: shell.assessment.cta })).toHaveAttribute(
       'href',
       '/assessment',
     )
     expect(s.queryByText(shell.waitlist.badge)).toBeNull()
+    document.cookie = 'sidebar_state=; path=/; max-age=0'
   })
 })

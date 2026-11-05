@@ -1,6 +1,6 @@
 /**
  * The onboarding guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §3): the prototype's dialog, a
- * left rail of five steps beside the step itself, with Back / Continue below. Lazy (index.ts).
+ * left rail of four steps beside the step itself, with Back / Continue below. Lazy (index.ts).
  */
 import { useNavigate } from '@tanstack/react-router'
 import {
@@ -11,13 +11,14 @@ import {
   Clock,
   DollarSign,
   Gauge,
-  ListTree,
-  MessageSquare,
-  Waypoints,
+  Play,
+  Plug,
+  ShieldCheck,
+  SquareTerminal,
+  WandSparkles,
   X,
-  type LucideIcon,
 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
 import { DotBackground } from '@nasiko/ui/composites/dot-background'
 import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
@@ -34,15 +35,19 @@ import { useConfigs } from '@nasiko/features/router/api'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useGuide, useSavePersona } from './api'
 import { AgentStep } from './AgentStep'
-import { OptimiseStep } from './OptimiseStep'
 import { copy } from './copy'
-import { minutesLeft, opensFor, STEPS, type PersonaPage, type StepId } from './logic'
+import { HarnessStep } from './HarnessStep'
+import { CONTINUE_HOLD_SECONDS, minutesLeft, opensFor, STEPS, type StepId } from './logic'
 import { ModelStep } from './ModelStep'
 import { StepHeading } from './parts'
 import { PERSONAS, type Persona } from './types'
 
-/** The Welcome rows' icons: the nav's own for Agents, Monitor, LLM router, Optimize, Sessions and Chat. */
-const ROW_ICONS = [Bot, DollarSign, Waypoints, Gauge, ListTree, MessageSquare]
+/** The Welcome rows' icons: the nav's own for Agents, Monitor, Optimize and Coding harnesses. */
+const ROW_ICONS = [Bot, DollarSign, Gauge, SquareTerminal]
+const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck]
+/** When each stage lights in the beam's 4 s pass (index.css `--animate-beam` / `--animate-stage`): negative, so the
+ *  loop is already running when the step opens. */
+const STAGE_DELAYS = ['-3.8s', '-2.73s', '-1.67s', '-0.6s']
 const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
 
 export function OnboardingDialog({
@@ -50,7 +55,7 @@ export function OnboardingDialog({
   onClose,
 }: {
   initialStep: StepId
-  /** Skip guide, the close button, Escape, finishing and leaving through a link all end here. */
+  /** Skip guide, the close button, Escape, Finish and leaving through a link all end here. */
   onClose: () => void
 }) {
   const navigate = useNavigate()
@@ -69,25 +74,35 @@ export function OnboardingDialog({
     setReached((r) => Math.max(r, i))
   }
   const next = () => go(index + 1)
+  // The Agent and key step's Continue holds for CONTINUE_HOLD_SECONDS, counting down in its label; each visit restarts it.
+  const [hold, setHold] = useState({ index, left: CONTINUE_HOLD_SECONDS })
+  if (hold.index !== index) setHold({ index, left: CONTINUE_HOLD_SECONDS })
+  const held = step === 'start' ? hold.left : 0
+  useEffect(() => {
+    if (held <= 0) return
+    const t = setTimeout(() => setHold((h) => ({ ...h, left: h.left - 1 })), 1000)
+    return () => clearTimeout(t)
+  }, [held, index])
+  const waiting = held > 0
+  const last = index === STEPS.length - 1
+  const opens = persona ? opensFor(persona) : '/'
+  /** Out of the guide to a page: closing first, so the guide never stays open over it. */
+  const leave = (to: Parameters<typeof navigate>[0]) => {
+    onClose()
+    void navigate(to)
+  }
 
   const onContinue = () => {
-    if (step === 'ready') return onClose()
+    // The last step finishes on the role's own page (the Role step said "Opens …").
+    if (last) return leave({ to: opens })
     if (step !== 'role') return next()
     if (!persona) return
     // Already saved (back on this step): nothing to send.
     if (persona === guide.persona) return next()
     save.mutate(persona, { onSuccess: next })
   }
-  const opens = persona ? opensFor(persona) : '/'
   // Nasiko provides no model credits, so an agent answers nothing until the user has a key of their own.
   const hasKey = !!model || !!configs.data?.length
-  // A key from before the guide is the model Ready shows, not a skipped step.
-  const current = configs.data?.find((c) => c.is_default) ?? configs.data?.[0]
-  /** Out of the guide to a page: closing first, so the guide never stays open over it. */
-  const leave = (to: Parameters<typeof navigate>[0]) => {
-    onClose()
-    void navigate(to)
-  }
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -172,11 +187,11 @@ export function OnboardingDialog({
               {copy.guide.step(index + 1, STEPS.length)}
             </span>
             <span className="flex-1" />
-            {step !== 'ready' ? (
+            {last ? null : (
               <Button type="button" variant="ghost" size="sm" onClick={onClose}>
                 {copy.guide.skipGuide}
               </Button>
-            ) : null}
+            )}
             <Button
               type="button"
               variant="outline"
@@ -205,10 +220,10 @@ export function OnboardingDialog({
                 failed={save.isError}
               />
             ) : null}
+            {/* The agent first, then the key (user request 2026-11-05); Continue still waits for the key. */}
             {step === 'start' ? (
               <div className="flex flex-col gap-10">
                 <StepHeading title={copy.start.title} intro={copy.start.intro} />
-                <ModelStep connected={model} onConnected={setModel} />
                 <AgentStep
                   started={agent}
                   onStarted={setAgent}
@@ -219,35 +234,10 @@ export function OnboardingDialog({
                   }}
                   onLeave={onClose}
                 />
+                <ModelStep connected={model} onConnected={setModel} />
               </div>
             ) : null}
-            {step === 'optimize' ? (
-              <OptimiseStep
-                onOpenAgents={() => leave({ to: '/agents' })}
-                onSavings={() => leave({ to: '/optimization' })}
-              />
-            ) : null}
-            {step === 'ready' ? (
-              <Ready
-                rows={[
-                  {
-                    step: 'role',
-                    label: copy.ready.role,
-                    value: persona ? copy.role.personas[persona].title : null,
-                  },
-                  { step: 'start', label: copy.ready.model, value: model ?? current?.name ?? null },
-                  {
-                    step: 'start',
-                    label: copy.ready.agent,
-                    value: agent ? copy.ready.building : null,
-                  },
-                ]}
-                onEdit={(s) => go(STEPS.indexOf(s))}
-                opens={opens}
-                hasKey={hasKey}
-                onGo={(to) => leave({ to })}
-              />
-            ) : null}
+            {step === 'harness' ? <HarnessStep onOpen={(to) => leave({ to })} /> : null}
           </div>
 
           <div className="flex items-center gap-2 border-t px-6 py-3">
@@ -258,28 +248,29 @@ export function OnboardingDialog({
               </Button>
             ) : null}
             <span className="flex-1" />
-            {/* Informational, so there is nothing to complete: the opt-out is worded as a
-                decision rather than as skipping an unfinished task. */}
-            {step === 'optimize' ? (
-              <Button type="button" variant="outline" onClick={next}>
-                {copy.optimise.skip}
-              </Button>
-            ) : null}
             <Button
               ref={primary}
               type="button"
+              // Focusable while off, so focus never drops to the page while it holds or waits for a key.
+              focusableWhenDisabled
+              className="data-disabled:pointer-events-none data-disabled:opacity-50"
               // No skipping the key: nothing past it works without one. Skip guide is the way out.
               disabled={
-                (step === 'role' && !persona) || (step === 'start' && !hasKey) || save.isPending
+                waiting ||
+                (step === 'role' && !persona) ||
+                (step === 'start' && !hasKey) ||
+                save.isPending
               }
               onClick={onContinue}
             >
               {save.isPending ? <Spinner aria-hidden /> : null}
               {step === 'welcome'
                 ? copy.guide.getStarted
-                : step === 'ready'
+                : last
                   ? copy.guide.finish
-                  : copy.guide.continue}
+                  : held > 0
+                    ? copy.guide.continueIn(held)
+                    : copy.guide.continue}
               <ArrowRight aria-hidden />
             </Button>
           </div>
@@ -300,11 +291,51 @@ const BAND_ANGLE = 248
 function Welcome() {
   const rows = copy.welcome.rows
   return (
-    <div className="relative flex flex-col gap-8">
+    // Sized to fit the dialog without scrolling (user review 2026-11-05): tight gaps, 32 px stage icons, short rows.
+    <div className="relative flex flex-col gap-5">
       <StepHeading
         title={<TextGenerateEffect words={copy.welcome.title} />}
         intro={copy.welcome.intro}
       />
+      {/* The four stages as one flow, as before 2026-11-04 (user review 2026-11-05): our take on Aceternity's Tracing
+          Beam. A beam runs along the line from Connect to Govern and each stage's icon lights as it passes; under
+          reduced motion Connect stays lit. Decorative: the words carry the meaning. */}
+      {/* The line runs between the first and last icons' centres: 1 rem in from each (half a size-8 icon). */}
+      <div className="relative">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute top-4 right-[calc(25%-2.125rem)] left-4 hidden h-px overflow-hidden bg-border sm:block"
+        >
+          <div className="absolute inset-y-0 w-1/4 animate-beam bg-linear-to-r from-transparent via-primary to-transparent motion-reduce:hidden" />
+        </div>
+        <ol aria-label={copy.welcome.stagesLabel} className="grid gap-x-6 gap-y-4 sm:grid-cols-4">
+          {copy.welcome.stages.map((s, i) => {
+            const Icon = STAGE_ICONS[i] ?? Plug
+            return (
+              <li key={s.title} className="relative flex flex-col gap-2">
+                <span
+                  aria-hidden
+                  style={{ animationDelay: STAGE_DELAYS[i] }}
+                  className={cn(
+                    'flex size-8 animate-stage items-center justify-center rounded-lg border bg-muted text-foreground ring-4 ring-background motion-reduce:animate-none',
+                    i === 0 &&
+                      'motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground',
+                  )}
+                >
+                  <Icon className="size-4" />
+                </span>
+                <div>
+                  <p className="flex items-baseline gap-2 text-sm font-medium">
+                    {s.title}
+                    <span className="font-mono text-[11px] font-normal text-muted-foreground">{`0${i + 1}`}</span>
+                  </p>
+                  <p className="text-xs text-pretty text-muted-foreground">{s.line}</p>
+                </div>
+              </li>
+            )
+          })}
+        </ol>
+      </div>
       {/* Capability beside outcome (user review 2026-11-04): what Nasiko does, and what that gets you. The outcome is
           the point, so it carries the weight. The step's one effect area, all Aceternity (user request 2026-11-04): the
           dot background behind it, the title's words arriving, and the Glowing Effect on the panel's edge, the tour's
@@ -333,7 +364,7 @@ function Welcome() {
                 <div
                   key={r.does}
                   data-row
-                  className="grid gap-1.5 px-4 py-3 sm:grid-cols-2 sm:items-center sm:gap-6"
+                  className="grid gap-1.5 px-4 py-2 sm:grid-cols-2 sm:items-center sm:gap-6"
                 >
                   <dt
                     className={cn(
@@ -421,109 +452,5 @@ function Role({
         ))}
       </RadioGroup>
     </div>
-  )
-}
-
-function Ready({
-  rows,
-  onEdit,
-  opens,
-  hasKey,
-  onGo,
-}: {
-  rows: { step: StepId; label: string; value: string | null }[]
-  onEdit: (step: StepId) => void
-  opens: PersonaPage
-  hasKey: boolean
-  onGo: (to: PersonaPage) => void
-}) {
-  return (
-    <div className="flex flex-col gap-6">
-      <span className="flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground">
-        <Check aria-hidden className="size-6" />
-      </span>
-      <StepHeading title={copy.ready.title} intro={copy.ready.intro} />
-      <ul className="divide-y rounded-xl border bg-card">
-        {rows.map((r) => (
-          <li key={r.label} className="flex items-center gap-3 px-4 py-3 text-sm">
-            <span
-              className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-full',
-                r.value ? 'bg-primary text-primary-foreground' : 'border',
-              )}
-            >
-              {r.value ? <Check aria-hidden className="size-3" /> : null}
-            </span>
-            <span className="w-20 text-muted-foreground">{r.label}</span>
-            <span className="flex-1 font-medium">{r.value ?? copy.ready.skipped}</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-label={copy.ready.edit(r.label)}
-              onClick={() => onEdit(r.step)}
-            >
-              {copy.ready.editShort}
-            </Button>
-          </li>
-        ))}
-      </ul>
-      {/* Chat and Agents lead for everyone (user review 2026-11-04); the role's own page follows when it is another. */}
-      <section className="flex flex-col gap-3">
-        <h3 className="text-sm font-medium">{copy.ready.next}</h3>
-        <div className="grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-3">
-          {/* No key, no answer: Chat takes the user back to add one rather than to a chat that fails. */}
-          <Choice
-            icon={MessageSquare}
-            title={copy.ready.chat}
-            line={hasKey ? copy.ready.chatLine : copy.ready.chatNeedsKey}
-            onClick={() => (hasKey ? onGo('/chat') : onEdit('start'))}
-          />
-          <Choice
-            icon={Bot}
-            title={copy.ready.agents}
-            line={copy.ready.agentsLine}
-            onClick={() => onGo('/agents')}
-          />
-          {opens !== '/' && opens !== '/chat' && opens !== '/agents' ? (
-            <Choice
-              icon={ArrowRight}
-              title={copy.ready.open(pageLabel(opens))}
-              line={copy.ready.openLine}
-              onClick={() => onGo(opens)}
-            />
-          ) : null}
-        </div>
-      </section>
-    </div>
-  )
-}
-
-function Choice({
-  icon: Icon,
-  title,
-  line,
-  onClick,
-}: {
-  icon: LucideIcon
-  title: string
-  line: string
-  onClick: () => void
-}) {
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      onClick={onClick}
-      className="h-auto justify-start gap-3 rounded-xl p-4 text-left whitespace-normal"
-    >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <Icon aria-hidden className="size-4" />
-      </span>
-      <span className="min-w-0">
-        <span className="block font-medium">{title}</span>
-        <span className="block text-xs font-normal text-muted-foreground">{line}</span>
-      </span>
-    </Button>
   )
 }

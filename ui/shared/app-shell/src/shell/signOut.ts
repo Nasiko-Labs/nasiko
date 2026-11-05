@@ -12,6 +12,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { logout } from '@nasiko/data-access/auth'
 import { isDeadSession401 } from '@nasiko/data-access/detect'
 import { clearStoredDrafts } from '@nasiko/app-core/draftKeys'
+import { clearSidebarCookie } from '@nasiko/app-core/shell/sidebarState'
 import {
   broadcastSession,
   clearSignedOutMark,
@@ -183,6 +184,8 @@ export async function clearLocalState(queryClient: QueryClient, userId: string |
     // drafts stored by an earlier page load still sit in localStorage.
     clearStoredDrafts()
   }
+  // The next sign-in starts with the sidebar collapsed.
+  clearSidebarCookie()
   // After chat and drafts (eng review R6 keeps that order): uploads and followed builds.
   await stopDeployWork()
   await resetQueryClient(queryClient)

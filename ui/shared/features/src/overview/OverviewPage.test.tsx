@@ -274,10 +274,10 @@ describe('first run (design 7A)', () => {
     expect(screen.getAllByRole('link', { name: deployCopy.entry.label })).toHaveLength(1)
     expect(screen.queryByRole('button', { name: copy.setup.button })).toBeNull()
     expect(within(card('overview-actions')).queryByRole('button', { name: /Copy/ })).toBeNull()
-    // The seed user picked a role and has router configs, but no agents yet: the guide resumes at Key and agent.
+    // The seed user picked a role and has router configs, but no agents yet: the guide resumes at Agent and key.
     await user.click(within(guideCard).getByRole('button', { name: 'Resume guide' }))
     expect(
-      await screen.findByRole('dialog', { name: 'Add your key, then chat with an agent' }),
+      await screen.findByRole('dialog', { name: 'Bring an agent, then add your key' }),
     ).toBeInTheDocument()
   })
 
@@ -291,7 +291,7 @@ describe('first run (design 7A)', () => {
     expect(await screen.findByText(/^nasiko connect /)).toBeInTheDocument()
     expect(screen.getByText('nasiko deploy ./my-agent')).toBeInTheDocument()
     await user.click(within(guideCard).getByRole('button', { name: /^Connect a model/ }))
-    expect(await screen.findByRole('heading', { name: '1. Your model key' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '2. Your model key' })).toBeInTheDocument()
   })
 
   it('says Start guide until a step is done', async () => {
@@ -328,9 +328,9 @@ describe('first run (design 7A)', () => {
     const button = await screen.findByRole('button', { name: 'Setup guide' })
     await waitFor(() => expect(button).toBeEnabled())
     await user.click(button)
-    // A finished user with configs and agents reopens at Ready.
+    // A finished user with configs and agents reopens at the last step, Coding harnesses.
     expect(
-      await screen.findByRole('dialog', { name: 'Your workspace is ready' }),
+      await screen.findByRole('dialog', { name: 'Bring in your coding harnesses' }),
     ).toBeInTheDocument()
   })
 

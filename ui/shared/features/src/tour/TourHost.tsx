@@ -36,7 +36,8 @@ export function TourHost() {
   const sub = useQuery({ ...meQuery, refetchOnMount: false, retryOnMount: false }).data?.sub
   const prefs = useTourPrefs(sub)
   const guide = useGuide()
-  const guideOpen = useGuideState().open
+  const guideState = useGuideState()
+  const guideOpen = guideState.open
   const busy = useIsFetching() > 0
   const layerTours = useSlots().tours
   const [open, setOpen] = useState<Open | null>(null)
@@ -68,10 +69,12 @@ export function TourHost() {
 
   // A first-time user turns the automatic tour on, once: after No thanks or the tour itself (which mark the Overview's
   // seen) it stays off.
+  // The guide records its first opening at once, so its own first run counts as first-time too.
+  const firstRun = guide.due || (guideOpen && guideState.firstRun)
   useEffect(() => {
-    if (sub && guide.due && !prefs.auto && !prefs.seen.includes('overview'))
+    if (sub && firstRun && !prefs.auto && !prefs.seen.includes('overview'))
       writePrefs(sub, { ...prefs, auto: true })
-  }, [sub, guide.due, prefs])
+  }, [sub, firstRun, prefs])
 
   const dueId = sub && !guide.due && !guideOpen && !open ? dueTour(prefs, pathname) : null
   useEffect(() => {

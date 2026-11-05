@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   BookOpen,
   CalendarClock,
+  ClipboardCheck,
   CircleAlert,
   CircleUser,
   Compass,
@@ -89,9 +90,9 @@ import {
   type Theme,
 } from '@nasiko/app-core/shell/theme'
 import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
-// The waitlist card gave way to the free-assessment card (user request 2026-10-22); WaitlistCta.tsx stays for now.
+// The waitlist card gave way to the free-assessment banner above the top bar (AssessmentCta.tsx); WaitlistCta.tsx stays
+// for now.
 // import { WaitlistCard } from './WaitlistCta'
-import { AssessmentCard } from './AssessmentCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
 const CHECKING_DELAY_MS = 1_000
@@ -118,7 +119,6 @@ export function AppSidebar({
   const { edition, slots } = use(EditionContext)
   const layers = edition.layers
   const Brand = slots.sidebarBrand
-  const SidebarCard = slots.sidebarCard
   const { setOpenMobile, isMobile, state } = useSidebar()
   const rail = state === 'collapsed' && !isMobile
   const { panels, setTarget } = use(SidebarPanelContext)
@@ -236,14 +236,7 @@ export function AppSidebar({
           className="flex min-h-0 flex-1 flex-col"
         />
       ) : null}
-      {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
-          background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
       {/* {holds ? null : <WaitlistCard />} */}
-      {holds ? null : SidebarCard ? (
-        <SidebarCard />
-      ) : pathname === '/assessment' ? null : (
-        <AssessmentCard />
-      )}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
           <HelpRows pathname={pathname} onPick={pick} />
@@ -481,6 +474,26 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
         >
           <SquareTerminal aria-hidden />
           <span className={LABEL}>{copy.help.cli}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      {/* Always here, so the assessment stays one click away after its banner is dismissed. */}
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          isActive={pathname === '/assessment'}
+          tooltip={copy.help.assessment}
+          className={cn(ROW, ACTIVE_ROW)}
+          render={
+            <Link
+              to="/assessment"
+              onClick={() => {
+                onPick()
+                setOpenMobile(false)
+              }}
+            />
+          }
+        >
+          <ClipboardCheck aria-hidden />
+          <span className={LABEL}>{copy.help.assessment}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}

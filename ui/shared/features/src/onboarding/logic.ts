@@ -1,10 +1,9 @@
 /** Pure onboarding rules (plan Task 1): the step model, where each persona lands, and the home's Setup guide ticks. */
-import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
 import type { Onboarding, Persona } from './types'
 
-/** `start` is one step for the model key and the first agent: the key first, since Nasiko provides no model credits and
- *  no agent answers without one. */
-export const STEPS = ['welcome', 'role', 'start', 'optimize', 'ready'] as const
+/** `start` is one step for the first agent and the model key (Nasiko provides no model credits, so Continue waits for the
+ *  key); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready). */
+export const STEPS = ['welcome', 'role', 'start', 'harness'] as const
 export type StepId = (typeof STEPS)[number]
 
 /** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. Nobody is sent to
@@ -38,25 +37,25 @@ export function ticks(v: { persona: Persona | null; configs: number; agents: num
   return { role: v.persona !== null, model: v.configs > 0, agent: v.agents > 0 }
 }
 
-/**
- * Resume at the first step not done yet; all done: Ready.
- *
- * `optimise` has no tick of its own and is skipped on resume: it configures nothing by itself, so a
- * returning user would be stopped by a page they have already read. A first run still walks through
- * it, which is the audience it exists for.
- */
+/** Resume at the first step not done yet; all done: the coding harnesses step, which has no tick of its own. */
 export function firstOpenStep(t: Ticks): StepId {
   if (!t.role) return 'role'
   if (!t.model || !t.agent) return 'start'
-  return 'ready'
+  return 'harness'
 }
 
-/** Minutes left on step n (1-based), the prototype's estimate; none on Ready. */
+/** Minutes left on step n (1-based) of the two-minute guide: two on Welcome and Role, one from the Agent and key step,
+ *  none on the last (user review 2026-11-05). */
 export const minutesLeft = (n: number) =>
-  n >= STEPS.length ? 0 : Math.max(1, 4 - Math.ceil(n / 2))
+  n >= STEPS.length ? 0 : Math.ceil((STEPS.length - n + 1) / 2)
 
-/** "Skip guide" lasts until sign-out: under the drafts prefix, so sign-out's draft clearing drops it too. */
-export const skipKey = (sub: string) => `${DRAFT_PREFIX}${sub}:meta:guideSkipped`
+/** How long the Agent and key step's Continue stays off, counting down in its label, so the step is read before it is
+ *  passed (user request 2026-11-05: that step only). */
+export const CONTINUE_HOLD_SECONDS = 5
+
+/** The guide opens on its own once per user (user request 2026-11-05): set when it does, and not under the drafts prefix,
+ *  so sign-out keeps it and an unfinished guide never comes back by itself. The Setup guide still reopens it. */
+export const skipKey = (sub: string) => `openruntime.guideShown:${sub}`
 
 /** The built-in providers' display names (settings/copy.ts lists the same three); anything else shows its id. */
 const PROVIDER_NAMES: Record<string, string> = {

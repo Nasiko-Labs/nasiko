@@ -83,6 +83,22 @@ describe('time control', () => {
     )
   })
 
+  // Regression (user report 2026-11-05): From was capped at To, so every month after To was greyed out in its picker.
+  it('lets From go past To, moving To with it, and To before From, moving From', async () => {
+    const { router } = renderApp('/tokenops?open=all&preset=custom&from=2026-01-01&to=2026-01-05')
+    const from = await screen.findByLabelText('From (UTC)')
+    expect(from).toHaveAttribute('max', '2026-03-20')
+    expect(screen.getByLabelText('To (UTC)')).not.toHaveAttribute('min')
+    fireEvent.change(from, { target: { value: '2026-03-10' } })
+    await waitFor(() =>
+      expect(router.state.location.search).toMatchObject({ from: '2026-03-10', to: '2026-03-10' }),
+    )
+    fireEvent.change(screen.getByLabelText('To (UTC)'), { target: { value: '2026-02-01' } })
+    await waitFor(() =>
+      expect(router.state.location.search).toMatchObject({ from: '2026-02-01', to: '2026-02-01' }),
+    )
+  })
+
   it('editing custom dates replaces history instead of adding a Back step per change', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/tokenops?open=all&preset=30d')
@@ -218,5 +234,24 @@ describe('coming back to the page', () => {
       restoreClockAndVisibility()
       rec.stop()
     }
+  })
+})
+
+// Regression (user report 2026-11-05): picking another month left the month card on this one.
+describe('the month card follows the window', () => {
+  it('shows the whole of last month, without a forecast, when Last month is picked', async () => {
+    renderApp('/tokenops?preset=last-month')
+    const title = await screen.findByRole('heading', { name: /February 2026/ })
+    expect(title).toHaveTextContent(/^Month/)
+    const card = title.closest('section')!
+    expect(await within(card).findByTestId('mtd-spend')).toHaveTextContent(/\$/)
+    expect(within(card).queryByTestId('forecast')).toBeNull()
+    expect(within(card).getByText(/the month before|No spend the month before/)).toBeInTheDocument()
+  })
+
+  it('stays on this month for a window that ends now', async () => {
+    renderApp('/tokenops?preset=7d')
+    const title = await screen.findByRole('heading', { name: /March 2026/ })
+    expect(title).toHaveTextContent(/^This month/)
   })
 })

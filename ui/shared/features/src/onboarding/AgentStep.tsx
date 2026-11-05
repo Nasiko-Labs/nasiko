@@ -1,6 +1,7 @@
 /**
- * The Key and agent step's second half: agents already running, to chat with once there is a key (Chat waits for it:
- * Nasiko provides no credits), then the Deploy page's own Upload, GitHub and Registry tabs. A started deploy stays in the guide (`onStarted`); the background follower toasts
+ * The Agent and key step's first half: agents already running, to chat with once there is a key (Chat waits for it:
+ * Nasiko provides no credits), then the Deploy page's own Registry, GitHub and Upload tabs (that order, user request
+ * 2026-11-05). A started deploy stays in the guide (`onStarted`); the background follower toasts
  * when its build finishes (plans/feat-deploy.md eng R8).
  */
 import { useQuery } from '@tanstack/react-query'
@@ -81,14 +82,14 @@ export function AgentStep({
         <Skeleton className="h-48 w-full" />
       ) : (
         // Running agents first: chatting with one is the quickest start. A failed list just leaves the deploy tabs.
-        <Tabs defaultValue={running.length ? 'try' : 'upload'} className="gap-4">
+        <Tabs defaultValue={running.length ? 'try' : 'registry'} className="gap-4">
           {/* Sticks to the top of the guide's scrolling body (px-6 py-8 md:px-10, so -top-8), as on the Deploy page. */}
           <div className="sticky -top-8 z-20 -mx-6 bg-background px-6 py-2 md:-mx-10 md:px-10">
             <TabsList>
               {running.length ? <TabsTrigger value="try">{copy.agent.try}</TabsTrigger> : null}
-              <TabsTrigger value="upload">{copy.agent.upload}</TabsTrigger>
-              <TabsTrigger value="github">{copy.agent.github}</TabsTrigger>
               <TabsTrigger value="registry">{copy.agent.registry}</TabsTrigger>
+              <TabsTrigger value="github">{copy.agent.github}</TabsTrigger>
+              <TabsTrigger value="upload">{copy.agent.upload}</TabsTrigger>
             </TabsList>
           </div>
           {running.length ? (
@@ -102,14 +103,14 @@ export function AgentStep({
               <Running agents={running} hasKey={hasKey} onChat={onChat} />
             </TabsContent>
           ) : null}
-          <TabsContent value="upload">
-            <UploadTab userId={me.sub} prefill={{}} onStarted={onStarted} />
+          <TabsContent value="registry">
+            <RegistryTab userId={me.sub} onStarted={onStarted} />
           </TabsContent>
           <TabsContent value="github">
             <GithubTab search={search} setSearch={setSearch} onStarted={onStarted} />
           </TabsContent>
-          <TabsContent value="registry">
-            <RegistryTab userId={me.sub} onStarted={onStarted} />
+          <TabsContent value="upload">
+            <UploadTab userId={me.sub} prefill={{}} onStarted={onStarted} />
           </TabsContent>
         </Tabs>
       )}
