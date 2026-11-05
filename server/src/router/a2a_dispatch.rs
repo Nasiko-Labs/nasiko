@@ -1709,7 +1709,6 @@ async fn agent_stream(
     let hitl_store = state.hitl_store.clone();
     let agent_id_for_hitl = agent.id;
     let agent_start = Instant::now();
-    let call_timeout_secs = state.config.agent_call_timeout_secs;
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
@@ -1753,13 +1752,8 @@ async fn agent_stream(
                         };
                         let chunk = match chunk_result {
                             Ok(c) => c,
-                            Err(e) => {
+                            Err(_) => {
                                 request_guard.set_outcome(RequestOutcome::Error);
-                                // The reply was cut off, so the turn did not complete. Without a
-                                // reason here the tail below would report it "completed".
-                                if agent_error.is_none() {
-                                    agent_error = Some(stream_cut_reason(&e, call_timeout_secs));
-                                }
                                 agent_done = true;
                                 continue;
                             }
@@ -1865,22 +1859,20 @@ async fn agent_stream(
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                 }
 
-                if let Some(err) = &agent_error {
-                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, err))));
+                if let Some(err) = agent_error {
+                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
                 } else {
                     yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                 }
 
                 // Guarded on 'running' like the other completion sites: a terminal
-                // 'failed'/'paused' is never downgraded by a later completion. A turn that ended
-                // in an error is recorded as failed, with the reason the user was shown.
+                // 'failed'/'paused' is never downgraded by a later completion.
                 let _ = sqlx::query(
-                    r#"UPDATE flows SET status = CASE WHEN $2::TEXT IS NULL THEN 'completed' ELSE 'failed' END,
-                       error_message = $2,
+                    r#"UPDATE flows SET status = 'completed',
                        duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                        completed_at = now()
                        WHERE flow_id = $1 AND status = 'running'"#,
-                ).bind(&flow_id_cleanup).bind(agent_error.as_deref()).execute(&db).await;
+                ).bind(&flow_id_cleanup).execute(&db).await;
                 flow_events.remove(&flow_id_cleanup).await;
             }
         };
@@ -2700,17 +2692,6 @@ fn non_streaming_reply_outcome(status_ok: bool, body: &serde_json::Value) -> Req
     RequestOutcome::from_success(status_ok && body.get("error").is_none() && !task_failed)
 }
 
-/// Why the agent's reply stream ended before its final event, in words for the user.
-fn stream_cut_reason(err: &reqwest::Error, call_timeout_secs: u64) -> String {
-    if err.is_timeout() {
-        format!(
-            "The agent did not finish within the {call_timeout_secs}-second limit, so its reply was cut off."
-        )
-    } else {
-        "The connection to the agent was lost before it finished replying.".to_string()
-    }
-}
-
 fn extract_failure_message(data: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
     let status_update = parsed
@@ -3376,50 +3357,5 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod stream_cut_tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-
-    /// HD-04: an agent that is still working when the agent-call budget runs out. The relay's
-    /// stream read fails with a timeout, and the user must be told so, not shown "completed".
-    #[tokio::test]
-    async fn a_reply_cut_off_by_the_time_limit_is_reported_as_such() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
-            // Headers and the first event, then silence: the agent is still working.
-            let _ = socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {}\n\n",
-                )
-                .await;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        });
-
-        let client = reqwest::Client::new();
-        let response = client
-            .get(format!("http://{addr}/"))
-            .timeout(std::time::Duration::from_millis(300))
-            .send()
-            .await
-            .unwrap();
-        let mut stream = response.bytes_stream();
-        let err = loop {
-            match stream.next().await {
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => break e,
-                None => panic!("the stream ended without the timeout error"),
-            }
-        };
-
-        let reason = stream_cut_reason(&err, 180);
-        assert!(reason.contains("180-second limit"), "{reason}");
     }
 }

@@ -2489,9 +2489,6 @@ impl ObservabilityService {
             p50_latency: Option<f64>,
             p95_latency: Option<f64>,
             p99_latency: Option<f64>,
-            /// Every row has no agent id: the platform's own calls (orchestrator routing and
-            /// MAF planning, service `nasiko-cp`), which belong to no registered agent.
-            platform: bool,
         }
 
         let agent_filter: Option<&str> = agent_name;
@@ -2527,8 +2524,7 @@ impl ObservabilityService {
                       COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
                       percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
                       percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
-                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency,
-                      BOOL_AND(agent_id IS NULL) AS platform
+                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency
                FROM trace_usage
                WHERE started_at >= $1 AND started_at < $2
                  AND ($3::TEXT IS NULL OR agent_name = $3)
@@ -2755,39 +2751,6 @@ impl ObservabilityService {
             });
         }
 
-        // The platform's own calls are real spend under no registered agent, so the loop above
-        // never meets them. A caller who sees the whole fleet gets them in the totals, and as
-        // one slice of the spend chart.
-        let mut platform_cost = 0.0;
-        if accessible.is_none() && parsed_owner_id.is_none() && agent_name.is_none() {
-            let registered: HashSet<&str> =
-                agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
-            let is_platform =
-                |r: &&TraceUsageAgg| r.platform && !registered.contains(r.agent_name.as_str());
-            for r in current_rows.iter().filter(is_platform) {
-                grand_input += r.input_tokens as u64;
-                grand_output += r.output_tokens as u64;
-                grand_cache_read += r.cache_read_tokens as u64;
-                grand_cache_creation += r.cache_creation_tokens as u64;
-                grand_cost += r.total_cost;
-                grand_tool_calls += r.tool_call_count as u64;
-                total_ops += r.operations as usize;
-                latency_samples.extend(r.p50_latency);
-                latency_samples_p95.extend(r.p95_latency);
-                latency_samples_p99.extend(r.p99_latency);
-                platform_cost += r.total_cost;
-            }
-            for r in prev_rows.iter().filter(is_platform) {
-                prev_grand_cost += r.total_cost;
-                prev_grand_total_tokens += (r.input_tokens + r.output_tokens) as u64;
-                prev_total_ops += r.operations as usize;
-                prev_grand_tool_calls += r.tool_call_count as u64;
-                prev_latency_samples.extend(r.p50_latency);
-                prev_latency_samples_p95.extend(r.p95_latency);
-                prev_latency_samples_p99.extend(r.p99_latency);
-            }
-        }
-
         let avg_cost = if total_ops > 0 {
             round6(grand_cost / total_ops as f64)
         } else {
@@ -2867,13 +2830,6 @@ impl ObservabilityService {
                     agent_name: "Others".into(),
                     spend_usd: round6(others),
                     pct: pct(others),
-                });
-            }
-            if platform_cost > 0.0 {
-                slices.push(SpendPieSlice {
-                    agent_name: "Platform (routing and planning)".into(),
-                    spend_usd: round6(platform_cost),
-                    pct: pct(platform_cost),
                 });
             }
             SpendByAgentBreakdown {

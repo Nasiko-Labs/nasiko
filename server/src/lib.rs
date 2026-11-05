@@ -31,6 +31,7 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
+pub mod error_reporting;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -490,6 +491,11 @@ where
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())
         .merge(registry_routes)
+        // Public: the UI's error-reporting settings and its Sentry tunnel (off unless configured).
+        .merge(error_reporting::router(
+            error_reporting::current_config(),
+            state.http_client.clone(),
+        ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
@@ -535,6 +541,9 @@ where
                 span
             },
         ))
+        // Outermost, so the request's Sentry transaction is the parent of the span above. A
+        // pass-through unless this server reports to Sentry (see `error_reporting`).
+        .layer(middleware::from_fn(error_reporting::trace_requests))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error
