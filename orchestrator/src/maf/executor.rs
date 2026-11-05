@@ -236,23 +236,43 @@ async fn write_token_usage(
 /// is recorded and priced alike; each caller describes its call in `metadata`.
 /// `session_id` is `None` for a call that belongs to no run.
 ///
-/// `cost_usd` is not bound: leaving it NULL is what lets the DB trigger price
-/// the row. Writing a zero here would defeat it.
+/// The row is priced here, by the same engine and with the same `metadata.pricing`
+/// record as the LLM router's rows: the database trigger that once priced rows left
+/// with no cost was dropped (migration 0043), so an unpriced row now stays at $0.
 pub async fn insert_token_usage(
     db: &PgPool,
     user_id: Uuid,
     session_id: Option<&str>,
     provider: &str,
     usage: &LlmUsage,
-    metadata: serde_json::Value,
+    mut metadata: serde_json::Value,
 ) -> Result<(), sqlx::Error> {
+    let priced = nasiko_pricing::PricingEngine::new(db.clone())
+        .price(
+            Some(provider),
+            &usage.model,
+            nasiko_pricing::RawUsage {
+                input: usage.input_tokens.max(0) as u64,
+                output: usage.output_tokens.max(0) as u64,
+                cache_read: usage.cached_tokens.max(0) as u64,
+                cache_creation: 0,
+                total: Some(usage.total_tokens.max(0) as u64),
+            },
+            // The planner's `input_tokens` is OpenAI's `prompt_tokens`, which counts the cached part.
+            nasiko_pricing::PromptConvention::Inclusive,
+            chrono::Utc::now(),
+        )
+        .await;
+    if let Some(fields) = metadata.as_object_mut() {
+        fields.insert("pricing".into(), priced.provenance());
+    }
     sqlx::query(
         r#"INSERT INTO token_usage
                (user_id, operation_type, session_id, provider, model,
                 input_tokens, output_tokens, total_tokens,
                 cached_tokens, cache_read_input_tokens,
-                latency_ms, streaming, metadata)
-           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10)"#,
+                latency_ms, streaming, metadata, cost_usd)
+           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10, $11)"#,
     )
     .bind(user_id)
     .bind(session_id)
@@ -264,6 +284,7 @@ pub async fn insert_token_usage(
     .bind(usage.cached_tokens as i32)
     .bind(usage.latency_ms as i32)
     .bind(metadata)
+    .bind(priced.cost.total_usd)
     .execute(db)
     .await
     .map(|_| ())
@@ -870,11 +891,14 @@ pub async fn execute_step(
     // stored value rather than failing outright — matching the proxy's
     // handling, and the only route by which an externally-registered
     // agent still works.
-    let endpoint = match nasiko_agent_proxy::resolve(db, step.agent_id).await {
-        Ok(resolved) => resolved
-            .endpoint
-            .map(|e| format!("http://{}:{}", e.host, e.port))
-            .unwrap_or_else(|| step.agent_endpoint.clone()),
+    let (endpoint, a2a_path) = match nasiko_agent_proxy::resolve(db, step.agent_id).await {
+        Ok(resolved) => (
+            resolved
+                .endpoint
+                .map(|e| format!("http://{}:{}", e.host, e.port))
+                .unwrap_or_else(|| step.agent_endpoint.clone()),
+            resolved.transport_path,
+        ),
         Err(e) => {
             let err = format!(
                 "step {} (agent '{}'): {e}",
@@ -959,6 +983,7 @@ pub async fn execute_step(
             call_agent(
                 client,
                 &endpoint,
+                a2a_path.as_deref(),
                 &execution_id.to_string(),
                 &user_id.to_string(),
                 &actual_prompt,
@@ -2122,9 +2147,12 @@ fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
     (traceparent, trace_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn call_agent(
     client: &reqwest::Client,
     endpoint: &str,
+    // The agent's A2A mount from its card (`agents.transport_path`); see `post_a2a_request`.
+    a2a_path: Option<&str>,
     context_id: &str,
     user_id: &str,
     prompt: &str,
@@ -2165,7 +2193,7 @@ async fn call_agent(
         }
     });
 
-    let json = post_a2a_request(client, endpoint, user_id, traceparent, &body).await?;
+    let json = post_a2a_request(client, endpoint, a2a_path, user_id, traceparent, &body).await?;
     classify_agent_response(json, context_id)
 }
 
@@ -2184,8 +2212,18 @@ async fn call_agent_continuation(
     traceparent: &str,
 ) -> Result<AgentCallOutcome, String> {
     let body = build_send_request_for_task(answer, context_id, task_id);
-    let json = post_a2a_request(client, endpoint, user_id, traceparent, &body).await?;
+    // The resume path holds only the step's stored endpoint, not the agent's resolved mount.
+    let json = post_a2a_request(client, endpoint, None, user_id, traceparent, &body).await?;
     classify_agent_response(json, task_id)
+}
+
+/// `{base}{path}` for an agent mounted at a non-root path, `None` for a root mount or no path.
+fn mounted_a2a_url(base: &str, a2a_path: Option<&str>) -> Option<String> {
+    let path = a2a_path
+        .map(str::trim)
+        .filter(|p| !p.is_empty() && *p != "/")?;
+    let sep = if path.starts_with('/') { "" } else { "/" };
+    Some(format!("{base}{sep}{path}"))
 }
 
 /// Shared HTTP mechanics for both a fresh `call_agent` call and `call_agent_continuation`'s
@@ -2194,14 +2232,17 @@ async fn call_agent_continuation(
 async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     client: &reqwest::Client,
     endpoint: &str,
+    a2a_path: Option<&str>,
     user_id: &str,
     traceparent: &str,
     body: &T,
 ) -> Result<serde_json::Value, String> {
-    // Some agents expose A2A at /jsonrpc, others at root /. Try /jsonrpc first
-    // and fall back to / on 404 so both agent types work without DB changes.
+    // An agent whose card names a non-root A2A mount (OpenCode serves only `/a2a/jsonrpc`) is
+    // called there and nowhere else, exactly as direct chat calls it. Otherwise: some agents
+    // expose A2A at /jsonrpc, others at root /, so try /jsonrpc first and fall back to / on 404.
     let base = endpoint.trim_end_matches('/');
-    let url_jsonrpc = format!("{base}/jsonrpc");
+    let mounted = mounted_a2a_url(base, a2a_path);
+    let url_jsonrpc = mounted.clone().unwrap_or_else(|| format!("{base}/jsonrpc"));
     let url_root = format!("{base}/");
 
     // No per-request MCP credential: the agent authenticates to `/api/mcp`
@@ -2220,7 +2261,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
             .send()
             .await
             .map_err(|e| e.to_string())?;
-        if r.status() == reqwest::StatusCode::NOT_FOUND {
+        if r.status() == reqwest::StatusCode::NOT_FOUND && mounted.is_none() {
             client
                 .post(&url_root)
                 .header("X-User-Id", user_id)
@@ -2352,6 +2393,27 @@ pub fn build_context(step_results: &[StepResult]) -> String {
 #[cfg(test)]
 mod resume_tests {
     use super::*;
+
+    #[test]
+    fn an_agent_mounted_below_root_is_called_at_its_mount() {
+        let base = "http://10.0.0.5:8080";
+        assert_eq!(
+            mounted_a2a_url(base, Some("/a2a/jsonrpc")).as_deref(),
+            Some("http://10.0.0.5:8080/a2a/jsonrpc")
+        );
+        assert_eq!(
+            mounted_a2a_url(base, Some("a2a")).as_deref(),
+            Some("http://10.0.0.5:8080/a2a")
+        );
+    }
+
+    #[test]
+    fn a_root_or_missing_mount_keeps_the_jsonrpc_then_root_fallback() {
+        let base = "http://10.0.0.5:8080";
+        assert_eq!(mounted_a2a_url(base, None), None);
+        assert_eq!(mounted_a2a_url(base, Some("/")), None);
+        assert_eq!(mounted_a2a_url(base, Some("")), None);
+    }
 
     fn step(index: i32) -> MafStep {
         MafStep {
@@ -2734,6 +2796,7 @@ mod resume_tests {
         let result = call_agent(
             &client,
             &server.url(),
+            None,
             "ctx-1",
             "user-1",
             "do the thing",
@@ -2743,6 +2806,43 @@ mod resume_tests {
         .await;
 
         mock.assert_async().await;
+        assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
+    }
+
+    /// HD-02: OpenCode serves A2A only at `/a2a/jsonrpc`. MAF must call that mount, and not
+    /// probe `/jsonrpc` or `/` first.
+    #[tokio::test]
+    async fn call_agent_uses_the_agents_a2a_mount() {
+        let mut server = mockito::Server::new_async().await;
+        let mounted = server
+            .mock("POST", "/a2a/jsonrpc")
+            .with_status(200)
+            .with_body(completed_agent_response())
+            .create_async()
+            .await;
+        let jsonrpc = server
+            .mock("POST", "/jsonrpc")
+            .expect(0)
+            .create_async()
+            .await;
+        let root = server.mock("POST", "/").expect(0).create_async().await;
+
+        let client = reqwest::Client::new();
+        let result = call_agent(
+            &client,
+            &server.url(),
+            Some("/a2a/jsonrpc"),
+            "ctx-1",
+            "user-1",
+            "do the thing",
+            None,
+            "00-trace-span-01",
+        )
+        .await;
+
+        mounted.assert_async().await;
+        jsonrpc.assert_async().await;
+        root.assert_async().await;
         assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
     }
 
@@ -2766,6 +2866,7 @@ mod resume_tests {
         let result = call_agent(
             &client,
             &server.url(),
+            None,
             "ctx-1",
             "user-1",
             "do the thing",
