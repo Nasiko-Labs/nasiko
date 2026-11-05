@@ -3,6 +3,10 @@
  * server says reporting is on, so it costs the shell nothing.
  */
 import * as Sentry from '@sentry/react'
+// The replay compression worker as a same-origin file (Vite emits it under /assets). The SDK's default worker is a
+// blob: URL, which the CSP refuses (worker-src falls back to script-src 'self'); without compression a replay is
+// sent raw, far over the tunnel's 2 MiB cap, and the server answers 413.
+import replayWorkerUrl from '@sentry/replay/worker-bundler?url'
 import type { AnyRouter } from '@tanstack/react-router'
 import { apiUrl } from '@nasiko/data-access/client'
 import { uiRelease } from '@nasiko/app-core/env'
@@ -36,6 +40,7 @@ export function startSentry(settings: ErrorReportingSettings, router: AnyRouter,
         ? [
             // Replays show layout and clicks, never content: every text node, input and image is masked or blocked.
             Sentry.replayIntegration({
+              workerUrl: replayWorkerUrl,
               maskAllText: true,
               maskAllInputs: true,
               blockAllMedia: true,

@@ -380,6 +380,9 @@ importers:
       '@sentry/react':
         specifier: ^11.8.0
         version: 11.8.0(react@19.3.0)
+      '@sentry/replay':
+        specifier: ^11.8.0
+        version: 11.8.0
       '@tanstack/react-query':
         specifier: ^5.103.3
         version: 5.103.3(react@19.3.0)
