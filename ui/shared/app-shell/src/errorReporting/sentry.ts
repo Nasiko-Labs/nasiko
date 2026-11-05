@@ -11,7 +11,7 @@ import type { AnyRouter } from '@tanstack/react-router'
 import { apiUrl } from '@nasiko/data-access/client'
 import { uiRelease } from '@nasiko/app-core/env'
 import { attachSink } from './queue'
-import { scrubBreadcrumb, scrubEvent, scrubTransaction } from './scrub'
+import { scrubBreadcrumb, scrubEvent, scrubSpan } from './scrub'
 import type { ErrorReportingSettings } from './settings'
 
 export function startSentry(settings: ErrorReportingSettings, router: AnyRouter, edition: string) {
@@ -56,7 +56,7 @@ export function startSentry(settings: ErrorReportingSettings, router: AnyRouter,
     replaysSessionSampleRate: settings.replaysSessionSampleRate,
     replaysOnErrorSampleRate: settings.replaysOnErrorSampleRate,
     beforeSend: scrubEvent,
-    beforeSendTransaction: scrubTransaction,
+    beforeSendSpan: scrubSpan,
     beforeBreadcrumb: scrubBreadcrumb,
   })
   Sentry.setTag('edition', edition)

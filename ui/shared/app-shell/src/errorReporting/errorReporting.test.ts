@@ -15,8 +15,8 @@ import {
   redactUrl,
   scrubBreadcrumb,
   scrubEvent,
-  scrubTransaction,
-  type TransactionEvent,
+  scrubSpan,
+  type StreamedSpan,
 } from './scrub'
 
 afterEach(() => resetForTests())
@@ -146,7 +146,37 @@ describe('scrubbing', () => {
       data: undefined,
       headers: { 'User-Agent': 'UA', Referer: 'https://cp.example.com/login?token=[REDACTED]' },
     })
-    expect(scrubTransaction(event as unknown as TransactionEvent).request?.cookies).toBeUndefined()
+  })
+
+  it('redacts URLs in a streamed span name and attributes, and keeps only the user agent header', () => {
+    const span = {
+      trace_id: 't',
+      span_id: 's',
+      name: 'GET https://cp.example.com/api/mcp/s/agent-secret?x=1',
+      start_timestamp: 0,
+      status: 'ok',
+      is_segment: false,
+      attributes: {
+        'url.full': 'https://cp.example.com/api/auth/sso/session?token=jwt&page=2',
+        'url.query': '?code=oauth&tab=a',
+        'http.query': 'state=s',
+        'http.request.header.user_agent': 'UA',
+        'http.request.header.authorization': 'Bearer x',
+        'http.response.header.set_cookie': 'access_token=x',
+        'http.response.status_code': 200,
+        'sentry.op': 'http.client',
+      },
+    } as StreamedSpan
+    const scrubbed = scrubSpan(span)
+    expect(scrubbed.name).toBe('GET https://cp.example.com/api/mcp/s/%7Btoken%7D')
+    expect(scrubbed.attributes).toEqual({
+      'url.full': 'https://cp.example.com/api/auth/sso/session?token=[REDACTED]&page=2',
+      'url.query': '?code=[REDACTED]&tab=a',
+      'http.query': 'state=[REDACTED]',
+      'http.request.header.user_agent': 'UA',
+      'http.response.status_code': 200,
+      'sentry.op': 'http.client',
+    })
   })
 
   it('redacts navigation and request breadcrumbs, and cuts console lines to their first line', () => {

@@ -7,8 +7,11 @@ import { ApiError, isAbortError, isTimeoutError } from '@nasiko/data-access/clie
  * so a URL is redacted the same way in a span, a log line and a crash report.
  */
 
-/** Not exported by @sentry/react 11; the type its `beforeSendTransaction` receives. */
-export type TransactionEvent = Parameters<NonNullable<BrowserOptions['beforeSendTransaction']>>[0]
+/**
+ * Not exported by @sentry/react 11; the span its `beforeSendSpan` receives. SDK 11 streams spans one by one
+ * (`traceLifecycle: 'stream'`, the default) and ignores `beforeSendTransaction`, so spans are scrubbed here.
+ */
+export type StreamedSpan = Parameters<NonNullable<BrowserOptions['beforeSendSpan']>>[0]
 
 const SENSITIVE_QUERY_KEY_PARTS = [
   'token',
@@ -72,7 +75,7 @@ export function isExpectedFailure(error: unknown): boolean {
   return error.status >= 400 && error.status < 500 && error.status !== 429
 }
 
-function scrubRequest<T extends ErrorEvent | TransactionEvent>(event: T): T {
+function scrubRequest(event: ErrorEvent): ErrorEvent {
   const request = event.request
   if (!request) return event
   const headers = request.headers ?? {}
@@ -102,9 +105,35 @@ export function scrubEvent(
   return scrubRequest(event)
 }
 
-/** `beforeSendTransaction`. */
-export function scrubTransaction(event: TransactionEvent): TransactionEvent {
-  return scrubRequest(event)
+/** A bare query string (`a=1&token=x`, with or without `?`), redacted with the same key rule as a URL. */
+function redactQuery(raw: string): string {
+  const query = raw.startsWith('?') ? raw.slice(1) : raw
+  const redacted = redactUrl(`/?${query}`).slice(2)
+  return raw.startsWith('?') && redacted ? `?${redacted}` : redacted
+}
+
+const QUERY_ATTRIBUTES = new Set(['url.query', 'http.query'])
+const KEPT_REQUEST_HEADERS = new Set([
+  'http.request.header.user_agent',
+  'http.request.header.user-agent',
+])
+
+/**
+ * `beforeSendSpan`. A span can't be dropped here, only cleaned: every URL in its name and string attributes is
+ * redacted, bare query attributes too, and request/response headers go except the user agent. An allow-list of
+ * attribute keys would break whenever the SDK adds one; redacting by value catches a URL under any key.
+ */
+export function scrubSpan(span: StreamedSpan): StreamedSpan {
+  const attributes: StreamedSpan['attributes'] = {}
+  for (const [key, value] of Object.entries(span.attributes)) {
+    if (key.startsWith('http.response.header.')) continue
+    if (key.startsWith('http.request.header.') && !KEPT_REQUEST_HEADERS.has(key)) continue
+    if (typeof value !== 'string') attributes[key] = value
+    else attributes[key] = QUERY_ATTRIBUTES.has(key) ? redactQuery(value) : redactUrl(value)
+  }
+  // An http.client span is named "GET https://host/path?query".
+  const name = span.name.split(' ').map(redactUrl).join(' ')
+  return { ...span, name, attributes }
 }
 
 const URL_FIELDS = ['url', 'from', 'to'] as const
