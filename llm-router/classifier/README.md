@@ -13,8 +13,8 @@ Configuration and routing semantics: [`../CLASSIFIER.md`](../CLASSIFIER.md).
 
 | Backend | What it is | Network | Notes |
 |---|---|---|---|
-| `regex` (default) | The original keyword vote count | No | Fixed complexity 3; confidence 0.5 if a pattern matched, else 0.25 |
-| `local` | Hashed word/char n-grams (plus the query's words crossed with the context kind: none, code, prose) → two-head multinomial logistic regression (type + complexity), temperature-calibrated | No | Weights embedded in the binary; override with `CLASSIFIER_MODEL_PATH` |
+| `regex` | The original keyword vote count; also the fallback when `local` or `hosted` fails | No | Fixed complexity 3; confidence 0.5 if a pattern matched, else 0.25 |
+| `local` (default) | Hashed word/char n-grams (plus the query's words crossed with the context kind: none, code, prose) → two-head multinomial logistic regression (type + complexity), temperature-calibrated | No | Weights embedded in the binary; override with `CLASSIFIER_MODEL_PATH` |
 | `hosted` | Any OpenAI-compatible chat-completions endpoint returning JSON | Yes | `CLASSIFIER_ENDPOINT`, `CLASSIFIER_API_KEY`, `CLASSIFIER_MODEL`; self-reported confidence |
 
 Other settings: `CLASSIFIER_TIMEOUT_MS` (default 250), `CLASSIFIER_MIN_CONFIDENCE` (default 0 = off;

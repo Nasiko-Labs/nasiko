@@ -1,7 +1,8 @@
 # Request classifier (`[classifier]`)
 
-`routing::RequestClassifier` decides the `RequestType` used at Level 3 of `route_model`. The regex
-classifier stays the default; nothing needs a network unless you opt in.
+`routing::RequestClassifier` decides the `RequestType` used at Level 3 of `route_model`. The local
+model is the default, with the regex classifier as its fallback; nothing needs a network unless you
+opt in to `hosted`.
 
 ```
 classify(query, context?) -> { request_type, complexity 1-5, confidence 0-1 }
@@ -9,7 +10,7 @@ classify(query, context?) -> { request_type, complexity 1-5, confidence 0-1 }
 
 | env | default | meaning |
 |---|---|---|
-| `CLASSIFIER_BACKEND` | `regex` | `regex` \| `local` \| `hosted` (unknown -> regex) |
+| `CLASSIFIER_BACKEND` | `local` | `local` \| `regex` \| `hosted` (unknown -> regex) |
 | `CLASSIFIER_MODEL_PATH` | embedded | `local`: weights JSON to load instead (load failure -> regex, logged) |
 | `CLASSIFIER_ENDPOINT` | - | `hosted`: full chat-completions URL (only this host gets the key) |
 | `CLASSIFIER_MODEL` / `CLASSIFIER_API_KEY` | - | `hosted` |

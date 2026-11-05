@@ -118,8 +118,8 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
-    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
-    /// `local` (in-process linear model, embedded weights, no network) or `hosted`
+    /// Request classifier backend: `local` (default; in-process linear model, embedded weights, no
+    /// network, regex as its fallback), `regex` (keyword rules only) or `hosted`
     /// (OpenAI-compatible endpoint, opt-in). Unknown values are treated as `regex`.
     pub classifier_backend: String,
     /// `local` only: weights JSON file to load instead of the embedded weights. Empty = embedded.
@@ -249,7 +249,7 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
-            classifier_backend: "regex".into(),
+            classifier_backend: "local".into(),
             classifier_model_path: String::new(),
             classifier_endpoint: String::new(),
             classifier_model: String::new(),
