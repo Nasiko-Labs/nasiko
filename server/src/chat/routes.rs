@@ -434,7 +434,7 @@ async fn create_session(
     // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
         Some(prompt) if !prompt.is_empty() => {
-            crate::titling::title_from_prompt(&state, user_id, prompt).await
+            crate::titling::title_from_prompt(&state, prompt).await
         }
         _ => "New chat".to_string(),
     };
@@ -1622,6 +1622,7 @@ fn download_target_response(target: DownloadTarget) -> axum::response::Response 
                 (header::CONTENT_TYPE, mime),
                 (header::CONTENT_LENGTH, size.to_string()),
                 (header::CONTENT_DISPOSITION, content_disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
             ],
             Body::from_stream(body),
         )
@@ -1848,6 +1849,13 @@ mod tests {
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|v| v.to_str().ok()),
             Some("attachment; filename*=UTF-8''a.txt")
+        );
+        assert_eq!(
+            stream
+                .headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
         );
 
         assert_eq!(
