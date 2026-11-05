@@ -235,6 +235,97 @@ pub struct UpdateLlmConfigRequest {
 ///
 /// `model` may be `None` when the user relies entirely on tier-based routing; it is required
 /// only when no tier model is set (otherwise the router has no fallback).
+/// How long one model check may take, so a slow provider never stalls saving a config.
+const MODEL_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Why the provider refuses `model`, or `None` when it serves it or the answer is inconclusive.
+///
+/// One 1-token chat call. Only a 404 counts as a refusal: that is how OpenAI answers both a model
+/// that does not exist and one it has retired ("has been deprecated"). Its model list still lists
+/// retired models, so a list lookup would not catch them. Any other outcome (timeout, network
+/// error, 401, 5xx) is not the model's fault and must never block a save.
+async fn openai_model_refusal(
+    http: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    model: &str,
+) -> Option<String> {
+    let resp = http
+        .post(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .bearer_auth(api_key)
+        .timeout(MODEL_CHECK_TIMEOUT)
+        .json(&json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "ping" }],
+            "max_completion_tokens": 1,
+        }))
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(%model, error = %e, "llm config: model check could not run"))
+        .ok()?;
+    if resp.status() != StatusCode::NOT_FOUND {
+        return None;
+    }
+    let body: Value = resp.json().await.unwrap_or_default();
+    let reason = body["error"]["message"]
+        .as_str()
+        .unwrap_or("the provider does not serve this model");
+    Some(format!("model '{model}' can't be used: {reason}"))
+}
+
+/// Refusals for the models a config names, checked against the provider it will call.
+///
+/// Built-in OpenAI only, with the key the router would use for a config without a stored
+/// secret: a key sent with this save, else the platform key, else the user's saved key. A
+/// config that points at a stored secret is not checked, so this never decrypts one.
+async fn unservable_models(
+    state: &AppState,
+    user_id: Uuid,
+    provider: &str,
+    stored_secret_name: Option<&str>,
+    secret_value: Option<&str>,
+    models: &[&str],
+) -> Vec<String> {
+    if provider != "openai" {
+        return Vec::new();
+    }
+    let api_key = match secret_value.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(key) => Some(key.to_string()),
+        None if stored_secret_name.is_some_and(|n| !n.trim().is_empty()) => None,
+        None => match state.config.openai_api_key.clone() {
+            Some(key) => Some(key),
+            None => nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await,
+        },
+    };
+    let Some(api_key) = api_key else {
+        return Vec::new();
+    };
+    let base_url = state
+        .config
+        .openai_base_url
+        .clone()
+        .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+    let mut distinct: Vec<&str> = models
+        .iter()
+        .map(|m| m.trim())
+        .filter(|m| !m.is_empty())
+        .collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    futures::future::join_all(
+        distinct
+            .into_iter()
+            .map(|m| openai_model_refusal(&state.http_client, &base_url, &api_key, m)),
+    )
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 fn validate(
     provider: &str,
     provider_supported: bool,
@@ -468,6 +559,30 @@ pub(crate) async fn create(
             format!("an LLM config named '{}' already exists", req.name),
         )
             .into_response();
+    }
+    let named: Vec<&str> = [
+        &req.model,
+        &req.tier1_model,
+        &req.tier2_model,
+        &req.tier3_model,
+        &req.pinned_model,
+    ]
+    .into_iter()
+    .flatten()
+    .map(String::as_str)
+    .chain(req.fallback_models.iter().map(String::as_str))
+    .collect();
+    let refusals = unservable_models(
+        &state,
+        user_id,
+        &provider_label,
+        req.api_key_secret_name.as_deref(),
+        req.secret_value.as_deref(),
+        &named,
+    )
+    .await;
+    if !refusals.is_empty() {
+        return (StatusCode::BAD_REQUEST, refusals.join("; ")).into_response();
     }
     if let Err((code, msg)) = ensure_secret(
         &state.db,
@@ -731,6 +846,39 @@ pub(crate) async fn update(
             )
                 .into_response();
         }
+    }
+    // Only the models this change names; the row's other models were checked when written.
+    let named: Vec<&str> = [
+        &req.model,
+        &req.tier1_model,
+        &req.tier2_model,
+        &req.tier3_model,
+        &req.pinned_model,
+    ]
+    .into_iter()
+    .flatten()
+    .map(String::as_str)
+    .chain(req.fallback_models.iter().flatten().map(String::as_str))
+    .collect();
+    let provider = resolved_provider
+        .clone()
+        .or_else(|| current["provider"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let stored_secret = req
+        .api_key_secret_name
+        .clone()
+        .or_else(|| current["api_key_secret_name"].as_str().map(str::to_string));
+    let refusals = unservable_models(
+        &state,
+        user_id,
+        &provider,
+        stored_secret.as_deref(),
+        req.secret_value.as_deref(),
+        &named,
+    )
+    .await;
+    if !refusals.is_empty() {
+        return (StatusCode::BAD_REQUEST, refusals.join("; ")).into_response();
     }
     if let Err((code, msg)) = ensure_secret(
         &state.db,
@@ -1036,6 +1184,56 @@ fn db_error(op: &str, e: sqlx::Error) -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// BUG-5: OpenAI answers a retired model with 404 "has been deprecated".
+    #[tokio::test]
+    async fn a_retired_model_is_refused_with_the_providers_reason() {
+        let mut server = mockito::Server::new_async().await;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(404)
+            .with_body(r#"{"error":{"message":"The model `gpt-4.1-nano` has been deprecated"}}"#)
+            .create_async()
+            .await;
+        let reason =
+            openai_model_refusal(&reqwest::Client::new(), &server.url(), "k", "gpt-4.1-nano").await;
+        assert_eq!(
+            reason.as_deref(),
+            Some(
+                "model 'gpt-4.1-nano' can't be used: The model `gpt-4.1-nano` has been deprecated"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_404_blocks_a_save() {
+        for status in [200, 400, 401, 429, 500, 503] {
+            let mut server = mockito::Server::new_async().await;
+            let _m = server
+                .mock("POST", "/chat/completions")
+                .with_status(status)
+                .with_body("{}")
+                .create_async()
+                .await;
+            let reason =
+                openai_model_refusal(&reqwest::Client::new(), &server.url(), "k", "gpt-4o-mini")
+                    .await;
+            assert_eq!(reason, None, "status {status} must not block a save");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_provider_does_not_block_a_save() {
+        // Port 9 (discard) on loopback: the connection is refused immediately.
+        let reason = openai_model_refusal(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:9",
+            "k",
+            "gpt-4o-mini",
+        )
+        .await;
+        assert_eq!(reason, None);
+    }
 
     #[test]
     fn accepts_supported_provider() {
