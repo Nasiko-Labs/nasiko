@@ -394,8 +394,9 @@ export interface Slots {
    */
   sidebarBrand: ComponentType | null
   /**
-   * Takes the free-assessment card's place above the sidebar footer (MT: the plan and credits). Hidden like it while a
-   * page's panel holds the sidebar; it draws its own collapsed-rail form.
+   * A card above the sidebar footer, in the free assessment's place (MT: the plan and credits): while a layer fills it,
+   * the assessment banner and help row are off. Hidden while a page's panel holds the sidebar; it draws its own
+   * collapsed-rail form.
    */
   sidebarCard: ComponentType | null
   /**

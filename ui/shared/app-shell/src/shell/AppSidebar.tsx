@@ -119,6 +119,7 @@ export function AppSidebar({
   const { edition, slots } = use(EditionContext)
   const layers = edition.layers
   const Brand = slots.sidebarBrand
+  const SidebarCard = slots.sidebarCard
   const { setOpenMobile, isMobile, state } = useSidebar()
   const rail = state === 'collapsed' && !isMobile
   const { panels, setTarget } = use(SidebarPanelContext)
@@ -237,9 +238,12 @@ export function AppSidebar({
         />
       ) : null}
       {/* {holds ? null : <WaitlistCard />} */}
+      {/* A layer's card above the footer (MT: the plan), hidden while a page's panel holds the sidebar. The core's own
+          assessment is a banner above the top bar now (AppShell), and gives way to this card. */}
+      {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} />
+          <HelpRows pathname={pathname} onPick={pick} assessment={!SidebarCard} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -433,7 +437,16 @@ function NavGroups({
 }
 
 /** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
+function HelpRows({
+  pathname,
+  onPick,
+  assessment,
+}: {
+  pathname: string
+  onPick(): void
+  /** The assessment row; off where a layer's card takes the assessment's place. */
+  assessment: boolean
+}) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
@@ -476,26 +489,28 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
-      {/* Always here, so the assessment stays one click away after its banner is dismissed. */}
-      <SidebarMenuItem>
-        <SidebarMenuButton
-          isActive={pathname === '/assessment'}
-          tooltip={copy.help.assessment}
-          className={cn(ROW, ACTIVE_ROW)}
-          render={
-            <Link
-              to="/assessment"
-              onClick={() => {
-                onPick()
-                setOpenMobile(false)
-              }}
-            />
-          }
-        >
-          <ClipboardCheck aria-hidden />
-          <span className={LABEL}>{copy.help.assessment}</span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
+      {/* Here whenever the banner could be, so the assessment stays one click away after it is dismissed. */}
+      {assessment ? (
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname === '/assessment'}
+            tooltip={copy.help.assessment}
+            className={cn(ROW, ACTIVE_ROW)}
+            render={
+              <Link
+                to="/assessment"
+                onClick={() => {
+                  onPick()
+                  setOpenMobile(false)
+                }}
+              />
+            }
+          >
+            <ClipboardCheck aria-hidden />
+            <span className={LABEL}>{copy.help.assessment}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ) : null}
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
     </>
   )

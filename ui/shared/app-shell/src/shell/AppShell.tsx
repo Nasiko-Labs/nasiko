@@ -43,7 +43,9 @@ export function AppShell({
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const fullHeight = FULL_HEIGHT.test(pathname)
   // The top bar's start: the page's nav group and item, layer patches applied (as the sidebar does).
-  const active = activeItem(pathname, applyNav(NAV_ITEMS, use(EditionContext).edition.layers))
+  const { edition, slots } = use(EditionContext)
+  const active = activeItem(pathname, applyNav(NAV_ITEMS, edition.layers))
+  const Notice = slots.shellNotice
   const item = active
     ? {
         to: active.to,
@@ -58,14 +60,15 @@ export function AppShell({
   const [choice, setChoice] = useState(readSidebarCookie)
   const open = choice ?? false
   const [bannerShown, dismissBanner] = useAssessmentBanner()
-  // Not on the assessment page itself.
-  const banner = bannerShown && pathname !== '/assessment'
+  // Not on the assessment page itself, nor where a layer's sidebar card takes the assessment's place (MT: the plan).
+  const banner = bannerShown && !slots.sidebarCard && pathname !== '/assessment'
   // The drill-in slot (sidebarPanel.ts): the sidebar hands out `target`, a page's SidebarPanel portals into it.
   const [target, setTarget] = useState<HTMLElement | null>(null)
   const [panels, setPanels] = useState(0)
   const inset = (
     <SidebarInset id="main" tabIndex={-1} className={cn('outline-none', fullHeight && 'min-h-0')}>
       <StaleBuildNotice />
+      {Notice ? <Notice /> : null}
       {/* One bar above every page (TopBar.tsx); on phones it also holds the menu button (§4.2). */}
       <ShellTopBar
         item={item}
