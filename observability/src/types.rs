@@ -153,11 +153,18 @@ pub fn extract_token_attrs(
         "output_tokens",
     ]);
 
-    let model = ["gen_ai.request.model", "llm.request.model", "model"]
-        .iter()
-        .find_map(|k| attrs.get(*k))
-        .and_then(|v| v.as_str())
-        .map(String::from);
+    // The model that answered, before the one asked for: after a fallback they differ, and
+    // pricing the failed model bills a call that never happened at its rate.
+    let model = [
+        "gen_ai.response.model",
+        "gen_ai.request.model",
+        "llm.request.model",
+        "model",
+    ]
+    .iter()
+    .find_map(|k| attrs.get(*k))
+    .and_then(|v| v.as_str())
+    .map(String::from);
 
     (input, output, model)
 }
@@ -1229,5 +1236,33 @@ mod unrecovered_error_tests {
         let mut s = span("a", Some("p"), "call", 0, 10, false);
         s.status_code = 0;
         assert_eq!(count(&[s]), 0);
+    }
+}
+
+#[cfg(test)]
+mod extract_token_attrs_tests {
+    use super::*;
+
+    fn attrs(pairs: &[(&str, &str)]) -> HashMap<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn the_model_that_answered_wins_over_the_one_requested() {
+        // TO-02: the config's model failed with 404 and the fallback answered.
+        let (.., model) = extract_token_attrs(&attrs(&[
+            ("gen_ai.request.model", "gpt-bogus-model"),
+            ("gen_ai.response.model", "gpt-4o-mini"),
+        ]));
+        assert_eq!(model.as_deref(), Some("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn the_requested_model_is_used_when_no_answer_was_recorded() {
+        let (.., model) = extract_token_attrs(&attrs(&[("gen_ai.request.model", "gpt-4.1")]));
+        assert_eq!(model.as_deref(), Some("gpt-4.1"));
     }
 }
