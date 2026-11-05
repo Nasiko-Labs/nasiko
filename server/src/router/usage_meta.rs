@@ -173,7 +173,7 @@ pub async fn summarize_flow_usage(
         cache_creation_tokens: turns.cache_creation_tokens + agents.cache_creation,
         cost_usd: turns.cost_usd + agents.cost,
         model: turns.model.clone(),
-        estimated: turns.estimated,
+        estimated: turns.estimated || agents.estimated,
         duration_ms,
     }
 }
@@ -188,15 +188,18 @@ struct AgentUsage {
     cache_read: u64,
     cache_creation: u64,
     cost: f64,
+    /// Any agent call priced at an inferred or default rate.
+    estimated: bool,
 }
 
 async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
-    let sums: Result<(i64, i64, i64, i64, f64), sqlx::Error> = sqlx::query_as(
+    let sums: Result<(i64, i64, i64, i64, f64, bool), sqlx::Error> = sqlx::query_as(
         r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
                   COALESCE(SUM(output_tokens), 0)::BIGINT,
                   COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
                   COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cost_usd), 0)::FLOAT8
+                  COALESCE(SUM(cost_usd), 0)::FLOAT8,
+                  COALESCE(BOOL_OR((metadata->'pricing'->>'estimated')::BOOLEAN), false)
            FROM token_usage
            WHERE session_id = $1
              AND operation_type = 'direct_llm'
@@ -207,12 +210,13 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
     .await;
 
     match sums {
-        Ok((input, output, cache_read, cache_creation, cost)) => AgentUsage {
+        Ok((input, output, cache_read, cache_creation, cost, estimated)) => AgentUsage {
             input: input.max(0) as u64,
             output: output.max(0) as u64,
             cache_read: cache_read.max(0) as u64,
             cache_creation: cache_creation.max(0) as u64,
             cost,
+            estimated,
         },
         Err(e) => {
             tracing::warn!(error = %e, %flow_id, "flow usage aggregation failed; usage_meta omits agent rows");

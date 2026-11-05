@@ -53,6 +53,9 @@ pub struct PriceQuote {
     /// rows in the live book carry input and output prices but no cache prices.
     pub cache_source: PriceSource,
     pub estimated: bool,
+    /// `estimated` only because the cache rates were inferred: the input and
+    /// output rates are exact, so a call that used no cache is still exact.
+    pub only_cache_estimated: bool,
     /// The name the rates were found under, for auditing a stored cost.
     pub resolved_as: String,
 }
@@ -133,6 +136,8 @@ pub async fn quote(
             || source.is_estimate()
             || read_source.is_estimate()
             || creation_source.is_estimate(),
+        only_cache_estimated: !(unqualified || source.is_estimate())
+            && (read_source.is_estimate() || creation_source.is_estimate()),
         resolved_as,
     }
 }
@@ -327,6 +332,10 @@ mod tests {
         assert_ne!(q.cache_read_per_1m, q.input_per_1m);
         assert_eq!(q.cache_source, PriceSource::Ratio);
         assert!(q.estimated, "an inferred cache rate must be flagged");
+        assert!(
+            q.only_cache_estimated,
+            "the input and output rates are exact"
+        );
     }
 
     #[tokio::test]
@@ -340,6 +349,10 @@ mod tests {
         assert!(q.cache_read_per_1m > 0.0);
         assert_eq!(q.source, PriceSource::Default);
         assert!(q.estimated);
+        assert!(
+            !q.only_cache_estimated,
+            "a default rate is a guess for every part"
+        );
     }
 
     #[tokio::test]

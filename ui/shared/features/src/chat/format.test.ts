@@ -65,6 +65,20 @@ describe('chatTotals and usage', () => {
       inputTokens: null,
       outputTokens: 7,
     })
+    // A cache hit: 66 new + 1,536 cached prompt tokens and 10 output is 1,612, not 76.
+    expect(
+      usageFromMessage(msg({ input_tokens: 66, cache_read_tokens: 1536, output_tokens: 10 })),
+    ).toMatchObject({ tokens: 1612, inputTokens: 66 })
+    expect(
+      chatTotals([
+        msg({
+          input_tokens: 77,
+          cache_read_tokens: 1536,
+          cache_creation_tokens: 0,
+          output_tokens: 398,
+        }),
+      ]).tokens,
+    ).toBe(2011)
     expect(usageFromMeta(null)).toBeNull()
     expect(usageFromMeta({ input_tokens: 3, output_tokens: 4 } as never)).toMatchObject({
       tokens: 7,

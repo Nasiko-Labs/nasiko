@@ -54,8 +54,13 @@ pub fn cost(usage: &NormalizedUsage, quote: &PriceQuote) -> CostBreakdown {
         // call that spent nothing is exactly zero whatever rate was guessed,
         // and flagging it would matter: `add_assign` keeps `estimated` sticky,
         // so a single token-less span would mark a whole session's total as an
-        // estimate while every dollar in it came from a looked-up rate.
-        estimated: quote.estimated && total_usd > 0.0,
+        // estimate while every dollar in it came from a looked-up rate. The same
+        // holds per part: inferred cache rates leave a call with no cache use exact.
+        estimated: if quote.only_cache_estimated {
+            cache_read_usd + cache_creation_usd > 0.0
+        } else {
+            quote.estimated && total_usd > 0.0
+        },
     }
 }
 
@@ -80,6 +85,7 @@ mod tests {
             source: PriceSource::Exact,
             cache_source: PriceSource::Exact,
             estimated: false,
+            only_cache_estimated: false,
             resolved_as: "test".into(),
         }
     }
@@ -189,5 +195,31 @@ mod tests {
             cost(&usage(0, 0, 0, 0), &quote(15.0, 75.0, 1.5, 18.75)).total_usd,
             0.0
         );
+    }
+
+    #[test]
+    fn inferred_cache_rates_leave_a_call_without_cache_use_exact() {
+        let mut q = quote(0.28, 0.42, 0.028, 0.0);
+        q.estimated = true; // cache rates inferred, input/output exact
+        q.only_cache_estimated = true;
+        let c = cost(&usage(1_000, 500, 0, 0), &q);
+        assert!(!c.estimated);
+    }
+
+    #[test]
+    fn inferred_cache_rates_flag_a_call_that_read_the_cache() {
+        let mut q = quote(0.28, 0.42, 0.028, 0.0);
+        q.estimated = true;
+        q.only_cache_estimated = true;
+        let c = cost(&usage(1_000, 500, 8_000, 0), &q);
+        assert!(c.estimated);
+    }
+
+    #[test]
+    fn guessed_main_rates_flag_any_priced_call() {
+        let mut q = quote(2.50, 10.0, 0.625, 1.5625);
+        q.estimated = true;
+        let c = cost(&usage(100, 100, 0, 0), &q);
+        assert!(c.estimated);
     }
 }
