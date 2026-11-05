@@ -54,10 +54,13 @@ pub(crate) struct CallContext<'a> {
     pub calibration: CalibrationInputs,
 }
 
-/// Chars per token for this call, and whether it had to be assumed.
+/// Chars per token for this call, and whether the saved-token figure it yields is an estimate.
 ///
-/// `(ratio, estimated)`. `estimated == false` means the ratio came from this call's own bytes and
-/// reported tokens, so the saved-token figure is as exact as the provider's own count.
+/// `(ratio, estimated)`. Always an estimate: even a ratio calibrated on this call's own bytes and
+/// reported tokens is an average over the whole request, and the text compression removes rarely
+/// tokenizes at that average. Re-counting the TokenOps test run's compressed tool results with
+/// the provider's tokenizer put this figure 0.24x to 1.94x off per result (1.37x over on JSON in
+/// aggregate), so a row must never claim to be measured.
 pub(crate) fn chars_per_token(inputs: CalibrationInputs) -> (f64, bool) {
     let calibrated = match (inputs.request_bytes, inputs.input_tokens) {
         (Some(bytes), Some(tokens)) if bytes > 0 && tokens > 0 => {
@@ -66,7 +69,7 @@ pub(crate) fn chars_per_token(inputs: CalibrationInputs) -> (f64, bool) {
         _ => None,
     };
     match calibrated {
-        Some(ratio) if PLAUSIBLE_CHARS_PER_TOKEN.contains(&ratio) => (ratio, false),
+        Some(ratio) if PLAUSIBLE_CHARS_PER_TOKEN.contains(&ratio) => (ratio, true),
         _ => (DEFAULT_CHARS_PER_TOKEN, true),
     }
 }
@@ -187,8 +190,8 @@ mod tests {
 
         assert_eq!(ratio, 3.0);
         assert!(
-            !estimated,
-            "a calibrated ratio must not be flagged estimated"
+            estimated,
+            "a calibrated ratio is still an average, so its figure is an estimate"
         );
     }
 
@@ -273,7 +276,8 @@ mod tests {
             "IP-1 cannot shorten what the model writes"
         );
         assert_eq!(r.method, Method::MeasuredBytes);
-        assert!(!r.token_estimated);
+        // The bytes are measured; the tokens they are worth are not.
+        assert!(r.token_estimated);
         assert!(r.saved_cost_usd > 0.0);
     }
 
