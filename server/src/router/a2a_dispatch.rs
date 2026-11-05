@@ -26,7 +26,6 @@ use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
-use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::orchestrator_policy::TurnKind;
 use crate::state::AppState;
@@ -259,7 +258,7 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store();
+    let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
         user_id,
@@ -692,7 +691,9 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+            .await
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -830,7 +831,6 @@ pub(crate) async fn orchestrator_stream(
         user_id,
         context_id.to_string(),
         state.genai_metrics.agent_call_meter(),
-        state.agent_wake.clone(),
     );
 
     // `A2aClient`'s own default is deliberately short — it is shared with agent
@@ -1662,12 +1662,6 @@ async fn agent_stream(
         }
         req
     };
-
-    state
-        .agent_wake
-        .before_forward(agent.id)
-        .await
-        .map_err(A2aDispatchError::Unavailable)?;
 
     // In flight until the agent's reply is complete. Starts as `Error`, so the early returns
     // below count as failures.
@@ -3050,9 +3044,6 @@ pub enum A2aDispatchError {
     NoAgents,
     AgentNotFound(String),
     Internal(String),
-    /// The agent cannot take the call right now. The message comes from the
-    /// [`crate::agent_wake::AgentWake`] seam and is already caller-safe.
-    Unavailable(String),
     /// A `reconnect_after_hitl_id` reconnect was for a HITL row that exists but isn't the
     /// caller's — same rule `authorize_hitl_action` enforces for every other `/api/hitl/*` route.
     Forbidden(String),
@@ -3081,7 +3072,6 @@ impl IntoResponse for A2aDispatchError {
                 format!("agent '{}' not found or not running", name),
             ),
             Self::Forbidden(e) => (StatusCode::FORBIDDEN, -32605, e),
-            Self::Unavailable(e) => (StatusCode::SERVICE_UNAVAILABLE, -32603, e),
             // A client error the agent raised is passed back as itself — a `413` the caller can
             // act on must not arrive looking like a server fault. An upstream 5xx is this
             // platform's bad gateway, not the caller's request.
