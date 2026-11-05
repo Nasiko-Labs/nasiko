@@ -288,7 +288,8 @@ function bootGuard(): Plugin {
 
 /**
  * The release name error reports carry (`VITE_NASIKO_RELEASE`, read by `shared/app-core/src/env.ts`): set it to pin one,
- * else `nasiko-ui@<VERSION>-<commit>` (just the version where there is no git, as in the Docker build). The build
+ * else `nasiko-ui@<package.json version>-<commit>` (just the version where there is no git, as in the Docker build).
+ * Not `ui/VERSION`: that file is private (scripts/lib/oss-paths.sh), and this config also builds the public tree. The build
  * writes it to `dist/.vite/sentry-release.txt` (a dotfile folder, never embedded or served) so the source-map upload
  * (scripts/sentry-sourcemaps.ts) files the maps under the same name.
  */
@@ -310,7 +311,9 @@ function errorReportingRelease(env: Record<string, string>): Plugin {
 }
 
 function defaultRelease(): string {
-  const version = readFileSync(join(ROOT, 'VERSION'), 'utf8').trim()
+  const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    version: string
+  }
   try {
     const commit = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
       cwd: ROOT,
