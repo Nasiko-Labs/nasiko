@@ -1073,7 +1073,7 @@ pub async fn execute_upload_and_deploy(
         // Nothing below can fail before `scaling.deploy` (spec building and the pull
         // credential attach are infallible; the latter logs its errors), so the durable state
         // mode the build above may have reset needs no restoring on an early exit.
-        let mut env = crate::agents::deploy_env::build(
+        let env = crate::agents::deploy_env::build(
             state,
             agent_id,
             owner_id,
@@ -1081,14 +1081,6 @@ pub async fn execute_upload_and_deploy(
             crate::agents::deploy_env::StateModeOnDeploy::Reset,
         )
         .await;
-        // Server-level LLM defaults, injected here (not baked into the DB payload) so the API
-        // key is never persisted in cleartext (RUN-5). Caller env wins.
-        if let Some(key) = state.config.openai_api_key.clone() {
-            env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
-        }
-        if let Some(url) = state.config.openai_base_url.clone() {
-            env.entry("OPENAI_BASE_URL".to_owned()).or_insert(url);
-        }
 
         // Deploy container keyed on agent UUID (not name) — see build_agent_spec.
         let mut spec = crate::agents::build_agent_spec(
@@ -1440,7 +1432,7 @@ pub async fn execute_clone_and_deploy(
         // Nothing below can fail before `scaling.deploy` (spec building and the pull
         // credential attach are infallible; the latter logs its errors), so the durable state
         // mode the build above may have reset needs no restoring on an early exit.
-        let mut env = crate::agents::deploy_env::build(
+        let env = crate::agents::deploy_env::build(
             state,
             agent_id,
             owner_id,
@@ -1448,13 +1440,6 @@ pub async fn execute_clone_and_deploy(
             crate::agents::deploy_env::StateModeOnDeploy::Reset,
         )
         .await;
-        // Server-level LLM defaults, never persisted in the job payload. Caller env wins.
-        if let Some(key) = state.config.openai_api_key.clone() {
-            env.entry("OPENAI_API_KEY".to_owned()).or_insert(key);
-        }
-        if let Some(url) = state.config.openai_base_url.clone() {
-            env.entry("OPENAI_BASE_URL".to_owned()).or_insert(url);
-        }
 
         // Deploy container keyed on agent UUID.
         let mut spec = crate::agents::build_agent_spec(

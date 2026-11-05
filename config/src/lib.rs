@@ -126,6 +126,10 @@ pub struct Config {
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub openai_model: String,
+    /// Whether agents get the platform's OpenAI API key as a fallback when they have no key of
+    /// their own. Default true for OSS backward compatibility. Set false to require agents to
+    /// bring their own keys.
+    pub agent_platform_key_fallback: bool,
     /// MAF "decompose one instruction into atomic sub-queries" service.
     /// `None` disables `/maf/workflow/from-instruction` (503).
     pub decomposer_api_url: Option<String>,
@@ -663,6 +667,7 @@ impl Config {
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
             openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
             router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),

@@ -1019,16 +1019,9 @@ async fn resolve_full_env(
     // path) already does this; this ad-hoc container path had silently
     // dropped it, so `nasiko restart` never picked up OPENAI_API_KEY /
     // OPENAI_BASE_URL changes made to the platform's own .env.
-    if let Some(ref key) = state.config.openai_api_key {
-        env.entry("OPENAI_API_KEY".into())
-            .or_insert_with(|| key.clone());
+    for (key, value) in state.platform_fallback_env() {
+        env.entry(key).or_insert(value);
     }
-    if let Some(ref url) = state.config.openai_base_url {
-        env.entry("OPENAI_BASE_URL".into())
-            .or_insert_with(|| url.clone());
-    }
-    env.entry("OPENAI_MODEL".into())
-        .or_insert_with(|| state.config.openai_model.clone());
 
     // 4. Same reasoning as the platform-LLM-config gap above, same fix shape —
     // this is a plain `agents` column (migration 0032), not a secret, so it's

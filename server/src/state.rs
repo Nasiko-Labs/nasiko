@@ -585,15 +585,12 @@ impl AppState {
     /// (`GET /api/agents/dev-env`, deployer+) so `nasiko run` can give local
     /// containers the same defaults a CP deployment would get.
     pub fn platform_fallback_env(&self) -> std::collections::HashMap<String, String> {
-        let mut env = std::collections::HashMap::new();
-        if let Some(ref key) = self.config.openai_api_key {
-            env.insert("OPENAI_API_KEY".into(), key.clone());
-        }
-        if let Some(ref url) = self.config.openai_base_url {
-            env.insert("OPENAI_BASE_URL".into(), url.clone());
-        }
-        env.insert("OPENAI_MODEL".into(), self.config.openai_model.clone());
-        env
+        build_platform_fallback_env(
+            self.config.agent_platform_key_fallback,
+            self.config.openai_api_key.as_deref(),
+            self.config.openai_base_url.as_deref(),
+            &self.config.openai_model,
+        )
     }
 
     /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
@@ -661,6 +658,27 @@ impl AppState {
         );
         env
     }
+}
+
+/// Builds the platform fallback environment map for agent deployments.
+///
+/// When `agent_platform_key_fallback` is false, `OPENAI_API_KEY` is omitted.
+/// `OPENAI_BASE_URL` and `OPENAI_MODEL` are always included when set.
+fn build_platform_fallback_env(
+    agent_platform_key_fallback: bool,
+    openai_api_key: Option<&str>,
+    openai_base_url: Option<&str>,
+    openai_model: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    if agent_platform_key_fallback && let Some(key) = openai_api_key {
+        env.insert("OPENAI_API_KEY".into(), key.to_string());
+    }
+    if let Some(url) = openai_base_url {
+        env.insert("OPENAI_BASE_URL".into(), url.to_string());
+    }
+    env.insert("OPENAI_MODEL".into(), openai_model.to_string());
+    env
 }
 
 /// Postgres extensions the migrations require (`0001_schema.sql` runs
@@ -747,5 +765,36 @@ mod tests {
         assert!(msg.contains("\"vector\""));
         assert!(msg.contains("permission denied"));
         assert!(msg.contains("azure.extensions"));
+    }
+
+    #[test]
+    fn platform_fallback_env_omits_key_when_flag_is_false() {
+        let env = build_platform_fallback_env(
+            false,
+            Some("test-key"),
+            Some("https://api.test.com"),
+            "test-model",
+        );
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "OPENAI_API_KEY should be omitted when flag is false"
+        );
+        assert_eq!(
+            env.get("OPENAI_BASE_URL"),
+            Some(&"https://api.test.com".to_string())
+        );
+        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
+    }
+
+    #[test]
+    fn platform_fallback_env_includes_key_when_flag_is_true() {
+        let env = build_platform_fallback_env(true, Some("test-key"), None, "test-model");
+        assert_eq!(
+            env.get("OPENAI_API_KEY"),
+            Some(&"test-key".to_string()),
+            "OPENAI_API_KEY should be present when flag is true"
+        );
+        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
+        assert!(!env.contains_key("OPENAI_BASE_URL"));
     }
 }

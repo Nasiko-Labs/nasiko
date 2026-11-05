@@ -39,10 +39,14 @@ async fn start_with(gateway_url: Option<&'static str>) -> Fixture {
         std::env::set_var("AGENT_JWT_SECRET", "deploy-env-test-secret-0123456789");
         std::env::set_var("LLM_GATEWAY_BASE_URL", LLM_BASE);
     }
-    let server = common::TestServer::start_with(move |config| {
+    start_configured(move |config| {
         config.mcp_gateway_public_url = gateway_url.map(str::to_owned);
     })
-    .await;
+    .await
+}
+
+async fn start_configured(configure: impl FnOnce(&mut nasiko_config::Config)) -> Fixture {
+    let server = common::TestServer::start_with(configure).await;
     let admin: Value = server
         .client
         .post(server.url("/api/auth/initialize-admin"))
@@ -59,6 +63,32 @@ async fn start_with(gateway_url: Option<&'static str>) -> Fixture {
 
 async fn start() -> Fixture {
     start_with(Some(GATEWAY_URL)).await
+}
+
+const PLATFORM_KEY: &str = "platform-openai-key";
+
+/// A server that holds the platform's OpenAI key and has no LLM gateway configured: the gateway
+/// would overwrite `OPENAI_API_KEY` on every deploy and hide whether the platform key was handed
+/// out at all.
+async fn start_with_platform_key(fallback: bool) -> Fixture {
+    // SAFETY: tests run serially (#[serial]), so no concurrent env mutation.
+    unsafe {
+        std::env::remove_var("LLM_GATEWAY_BASE_URL");
+    }
+    start_configured(move |config| {
+        config.agent_platform_key_fallback = fallback;
+        config.openai_api_key = Some(PLATFORM_KEY.to_owned());
+    })
+    .await
+}
+
+/// The platform key is in the deploy env exactly when the fallback is on.
+fn assert_platform_key(spec: &DeploymentSpec, fallback: bool) {
+    assert_eq!(
+        spec.env_vars.get("OPENAI_API_KEY").map(String::as_str),
+        fallback.then_some(PLATFORM_KEY),
+        "AGENT_PLATFORM_KEY_FALLBACK={fallback}"
+    );
 }
 
 impl Fixture {
@@ -599,6 +629,59 @@ async fn clone_job_deploy_carries_the_platform_env() {
 
     assert_platform_env(&f.first_spec(agent_id).await);
     f.server.cleanup().await;
+}
+
+// ─── The platform key fallback ──────────────────────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn zip_upload_deploy_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = upload_zip(&f, "uploaded-agent", vec![]).await;
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn clone_job_deploy_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = f.agent_row("cloned-agent", None, "deploying").await;
+        queue_clone_job(&f, agent_id, "cloned-agent").await;
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn admin_restart_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = f
+            .agent_row("restarted-agent", Some("nasiko/restart:1"), "running")
+            .await;
+
+        let res = common::as_superuser(
+            f.server
+                .client
+                .post(f.server.url("/api/containers/restarted-agent/restart")),
+            &f.uid(),
+            "admin",
+        )
+        .send()
+        .await
+        .unwrap();
+        assert!(res.status().is_success(), "restart: {}", res.status());
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
 }
 
 // ─── The state credential ───────────────────────────────────────────────────

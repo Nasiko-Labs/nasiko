@@ -741,6 +741,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
+        agent_platform_key_fallback: true,
         openai_api_key: None,
         openai_base_url: None,
         openai_model: "gpt-4o".into(),

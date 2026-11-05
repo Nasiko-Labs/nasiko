@@ -133,6 +133,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         openai_api_key: Some("bench-dummy-key".into()),
         openai_base_url: Some(mock_llm_base_url.to_string()),
         openai_model: "mock-model".into(),
+        agent_platform_key_fallback: true,
         decomposer_api_url: None,
         decomposer_api_key: None,
         router_model: "mock-model".into(),
