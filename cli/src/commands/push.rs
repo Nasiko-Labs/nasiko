@@ -71,7 +71,13 @@ fn push_from_directory(
     super::build::build(dir, Some(&image_tag), Some("linux/amd64"))?;
 
     // Push to OCI
-    let repo = format!("nasiko/{agent_name}");
+    // Get namespace from server capability or fall back to legacy
+    let namespace = match client.image_namespace()? {
+        Some(ns) => ns,
+        None => "nasiko".to_string(),
+    };
+    let slug = crate::util::image_name_slug(&agent_name);
+    let repo = format!("{}/{}", namespace, slug);
     term::print_info(&format!("Pushing {image_tag} → {repo}:{version}..."));
     oci::push_image(&image_tag, &repo, &version)?;
 
@@ -121,7 +127,14 @@ fn push_from_image(
 
     let (image_name, image_tag_version) = parse_image_name_and_tag(image);
     let agent_name = name_override.map(String::from).unwrap_or(image_name);
-    let repo = format!("nasiko/{agent_name}");
+
+    // Get namespace from server capability or fall back to legacy
+    let namespace = match client.image_namespace()? {
+        Some(ns) => ns,
+        None => "nasiko".to_string(),
+    };
+    let slug = crate::util::image_name_slug(&agent_name);
+    let repo = format!("{}/{}", namespace, slug);
 
     let existing = lookup_existing(client, &agent_name)?;
     let (current_deployed_version, used_versions) = used_version_context(client, &existing)?;

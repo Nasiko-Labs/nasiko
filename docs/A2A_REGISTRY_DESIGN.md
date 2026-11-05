@@ -242,6 +242,12 @@ A2A-Version: 1.0
 }
 ```
 
+### Authentication and Access Control
+
+- **No token:** the registry lists public agents only.
+- **A session token:** it lists the agents that caller may call through the agent proxy, decided by the same check the proxy uses. An invalid token is a 401, never a quiet fall back to the public view.
+- Every entry's address is the agent proxy path, `/api/agents/{id}`, never a container address, so a call made from the list goes through the proxy's access check, flow guard and tracing (`oss/server/src/registry_a2a.rs`).
+
 ## End-to-End: Every Path is A2A
 
 ```
