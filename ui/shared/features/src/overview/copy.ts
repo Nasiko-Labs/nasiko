@@ -156,6 +156,70 @@ export const copy = {
     calls: (n: string) => `${n} tool calls`,
     failed: (pct: string) => `${pct} failed`,
   },
+  /** The coding harness preview (HarnessPreview.tsx): Home a month into connecting, on sample data, shown while no
+   *  coding harness is connected (2026-11-06). */
+  harnessPreview: {
+    title: "Coding harnesses aren't connected yet",
+    body: 'See what Home shows once your developers connect Claude Code or Codex: a 20-second preview with sample data.',
+    watch: 'Watch the preview',
+    timeline: 'Preview timeline',
+    jump: (stop: string) => `Jump to ${stop}`,
+    sample: 'Sample data',
+    close: 'Close the preview',
+    prev: 'Previous step',
+    next: 'Next step',
+    play: 'Play',
+    pause: 'Pause',
+    replay: 'Replay',
+    day: (n: number) => `Day ${n}`,
+    stops: [
+      {
+        label: 'Today',
+        title: 'One command on a developer’s laptop',
+        body: 'Each developer signs in once. The CLI finds Claude Code and Codex, starts reporting, and imports their past sessions.',
+      },
+      {
+        label: 'Day 1',
+        title: 'Sessions start arriving',
+        body: 'Every session shows up within minutes, with its turns and estimated cost.',
+      },
+      {
+        label: 'Week 1',
+        title: 'Home fills in',
+        body: 'Coding harness spend sits beside your agents’ runs, and grows as more developers connect.',
+      },
+      {
+        label: 'Month 1',
+        title: 'How your team codes',
+        body: 'Which models they lean on, how many subagents they spawn, and the tools they call most.',
+      },
+    ],
+    terminal: [
+      'Logged in as dev@yourcompany.com',
+      'Found Claude Code and Codex, now reporting',
+      'Importing past sessions in the background',
+    ],
+    sessions: 'Recent sessions',
+    sessionsMeta: 'Turns · Cost',
+    turns: (n: number) => `${n} turns`,
+    harnesses: 'Coding harnesses used',
+    developers: (n: string) => `${n} developers`,
+    est: 'est.',
+    connected: (n: number) => `${n} connected`,
+    notYet: 'not yet',
+    runs: 'Agent runs',
+    runsLine: (perDay: string, calls: string) => `${perDay} per day · ${calls} tool calls`,
+    models: 'Models',
+    topModel: (model: string) => `of turns on ${model}`,
+    subagents: 'Subagents',
+    subagentsLine: 'runs spawned by a session',
+    tools: 'Tools',
+    toolsLine: 'tool calls · 2.8% failed',
+    ending: 'Each developer connects on their own machine.',
+    copyCommands: 'Copy the commands for your team',
+    copied: 'Copied',
+    connectYours: 'Connect yours',
+  },
   /** "Did you know": one tip at a time, in the lead card when its savings band is empty (DidYouKnow.tsx). */
   tips: {
     title: 'Did you know?',
@@ -250,19 +314,8 @@ export const copy = {
     setupTitle: 'Setup',
     setupCount: (n: number) => `${n} to set up`,
     /** Setup items: a step while the thing isn't set up (`title`, `detail`, `action`); once it is, its name, how many
-     *  exist and where to manage them (`doneTitle`, `done`, `manage`). The canvases' setup steps (`estate/setup.ts`)
-     *  reuse them, and add the two only the estate can tell: a first call, and a coding harness. */
+     *  exist and where to manage them (`doneTitle`, `done`, `manage`). */
     setup: {
-      chat: {
-        title: 'Chat with an agent',
-        detail: 'The first call brings in spend, models and traces.',
-        action: 'Chat',
-      },
-      harness: {
-        title: 'Connect a coding harness',
-        detail: 'Claude Code, Codex and Cursor sessions, with what each costs.',
-        action: 'Connect',
-      },
       router: {
         title: 'Add an LLM router config',
         detail: 'One key per provider for every agent; swap models without a redeploy.',

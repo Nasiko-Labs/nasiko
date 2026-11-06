@@ -710,6 +710,45 @@ describe('coding harness activity (2026-11-06)', () => {
   })
 })
 
+describe('the coding harness preview (2026-11-06)', () => {
+  it('stays out while a harness is connected', async () => {
+    renderApp('/')
+    await loaded()
+    await screen.findByTestId('overview-harness-activity', {}, { timeout: 8000 })
+    expect(screen.queryByRole('button', { name: copy.harnessPreview.watch })).toBeNull()
+  })
+
+  it('sits in the none-connected tile, never a section of its own, and plays Today to Month 1', async () => {
+    window.history.replaceState(null, '', '/?mock=no-harnesses')
+    renderApp('/')
+    await loaded()
+    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    expect(tile).toHaveTextContent(copy.quiet.harnessesNone)
+    expect(card('overview-harness-activity')).toBeNull()
+    await userEvent.click(within(tile).getByRole('button', { name: copy.harnessPreview.watch }))
+    const dialog = await screen.findByRole('dialog', { name: copy.harnessPreview.stops[0]?.title })
+    expect(dialog).toHaveTextContent(copy.harnessPreview.sample)
+    expect(dialog).toHaveTextContent('nasiko auth login')
+    const next = within(dialog).getByRole('button', { name: copy.harnessPreview.next })
+    for (let i = 0; i < 3; i++) await userEvent.click(next)
+    expect(
+      within(dialog).getByRole('heading', { name: copy.harnessPreview.stops[3]?.title }),
+    ).toBeInTheDocument()
+    expect(
+      within(dialog).getByRole('button', { name: copy.harnessPreview.jump('Month 1') }),
+    ).toHaveAttribute('aria-current', 'step')
+    expect(dialog).toHaveTextContent(copy.harnessPreview.subagents)
+    // Past the last step: the ending hands over the commands and Connect yours.
+    await userEvent.click(next)
+    expect(
+      within(dialog).getByRole('link', { name: copy.harnessPreview.connectYours }),
+    ).toHaveAttribute('href', '/harnesses')
+    expect(dialog).toHaveTextContent('2,555')
+    await userEvent.click(within(dialog).getByRole('button', { name: copy.harnessPreview.close }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+})
+
 describe('quiet tiles (2026-11-05)', () => {
   it('folds zero spend, tokens and runs into one line that says what fills them', async () => {
     configureMocks({ variant: 'no-spend' })

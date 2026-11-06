@@ -22,6 +22,7 @@ import { copy } from '../copy'
 import type { QuietItem } from '../quiet'
 import { LAST_WEEK } from '../tuning'
 import { TOUCH } from './Card'
+import { WatchPreview } from './HarnessPreview'
 
 const q = copy.quiet
 
@@ -114,13 +115,17 @@ function QuietCell({
         <h3 className="text-base font-medium text-pretty">{v.title}</h3>
         <p className="max-w-prose text-sm text-pretty text-muted-foreground">{v.detail}</p>
       </div>
-      <Link
-        to={v.to}
-        search={(v.search ?? {}) as never}
-        {...asButton({ variant: 'outline', size: 'sm', className: cn('mt-auto', TOUCH) })}
-      >
-        {v.action} <ArrowRight aria-hidden />
-      </Link>
+      <div className="mt-auto flex flex-wrap gap-2">
+        {/* None connected: a preview of what connecting brings, on sample data (2026-11-06). */}
+        {item.id === 'harnesses' && !item.connected ? <WatchPreview /> : null}
+        <Link
+          to={v.to}
+          search={(v.search ?? {}) as never}
+          {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+        >
+          {v.action} <ArrowRight aria-hidden />
+        </Link>
+      </div>
     </div>
   )
 }

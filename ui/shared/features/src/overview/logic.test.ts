@@ -13,6 +13,8 @@ import { mergeNeeds, watchSummary } from './needs'
 import { rangeWindow } from './api'
 import { stackSpend } from './stack'
 import { quietTiles } from './quiet'
+import { PREVIEW_MS, previewFrame, revealed, stepStart } from './preview'
+import { PREVIEW_STEP_MS } from './tuning'
 import { harnessDetails, type HarnessLine, type HarnessSummary, type Spend } from './api'
 
 const NOW = Date.parse('2026-09-29T12:00:00Z')
@@ -612,5 +614,36 @@ describe('harnessDetails (2026-11-06)', () => {
       tools: [],
       failedPct: null,
     })
+  })
+})
+
+describe('the harness preview (2026-11-06)', () => {
+  it('starts on Today and grows Week 1 from Day 1 to Week 1, Month 1 from Week 1 to Month 1', () => {
+    const start = previewFrame(0)
+    expect(start).toMatchObject({ step: 0, progress: 0, done: false, day: 1 })
+    const week = previewFrame(2 * PREVIEW_STEP_MS)
+    expect(week).toMatchObject({ step: 2, day: 1 })
+    expect(week.runs).toBe(84)
+    const weekEnd = previewFrame(3 * PREVIEW_STEP_MS - 1)
+    expect(weekEnd.day).toBe(7)
+    expect(weekEnd.runs).toBeCloseTo(712, 0)
+    const end = previewFrame(PREVIEW_MS)
+    expect(end).toMatchObject({ step: 3, progress: 1, done: true, day: 30 })
+    expect(end.runs).toBe(2555)
+    expect(end.cost.reduce((a, b) => a + b, 0)).toBeCloseTo(1133.48, 2)
+    expect(end.subagents.reduce((a, b) => a + b, 0)).toBe(1030)
+  })
+
+  it('jumps to the start of a step, its end under reduced motion, and past the last to the end', () => {
+    expect(stepStart(-1, false)).toBe(0)
+    expect(stepStart(2, false)).toBe(2 * PREVIEW_STEP_MS)
+    expect(previewFrame(stepStart(2, true))).toMatchObject({ step: 2, day: 7 })
+    expect(stepStart(4, false)).toBe(PREVIEW_MS)
+  })
+
+  it('shows the first line at once and every line before the step ends', () => {
+    expect(revealed(0, 4)).toBe(1)
+    expect(revealed(0.95, 4)).toBe(4)
+    expect(revealed(1, 4)).toBe(4)
   })
 })

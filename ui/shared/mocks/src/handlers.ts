@@ -230,7 +230,6 @@ const PAGE_VARIANTS: readonly string[] = [
   ...BUDGETS_PAGE_VARIANTS,
   ...AGENTS_ONBOARDING_VARIANTS,
   'village-unlimited',
-  'overview-bare',
 ]
 
 /**
@@ -254,6 +253,8 @@ export const MOCK_VARIANTS = [
   'usage-500',
   'all-unpriced',
   'no-activity',
+  // No coding harness connected at all (no registrations, no sessions): Home's harness preview (2026-11-06).
+  'no-harnesses',
   // TokenOps: no spend in the last two months (its first-run state); `?mock=no-spend,desktop-running` is that state
   // while coding agents sync, when the page shows the loading state instead.
   'no-spend',
@@ -319,9 +320,6 @@ export const MOCK_VARIANTS = [
   // the page builds its smaller map), or a quiet estate with no problems (the healthy state).
   'overview-absent',
   'overview-quiet',
-  // Overview: agents deployed and nothing else yet (the village's and the Map's empty states). Combines with others
-  // (`?mock=onboarding-done,overview-bare,no-spend`), so it is a page variant.
-  'overview-bare',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
   ...CHAT_PAGE_VARIANTS,
@@ -429,18 +427,25 @@ function onboardingSeed(base: HarnessSeed): HarnessSeed {
 const variantSeeds = new Map<string, HarnessSeed>()
 function harnessData(): HarnessSeed {
   const base = onboardingSeed(getHarnessSeed())
-  // `no-activity` combines with `no-spend` (`?mock=no-spend,no-activity`): the Overview with nothing at all to show.
-  const v = hasVariant('no-activity') ? 'no-activity' : variant()
-  if (v !== 'all-unpriced' && v !== 'no-activity') return base
+  // `no-activity` and `no-harnesses` combine with `no-spend` (`?mock=no-spend,no-activity`): the Overview with nothing
+  // at all to show.
+  const v = hasVariant('no-harnesses')
+    ? 'no-harnesses'
+    : hasVariant('no-activity')
+      ? 'no-activity'
+      : variant()
+  if (v !== 'all-unpriced' && v !== 'no-activity' && v !== 'no-harnesses') return base
   const hit = variantSeeds.get(v)
   if (hit && hit.anchor === base.anchor) return hit
   const next =
-    v === 'no-activity'
-      ? { ...base, sessions: [] }
-      : {
-          ...base,
-          sessions: base.sessions.map((x) => ({ ...x, unpriced_turns: x.turns, cost_usd: 0 })),
-        }
+    v === 'no-harnesses'
+      ? { ...base, agents: [], sessions: [] }
+      : v === 'no-activity'
+        ? { ...base, sessions: [] }
+        : {
+            ...base,
+            sessions: base.sessions.map((x) => ({ ...x, unpriced_turns: x.turns, cost_usd: 0 })),
+          }
   variantSeeds.set(v, next)
   return next
 }
@@ -2351,7 +2356,6 @@ handlerGroups.overview = overviewHandlers({
   now: () => nowFn(),
   absent: () => hasVariant('overview-absent'),
   quiet: () => hasVariant('overview-quiet'),
-  bare: () => hasVariant('overview-bare'),
   unlimited: () => hasVariant('village-unlimited'),
   agents: () => getAgents().agents,
   harness: harnessData,

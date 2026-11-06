@@ -24,6 +24,7 @@ import { cn } from '@nasiko/ui/lib/utils'
 import type { HarnessSummary } from '../api'
 import { copy } from '../copy'
 import { SourceFailed } from './Card'
+import { WatchPreview } from './HarnessPreview'
 
 type Tone = 'ready' | 'idle' | null
 
@@ -178,7 +179,13 @@ export function HarnessCell({ data, days }: { data: HarnessSummary; days: number
       ) : data.notVisible ? (
         <Status tone={null}>{copy.harnesses.notVisible}</Status>
       ) : !data.connected ? (
-        <Status tone="idle">{copy.setUpNow.noHarnesses}</Status>
+        <>
+          <Status tone="idle">{copy.setUpNow.noHarnesses}</Status>
+          {/* Above the stretched link, so it is its own target. */}
+          <div className="relative z-10 mt-auto">
+            <WatchPreview />
+          </div>
+        </>
       ) : (
         <Status tone="ready">
           {copy.harnesses.connected(data.connected)}
