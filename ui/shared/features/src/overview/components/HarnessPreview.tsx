@@ -3,7 +3,7 @@
  * dialog). While no coding harness is connected, the summary's "No coding harnesses connected" tile carries Watch the
  * preview, which plays Home itself from a developer's first command to a month in, on sample numbers (`preview.ts`): a
  * bar takes the header's place (the stops, the day, pause, Exit), the tile shows the command at Today and from Day 1 is
- * Home's own Harnesses tile, and Home's own Coding harness activity card joins under Needs your attention, both edged
+ * Home's own Harnesses tile, and Home's own Coding harness activity card joins above Needs your attention, both edged
  * and badged as sample data. Once it ends, "Back to your Home in 5s" counts down and Home comes back, unless the viewer
  * picks Stay. Under reduced motion nothing grows: it opens on the end, the stops show each step whole, and only the
  * countdown runs.

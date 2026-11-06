@@ -6,8 +6,8 @@
  *
  * A column shows only when the server sent its numbers; one that sends model names alone gets "<harness> mostly runs
  * <model>", no share claimed. With nothing connected, or nothing run in the range, the card is left out: the
- * Harnesses tile above already says so (user 2026-11-06). While Home's coding harness preview plays, it shows on sample
- * numbers (HarnessPreview.tsx).
+ * Harnesses tile above already says so (user 2026-11-06). While Home's coding harness preview plays, `PreviewActivity`
+ * shows it on sample numbers above Needs your attention (HarnessPreview.tsx).
  */
 import { useRef, type CSSProperties, type ReactNode } from 'react'
 import { Card as Tile } from '@nasiko/ui/primitives/card'
@@ -76,27 +76,18 @@ function Bars({
   )
 }
 
-export function HarnessActivity({
-  data,
-  days,
-  className,
-}: {
-  data: HarnessSummary
-  days: number
-  className?: string
-}) {
-  // Home's coding harness preview, past Today: this card on sample numbers, sliding in where it will sit.
+/** Home's coding harness preview, past Today: this card on sample numbers, sliding in above Needs your attention
+ *  (user 2026-11-06: there in the preview only; the real card stays under the inbox and fleet health). */
+export function PreviewActivity({ days, className }: { days: number; className?: string }) {
   const sample = usePreviewSample()
   return sample ? (
     <Sampled className={cn('slide-in-from-top-2', className)}>
-      <ActivityCard data={sample} days={days} />
+      <HarnessActivity data={sample} days={days} />
     </Sampled>
-  ) : (
-    <ActivityCard data={data} days={days} className={className} />
-  )
+  ) : null
 }
 
-function ActivityCard({
+export function HarnessActivity({
   data,
   days,
   className,

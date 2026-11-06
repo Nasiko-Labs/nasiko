@@ -752,7 +752,11 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     // Home's own Harnesses tile and activity card, on sample numbers.
     expect(card('quiet-harnesses')).toBeNull()
     expect(card('overview-harnesses')).not.toBeNull()
-    expect(card('overview-harness-activity')).not.toBeNull()
+    // The sample card plays above Needs your attention; the real one sits below it (user 2026-11-06).
+    expect(
+      card('overview-harness-activity').compareDocumentPosition(card('overview-needs')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
     act(() => {
       vi.advanceTimersByTime(PREVIEW_STEP_MS)
     })
