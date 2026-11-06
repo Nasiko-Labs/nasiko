@@ -58,6 +58,7 @@ import {
 import { FirstRunHero, FirstRunPreview } from './components/FirstRun'
 import { FleetHealth } from './components/FleetHealth'
 import { HarnessActivity } from './components/HarnessActivity'
+import { PreviewHeader, PreviewProvider } from './components/HarnessPreview'
 import { NeedsYou } from './components/NeedsYou'
 import { usePausedFlows } from '@nasiko/features/flows/paused'
 import { RecentChats } from './components/RecentChats'
@@ -118,11 +119,16 @@ function Frame({
   actions?: ReactNode
   children: ReactNode
 }) {
+  // The coding harness preview plays on the page itself (HarnessPreview.tsx), its bar in the header's place.
   return (
-    <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
-      <PageHeader title={copy.title} description={description} actions={actions} />
-      {children}
-    </div>
+    <PreviewProvider>
+      <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
+        <PreviewHeader>
+          <PageHeader title={copy.title} description={description} actions={actions} />
+        </PreviewHeader>
+        {children}
+      </div>
+    </PreviewProvider>
   )
 }
 

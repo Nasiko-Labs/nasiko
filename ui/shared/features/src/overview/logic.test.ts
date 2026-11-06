@@ -13,8 +13,17 @@ import { mergeNeeds, watchSummary } from './needs'
 import { rangeWindow } from './api'
 import { stackSpend } from './stack'
 import { quietTiles } from './quiet'
-import { PREVIEW_MS, previewFrame, revealed, stepStart } from './preview'
-import { PREVIEW_STEP_MS } from './tuning'
+import {
+  PREVIEW_MS,
+  PREVIEW_OFF,
+  previewAt,
+  previewFrame,
+  previewTick,
+  revealed,
+  sampleSummary,
+  stepStart,
+} from './preview'
+import { PREVIEW_HOLD_MS, PREVIEW_STEP_MS } from './tuning'
 import { harnessDetails, type HarnessLine, type HarnessSummary, type Spend } from './api'
 
 const NOW = Date.parse('2026-09-29T12:00:00Z')
@@ -617,28 +626,74 @@ describe('harnessDetails (2026-11-06)', () => {
   })
 })
 
-describe('the harness preview (2026-11-06)', () => {
-  it('starts on Today and grows Week 1 from Day 1 to Week 1, Month 1 from Week 1 to Month 1', () => {
-    const start = previewFrame(0)
-    expect(start).toMatchObject({ step: 0, progress: 0, done: false, day: 1 })
-    const week = previewFrame(2 * PREVIEW_STEP_MS)
-    expect(week).toMatchObject({ step: 2, day: 1 })
-    expect(week.runs).toBe(84)
-    const weekEnd = previewFrame(3 * PREVIEW_STEP_MS - 1)
-    expect(weekEnd.day).toBe(7)
-    expect(weekEnd.runs).toBeCloseTo(712, 0)
+describe('the harness preview, in place (2026-11-06)', () => {
+  it('grows Day 1 from the imported sessions, Week 1 from Day 1, Month 1 from Week 1', () => {
+    expect(previewFrame(0)).toMatchObject({ step: 0, progress: 0, done: false, day: 1 })
+    expect(previewFrame(PREVIEW_STEP_MS).cost[0]).toBe(2.18)
+    expect(previewFrame(2 * PREVIEW_STEP_MS).cost[0]).toBe(18.4)
+    expect(previewFrame(3 * PREVIEW_STEP_MS - 1).day).toBe(7)
     const end = previewFrame(PREVIEW_MS)
     expect(end).toMatchObject({ step: 3, progress: 1, done: true, day: 30 })
-    expect(end.runs).toBe(2555)
     expect(end.cost.reduce((a, b) => a + b, 0)).toBeCloseTo(1133.48, 2)
-    expect(end.subagents.reduce((a, b) => a + b, 0)).toBe(1030)
   })
 
-  it('jumps to the start of a step, its end under reduced motion, and past the last to the end', () => {
+  it('draws as Home’s own harness summary from Day 1, so the tile stops being quiet', () => {
+    const day1 = sampleSummary(previewFrame(PREVIEW_STEP_MS))
+    expect(day1).toMatchObject({ connected: 2, activeDevs: 1, ownOnly: false, isPending: false })
+    const busy = {
+      totals: { spend: 2, runs: 10, previous: null },
+      totalsError: null,
+      tokens: { total: 900, changePct: null, input: 600, output: 300 },
+      driversError: null,
+      unpriced: false,
+    } as Spend
+    expect(quietTiles(busy, day1)).toMatchObject({
+      tiles: ['spend', 'tokens', 'runs', 'harnesses'],
+      quiet: [],
+    })
+    const month = sampleSummary(previewFrame(PREVIEW_MS))
+    expect(month).toMatchObject({ connected: 3, activeDevs: 62 })
+    const d = harnessDetails(month.harnesses)
+    expect(d.models.map((m) => [m.name, Number(m.share.toFixed(1))])).toEqual([
+      ['claude-sonnet-4', 37.4],
+      ['claude-opus-4', 27.9],
+      ['gpt-5-codex', 23.3],
+      ['gpt-5', 11.4],
+    ])
+    expect(d.subagentRuns).toBe(1030)
+    expect(d.toolCalls).toBeCloseTo(71_584, 6)
+    expect(d.failedPct).toBeCloseTo(2.8, 6)
+    // Day 1 has one model and no idle tool rows.
+    expect(harnessDetails(day1.harnesses).models).toHaveLength(1)
+    expect(harnessDetails(day1.harnesses).tools.map((t) => t.name)).toEqual([
+      'Bash',
+      'Edit',
+      'Read',
+    ])
+  })
+
+  it('jumps to a stop’s start, or under reduced motion shows it whole, the last as the end', () => {
     expect(stepStart(-1, false)).toBe(0)
     expect(stepStart(2, false)).toBe(2 * PREVIEW_STEP_MS)
-    expect(previewFrame(stepStart(2, true))).toMatchObject({ step: 2, day: 7 })
-    expect(stepStart(4, false)).toBe(PREVIEW_MS)
+    expect(previewFrame(stepStart(2, true))).toMatchObject({ step: 2, day: 7, done: false })
+    expect(stepStart(3, true)).toBe(PREVIEW_MS)
+    expect(previewAt(0, false)).toMatchObject({ on: true, elapsed: 0, playing: true })
+    expect(previewAt(3, true)).toMatchObject({ on: true, elapsed: PREVIEW_MS, playing: false })
+  })
+
+  it('plays, then counts down back to Home, unless paused or the viewer stays', () => {
+    const ended = previewTick(previewAt(0, false), PREVIEW_MS)
+    expect(ended).toMatchObject({ on: true, elapsed: PREVIEW_MS, playing: false, hold: 0 })
+    expect(previewTick(ended, PREVIEW_HOLD_MS - 1)).toMatchObject({
+      on: true,
+      hold: PREVIEW_HOLD_MS - 1,
+    })
+    expect(previewTick(ended, PREVIEW_HOLD_MS)).toEqual(PREVIEW_OFF)
+    const stayed = { ...ended, stay: true }
+    expect(previewTick(stayed, PREVIEW_HOLD_MS)).toBe(stayed)
+    const paused = { ...previewAt(1, false), playing: false }
+    expect(previewTick(paused, PREVIEW_HOLD_MS)).toBe(paused)
+    expect(previewTick(PREVIEW_OFF, 50)).toBe(PREVIEW_OFF)
   })
 
   it('shows the first line at once and every line before the step ends', () => {
