@@ -276,7 +276,7 @@ async fn write_resolved_row(
     };
 
     // Resolve user_id from the chat_session that owns this session_id.
-    let user_id: Option<uuid::Uuid> = match &session_id {
+    let session_user: Option<uuid::Uuid> = match &session_id {
         Some(sid) => {
             sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1 LIMIT 1")
                 .bind(sid)
@@ -286,6 +286,17 @@ async fn write_resolved_row(
                 .flatten()
         }
         None => None,
+    };
+    // A turn sent through the API or an A2A client has no UI chat session, but every entry
+    // path opens a flow keyed by the trace id, and the flow knows who sent it.
+    let user_id = match session_user {
+        Some(user) => Some(user),
+        None => sqlx::query_scalar("SELECT user_id FROM flows WHERE flow_id = $1")
+            .bind(&row.trace_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten(),
     };
 
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
