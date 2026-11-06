@@ -604,14 +604,15 @@ export function RoutedLive({
       }
       const create = e.key === 'createFailed' || e.key === 'saveUserFailed'
       const refusal = refusalOf(e, chatRefusal)
-      const { actions, links } = refusal
-        ? { actions: [], links: undefined }
-        : create
-          ? {
-              actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
-              links: undefined,
-            }
-          : routedActions(e, live.userText, handlers, resume)
+      const { actions, links } =
+        refusal && !refusal.retry
+          ? { actions: [], links: undefined }
+          : create
+            ? {
+                actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
+                links: undefined,
+              }
+            : routedActions(e, live.userText, handlers, resume)
       end = (
         <ErrorNotice
           error={e}

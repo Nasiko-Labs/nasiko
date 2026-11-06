@@ -371,6 +371,8 @@ export interface ChatRefusal {
   action: string
   /** The server's own words, shown under Details in place of the raw failure text. */
   detail: string
+  /** Running again may work (the agent wasn't ready yet), so the card offers it. */
+  retry?: boolean
 }
 
 export interface Slots {
@@ -436,8 +438,10 @@ export interface Slots {
   /** Budgets (Enterprise only). `NO_BUDGETS` in an OSS build: every surface off, nothing read. */
   budgets: BudgetsSurface
   /**
-   * Reads a failed chat turn's text for a refusal that running again won't fix (EE: a budget stop). Recognised, the
-   * card shows these words with no Run again and no agent logs. OSS: none, every failure is the generic one.
+   * Reads a failed chat turn's text, or the server's words for a turn it couldn't start, for a refusal the layer
+   * knows (EE: a budget stop, which running again won't fix). Recognised, the card shows these words, with no Run
+   * again and no agent logs unless the refusal says running again may work. OSS: none, every failure is the generic
+   * one.
    */
   chatRefusal: ((detail: string) => ChatRefusal | null) | null
 }

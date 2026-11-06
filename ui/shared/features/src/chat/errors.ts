@@ -167,10 +167,14 @@ export const failedTurnError = (
   detail: string | undefined,
 ): ChatError => new ChatError({ phase: 'stream', key, certainty: 'unknown', serverDetail: detail })
 
-/** The layer's words for a failed turn it recognises as a refusal (the `chatRefusal` slot), else null. */
+/**
+ * The layer's words for a failure it recognises as a refusal (the `chatRefusal` slot), else null: a turn that ended as
+ * failed, or a 503 whose words say why the agent couldn't take the turn.
+ */
 export function refusalOf(error: ChatError, read: Slots['chatRefusal']): ChatRefusal | null {
   if (!read || !error.serverDetail) return null
-  if (error.key !== 'agentFailed' && error.key !== 'routedFailed') return null
+  if (error.key !== 'agentFailed' && error.key !== 'routedFailed' && error.key !== 'noAgents')
+    return null
   return read(error.serverDetail)
 }
 

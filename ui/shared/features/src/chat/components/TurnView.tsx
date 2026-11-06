@@ -391,10 +391,16 @@ function TurnViewBody({
     key?: string,
   ) => {
     const refusal = refusalOf(error, chatRefusal)
-    // Run again would be refused the same way and the agent did nothing wrong: there is only the why to read.
-    const { actions, links } = refusal
-      ? { actions: [], links: undefined }
-      : errorActions(error, text, agentId, handlers)
+    // Run again would be refused the same way and the agent did nothing wrong: there is only the why to read, unless
+    // the refusal says the agent just wasn't ready yet.
+    const { actions, links } = refusal?.retry
+      ? {
+          actions: [{ label: copy.retry, onClick: handlers.runAgain, primary: true }],
+          links: undefined,
+        }
+      : refusal
+        ? { actions: [], links: undefined }
+        : errorActions(error, text, agentId, handlers)
     return (
       <ErrorNotice
         key={key}

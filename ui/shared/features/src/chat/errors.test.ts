@@ -40,10 +40,12 @@ describe('refusals a layer recognises', () => {
       ? { problem: 'Quota hit.', cause: 'Refused.', action: 'Wait.', detail: 'Try tomorrow.' }
       : null
 
-  it('asks the layer about a failed turn, and only a failed turn', () => {
+  it('asks the layer about a failed turn or a turn the server couldn’t start, and nothing else', () => {
     for (const key of ['agentFailed', 'routedFailed'] as const) {
       expect(refusalOf(failedTurnError(key, 'E: quota_hit'), read)?.detail).toBe('Try tomorrow.')
     }
+    const unavailable = dispatchError(503, { error: { code: -32603, message: 'quota_hit' } })
+    expect(refusalOf(unavailable, read)?.detail).toBe('Try tomorrow.')
     expect(refusalOf(failedTurnError('agentFailed', 'upstream timeout'), read)).toBeNull()
     const cut = new ChatError({
       phase: 'stream',
