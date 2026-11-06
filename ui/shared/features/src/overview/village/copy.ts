@@ -207,24 +207,6 @@ export const villageCopy = {
     placeholder: 'Ask the Orchestrator about your fleet…',
     send: 'Ask',
   },
-  /** The find box (the Map's Go to): find any part or problem and open it. */
-  query: {
-    label: 'Find on the canvas',
-    placeholder: 'Find a team, agent, model, tool or problem…',
-    goTo: 'Go to…',
-    scopeLabel: 'Look in',
-    scopes: {
-      all: 'All',
-      problems: 'Problems',
-      agents: 'Agents',
-      teams: 'Teams',
-      models: 'Models',
-      tools: 'Tools',
-    },
-    problems: 'Problems',
-    parts: 'Parts',
-    empty: 'Nothing here matches.',
-  },
   panel: {
     orgBudget: 'Budget this month',
     allowance: 'Your allowance',

@@ -20,7 +20,7 @@ import { TargetLink } from '../panel/targets'
 import type { Hud } from '../village/model'
 import { cardInsight, visibleOpps, type Action, type BoardSel } from './cards'
 import { boardCopy } from './copy'
-import type { Board, SpendCard } from './model'
+import { harnessLabel, routeOf, type Board, type SpendCard } from './model'
 import './board.css'
 
 const copy = boardCopy.panel
@@ -62,7 +62,9 @@ export function CardPanel({
     >
       <ScrollArea className="h-full min-h-0 [&>[data-slot=scroll-area-viewport]>div]:block!">
         <div className="pb-4">
-          {s.type === 'day' ? (
+          {s.type === 'kind' ? (
+            <KindView harness={s.key} v={v} onPick={onPick} onClose={onClose} />
+          ) : s.type === 'day' ? (
             <DayView
               index={s.index}
               v={v}
@@ -230,12 +232,12 @@ function CardView({
               key={t.id ?? 'none'}
               name={t.id ? t.name : boardCopy.noTeam}
               value={boardCopy.teamNote(t.projected, t.limit, t.hard)}
-              onClick={() => (t.id ? onPick(`node:${t.id}`) : onPick('place:tank'))}
+              onClick={() => (t.id ? onPick(`node:${t.id}`) : onPick('card:budget'))}
             />
           ))}
         </Section>
       ) : null}
-      {s.id === 'opportunities' ? (
+      {s.id === 'saved' && visibleOpps(v).length ? (
         <Section title={copy.ways}>
           {visibleOpps(v).map((o) => (
             <Row
@@ -372,6 +374,57 @@ function DayView({
           {copy.allBill}
         </Button>
       </div>
+    </>
+  )
+}
+
+/** A coding-harness kind (a whole row of the Local harnesses card): what it spends, where it goes, its installs. */
+function KindView({
+  harness,
+  v,
+  onPick,
+  onClose,
+}: {
+  harness: string
+  v: EstateView
+  onPick(sel: string): void
+  onClose(): void
+}) {
+  const k = copy.kind
+  const e = v.estate
+  const installs = e.harnesses
+    .filter((h) => h.harness === harness)
+    .sort((a, b) => (b.spend_usd ?? -1) - (a.spend_usd ?? -1))
+  const spent = installs.reduce((n, h) => n + (h.spend_usd ?? 0), 0)
+  const failing = installs.filter((h) => v.state.get(h.id) === 'errors').length
+  const via = [...new Set(installs.map((h) => routeOf(e, h.router_id)))].map(
+    (id) => e.routers.find((r) => r.id === id)?.name ?? boardCopy.direct.name,
+  )
+  const name = harnessLabel(installs[0]?.name ?? harness)
+  return (
+    <>
+      <Head title={name} sub={k.sub(installs.length, fmtMoney(spent))} onClose={onClose} />
+      <div className="px-4 pt-1">
+        <KV
+          rows={[
+            [k.spend, fmtMoney(spent)],
+            [k.installs, installs.length],
+            [k.failing, failing],
+            [k.via, via.join(', ')],
+          ]}
+        />
+      </div>
+      <Section title={k.top}>
+        {installs.slice(0, ROWS).map((h) => (
+          <Row
+            key={h.id}
+            name={h.name}
+            value={h.spend_usd === null ? '—' : fmtMoney(h.spend_usd)}
+            onClick={() => onPick(`node:${h.id}`)}
+          />
+        ))}
+      </Section>
+      <Actions items={[{ label: k.open, to: '/harnesses' }]} />
     </>
   )
 }

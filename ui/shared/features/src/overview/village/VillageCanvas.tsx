@@ -5,9 +5,10 @@
  *
  * Village and Map share this one canvas: switching view swaps only what is inside the pan-and-zoom zone (the village's
  * world, or the Map's board, `fleet/FleetBoard.tsx`), so the HUD, the Control center, Kiko, the drawer and the zoom
- * stay where they are. Both views have the System card in their top left (`fleet/SystemCard.tsx`, folded to its
- * counts until opened; every part as a list, it replaced the List view); the village has its meters in the top right,
- * the Map a Go to box beside the System card. On the Map a pick doesn't zoom in (its lines reach across the board): the
+ * stay where they are. The village has the System card in its top left (`fleet/SystemCard.tsx`, folded to its counts
+ * until opened; every part as a list, it replaced the List view), its meters in the top right and Kiko bottom left. The
+ * Map (nasiko-ui-lab's, 2026-11-05) opens on Fleet Runtime and TokenOps across the canvas's width (`HOME`, Org a pan to
+ * the left) with its legend in the top right. On the Map a pick doesn't zoom in (its lines reach across the board): the
  * view eases over to make room for the drawer. A click on one of its cards picks the card the same way: it lights, the
  * other cards fade and the drawer opens on the card's insights (`fleet/CardPanel.tsx`), whose buttons go to the pages.
  *
@@ -33,10 +34,10 @@ import type { EstateView } from '../estate/useEstateView'
 import { CardPanel } from '../fleet/CardPanel'
 import { boardSel, cardOf } from '../fleet/cards'
 import { boardCopy } from '../fleet/copy'
-import { BOARD, FleetBoard } from '../fleet/FleetBoard'
-import { CARDS } from '../fleet/layout'
+import { BoardLegend, FleetBoard } from '../fleet/FleetBoard'
+import { CARDS, HOME } from '../fleet/layout'
 import type { Anchor } from '../fleet/lines'
-import { billSeries, buildBoard } from '../fleet/model'
+import { billSeries, buildBoard, harnessLabel } from '../fleet/model'
 import { SystemCard } from '../fleet/SystemCard'
 import { parseSel } from '../map/selection'
 import { OVERLAY, useViewport } from '../map/useViewport'
@@ -60,7 +61,6 @@ import { createMotion } from './motion'
 import { MotionOn } from './motionContext'
 import { PlacePanel } from './PlacePanel'
 import { useVillagePrefs } from './prefs'
-import { GoTo } from './Query'
 import { buildScene, focusFor, placeOf, type Entity } from './scene'
 import { Shop, type Dest } from './Shop'
 import { hoverStore } from './stores'
@@ -137,7 +137,12 @@ export function VillageCanvas({
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
-    return () => ro.disconnect()
+    // The canvas sets its own height, so only the window tells it the room below it changed.
+    window.addEventListener('resize', measure)
+    return () => {
+      ro.disconnect()
+      window.removeEventListener('resize', measure)
+    }
   }, [])
 
   // The drawer keeps showing the last selection while it slides out.
@@ -153,7 +158,7 @@ export function VillageCanvas({
   const [systemOpen, setSystemOpen] = useState(false)
   const reserve = wide && drawerOpen ? PANEL_RESERVE : 0
   const changeView = (x: VillageView) => onView(x)
-  const vp = useViewport(zone, isMap ? BOARD : VILLAGE_FRAME, reserve, {
+  const vp = useViewport(zone, isMap ? HOME : VILLAGE_FRAME, reserve, {
     anywhere: true,
     easeReserve: isMap && !reduced,
   })
@@ -234,12 +239,14 @@ export function VillageCanvas({
       vp.center((x0 + x1) / 2, (y0 + y1) / 2 + (bottom - top) / 2 / z, z, reduced)
     }, 60)
   }
-  /** The Map's part a selection is about: its row, a harness install's column, the budget's gauge, a picked card. */
+  /** The Map's part a selection is about: its row, a harness kind's row, a picked card. */
   const boxOf = (s: string): Anchor | undefined => {
-    const c = cardOf(boardSel(s))
+    const b0 = boardSel(s)
+    if (b0?.type === 'kind') return anchors.current.get(`hk:${b0.key}`)
+    const c = cardOf(b0)
     if (c) {
       const b = CARDS[c]
-      return { x: b.left, y: b.top, w: b.width, h: b.height }
+      return anchors.current.get(`card:${c}`) ?? { x: b.left, y: b.top, w: b.width, h: b.height }
     }
     const id = s.startsWith('node:') ? s.slice('node:'.length) : null
     if (!id) return s === 'place:tank' ? anchors.current.get('org') : undefined
@@ -437,7 +444,6 @@ export function VillageCanvas({
                 v={v}
                 board={board}
                 card={bill.card}
-                dates={bill.dates}
                 hud={village.hud}
                 mine={mine}
                 saved={saved}
@@ -508,18 +514,22 @@ export function VillageCanvas({
             />
             <SettingsButton reducedBySystem={reduced} onReplay={() => openGuide('welcome')} />
           </div>
-          {/* Top left, in both views: the System card (and on the Map, Go to beside it). */}
-          {wide ? (
+          {/* Top left, on the village: the System card. */}
+          {wide && !isMap ? (
             <div
               data-vp-ignore=""
               className="pointer-events-none absolute top-3 bottom-24 left-3 z-10 flex items-start gap-2"
             >
               {systemUi}
-              {isMap ? (
-                <div className="pointer-events-auto">
-                  <GoTo v={v} onPick={select} />
-                </div>
-              ) : null}
+            </div>
+          ) : null}
+          {/* Top right, on the Map: its legend, straight on the canvas (the drawer covers it). */}
+          {isMap ? (
+            <div
+              data-vp-ignore=""
+              className="pointer-events-none absolute top-4 right-4 z-10 hidden @[900px]/village:block"
+            >
+              <BoardLegend />
             </div>
           ) : null}
           {/* Top right: the village's meters (the Map's board shows the same numbers on its own cards). They stay put;
@@ -538,21 +548,23 @@ export function VillageCanvas({
               />
             </div>
           )}
-          <div className="absolute bottom-2 left-3 z-10">
-            <Kiko
-              log={village.log}
-              open={kikoOpen}
-              index={kikoIndex}
-              onToggle={() => {
-                setLogOpen(false)
-                setKikoOpen((o) => !o)
-              }}
-              onNext={() => setKikoIndex((k) => k + 1)}
-              onClose={() => setKikoOpen(false)}
-              onTake={take}
-              estate={v.estate}
-            />
-          </div>
+          {isMap ? null : (
+            <div className="absolute bottom-2 left-3 z-10">
+              <Kiko
+                log={village.log}
+                open={kikoOpen}
+                index={kikoIndex}
+                onToggle={() => {
+                  setLogOpen(false)
+                  setKikoOpen((o) => !o)
+                }}
+                onNext={() => setKikoIndex((k) => k + 1)}
+                onClose={() => setKikoOpen(false)}
+                onTake={take}
+                estate={v.estate}
+              />
+            </div>
+          )}
 
           {isMap ? null : (
             <div className="absolute right-3 bottom-3 z-10 hidden @[900px]/village:block">
@@ -622,12 +634,7 @@ export function VillageCanvas({
             </aside>
           ) : null}
         </div>
-        {wide ? null : (
-          <div className="mt-3 flex flex-col gap-2">
-            {isMap ? <GoTo v={v} onPick={select} /> : null}
-            {systemUi}
-          </div>
-        )}
+        {wide || isMap ? null : <div className="mt-3 flex flex-col gap-2">{systemUi}</div>}
         {!wide && open && inspector ? (
           <aside className="mt-3 max-h-[520px] overflow-hidden rounded-xl border bg-card">
             {inspector}
@@ -657,6 +664,10 @@ function mapName(sel: string | undefined, v: EstateView, mine: boolean): string 
     return v.estate.opportunities.find((o) => o.id === sel.slice('opp:'.length))?.title
   const b = boardSel(sel)
   if (b?.type === 'day') return boardCopy.totalSpend
+  if (b?.type === 'kind') {
+    const h = v.estate.harnesses.find((x) => x.harness === b.key)
+    return h ? harnessLabel(h.name) : b.key
+  }
   if (b) {
     const names: Record<string, string> = {
       teams: boardCopy.teams,
@@ -668,7 +679,6 @@ function mapName(sel: string | undefined, v: EstateView, mine: boolean): string 
       harness: boardCopy.harness,
       bill: boardCopy.totalSpend,
       saved: boardCopy.saved,
-      opportunities: boardCopy.opps.title,
       budget: mine ? boardCopy.allowance : boardCopy.budget,
     }
     return names[b.id]

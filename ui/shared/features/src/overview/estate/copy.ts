@@ -176,6 +176,10 @@ export const estateCopy = {
     since: (day: string) => `Since ${day}`,
     also: (kind: string) => `also ${kind.toLowerCase()}`,
     vsTarget: (cur: string, target: string) => [cur, `vs ${target} target`] as const,
+    trendLabel: (metric: string, first: string, last: string, target: string) =>
+      `${metric} over the last 10 days: from ${first} to ${last}, against a ${target} target`,
+    daysAgo: (n: number) => `${n} days ago`,
+    today: 'Today',
     whoNone: 'Nobody is on it yet',
     whoMe: 'You are on it',
     whoOther: (name: string) => `${name} is on it`,

@@ -169,8 +169,7 @@ describe('the village', () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=village')
     const v = await village()
-    // The find box is the Map's (Go to); the village's bottom centre is a chat box.
-    expect(within(v).queryByRole('combobox', { name: copy.query.label })).toBeNull()
+    // The village's bottom centre is a chat box.
     const ask = within(v).getByRole('form', { name: copy.ask.label })
     expect(within(ask).getByRole('button', { name: copy.ask.send })).toBeDisabled()
     await user.type(
@@ -197,11 +196,15 @@ describe('the village', () => {
     expect(within(v).queryByText(/^Kiko · /)).toBeNull()
   })
 
-  it('an old List link opens the Map, whose System card lists every part and picks one', async () => {
+  it("an old List link opens the Map; the village's System card lists every part and picks one", async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=list')
+    await village()
+    expect(screen.getByRole('radio', { name: overviewCopy.views.map })).toBeChecked()
+    // The System card is the village's (the Map's board lists every part itself).
+    expect(screen.queryByRole('button', { name: boardCopy.system.openLabel })).toBeNull()
+    await user.click(screen.getByRole('radio', { name: overviewCopy.views.village }))
     const v = await village()
-    expect(await screen.findByTestId('overview-canvas')).toBeInTheDocument()
     // Folded to its counts by default, in the top left.
     expect(within(v).queryByRole('region', { name: boardCopy.system.title })).toBeNull()
     await user.click(within(v).getByRole('button', { name: boardCopy.system.openLabel }))

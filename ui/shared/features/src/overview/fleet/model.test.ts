@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import {
   AGENT_DAYS,
+  WORKFLOW_DAYS,
   HARNESS_CELLS,
   SHOWN,
   TOOL_OFF_RECENT_DAYS,
@@ -31,9 +32,12 @@ describe('the board', () => {
     expect(b.agents).toHaveLength(Math.min(SHOWN.agents, e.agents.length))
     const spend = b.agents.map((a) => a.spend)
     expect([...spend].sort((x, y) => y - x)).toEqual(spend)
-    for (const a of b.agents) expect(a.days).toHaveLength(AGENT_DAYS)
-    // Days before the window are empty, never healthy.
-    if (e.days.length < AGENT_DAYS) expect(b.agents[0]?.days[0]).toBe('none')
+    // Only the days the estate has, oldest first: a short window fills the tiles from the left, never pads with 'none'.
+    for (const a of b.agents) {
+      expect(a.days).toHaveLength(Math.min(AGENT_DAYS, e.days.length))
+      expect(a.days).not.toContain('none')
+    }
+    for (const w of b.workflows) expect(w.days).toHaveLength(Math.min(WORKFLOW_DAYS, e.days.length))
     expect(b.agents.some((a) => a.now === 'bad')).toBe(true)
   })
 

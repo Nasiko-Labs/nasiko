@@ -1,21 +1,24 @@
 /**
  * The Map view's token lines over the OV-1 mock: one line per pair, spend that reconciles with the agents and teams,
  * red only where spend is going up, a selection that lights what the part is wired to (not every team a problem
- * names), and routes that run through the gutters and streets and land at a part's own place: a router's port, a
- * model's row in its provider's column.
+ * names), and one curve per line from a part's right edge to the next part's own place: a router's row, a model's row
+ * in its provider's row, a provider's line on the bill. Nothing reaches the bill but the providers.
  */
 import { describe, expect, it } from 'vitest'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { LANES } from './layout'
 import {
   buildLines,
+  curve,
   focusOf,
+  kindFocus,
   kindId,
   litLine,
   ORG,
   BILL,
-  BUDGET,
+  billLine,
   pointsOf,
+  restLines,
   roundPath,
   type Anchor,
   type Line,
@@ -34,15 +37,19 @@ async function setup() {
 const of = (lines: Line[], route: Line['route']) => lines.filter((l) => l.route === route)
 
 describe('the token lines', () => {
-  it('joins the org to every team, red where the team is over pace', async () => {
-    const { board, lines } = await setup()
-    const org = of(lines, 'org-team')
-    expect(org).toHaveLength(board.teams.length)
-    for (const t of board.teams) {
-      const l = org.find((x) => x.to === (t.id ?? 'team:none'))
-      expect(l?.usd).toBeCloseTo(t.usd)
-      expect(l?.hot).toBe((t.pace ?? 0) > 1)
-    }
+  it('draws no line inside a card, and none to the bill but the providers', async () => {
+    const { lines } = await setup()
+    expect(lines.some((l) => l.from === ORG)).toBe(false)
+    expect(lines.filter((l) => l.to === BILL).every((l) => l.route === 'provider-bill')).toBe(true)
+  })
+
+  it("lights a harness kind picked whole with every install's own parts", async () => {
+    const { v, board } = await setup()
+    const c = board.harnesses[0]!
+    const f = kindFocus(v, c.key)
+    expect(f.has(kindId(c.key))).toBe(true)
+    for (const h of v.estate.harnesses.filter((x) => x.harness === c.key))
+      expect(f.has(h.id)).toBe(true)
   })
 
   it('gives each agent its own line from each of its teams, splitting its spend between them', async () => {
@@ -71,20 +78,28 @@ describe('the token lines', () => {
       const outUsd = of(lines, 'router-model')
         .filter((l) => l.from === r.id)
         .reduce((n, l) => n + l.usd, 0)
+      // Coding harnesses routed through it send on what they spend too.
+      const harnessUsd = of(lines, 'harness-router')
+        .filter((l) => l.to === r.id)
+        .reduce((n, l) => n + l.usd, 0)
       // Agents past the twelve shown add to what the router sends on, never take from it.
       expect(outUsd).toBeGreaterThanOrEqual(inUsd - 1e-6)
-      expect(outUsd).toBeCloseTo(r.spend)
+      expect(outUsd).toBeCloseTo(r.spend + harnessUsd)
       for (const l of of(lines, 'router-model').filter((x) => x.from === r.id))
         expect(l.via).toMatch(/^provider:/)
     }
   })
 
-  it('sends coding harnesses past the routers, straight to their models, and from their teams', async () => {
+  it('passes coding harnesses with no router through the No router row to their models, and from their teams', async () => {
     const { board, lines } = await setup()
+    const direct = board.direct?.id
+    expect(direct).toBeTruthy()
     for (const c of board.harnesses) {
-      expect(of(lines, 'harness-model').some((l) => l.from === kindId(c.key))).toBe(true)
+      expect(of(lines, 'harness-router').some((l) => l.from === kindId(c.key))).toBe(true)
       expect(of(lines, 'team-harness').some((l) => l.to === kindId(c.key))).toBe(true)
     }
+    expect(of(lines, 'harness-router').some((l) => l.to === direct)).toBe(true)
+    expect(of(lines, 'router-model').some((l) => l.from === direct)).toBe(true)
     expect(of(lines, 'agent-router').every((l) => !l.from.startsWith('hk:'))).toBe(true)
   })
 
@@ -94,6 +109,37 @@ describe('the token lines', () => {
     expect(flows.length).toBeGreaterThan(0)
     expect(new Set(flows.map((l) => l.id)).size).toBe(flows.length)
     expect(flows.every((l) => l.kind === 'calls' && !l.hot)).toBe(true)
+  })
+
+  it("marks failing the lines at a part in error, and a workflow's call only where its step fails", async () => {
+    const { v, lines } = await setup()
+    // A team is never the broken end: the line breaks at its part.
+    const broken = (id: string) => v.nodes.get(id)?.kind !== 'group' && v.state.get(id) === 'errors'
+    const failing = lines.filter((l) => l.failing)
+    expect(failing.length).toBeGreaterThan(0)
+    for (const l of lines.filter((x) => !x.from.startsWith('hk:') && !x.to.startsWith('hk:')))
+      expect(l.failing).toBe(broken(l.to) || (!l.route.startsWith('flow') && broken(l.from)))
+  })
+})
+
+describe('the board at rest', () => {
+  it('keeps only failing and red lines, none from a team, and one line into each provider and failing tool', async () => {
+    const { lines } = await setup()
+    const rest = restLines(lines)
+    expect(rest.length).toBeGreaterThan(0)
+    expect(rest.every((l) => l.failing || l.hot)).toBe(true)
+    expect(rest.some((l) => l.route.startsWith('team'))).toBe(false)
+    const toProviders = rest.filter((l) => l.route === 'router-model')
+    expect(toProviders.every((l) => l.to === l.via)).toBe(true)
+    const alerting = lines.filter((l) => l.route === 'router-model' && (l.failing || l.hot))
+    expect(toProviders.map((l) => l.to).sort()).toEqual(
+      [...new Set(alerting.map((l) => l.via))].sort(),
+    )
+    // One master calls line into each part in error that is called, and none into a healthy one.
+    const calls = rest.filter((l) => l.kind === 'calls')
+    expect(calls.every((l) => l.endFails)).toBe(true)
+    const into = lines.filter((l) => l.kind === 'calls' && l.endFails).map((l) => l.to)
+    expect(calls.map((l) => l.to).sort()).toEqual([...new Set(into)].sort())
   })
 })
 
@@ -133,95 +179,99 @@ describe('a selection', () => {
 describe('routing', () => {
   const box = (x: number, y: number, w = 100, h = 20): Anchor => ({ x, y, w, h })
 
-  it('runs a team line down its own lane in the gutter and straight into the agent', () => {
-    const l: Line = {
-      id: 'x',
-      route: 'team-agent',
-      kind: 'spend',
-      from: 't',
-      to: 'a',
-      via: null,
-      lane: 2,
-      slot: 0,
-      usd: 1,
-      hot: false,
-    }
-    const pts = pointsOf(
-      l,
-      new Map([
-        ['t', box(40, 200)],
-        ['a', box(589, 300)],
-      ]),
-    )
-    const lane = LANES.g0 + 10 + 2 * 7
-    expect(pts).toEqual([
+  const line = (route: Line['route'], from: string, to: string, lane: number): Line => ({
+    id: 'x',
+    route,
+    kind: 'spend',
+    from,
+    to,
+    via: route.endsWith('model') ? 'p' : null,
+    lane,
+    slot: 0,
+    usd: 1,
+    hot: false,
+    failing: false,
+    endFails: false,
+  })
+
+  it('runs a line from the right edge of its part to the left edge of the next, at their rows', () => {
+    const l = line('team-agent', 't', 'a', 2)
+    expect(
+      pointsOf(
+        l,
+        new Map([
+          ['t', box(40, 200)],
+          ['a', box(589, 300)],
+        ]),
+      ),
+    ).toEqual([
       [140, 210],
-      [lane, 210],
-      [lane, 310],
       [589, 310],
     ])
     expect(pointsOf(l, new Map([['t', box(40, 200)]]))).toBeNull()
   })
 
-  it("drops a router's line out of its tile, along s3, into the model's own row of its provider's column", () => {
-    const l: Line = {
-      id: 'x',
-      route: 'router-model',
-      kind: 'spend',
-      from: 'r',
-      to: 'm',
-      via: 'p',
-      lane: 1,
-      slot: 2,
-      usd: 1,
-      hot: false,
-    }
+  it("runs a router's line into the model's own row, or its provider's row when the model isn't drawn", () => {
+    const l = line('router-model', 'r', 'm', 1)
     const at = new Map([
-      ['r', box(500, 498, 28, 28)],
-      ['p', box(370, 660, 90, 18)],
-      ['m', box(370, 700, 90, 20)],
+      ['r', box(1000, 200, 250, 30)],
+      ['p', box(1350, 240, 104, 18)],
+      ['m', box(1480, 260, 200, 16)],
     ])
-    const pts = pointsOf(l, at)
-    // The tile's middle; the street's lane; the model's slot in the column.
-    expect(pts?.at(0)).toEqual([514, 526])
-    expect(pts?.at(-2)).toEqual([370 + 6 + 2 * 7, LANES.s3 + 3 + 3])
-    expect(pts?.at(-1)).toEqual([370 + 6 + 2 * 7, 702])
-    // A model the column doesn't draw lands on its provider.
+    expect(pointsOf(l, at)).toEqual([
+      [1250, 210],
+      [1480, 268],
+    ])
     at.delete('m')
-    expect(pointsOf(l, at)?.at(-1)).toEqual([370 + 6 + 2 * 7, 662])
+    expect(pointsOf(l, at)?.at(-1)).toEqual([1350, 253])
   })
 
-  it('sends a harness kind straight to the bill, and the budget pays each provider along s4', () => {
-    const bill: Line = {
-      id: 'x',
-      route: 'harness-bill',
-      kind: 'spend',
-      from: 'hk:claude',
-      to: BILL,
-      via: null,
-      lane: 1,
-      slot: 0,
-      usd: 1,
-      hot: false,
-    }
+  it("lands a provider on its own line on the bill, or the bill's edge when the line isn't drawn", () => {
     const at = new Map([
-      ['hk:claude', box(360, 760, 200, 80)],
-      [BILL, box(1116, 144, 300, 576)],
-      [BUDGET, box(1436, 540, 280, 180)],
-      ['p', box(400, 600, 90, 18)],
+      [BILL, box(1700, 144, 300, 580)],
+      ['p', box(1272, 200, 104, 18)],
+      [billLine('p'), box(1712, 300, 276, 20)],
     ])
-    // Out of the harnesses' right side and up into the bill's bottom edge.
-    expect(pointsOf(bill, at)).toEqual([
-      [560, 777],
-      [1116 + 28 + 12, 777],
-      [1116 + 28 + 12, 720],
+    const pay = line('provider-bill', 'p', BILL, 0)
+    expect(pointsOf(pay, at)).toEqual([
+      [1376, 209],
+      [1712, 310],
     ])
-    const pay: Line = { ...bill, route: 'budget-provider', from: BUDGET, to: 'p', lane: 0 }
-    const pts = pointsOf(pay, at)
-    // Out of the budget's left edge, down beside the bill, along s4, up into the provider's column.
-    expect(pts?.at(0)).toEqual([1436, 584])
-    expect(pts?.at(2)).toEqual([LANES.g3 + 4, LANES.s4 + 3])
-    expect(pts?.at(-1)).toEqual([445, 602])
+    at.delete(billLine('p'))
+    expect(pointsOf(pay, at)?.at(-1)).toEqual([1700, 154])
+  })
+
+  it("brackets a workflow's call into an agent in its own column, down the column's left side", () => {
+    const l = { ...line('flow-agent', 'w', 'a', 1), kind: 'calls' as const }
+    const pts = pointsOf(
+      l,
+      new Map([
+        ['w', box(410, 900, 360, 20)],
+        ['a', box(410, 200, 360, 20)],
+      ]),
+    )
+    const x = LANES.g0 - 10 - 6
+    expect(pts).toEqual([
+      [410, 910],
+      [x, 910],
+      [x, 210],
+      [410, 210],
+    ])
+  })
+
+  it('draws two points as one smooth S, level where it leaves and lands', () => {
+    expect(
+      curve([
+        [0, 0],
+        [100, 50],
+      ]),
+    ).toBe('M0 0C50 0 50 50 100 50')
+    expect(
+      curve([
+        [0, 10],
+        [100, 10],
+      ]),
+    ).toBe('M0 10L100 10')
   })
 
   it('rounds the corners and drops repeated points', () => {

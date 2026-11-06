@@ -17,14 +17,19 @@ import type { EstateView } from '../estate/useEstateView'
 export type Tone = 'ok' | 'bad' | 'warn' | 'idle' | 'none'
 export type HarnessTone = 'high' | 'low' | 'empty' | 'bad' | 'warn'
 
-/** How many day tiles an agent shows (two rows of nine), how many installs a harness column (four rows of eleven). */
+/**
+ * How many day tiles an agent shows (two rows of nine), a workflow (one row of ten: a fixed window however many runs or
+ * steps it has), and how many installs a harness row (two rows of 26).
+ */
 export const AGENT_DAYS = 18
-export const HARNESS_CELLS = 44
+export const WORKFLOW_DAYS = 10
+export const HARNESS_CELLS = 52
 export const SHOWN = {
   agents: 9,
   /** As many as fit beside the agents, in the Teams card's row shape. */
   workflows: 4,
-  tools: 24,
+  /** A row each, like the providers (Ans's reference, 2026-11-04); the column has room for twelve (2026-11-05). */
+  tools: 12,
   harnesses: 3,
   routers: 4,
   providers: 4,
@@ -66,7 +71,7 @@ export interface AgentRow {
   /** A cost problem is on it: its spend reads red. */
   costly: boolean
   now: Tone
-  /** The last AGENT_DAYS days, oldest first (`none` before the window). */
+  /** The last AGENT_DAYS days the estate has, oldest first: the card draws them from the left. */
   days: Tone[]
 }
 export interface StepCell {
@@ -81,6 +86,8 @@ export interface WorkflowRow {
   runs: number
   failing: boolean
   steps: StepCell[]
+  /** The last WORKFLOW_DAYS days the estate has, oldest first. */
+  days: Tone[]
 }
 export interface ToolRow {
   id: string
@@ -144,6 +151,19 @@ export interface RouterCard {
   tone: Tone
   providers: Share[]
 }
+/**
+ * The LLM Routers card's "No router" row: what reaches a model with no router between, agents and coding harnesses
+ * alike, so their lines pass through it like a router's (Ans, 2026-11-04).
+ */
+export interface DirectRow {
+  /** The estate's own direct path when it has one (a part you can pick), else NO_ROUTER. */
+  id: string
+  spend: number
+  /** Of all spend, agents' and coding harnesses'. */
+  share: number
+  agents: number
+  harnesses: number
+}
 export interface ModelBar extends Share {
   /** 0..1 of the biggest shown model's spend, on every provider's column: one scale for the whole card. */
   bar: number
@@ -201,6 +221,7 @@ export interface Board {
   harnessCount: number
   routers: RouterCard[]
   routerCount: number
+  direct: DirectRow | null
   providers: ProviderRow[]
   bill: Bill
   /** Every team, worst pace first, then the people in no team. */
@@ -209,13 +230,41 @@ export interface Board {
 }
 
 /**
- * The teams an agent works for: the groups whose people ran it (proposed `team_ids`, V-1), else its owner's group,
- * the village's rule. Its spend is split evenly over them.
+ * The teams an agent works for: the groups whose people ran it (proposed `team_ids`, V-1), else its owner's group.
+ * Its spend is split evenly over them.
  */
 export function teamsOf(e: Estate, a: EstateAgent): string[] {
   const owner = a.owner_id ? e.people.find((p) => p.id === a.owner_id)?.group_id : null
   const known = new Set(e.groups.map((g) => g.id))
   return [...new Set((a.team_ids ?? [owner]).filter((x): x is string => !!x && known.has(x)))]
+}
+
+/** The No router row's anchor when the estate has no direct path of its own. */
+export const NO_ROUTER = 'router:none'
+/** Where traffic that skips every router goes on the board: the estate's direct path, else NO_ROUTER. */
+export const directId = (e: Estate) => e.routers.find((r) => r.direct)?.id ?? NO_ROUTER
+/** The router row a part's traffic passes through: its own router, else the No router row. */
+export function routeOf(e: Estate, routerId: string | null | undefined): string {
+  const r = routerId ? e.routers.find((x) => x.id === routerId) : undefined
+  return r && !r.direct ? r.id : directId(e)
+}
+
+/**
+ * The tools on the card, most used first: every one that needs a look (failing, slow), the most used after them, then
+ * up to two turned off lately (faded), so a capped list never drops a broken tool or hides one just switched off.
+ */
+function shownTools(tools: ToolRow[]): ToolRow[] {
+  const off = tools.filter((t) => t.offSince).slice(0, 2)
+  const on = tools.filter((t) => !t.offSince)
+  const room = SHOWN.tools - off.length
+  const keep = new Set(
+    on
+      .filter((t) => t.tone === 'bad' || t.tone === 'warn')
+      .slice(0, room)
+      .map((t) => t.id),
+  )
+  for (const t of on) if (keep.size < room) keep.add(t.id)
+  return [...on.filter((t) => keep.has(t.id)), ...off]
 }
 
 /** Everything that calls a tool: agents, coding harnesses and workflow steps. */
@@ -241,25 +290,30 @@ function shares<T extends { spend: number }>(rows: T[]): (T & { share: number })
   return rows.map((r) => ({ ...r, share: sum > 0 ? r.spend / sum : 1 / rows.length }))
 }
 
+/**
+ * A part's last `n` days in their tones, oldest first: only days the estate has, so a short window fills its tiles from
+ * the left and leaves the rest empty (Ans, 2026-11-05: "left aligned so that that progress is felt").
+ */
+export function recentDays(v: EstateView, id: string, n: number): Tone[] {
+  const last = Math.min(v.view.day, v.estate.days.length - 1)
+  const days: Tone[] = []
+  for (let k = Math.max(0, last - n + 1); k <= last; k++) days.push(toneOf(v.day(id, k)))
+  return days
+}
+
 export function buildBoard(v: EstateView): Board {
   const e = v.estate
   const st = (id: string) => v.state.get(id)
-  const last = e.days.length - 1
   const kinds = (id: string): Problem[] => problemsOf(v.nodes, v.problems, id)
 
-  const agents = [...e.agents].sort(byDesc((a) => a.spend_usd)).map((a): AgentRow => {
-    const days: Tone[] = []
-    for (let k = v.view.day - AGENT_DAYS + 1; k <= v.view.day; k++)
-      days.push(k < 0 || k > last ? 'none' : toneOf(v.day(a.id, k)))
-    return {
-      id: a.id,
-      name: a.name,
-      spend: a.spend_usd,
-      costly: kinds(a.id).some((p) => p.kind === 'cost' || p.also === 'cost'),
-      now: toneOf(st(a.id)),
-      days,
-    }
-  })
+  const agents = [...e.agents].sort(byDesc((a) => a.spend_usd)).map((a): AgentRow => ({
+    id: a.id,
+    name: a.name,
+    spend: a.spend_usd,
+    costly: kinds(a.id).some((p) => p.kind === 'cost' || p.also === 'cost'),
+    now: toneOf(st(a.id)),
+    days: recentDays(v, a.id, AGENT_DAYS),
+  }))
 
   const workflows = [...e.workflows].sort(byDesc((w) => w.runs)).map((w): WorkflowRow => {
     const steps = w.steps.map((s, i) => ({
@@ -274,6 +328,7 @@ export function buildBoard(v: EstateView): Board {
       runs: w.runs,
       failing: toneOf(st(w.id)) === 'bad' || steps.some((s) => s.tone === 'bad'),
       steps,
+      days: recentDays(v, w.id, WORKFLOW_DAYS),
     }
   })
 
@@ -366,6 +421,25 @@ export function buildBoard(v: EstateView): Board {
     })
     .sort(byDesc((r) => r.spend))
 
+  // What skips every router: the agents with none and the coding harnesses that call their providers directly.
+  const did = directId(e)
+  const loneAgents = e.agents.filter((a) => routeOf(e, a.router_id) === did)
+  const loneHarnesses = e.harnesses.filter((h) => routeOf(e, h.router_id) === did)
+  const allSpend = agentTotal + e.harnesses.reduce((n, h) => n + (h.spend_usd ?? 0), 0)
+  const directSpend =
+    loneAgents.reduce((n, a) => n + a.spend_usd, 0) +
+    loneHarnesses.reduce((n, h) => n + (h.spend_usd ?? 0), 0)
+  const direct: DirectRow | null =
+    loneAgents.length || loneHarnesses.length
+      ? {
+          id: did,
+          spend: directSpend,
+          share: allSpend > 0 ? directSpend / allSpend : 0,
+          agents: loneAgents.length,
+          harnesses: loneHarnesses.length,
+        }
+      : null
+
   const provRows = e.providers
     .map((p) => {
       const models = e.models
@@ -447,12 +521,13 @@ export function buildBoard(v: EstateView): Board {
     agentCount: agents.length,
     workflows: workflows.slice(0, SHOWN.workflows),
     workflowCount: workflows.length,
-    tools: tools.slice(0, SHOWN.tools),
+    tools: shownTools(tools),
     toolCount: e.tools.length,
     harnesses: harnesses.slice(0, SHOWN.harnesses),
     harnessCount: e.harnesses.length,
     routers: routers.slice(0, SHOWN.routers),
     routerCount: routers.length,
+    direct,
     providers,
     bill: billOf(e),
     teams,

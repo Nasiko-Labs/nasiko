@@ -1,17 +1,17 @@
 /**
  * Where everything sits on the Map view's board, in board units (the viewport scales them; 1 unit is 1 CSS px at
- * 100%). Three sections, left to right (Ans's wireframe, 2026-10-17, second round): Org (every team against its
- * budget, the full height), Fleet Runtime (agents and workflows on top; under the agents the LLM routers, a small box,
- * over the providers and their models; under the workflows the connectors and tools; the local harnesses across the
- * bottom) and TokenOps (the bill, the full height, on the left; the savings globe over the opportunities and the
- * budget on the right). Inside a section every card is GAP from its neighbours; sections are GUTTER apart.
+ * 100%). Five columns, left to right, the way the spend flows (Ans's wireframe, 2026-11-04): Org (every team against
+ * its budget); the agents, the local harnesses and the workflows, stacked; the LLM routers over the connectors and
+ * tools; the providers and their models; TokenOps (total spend, then what was saved and the month's budget under it).
  *
- * The token lines are drawn under the cards and run in the gaps: the gutter beside the teams (g0), the gap between the
- * agents and the workflows (g1), the street under the top row (s1), the band left of the routers, the street between
- * the routers and the providers (s3) and the street over the harnesses (s4), so a line enters a card at its edge and
- * never crosses a card's content (lines.ts).
+ * A column's cards stack (FleetBoard's `Stack`): each one as tall as what it holds, GAP from the next, the same gap in every column
+ * (Ans, 2026-11-04: "reduce the vertical gap … keep them all same"). The heights below are only what the canvas pans to
+ * before the board is measured; once it is, every card's own box (its `card:<id>` anchor) wins.
+ *
+ * The token lines are drawn under the cards: each one a curve across the gutter between two neighbouring columns
+ * (lines.ts), so it never crosses a card's content.
  */
-export const BOARD = { width: 1748, height: 912 }
+export const BOARD = { width: 1868, height: 1080 }
 
 export interface Box {
   left: number
@@ -20,61 +20,56 @@ export interface Box {
   height: number
 }
 
-/** Between two cards in one section, and between two sections. */
-export const GAP = 20
-const GUTTER = 72
+/** Between two cards in one column. */
+export const GAP = 12
 
-/** The section headings' row, and where the cards start and end. */
+/** The section headings' row, and where the cards start. */
 export const TITLE_TOP = 100
 const TOP = 144
-/** The Fleet Runtime's top row ends here; the routers and the tools start a GAP under it (the street s1). */
-const ROW = 464
-const LOW = ROW + GAP
-/** Where the Org, the providers, the tools and TokenOps end; the harnesses start a GAP under it (the street s4). */
-const BOTTOM = 720
-const HARNESS_TOP = BOTTOM + GAP
-const HARNESS_H = 132
 
+/**
+ * Proximity groups the columns (Ans, 2026-11-05: "all feels like a same group"): the three Fleet Runtime columns sit a
+ * narrow INNER gutter apart, the sections (Org, Fleet Runtime, TokenOps) a wide SECTION gutter apart.
+ */
+const INNER = 44
+const SECTION = 128
 const ORG_LEFT = 32
 const TEAMS_W = 250
-const FLEET = ORG_LEFT + TEAMS_W + GUTTER
-const AGENTS_W = 420
-const WORKFLOWS_W = 250
-const FLEET_RIGHT = FLEET + AGENTS_W + GAP + WORKFLOWS_W
-const TOKENOPS = FLEET_RIGHT + GUTTER
-const BILL_W = 300
-const SIDE = TOKENOPS + BILL_W + GAP
-const SIDE_W = 280
+const FLEET = ORG_LEFT + TEAMS_W + SECTION
+const FLEET_W = 360
+const ROUTE = FLEET + FLEET_W + INNER
+const ROUTE_W = 250
+const MODELS = ROUTE + ROUTE_W + INNER
+const MODELS_W = 300
+const TOKENOPS = MODELS + MODELS_W + SECTION
+const TOKENOPS_W = 300
 
-/** The routers' box: one row of tiles. */
-const ROUTERS_H = 56
-const SAVED_H = 184
-const OPP_TOP = TOP + SAVED_H + GAP
-const BUDGET_H = 180
+const AGENTS_H = 330
+const HARNESS_H = 220
+const WORKFLOWS_H = 280
+const ROUTERS_H = 250
+const BILL_H = 320
+const SAVED_H = 160
+
+const below = (b: Box) => b.top + b.height + GAP
+
+const agents = { left: FLEET, top: TOP, width: FLEET_W, height: AGENTS_H }
+const harness = { left: FLEET, top: below(agents), width: FLEET_W, height: HARNESS_H }
+const routers = { left: ROUTE, top: TOP, width: ROUTE_W, height: ROUTERS_H }
+const bill = { left: TOKENOPS, top: TOP, width: TOKENOPS_W, height: BILL_H }
+const saved = { left: TOKENOPS, top: below(bill), width: TOKENOPS_W, height: SAVED_H }
 
 export const CARDS = {
-  teams: { left: ORG_LEFT, top: TOP, width: TEAMS_W, height: BOTTOM - TOP },
-  agents: { left: FLEET, top: TOP, width: AGENTS_W, height: ROW - TOP },
-  workflows: { left: FLEET + AGENTS_W + GAP, top: TOP, width: WORKFLOWS_W, height: ROW - TOP },
-  // A GAP in from the providers' left edge: the direct lines (no router) run down that band.
-  routers: { left: FLEET + GAP, top: LOW, width: AGENTS_W - GAP, height: ROUTERS_H },
-  providers: {
-    left: FLEET,
-    top: LOW + ROUTERS_H + GAP,
-    width: AGENTS_W,
-    height: BOTTOM - (LOW + ROUTERS_H + GAP),
-  },
-  tools: { left: FLEET + AGENTS_W + GAP, top: LOW, width: WORKFLOWS_W, height: BOTTOM - LOW },
-  harness: { left: FLEET, top: HARNESS_TOP, width: FLEET_RIGHT - FLEET, height: HARNESS_H },
-  bill: { left: TOKENOPS, top: TOP, width: BILL_W, height: BOTTOM - TOP },
-  saved: { left: SIDE + (SIDE_W - SAVED_H) / 2, top: TOP, width: SAVED_H, height: SAVED_H },
-  opportunities: {
-    left: SIDE,
-    top: OPP_TOP,
-    width: SIDE_W,
-    height: BOTTOM - BUDGET_H - GAP - OPP_TOP,
-  },
-  budget: { left: SIDE, top: BOTTOM - BUDGET_H, width: SIDE_W, height: BUDGET_H },
+  teams: { left: ORG_LEFT, top: TOP, width: TEAMS_W, height: 560 },
+  agents,
+  harness,
+  workflows: { left: FLEET, top: below(harness), width: FLEET_W, height: WORKFLOWS_H },
+  routers,
+  tools: { left: ROUTE, top: below(routers), width: ROUTE_W, height: 200 },
+  providers: { left: MODELS, top: TOP, width: MODELS_W, height: 470 },
+  bill,
+  saved,
+  budget: { left: TOKENOPS, top: below(saved), width: TOKENOPS_W, height: 180 },
 } satisfies Record<string, Box>
 
 export type CardId = keyof typeof CARDS
@@ -87,20 +82,22 @@ export const SECTIONS = [
   { id: 'tokenops', left: CARDS.bill.left },
 ] as const
 
-/** Where the lines run: x of each gutter's left edge and y of each street's top. */
+/**
+ * Where the lines run: g0, the gutter left of the fleet, holds the workflows' brackets up into the agents, clear of the
+ * spend and calls lines leaving the fleet's right edge (Ans, 2026-11-05).
+ */
 export const LANES = {
-  /** Teams → agents and harnesses (one lane per team). */
-  g0: CARDS.teams.left + CARDS.teams.width,
-  /** Between the agents and the workflows: a lane per router, per tool and per workflow. */
-  g1: CARDS.agents.left + CARDS.agents.width,
-  /** Under the top row: agents across to the routers and the tools, the direct lines to the band. */
-  s1: ROW,
-  /** The band left of the routers: the direct lines down to the providers. */
-  band: CARDS.providers.left,
-  /** Between the routers and the providers: every line into a model from above. */
-  s3: CARDS.routers.top + CARDS.routers.height,
-  /** Over the harnesses: their lines up to the models and tools, and the month's payments to the providers. */
-  s4: BOTTOM,
-  /** Between the bill and the budget: the payments' way into the budget. */
-  g3: CARDS.bill.left + CARDS.bill.width,
+  g0: CARDS.agents.left,
+}
+
+/**
+ * The Map's home view (Ans, 2026-11-05): Fleet Runtime and TokenOps fill the canvas's width from their headings down,
+ * the rest below the fold; Org is a pan to the left. The canvas opens on it and Fit returns to it.
+ */
+export const HOME = {
+  x0: CARDS.agents.left - 96,
+  y0: TITLE_TOP - 40,
+  width: CARDS.bill.left + CARDS.bill.width + 96 - (CARDS.agents.left - 96),
+  height: BOARD.height,
+  widthOnly: true,
 }

@@ -1,52 +1,54 @@
 /**
- * The Map view's token lines (pure, tested in lines.test.ts): every connection the village draws as a coin trail,
+ * The Map view's token lines (pure, tested in lines.test.ts): every connection between the estate's parts,
  * drawn on the board between the parts it joins, one line per pair so each agent, workflow and tool has its own.
  *
  * - Spend (blue, as wide as what it carries; red where spend is going up: a team over pace, or a cost problem on
- *   the parts carrying more than HOT_SHARE of the line's spend): org → team → agent → its LLM router → each model the
- *   router sends it to, or agent → model when it has no router; team → coding harness → model, and each harness kind
- *   straight to the bill (its spend is billed with no router between); the month's budget → each provider (what it
- *   pays them, the bill's amounts).
+ *   the parts carrying more than HOT_SHARE of the line's spend): team → agent → its LLM router → each model the
+ *   router sends it to; team → coding harness → its router → each model; an agent or a coding harness with no router
+ *   passes through the routers' No router row the same way (Ans, 2026-11-04); each provider → its line on the bill
+ *   (what it is paid, agents and coding harnesses alike). Nothing reaches the bill past the providers (Ans, 2026-11-05:
+ *   "I don't want any of them bypassing providers and models").
  * - Calls (thin, lighter): workflow → each step's agent or tool, agent → tool, coding harness → tool.
+ * - Failing (strong red, spend or calls): a line touching a part in error (`failing`). With nothing picked the board
+ *   draws only these and the red spend lines, fewer still (`restLines`), so what is breaking shows at rest (Ans,
+ *   2026-11-05: "keep all the lines that represent an error or warning by default").
  *
  * `focusOf` is what a selection keeps lit: the estate's own `related` rule plus the path a part's spend takes (an
- * agent's teams, a router's models, a team's agents and where they spend). `pointsOf` routes a line through the board's
- * gutters and streets (layout.ts) from the parts' measured boxes. The lines are drawn under the cards, so a line's last
- * leg into its part disappears at the card's edge: the edge is where it lands. Only the org's lines to its teams run
- * inside a card (the Teams card's left margin) and are drawn over it (`OVER`).
+ * agent's teams, a router's models, a team's agents and where they spend). Every line joins two neighbouring columns
+ * and is drawn as one smooth curve from the right edge of its part to the left edge of the next (`pointsOf`, `curve`),
+ * so lines sharing a part fan out from one point instead of running in lanes (Ans, 2026-11-05: "organize the lines in
+ * such a way that it's much soothing"). The only exception is a workflow's call to an agent in its own column: a
+ * bracket out of the workflow's left edge, up the fleet's left gutter and into the agent's left edge. The lines are
+ * drawn under the cards, so a line
+ * ends at a card's edge, never inside one.
  */
 import { problemsOf, related } from '../estate/model'
 import type { EstateView } from '../estate/useEstateView'
 import { LANES } from './layout'
-import { modelWeights, SHOWN, teamsOf, type Board } from './model'
+import { modelWeights, routeOf, SHOWN, teamsOf, type Board } from './model'
 
 /**
- * The anchors that aren't estate nodes: the org's budget, the people in no team, a harness kind's column, and the two
- * TokenOps cards lines end on (the bill and the month's budget).
+ * The anchors that aren't estate nodes: the org's budget, the people in no team, a harness kind's row, the two
+ * TokenOps cards (the bill and the month's budget) and a provider's line on the bill, where its line lands.
  */
 export const ORG = 'org'
 export const TEAMLESS = 'team:none'
 export const BILL = 'card:bill'
 export const BUDGET = 'card:budget'
 export const kindId = (kind: string) => `hk:${kind}`
+export const billLine = (id: string) => `bill:${id}`
 
 type Route =
-  | 'org-team'
   | 'team-agent'
   | 'team-harness'
   | 'flow-agent'
   | 'flow-tool'
   | 'agent-tool'
   | 'agent-router'
-  | 'agent-model'
   | 'router-model'
-  | 'harness-model'
+  | 'harness-router'
   | 'harness-tool'
-  | 'harness-bill'
-  | 'budget-provider'
-
-/** The routes drawn over the cards: they run inside one. */
-export const OVER: ReadonlySet<Route> = new Set(['org-team'])
+  | 'provider-bill'
 
 /** A line reads red when parts with a cost problem carry more than this share of its spend. */
 const HOT_SHARE = 0.25
@@ -65,12 +67,21 @@ export interface Line {
   slot: number
   usd: number
   hot: boolean
+  /** It touches a part in error, so it is drawn even with nothing picked (Ans, 2026-11-05). */
+  failing: boolean
+  /** The part it lands on is the one in error (not the part it leaves). */
+  endFails: boolean
 }
 
 export function buildLines(v: EstateView, board: Board): Line[] {
   const e = v.estate
   const costly = (id: string) =>
     problemsOf(v.nodes, v.problems, id).some((p) => p.kind === 'cost' || p.also === 'cost')
+  // A part in error; a coding harness kind is one when any of its installs is. Teams never are: a line breaks at its part.
+  const broken = (id: string): boolean =>
+    id.startsWith('hk:')
+      ? e.harnesses.some((h) => kindId(h.harness) === id && v.state.get(h.id) === 'errors')
+      : v.nodes.get(id)?.kind !== 'group' && v.state.get(id) === 'errors'
   const providerOf = (m: string) => e.models.find((x) => x.id === m)?.provider_id ?? null
   const groupOf = (person: string | null) =>
     person ? (e.people.find((p) => p.id === person)?.group_id ?? null) : null
@@ -78,7 +89,9 @@ export function buildLines(v: EstateView, board: Board): Line[] {
   const teamLane = new Map(board.teams.map((t, i) => [t.id ?? TEAMLESS, i]))
   const agents = new Map(board.agents.map((a) => [a.id, a]))
   const toolLane = new Map(board.tools.map((t, i) => [t.id, i]))
+  // The No router row's lane follows the routers' own.
   const routerLane = new Map(board.routers.map((r, i) => [r.id, i]))
+  if (board.direct) routerLane.set(board.direct.id, SHOWN.routers)
   const models = new Set(board.providers.flatMap((p) => p.models.map((m) => m.id)))
   const slotOf = new Map(board.providers.flatMap((p) => p.models.map((m, i) => [m.id, i] as const)))
   const providers = new Set(board.providers.map((p) => p.id))
@@ -87,14 +100,24 @@ export function buildLines(v: EstateView, board: Board): Line[] {
   const out = new Map<string, Line>()
   // What each line's costly parts carry; a line is red once that passes HOT_SHARE of it (see the end).
   const heat = new Map<string, number>()
-  const add = (l: Omit<Line, 'id' | 'via' | 'slot'> & { via?: string | null }) => {
+  const add = (
+    l: Omit<Line, 'id' | 'via' | 'slot' | 'failing' | 'endFails'> & { via?: string | null },
+  ) => {
     const id = `${l.route}:${l.from}>${l.to}`
     if (l.hot) heat.set(id, (heat.get(id) ?? 0) + l.usd)
     const was = out.get(id)
     if (was) {
       was.usd += l.usd
       was.hot ||= l.hot
-    } else out.set(id, { ...l, id, via: l.via ?? null, slot: slotOf.get(l.to) ?? SHOWN.models })
+    } else
+      out.set(id, {
+        ...l,
+        id,
+        via: l.via ?? null,
+        slot: slotOf.get(l.to) ?? SHOWN.models,
+        failing: false,
+        endFails: false,
+      })
   }
   const toModels = (
     route: Route,
@@ -108,17 +131,6 @@ export function buildLines(v: EstateView, board: Board): Line[] {
       if (shownModel(m))
         add({ route, kind: 'spend', from, to: m, via: providerOf(m), lane, usd: usd * w, hot })
   }
-
-  for (const t of board.teams)
-    add({
-      route: 'org-team',
-      kind: 'spend',
-      from: ORG,
-      to: t.id ?? TEAMLESS,
-      lane: 0,
-      usd: t.usd,
-      hot: (t.pace ?? 0) > 1,
-    })
 
   for (const row of board.agents) {
     const a = e.agents.find((x) => x.id === row.id)
@@ -146,33 +158,33 @@ export function buildLines(v: EstateView, board: Board): Line[] {
           usd: 0,
           hot: false,
         })
-    const r = e.routers.find((x) => x.id === a.router_id)
-    if (r && !r.direct) {
-      if (routerLane.has(r.id))
-        add({
-          route: 'agent-router',
-          kind: 'spend',
-          from: a.id,
-          to: r.id,
-          lane: routerLane.get(r.id) ?? 0,
-          usd: a.spend_usd,
-          hot: row.costly,
-        })
-    } else toModels('agent-model', a.id, 0, a.model_ids, a.spend_usd, row.costly)
+    const r = routeOf(e, a.router_id)
+    if (routerLane.has(r))
+      add({
+        route: 'agent-router',
+        kind: 'spend',
+        from: a.id,
+        to: r,
+        lane: routerLane.get(r) ?? 0,
+        usd: a.spend_usd,
+        hot: row.costly,
+      })
   }
 
-  board.routers.forEach((r, i) => {
-    for (const a of e.agents)
-      if (a.router_id === r.id)
-        toModels(
-          'router-model',
-          r.id,
-          i,
-          a.model_ids,
-          a.spend_usd,
-          agents.get(a.id)?.costly ?? costly(a.id),
-        )
-  })
+  // Each router row (the No router one too) passes on to the models what reached it from agents and harnesses.
+  for (const a of e.agents) {
+    const r = routeOf(e, a.router_id)
+    const lane = routerLane.get(r)
+    if (lane !== undefined)
+      toModels(
+        'router-model',
+        r,
+        lane,
+        a.model_ids,
+        a.spend_usd,
+        agents.get(a.id)?.costly ?? costly(a.id),
+      )
+  }
 
   board.workflows.forEach((w, i) => {
     const flow = e.workflows.find((x) => x.id === w.id)
@@ -217,7 +229,20 @@ export function buildLines(v: EstateView, board: Board): Line[] {
           usd: h.spend_usd ?? 0,
           hot,
         })
-      toModels('harness-model', kind, k, h.model_ids, h.spend_usd ?? 0, hot)
+      const r = routeOf(e, h.router_id)
+      const lane = routerLane.get(r)
+      if (lane !== undefined) {
+        add({
+          route: 'harness-router',
+          kind: 'spend',
+          from: kind,
+          to: r,
+          lane: k,
+          usd: h.spend_usd ?? 0,
+          hot,
+        })
+        toModels('router-model', r, lane, h.model_ids, h.spend_usd ?? 0, hot)
+      }
       for (const tool of h.tool_ids)
         if (toolLane.has(tool))
           add({
@@ -231,24 +256,12 @@ export function buildLines(v: EstateView, board: Board): Line[] {
           })
     }
   }
-  board.harnesses.forEach((c, k) => {
-    const installs = e.harnesses.filter((h) => h.harness === c.key)
-    add({
-      route: 'harness-bill',
-      kind: 'spend',
-      from: kindId(c.key),
-      to: BILL,
-      lane: k,
-      usd: c.spend,
-      hot: installs.some((h) => costly(h.id)),
-    })
-  })
   board.providers.forEach((p, i) =>
     add({
-      route: 'budget-provider',
+      route: 'provider-bill',
       kind: 'spend',
-      from: BUDGET,
-      to: p.id,
+      from: p.id,
+      to: BILL,
       lane: i,
       usd: p.spend,
       hot: costly(p.id),
@@ -259,6 +272,9 @@ export function buildLines(v: EstateView, board: Board): Line[] {
     const own = l.route === 'router-model' && (costly(l.from) || costly(l.to))
     const share = l.usd > 0 ? (heat.get(l.id) ?? 0) / l.usd : 0
     l.hot = own || (l.kind === 'spend' && (l.usd > 0 ? share > HOT_SHARE : l.hot))
+    // A workflow's call is failing only where its step's part is: the workflow reads failing for any one of them.
+    l.endFails = broken(l.to)
+    l.failing = l.endFails || (!l.route.startsWith('flow') && broken(l.from))
   }
   return [...out.values()]
 }
@@ -290,11 +306,12 @@ export function focusOf(v: EstateView, id: string): Set<string> {
   )
   const steps = new Set(e.workflows.find((w) => w.id === id)?.steps.map((x) => x.ref) ?? [])
   // What the part is wired to: these agents' teams and these installs' kinds light up with it.
+  const route = (x: string | null | undefined) => routeOf(e, x)
   const agents = e.agents.filter((a) =>
     kind === 'group'
       ? teamsOf(e, a).includes(id)
       : a.id === id ||
-        a.router_id === id ||
+        route(a.router_id) === id ||
         a.tool_ids.includes(id) ||
         steps.has(a.id) ||
         a.model_ids.some((m) => models.has(m)),
@@ -302,18 +319,22 @@ export function focusOf(v: EstateView, id: string): Set<string> {
   const installs = e.harnesses.filter((h) =>
     kind === 'group'
       ? groupOf(h.owner_id) === id
-      : h.id === id || h.tool_ids.includes(id) || h.model_ids.some((m) => models.has(m)),
+      : h.id === id ||
+        (kind === 'router' && route(h.router_id) === id) ||
+        h.tool_ids.includes(id) ||
+        h.model_ids.some((m) => models.has(m)),
   )
+  // The router row a part passes through lights with it: its own router, or No router.
+  const passes = kind === 'group' || kind === 'agent' || kind === 'harness' || models.size > 0
   for (const a of agents) {
     s.add(a.id)
+    if (passes) s.add(route(a.router_id))
     if (kind === 'group') {
-      if (a.router_id) s.add(a.router_id)
       path(a.model_ids)
       a.tool_ids.forEach((t) => s.add(t))
       continue
     }
     if (kind === 'router') path(a.model_ids)
-    if (models.size && a.router_id) s.add(a.router_id)
     const ts = teamsOf(e, a)
     if (ts.length) ts.forEach((t) => s.add(t))
     else s.add(TEAMLESS)
@@ -322,9 +343,20 @@ export function focusOf(v: EstateView, id: string): Set<string> {
     s.add(h.id)
     s.add(kindId(h.harness))
     s.add(groupOf(h.owner_id) ?? TEAMLESS)
-    if (kind === 'group') path(h.model_ids)
+    if (passes) s.add(route(h.router_id))
+    if (kind === 'group' || kind === 'router') path(h.model_ids)
   }
   if (s.has(TEAMLESS) || [...s].some((x) => v.nodes.get(x)?.kind === 'group')) s.add(ORG)
+  // Spend that reaches a provider reaches the bill: its provider's line into Total spend lights with it.
+  if ([...s].some((x) => v.nodes.get(x)?.kind === 'provider')) s.add(BILL)
+  return s
+}
+
+/** What a harness kind's row keeps lit when picked: the row and everything each of its installs touches. */
+export function kindFocus(v: EstateView, key: string): Set<string> {
+  const s = new Set([kindId(key)])
+  for (const h of v.estate.harnesses)
+    if (h.harness === key) for (const x of focusOf(v, h.id)) s.add(x)
   return s
 }
 
@@ -344,213 +376,96 @@ export type Pt = [number, number]
 /** A row's line height: lines meet a row at the middle of its first line, not of the whole row. */
 const cy = (b: Anchor) => b.y + Math.min(b.h / 2, 10)
 const right = (b: Anchor) => b.x + b.w
-const mid = (b: Anchor) => b.x + b.w / 2
-const bottom = (b: Anchor) => b.y + b.h
+
+/** A workflow's bracket up into an agent in its own column: a lane per workflow in the gutter left of it. */
+const flowLane = (lane: number) => LANES.g0 - 10 - lane * 6
 
 /**
- * The streets' lanes (y). In s1, under the top row: the agents' lines to their routers, a lane each; the direct lines
- * (no router); the calls to tools. In s3, over the providers: the routers' lines to their models, a lane each, and the
- * direct lines under them. In s4, over the harnesses: the budget's payments to the providers, a lane each, then the
- * harnesses' lines up to their models and tools.
+ * What the board draws with nothing picked (Ans, 2026-11-05): only failing and red lines, none from a team (a team's
+ * lines wait for a pick), and one master line into each part that needs one, since the part's own row already shows
+ * what is wrong ("just connect one line to anthropic since the parent itself will surface the error"; "keep a master
+ * line" for the tools):
+ * - each provider: one line from its worst router (failing, then red, then the most spend), landing on its row;
+ * - each tool (and each agent a workflow calls): one calls line, only when that tool is the part in error, from the
+ *   first agent that calls it, else a coding harness, else a workflow. A failing agent's calls to healthy tools wait
+ *   for a pick.
  */
-const S1 = {
-  router: (lane: number) => LANES.s1 + 3 + lane * 2,
-  direct: LANES.s1 + 12,
-  calls: LANES.s1 + 16,
-}
-const S3 = {
-  router: (lane: number) => LANES.s3 + 3 + lane * 3,
-  direct: LANES.s3 + 16,
-}
-const S4 = {
-  pay: (lane: number) => LANES.s4 + 3 + lane * 2.5,
-  model: (lane: number) => LANES.s4 + 13 + lane * 1.5,
-  calls: LANES.s4 + 17,
-}
-/** The gutter lanes (x): g0 a lane per team; g1 the routers', the direct lane, then the tools' and workflows'. */
-const G = {
-  team: (lane: number) => LANES.g0 + 10 + lane * 7,
-  router: (lane: number) => LANES.g1 + 2 + lane * 2,
-  direct: LANES.g1 + 10,
-  tool: (lane: number) => LANES.g1 + 12 + (lane % 8) * 0.75,
-  flow: (lane: number) => LANES.g1 + 18 - lane,
-  /** The band left of the routers, where the direct lines go down. */
-  band: LANES.band + 10,
-  /** Between the bill and the budget: a payment's lane up into the budget. */
-  pay: (lane: number) => LANES.g3 + 4 + lane * 3,
+export function restLines(lines: readonly Line[]): Line[] {
+  const out = new Map<string, Line>()
+  for (const l of lines) {
+    if (!(l.failing || l.hot) || l.route.startsWith('team')) continue
+    if (l.kind === 'calls' && !l.endFails) continue
+    if (l.route !== 'router-model' || !l.via) {
+      out.set(l.id, l)
+      continue
+    }
+    const id = `router-provider:${l.from}>${l.via}`
+    const was = out.get(id)
+    if (was) {
+      was.usd += l.usd
+      was.hot ||= l.hot
+      was.failing ||= l.failing
+    } else out.set(id, { ...l, id, to: l.via })
+  }
+  // One line into each provider and each called part: the best of those landing on it.
+  const master = new Map<string, Line>()
+  const better = (a: Line, b: Line) =>
+    a.kind === 'calls'
+      ? CALLER.indexOf(a.route) < CALLER.indexOf(b.route)
+      : (Number(a.failing) - Number(b.failing) || Number(a.hot) - Number(b.hot) || a.usd - b.usd) >
+        0
+  const merged = (l: Line) => l.kind === 'calls' || l.id.startsWith('router-provider:')
+  for (const l of out.values())
+    if (merged(l)) {
+      const was = master.get(l.to)
+      if (!was || better(l, was)) master.set(l.to, l)
+    }
+  return [...out.values()].filter((l) => !merged(l) || master.get(l.to) === l)
 }
 
+/** Which caller's line is a tool's master line at rest: an agent's first, then a coding harness's, then a workflow's. */
+const CALLER: readonly Route[] = ['agent-tool', 'harness-tool', 'flow-tool', 'flow-agent']
+
 /**
- * The line's points, routed through the gaps (layout.ts LANES): out of a part's edge, along its gutter lane, across a
- * street when it has to pass a row, and into the other part. Null when either end isn't drawn.
+ * The line's points: out of its part's right edge at its row, into the next part's left edge at its row (the bill's
+ * own line for a provider; a provider's row for a model the card doesn't draw). A workflow's call to an agent is a
+ * bracket out of the workflow's left edge and into the agent's. Null when either end isn't drawn.
  */
 export function pointsOf(l: Line, at: ReadonlyMap<string, Anchor>): Pt[] | null {
   const a = at.get(l.from)
   const b = at.get(l.to)
-  // A model's line drops into its own row, in its provider's column (the column when the model isn't drawn).
-  const modelX = () => {
-    const end = b ?? (l.via ? at.get(l.via) : undefined)
-    return end ? { end, x: end.x + 6 + l.slot * 7 } : null
+  if (!a) return null
+  if (l.route === 'flow-agent') {
+    if (!b) return null
+    const x = flowLane(l.lane)
+    return [
+      [a.x, cy(a)],
+      [x, cy(a)],
+      [x, cy(b)],
+      [b.x, cy(b)],
+    ]
   }
-  const fromAbove = (x: number, y: number): Pt[] | null => {
-    const m = modelX()
-    return m
-      ? [
-          [x, y],
-          [m.x, y],
-          [m.x, m.end.y + 2],
-        ]
-      : null
-  }
-  const tail = (pts: Pt[], end: Pt[] | null) => (end ? [...pts, ...end] : null)
-  // A tool is entered from above, out of s1's calls lane.
-  const toTool = (pts: Pt[]): Pt[] | null =>
-    b ? [...pts, [mid(b), S1.calls], [mid(b), b.y]] : null
-  // A harness kind's port on the harnesses' top edge, apart from the other kinds'.
-  const hport = (x: Anchor) => x.x + 24 + l.lane * 10
-  switch (l.route) {
-    case 'org-team': {
-      if (!a || !b) return null
-      const x = b.x - 9
-      return [
-        [x, a.y + a.h],
-        [x, cy(b)],
-        [b.x - 2, cy(b)],
-      ]
-    }
-    case 'team-agent': {
-      if (!a || !b) return null
-      const x = G.team(l.lane)
-      return [
-        [right(a), cy(a)],
-        [x, cy(a)],
-        [x, cy(b)],
-        [b.x, cy(b)],
-      ]
-    }
-    case 'team-harness': {
-      if (!a || !b) return null
-      const x = G.team(l.lane)
-      const y = b.y + 6 + l.lane * 4
-      return [
-        [right(a), cy(a)],
-        [x, cy(a)],
-        [x, y],
-        [LANES.band, y],
-      ]
-    }
-    case 'flow-agent': {
-      if (!a || !b) return null
-      const x = G.flow(l.lane)
-      return [
-        [a.x, cy(a)],
-        [x, cy(a)],
-        [x, cy(b)],
-        [right(b), cy(b)],
-      ]
-    }
-    case 'flow-tool': {
-      if (!a) return null
-      const x = G.flow(l.lane)
-      return toTool([
-        [a.x, cy(a)],
-        [x, cy(a)],
-        [x, S1.calls],
-      ])
-    }
-    case 'agent-tool': {
-      if (!a) return null
-      const x = G.tool(l.lane)
-      return toTool([
-        [right(a), cy(a)],
-        [x, cy(a)],
-        [x, S1.calls],
-      ])
-    }
-    case 'agent-router': {
-      if (!a || !b) return null
-      const x = G.router(l.lane)
-      const y = S1.router(l.lane)
-      return [
-        [right(a), cy(a)],
-        [x, cy(a)],
-        [x, y],
-        [mid(b), y],
-        [mid(b), b.y],
-      ]
-    }
-    case 'agent-model': {
-      if (!a) return null
-      return tail(
-        [
-          [right(a), cy(a)],
-          [G.direct, cy(a)],
-          [G.direct, S1.direct],
-          [G.band, S1.direct],
-          [G.band, S3.direct],
-        ],
-        fromAbove(G.band, S3.direct),
-      )
-    }
-    case 'router-model': {
-      if (!a) return null
-      const y = S3.router(l.lane)
-      return tail(
-        [
-          [mid(a), bottom(a)],
-          [mid(a), y],
-        ],
-        fromAbove(mid(a), y),
-      )
-    }
-    case 'harness-model': {
-      if (!a) return null
-      const m = modelX()
-      if (!m) return null
-      const px = hport(a)
-      const y = S4.model(l.lane)
-      return [
-        [px, a.y],
-        [px, y],
-        [m.x, y],
-        [m.x, bottom(m.end)],
-      ]
-    }
-    case 'harness-tool': {
-      if (!a || !b) return null
-      const px = hport(a)
-      return [
-        [px, a.y],
-        [px, S4.calls],
-        [mid(b), S4.calls],
-        [mid(b), bottom(b)],
-      ]
-    }
-    case 'harness-bill': {
-      if (!a || !b) return null
-      const y = a.y + 12 + l.lane * 5
-      const x = b.x + 28 + l.lane * 12
-      return [
-        [right(a), y],
-        [x, y],
-        [x, bottom(b)],
-      ]
-    }
-    case 'budget-provider': {
-      // From the budget's left edge, down the gap beside the bill, along s4 and up into the provider's column.
-      if (!a || !b) return null
-      const x = G.pay(l.lane)
-      const y = S4.pay(l.lane)
-      const into = a.y + 44 + l.lane * 10
-      return [
-        [a.x, into],
-        [x, into],
-        [x, y],
-        [mid(b), y],
-        [mid(b), b.y + 2],
-      ]
-    }
-  }
+  const end =
+    l.route === 'provider-bill'
+      ? (at.get(billLine(l.from)) ?? b)
+      : (b ?? (l.via ? at.get(l.via) : undefined))
+  if (!end) return null
+  // A model the card doesn't draw: its provider's row, a little under the provider's own line.
+  const y = cy(end) + (!b && l.route !== 'provider-bill' ? 4 : 0)
+  return [
+    [right(a), cy(a)],
+    [end.x, y],
+  ]
+}
+
+/** A line's path: a smooth S between two points (level at both ends), a rounded bracket through more. */
+export function curve(pts: readonly Pt[]): string {
+  if (pts.length !== 2) return roundPath(pts)
+  const [[x0, y0], [x1, y1]] = pts as [Pt, Pt]
+  const f = (n: number) => +n.toFixed(1)
+  if (Math.abs(y1 - y0) < 0.5) return `M${f(x0)} ${f(y0)}L${f(x1)} ${f(y1)}`
+  const m = (x0 + x1) / 2
+  return `M${f(x0)} ${f(y0)}C${f(m)} ${f(y0)} ${f(m)} ${f(y1)} ${f(x1)} ${f(y1)}`
 }
 
 /** An SVG path through the points, its corners rounded (never past half a leg, so short legs stay square-ish). */

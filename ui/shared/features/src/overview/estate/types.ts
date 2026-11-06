@@ -175,6 +175,11 @@ const harnessSchema = z.looseObject({
   model_ids: z.array(z.string()),
   tool_ids: z.array(z.string()),
   spend_usd: z.number().nullable(),
+  /**
+   * Proposed: the LLM router the harness's traffic goes through, when it is connected to one. A routed harness is one
+   * the router can optimise (the Map's bill marks it); absent or null, it calls its provider directly.
+   */
+  router_id: z.string().nullish(),
   /** The last sessions, oldest first. */
   sessions: z.array(z.enum(SESSION_OUTCOMES)),
 })

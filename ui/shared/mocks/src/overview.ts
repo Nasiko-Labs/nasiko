@@ -102,11 +102,22 @@ const SHORT: Record<string, string> = {
   'gpt-4o-mini': '4o mini',
   'claude-sonnet-4': 'Sonnet 4',
   'claude-opus-4': 'Opus 4',
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-3-7-sonnet': 'Sonnet 3.7',
   'gemini-2.0-flash': 'Flash',
   'custom-local': 'Llama',
   'gpt-5-codex': 'Codex',
   'cursor-small': 'Cursor',
   'swe-1': 'SWE-1',
+}
+/**
+ * Anthropic models Claude Code installs run beside the seed's Sonnet 4 that no seeded turn names (from nasiko-ui-lab),
+ * each as its spend against Sonnet 4's, so the Map's Anthropic card lists them under Sonnet 4.
+ */
+const CLAUDE_CODE_MODELS: Record<string, number> = {
+  'claude-opus-4': 0.3,
+  'claude-haiku-4-5': 0.14,
+  'claude-3-7-sonnet': 0.06,
 }
 export const modelId = (model: string) => `model:${model}`
 const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7)
@@ -237,6 +248,10 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
   const sessionsBy = new Map<string, typeof hs.sessions>()
   for (const x of hs.sessions)
     if (x.ts <= now) sessionsBy.set(x.agent_id, [...(sessionsBy.get(x.agent_id) ?? []), x])
+  // Which harness kinds go through an LLM router (the proposed `router_id`): a placeholder set; the biggest two stay
+  // direct, so the Map's No router lane carries them.
+  const routedVia = routers.find((r) => !r.direct)?.id ?? null
+  const ROUTED_KINDS = new Set(['opencode', 'windsurf'])
   const harnesses = hs.agents
     .filter((h) => !h.deleted && !h.spoofed)
     .map((h) => {
@@ -250,7 +265,13 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
         name: `${HARNESS_META[h.harness]?.name ?? h.harness} (${first(h.owner_id)})`,
         harness: h.harness,
         owner_id: h.owner_id,
-        model_ids: (HARNESS_META[h.harness]?.models ?? []).map(modelId),
+        router_id: ROUTED_KINDS.has(h.harness) ? routedVia : null,
+        model_ids: [
+          ...new Set([
+            ...(HARNESS_META[h.harness]?.models ?? []),
+            ...(h.harness === 'claude' ? Object.keys(CLAUDE_CODE_MODELS) : []),
+          ]),
+        ].map(modelId),
         tool_ids: [T('github'), h.harness === 'claude' ? T('linear') : T('slack')].filter(
           (x): x is string => !!x,
         ),
@@ -286,12 +307,15 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
   const modelNames = [
     ...new Set([...agents.flatMap((a) => a.model_ids), ...harnesses.flatMap((h) => h.model_ids)]),
   ].map((id) => id.slice('model:'.length))
+  const sonnetSpend = modelSpend.get('claude-sonnet-4')?.spend ?? 0
   const models = modelNames.map((m) => ({
     id: modelId(m),
     name: m,
     short: SHORT[m] ?? m,
     provider_id: `provider:${providerOf(m)}`,
-    spend_usd: Math.round((modelSpend.get(m)?.spend ?? 0) * 100) / 100,
+    spend_usd:
+      Math.round((modelSpend.get(m)?.spend || (CLAUDE_CODE_MODELS[m] ?? 0) * sonnetSpend) * 100) /
+      100,
     calls: modelSpend.get(m)?.calls ?? 0,
     p95_ms: p95(modelSpend.get(m)?.lat ?? []),
   }))
