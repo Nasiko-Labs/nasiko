@@ -1730,19 +1730,23 @@ impl ObservabilityService {
     ) -> Result<SessionDetailResponse, ObservabilityError> {
         self.authorize_session(session_id, user_id, is_superuser, "session")
             .await?;
-        let agent_name: Option<String> = sqlx::query_scalar(
-            r#"SELECT CASE
+        // An orchestrator-routed session has no agent of its own; name the one that did the work.
+        let ran_agent = super::sessions_sql::ran_agent_name("cs.session_id");
+        let agent_name: Option<String> = sqlx::query_scalar(&format!(
+            r#"SELECT COALESCE(
+                 CASE
                    WHEN a.coding_agent_integration_id IS NOT NULL
                         AND u.username IS NOT NULL
                         AND a.name NOT LIKE u.username || '-%'
                      THEN u.username || '-' || a.name
                    ELSE a.name
-                 END
+                 END,
+                 {ran_agent})
                FROM chat_sessions cs
                LEFT JOIN agents a ON a.id = cs.agent_id
                LEFT JOIN users u ON u.id = cs.user_id
-               WHERE cs.session_id = $1"#,
-        )
+               WHERE cs.session_id = $1"#
+        ))
         .bind(session_id)
         .fetch_optional(&self.db)
         .await
