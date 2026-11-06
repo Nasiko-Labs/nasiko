@@ -61,6 +61,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'home-budgets-absent',
   'overview-absent',
   'overview-quiet',
+  'overview-bare',
   'village-unlimited',
   // Chat page variants (v1c DX1); harmless here, listed so the lists stay equal.
   'no-agents',
