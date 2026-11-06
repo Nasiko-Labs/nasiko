@@ -1,10 +1,31 @@
 use anyhow::{Context, Result, bail};
 
+use crate::commands::sso::{self, SsoAvailability};
 use crate::config;
 
-/// Login to the active cluster with username/password.
-pub fn login() -> Result<()> {
-    let (name, username) = authenticate()?;
+/// How `auth login` signs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginMethod {
+    /// SSO in the browser when the control plane has it, a password otherwise.
+    Auto,
+    Sso,
+    Password,
+}
+
+impl LoginMethod {
+    pub fn from_flags(sso: bool, password: bool) -> Self {
+        match (sso, password) {
+            (true, _) => Self::Sso,
+            (_, true) => Self::Password,
+            _ => Self::Auto,
+        }
+    }
+}
+
+/// Sign in to the active cluster, then offer to connect the coding agents found on this
+/// machine.
+pub fn login(method: LoginMethod) -> Result<()> {
+    let (name, username) = authenticate(method)?;
     println!("Logged in to {} as {}", name, username);
     crate::commands::integration::auto_install_if_authenticated();
     Ok(())
@@ -13,15 +34,44 @@ pub fn login() -> Result<()> {
 /// Login without the automatic coding-agent setup — for `nasiko connect`, which asks what
 /// to set up itself.
 pub fn login_without_setup() -> Result<()> {
-    let (name, username) = authenticate()?;
+    let (name, username) = authenticate(LoginMethod::Auto)?;
     println!("Logged in to {} as {}", name, username);
     Ok(())
 }
 
-/// Prompts for credentials and saves the session token. Returns the cluster and username.
-fn authenticate() -> Result<(String, String)> {
+/// Signs in by `method` and saves the session token. Returns the cluster and username.
+fn authenticate(method: LoginMethod) -> Result<(String, String)> {
     let (name, entry) = config::active_cluster()?;
+    let base = entry.url.trim_end_matches('/');
+    if method == LoginMethod::Password {
+        return authenticate_with_password(name, base);
+    }
+    match sso::availability(base)? {
+        SsoAvailability::Configured(provider) => {
+            let (username, token) = sso::sign_in(base, &provider)?;
+            config::save_login(&username, &token)?;
+            Ok((name, username))
+        }
+        SsoAvailability::NotConfigured if method == LoginMethod::Sso => {
+            bail!(
+                "no SSO is configured on {base}; sign in with a password: {} --password",
+                crate::commands::local_agents::login_hint()
+            )
+        }
+        SsoAvailability::Unsupported if method == LoginMethod::Sso => {
+            bail!(
+                "{base} does not support SSO sign-in; sign in with a password: {} --password",
+                crate::commands::local_agents::login_hint()
+            )
+        }
+        SsoAvailability::NotConfigured | SsoAvailability::Unsupported => {
+            authenticate_with_password(name, base)
+        }
+    }
+}
 
+/// Prompts for a username and password and saves the session token.
+fn authenticate_with_password(name: String, base: &str) -> Result<(String, String)> {
     let username: String = dialoguer::Input::new()
         .with_prompt("Username")
         .interact_text()?;
@@ -34,7 +84,7 @@ fn authenticate() -> Result<(String, String)> {
             .http_status_as_error(false)
             .build(),
     );
-    let url = format!("{}/api/auth/login", entry.url);
+    let url = format!("{base}/api/auth/login");
 
     let mut resp = http
         .post(&url)
@@ -43,7 +93,7 @@ fn authenticate() -> Result<(String, String)> {
             "username": username,
             "password": password,
         }))
-        .with_context(|| format!("cannot reach control plane at {}", entry.url))?;
+        .with_context(|| format!("cannot reach control plane at {base}"))?;
 
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {

@@ -74,3 +74,6 @@ if (-not (($UserPath -split ';') -contains $Dir)) {
     Write-Host "→ added $Dir to your user PATH (open a new terminal to use it)"
 }
 Write-Host "✓ installed $(& $Exe --version) to $Exe"
+Write-Host ""
+Write-Host "Next: sign in to Nasiko in your browser, then connect your coding agents:"
+Write-Host "    nasiko auth login"

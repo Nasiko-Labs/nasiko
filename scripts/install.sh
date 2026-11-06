@@ -121,3 +121,6 @@ case ":${PATH}:" in
     echo "    export PATH=\"${dir}:\$PATH\""
     ;;
 esac
+echo
+echo "Next: sign in to Nasiko in your browser, then connect your coding agents:"
+echo "    nasiko auth login"

@@ -248,8 +248,16 @@ enum McpCommands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Save API token for active cluster
-    Login,
+    /// Sign in to the active control plane — in the browser through its SSO when it has one,
+    /// otherwise with a username and password
+    Login {
+        /// Sign in through the control plane's SSO in your browser
+        #[arg(long, conflicts_with = "password")]
+        sso: bool,
+        /// Sign in with a username and password instead of SSO
+        #[arg(long)]
+        password: bool,
+    },
     /// Show current auth status
     Status,
     /// Clear stored token
@@ -282,6 +290,7 @@ enum ContextStrategyCommands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    nasiko::config::enable_default_cloud();
 
     match cli.command {
         Commands::Agent(cmd) => nasiko::dispatch_agent_dev(cmd),
@@ -338,7 +347,9 @@ fn main() -> Result<()> {
                 }
             },
             CpCommands::Auth { command } => match command {
-                AuthCommands::Login => commands::auth::login(),
+                AuthCommands::Login { sso, password } => {
+                    commands::auth::login(commands::auth::LoginMethod::from_flags(sso, password))
+                }
                 AuthCommands::Status => commands::auth::status(),
                 AuthCommands::Logout => commands::auth::logout(),
                 AuthCommands::Whoami => commands::auth::whoami(),

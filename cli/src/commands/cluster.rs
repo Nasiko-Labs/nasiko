@@ -96,6 +96,9 @@ fn log_in_after_connect() {
 
 /// List configured clusters.
 pub fn list() -> Result<()> {
+    // Resolving the active cluster first saves the hosted default on a fresh install, so the
+    // list shows what every other command would talk to.
+    let _ = config::active_cluster();
     let cfg = config::load()?;
     if cfg.clusters.is_empty() {
         println!("No clusters configured. Run `nasiko connect <url>`.");

@@ -61,9 +61,45 @@ pub fn save(config: &Config) -> Result<()> {
     Ok(())
 }
 
+/// The hosted Free plane a fresh install talks to until another control plane is connected.
+/// `NASIKO_CLOUD_URL` overrides it (a staging plane, or a self-hosted default for a team).
+pub const DEFAULT_CLOUD_URL: &str = "https://free.beta.nasiko.dev";
+
+/// The name the default control plane is saved under.
+pub const DEFAULT_CLOUD_NAME: &str = "nasiko";
+
+static DEFAULT_CLOUD_ENABLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Lets [`active_cluster`] fall back to the hosted Free plane. The `nasiko` binary turns it on
+/// at startup; a CLI built on this library (an admin CLI, say) leaves it off and keeps the
+/// "no active cluster" error.
+pub fn enable_default_cloud() {
+    DEFAULT_CLOUD_ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn default_cloud_url() -> String {
+    std::env::var("NASIKO_CLOUD_URL")
+        .ok()
+        .map(|url| url.trim().trim_end_matches('/').to_string())
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| DEFAULT_CLOUD_URL.to_string())
+}
+
 /// Get the active cluster entry.
+///
+/// With [`enable_default_cloud`], a config with no control plane at all — a fresh install — is
+/// pointed at the hosted Free plane and saved, so the first command works without a `connect`.
+/// Once any control plane is saved, nothing is chosen on the user's behalf.
 pub fn active_cluster() -> Result<(String, ClusterEntry)> {
-    let config = load()?;
+    let mut config = load()?;
+    if config.active.is_none()
+        && config.clusters.is_empty()
+        && DEFAULT_CLOUD_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+    {
+        connect(DEFAULT_CLOUD_NAME, &default_cloud_url())?;
+        config = load()?;
+    }
     let name = config.active.ok_or_else(|| {
         // One plain line: callers wrap this error into their own messages and some print it to
         // stdout, so it must carry no line breaks or color codes. No `up` hint either: the error

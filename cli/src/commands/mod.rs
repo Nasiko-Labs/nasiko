@@ -27,6 +27,7 @@ pub mod registry;
 pub mod scaffold;
 pub mod secrets;
 pub mod skill;
+pub mod sso;
 pub mod status;
 pub mod tui;
 pub mod upload;
