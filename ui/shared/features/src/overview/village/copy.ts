@@ -5,6 +5,7 @@
  * provider), so every inspector line says what the place stands for.
  */
 import { fmtMoney } from '@nasiko/ui/lib/format'
+import type { StepId } from '../estate/setup'
 import type { Beacon, LogKind, Pose } from './model'
 import type { Kind } from './zones'
 
@@ -162,6 +163,24 @@ export const villageCopy = {
     foot: 'Everything I flag stays in the Control center up top.',
     quietTitle: 'All quiet.',
     quiet: "Nothing needs you right now. I'll raise my hand when something does.",
+    /**
+     * The setup checklist (the canvases' setup steps, `estate/setup.ts`): in full while nothing has run, else the steps
+     * left under All quiet. The next step says what it brings to life here.
+     */
+    setup: {
+      title: 'Get your village going',
+      intro: 'The village builds itself from what runs. Each step brings a part of it to life.',
+      left: 'Still to set up:',
+      progress: (done: number, all: number) => `${done} of ${all} done`,
+      done: 'done',
+      place: {
+        chat: 'Your agents get to work, and their spend flows into the village.',
+        harness: 'Lights the coding-tool observatory, with what each session costs.',
+        mcp: 'Opens the MCP gateway: the tools your agents can call.',
+        router: 'Raises a router gate on the road to the providers.',
+        workflows: 'Starts a project yard that fills with each run.',
+      } satisfies Record<StepId, string>,
+    },
     request: 'Someone is waiting on your answer.',
   },
   settings: {

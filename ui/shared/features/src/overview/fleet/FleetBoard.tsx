@@ -34,10 +34,13 @@ import {
   type CSSProperties,
   type ReactNode,
 } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Link } from '@tanstack/react-router'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { fmtMoney } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
+import { copy as overviewCopy } from '../copy'
 import { estateCopy } from '../estate/copy'
+import { STEP_TO, type StepId, type StepTo } from '../estate/setup'
 import type { EstateView } from '../estate/useEstateView'
 import { BRAND_PATHS } from '../map/brands'
 import type { ViewState } from '../map/useViewport'
@@ -546,6 +549,60 @@ function Count({ shown, all }: { shown: number; all: number }) {
   return <span className="fb-count">{copy.count(shown, all)}</span>
 }
 
+/** Where an empty card's step goes: one of the canvases' setup steps, or a page of its own. */
+interface Go {
+  label: string
+  to: StepTo | '/deploy' | '/optimization'
+  search?: { tab: 'providers' }
+}
+const stepGo = (id: StepId): Go => ({ label: overviewCopy.needs.setup[id].title, to: STEP_TO[id] })
+/** The ghost rows' name widths, in percent: a short, uneven list rather than a ruler. */
+const GHOST = [62, 46, 34]
+
+/**
+ * An empty card's body: faint rows in the card's own shape (with day tiles under them for the cards that draw days),
+ * fading out, then what lands here once it fills and the one step that fills it. The step is a link, the board's only
+ * one: an empty card has nothing to pick yet.
+ */
+function Blank({
+  text,
+  go,
+  rows = 3,
+  tiles,
+}: {
+  text: string
+  go?: Go
+  rows?: number
+  tiles?: boolean
+}) {
+  return (
+    <div className="fb-blank">
+      <span className="fb-ghost" aria-hidden>
+        {GHOST.slice(0, rows).map((w) => (
+          <span key={w} className="fb-grow">
+            <span className="fb-gline">
+              <i className="fb-gmark" />
+              <i style={{ width: `${w}%` }} />
+              <i className="fb-gval" />
+            </span>
+            {tiles ? <i className="fb-gtiles" /> : null}
+          </span>
+        ))}
+      </span>
+      <p className="fb-btext">{text}</p>
+      {go ? (
+        <Link
+          to={go.to}
+          search={(go.search ?? {}) as never}
+          {...asButton({ variant: 'outline', size: 'xs', className: 'fb-bgo' })}
+        >
+          {go.label}
+        </Link>
+      ) : null}
+    </div>
+  )
+}
+
 const tip = (k: number, tone: string) => copy.day(k, copy.tone[tone] ?? tone)
 const pct = (f: number) => `${(Math.max(0, Math.min(1, f)) * 100).toFixed(1)}%`
 
@@ -636,11 +693,15 @@ function Teams({ board, hit, lit }: { board: Board; hit: Hit; lit: Lit }) {
       className="fb-teams"
       count={<span className="fb-count">{copy.teamsMeta(named, board.people)}</span>}
     >
-      <div className="fb-teamlist">
-        {board.teams.map((t) => (
-          <Team key={t.id ?? TEAMLESS} t={t} max={max} hit={hit} lit={lit} />
-        ))}
-      </div>
+      {board.teams.length ? (
+        <div className="fb-teamlist">
+          {board.teams.map((t) => (
+            <Team key={t.id ?? TEAMLESS} t={t} max={max} hit={hit} lit={lit} />
+          ))}
+        </div>
+      ) : (
+        <Blank text={copy.empty.teams} rows={2} tiles />
+      )}
     </Card>
   )
 }
@@ -657,6 +718,14 @@ function Agents({ board, hit, lit }: { board: Board; hit: Hit; lit: Lit }) {
       title={copy.agents}
       count={<Count shown={board.agents.length} all={board.agentCount} />}
     >
+      {board.agents.length ? null : (
+        <Blank
+          text={copy.empty.agents}
+          go={{ label: copy.empty.deploy, to: '/deploy' }}
+          rows={2}
+          tiles
+        />
+      )}
       <div className="fb-agents">
         {board.agents.map((a) => {
           const tone = agentTone(a)
@@ -745,11 +814,15 @@ function Workflows({ board, hit, lit }: { board: Board; hit: Hit; lit: Lit }) {
       title={copy.workflows}
       count={<Count shown={board.workflows.length} all={board.workflowCount} />}
     >
-      <div className="fb-teamlist fb-flowlist">
-        {board.workflows.map((w) => (
-          <Workflow key={w.id} w={w} hit={hit} lit={lit} />
-        ))}
-      </div>
+      {board.workflows.length ? (
+        <div className="fb-teamlist fb-flowlist">
+          {board.workflows.map((w) => (
+            <Workflow key={w.id} w={w} hit={hit} lit={lit} />
+          ))}
+        </div>
+      ) : (
+        <Blank text={copy.empty.workflows} go={stepGo('workflows')} rows={2} tiles />
+      )}
     </Card>
   )
 }
@@ -853,7 +926,7 @@ function Tools({
           })}
         </div>
       ) : (
-        <p className="fb-empty">{t.empty}</p>
+        <Blank text={copy.empty.tools} go={stepGo('mcp')} />
       )}
     </Card>
   )
@@ -880,6 +953,9 @@ function Harnesses({
 }) {
   return (
     <Card id="harness" title={copy.harness} count={<Count shown={all} all={all} />}>
+      {cols.length ? null : (
+        <Blank text={copy.empty.harness} go={stepGo('harness')} rows={2} tiles />
+      )}
       <div className="fb-harness">
         {cols.map((c) => (
           <div
@@ -983,15 +1059,16 @@ function Routers({
             )
           })}
         </div>
-      ) : direct ? null : (
-        <p className="fb-empty">{copy.noRoutedSpend}</p>
-      )}
+      ) : null}
       {direct ? (
         <>
           {routers.length ? <span className="fb-rule" aria-hidden /> : null}
           <Direct d={direct} hit={node(direct.id) ? hit : null} lit={lit} dim={dim} />
         </>
       ) : null}
+      {routers.length ? null : (
+        <Blank text={copy.empty.routers} go={stepGo('router')} rows={direct ? 1 : 2} />
+      )}
     </Card>
   )
 }
@@ -1061,6 +1138,12 @@ function Providers({
       title={copy.providers}
       count={<span className="fb-count">{copy.providersMeta(all, models)}</span>}
     >
+      {providers.length ? null : (
+        <Blank
+          text={copy.empty.providers}
+          go={{ label: copy.empty.providerKey, to: '/router', search: { tab: 'providers' } }}
+        />
+      )}
       <div className="fb-prows">
         {providers.map((p) => (
           <div key={p.id} className={cn('fb-prow', dim([p.id, ...p.models.map((m) => m.id)]))}>
@@ -1173,6 +1256,20 @@ function BillCard({
       <span className="fb-amount">{fmtMoney(bill.total)}</span>
       <p className="fb-sub">{b.period(Math.max(1, card.series.length))}</p>
       <span className="fb-rule" aria-hidden />
+      {bill.total || bill.providers.length ? (
+        <BillLines bill={bill} hit={hit} lit={lit} />
+      ) : (
+        <Blank text={copy.empty.bill} />
+      )}
+    </Card>
+  )
+}
+
+/** The bill's lines: by provider, by source, and the total they add up to. */
+function BillLines({ bill, hit, lit }: { bill: Bill; hit: Hit; lit: Lit }) {
+  const b = copy.bill
+  return (
+    <>
       <p className="fb-bhead">{b.byProvider}</p>
       {bill.providers.map((p) => (
         <Button
@@ -1207,7 +1304,7 @@ function BillCard({
       <BillRow name={b.harnesses} amount={fmtMoney(bill.harnesses)} />
       <span className="fb-rule" aria-hidden />
       <BillRow name={b.total} amount={fmtMoney(bill.total)} className="fb-btotal" />
-    </Card>
+    </>
   )
 }
 
@@ -1295,7 +1392,8 @@ function Budget({
       ) : (
         <p className="fb-sub">{copy.noBudget}</p>
       )}
-      {mine ? null : (
+      {/* What no budget governs; with no budget and nothing spent, three zeros say nothing. */}
+      {mine || (!b && !hud.ungoverned) ? null : (
         <div className="fb-bunder" title={copy.ungovernedTitle}>
           <span className="fb-bline fb-btotal">
             <span className="fb-name">{copy.ungoverned}</span>
@@ -1336,8 +1434,18 @@ function Saved({
       <span className="fb-amount fb-good">{fmtMoney(off)}</span>
       <p className="fb-sub">{copy.savedSub}</p>
       <span className="fb-rule" aria-hidden />
-      <BillRow name={b.before} amount={fmtMoney(total + off)} />
-      <BillRow name={b.total} amount={fmtMoney(total)} className="fb-btotal" />
+      {total || off ? (
+        <>
+          <BillRow name={b.before} amount={fmtMoney(total + off)} />
+          <BillRow name={b.total} amount={fmtMoney(total)} className="fb-btotal" />
+        </>
+      ) : (
+        <Blank
+          text={copy.empty.saved}
+          go={{ label: copy.empty.savedGo, to: '/optimization' }}
+          rows={1}
+        />
+      )}
     </Card>
   )
 }

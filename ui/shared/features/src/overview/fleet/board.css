@@ -687,10 +687,59 @@
   line-height: 14px;
   color: var(--fb-ink3);
 }
-.fb-empty {
+/*
+ * An empty card's body (FleetBoard's Blank): ghost rows in the empty tiles' grey, in the card's own shape and fading out
+ * downward, then what lands here and the step that fills it.
+ */
+.fb-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.fb-ghost {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-self: stretch;
+  mask-image: linear-gradient(#000 25%, transparent);
+}
+.fb-grow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fb-gline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fb-gline i,
+.fb-gtiles {
+  display: block;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--fb-none);
+}
+.fb-gline .fb-gmark {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.fb-gline .fb-gval {
+  flex: none;
+  width: 36px;
+  margin-left: auto;
+}
+.fb-gtiles {
+  background: repeating-linear-gradient(90deg, var(--fb-none) 0 11px, transparent 11px 14px);
+}
+.fb-btext {
   margin: 0;
   font-size: 12px;
-  color: var(--fb-ink3);
+  line-height: 16px;
+  color: var(--fb-ink2);
+  text-wrap: pretty;
 }
 
 /* Providers and models: a section per provider, its models each a row (name, spend) over a full-width bar. */

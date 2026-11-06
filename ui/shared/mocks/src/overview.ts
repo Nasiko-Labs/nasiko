@@ -10,8 +10,9 @@
  * budget. A problem whose node is missing (a variant, a test seed) is left out.
  *
  * State: OV-2 writes (owner, snooze, handled) and OV-3 pins, reset with the other mocks. Variants:
- * `overview-absent` (bare 404s, the page builds its fallback map), `overview-quiet` (no problems: the healthy state) and
- * `village-unlimited` (a paid plan: every village plot open).
+ * `overview-absent` (bare 404s, the page builds its fallback map), `overview-quiet` (no problems: the healthy state),
+ * `overview-bare` (agents deployed, nothing run or connected yet: the canvases' empty state) and `village-unlimited` (a
+ * paid plan: every village plot open).
  */
 import { http, HttpResponse, type HttpHandler } from 'msw'
 import type { MockAgent } from './agents'
@@ -24,6 +25,8 @@ export interface OverviewMockCtx {
   now(): number
   absent(): boolean
   quiet(): boolean
+  /** Agents deployed and nothing else: no traffic, teams, tools, routers, harnesses or workflows (`overview-bare`). */
+  bare(): boolean
   /** The workspace is on a paid plan (`village-unlimited`). */
   unlimited(): boolean
   agents(): readonly MockAgent[]
@@ -1177,7 +1180,7 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
     } else row.unbudgeted_usd += x.cost_usd
   }
   const cents = (v: number) => Math.round(v * 100) / 100
-  return {
+  const estate = {
     as_of: new Date(now).toISOString(),
     // Proposed (V-9): the workspace's plan, which sets the village's open plots.
     plan: ctx.unlimited() ? 'team' : 'free',
@@ -1216,6 +1219,44 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
         Math.round(Math.min(15, mySpend * (monthDay / Math.max(1, rangeDays))) * 100) / 100 || 7.55,
       projected_usd: 17.9,
     },
+  }
+  if (!ctx.bare()) return estate
+  // Agents deployed, nothing run: every agent idle at $0, nothing connected, no problems to raise.
+  return {
+    ...estate,
+    groups: [],
+    people: [],
+    workflows: [],
+    projects: [],
+    routers: [],
+    providers: [],
+    models: [],
+    agents: estate.agents.map((a) => ({
+      ...a,
+      router_id: null,
+      model_ids: [],
+      tool_ids: [],
+      spend_usd: 0,
+      runs: 0,
+      success_pct: null,
+      p95_ms: null,
+      idle: true,
+      team_ids: [],
+      failed_spend_usd: null,
+    })),
+    tools: [],
+    harnesses: [],
+    flows: [],
+    problems: [],
+    chains: [],
+    opportunities: [],
+    daily: estate.daily.map(() => ({
+      budgeted_usd: 0,
+      unbudgeted_usd: 0,
+      uncapped_usd: 0,
+      saved_usd: 0,
+    })),
+    allowance: null,
   }
 }
 

@@ -165,6 +165,29 @@ describe('the village', () => {
     ).toHaveAttribute('aria-pressed', 'true')
   })
 
+  it('with nothing run yet, Kiko holds the setup checklist, the next step first', async () => {
+    configureMocks({ variant: 'overview-bare' })
+    const user = userEvent.setup()
+    renderApp('/?view=village')
+    const v = await village()
+    await user.click(within(v).getByRole('button', { name: copy.kiko.label(0) }))
+    expect(within(v).getByText(copy.kiko.setup.title)).toBeInTheDocument()
+    expect(within(v).getByText(copy.kiko.setup.progress(0, 5))).toBeInTheDocument()
+    const step = overviewCopy.needs.setup
+    expect(within(v).getByText(copy.kiko.setup.place.chat)).toBeInTheDocument()
+    for (const [name, href] of [
+      [step.chat.title, /^\/chat\/?$/],
+      [step.harness.title, /^\/harnesses$/],
+      [step.mcp.title, /^\/mcp\/?$/],
+      [step.router.title, /^\/router$/],
+      [step.workflows.title, /^\/workflows\/new$/],
+    ] as const)
+      expect(within(v).getByRole('link', { name })).toHaveAttribute(
+        'href',
+        expect.stringMatching(href),
+      )
+  })
+
   it('the chat box hands a question to a new Orchestrator chat, as its draft', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=village')

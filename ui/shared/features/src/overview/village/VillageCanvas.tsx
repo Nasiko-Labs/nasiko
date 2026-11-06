@@ -22,14 +22,17 @@
  * Placing (V28): a Build card lights that kind's open plots green; picking one remembers it in this browser and opens
  * the page where the thing is set up.
  */
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
+import { MessagesSquare } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { openGuide } from '@nasiko/features/onboarding/api'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
 import type { Spend } from '../api'
+import { copy as overviewCopy } from '../copy'
+import { nothingRan, setupSteps } from '../estate/setup'
 import type { EstateView } from '../estate/useEstateView'
 import { CardPanel } from '../fleet/CardPanel'
 import { boardSel, cardOf } from '../fleet/cards'
@@ -317,18 +320,21 @@ export function VillageCanvas({
     return () => el.removeEventListener('keydown', key)
   }, [placing, logOpen, kikoOpen, sel, onSel, vp, reduced, isMap])
 
-  // Kiko speaks up once per visit, a moment after the village loads, when something is broken: not over a link that
-  // opened a selection, and not on a phone-sized canvas, where the bubble would cover the village.
-  const broken = village.log.fix.length > 0
+  // Kiko speaks up once per visit, a moment after the village loads, when something is broken or nothing has run yet
+  // (its setup checklist): not over a link that opened a selection, and not on a phone-sized canvas, where the bubble
+  // would cover the village.
+  const steps = useMemo(() => setupSteps(v.estate), [v.estate])
+  const fresh = useMemo(() => nothingRan(v.estate), [v.estate])
+  const speak = village.log.fix.length > 0 || (fresh && !isMap)
   const [spoke, setSpoke] = useState(() => !!sel)
   useEffect(() => {
-    if (spoke || !broken) return
+    if (spoke || !speak) return
     const t = setTimeout(() => {
       setSpoke(true)
       if ((wrap.current?.clientWidth ?? 0) >= 640) setKikoOpen((o) => o || !logOpen)
     }, KIKO_DELAY_MS)
     return () => clearTimeout(t)
-  }, [spoke, broken, logOpen])
+  }, [spoke, speak, logOpen])
 
   const take = (item: { sel: string | null; anchor: string | null }) => {
     setLogOpen(false)
@@ -562,6 +568,8 @@ export function VillageCanvas({
                 onClose={() => setKikoOpen(false)}
                 onTake={take}
                 estate={v.estate}
+                steps={steps}
+                fresh={fresh}
               />
             </div>
           )}
@@ -576,7 +584,11 @@ export function VillageCanvas({
               Deselect, over the village's chat box. */}
           <div
             data-vp-ignore=""
-            className="absolute bottom-3 left-1/2 z-10 flex w-[min(440px,calc(100%-176px))] -translate-x-1/2 flex-col items-center gap-2"
+            className={cn(
+              'absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-2',
+              // The Map has no Kiko in the bottom left to keep clear of.
+              isMap ? 'w-[min(600px,calc(100%-24px))]' : 'w-[min(440px,calc(100%-176px))]',
+            )}
           >
             {placing ? (
               <div className={cn(CARD, 'flex items-center gap-3 px-3 py-2 text-sm')} role="status">
@@ -599,6 +611,7 @@ export function VillageCanvas({
                 </Button>
               </div>
             ) : null}
+            {isMap && fresh && wide ? <FirstCall /> : null}
             {isMap ? null : <CanvasAsk className="w-full" />}
           </div>
 
@@ -635,6 +648,12 @@ export function VillageCanvas({
           ) : null}
         </div>
         {wide || isMap ? null : <div className="mt-3 flex flex-col gap-2">{systemUi}</div>}
+        {/* Too narrow to share: the Map's nudge goes under the canvas, as the System card does. */}
+        {!wide && isMap && fresh ? (
+          <div className="mt-3">
+            <FirstCall />
+          </div>
+        ) : null}
         {!wide && open && inspector ? (
           <aside className="mt-3 max-h-[520px] overflow-hidden rounded-xl border bg-card">
             {inspector}
@@ -654,6 +673,28 @@ export function VillageCanvas({
         />
       </div>
     </MotionOn.Provider>
+  )
+}
+
+/**
+ * The Map's nudge while nothing in the range has called a model: its cards fill from real traffic, so the one step that
+ * fills most of them is a first chat. The empty cards carry their own steps.
+ */
+function FirstCall() {
+  const c = boardCopy.empty.banner
+  return (
+    <div className={cn(CARD, 'flex w-full flex-wrap items-center gap-3 py-2.5 pr-2.5 pl-3')}>
+      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted" aria-hidden>
+        <MessagesSquare className="size-4" />
+      </span>
+      <div className="min-w-48 flex-1">
+        <p className="text-sm font-semibold">{c.title}</p>
+        <p className="text-xs text-muted-foreground">{c.body}</p>
+      </div>
+      <Link to="/chat" search={{} as never} {...asButton({ size: 'sm', className: 'shrink-0' })}>
+        {overviewCopy.needs.setup.chat.title}
+      </Link>
+    </div>
   )
 }
 

@@ -76,12 +76,34 @@ export const boardCopy = {
   tool: {
     off: (days: number) =>
       `Turned off ${days < 1 ? 'today' : days < 2 ? 'yesterday' : `${Math.floor(days)} days ago`}`,
-    empty: 'No tools here.',
   },
   routerLabel: (name: string, spend: string, share: string) =>
     `${name}, ${spend}, ${share} of agent spend`,
   saved: 'Saved',
   savedSub: 'from optimizations',
+  /**
+   * An empty card (FleetBoard's `Blank`): what lands here once it fills, over the one step that fills it (the canvases'
+   * setup steps, `estate/setup.ts`). Cards that fill from traffic alone (the bill) leave the step to the canvas's banner.
+   */
+  empty: {
+    teams: 'Each team’s spend against its budget, with its people.',
+    agents: 'None of the agents here are yours yet.',
+    deploy: 'Deploy an agent',
+    harness: 'Claude Code, Codex and Cursor installs, each by what it spends.',
+    workflows: 'Each workflow’s steps, and how its runs went day by day.',
+    routers: 'Routers pick a model for each call, keep a fallback and carry what they save.',
+    tools: 'The tools your agents call, busiest first, and any that fail.',
+    providers: 'The providers and models your agents call with your key, by what each costs.',
+    providerKey: 'Add a provider key',
+    bill: 'Spend by provider and by source, from the first call.',
+    saved: 'What optimization trims off each call, once calls run.',
+    savedGo: 'Open Optimization',
+    /** The Map's banner while nothing in the range has called a model. */
+    banner: {
+      title: 'No agent has run in this range',
+      body: 'The Map fills from real traffic: the first call brings in spend, providers and models.',
+    },
+  },
   opportunities: (k: number) => `${n(k, 'way', 'ways')} to save more`,
   /** A card's title is a button: it lights the card and opens its insights in the drawer. */
   cardLabel: (what: string) => `${what}: show insights`,
@@ -254,7 +276,6 @@ export const boardCopy = {
   changeLabel: (p: number) =>
     `${p <= 0 ? 'Down' : 'Up'} ${Math.abs(Math.round(p))}% on the window before`,
   share: pct,
-  noRoutedSpend: 'No routed spend',
   /** The LLM Routers card's No router section: what reaches a model with no router between. */
   direct: {
     name: 'No router',

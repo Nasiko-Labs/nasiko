@@ -53,6 +53,8 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
       expect(within(b).getByRole('heading', { name: card })).toBeInTheDocument()
     // Nothing on the board goes to another page by itself: the drawer's buttons do.
     expect(within(b).queryAllByRole('link')).toHaveLength(0)
+    // Traffic ran: no first-call nudge.
+    expect(screen.queryByText(boardCopy.empty.banner.title)).toBeNull()
     // Every team is in the Org, against its own budget.
     expect(
       within(b).getByRole('button', { name: /^Platform, \$\d[\d,]* of \$/ }),
@@ -163,6 +165,31 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     // No filter tabs: the marks alone.
     expect(within(tools).queryByRole('radio')).toBeNull()
     expect(within(tools).getByRole('button', { name: /^github,/ })).toBeInTheDocument()
+  })
+
+  it('an empty board says what fills each card and links its step; a first chat is the canvas’s one nudge', async () => {
+    configureMocks({ variant: 'overview-bare' })
+    renderApp('/?view=map')
+    const b = await board()
+    const card = (id: string) => b.querySelector<HTMLElement>(`[data-card="${id}"]`)!
+    const step = copy.needs.setup
+    for (const [id, name, href] of [
+      ['harness', step.harness.title, '/harnesses'],
+      ['workflows', step.workflows.title, '/workflows/new'],
+      ['routers', step.router.title, '/router'],
+      ['tools', step.mcp.title, '/mcp'],
+      ['providers', boardCopy.empty.providerKey, '/router?tab=providers'],
+    ] as const)
+      expect(within(card(id)).getByRole('link', { name })).toHaveAttribute('href', href)
+    // The bill fills from traffic alone: what lands there, no step of its own.
+    expect(within(card('bill')).getByText(boardCopy.empty.bill)).toBeInTheDocument()
+    expect(within(card('bill')).queryByRole('link')).toBeNull()
+    const canvas = screen.getByTestId('village-canvas')
+    expect(within(canvas).getByText(boardCopy.empty.banner.title)).toBeInTheDocument()
+    expect(within(canvas).getByRole('link', { name: step.chat.title })).toHaveAttribute(
+      'href',
+      expect.stringMatching(/^\/chat\/?$/),
+    )
   })
 
   it("sits in the village's canvas: the same HUD, and switching view keeps the canvas", async () => {

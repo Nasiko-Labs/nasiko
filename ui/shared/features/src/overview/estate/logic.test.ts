@@ -21,6 +21,7 @@ import {
   visibleProblems,
   type View,
 } from './model'
+import { nothingRan, setupSteps } from './setup'
 import type { Estate, Problem } from './types'
 
 const day = (n: number) => `2026-10-${String(n).padStart(2, '0')}`
@@ -524,5 +525,48 @@ describe('OV-2’s patch, applied before the server answers', () => {
     expect(applyPatch(p, { handled: true }, NOW).handled_at).toBe(new Date(NOW).toISOString())
     expect(applyPatch({ ...p, handled_at: 'then' }, { handled: false }, NOW).handled_at).toBeNull()
     expect(applyPatch({ ...p, owner_id: 'p1' }, { owner_id: null }, NOW).owner_id).toBeNull()
+  })
+})
+
+describe('the canvases’ setup steps', () => {
+  const done = (e: Estate) => Object.fromEntries(setupSteps(e).map((s) => [s.id, s.done]))
+
+  it('reads each step off the estate, in one order', () => {
+    const e = estate()
+    expect(setupSteps(e).map((s) => s.id)).toEqual([
+      'chat',
+      'harness',
+      'mcp',
+      'router',
+      'workflows',
+    ])
+    expect(nothingRan(e)).toBe(false)
+    expect(done(e)).toMatchObject({ chat: true, router: true, workflows: true })
+  })
+
+  it('agents deployed and nothing else: only the direct path, nothing run, every step left', () => {
+    const e = estate()
+    const bare: Estate = {
+      ...e,
+      agents: e.agents.map((a) => ({ ...a, runs: 0, spend_usd: 0 })),
+      harnesses: [],
+      tools: [],
+      routers: e.routers.filter((r) => r.direct),
+      workflows: [],
+    }
+    expect(nothingRan(bare)).toBe(true)
+    expect(setupSteps(bare).every((s) => !s.done)).toBe(true)
+    // A coding harness's session is a run too.
+    const install = {
+      id: 'h1',
+      name: 'Claude Code (Ada)',
+      harness: 'claude',
+      owner_id: 'p1',
+      model_ids: [],
+      tool_ids: [],
+      spend_usd: null,
+      sessions: ['ok' as const],
+    }
+    expect(nothingRan({ ...bare, harnesses: [install] })).toBe(false)
   })
 })
