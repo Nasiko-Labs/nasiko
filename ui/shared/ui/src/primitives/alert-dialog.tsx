@@ -1,4 +1,6 @@
 // fidelity: nasiko-ui-lab@1b99bdda: class strings are the lab's `alert-dialog` (`data-[state=…]` → `data-open:`/`data-closed:`); Base UI internals kept.
+// Local edit: the overlay takes the popup's `duration-200`. Base UI unmounts both when the popup's animation ends,
+// and tw-animate's fill mode is none, so a shorter backdrop fade snapped back to full black/50 until then (a flash).
 "use client"
 
 import * as React from "react"
@@ -37,7 +39,7 @@ function AlertDialogOverlay({
     <AlertDialogPrimitive.Backdrop
       data-slot="alert-dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-black/50 data-closed:animate-out data-closed:fade-out-0 data-open:animate-in data-open:fade-in-0",
+        "fixed inset-0 z-50 bg-black/50 duration-200 data-closed:animate-out data-closed:fade-out-0 data-open:animate-in data-open:fade-in-0",
         className
       )}
       {...props}
