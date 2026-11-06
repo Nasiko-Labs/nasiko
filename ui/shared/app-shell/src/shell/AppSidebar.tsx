@@ -69,7 +69,7 @@ import { askForTour } from '@nasiko/app-core/tour'
 import { cn } from '@nasiko/ui/lib/utils'
 import { pickShared, withoutWindow } from '@nasiko/app-core/shell/context'
 import { copy } from '@nasiko/app-core/shell/copy'
-import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
+import { NasikoLockup, NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 import {
   activeItem,
   backIndex,
@@ -185,10 +185,9 @@ export function AppSidebar({
                     {/* A plain link: TanStack's Link would mark it aria-current on /, doubling the nav's Home item
                       (§3 rule 4: one current item). */}
 
-                    <NasikoMark className="size-4 shrink-0 text-logo" />
-                    <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
-                      <span className="truncate font-semibold">{copy.brand}</span>
-                    </span>
+                    {/* h-4: the mark stays the rail's 16 px size. `!` beats the button's `[&>svg]:size-4`, which would
+                      squeeze the whole lockup into a 16 px square. */}
+                    <NasikoLockup className="h-4! w-auto! shrink-0" />
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>
