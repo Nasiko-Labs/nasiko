@@ -15,13 +15,11 @@ import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { copy } from './copy'
-import { DEFAULT_RANGE, RANGE_DAYS } from './search'
 import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, SAVED_BARS } from './tuning'
 
 setupPinnedSeed()
 afterEach(() => {
-  configureMocks({ seed, now, loggedIn: true, superuser: null, variant: null, routerVariants: [] })
-  window.history.replaceState(null, '', '/')
+  configureMocks({ seed, now, loggedIn: true, superuser: null, variant: null })
   configureChatMock({ waiting: false })
   clearChatRegistry()
 })
@@ -144,7 +142,7 @@ describe('Fleet health', () => {
   })
 })
 
-describe('Needs your attention', () => {
+describe('Needs you', () => {
   const needs = () => card('overview-needs')
   const settled = async () => {
     await loaded()
@@ -234,8 +232,7 @@ describe('Needs your attention', () => {
       .filter((li) => li.querySelector('[data-kind="request"]'))
     expect(rows.length).toBeGreaterThan(0)
     expect(within(needs()).queryByRole('link', { name: 'Open flow' })).toBeNull()
-    // The word, not "Workflows" (the setup item).
-    expect(within(needs()).queryByText(/\bflows\b/i)).toBeNull()
+    expect(within(needs()).queryByText(/flows/i)).toBeNull()
   })
 
   it('a normal user gets one "outside Chat" row for requests no chat claims (eng R5)', async () => {
@@ -360,8 +357,6 @@ describe('first run (design 7A)', () => {
     const paths = rec.urls.map((u) => u.pathname)
     expect(paths.filter((p) => p.includes('/finops/'))).toEqual([])
     expect(paths.filter((p) => p.includes('/session/'))).toEqual([])
-    // Setup steps belong to Needs your attention, which the first run doesn't have (2026-11-05).
-    expect(paths.filter((p) => p.includes('/maf/workflows'))).toEqual([])
   })
 })
 
@@ -418,7 +413,7 @@ describe('Coding harnesses', () => {
     ).toBeInTheDocument()
   })
 
-  it('labels harness cost as value at API prices, not a charge', async () => {
+  it('labels cost as an estimate at API list price', async () => {
     renderApp('/')
     expect(
       await within(await screen.findByTestId('overview-harnesses')).findByText(
@@ -462,7 +457,6 @@ describe('structure (design 14A)', () => {
       'overview-savings',
       'overview-needs',
       'overview-health',
-      'overview-harness-activity',
       'overview-spend',
       'overview-sessions',
       'overview-saved',
@@ -514,8 +508,6 @@ describe('Savings', () => {
       'href',
       '/tokenops?open=optimize',
     )
-    // The band fills the lead card's foot: no tip beside it.
-    expect(screen.queryByTestId('overview-tip')).toBeNull()
   })
 
   it('the breakdown link lands on the optimization section', async () => {
@@ -638,131 +630,6 @@ describe('Savings', () => {
     renderApp('/')
     await screen.findByTestId('kpi-spend')
     expect(screen.queryByTestId('overview-savings')).toBeNull()
-    // The band's slot takes a tip instead (user 2026-11-06), even beside tiles with figures.
-    expect(document.querySelector('[data-tour="overview-summary"]')).toContainElement(
-      screen.getByTestId('overview-tip'),
-    )
-    // Nothing saved by any agent: Saved tokens says so and links to turning it on.
-    const saved = await within(card('overview-saved')).findByTestId('saved-quiet')
-    expect(within(saved).getByRole('link', { name: copy.cardQuiet.savedAction })).toHaveAttribute(
-      'href',
-      '/optimization',
-    )
-  })
-})
-
-describe('setup items (2026-11-05)', () => {
-  it('turns what isn’t set up into steps and keeps what is, with its count and where to manage it', async () => {
-    configureMocks({ variant: 'mcp-empty', routerVariants: ['router-empty'] })
-    renderApp('/')
-    await loaded()
-    const steps = await within(card('overview-needs')).findByTestId('needs-setup')
-    expect(
-      within(steps).getByRole('link', { name: copy.needs.setup.router.action }),
-    ).toHaveAttribute('href', '/router')
-    expect(within(steps).getByRole('link', { name: copy.needs.setup.mcp.action })).toHaveAttribute(
-      'href',
-      '/mcp',
-    )
-    // The seed has workflows: the item stays, saying so, and opens them.
-    expect(steps).toHaveTextContent(copy.needs.setup.workflows.doneTitle)
-    expect(steps).toHaveTextContent(/\d+\+? workflows? deployed/)
-    expect(
-      within(steps).getByRole('link', { name: copy.needs.setup.workflows.manage }),
-    ).toHaveAttribute('href', '/workflows')
-    expect(card('overview-needs')).toHaveTextContent(copy.needs.setupCount(2))
-  })
-
-  it('keeps all three when everything is set up, with nothing counted as left', async () => {
-    renderApp('/')
-    await loaded()
-    const steps = await within(card('overview-needs')).findByTestId('needs-setup')
-    expect(steps.querySelectorAll('[data-kind="setup"][data-done="true"]')).toHaveLength(3)
-    expect(card('overview-needs')).not.toHaveTextContent(/to set up/)
-  })
-})
-
-describe('lower cards with nothing to show (2026-11-06)', () => {
-  it('keep their place and say what fills them, with one step', async () => {
-    configureMocks({ variant: 'empty' })
-    renderApp('/')
-    await loaded()
-    const quiet = await within(card('overview-sessions')).findByTestId('sessions-quiet')
-    expect(quiet).toHaveTextContent(copy.sessions.none)
-    expect(
-      within(quiet).getByRole('link', { name: copy.cardQuiet.sessionsAction }),
-    ).toHaveAttribute('href', '/chat?auto=1')
-  })
-})
-
-describe('coding harness activity (2026-11-06)', () => {
-  it('shows models, subagent runs and tools in a section of its own', async () => {
-    renderApp('/')
-    await loaded()
-    const section = await within(card('overview-harness-activity')).findByRole('list', {
-      name: copy.activity.models,
-    })
-    expect(within(section).getAllByRole('listitem').length).toBeGreaterThan(0)
-    const activity = card('overview-harness-activity')
-    expect(activity).toHaveTextContent(copy.activity.subagents)
-    expect(within(activity).getByRole('list', { name: copy.activity.tools })).toBeInTheDocument()
-    expect(activity).toHaveTextContent(/[\d,]+ tool calls/)
-  })
-
-  it('is left out when the harnesses sat idle, since the Harnesses tile already says so', async () => {
-    window.history.replaceState(null, '', '/?mock=no-activity')
-    renderApp('/')
-    await loaded()
-    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
-    expect(tile).toHaveTextContent(copy.quiet.harnessesIdle(RANGE_DAYS[DEFAULT_RANGE]))
-    expect(card('overview-harness-activity')).toBeNull()
-  })
-})
-
-describe('quiet tiles (2026-11-05)', () => {
-  it('folds zero spend, tokens and runs into one line that says what fills them', async () => {
-    configureMocks({ variant: 'no-spend' })
-    renderApp('/')
-    const quiet = await screen.findByTestId('quiet-activity', {}, { timeout: 8000 })
-    expect(quiet).toHaveTextContent(copy.quiet.activity(RANGE_DAYS[DEFAULT_RANGE]))
-    expect(within(quiet).getByRole('link', { name: copy.quiet.startChat })).toHaveAttribute(
-      'href',
-      '/chat',
-    )
-    for (const id of ['kpi-spend', 'kpi-tokens', 'kpi-runs'])
-      expect(screen.queryByTestId(id)).toBeNull()
-    expect(screen.getByTestId('overview-harnesses')).toBeInTheDocument()
-    // The Spend card keeps its place with its own quiet state, never $0.00 and a table of zeros.
-    expect(within(card('overview-spend')).getByTestId('spend-quiet')).toBeInTheDocument()
-  })
-
-  it('fills the 2×2 with the quiet panel when nothing has a figure, and never puts the tip in it', async () => {
-    window.history.replaceState(null, '', '/?mock=no-activity')
-    configureMocks({ variant: 'no-spend' })
-    renderApp('/')
-    const harnesses = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
-    expect(harnesses).toHaveTextContent(copy.quiet.harnessesIdle(RANGE_DAYS[DEFAULT_RANGE]))
-    expect(screen.getByTestId('quiet-activity')).toBeInTheDocument()
-    expect(within(screen.getByTestId('overview-quiet')).queryByTestId('overview-tip')).toBeNull()
-    // An empty dashboard: the tip takes the savings band's slot in the lead card, without a counter; Next turns it.
-    const tip = screen.getByTestId('overview-tip')
-    expect(document.querySelector('[data-tour="overview-summary"]')).toContainElement(tip)
-    expect(tip).not.toHaveTextContent(/Tip \d+ of \d+/)
-    const shown = () => tip.querySelector('[aria-hidden="false"]')?.textContent
-    const first = shown()
-    await userEvent.click(within(tip).getByRole('button', { name: copy.tips.next }))
-    expect(shown()).not.toBe(first)
-  })
-  it('keeps the band out until the tiles show activity, with the tip in its place (2026-11-06)', async () => {
-    // Savings count a call at once (`token_usage`), the tiles minutes later (`trace_usage`): savings with spend to
-    // trim beside tiles that have none yet must never read "could be trimmed" beside "No agent activity".
-    const savings = await apiFetch<object>('/api/observability/finops/savings')
-    configureMocks({ variant: 'no-spend' })
-    server.use(http.get('*/api/observability/finops/savings', () => HttpResponse.json(savings)))
-    renderApp('/')
-    await screen.findByTestId('quiet-activity', {}, { timeout: 8000 })
-    expect(await screen.findByTestId('overview-tip')).toBeInTheDocument()
-    expect(screen.queryByTestId('overview-savings')).toBeNull()
   })
 })
 
@@ -775,10 +642,6 @@ describe('the summary tiles (redesign 2026-10-19)', () => {
     expect(within(tokens).getByText(/^input \d/)).toBeInTheDocument()
     expect(within(tokens).getByText(/^output \d/)).toBeInTheDocument()
     expect(within(card('kpi-runs')).getByTestId('kpi-cost-per-run')).toHaveTextContent(/per run$/)
-    // Tool calls from the same dashboard (2026-11-05).
-    expect(within(card('kpi-runs')).getByTestId('kpi-tool-calls')).toHaveTextContent(
-      /^[\d,]+ tool calls/,
-    )
     // The run states moved from the old Agents running tile to Fleet health.
     expect(screen.queryByTestId('kpi-agents')).toBeNull()
     expect(within(card('overview-health')).getByTestId('health-run-states')).toHaveTextContent(

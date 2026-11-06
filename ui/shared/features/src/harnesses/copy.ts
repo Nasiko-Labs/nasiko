@@ -18,11 +18,10 @@ export const copy = {
   registered: 'Registered',
   registeredTip:
     'A harness is registered when its agent row exists: `nasiko agents install` creates it, and so does `nasiko connect`, `use` or `auth login` for every harness found on the machine. Uninstalling keeps the row, so registered can overstate real use.',
-  // Not "cost" (user 2026-11-06): a subscription seat pays a flat fee, so this was never spent.
-  estCost: 'API value',
+  estCost: 'Est. cost',
   estCostTip:
-    "Usage priced at each provider's published API rates (tokens × list price). Subscription seats are billed at a flat rate, so this is not invoiced spend.",
-  csvCostHeader: 'Value at API prices (USD)',
+    'Tokens × the model list price. Harness seats are usually billed per seat, so this is not an invoice.',
+  csvCostHeader: 'Estimated cost (API list price, USD)',
   unpriced: 'unpriced',
   unpricedTip: 'Most of these turns used a model with no price, so no cost is shown.',
   unpricedCount: (n: number) => `${n.toLocaleString('en-US')} unpriced`,

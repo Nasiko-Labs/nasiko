@@ -132,7 +132,7 @@ describe('Breakdown', () => {
       ),
     ).toBeInTheDocument()
     await user.click(
-      within(screen.getByLabelText('Metric')).getByRole('radio', { name: 'API value' }),
+      within(screen.getByLabelText('Metric')).getByRole('radio', { name: 'Est. cost' }),
     )
     expect(onMetric).toHaveBeenCalledWith('cost')
     rerender(<Breakdown {...base} team rows={rows} metric="cost" />)
@@ -154,7 +154,7 @@ describe('Breakdown', () => {
     const [name, body] = csv.calls[0]!
     expect(name).toBe('harnesses-2-of-5.csv')
     const lines = body.split(/\r?\n/)
-    expect(lines[0]).toContain('Claude Code Value at API prices (USD)')
+    expect(lines[0]).toContain('Claude Code Estimated cost (API list price, USD)')
     const ada = lines.find((l) => l.startsWith('"Ada"'))!
     // Claude cost column is blank for the mostly-unpriced developer; its unpriced count travels with it.
     expect(ada.split(',')[3]).toBe('""')
@@ -257,7 +257,7 @@ describe('Trend', () => {
     expect(screen.getByText(/Claude Code: 2 active/)).toBeInTheDocument()
   })
 
-  it('switches to API value; an empty series offers a wider window only when there is one', async () => {
+  it('switches to Est. cost; an empty series offers a wider window only when there is one', async () => {
     const onWiden = vi.fn()
     const { rerender } = render(
       <Trend
@@ -269,7 +269,7 @@ describe('Trend', () => {
       />,
     )
     await userEvent.click(
-      within(screen.getByLabelText('Trend metric')).getByRole('radio', { name: 'API value' }),
+      within(screen.getByLabelText('Trend metric')).getByRole('radio', { name: 'Est. cost' }),
     )
     expect(screen.getByText('Estimated cost per harness')).toBeInTheDocument()
     expect(screen.getByText(/Claude Code: \$0\.50\. Codex: no activity\./)).toBeInTheDocument()

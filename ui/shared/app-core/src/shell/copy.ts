@@ -1,5 +1,6 @@
 /** Every user-facing string of the app shell (sidebar, theme menu, sign out). */
 export const copy = {
+  brand: 'Nasiko',
   brandTooltip: '',
   navLabel: 'Main',
   // The drill-in panel's way back (Chat, Settings): it reads "Back"; its name (and tooltip) says where to: the page

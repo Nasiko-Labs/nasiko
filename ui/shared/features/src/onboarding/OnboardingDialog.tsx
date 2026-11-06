@@ -220,8 +220,7 @@ export function OnboardingDialog({
                 failed={save.isError}
               />
             ) : null}
-            {/* The agent first, then the key (user request 2026-11-05). Continue needs only the hold: a user with no key
-                yet may go on (user request 2026-11-06); Chat still waits for one. */}
+            {/* The agent first, then the key (user request 2026-11-05); Continue still waits for the key. */}
             {step === 'start' ? (
               <div className="flex flex-col gap-10">
                 <StepHeading title={copy.start.title} intro={copy.start.intro} />
@@ -252,10 +251,16 @@ export function OnboardingDialog({
             <Button
               ref={primary}
               type="button"
-              // Focusable while off, so focus never drops to the page while it holds or waits for a role.
+              // Focusable while off, so focus never drops to the page while it holds or waits for a key.
               focusableWhenDisabled
               className="data-disabled:pointer-events-none data-disabled:opacity-50"
-              disabled={waiting || (step === 'role' && !persona) || save.isPending}
+              // No skipping the key: nothing past it works without one. Skip guide is the way out.
+              disabled={
+                waiting ||
+                (step === 'role' && !persona) ||
+                (step === 'start' && !hasKey) ||
+                save.isPending
+              }
               onClick={onContinue}
             >
               {save.isPending ? <Spinner aria-hidden /> : null}

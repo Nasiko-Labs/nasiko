@@ -30,7 +30,7 @@ const sidebarState = () =>
   document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state')
 const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')!
 /** The open sidebar's brand link (the phone top bar has one too; the rail's mark is the Expand button). */
-const sidebarBrand = () => within(sidebar()).getByRole('link', { name: 'Nasiko' })
+const sidebarBrand = () => within(sidebar()).getByRole('link', { name: copy.brand })
 /** The sidebar starts as the rail; a stored choice opens it. */
 const expanded = () => {
   document.cookie = 'sidebar_state=true; path=/'

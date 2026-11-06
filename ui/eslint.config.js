@@ -105,8 +105,6 @@ const PUBLIC = {
     'components/NeedsYou',
     'components/FirstRun',
     'components/SetupGuide',
-    // EE's Budget burn panel draws the Overview's quiet card when nothing is spent.
-    'components/Card',
   ],
   observability: ['StateCard', 'tuning', 'types', 'spans', 'copy', 'sessions', 'limiter'],
   // Budgets (plans/feat-budget-burn.md eng D1) build their sheet from the router's generic sheet parts.
@@ -166,8 +164,7 @@ const PUBLIC = {
   ],
   // The session ledger (PR1b) shares the session pages' breadcrumb.
   trace: ['api', 'Waterfall', 'Crumbs'],
-  // The Overview's setup steps ask whether any workflow exists (the list page's own query).
-  workflows: ['api'],
+  workflows: [],
 }
 
 /** Raw controls outside components/ui (Phase 1 guard): shadcn primitives or shared composites instead. */
