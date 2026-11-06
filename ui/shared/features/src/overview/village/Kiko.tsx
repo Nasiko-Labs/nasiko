@@ -54,7 +54,7 @@ export function Kiko({
     <div className="flex items-end gap-2.5">
       <Button
         variant="ghost"
-        className="relative h-24 w-20 shrink-0 rounded-2xl border border-black/5 bg-white p-1.5 shadow-md hover:bg-white"
+        className="relative h-24 w-20 shrink-0 rounded-2xl border bg-card p-1.5 shadow-md hover:bg-card"
         aria-label={copy.kiko.label(count)}
         aria-expanded={open}
         onClick={onToggle}
