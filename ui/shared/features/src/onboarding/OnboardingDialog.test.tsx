@@ -172,7 +172,7 @@ describe('first-run guide', () => {
     expect(localStorage.getItem(skipKey(ADMIN_ID))).toBe('1')
   })
 
-  it("ends on the coding harnesses and finishes on the role's page", async () => {
+  it('ends on the coding harnesses and finishes on the Overview, whatever the role', async () => {
     firstTime()
     const user = userEvent.setup()
     const { router } = renderApp('/')
@@ -202,8 +202,8 @@ describe('first-run guide', () => {
       expect.stringMatching(/^Open Agents/),
     ])
     await advance(user, /finish/i)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/sessions'))
-    expect(screen.queryByRole('dialog')).toBeNull()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(router.state.location.pathname).toBe('/')
   })
 
   it('keeps a started deploy in the guide instead of opening its page', async () => {

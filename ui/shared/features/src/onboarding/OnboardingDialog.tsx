@@ -19,7 +19,8 @@ import {
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
+// Paused with the role's landing page (see `onContinue`): every role finishes on the Overview.
+// import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
 import { DotBackground } from '@nasiko/ui/composites/dot-background'
 import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
 import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
@@ -37,7 +38,7 @@ import { useGuide, useSavePersona } from './api'
 import { AgentStep } from './AgentStep'
 import { copy } from './copy'
 import { HarnessStep } from './HarnessStep'
-import { CONTINUE_HOLD_SECONDS, minutesLeft, opensFor, STEPS, type StepId } from './logic'
+import { CONTINUE_HOLD_SECONDS, minutesLeft, STEPS, type StepId } from './logic'
 import { ModelStep } from './ModelStep'
 import { StepHeading } from './parts'
 import { PERSONAS, type Persona } from './types'
@@ -48,7 +49,7 @@ const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck]
 /** When each stage lights in the beam's 4 s pass (index.css `--animate-beam` / `--animate-stage`): negative, so the
  *  loop is already running when the step opens. */
 const STAGE_DELAYS = ['-3.8s', '-2.73s', '-1.67s', '-0.6s']
-const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
+// const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
 
 export function OnboardingDialog({
   initialStep,
@@ -85,7 +86,7 @@ export function OnboardingDialog({
   }, [held, index])
   const waiting = held > 0
   const last = index === STEPS.length - 1
-  const opens = persona ? opensFor(persona) : '/'
+  // const opens = persona ? opensFor(persona) : '/'
   /** Out of the guide to a page: closing first, so the guide never stays open over it. */
   const leave = (to: Parameters<typeof navigate>[0]) => {
     onClose()
@@ -93,8 +94,10 @@ export function OnboardingDialog({
   }
 
   const onContinue = () => {
-    // The last step finishes on the role's own page (the Role step said "Opens …").
-    if (last) return leave({ to: opens })
+    // Every role finishes on the Overview, where the guide runs (user request 2026-11-06). Paused, not removed: the
+    // role's own page (`logic.ts` `opensFor`, and the Role step's "Opens …" line) comes back by restoring these.
+    // if (last) return leave({ to: opens })
+    if (last) return onClose()
     if (step !== 'role') return next()
     if (!persona) return
     // Already saved (back on this step): nothing to send.
@@ -220,7 +223,8 @@ export function OnboardingDialog({
                 failed={save.isError}
               />
             ) : null}
-            {/* The agent first, then the key (user request 2026-11-05); Continue still waits for the key. */}
+            {/* The agent first, then the key (user request 2026-11-05). Continue needs only the hold: a user with no key
+                yet may go on (user request 2026-11-06); Chat still waits for one. */}
             {step === 'start' ? (
               <div className="flex flex-col gap-10">
                 <StepHeading title={copy.start.title} intro={copy.start.intro} />
@@ -251,16 +255,10 @@ export function OnboardingDialog({
             <Button
               ref={primary}
               type="button"
-              // Focusable while off, so focus never drops to the page while it holds or waits for a key.
+              // Focusable while off, so focus never drops to the page while it holds or waits for a role.
               focusableWhenDisabled
               className="data-disabled:pointer-events-none data-disabled:opacity-50"
-              // No skipping the key: nothing past it works without one. Skip guide is the way out.
-              disabled={
-                waiting ||
-                (step === 'role' && !persona) ||
-                (step === 'start' && !hasKey) ||
-                save.isPending
-              }
+              disabled={waiting || (step === 'role' && !persona) || save.isPending}
               onClick={onContinue}
             >
               {save.isPending ? <Spinner aria-hidden /> : null}
@@ -444,9 +442,10 @@ function Role({
             <span className="flex min-w-0 flex-col gap-1">
               <span className="text-sm font-medium">{copy.role.personas[p].title}</span>
               <span className="text-xs text-muted-foreground">{copy.role.personas[p].line}</span>
+              {/* Paused with the role's landing page (see `onContinue`).
               <span className="text-xs text-muted-foreground">
                 {copy.role.opens(pageLabel(opensFor(p)))}
-              </span>
+              </span> */}
             </span>
           </label>
         ))}
