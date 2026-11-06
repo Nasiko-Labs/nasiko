@@ -5,15 +5,32 @@ import {
   firstOpenStep,
   guideDue,
   guideProviders,
+  mandatoryAgent,
+  MAX_SEEDED,
   minutesLeft,
   opensFor,
   skipKey,
   STEPS,
   ticks,
+  togglePick,
 } from './logic'
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
+  it('makes the agent with the most successful runs mandatory, not the most used one', () => {
+    const busy = { name: 'Busy', line: '', runs: 1_000, success: 0.5 }
+    const good = { name: 'Good', line: '', runs: 800, success: 0.9 }
+    expect(mandatoryAgent([busy, good])).toBe(good)
+  })
+
+  it('never drops the mandatory pick and stops at the cap', () => {
+    expect(togglePick(['M'], 'M', 'M')).toEqual(['M'])
+    expect(togglePick(['M'], 'A', 'M')).toEqual(['M', 'A'])
+    expect(togglePick(['M', 'A'], 'A', 'M')).toEqual(['M'])
+    expect(MAX_SEEDED).toBe(3)
+    expect(togglePick(['M', 'A', 'B'], 'C', 'M')).toEqual(['M', 'A', 'B'])
+  })
+
   it('has the four steps in order, the first agent and the model key as one', () => {
     expect(STEPS).toEqual(['welcome', 'role', 'start', 'harness'])
   })

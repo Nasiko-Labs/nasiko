@@ -1,53 +1,52 @@
 /**
- * The Agent and key step's first half: agents already running, to chat with once there is a key (Chat waits for it:
- * every model call is billed to the user's own key), then the Deploy page's own Registry, GitHub and Upload tabs (that order, user request
- * 2026-11-05). A started deploy stays in the guide (`onStarted`); the background follower toasts
- * when its build finishes (plans/feat-deploy.md eng R8).
+ * The Agent and key step's first half: prebuilt agents to deploy (up to MAX_SEEDED, the one with the best record
+ * always included; meeting 2026-11-06, in place of chatting with a running one), then the Deploy page's own Registry,
+ * GitHub and Upload tabs (that order, user request 2026-11-05). A started deploy stays in the guide (`onStarted`); the
+ * background follower toasts when its build finishes (plans/feat-deploy.md eng R8).
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, CircleCheck, KeyRound } from 'lucide-react'
-import { useState } from 'react'
+import { Bot, ChevronRight, CircleCheck, Rocket } from 'lucide-react'
+import { useId, useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
-import { Button, withButtonStyle } from '@nasiko/ui/primitives/button'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { Button, asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
+import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
-import { useAgentsDirectory } from '@nasiko/features/agents/api'
-import { exampleTexts } from '@nasiko/features/agents/normalize'
-import { isHarness } from '@nasiko/features/agents/status'
-import type { Agent } from '@nasiko/features/agents/types'
+import { cn } from '@nasiko/ui/lib/utils'
 import { GithubTab } from '@nasiko/features/deploy/GithubTab'
 import { RegistryTab } from '@nasiko/features/deploy/RegistryTab'
 import type { DeploySearch } from '@nasiko/features/deploy/search'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
 import { copy } from './copy'
+import { mandatoryAgent, MAX_SEEDED, SEEDED_AGENTS, togglePick } from './logic'
 import { SectionHeading } from './parts'
 
-/** Enough to choose from without scrolling the guide. */
-const MAX_RUNNING = 4
+const MANDATORY = mandatoryAgent(SEEDED_AGENTS).name
+/** The mandatory agent leads the list it's always part of. */
+const OFFERED = [
+  ...SEEDED_AGENTS.filter((a) => a.name === MANDATORY),
+  ...SEEDED_AGENTS.filter((a) => a.name !== MANDATORY),
+]
 
 export function AgentStep({
   started,
   onStarted,
-  hasKey,
-  onChat,
+  seeded,
+  onSeeded,
   onLeave,
 }: {
   started: DeployStarted | null
-  /** The user has a model key (connected above, or an LLM config already): until then Chat is off. */
-  hasKey: boolean
   onStarted: (to: DeployStarted) => void
-  /** Chat with a running agent: the guide closes and Chat opens on it. */
-  onChat: (agentId: string) => void
+  /** The prebuilt agents deployed from this guide, null until then (kept by the guide across steps). */
+  seeded: readonly string[] | null
+  onSeeded: (names: string[]) => void
   /** Following a link out of the guide closes it first. */
   onLeave: () => void
 }) {
   const me = useQuery(meQuery).data
-  const dir = useAgentsDirectory()
-  const running = (dir.data ?? [])
-    .filter((a) => a.status === 'running' && !isHarness(a))
-    .slice(0, MAX_RUNNING)
   // The Deploy page keeps the GitHub tab's picks in its URL; inside the guide they are local.
   const [search, setSearchState] = useState<DeploySearch>({ method: 'github' })
   const setSearch = (patch: Partial<DeploySearch>) => setSearchState((s) => ({ ...s, ...patch }))
@@ -78,31 +77,39 @@ export function AgentStep({
             )}
           </AlertDescription>
         </Alert>
-      ) : !me || dir.isPending ? (
+      ) : !me ? (
         <Skeleton className="h-48 w-full" />
       ) : (
-        // Running agents first: chatting with one is the quickest start. A failed list just leaves the deploy tabs.
-        <Tabs defaultValue={running.length ? 'try' : 'registry'} className="gap-4">
+        // Prebuilt agents first: deploying them is the quickest start.
+        <Tabs defaultValue="seeded" className="gap-4">
           {/* Sticks to the top of the guide's scrolling body (px-6 py-8 md:px-10, so -top-8), as on the Deploy page. */}
           <div className="sticky -top-8 z-20 -mx-6 bg-background px-6 py-2 md:-mx-10 md:px-10">
             <TabsList>
-              {running.length ? <TabsTrigger value="try">{copy.agent.try}</TabsTrigger> : null}
+              <TabsTrigger value="seeded">{copy.agent.seeded}</TabsTrigger>
               <TabsTrigger value="registry">{copy.agent.registry}</TabsTrigger>
               <TabsTrigger value="github">{copy.agent.github}</TabsTrigger>
               <TabsTrigger value="upload">{copy.agent.upload}</TabsTrigger>
             </TabsList>
           </div>
-          {running.length ? (
-            <TabsContent value="try" className="flex flex-col gap-3">
-              {hasKey ? null : (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <KeyRound aria-hidden className="size-4 shrink-0" />
-                  {copy.agent.needsKey}
-                </p>
-              )}
-              <Running agents={running} hasKey={hasKey} onChat={onChat} />
-            </TabsContent>
-          ) : null}
+          <TabsContent value="seeded">
+            {seeded ? (
+              <Alert role="status">
+                <CircleCheck aria-hidden />
+                <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span>{copy.agent.deploying(seeded)}</span>
+                  <Link
+                    to="/agents"
+                    onClick={onLeave}
+                    {...asButton({ variant: 'link', size: 'sm', className: 'h-auto px-0' })}
+                  >
+                    {copy.agent.openAgents}
+                  </Link>
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <Seeded onDeploy={onSeeded} />
+            )}
+          </TabsContent>
           <TabsContent value="registry">
             <RegistryTab userId={me.sub} onStarted={onStarted} />
           </TabsContent>
@@ -127,49 +134,73 @@ export function AgentStep({
   )
 }
 
-/** Each running agent with its first skill example. */
-function Running({
-  agents,
-  hasKey,
-  onChat,
-}: {
-  agents: readonly Agent[]
-  hasKey: boolean
-  onChat: (agentId: string) => void
-}) {
+/** The prebuilt agents as checkboxes, the mandatory one checked and locked, then Deploy. */
+function Seeded({ onDeploy }: { onDeploy: (names: string[]) => void }) {
+  const id = useId()
+  const [picks, setPicks] = useState<string[]>([MANDATORY])
+  const full = picks.length >= MAX_SEEDED
   return (
-    <ul aria-label={copy.agent.tryLabel} className="grid gap-3 sm:grid-cols-2">
-      {agents.map((a) => {
-        const name = a.display_name?.trim() || a.name
-        const example = a.skills.flatMap(exampleTexts)[0]
-        return (
-          <li key={a.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4">
-            <div className="flex items-start gap-3">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-                <Bot aria-hidden className="size-4" />
-              </span>
-              <div className="min-w-0">
-                <p className="truncate text-sm font-medium">{name}</p>
-                <p className="line-clamp-2 text-xs text-muted-foreground">
-                  {example ? `“${example}”` : copy.agent.noExample}
-                </p>
-              </div>
-            </div>
-            <div className="mt-auto flex justify-end">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={!hasKey}
-                aria-label={copy.agent.chatWith(name)}
-                onClick={() => onChat(a.id)}
+    <fieldset className="flex flex-col gap-3">
+      <legend className="sr-only">{copy.agent.seededLabel}</legend>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm">
+        <p className="text-muted-foreground">{copy.agent.seededLead(MAX_SEEDED)}</p>
+        <p aria-live="polite" className="text-xs text-muted-foreground tabular-nums">
+          {copy.agent.picked(picks.length, MAX_SEEDED)}
+          {full ? ` · ${copy.agent.full}` : null}
+        </p>
+      </div>
+      <ul className="grid gap-3 sm:grid-cols-2">
+        {OFFERED.map((a, i) => {
+          const cid = `${id}-seeded-${i}`
+          const mandatory = a.name === MANDATORY
+          const on = picks.includes(a.name)
+          const locked = !mandatory && !on && full
+          return (
+            <li key={a.name}>
+              {/* The Role step's card, a checkbox in place of its radio. */}
+              <label
+                htmlFor={cid}
+                className={cn(
+                  'flex h-full items-start gap-3 rounded-xl border bg-card p-4 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent',
+                  mandatory
+                    ? 'cursor-default'
+                    : locked
+                      ? 'cursor-not-allowed'
+                      : 'cursor-pointer hover:bg-accent/50',
+                )}
               >
-                {copy.agent.chat}
-              </Button>
-            </div>
-          </li>
-        )
-      })}
-    </ul>
+                <Checkbox
+                  id={cid}
+                  checked={on}
+                  disabled={mandatory || locked}
+                  // Locked on, not greyed out: every pick deploys it.
+                  className={cn('mt-0.5', mandatory && 'disabled:opacity-100')}
+                  onCheckedChange={() => setPicks((p) => togglePick(p, a.name, MANDATORY))}
+                />
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <Bot aria-hidden className="size-4" />
+                </span>
+                <span className={cn('flex min-w-0 flex-col gap-1', locked && 'opacity-60')}>
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">
+                    {a.name}
+                    {mandatory ? <Badge variant="info">{copy.agent.included}</Badge> : null}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{a.line}</span>
+                  <span className="text-xs text-muted-foreground tabular-nums">
+                    {copy.agent.record(a.runs, a.success)}
+                  </span>
+                </span>
+              </label>
+            </li>
+          )
+        })}
+      </ul>
+      <div>
+        <Button type="button" onClick={() => onDeploy(picks)}>
+          <Rocket aria-hidden />
+          {copy.agent.deploy(picks.length)}
+        </Button>
+      </div>
+    </fieldset>
   )
 }

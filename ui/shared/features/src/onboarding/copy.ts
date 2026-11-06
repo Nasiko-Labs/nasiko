@@ -151,14 +151,23 @@ export const copy = {
   },
   agent: {
     title: '1. Your first agent',
-    intro: 'Chat with one that is already running, or bring your own.',
-    try: 'Running now',
-    tryLabel: 'Agents running now',
-    noExample: 'Ask it what it can do.',
-    chat: 'Chat',
-    chatWith: (name: string) => `Chat with ${name}`,
-    // Chat waits for a key: with no Nasiko credits, an agent answers nothing without one.
-    needsKey: 'Add your key below to chat. Every agent calls the model with it.',
+    intro: 'Deploy prebuilt agents, or bring your own.',
+    // Pre-seeded agents to deploy, in place of chatting with a running one (meeting 2026-11-06).
+    seeded: 'Prebuilt',
+    seededLabel: 'Prebuilt agents to deploy',
+    seededLead: (max: number) =>
+      `Pick up to ${max}. The one with the best record is always included.`,
+    picked: (n: number, max: number) => `${n} of ${max} picked`,
+    full: 'Uncheck one to swap it for another.',
+    included: 'Always included',
+    record: (runs: number, success: number) =>
+      `${runs.toLocaleString('en-US')} runs · ${Math.round(success * 100)}% succeeded`,
+    deploy: (n: number) => (n === 1 ? 'Deploy 1 agent' : `Deploy ${n} agents`),
+    deploying: (names: readonly string[]) =>
+      names.length === 1
+        ? `${names[0]} is on its way. It shows up in Agents once it's running.`
+        : `${names.slice(0, -1).join(', ')} and ${names.at(-1)} are on their way. They show up in Agents once they're running.`,
+    openAgents: 'Open Agents',
     upload: 'Upload a zip',
     github: 'GitHub',
     registry: 'Registry',

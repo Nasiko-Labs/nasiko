@@ -344,6 +344,8 @@ export const ensureChatSeed = (ctx: ChatMockContext) => seed(ctx)
 function seed(ctx: ChatMockContext) {
   if (seeded) return
   seeded = true
+  // A workspace fresh from setup (`try-run`, mocks/tryRun.ts) has had no chats yet.
+  if (ctx.hasVariant?.('try-run')) return
   const now = ctx.now()
   const running = ctx.agents().filter((a) => a.running)
   const a = running[0]

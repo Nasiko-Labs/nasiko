@@ -53,6 +53,72 @@ export const minutesLeft = (n: number) =>
  *  passed (user request 2026-11-05: that step only). */
 export const CONTINUE_HOLD_SECONDS = 5
 
+/** A prebuilt agent the Agent and key step offers to deploy, with its record across workspaces. */
+export interface SeededAgent {
+  name: string
+  line: string
+  runs: number
+  /** Share of `runs` that succeeded, 0–1. */
+  success: number
+}
+
+/**
+ * The prebuilt agents (seed agent names, mocks/seed.ts). ponytail: a fixed list with demo figures, and deploying it
+ * only records the pick; a server list of seeded agents with their real run and usage metrics replaces both.
+ */
+export const SEEDED_AGENTS: readonly SeededAgent[] = [
+  {
+    name: 'Research Agent',
+    line: 'Digs into a topic and writes a sourced brief.',
+    runs: 4_820,
+    success: 0.97,
+  },
+  {
+    name: 'Support Bot',
+    line: 'Answers customer questions from your docs.',
+    runs: 6_100,
+    success: 0.71,
+  },
+  {
+    name: 'SQL Analyst',
+    line: 'Turns a question into SQL and explains the result.',
+    runs: 2_300,
+    success: 0.99,
+  },
+  {
+    name: 'Doc Writer',
+    line: 'Drafts and tidies docs from notes or code.',
+    runs: 1_950,
+    success: 0.93,
+  },
+  {
+    name: 'Summarizer',
+    line: 'Condenses long threads, calls and reports.',
+    runs: 3_400,
+    success: 0.9,
+  },
+  {
+    name: 'Meeting Notes',
+    line: 'Turns a transcript into decisions and actions.',
+    runs: 1_200,
+    success: 0.95,
+  },
+]
+
+/** How many prebuilt agents one pick deploys at most, the mandatory one included (meeting 2026-11-06). */
+export const MAX_SEEDED = 3
+
+/** The agent every pick includes: the most successful runs (runs × success), so heavy use with a poor record loses. */
+export const mandatoryAgent = (agents: readonly SeededAgent[]): SeededAgent =>
+  agents.reduce((best, a) => (a.runs * a.success > best.runs * best.success ? a : best))
+
+/** The picks after toggling `name`: the mandatory one never leaves, and the pick never grows past MAX_SEEDED. */
+export function togglePick(picks: readonly string[], name: string, mandatory: string): string[] {
+  if (name === mandatory) return [...picks]
+  if (picks.includes(name)) return picks.filter((p) => p !== name)
+  return picks.length >= MAX_SEEDED ? [...picks] : [...picks, name]
+}
+
 /** The guide opens on its own once per user (user request 2026-11-05): set when it does, and not under the drafts prefix,
  *  so sign-out keeps it and an unfinished guide never comes back by itself. The Setup guide still reopens it. */
 export const skipKey = (sub: string) => `openruntime.guideShown:${sub}`

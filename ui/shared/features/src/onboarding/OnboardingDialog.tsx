@@ -32,7 +32,6 @@ import { Progress } from '@nasiko/ui/primitives/progress'
 import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
 import { Spinner } from '@nasiko/ui/primitives/spinner'
 import type { DeployStarted } from '@nasiko/features/deploy/UploadTab'
-import { useConfigs } from '@nasiko/features/router/api'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useGuide, useSavePersona } from './api'
 import { AgentStep } from './AgentStep'
@@ -62,12 +61,12 @@ export function OnboardingDialog({
   const navigate = useNavigate()
   const guide = useGuide()
   const save = useSavePersona()
-  const configs = useConfigs()
   const [index, setIndex] = useState(STEPS.indexOf(initialStep))
   const [reached, setReached] = useState(index)
   const [persona, setPersona] = useState<Persona | null>(guide.persona)
   const [model, setModel] = useState<string | null>(null)
   const [agent, setAgent] = useState<DeployStarted | null>(null)
+  const [seeded, setSeeded] = useState<string[] | null>(null)
   const step = STEPS[index] ?? 'welcome'
   const primary = useRef<HTMLButtonElement>(null)
   const go = (i: number) => {
@@ -104,8 +103,6 @@ export function OnboardingDialog({
     if (persona === guide.persona) return next()
     save.mutate(persona, { onSuccess: next })
   }
-  // Nasiko provides no model credits, so an agent answers nothing until the user has a key of their own.
-  const hasKey = !!model || !!configs.data?.length
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -139,7 +136,7 @@ export function OnboardingDialog({
                   ? reached > 0
                   : id === 'role'
                     ? !!persona && persona === guide.persona
-                    : id === 'start' && (!!model || !!agent))
+                    : id === 'start' && (!!model || !!agent || !!seeded))
               return (
                 <Button
                   key={id}
@@ -224,18 +221,15 @@ export function OnboardingDialog({
               />
             ) : null}
             {/* The agent first, then the key (user request 2026-11-05). Continue needs only the hold: a user with no key
-                yet may go on (user request 2026-11-06); Chat still waits for one. */}
+                yet may go on (user request 2026-11-06). */}
             {step === 'start' ? (
               <div className="flex flex-col gap-10">
                 <StepHeading title={copy.start.title} intro={copy.start.intro} />
                 <AgentStep
                   started={agent}
                   onStarted={setAgent}
-                  hasKey={hasKey}
-                  onChat={(agent) => {
-                    onClose()
-                    void navigate({ to: '/chat', search: { agent } })
-                  }}
+                  seeded={seeded}
+                  onSeeded={setSeeded}
                   onLeave={onClose}
                 />
                 <ModelStep connected={model} onConnected={setModel} />

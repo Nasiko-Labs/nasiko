@@ -67,6 +67,8 @@ import { SetupGuide } from './components/SetupGuide'
 import { SetUpNow } from './components/SetUpNow'
 import { SummaryCard } from './components/SummaryCard'
 import { Spend } from './components/Spend'
+import { TryAgentRun } from './components/TryAgentRun'
+import { readDone, showTryRun } from './tryRun'
 import { FilterBar } from './components/FilterBar'
 import { copy } from './copy'
 import { useEstate, useProblemAction } from './estate/api'
@@ -235,6 +237,7 @@ function HeaderActions({
 // itself collapses (`empty:hidden`) when both step out; Recent chats spans the row.
 const FULL = '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12'
 const PLACE = {
+  tryRun: FULL,
   needs: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-8',
   health: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-4',
   burn: FULL,
@@ -470,7 +473,13 @@ function Overview({
         burn.pending ||
         chats.isPending))
   const [painted, setPainted] = useState(false)
-  if (!painted && !coldPending) setPainted(true)
+  // The try-a-run card, decided once at the first paint: it asks for a refresh after each run, so it must not vanish
+  // when its own run lands mid-visit.
+  const [tryRun, setTryRun] = useState(false)
+  if (!painted && !coldPending) {
+    setPainted(true)
+    setTryRun(!firstRun && showTryRun(readDone(me.sub), spend.totals?.runs ?? null))
+  }
   if (!painted && coldPending) {
     return (
       <Frame description={description} actions={actions}>
@@ -568,6 +577,8 @@ function Overview({
         <VillageLoading view={view === 'map' ? 'map' : 'village'} />
       )}
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
+        {/* Right after setup, before anything has run: the call to run the agent they picked, first in line. */}
+        {tryRun ? <TryAgentRun userId={me.sub} className={PLACE.tryRun} /> : null}
         <NeedsYou
           data={needsYou}
           now={now.getTime()}

@@ -570,6 +570,32 @@ export const copy = {
       return `${visible}: ${shown}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
     },
   },
+  /**
+   * The try-a-run card (components/TryAgentRun.tsx): the agent the viewer picked during setup, run once as it is, then
+   * the same task with Token optimization on. Simulated for now: the states play on a timer and the figures are the
+   * demo's, not read from the server.
+   */
+  tryRun: {
+    title: (agent: string) => `Your ${agent} is ready`,
+    lead: 'You picked it during setup. Give it a real task right here, then run the same task with Token optimization on and compare what it costs.',
+    requestLabel: 'Its first task',
+    /** The detailed request the run would send. */
+    request:
+      "Prepare my brief for Thursday's board meeting: last quarter's revenue, margin and cash runway against plan, the three biggest risks with what we're doing about each, how our two main competitors moved this quarter, and five questions the board is likely to ask, with a one-line answer to each. One page, plain language.",
+    baseline: 'Run it',
+    optimized: 'Run it optimized',
+    starting: 'Starting your agent…',
+    running: 'Running your agent…',
+    completed: 'Your agent completed',
+    baselineDone: (agent: string) => `Your ${agent} completed the run with 50 cents spent.`,
+    optimizedDone: (agent: string) =>
+      `Your ${agent} completed the same run with Token optimization on.`,
+    seeRun: 'See what it did',
+    refreshStats: "Refresh to see your agent's stats on Home.",
+    refreshOptimized: 'Refresh to see what optimization saved.',
+    nextStep: 'Next: run the same task with Token optimization on.',
+    refresh: 'Refresh',
+  },
   rating: {
     healthy: 'Healthy',
     watch: 'Watch',

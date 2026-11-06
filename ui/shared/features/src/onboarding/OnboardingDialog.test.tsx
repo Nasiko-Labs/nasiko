@@ -1,7 +1,7 @@
 /**
  * The first-run guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §2-§3, the Agent and key step from
  * 2026-11-04-quick-onboarding-design.md): a first-time user gets it on `/` with Home hidden; each step's Continue waits a
- * moment; the persona saves on Continue; one step opens a running agent in Chat and saves a default config; skipping
+ * moment; the persona saves on Continue; one step deploys prebuilt agents and saves a default config; skipping
  * lasts the session; the Coding harnesses step finishes on the role's page.
  */
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
@@ -225,25 +225,33 @@ describe('first-run guide', () => {
     expect(router.state.location.pathname).toBe('/')
   })
 
-  it('opens a running agent in Chat straight from the Agent and key step', async () => {
+  it('deploys up to three prebuilt agents, the one with the best record always included', async () => {
     firstTime()
     const user = userEvent.setup()
-    const { router } = renderApp('/')
+    renderApp('/')
     await guide()
     await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /product manager/i }))
     await advance(user)
-    // The seed user already has a model config, so Chat is on.
-    const running = await screen.findByRole('list', { name: 'Agents running now' })
-    expect(screen.queryByText(/Add your key below to chat/)).toBeNull()
-    const [first] = within(running).getAllByRole('button', { name: /^Chat with / })
-    await user.click(first!)
-    await waitFor(() => expect(router.state.location.pathname).toBe('/chat'))
-    expect(router.state.location.search).toMatchObject({ agent: expect.any(String) })
-    expect(screen.queryByRole('dialog')).toBeNull()
+    const picks = await screen.findByRole('group', { name: 'Prebuilt agents to deploy' })
+    const box = (name: RegExp) => within(picks).getByRole('checkbox', { name })
+    // The most successful runs, not the most runs: Research Agent, checked and locked.
+    expect(box(/Research Agent/)).toBeChecked()
+    expect(box(/Research Agent/)).toBeDisabled()
+    await user.click(box(/SQL Analyst/))
+    await user.click(box(/Summarizer/))
+    expect(within(picks).getByText(/3 of 3 picked/)).toBeInTheDocument()
+    expect(box(/Support Bot/)).toBeDisabled()
+    await user.click(within(picks).getByRole('button', { name: 'Deploy 3 agents' }))
+    const deployed = /^Research Agent, SQL Analyst and Summarizer are on their way/
+    expect(await screen.findByText(deployed)).toBeInTheDocument()
+    // The guide keeps it across steps.
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    await advance(user)
+    expect(await screen.findByText(deployed)).toBeInTheDocument()
   })
 
-  it('keeps Chat off until the user has a key, while Continue turns on after the hold anyway', async () => {
+  it('turns Continue on after the hold with no key yet', async () => {
     firstTime()
     server.use(
       http.get('*/api/llm-configs', () =>
@@ -256,27 +264,17 @@ describe('first-run guide', () => {
     await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
     await advance(user)
-    const running = await screen.findByRole('list', { name: 'Agents running now' })
-    expect(screen.getByText(/Add your key below to chat/)).toBeInTheDocument()
-    for (const b of within(running).getAllByRole('button', { name: /^Chat with / })) {
-      expect(b).toBeDisabled()
-    }
+    await screen.findByRole('heading', { name: '2. Your model key' })
     expect(screen.queryByRole('button', { name: 'Skip this step' })).toBeNull()
     // No key is no reason to stay (user request 2026-11-06): Continue waits out the hold, then turns on.
     off(screen.getByRole('button', { name: /continue/i }))
     await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
-    // A key connected here turns Chat on.
     await user.click(screen.getByRole('radio', { name: /anthropic/i }))
     await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-test')
     // A model the catalog doesn't list can be typed in, as the LLM router accepts.
     await user.type(screen.getByLabelText('Model'), 'claude-next')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
     await screen.findByText(/Connected · Anthropic/)
-    expect(screen.queryByText(/Add your key below to chat/)).toBeNull()
-    const again = screen.getByRole('list', { name: 'Agents running now' })
-    for (const b of within(again).getAllByRole('button', { name: /^Chat with / })) {
-      expect(b).toBeEnabled()
-    }
     on(screen.getByRole('button', { name: /continue/i }))
   })
 
@@ -296,26 +294,25 @@ describe('first-run guide', () => {
     expect(screen.getByText(/billed to the account that owns the key/)).toBeInTheDocument()
   })
 
-  it('opens on the deploy tabs when no agent is running', async () => {
+  it('opens on the prebuilt agents, then the deploy tabs', async () => {
     firstTime()
-    configureMocks({ variant: 'no-agents' })
     const user = userEvent.setup()
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
     await user.click(screen.getByRole('radio', { name: /developer/i }))
     await advance(user)
-    // Registry, GitHub, then Upload a zip; the first is open.
-    expect(await screen.findByRole('tab', { name: 'Registry' })).toHaveAttribute(
+    // Prebuilt, then Registry, GitHub and Upload a zip; the first is open.
+    expect(await screen.findByRole('tab', { name: 'Prebuilt' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Prebuilt',
       'Registry',
       'GitHub',
       'Upload a zip',
     ])
-    expect(screen.queryByRole('tab', { name: 'Running now' })).toBeNull()
   })
 
   it('never opens for a finished user or a server without the endpoint', async () => {

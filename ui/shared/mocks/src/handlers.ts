@@ -130,6 +130,8 @@ import {
 } from './codingAgents'
 import { checkZip, MAX_ZIP_BYTES } from '@nasiko/features/deploy/zipcheck'
 import { nameProblem } from '@nasiko/features/deploy/name'
+import { readDone, type TryRunKind } from '@nasiko/features/overview/tryRun'
+import { tryRunAgent, tryRunSavings, tryRunTraces } from './tryRun'
 import { parseVersion } from '@nasiko/features/deploy/version'
 import { DEFAULT_REGISTRY, parseReference } from '@nasiko/features/deploy/registry'
 import type { BuildStatus, UploadPipelineStatus } from '@nasiko/features/deploy/types'
@@ -140,7 +142,10 @@ import { PERSONAS, type Persona } from '@nasiko/features/onboarding/types'
 
 // Built on first use, so mock mode doesn't block first paint on seed generation.
 let seed: Seed | null = null
-const getSeed = (): Seed => (seed ??= generateSeed())
+const getSeed = (): Seed => {
+  const base = (seed ??= generateSeed())
+  return hasVariant('try-run') ? tryRunSeed(base) : base
+}
 let nowFn: () => number = () => Date.now()
 let loggedIn = true
 /** Browser mock only: remembers sign-in across reloads, like the server's cookie (QA ISSUE-003). */
@@ -231,6 +236,7 @@ const PAGE_VARIANTS: readonly string[] = [
   ...AGENTS_ONBOARDING_VARIANTS,
   'village-unlimited',
   'overview-bare',
+  'try-run',
 ]
 
 /**
@@ -326,6 +332,9 @@ export const MOCK_VARIANTS = [
   'overview-bare',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
+  // Home's try-a-run card (mocks/tryRun.ts): a workspace with no activity until the card's simulated runs, each of
+  // which then shows in the spend, token and savings reads. Combines: `?mock=onboarding-done,try-run`.
+  'try-run',
   ...CHAT_PAGE_VARIANTS,
   ...ROUTER_PAGE_VARIANTS,
   ...BUDGETS_PAGE_VARIANTS,
@@ -374,8 +383,10 @@ let fixedPageVariants = new Set<string>()
 
 // Harnesses: its own seed (T1) and the viewer persona (`?as=<seed-username>`, mock only).
 let harnessSeed: HarnessSeed | null = null
-const getHarnessSeed = (): HarnessSeed =>
-  (harnessSeed ??= generateHarnessSeed({ anchor: new Date(nowFn()) }))
+const getHarnessSeed = (): HarnessSeed => {
+  const base = (harnessSeed ??= generateHarnessSeed({ anchor: new Date(nowFn()) }))
+  return hasVariant('try-run') ? freshHarnessSeed(base) : base
+}
 let fixedPersona: string | null = null
 let personaLocked = false
 
@@ -484,6 +495,40 @@ const getFinopsSeed = (): Seed => {
   if (hasVariant('no-spend')) return (finops.empty ??= { ...finops.merged, traces: [] })
   return finops.merged
 }
+/** When this mock first saw each try-a-run run done: its trace's time, kept so a refresh never moves it. */
+let tryRunAt: Partial<Record<TryRunKind, number>> = {}
+let tryRunMemo: { base: Seed; key: string; seed: Seed } | null = null
+const tryRunDone = () => readDone(viewer().id)
+/**
+ * The `try-run` workspace (mocks/tryRun.ts): a user who just finished setup, so the fleet is the one agent they picked
+ * and its activity is only the try-a-run card's runs. Memoised per base seed and set of runs, so reads agree.
+ */
+function tryRunSeed(base: Seed): Seed {
+  const done = tryRunDone()
+  for (const k of done) tryRunAt[k] ??= nowFn()
+  const key = done.join()
+  if (tryRunMemo?.base !== base || tryRunMemo.key !== key) {
+    const agent = tryRunAgent(base)
+    tryRunMemo = {
+      base,
+      key,
+      seed: {
+        ...base,
+        agents: agent ? [agent] : [],
+        traces: tryRunTraces(base, done, tryRunAt),
+        sessions: base.sessions.filter((x) => x.agent_id === agent?.id),
+      },
+    }
+  }
+  return tryRunMemo.seed
+}
+/** No coding harnesses yet in the `try-run` workspace: its users stay (the viewer is one), their harnesses don't. */
+let tryRunHarness: { base: HarnessSeed; seed: HarnessSeed } | null = null
+function freshHarnessSeed(base: HarnessSeed): HarnessSeed {
+  if (tryRunHarness?.base !== base)
+    tryRunHarness = { base, seed: { ...base, agents: [], sessions: [] } }
+  return tryRunHarness.seed
+}
 // Deploy: builds and uploads derived from the agents state, rebuilt with it (plans/feat-deploy.md §9).
 let deployState: DeployState | null = null
 const getDeploy = (): DeployState => (deployState ??= buildDeployState(getAgents(), nowFn()))
@@ -525,11 +570,11 @@ export const mcpMockState = (): McpState => getMcp()
 let workflowsState: WorkflowsState | null = null
 let workflowsKey = ''
 function getWorkflows(): WorkflowsState {
-  const key = String(hasVariant('workflows-empty'))
+  // A workspace fresh from setup (`try-run`) has no workflows yet, and none of the seed agents they'd call.
+  const empty = hasVariant('workflows-empty') || hasVariant('try-run')
+  const key = String(empty)
   if (!workflowsState || workflowsKey !== key) {
-    workflowsState = buildWorkflowsState(getAgents(), getSeed(), ADMIN_ID, nowFn(), {
-      empty: hasVariant('workflows-empty'),
-    })
+    workflowsState = buildWorkflowsState(getAgents(), getSeed(), ADMIN_ID, nowFn(), { empty })
     workflowsKey = key
   }
   return workflowsState
@@ -635,6 +680,9 @@ export function resetAgentsMock() {
   resetOptimizationMock()
   resetChatMock()
   resetOverviewMock()
+  tryRunAt = {}
+  tryRunMemo = null
+  tryRunHarness = null
   // The chat knobs tests can turn (v1c DX3).
   fixedSuperuser = null
   fixedPageVariants = new Set()
@@ -1489,7 +1537,8 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
         // page's Mechanisms counts follow the same switches as its other blocks. The rest is the fixed sample.
-        const s = savings()
+        const demo = hasVariant('try-run')
+        const s = demo ? tryRunSavings(savings(), getSeed(), tryRunDone()) : savings()
         // `no-spend` has no traces, so nothing was optimized and nothing could be: zero, so the Overview's lead card
         // shows its "Did you know?" instead of the band.
         if (hasVariant('no-spend'))
@@ -1528,7 +1577,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return {
           ...s,
           by_agent: savingsByAgent(
-            [...s.by_agent, ...seedSavingsRows(params(request))],
+            demo ? s.by_agent : [...s.by_agent, ...seedSavingsRows(params(request))],
             params(request),
           ),
           coverage: {
@@ -2347,8 +2396,10 @@ const chatCtx: ChatMockContext = {
     )
     return h ? { id: h.id, name: h.name } : null
   },
+  // The chat page's variants, and the `try-run` workspace (no seeded chats).
   hasVariant: (v) =>
-    (CHAT_PAGE_VARIANTS as readonly string[]).includes(v) && hasVariant(v as MockVariant),
+    ([...CHAT_PAGE_VARIANTS, 'try-run'] as readonly string[]).includes(v) &&
+    hasVariant(v as MockVariant),
   superuser,
 }
 handlerGroups.chat = chatHandlers(chatCtx)
