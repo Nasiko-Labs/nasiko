@@ -16,6 +16,21 @@ irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
 
 Then check it: `nasiko --version`.
 
+## Signing in
+
+The published CLI talks to the hosted Nasiko control plane until you connect another one, so the next step is:
+
+```console
+$ nasiko auth login
+```
+
+It signs you in through the control plane's SSO in your browser (`--password` for a username and password
+instead), then offers to connect the coding agents it finds on this machine. `nasiko connect <url>` switches to
+your own control plane.
+
+The default is baked in at build time from `NASIKO_CLOUD_URL`; a CLI built from source has none and starts with
+`nasiko connect <url>`. Setting `NASIKO_CLOUD_URL` when running the CLI overrides it.
+
 ## What the installer does
 
 The CLI is published to the Nasiko registry as one multi-platform artifact, `nasiko/nasiko`, with a build for
