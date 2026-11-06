@@ -79,8 +79,8 @@ pub struct McpConnector {
     /// A `provider_type = 'system'` connector with this true is enabled for every
     /// agent by default — unioned into each agent's enabled set at the gateway's
     /// sole [`crate::permissions::PermissionContext`] builder
-    /// (`load_permission_context`), independent of any `mcp_agent_connector_access`
-    /// row. Non-system rows carry it as `false` and it has no effect on them.
+    /// (`load_permission_context`), unless the agent has an `mcp_agent_connector_access`
+    /// row switching it off. Non-system rows carry it as `false` and it has no effect on them.
     pub auto_enable: bool,
     // uploaded_build-only
     pub build_status: Option<String>,
