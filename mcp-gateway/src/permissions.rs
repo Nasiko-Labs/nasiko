@@ -158,22 +158,13 @@ pub async fn load_permission_context(
         .collect();
     // Default-on system connectors: a `provider_type = 'system'` connector with
     // `auto_enable = true` the agent's owner can reach is enabled for this agent
-    // without any `mcp_agent_connector_access` row. A union at this one chokepoint —
-    // the set feeds both `tools/list` (aggregator) and `tools/call` (protocol)
-    // through `decide`, and `compute_hash` below folds the unioned ids so the
-    // manifest cache busts correctly. An access row that switches the connector
-    // off wins over the default, or the connector could never be turned off.
-    let switched_off: HashSet<Uuid> = rows
-        .iter()
-        .filter(|r| !r.enabled)
-        .map(|r| r.connector_id)
-        .collect();
-    enabled_connectors.extend(
-        repo::list_auto_enabled_system_connector_ids(&state.db, agent_id)
-            .await?
-            .into_iter()
-            .filter(|id| !switched_off.contains(id)),
-    );
+    // without any `mcp_agent_connector_access` row. A PURE ADDITIVE UNION at this
+    // one chokepoint — the set feeds both `tools/list` (aggregator) and
+    // `tools/call` (protocol) through `decide`, and `compute_hash` below folds the
+    // unioned ids so the manifest cache busts correctly. Nothing else changes: an
+    // existing access row's meaning, `decide`, and `get_stance` are untouched.
+    enabled_connectors
+        .extend(repo::list_auto_enabled_system_connector_ids(&state.db, agent_id).await?);
     let mut rules = Vec::new();
     for row in &rows {
         for tr in parse_tool_rules(&row.tool_rules) {
@@ -375,19 +366,23 @@ pub async fn set_connector_access_view(
     .await?;
     invalidate_permission_cache(state, agent_id).await;
     if enabled {
-        tokio::spawn(sync_catalog_if_empty(state.clone(), user_id, connector_id));
+        tokio::spawn(sync_catalog_after_enable(
+            state.clone(),
+            user_id,
+            connector_id,
+        ));
     }
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
 }
 
-/// Fill a never-synced connector's tool catalog. Search and the connector list find a
-/// connector's tools only once they are in the catalog, and enabling a connector on an agent
-/// (`nasiko mcp agent tools enable`) or connecting an account is often the only step a caller
-/// takes — nothing else guarantees the tool list is ever opened. Runs off the request, since a
-/// live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the toggle or connection is already
-/// saved, so an unreachable backend only logs, and the tool list view retries the sync on its
-/// next read.
-pub async fn sync_catalog_if_empty(state: McpState, user_id: Uuid, connector_id: Uuid) {
+/// Fill a never-synced connector's tool catalog when it is enabled on an agent.
+/// Search finds a connector's tools only once they are in the catalog, and
+/// enabling (`nasiko mcp agent tools enable`) is often the only step a caller
+/// takes — nothing else guarantees the tool list is ever opened. Runs off the
+/// request, since a live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the
+/// toggle is already saved, so an unreachable backend only logs, and the tool
+/// list view retries the sync on its next read.
+async fn sync_catalog_after_enable(state: McpState, user_id: Uuid, connector_id: Uuid) {
     let synced = match repo::list_connector_tools(&state.db, connector_id).await {
         Ok(catalog) if !catalog.is_empty() => return,
         Ok(_) => sync_connector_tools(&state, user_id, connector_id).await,
@@ -753,8 +748,9 @@ pub struct ToolRuleInput {
     pub stance: String,
 }
 
-/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates
-/// + dedupes each connector's rules, and upserts (preserving `enabled`).
+/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates and dedupes
+/// each connector's rules, and upserts them, preserving `enabled`. An agent with no access row
+/// yet gets one that is not enabled: setting a rule is not enabling.
 pub async fn bulk_update_tools(
     state: &McpState,
     user_id: Uuid,
@@ -792,7 +788,7 @@ pub async fn bulk_update_tools(
         let enabled = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
             .await?
             .map(|r| r.enabled)
-            .unwrap_or(true);
+            .unwrap_or(false);
         let tool_rules: Vec<ToolRule> = patterns
             .iter()
             .map(|(p, s)| ToolRule {
