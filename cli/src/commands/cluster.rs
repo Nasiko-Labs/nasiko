@@ -10,7 +10,7 @@ use crate::commands::local_agents;
 use crate::config;
 
 /// Resolves `connect`'s TARGET, `--url` and `--name` into the URL to register and the name
-/// given for it (`None` derives one). Accepts the same forms as `nasiko-ee connect`:
+/// given for it (`None` derives one). Accepts three forms:
 /// `connect <url> [--name <name>]`, `connect <name> --url <url>` and `connect --url <url>`.
 pub fn control_plane_to_register(
     target: Option<String>,

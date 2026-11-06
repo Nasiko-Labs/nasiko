@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_connect_like_nasiko_ee() {
+    fn parses_connect_with_name_and_url() {
         let cli = Cli::try_parse_from([
             "nasiko",
             "connect",

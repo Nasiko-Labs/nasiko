@@ -2,8 +2,8 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
-# Three binaries share this package (the server and two demo seeders); `cargo run -p nasiko-server`
-# means the server, as `default-run` does for nasiko-server-ee.
+# Three binaries share this package (the server and two demo seeders); `default-run` makes
+# `cargo run -p nasiko-server` mean the server.
 default-run = "nasiko-server"
 
 [lib]
