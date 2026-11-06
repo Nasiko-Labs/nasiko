@@ -314,8 +314,19 @@ export const copy = {
     setupTitle: 'Setup',
     setupCount: (n: number) => `${n} to set up`,
     /** Setup items: a step while the thing isn't set up (`title`, `detail`, `action`); once it is, its name, how many
-     *  exist and where to manage them (`doneTitle`, `done`, `manage`). */
+     *  exist and where to manage them (`doneTitle`, `done`, `manage`). The canvases' setup steps (`estate/setup.ts`)
+     *  reuse them, and add the two only the estate can tell: a first call, and a coding harness. */
     setup: {
+      chat: {
+        title: 'Chat with an agent',
+        detail: 'The first call brings in spend, models and traces.',
+        action: 'Chat',
+      },
+      harness: {
+        title: 'Connect a coding harness',
+        detail: 'Claude Code, Codex and Cursor sessions, with what each costs.',
+        action: 'Connect',
+      },
       router: {
         title: 'Add an LLM router config',
         detail: 'One key per provider for every agent; swap models without a redeploy.',

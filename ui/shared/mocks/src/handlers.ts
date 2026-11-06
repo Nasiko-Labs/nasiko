@@ -230,6 +230,7 @@ const PAGE_VARIANTS: readonly string[] = [
   ...BUDGETS_PAGE_VARIANTS,
   ...AGENTS_ONBOARDING_VARIANTS,
   'village-unlimited',
+  'overview-bare',
 ]
 
 /**
@@ -320,6 +321,9 @@ export const MOCK_VARIANTS = [
   // the page builds its smaller map), or a quiet estate with no problems (the healthy state).
   'overview-absent',
   'overview-quiet',
+  // Overview: agents deployed and nothing else yet (the village's and the Map's empty states). Combines with others
+  // (`?mock=onboarding-done,overview-bare,no-spend`), so it is a page variant.
+  'overview-bare',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
   ...CHAT_PAGE_VARIANTS,
@@ -2356,6 +2360,7 @@ handlerGroups.overview = overviewHandlers({
   now: () => nowFn(),
   absent: () => hasVariant('overview-absent'),
   quiet: () => hasVariant('overview-quiet'),
+  bare: () => hasVariant('overview-bare'),
   unlimited: () => hasVariant('village-unlimited'),
   agents: () => getAgents().agents,
   harness: harnessData,
