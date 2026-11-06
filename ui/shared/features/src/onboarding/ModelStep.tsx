@@ -2,10 +2,13 @@
  * The Agent and key step's second half (bring your own key: every model call is billed to it): pick a built-in provider and save its key as
  * the caller's default LLM config, through the router's own `useSaveConfig` (key hygiene as there: the mutation keeps
  * nothing and resets on unmount; the key is never read back). "Where do I get a key?" above the field opens the steps.
+ * Then the model, the LLM router's own field (`SuggestInput`: the provider's catalog models as suggestions, any name
+ * accepted): never guessed, since a catalog's first model isn't always one the key can call (user 2026-11-06).
  */
 import { CircleCheck, CircleHelp, Eye, EyeOff, KeyRound, Lock, TriangleAlert } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { PanelError } from '@nasiko/ui/composites/panel'
+import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Field, FieldLabel } from '@nasiko/ui/primitives/field'
@@ -51,21 +54,21 @@ export function ModelStep({
   const [key, setKey] = useState('')
   // The eye beside the key, as on the login page's password: to check a paste before Connect.
   const [showKey, setShowKey] = useState(false)
-  const [empty, setEmpty] = useState(false)
+  const [model, setModel] = useState('')
+  const [empty, setEmpty] = useState<'key' | 'model' | null>(null)
+  const models = providers.find((p) => p.provider === provider)?.models ?? []
 
   const connect = () => {
     if (!provider) return
-    if (!key.trim()) return setEmpty(true)
-    // The server needs a model (or tier models) on every config: the provider's first catalog model, changeable later
-    // in the LLM router.
-    const model = providers.find((p) => p.provider === provider)?.models[0] ?? null
+    if (!key.trim()) return setEmpty('key')
+    if (!model.trim()) return setEmpty('model')
     save.mutate(
       {
         mode: 'create',
         body: {
           name: `${provider}-setup`,
           provider,
-          model,
+          model: model.trim(),
           api_key_secret_name: defaultSecretName(provider),
           secret_value: key.trim(),
           is_default: true,
@@ -74,7 +77,7 @@ export function ModelStep({
       {
         onSuccess: () => {
           setKey('')
-          onConnected(model ? `${providerName(provider)} · ${model}` : providerName(provider))
+          onConnected(`${providerName(provider)} · ${model.trim()}`)
         },
       },
     )
@@ -101,6 +104,8 @@ export function ModelStep({
             value={provider ?? ''}
             onValueChange={(v) => {
               setPicked(v)
+              // Another provider's model names don't carry over.
+              setModel('')
               save.reset()
             }}
             className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3"
@@ -132,35 +137,53 @@ export function ModelStep({
                 </FieldLabel>
                 <KeyHelp provider={provider} />
               </div>
+              <InputGroup className="h-10">
+                <InputGroupAddon>
+                  <KeyRound aria-hidden />
+                </InputGroupAddon>
+                <InputGroupInput
+                  id={`${ids}-key`}
+                  type={showKey ? 'text' : 'password'}
+                  placeholder={copy.model.placeholder[provider] ?? copy.model.placeholderOther}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={key}
+                  onChange={(e) => {
+                    setKey(e.target.value)
+                    setEmpty(null)
+                  }}
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    size="icon-sm"
+                    aria-label={copy.model.showKey}
+                    aria-pressed={showKey}
+                    aria-controls={`${ids}-key`}
+                    onClick={() => setShowKey((v) => !v)}
+                  >
+                    {showKey ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
+            </Field>
+          ) : null}
+          {provider ? (
+            <Field className="gap-2">
+              <FieldLabel htmlFor={`${ids}-model`}>{copy.model.model}</FieldLabel>
               <div className="flex gap-2">
-                <InputGroup className="h-10">
-                  <InputGroupAddon>
-                    <KeyRound aria-hidden />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    id={`${ids}-key`}
-                    type={showKey ? 'text' : 'password'}
-                    placeholder={copy.model.placeholder[provider] ?? copy.model.placeholderOther}
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={key}
-                    onChange={(e) => {
-                      setKey(e.target.value)
-                      setEmpty(false)
-                    }}
-                  />
-                  <InputGroupAddon align="inline-end">
-                    <InputGroupButton
-                      size="icon-sm"
-                      aria-label={copy.model.showKey}
-                      aria-pressed={showKey}
-                      aria-controls={`${ids}-key`}
-                      onClick={() => setShowKey((v) => !v)}
-                    >
-                      {showKey ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
-                    </InputGroupButton>
-                  </InputGroupAddon>
-                </InputGroup>
+                <SuggestInput
+                  id={`${ids}-model`}
+                  className="h-10 flex-1"
+                  suggestions={models}
+                  value={model}
+                  placeholder={copy.model.modelPlaceholder}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onValueChange={(m) => {
+                    setModel(m)
+                    setEmpty(null)
+                  }}
+                />
                 <Button
                   type="button"
                   variant="outline"
@@ -183,7 +206,7 @@ export function ModelStep({
           {empty ? (
             <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
               <TriangleAlert aria-hidden className="size-4" />
-              {copy.model.keyEmpty}
+              {empty === 'key' ? copy.model.keyEmpty : copy.model.modelEmpty}
             </p>
           ) : null}
           {save.isError ? (

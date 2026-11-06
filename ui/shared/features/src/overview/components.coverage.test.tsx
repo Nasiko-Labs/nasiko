@@ -299,6 +299,16 @@ describe('Spend', () => {
       '/workflows',
     )
     unmount()
+    // The Overview's rule (user 2026-11-06): with nothing to show, the card isn't drawn at all.
+    const hidden = renderInRouter(
+      <>
+        <MonthBar spend={empty} />
+        <Spend now={Date.parse('2026-03-20T15:00:00Z')} spend={empty} hideEmpty />
+      </>,
+    )
+    await screen.findByText(copy.spend.noSpendYet)
+    expect(document.querySelector('[data-testid="overview-spend"]')).toBeNull()
+    hidden.unmount()
     renderInRouter(<MonthBar spend={spendData()} />)
     expect(await screen.findByTestId('overview-forecast')).toHaveTextContent(
       /^Forecast from day \d+$/,

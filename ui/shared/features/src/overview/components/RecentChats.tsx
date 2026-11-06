@@ -28,11 +28,14 @@ export function RecentChats({
   username,
   now,
   className,
+  hideEmpty = false,
 }: {
   byId: ReadonlyMap<string, Agent>
   username: string
   now: number
   className?: string
+  /** The Overview's rule (user 2026-11-06): with nothing to show, render nothing instead of the quiet state. */
+  hideEmpty?: boolean
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null)
   const chats = useChatSessions()
@@ -40,6 +43,7 @@ export function RecentChats({
     .map((r) => ({ row: r, who: chatIdentity(r, byId, username) }))
     .filter((c) => c.who.kind !== 'recorded')
     .slice(0, RECENT_SESSION_ROWS)
+  if (hideEmpty && !chats.isPending && !chats.isError && !rows.length) return null
   return (
     <Card
       id="overview-chats"

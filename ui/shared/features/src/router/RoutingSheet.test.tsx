@@ -115,7 +115,7 @@ describe('choices', () => {
     renderApp('/router')
     await ready()
     let sheet = await openSheet('Doc Writer')
-    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'claude-sonnet-4')
+    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'claude-sonnet-4{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
     await within(sheet).findByText(copy.savedPlan('Doc Writer'))
     await userEvent.click(within(sheet).getByRole('button', { name: copy.done }))
@@ -296,7 +296,7 @@ describe('session', () => {
         () => new Response('session expired', { status: 401 }),
       ),
     )
-    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'gpt-4o')
+    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'gpt-4o{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
     expect(router.state.location.search).toMatchObject({ expired: true })

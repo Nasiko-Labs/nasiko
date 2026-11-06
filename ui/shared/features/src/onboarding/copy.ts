@@ -117,6 +117,9 @@ export const copy = {
     >,
     placeholderOther: 'Paste your API key',
     showKey: 'Show key',
+    // The provider's catalog models as suggestions, or any name typed in (the LLM router's field, SuggestInput).
+    model: 'Model',
+    modelPlaceholder: 'Pick or type a model',
     // Where each provider creates keys; the ? beside the key field links it.
     keyPage: {
       openai: 'https://platform.openai.com/api-keys',
@@ -140,6 +143,7 @@ export const copy = {
     connected: (what: string) =>
       `Connected · ${what} is now your default model through the gateway`,
     keyEmpty: 'Paste a key first.',
+    modelEmpty: 'Pick a model first.',
     vault: 'The key is saved as one of your secrets and never shown again.',
     noProviders: 'No model providers are available on this server yet.',
     loadFailed: 'the model providers',

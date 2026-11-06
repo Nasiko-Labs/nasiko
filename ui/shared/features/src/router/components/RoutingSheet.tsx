@@ -11,11 +11,11 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { PrevNext } from '@nasiko/ui/composites/prev-next'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Field, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
-import { Input } from '@nasiko/ui/primitives/input'
 import { Label } from '@nasiko/ui/primitives/label'
 import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
 import {
@@ -248,7 +248,6 @@ function Body({
   // Seeded once from the routing at open (never re-seeded under the user).
   const {
     control,
-    register,
     setValue,
     formState: { isDirty },
   } = useForm<Form>({
@@ -488,19 +487,22 @@ function Body({
                 {copy.overrideModel}
               </FieldLabel>
               <div className="flex gap-2">
-                <Input
-                  id={`${ids}-override`}
-                  list={`${ids}-models`}
-                  {...register('override')}
-                  placeholder={copy.overridePlaceholder}
-                />
-                <datalist id={`${ids}-models`}>
-                  {(catalog ?? []).flatMap((g) =>
-                    g.models.map((m) => (
-                      <option key={`${g.provider}/${m.model}`} value={m.model} />
-                    )),
+                <Controller
+                  control={control}
+                  name="override"
+                  render={({ field }) => (
+                    <SuggestInput
+                      id={`${ids}-override`}
+                      className="flex-1"
+                      suggestions={(catalog ?? []).flatMap((g) => g.models.map((m) => m.model))}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                      placeholder={copy.overridePlaceholder}
+                    />
                   )}
-                </datalist>
+                />
                 {override ? (
                   <Button
                     className="pointer-coarse:min-h-11"

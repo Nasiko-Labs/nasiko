@@ -27,7 +27,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'nav-fleet',
       side: 'right',
       title: 'Fleet',
-      body: 'Your agents, workflows and coding harnesses.',
+      body: 'Your agents, coding harnesses and workflows.',
     },
     {
       target: 'nav-observe',
@@ -60,7 +60,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   overview: [
     {
       title: 'Home',
-      body: 'Your fleet at a glance: what it costs, what needs you and how healthy each agent is.',
+      body: 'Your fleet at a glance: what it costs, what needs your attention and how healthy each agent is.',
     },
     {
       target: 'overview-views',
@@ -94,8 +94,8 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     },
     {
       target: 'overview-needs',
-      title: 'Needs you',
-      body: 'Agents that need action, requests waiting for your answer and failed sessions, worst first.',
+      title: 'Needs your attention',
+      body: 'Agents that need action, requests waiting for your answer and failed sessions, worst first, then what is left to set up.',
     },
     {
       target: 'overview-health',
@@ -123,8 +123,9 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Pick a conversation up where you left it.',
     },
     {
+      // The empty fleet's panel (SetUpNow.tsx); the summary has no Quick actions since 2026-11-06.
       target: 'overview-actions',
-      title: 'Quick actions',
+      title: 'Works before your first agent',
       body: 'Start a chat, ask the Orchestrator or set up what agents need, from here.',
     },
   ],

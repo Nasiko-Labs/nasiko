@@ -214,7 +214,7 @@ describe('configs', () => {
     const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
     await userEvent.type(within(sheet).getByLabelText(copy.fieldName), 'my-default')
     await choose(within(sheet).getByLabelText(copy.fieldProvider), 'anthropic')
-    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'claude-sonnet-4')
+    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'claude-sonnet-4{Tab}')
     expect(within(sheet).getByRole('checkbox', { name: copy.useAsDefault })).toBeChecked()
     const save = within(sheet).getByRole('button', { name: copy.save })
     await userEvent.dblClick(save)

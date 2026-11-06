@@ -15,11 +15,13 @@ import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { copy } from './copy'
+import { DEFAULT_RANGE, RANGE_DAYS } from './search'
 import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, SAVED_BARS } from './tuning'
 
 setupPinnedSeed()
 afterEach(() => {
-  configureMocks({ seed, now, loggedIn: true, superuser: null, variant: null })
+  configureMocks({ seed, now, loggedIn: true, superuser: null, variant: null, routerVariants: [] })
+  window.history.replaceState(null, '', '/')
   configureChatMock({ waiting: false })
   clearChatRegistry()
 })
@@ -142,7 +144,7 @@ describe('Fleet health', () => {
   })
 })
 
-describe('Needs you', () => {
+describe('Needs your attention', () => {
   const needs = () => card('overview-needs')
   const settled = async () => {
     await loaded()
@@ -232,7 +234,8 @@ describe('Needs you', () => {
       .filter((li) => li.querySelector('[data-kind="request"]'))
     expect(rows.length).toBeGreaterThan(0)
     expect(within(needs()).queryByRole('link', { name: 'Open flow' })).toBeNull()
-    expect(within(needs()).queryByText(/flows/i)).toBeNull()
+    // The word, not "Workflows" (the setup item).
+    expect(within(needs()).queryByText(/\bflows\b/i)).toBeNull()
   })
 
   it('a normal user gets one "outside Chat" row for requests no chat claims (eng R5)', async () => {
@@ -270,7 +273,7 @@ describe('first run (design 7A)', () => {
     // The guide fills the hero's right half (redesign 2026-10-21), not a card of its own; no range with nothing to range.
     expect(card('overview-first-run')).toContainElement(guideCard)
     expect(screen.queryByRole('group', { name: copy.range.label })).toBeNull()
-    // One next action: Deploy beside the headline; the header's Setup guide and Quick actions' Deploy step aside.
+    // One next action: Deploy beside the headline; the header's Setup guide steps aside.
     expect(screen.getAllByRole('link', { name: deployCopy.entry.label })).toHaveLength(1)
     expect(screen.queryByRole('button', { name: copy.setup.button })).toBeNull()
     expect(within(card('overview-actions')).queryByRole('button', { name: /Copy/ })).toBeNull()
@@ -357,6 +360,8 @@ describe('first run (design 7A)', () => {
     const paths = rec.urls.map((u) => u.pathname)
     expect(paths.filter((p) => p.includes('/finops/'))).toEqual([])
     expect(paths.filter((p) => p.includes('/session/'))).toEqual([])
+    // Setup steps belong to Needs your attention, which the first run doesn't have (2026-11-05).
+    expect(paths.filter((p) => p.includes('/maf/workflows'))).toEqual([])
   })
 })
 
@@ -413,7 +418,7 @@ describe('Coding harnesses', () => {
     ).toBeInTheDocument()
   })
 
-  it('labels cost as an estimate at API list price', async () => {
+  it('labels harness cost as value at API prices, not a charge', async () => {
     renderApp('/')
     expect(
       await within(await screen.findByTestId('overview-harnesses')).findByText(
@@ -425,25 +430,21 @@ describe('Coding harnesses', () => {
 
 describe('Budgets', () => {
   // Budgets hidden (no server support for /api/budgets yet, R-L10): un-skip with the commented budget code.
-  it.skip('shows the card and Adjust budget when the server has budgets', async () => {
+  it.skip('shows the card when the server has budgets', async () => {
     renderApp('/')
     await loaded()
     expect(
       await within(card('overview-budget')).findByText(copy.budget.forecast, {}, { timeout: 5000 }),
     ).toBeInTheDocument()
-    expect(
-      within(card('overview-actions')).getByRole('link', { name: copy.actions.adjustBudget }),
-    ).toHaveAttribute('href', '/router#router-budgets')
   })
 
-  it('hides both on a server without budgets (a bare 404); Recent sessions sits beside Fleet health', async () => {
+  it('hides it on a server without budgets (a bare 404); Recent sessions sits beside Saved tokens', async () => {
     server.use(http.get('*/api/budgets', () => new HttpResponse(null, { status: 404 })))
     renderApp('/')
     await loaded()
     await waitFor(() => expect(card('overview-budget')).toBeNull())
-    const actions = card('overview-actions')
-    expect(within(actions).queryByRole('link', { name: copy.actions.adjustBudget })).toBeNull()
-    expect(card('overview-sessions').className).toContain('@[1100px]/overview:col-span-7')
+    expect(card('overview-sessions').className).toContain('@[1100px]/overview:flex-7')
+    expect(card('overview-sessions').parentElement).toBe(card('overview-saved').parentElement)
   })
 })
 
@@ -457,11 +458,11 @@ describe('structure (design 14A)', () => {
       'overview-savings',
       'overview-needs',
       'overview-health',
+      'overview-harness-activity',
       'overview-spend',
       'overview-sessions',
       'overview-saved',
       'overview-chats',
-      'overview-actions',
     ]
     for (const id of ids) {
       const c = card(id)
@@ -508,6 +509,8 @@ describe('Savings', () => {
       'href',
       '/tokenops?open=optimize',
     )
+    // The band fills the lead card's foot: no tip beside it.
+    expect(screen.queryByTestId('overview-tip')).toBeNull()
   })
 
   it('the breakdown link lands on the optimization section', async () => {
@@ -630,6 +633,127 @@ describe('Savings', () => {
     renderApp('/')
     await screen.findByTestId('kpi-spend')
     expect(screen.queryByTestId('overview-savings')).toBeNull()
+    // The band's slot takes a tip instead (user 2026-11-06), even beside tiles with figures.
+    expect(document.querySelector('[data-tour="overview-summary"]')).toContainElement(
+      screen.getByTestId('overview-tip'),
+    )
+    // Nothing saved by any agent: Saved tokens steps out (user 2026-11-06) and Recent sessions takes its row.
+    await waitFor(() => expect(card('overview-saved')).toBeNull())
+    expect(card('overview-sessions')).toBeInTheDocument()
+  })
+})
+
+describe('setup items (2026-11-05)', () => {
+  it('turns what isn’t set up into steps and keeps what is, with its count and where to manage it', async () => {
+    configureMocks({ variant: 'mcp-empty', routerVariants: ['router-empty'] })
+    renderApp('/')
+    await loaded()
+    const steps = await within(card('overview-needs')).findByTestId('needs-setup')
+    expect(
+      within(steps).getByRole('link', { name: copy.needs.setup.router.action }),
+    ).toHaveAttribute('href', '/router')
+    expect(within(steps).getByRole('link', { name: copy.needs.setup.mcp.action })).toHaveAttribute(
+      'href',
+      '/mcp',
+    )
+    // The seed has workflows: the item stays, saying so, and opens them.
+    expect(steps).toHaveTextContent(copy.needs.setup.workflows.doneTitle)
+    expect(steps).toHaveTextContent(/\d+\+? workflows? deployed/)
+    expect(
+      within(steps).getByRole('link', { name: copy.needs.setup.workflows.manage }),
+    ).toHaveAttribute('href', '/workflows')
+    expect(card('overview-needs')).toHaveTextContent(copy.needs.setupCount(2))
+  })
+
+  it('keeps all three when everything is set up, with nothing counted as left', async () => {
+    renderApp('/')
+    await loaded()
+    const steps = await within(card('overview-needs')).findByTestId('needs-setup')
+    expect(steps.querySelectorAll('[data-kind="setup"][data-done="true"]')).toHaveLength(3)
+    expect(card('overview-needs')).not.toHaveTextContent(/to set up/)
+  })
+})
+
+describe('lower cards with nothing to show (user 2026-11-06)', () => {
+  it('step out, and a row whose cards all stepped out leaves no gap', async () => {
+    configureMocks({ variant: 'empty' })
+    renderApp('/')
+    await loaded()
+    await waitFor(() => expect(card('overview-sessions')).toBeNull())
+    expect(card('overview-needs')).toBeInTheDocument()
+    // No Quick actions: the sidebar, Agents and "Did you know?" cover them.
+    expect(card('overview-actions')).toBeNull()
+  })
+})
+
+describe('coding harness activity (2026-11-06)', () => {
+  it('shows models, subagent runs and tools in a section of its own', async () => {
+    renderApp('/')
+    await loaded()
+    const section = await within(card('overview-harness-activity')).findByRole('list', {
+      name: copy.activity.models,
+    })
+    expect(within(section).getAllByRole('listitem').length).toBeGreaterThan(0)
+    const activity = card('overview-harness-activity')
+    expect(activity).toHaveTextContent(copy.activity.subagents)
+    expect(within(activity).getByRole('list', { name: copy.activity.tools })).toBeInTheDocument()
+    expect(activity).toHaveTextContent(/[\d,]+ tool calls/)
+  })
+
+  it('is left out when the harnesses sat idle, since the Harnesses tile already says so', async () => {
+    window.history.replaceState(null, '', '/?mock=no-activity')
+    renderApp('/')
+    await loaded()
+    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    expect(tile).toHaveTextContent(copy.quiet.harnessesIdle(RANGE_DAYS[DEFAULT_RANGE]))
+    expect(card('overview-harness-activity')).toBeNull()
+  })
+})
+
+describe('quiet tiles (2026-11-05)', () => {
+  it('folds zero spend, tokens and runs into one line that says what fills them', async () => {
+    configureMocks({ variant: 'no-spend' })
+    renderApp('/')
+    const quiet = await screen.findByTestId('quiet-activity', {}, { timeout: 8000 })
+    expect(quiet).toHaveTextContent(copy.quiet.activity(RANGE_DAYS[DEFAULT_RANGE]))
+    expect(within(quiet).getByRole('link', { name: copy.quiet.startChat })).toHaveAttribute(
+      'href',
+      '/chat',
+    )
+    for (const id of ['kpi-spend', 'kpi-tokens', 'kpi-runs'])
+      expect(screen.queryByTestId(id)).toBeNull()
+    expect(screen.getByTestId('overview-harnesses')).toBeInTheDocument()
+    // Nothing spent: the Spend card steps out, never $0.00 and a table of zeros (user 2026-11-06).
+    expect(card('overview-spend')).toBeNull()
+  })
+
+  it('fills the 2×2 with the quiet panel when nothing has a figure, and never puts the tip in it', async () => {
+    window.history.replaceState(null, '', '/?mock=no-activity')
+    configureMocks({ variant: 'no-spend' })
+    renderApp('/')
+    const harnesses = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    expect(harnesses).toHaveTextContent(copy.quiet.harnessesIdle(RANGE_DAYS[DEFAULT_RANGE]))
+    expect(screen.getByTestId('quiet-activity')).toBeInTheDocument()
+    expect(within(screen.getByTestId('overview-quiet')).queryByTestId('overview-tip')).toBeNull()
+    // An empty dashboard: the tip takes the savings band's slot in the lead card, without a counter; Next turns it.
+    const tip = screen.getByTestId('overview-tip')
+    expect(document.querySelector('[data-tour="overview-summary"]')).toContainElement(tip)
+    expect(tip).not.toHaveTextContent(/Tip \d+ of \d+/)
+    const shown = () => tip.querySelector('[aria-hidden="false"]')?.textContent
+    const first = shown()
+    await userEvent.click(within(tip).getByRole('button', { name: copy.tips.next }))
+    expect(shown()).not.toBe(first)
+  })
+  it('keeps the band out until the tiles show activity, with the tip in its place (2026-11-06)', async () => {
+    // Savings count a call at once (`token_usage`), the tiles minutes later (`trace_usage`): savings with spend to
+    // trim beside tiles that have none yet must never read "could be trimmed" beside "No agent activity".
+    const savings = await apiFetch<object>('/api/observability/finops/savings')
+    configureMocks({ variant: 'no-spend' })
+    server.use(http.get('*/api/observability/finops/savings', () => HttpResponse.json(savings)))
+    renderApp('/')
+    await screen.findByTestId('quiet-activity', {}, { timeout: 8000 })
+    expect(await screen.findByTestId('overview-tip')).toBeInTheDocument()
+    expect(screen.queryByTestId('overview-savings')).toBeNull()
   })
 })
 
@@ -642,6 +766,10 @@ describe('the summary tiles (redesign 2026-10-19)', () => {
     expect(within(tokens).getByText(/^input \d/)).toBeInTheDocument()
     expect(within(tokens).getByText(/^output \d/)).toBeInTheDocument()
     expect(within(card('kpi-runs')).getByTestId('kpi-cost-per-run')).toHaveTextContent(/per run$/)
+    // Tool calls from the same dashboard (2026-11-05).
+    expect(within(card('kpi-runs')).getByTestId('kpi-tool-calls')).toHaveTextContent(
+      /^[\d,]+ tool calls/,
+    )
     // The run states moved from the old Agents running tile to Fleet health.
     expect(screen.queryByTestId('kpi-agents')).toBeNull()
     expect(within(card('overview-health')).getByTestId('health-run-states')).toHaveTextContent(

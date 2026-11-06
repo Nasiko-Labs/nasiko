@@ -13,6 +13,7 @@ import { flushSync } from 'react-dom'
 import { Controller, useForm, useWatch, type Control, type UseFormRegister } from 'react-hook-form'
 import { z } from 'zod'
 import { Disclosure } from '@nasiko/ui/composites/disclosure'
+import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import {
@@ -482,17 +483,21 @@ function EditorForm({
             {fieldError('provider')}
           </FormField>
           <FormField id={`${ids}-model`} label={copy.fieldModel} hint={copy.modelHint}>
-            <Input
-              id={`${ids}-model`}
-              list={`${ids}-models`}
-              {...register('model')}
-              aria-invalid={!!touchedFields.model && !!errs.model}
+            <Controller
+              control={control}
+              name="model"
+              render={({ field }) => (
+                <SuggestInput
+                  id={`${ids}-model`}
+                  suggestions={modelsFor(form.provider)}
+                  value={field.value}
+                  onValueChange={field.onChange}
+                  onBlur={field.onBlur}
+                  ref={field.ref}
+                  aria-invalid={!!touchedFields.model && !!errs.model}
+                />
+              )}
             />
-            <datalist id={`${ids}-models`}>
-              {modelsFor(form.provider).map((m) => (
-                <option key={m} value={m} />
-              ))}
-            </datalist>
             {offCatalog(form.model) ? <Warn>{copy.notInCatalog}</Warn> : null}
             {blockedNote('model')}
             {fieldError('model')}
@@ -520,7 +525,20 @@ function EditorForm({
             </FieldLegend>
             {TIERS.map((i) => (
               <FormField key={i} id={`${ids}-t${i}`} label={copy.tierLabels[i]}>
-                <Input id={`${ids}-t${i}`} list={`${ids}-models`} {...register(`tiers.${i}`)} />
+                <Controller
+                  control={control}
+                  name={`tiers.${i}`}
+                  render={({ field }) => (
+                    <SuggestInput
+                      id={`${ids}-t${i}`}
+                      suggestions={modelsFor(form.provider)}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  )}
+                />
                 {offCatalog(form.tiers[i]) ? <Warn>{copy.notInCatalog}</Warn> : null}
                 {blockedNote(TIER_FIELDS[i])}
               </FormField>
@@ -567,12 +585,21 @@ function EditorForm({
             <p className="text-xs text-muted-foreground">{copy.pinModelHint}</p>
             {form.pinned || form.pinModel ? (
               <FormField id={`${ids}-pin`} label={copy.fieldModel}>
-                <Input
-                  id={`${ids}-pin`}
-                  list={`${ids}-models`}
-                  {...register('pinModel')}
-                  placeholder={form.model}
-                  aria-invalid={!!touchedFields.pinModel && !!errs.pinModel}
+                <Controller
+                  control={control}
+                  name="pinModel"
+                  render={({ field }) => (
+                    <SuggestInput
+                      id={`${ids}-pin`}
+                      suggestions={modelsFor(form.provider)}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                      placeholder={form.model}
+                      aria-invalid={!!touchedFields.pinModel && !!errs.pinModel}
+                    />
+                  )}
                 />
                 {errs.pinModel ? <p className="text-xs text-destructive">{errs.pinModel}</p> : null}
                 {blockedNote('pinned_model')}
@@ -952,24 +979,20 @@ function Fallbacks({
         </ol>
       ) : null}
       <div className="flex gap-2">
-        <Input
+        <SuggestInput
           aria-label={copy.addFallback}
-          list={`${ids}-all`}
+          className="flex-1"
+          suggestions={allModels}
           value={draft}
           placeholder={copy.fallbackPlaceholder}
-          onChange={(e) => setDraft(e.target.value)}
+          onValueChange={setDraft}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault()
-              addDraft()
-            }
+            // Enter on a highlighted suggestion fills the field (the list's own Enter); otherwise it adds.
+            if (e.key !== 'Enter' || e.currentTarget.getAttribute('aria-activedescendant')) return
+            e.preventDefault()
+            addDraft()
           }}
         />
-        <datalist id={`${ids}-all`}>
-          {allModels.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
         <Button
           type="button"
           variant="outline"

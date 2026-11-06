@@ -76,8 +76,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     shared: false,
     also: ['/deploy', '/builds'],
   },
-  // plans/feat-workflows.md §1: Drafts and Runs are its sub-pages (/workflows/*).
-  { to: '/workflows', label: copy.nav.workflows, icon: Workflow, group: 'fleet', shared: false },
+  // Coding harnesses before Workflows (user request 2026-11-06).
   {
     to: '/harnesses',
     label: copy.nav.harnesses,
@@ -85,6 +84,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
     group: 'fleet',
     shared: true,
   },
+  // plans/feat-workflows.md §1: Drafts and Runs are its sub-pages (/workflows/*).
+  { to: '/workflows', label: copy.nav.workflows, icon: Workflow, group: 'fleet', shared: false },
   { to: '/sessions', label: copy.nav.sessions, icon: ListTree, group: 'observe', shared: true },
   // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
   { to: '/flows', label: copy.nav.flows, icon: Network, group: 'observe', shared: false },

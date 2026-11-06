@@ -123,14 +123,23 @@ describe('first-run guide', () => {
     expect(screen.getByLabelText('Anthropic API key')).toHaveAttribute('type', 'password')
     await user.click(screen.getByRole('button', { name: 'Show key' }))
     expect(screen.getByLabelText('Anthropic API key')).toHaveAttribute('type', 'text')
+    // The model is asked for, never guessed from the catalog (user 2026-11-06).
     await user.click(screen.getByRole('button', { name: 'Connect' }))
-    expect(await screen.findByText(/Connected · Anthropic/)).toBeInTheDocument()
+    expect(screen.getByText('Pick a model first.')).toBeInTheDocument()
+    // The router's field: the provider's catalog models as suggestions, in the theme's own list.
+    await user.click(screen.getByLabelText('Model'))
+    await user.click(await screen.findByRole('option', { name: 'claude-sonnet-4' }))
+    expect(screen.getByLabelText('Model')).toHaveValue('claude-sonnet-4')
+    await user.click(screen.getByRole('button', { name: 'Connect' }))
+    expect(await screen.findByText(/Connected · Anthropic · claude-sonnet-4/)).toBeInTheDocument()
     await rec.flush()
-    const post = rec.requests.find(
+    const posts = rec.requests.filter(
       (r) => r.method === 'POST' && r.url.pathname === '/api/llm-configs',
     )
-    expect(post?.body).toMatchObject({
+    expect(posts).toHaveLength(1)
+    expect(posts[0]?.body).toMatchObject({
       provider: 'anthropic',
+      model: 'claude-sonnet-4',
       api_key_secret_name: 'ANTHROPIC_API_KEY',
       secret_value: 'sk-ant-test',
       is_default: true,
@@ -234,7 +243,7 @@ describe('first-run guide', () => {
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('keeps Chat and Continue off until the user has a key', async () => {
+  it('keeps Chat off until the user has a key, while Continue turns on after the hold anyway', async () => {
     firstTime()
     server.use(
       http.get('*/api/llm-configs', () =>
@@ -252,12 +261,15 @@ describe('first-run guide', () => {
     for (const b of within(running).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeDisabled()
     }
-    // Nothing past this step works without a key, so there is no skipping it.
     expect(screen.queryByRole('button', { name: 'Skip this step' })).toBeNull()
+    // No key is no reason to stay (user request 2026-11-06): Continue waits out the hold, then turns on.
     off(screen.getByRole('button', { name: /continue/i }))
-    // A key connected here turns Chat and Continue on.
+    await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
+    // A key connected here turns Chat on.
     await user.click(screen.getByRole('radio', { name: /anthropic/i }))
     await user.type(screen.getByLabelText('Anthropic API key'), 'sk-ant-test')
+    // A model the catalog doesn't list can be typed in, as the LLM router accepts.
+    await user.type(screen.getByLabelText('Model'), 'claude-next')
     await user.click(screen.getByRole('button', { name: 'Connect' }))
     await screen.findByText(/Connected · Anthropic/)
     expect(screen.queryByText(/Add your key below to chat/)).toBeNull()
@@ -265,7 +277,7 @@ describe('first-run guide', () => {
     for (const b of within(again).getAllByRole('button', { name: /^Chat with / })) {
       expect(b).toBeEnabled()
     }
-    await waitFor(() => on(screen.getByRole('button', { name: /continue/i })))
+    on(screen.getByRole('button', { name: /continue/i }))
   })
 
   it("says where to get a key, linking the provider's keys page", async () => {

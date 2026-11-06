@@ -123,8 +123,8 @@ export const copy = {
     connect: 'Connect',
     openHarnesses: 'Open Coding harnesses',
   },
-  /** Each lower card's own quiet state (2026-11-06): what would fill it and the one step that does (Card.tsx
-   *  `CardQuiet`). The actions differ on purpose, so an empty page never offers the same button five times. */
+  /** A card's own quiet state (Card.tsx `CardQuiet`): what would fill it and the one step that does. On the Overview the
+   *  cards below Needs you step out instead (`hideEmpty`, user 2026-11-06); Weave's catalog keeps these. */
   cardQuiet: {
     spend: (days: number) => `No spend in the last ${days} days`,
     spendDetail:
@@ -134,10 +134,6 @@ export const copy = {
     spendAction: 'Run a workflow',
     sessionsDetail: 'Each conversation with an agent is a session, with its trace, cost and steps.',
     sessionsAction: 'Ask the Orchestrator',
-    saved: 'No tokens saved in this range',
-    savedDetail:
-      'Token optimization trims the chat history and tool output agents re-send. Turn it on for an agent to see what it saves.',
-    savedAction: 'Turn on optimization',
     chatsDetail: 'Ask a question and the Orchestrator picks the agent to answer it.',
     health: 'No agent is running yet',
     healthDetail:
@@ -209,7 +205,6 @@ export const copy = {
     subtitle: (basis: string | null) =>
       basis ? `Largest first · basis: ${basis}` : 'Largest first',
     capped: 'Agents past the first 200 may have savings too',
-    none: 'No savings reported in this range.',
     other: (n: number) => `Other (${n})`,
   },
   chats: {
@@ -217,7 +212,6 @@ export const copy = {
     link: 'Chat',
     what: 'recent chats',
     none: 'No chats yet.',
-    start: 'Start one',
   },
   needs: {
     title: 'Needs your attention',
@@ -256,19 +250,8 @@ export const copy = {
     setupTitle: 'Setup',
     setupCount: (n: number) => `${n} to set up`,
     /** Setup items: a step while the thing isn't set up (`title`, `detail`, `action`); once it is, its name, how many
-     *  exist and where to manage them (`doneTitle`, `done`, `manage`). The canvases' setup steps (`estate/setup.ts`)
-     *  reuse them, and add the two only the estate can tell: a first call, and a coding harness. */
+     *  exist and where to manage them (`doneTitle`, `done`, `manage`). */
     setup: {
-      chat: {
-        title: 'Chat with an agent',
-        detail: 'The first call brings in spend, models and traces.',
-        action: 'Chat',
-      },
-      harness: {
-        title: 'Connect a coding harness',
-        detail: 'Claude Code, Codex and Cursor sessions, with what each costs.',
-        action: 'Connect',
-      },
       router: {
         title: 'Add an LLM router config',
         detail: 'One key per provider for every agent; swap models without a redeploy.',
@@ -396,6 +379,7 @@ export const copy = {
     traceStore: 'Sessions need the trace store.',
     open: 'Open Sessions',
   },
+  /** Quick actions (components/QuickActions.tsx): Weave's catalog only since the Overview dropped it (2026-11-06). */
   actions: {
     title: 'Quick actions',
     newChat: 'New chat',

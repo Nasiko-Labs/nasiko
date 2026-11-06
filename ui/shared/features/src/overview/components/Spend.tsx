@@ -36,10 +36,13 @@ export function Spend({
   spend,
   now,
   className,
+  hideEmpty = false,
 }: {
   spend: SpendData
   now: number
   className?: string
+  /** The Overview's rule (user 2026-11-06): with nothing to show, render nothing instead of the quiet state. */
+  hideEmpty?: boolean
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null)
   const [mode, setMode] = useState<ChartMode>('bars')
@@ -68,6 +71,7 @@ export function Spend({
       ? ((totals.spend - totals.previous.spend) / totals.previous.spend) * 100
       : null
   const anySpend = spend.days.some((d) => d.spend > 0)
+  if (hideEmpty && totals && totals.spend <= 0) return null
   return (
     <Card
       id="overview-spend"
