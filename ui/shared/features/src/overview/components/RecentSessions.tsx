@@ -3,8 +3,9 @@
  * from the same checks Needs you uses (the newest 25, eng review R7). Tempo errors say the trace store is needed.
  */
 import { Link } from '@tanstack/react-router'
-import { CircleAlert, CircleCheck, CircleDashed, ListTree, Timer } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleDashed, Timer } from 'lucide-react'
 import { useRef } from 'react'
+import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
@@ -21,7 +22,7 @@ import { ApiError } from '@nasiko/data-access/client'
 import type { NeedsYou } from '../api'
 import { copy } from '../copy'
 import { LAST_WEEK, RECENT_SESSION_ROWS } from '../tuning'
-import { Card, CardError, CardQuiet, CardSkeleton, TOUCH } from './Card'
+import { Card, CardError, CardSkeleton, TOUCH } from './Card'
 
 const MARK: Partial<Record<Status, { Icon: typeof CircleCheck; tone: string; label: string }>> = {
   failed: { Icon: CircleAlert, tone: 'text-destructive', label: copy.sessions.failed },
@@ -76,21 +77,7 @@ export function RecentSessions({
           titleRef={titleRef}
         />
       ) : !rows.length ? (
-        <CardQuiet
-          Icon={ListTree}
-          title={copy.sessions.none}
-          detail={copy.cardQuiet.sessionsDetail}
-          action={
-            <Link
-              to="/chat"
-              search={{ auto: 1 } as never}
-              {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
-            >
-              {copy.cardQuiet.sessionsAction}
-            </Link>
-          }
-          testId="sessions-quiet"
-        />
+        <EmptyState title={copy.sessions.none} action={<OpenSessions />} className="py-6 md:py-6" />
       ) : (
         <Table className="table-fixed text-xs">
           <TableHeader>

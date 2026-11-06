@@ -455,13 +455,6 @@ async fn spend_totals_include_child_turns_exactly_once() {
     assert_eq!(totals["turns"], 5, "{usage}");
     assert_eq!(totals["tokens"], tokens, "{usage}");
     assert!((totals["cost_usd"].as_f64().unwrap() - cost).abs() < 1e-9);
-    // One child session, however many turns it ran; the parent is not a run.
-    let claude = &usage["data"]["by_harness"][0];
-    assert_eq!(claude["harness"], "claude", "{usage}");
-    assert_eq!(claude["subagent_runs"], 1, "{usage}");
-    assert_eq!(claude["models"][0]["model"], "claude-test", "{usage}");
-    assert_eq!(claude["models"][0]["turns"], 5, "{usage}");
-    assert_eq!(claude["models"][0]["tokens"], tokens, "{usage}");
     server.cleanup().await;
 }
 

@@ -2618,20 +2618,8 @@ async fn coding_agent_usage_reports_the_callers_own_harnesses() {
         by["claude"]["top_models"],
         serde_json::json!(["sonnet", "opus"])
     );
-    // Each seeded turn is 100 input + 50 output tokens.
-    assert_eq!(
-        by["claude"]["models"],
-        serde_json::json!([
-            {"model": "sonnet", "turns": 2, "tokens": 300, "cost_usd": 3.0},
-            {"model": "opus", "turns": 1, "tokens": 150, "cost_usd": 3.0},
-        ])
-    );
-    // Seeded straight into `trace_usage`: no receipts, no sessions.
-    assert_eq!(by["claude"]["subagent_runs"], 0);
-    assert_eq!(by["claude"]["tools"], serde_json::json!([]));
     assert_eq!(by["codex"]["turns"], 0, "an idle seat still has an entry");
     assert_eq!(by["codex"]["idle_seats"], 1);
-    assert_eq!(by["codex"]["models"], serde_json::json!([]));
 
     // Everything the trend and the Individual panel need, in the one response.
     assert!(!d["series"].as_array().unwrap().is_empty());

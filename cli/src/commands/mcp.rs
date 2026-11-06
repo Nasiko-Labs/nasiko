@@ -103,17 +103,6 @@ fn parse_kv_env(raw: &[String]) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
-/// Whether registering a connector should ask for an OAuth client ID. Only a person at a
-/// terminal is asked; a script gets dynamic client registration, which is what leaving the
-/// prompt empty means.
-fn should_prompt_for_oauth_client(
-    auth_type: &str,
-    oauth_client_id: Option<&str>,
-    interactive: bool,
-) -> bool {
-    auth_type == "oauth2" && oauth_client_id.is_none() && interactive
-}
-
 fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
@@ -527,34 +516,31 @@ pub fn connector_register(
     let headers = parse_headers(headers)?;
 
     // Prompt for OAuth credentials when auth_type is oauth2 and none were supplied.
-    let (oauth_client_id, oauth_client_secret) = if should_prompt_for_oauth_client(
-        auth_type,
-        oauth_client_id,
-        std::io::stdin().is_terminal(),
-    ) {
-        let cid: String = dialoguer::Input::new()
-            .with_prompt("OAuth client ID (leave empty for Dynamic Client Registration)")
-            .allow_empty(true)
-            .interact_text()?;
-        if cid.is_empty() {
-            (None, None)
-        } else {
-            let secret: String = dialoguer::Password::new()
-                .with_prompt("OAuth client secret (leave empty for a public client)")
-                .interact()?;
-            let secret = if secret.is_empty() {
-                None
+    let (oauth_client_id, oauth_client_secret) =
+        if auth_type == "oauth2" && oauth_client_id.is_none() {
+            let cid: String = dialoguer::Input::new()
+                .with_prompt("OAuth client ID (leave empty for Dynamic Client Registration)")
+                .allow_empty(true)
+                .interact_text()?;
+            if cid.is_empty() {
+                (None, None)
             } else {
-                Some(secret)
-            };
-            (Some(cid), secret)
-        }
-    } else {
-        (
-            oauth_client_id.map(str::to_string),
-            oauth_client_secret.map(str::to_string),
-        )
-    };
+                let secret: String = dialoguer::Password::new()
+                    .with_prompt("OAuth client secret (leave empty for a public client)")
+                    .interact()?;
+                let secret = if secret.is_empty() {
+                    None
+                } else {
+                    Some(secret)
+                };
+                (Some(cid), secret)
+            }
+        } else {
+            (
+                oauth_client_id.map(str::to_string),
+                oauth_client_secret.map(str::to_string),
+            )
+        };
 
     let body = serde_json::json!({
         "name": name,
@@ -2440,17 +2426,5 @@ mod tests {
 
         let client = Client::for_test(&server.url(), None);
         connector_revoke_agent_with(&client, "conn-r", "worker-bot").unwrap();
-    }
-    #[test]
-    fn only_a_terminal_is_asked_for_an_oauth_client_id() {
-        assert!(should_prompt_for_oauth_client("oauth2", None, true));
-        // A script falls through to dynamic client registration.
-        assert!(!should_prompt_for_oauth_client("oauth2", None, false));
-    }
-
-    #[test]
-    fn a_supplied_client_id_or_another_auth_type_is_never_prompted_for() {
-        assert!(!should_prompt_for_oauth_client("oauth2", Some("id"), true));
-        assert!(!should_prompt_for_oauth_client("bearer", None, true));
     }
 }

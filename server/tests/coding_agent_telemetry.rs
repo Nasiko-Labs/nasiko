@@ -1475,57 +1475,6 @@ async fn spend_is_written_at_ingest_and_every_usage_view_reflects_it_without_rea
     server.cleanup().await;
 }
 
-/// Per-tool calls come from the receipts, so a metadata-only turn's tools count
-/// too. Only `failed` and `timed_out` are failures: a denial is the user's call.
-#[tokio::test]
-#[serial]
-async fn usage_lists_each_harness_tools_by_calls_with_their_failures() {
-    use CodingAgentToolCallStatus::*;
-    let server = common::TestServer::start().await;
-    let (user_id, _) = setup(&server).await;
-    let mut metadata_only = turn_at("tools", 1, vec![Succeeded, Denied, Failed]);
-    metadata_only.capture_policy = CapturePolicy::MetadataOnly;
-    metadata_only.turn.prompt = None;
-    metadata_only.turn.response = None;
-    metadata_only.turn.tool_calls[0].name = "read".into();
-    ingest_session(
-        &server,
-        user_id,
-        "tools",
-        vec![
-            turn_at("tools", 0, vec![Succeeded, TimedOut]),
-            metadata_only,
-        ],
-    )
-    .await;
-
-    let window = "start_time=2023-01-01T00%3A00%3A00Z&end_time=2024-01-01T00%3A00%3A00Z";
-    let usage: Value = common::as_member(
-        server
-            .client
-            .get(server.url(&format!("/api/observability/coding-agents/usage?{window}"))),
-        &user_id.to_string(),
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap()
-    .json()
-    .await
-    .unwrap();
-    let claude = &usage["data"]["by_harness"][0];
-    assert_eq!(claude["harness"], "claude", "{usage}");
-    assert_eq!(
-        claude["tools"],
-        json!([
-            {"name": "bash", "calls": 4, "failed": 2},
-            {"name": "read", "calls": 1, "failed": 0},
-        ]),
-        "{usage}"
-    );
-    server.cleanup().await;
-}
-
 /// The row ingest writes is the row the Tempo read-back derives from the
 /// exported trace — so a later read-back of the same turn replaces it with the
 /// same values instead of adding a second row.

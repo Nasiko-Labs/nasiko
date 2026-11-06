@@ -340,25 +340,6 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
 
 /// Shared WHERE clause for the page and for `matching_count`, so the two can
 /// never drift apart. Binds: `$1` caller, `$2`/`$3` window, `$4` parent.
-/// SQL for the name of the agent that did a session's work, for a session whose
-/// `chat_sessions.agent_id` is empty (an orchestrator-routed chat picks its agent per turn).
-///
-/// It is the agent with the most tokens in `trace_usage`. Rows with no `agent_id` are the
-/// orchestrator's own model calls (`nasiko-cp`), not an agent, so they are left out.
-/// `session_id` is the SQL expression holding the session's id.
-pub(super) fn ran_agent_name(session_id: &str) -> String {
-    format!(
-        "(SELECT u.agent_name
-            FROM trace_usage u
-           WHERE u.session_id = {session_id} AND u.agent_id IS NOT NULL
-           GROUP BY u.agent_name
-           ORDER BY sum(u.input_tokens + u.output_tokens
-                        + u.cache_read_tokens + u.cache_creation_tokens) DESC,
-                    u.agent_name
-           LIMIT 1)"
-    )
-}
-
 fn scope_clause(status: Option<StatusFilter>, level: &ListLevel) -> String {
     let window = match level {
         ListLevel::TopLevel => {
@@ -383,7 +364,6 @@ pub async fn list_sessions(
 ) -> Result<SessionListResponse, ObservabilityError> {
     let scope = scope_clause(q.status, &q.level);
     let subagents = subagent_totals_lateral("p");
-    let ran_agent = ran_agent_name("p.session_id");
     // One extra row answers "is there a next page?" without a second query.
     let fetch = q.limit + 1;
 
@@ -399,7 +379,7 @@ WITH page AS (
      LIMIT $7
 )
 SELECT p.session_id,
-       COALESCE(a.name, {ran_agent}) AS agent_name,
+       a.name AS agent_name,
        p.created_at,
        tr.trace_count,
        tu.total_tokens,

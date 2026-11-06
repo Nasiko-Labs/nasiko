@@ -330,7 +330,7 @@ pub(crate) async fn validate_image_ref(
 /// Qualifies images in the platform namespaces: `nasiko/` (legacy) and
 /// `u-{32 lowercase hex}/` (per-owner). An arbitrary third-party reference
 /// (e.g. `nginx:latest`) is left untouched.
-pub(crate) fn qualify_deploy_image(registry: &str, image: &str) -> String {
+pub fn qualify_deploy_image(registry: &str, image: &str) -> String {
     if registry.is_empty() {
         return image.to_string();
     }
