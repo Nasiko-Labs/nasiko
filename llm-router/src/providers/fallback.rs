@@ -14,6 +14,7 @@
 //! could end up with vectors from two different models in one corpus. They now take a
 //! single attempt in [`crate::providers::execute_embeddings_once`].
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use futures::stream::BoxStream;
@@ -131,7 +132,7 @@ async fn chat_attempts(
             }
         };
         // Working copies so a parameter-fix retry can mutate the request + config.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
@@ -141,7 +142,15 @@ async fn chat_attempts(
                     return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
@@ -237,7 +246,7 @@ async fn chat_stream_attempts(
         };
         // The initial connect (status check) happens before any chunk flows, so a
         // parameter-rejection surfaces here and is safe to fix-and-retry — same as `chat`.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
@@ -252,7 +261,15 @@ async fn chat_stream_attempts(
                     return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
@@ -266,6 +283,10 @@ async fn chat_stream_attempts(
         }
     }
     Err(failures.into_error())
+}
+
+fn names_a_param(provider: &dyn ProviderClient, err: &ProviderError) -> bool {
+    provider.droppable_param(err).is_some() || provider.repairable_param(err).is_some()
 }
 
 /// Log the outbound request to an upstream LLM — provider + model only (never the
