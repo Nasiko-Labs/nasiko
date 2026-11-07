@@ -6,18 +6,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
+use super::auth_layer::rejected_body;
 use super::chat::{
-    AuthedCaller, RequestSignals, RoutedRequest, authenticate_caller, lookup_agent_owner,
-    resolve_routed_request,
+    AuthedCaller, RequestSignals, RoutedRequest, lookup_agent_owner, resolve_routed_request,
 };
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
@@ -64,17 +65,24 @@ const RESPONSE_HEADERS: &[&str] = &[
 
 pub async fn responses(
     State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return rejected_body(rejection, ctx.cfg.max_body_bytes, gateway_error_response);
+        }
+    };
     let store = PgRegistry::new(ctx.db.clone());
-    match responses_core(&ctx, &store, &headers, body).await {
+    match responses_core_as(&ctx, &store, caller, &headers, body).await {
         Ok(response) => response,
         Err(error) => gateway_error_response(error),
     }
 }
 
-fn gateway_error_response(error: GatewayError) -> Response {
+pub(crate) fn gateway_error_response(error: GatewayError) -> Response {
     let status = error.status();
     let code = error_code(&error);
     let message = if matches!(error, GatewayError::Internal(_)) {
@@ -86,13 +94,25 @@ fn gateway_error_response(error: GatewayError) -> Response {
     responses_error(status, message, code)
 }
 
+#[cfg(test)]
 async fn responses_core(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
     headers: &HeaderMap,
+    body: Value,
+) -> Result<Response, GatewayError> {
+    let caller = super::chat::authenticate_caller(ctx, store, headers).await?;
+    responses_core_as(ctx, store, caller, headers, body).await
+}
+
+async fn responses_core_as(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    caller: AuthedCaller,
+    headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
+    let (agent_id, owner_id, session) = match caller {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
@@ -1158,6 +1178,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
         }
     }
 
@@ -1178,12 +1199,14 @@ mod tests {
 
     #[tokio::test]
     async fn auth_is_required_before_upstream() {
-        let response = responses(
-            State(ctx("http://unused".into())),
-            HeaderMap::new(),
-            Json(json!({})),
-        )
-        .await;
+        let ctx = ctx("http://unused".into());
+        let request = axum::http::Request::post("/v1/responses")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+        let response = tower::ServiceExt::oneshot(crate::router(ctx), request)
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["error"]["code"], "invalid_api_key");

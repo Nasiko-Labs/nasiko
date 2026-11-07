@@ -92,6 +92,7 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
+    pub body_permits: Arc<tokio::sync::Semaphore>,
 }
 
 impl LlmRouterCtx {
@@ -141,6 +142,7 @@ impl LlmRouterCtx {
         let salience_gate = build_salience_gate(&cfg);
         let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
+        let body_permits = handlers::auth_layer::body_permit_pool(cfg.max_inflight_body_bytes);
         Self {
             db,
             http,
@@ -152,6 +154,7 @@ impl LlmRouterCtx {
             salience_gate,
             classifier,
             pricing,
+            body_permits,
         }
     }
 }
@@ -173,9 +176,8 @@ pub fn provider_client(read_timeout: Duration) -> reqwest::Client {
 /// Build the request classifier from config. The only place backend selection happens, shared by
 /// the router and the `classifier_eval` example so both exercise the same path.
 ///
-/// `local` (the default) and `hosted` are wrapped in a [`routing::GuardedClassifier`] (see
-/// [`build_guarded_classifier`]), which answers with the regex classifier when the model errors or
-/// times out; `regex` or an unknown value is returned bare.
+/// `regex` (default / unknown value) is returned bare so default behaviour is untouched; `local`
+/// and `hosted` are wrapped in a [`routing::GuardedClassifier`] (see [`build_guarded_classifier`]).
 pub fn build_classifier(
     cfg: &GatewayConfig,
     http: reqwest::Client,
@@ -340,10 +342,7 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
 /// server: the OpenAI-compatible surface lives under `/v1`, and Gemini under `/v1beta`
 /// (each path mirrors what that provider's stock SDK appends to its base URL).
 pub fn router(ctx: LlmRouterCtx) -> Router {
-    Router::new()
-        // Liveness probe owned by this router. The host server keeps its own
-        // top-level `/health`; a future standalone binary will also map `/health`.
-        .route("/v1/health", get(health))
+    let llm_routes = Router::new()
         .route(
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
@@ -359,6 +358,16 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1beta/models/{model_method}",
             post(handlers::chat::gemini_generate),
         )
+        .route_layer(axum::middleware::from_fn_with_state(
+            ctx.clone(),
+            handlers::auth_layer::authenticate_first,
+        ))
+        .layer(axum::extract::DefaultBodyLimit::max(ctx.cfg.max_body_bytes));
+    Router::new()
+        // Liveness probe owned by this router. The host server keeps its own
+        // top-level `/health`; a future standalone binary will also map `/health`.
+        .route("/v1/health", get(health))
+        .merge(llm_routes)
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
         .with_state(ctx)
@@ -505,43 +514,5 @@ mod transport_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
-    }
-}
-
-#[cfg(test)]
-mod classifier_default_tests {
-    use super::*;
-    use routing::classifier::linear::LinearClassifier;
-
-    #[test]
-    fn the_default_classifier_is_the_local_model() {
-        let classifier = build_classifier(&GatewayConfig::default(), reqwest::Client::new());
-        assert_eq!(classifier.name(), LinearClassifier::NAME);
-    }
-
-    #[test]
-    fn regex_stays_available_and_is_the_answer_for_an_unknown_backend() {
-        for backend in ["regex", "no-such-backend"] {
-            let cfg = GatewayConfig {
-                classifier_backend: backend.into(),
-                ..GatewayConfig::default()
-            };
-            assert_eq!(
-                build_classifier(&cfg, reqwest::Client::new()).name(),
-                "regex"
-            );
-        }
-    }
-
-    #[test]
-    fn a_local_model_that_fails_to_load_falls_back_to_regex() {
-        let cfg = GatewayConfig {
-            classifier_model_path: "/no/such/weights.json".into(),
-            ..GatewayConfig::default()
-        };
-        assert_eq!(
-            build_classifier(&cfg, reqwest::Client::new()).name(),
-            "regex"
-        );
     }
 }

@@ -2,9 +2,6 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
-# Three binaries share this package (the server and two demo seeders); `default-run` makes
-# `cargo run -p nasiko-server` mean the server.
-default-run = "nasiko-server"
 
 [lib]
 path = "src/lib.rs"
@@ -110,6 +107,7 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 mockito = { workspace = true }
+zstd = { workspace = true }
 criterion = { workspace = true }
 nasiko-bench-support = { workspace = true }
 

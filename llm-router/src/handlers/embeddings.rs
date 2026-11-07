@@ -235,6 +235,7 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
         }
     }
 
