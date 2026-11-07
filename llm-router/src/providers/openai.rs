@@ -19,10 +19,12 @@ use futures::stream::BoxStream;
 use serde_json::{Value, json};
 
 use super::dialect::ProviderDialect;
+use super::media::{self, DocumentKind, document_kind};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Message, ToolDef,
+    ChatChunk, ChatRequest, ChatResponse, ContentPart, EmbeddingsRequest, EmbeddingsResponse,
+    Message, ToolDef, UnsupportedPart,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -37,6 +39,7 @@ pub struct OpenAiProvider {
     /// Key the prompt cache by the agent ([`add_cache_key`]).
     cache_key: bool,
     refuse_document_urls: bool,
+    strict_media: bool,
 }
 
 impl OpenAiProvider {
@@ -56,12 +59,27 @@ impl OpenAiProvider {
             max_tools: 0,
             cache_key: false,
             refuse_document_urls: false,
+            strict_media: false,
         }
     }
 
     pub fn with_document_urls_refused(mut self, refused: bool) -> Self {
         self.refuse_document_urls = refused;
         self
+    }
+
+    pub fn with_strict_media(mut self, strict: bool) -> Self {
+        self.strict_media = strict;
+        self
+    }
+
+    fn outbound(&self, req: &ChatRequest) -> Result<ChatRequest, ProviderError> {
+        self.check_documents(req)?;
+        let mut out = req.clone();
+        if self.strict_media {
+            prepare_media(&mut out)?;
+        }
+        Ok(out)
     }
 
     fn check_documents(&self, req: &ChatRequest) -> Result<(), ProviderError> {
@@ -122,6 +140,68 @@ impl OpenAiProvider {
             retryable: status.as_u16() == 429 || status.is_server_error(),
         }
     }
+}
+
+const OPENAI_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const OPENAI_FILES_MAX_BYTES: u64 = 50_000_000;
+
+fn refused(err: UnsupportedPart) -> ProviderError {
+    ProviderError::Rejected(format!(
+        "OpenAI does not accept this input: {}",
+        err.into_message()
+    ))
+}
+
+fn prepare_media(out: &mut ChatRequest) -> Result<(), ProviderError> {
+    let mut file_bytes = 0;
+    for message in &mut out.messages {
+        let Some(Value::Array(parts)) = message.content.as_mut() else {
+            continue;
+        };
+        for part in parts.iter_mut() {
+            match ContentPart::from_openai_part(part) {
+                Ok(ContentPart::File { source, filename }) => {
+                    let Some((media_type, data)) = source.inline() else {
+                        continue;
+                    };
+                    match document_kind(media_type) {
+                        DocumentKind::TextLike => {
+                            let text = media::text_document(&source, filename.as_deref())
+                                .map_err(refused)?;
+                            *part = json!({ "type": "text", "text": text });
+                        }
+                        DocumentKind::Pdf => file_bytes += media::decoded_len(data),
+                        DocumentKind::Other => {
+                            return Err(refused(UnsupportedPart::new(format!(
+                                "'{media_type}' files (it reads PDF; text files are sent as text)"
+                            ))));
+                        }
+                    }
+                }
+                Ok(image @ ContentPart::Image { .. }) => {
+                    let ContentPart::Image { source, .. } = &image else {
+                        continue;
+                    };
+                    let Some(media_type) = source.media_type() else {
+                        continue;
+                    };
+                    if !OPENAI_IMAGE_TYPES.contains(&media_type) {
+                        return Err(refused(UnsupportedPart::new(format!(
+                            "'{media_type}' images (it reads png, jpeg, gif and webp)"
+                        ))));
+                    }
+                    *part = image.to_openai_part();
+                }
+                _ => {}
+            }
+        }
+    }
+    if file_bytes > OPENAI_FILES_MAX_BYTES {
+        return Err(refused(UnsupportedPart::new(
+            "more than 50 MB of files in one request",
+        )));
+    }
+    Ok(())
 }
 
 /// The field an OpenAI request keys its prompt cache with.
@@ -409,8 +489,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        self.check_documents(req)?;
-        let mut out = req.clone();
+        let mut out = self.outbound(req)?;
         out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
         out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
         // OpenAI deprecated `max_tokens`; newer models reject it. Emit the current
@@ -460,8 +539,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        self.check_documents(req)?;
-        let mut out = req.clone();
+        let mut out = self.outbound(req)?;
         out.model = Some(cfg.model.clone());
         out.temperature = cfg.temperature.or(req.temperature);
         // See `chat` — OpenAI wants `max_completion_tokens`, not the deprecated `max_tokens`.
@@ -629,6 +707,113 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+        }
+    }
+
+    fn ok_reply() -> String {
+        json!({
+            "id": "c1", "object": "chat.completion", "model": "gpt-4o",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    async fn builtin_openai(
+        server: &mut mockito::ServerGuard,
+        expected_messages: Value,
+        hits: usize,
+    ) -> (Box<dyn ProviderClient>, mockito::Mock) {
+        let mock = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "messages": expected_messages }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ok_reply())
+            .expect(hits)
+            .create_async()
+            .await;
+        let cfg = crate::config::GatewayConfig {
+            openai_api_base: server.url(),
+            ..Default::default()
+        };
+        let provider =
+            super::super::provider_for("openai", None, &reqwest::Client::new(), &cfg).unwrap();
+        (provider, mock)
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn ask_with(part: Value) -> ChatRequest {
+        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
+            { "type": "text", "text": "what does it say?" }, part
+        ]}]}))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_text_document_reaches_openai_as_a_text_part() {
+        let mut server = mockito::Server::new_async().await;
+        let (provider, mock) = builtin_openai(
+            &mut server,
+            json!([{ "role": "user", "content": [
+                { "type": "text", "text": "what does it say?" },
+                { "type": "text", "text": "File: data.csv\n\nregion,q2\nEMEA,913" }
+            ]}]),
+            1,
+        )
+        .await;
+        let req = ask_with(json!({ "type": "file", "file": {
+            "file_data": format!("data:text/csv;base64,{}", b64(b"region,q2\nEMEA,913")),
+            "filename": "data.csv"
+        }}));
+
+        provider
+            .chat(&req, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_file_or_image_type_openai_cannot_read_is_refused_before_sending() {
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let cases = [
+            (
+                json!({ "type": "file", "file": {
+                    "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
+                }}),
+                docx,
+            ),
+            (
+                json!({ "type": "image_url", "image_url": { "url": "data:image/tiff;base64,SUkqAA==" } }),
+                "image/tiff",
+            ),
+        ];
+        for (part, named) in cases {
+            let mut server = mockito::Server::new_async().await;
+            let (provider, mock) = builtin_openai(&mut server, json!([]), 0).await;
+
+            let err = provider
+                .chat(&ask_with(part), &resolved("gpt-4o", None))
+                .await
+                .unwrap_err();
+
+            let ProviderError::Rejected(message) = err else {
+                panic!("expected a by-name refusal, got {err:?}");
+            };
+            assert!(
+                message.starts_with("OpenAI does not accept this input"),
+                "{message}"
+            );
+            assert!(message.contains(named), "{message}");
+            mock.assert_async().await;
         }
     }
 
