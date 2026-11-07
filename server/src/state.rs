@@ -47,13 +47,6 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
-    /// Called just before forwarding a request to an agent container. OSS default is a no-op
-    /// (`NoAgentWake`); the EE composition root installs the real implementation through this
-    /// cell (`SwappableAgentWake::install`, not a plain reassignment) for the same reason
-    /// `prompt_context` does - the HITL resume dispatcher forwards to agents too, and holds an
-    /// `AppState` clone taken before that root runs. See that field's doc comment and the
-    /// `agent_wake` module docs.
-    pub agent_wake: Arc<crate::agent_wake::SwappableAgentWake>,
     /// What the MAF worker runs each queued workflow through. OSS wires
     /// `LinearMafExecutor` (steps in array order); the EE composition root
     /// replaces it before the app is built, the same way it replaces
@@ -90,6 +83,7 @@ pub struct AppState {
     /// same reason `prompt_context` does — see that field's doc comment and the
     /// `chat::turn_artifacts` module docs.
     pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
+    pub llm_config_cache: Arc<nasiko_llm_router::ConfigCache>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -134,12 +128,10 @@ impl AppState {
     /// The embedding client the chat handlers hand to
     /// `context_selection::fetch_for_user`. Built per call (it is a thin
     /// handle over the shared `history_embedding_cache`, not a connection),
-    /// so the call sites don't each re-derive the provider settings. Embeds with the key `user_id`
-    /// saved from the UI when there is one, else the server's.
-    pub async fn history_vector_store(&self, user_id: uuid::Uuid) -> VectorStore {
-        let server_key = self.config.openai_api_key.as_deref().unwrap_or_default();
+    /// so the two call sites don't each re-derive the provider settings.
+    pub fn history_vector_store(&self) -> VectorStore {
         VectorStore::for_embedding(
-            nasiko_orchestrator::user_key::openai_key(&self.db, user_id, server_key).await,
+            self.config.openai_api_key.clone().unwrap_or_default(),
             self.config
                 .openai_base_url
                 .clone()
@@ -241,9 +233,6 @@ impl AppState {
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
             Arc::new(crate::spend_gate::NoSpendGate);
-        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
-            crate::agent_wake::NoAgentWake,
-        )));
         let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
             Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
         let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
@@ -369,13 +358,17 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
-            agent_wake,
             maf_executor,
             maf_policy,
             prompt_context,
             agent_deletion_hook,
             agent_scaling,
             turn_artifacts,
+            llm_config_cache: Arc::new(nasiko_llm_router::ConfigCache::new(
+                std::time::Duration::from_secs(
+                    nasiko_llm_router::config::GatewayConfig::llm_config_cache_ttl_secs_from_env(),
+                ),
+            )),
             history_embedding_cache,
             observability,
             github_svc,
@@ -534,10 +527,6 @@ impl AppState {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
 
-        // Before the seeding below, which needs the key to register toolkits.
-        crate::composio_settings::apply_stored_key(self).await;
-        tokio::spawn(crate::composio_settings::watch_stored_key(self.clone()));
-
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
@@ -585,12 +574,15 @@ impl AppState {
     /// (`GET /api/agents/dev-env`, deployer+) so `nasiko run` can give local
     /// containers the same defaults a CP deployment would get.
     pub fn platform_fallback_env(&self) -> std::collections::HashMap<String, String> {
-        build_platform_fallback_env(
-            self.config.agent_platform_key_fallback,
-            self.config.openai_api_key.as_deref(),
-            self.config.openai_base_url.as_deref(),
-            &self.config.openai_model,
-        )
+        let mut env = std::collections::HashMap::new();
+        if let Some(ref key) = self.config.openai_api_key {
+            env.insert("OPENAI_API_KEY".into(), key.clone());
+        }
+        if let Some(ref url) = self.config.openai_base_url {
+            env.insert("OPENAI_BASE_URL".into(), url.clone());
+        }
+        env.insert("OPENAI_MODEL".into(), self.config.openai_model.clone());
+        env
     }
 
     /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
@@ -658,27 +650,6 @@ impl AppState {
         );
         env
     }
-}
-
-/// Builds the platform fallback environment map for agent deployments.
-///
-/// When `agent_platform_key_fallback` is false, `OPENAI_API_KEY` is omitted.
-/// `OPENAI_BASE_URL` and `OPENAI_MODEL` are always included when set.
-fn build_platform_fallback_env(
-    agent_platform_key_fallback: bool,
-    openai_api_key: Option<&str>,
-    openai_base_url: Option<&str>,
-    openai_model: &str,
-) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
-    if agent_platform_key_fallback && let Some(key) = openai_api_key {
-        env.insert("OPENAI_API_KEY".into(), key.to_string());
-    }
-    if let Some(url) = openai_base_url {
-        env.insert("OPENAI_BASE_URL".into(), url.to_string());
-    }
-    env.insert("OPENAI_MODEL".into(), openai_model.to_string());
-    env
 }
 
 /// Postgres extensions the migrations require (`0001_schema.sql` runs
@@ -765,36 +736,5 @@ mod tests {
         assert!(msg.contains("\"vector\""));
         assert!(msg.contains("permission denied"));
         assert!(msg.contains("azure.extensions"));
-    }
-
-    #[test]
-    fn platform_fallback_env_omits_key_when_flag_is_false() {
-        let env = build_platform_fallback_env(
-            false,
-            Some("test-key"),
-            Some("https://api.test.com"),
-            "test-model",
-        );
-        assert!(
-            !env.contains_key("OPENAI_API_KEY"),
-            "OPENAI_API_KEY should be omitted when flag is false"
-        );
-        assert_eq!(
-            env.get("OPENAI_BASE_URL"),
-            Some(&"https://api.test.com".to_string())
-        );
-        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
-    }
-
-    #[test]
-    fn platform_fallback_env_includes_key_when_flag_is_true() {
-        let env = build_platform_fallback_env(true, Some("test-key"), None, "test-model");
-        assert_eq!(
-            env.get("OPENAI_API_KEY"),
-            Some(&"test-key".to_string()),
-            "OPENAI_API_KEY should be present when flag is true"
-        );
-        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
-        assert!(!env.contains_key("OPENAI_BASE_URL"));
     }
 }

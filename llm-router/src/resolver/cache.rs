@@ -85,6 +85,10 @@ impl ConfigCache {
         );
     }
 
+    pub fn invalidate(&self, agent_id: Uuid) {
+        self.entries.remove(&agent_id);
+    }
+
     /// Drop all cached entries (test/ops hook; also used after an `llm_config` edit).
     pub fn clear(&self) {
         self.entries.clear();
@@ -111,6 +115,21 @@ mod tests {
         c.put(agent(), None);
         assert!(matches!(c.get(agent()), Some(None)));
         c.clear();
+        assert!(c.get(agent()).is_none());
+    }
+
+    #[test]
+    fn invalidate_drops_only_that_agent() {
+        let other = Uuid::parse_str("22222222-2222-2222-2222-222222222222").unwrap();
+        let c = ConfigCache::new(Duration::from_secs(60));
+        c.put(agent(), None);
+        c.put(other, None);
+        c.put_org_embedding_default(None);
+        c.invalidate(agent());
+        assert!(c.get(agent()).is_none());
+        assert!(matches!(c.get(other), Some(None)));
+        assert!(matches!(c.get_org_embedding_default(), Some(None)));
+        c.invalidate(agent());
         assert!(c.get(agent()).is_none());
     }
 

@@ -280,6 +280,13 @@ impl Default for GatewayConfig {
 }
 
 impl GatewayConfig {
+    pub fn llm_config_cache_ttl_secs_from_env() -> u64 {
+        std::env::var("LLM_CONFIG_CACHE_TTL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(Self::default().llm_config_cache_ttl_secs)
+    }
+
     /// Load configuration from the process environment, falling back to [`Default`]
     /// per key.
     pub fn from_env() -> Self {
@@ -308,10 +315,7 @@ impl GatewayConfig {
                 &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
                 &d.platform_openrouter_api_key,
             ),
-            llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.llm_config_cache_ttl_secs),
+            llm_config_cache_ttl_secs: Self::llm_config_cache_ttl_secs_from_env(),
             redis_url: env_or("REDIS_URL", &d.redis_url),
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
                 .ok()

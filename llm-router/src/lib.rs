@@ -157,6 +157,11 @@ impl LlmRouterCtx {
             body_permits,
         }
     }
+
+    pub fn with_config_cache(mut self, cache: Arc<ConfigCache>) -> Self {
+        self.cache = cache;
+        self
+    }
 }
 
 /// The outbound client for provider calls.
