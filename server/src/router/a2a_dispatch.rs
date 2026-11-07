@@ -26,7 +26,6 @@ use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
-use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::orchestrator_policy::TurnKind;
 use crate::state::AppState;
@@ -259,7 +258,7 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store(user_id).await;
+    let history_store = state.history_vector_store();
     let history = context_selection::fetch_for_user(
         &state.db,
         user_id,
@@ -692,9 +691,7 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
-            .await
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+        api_key: std::env::var("OPENAI_API_KEY").ok(),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -832,7 +829,6 @@ pub(crate) async fn orchestrator_stream(
         user_id,
         context_id.to_string(),
         state.genai_metrics.agent_call_meter(),
-        state.agent_wake.clone(),
     );
 
     // `A2aClient`'s own default is deliberately short — it is shared with agent
@@ -1665,12 +1661,6 @@ async fn agent_stream(
         req
     };
 
-    state
-        .agent_wake
-        .before_forward(agent.id)
-        .await
-        .map_err(A2aDispatchError::Unavailable)?;
-
     // In flight until the agent's reply is complete. Starts as `Error`, so the early returns
     // below count as failures.
     let mut request_guard = state
@@ -1717,7 +1707,6 @@ async fn agent_stream(
     let hitl_store = state.hitl_store.clone();
     let agent_id_for_hitl = agent.id;
     let agent_start = Instant::now();
-    let call_timeout_secs = state.config.agent_call_timeout_secs;
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
@@ -1761,13 +1750,8 @@ async fn agent_stream(
                         };
                         let chunk = match chunk_result {
                             Ok(c) => c,
-                            Err(e) => {
+                            Err(_) => {
                                 request_guard.set_outcome(RequestOutcome::Error);
-                                // The reply was cut off, so the turn did not complete. Without a
-                                // reason here the tail below would report it "completed".
-                                if agent_error.is_none() {
-                                    agent_error = Some(stream_cut_reason(&e, call_timeout_secs));
-                                }
                                 agent_done = true;
                                 continue;
                             }
@@ -1873,22 +1857,20 @@ async fn agent_stream(
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                 }
 
-                if let Some(err) = &agent_error {
-                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, err))));
+                if let Some(err) = agent_error {
+                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
                 } else {
                     yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                 }
 
                 // Guarded on 'running' like the other completion sites: a terminal
-                // 'failed'/'paused' is never downgraded by a later completion. A turn that ended
-                // in an error is recorded as failed, with the reason the user was shown.
+                // 'failed'/'paused' is never downgraded by a later completion.
                 let _ = sqlx::query(
-                    r#"UPDATE flows SET status = CASE WHEN $2::TEXT IS NULL THEN 'completed' ELSE 'failed' END,
-                       error_message = $2,
+                    r#"UPDATE flows SET status = 'completed',
                        duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                        completed_at = now()
                        WHERE flow_id = $1 AND status = 'running'"#,
-                ).bind(&flow_id_cleanup).bind(agent_error.as_deref()).execute(&db).await;
+                ).bind(&flow_id_cleanup).execute(&db).await;
                 flow_events.remove(&flow_id_cleanup).await;
             }
         };
@@ -2255,10 +2237,9 @@ const MAX_ATTACHED_FILES: usize = 10;
 /// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
 /// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
 /// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
-/// the storage limit would be. Over it, the turn is refused with a message the user can act on
-/// rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
+/// a PDF at 32 MB, OpenAI an audio file at 25 MB). Over it, the turn is refused with a message
+/// the user can act on rather than quietly reaching the agent without the file it was about.
+const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
 
 /// What the caller attached to this turn, in the two forms this endpoint accepts.
 ///
@@ -2270,12 +2251,7 @@ const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
 ///   than that same 2 MiB limit can be sent at all.
 ///
 /// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
-/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
-///
-/// An id that resolves to nothing is skipped rather than failing the turn: the text still
-/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
-/// budget is the opposite — the turn is about the file, so it fails loudly.
+/// upload by guessing a UUID, and only through object storage. Order follows the caller's list.
 async fn inbound_file_parts(
     state: &AppState,
     params: &nasiko_types::a2a::SendMessageRequest,
@@ -2289,21 +2265,39 @@ async fn inbound_file_parts(
         .filter(|p| matches!(p.content, PartContent::Raw(_)))
         .cloned()
         .collect();
+    let inline_bytes: u64 = parts
+        .iter()
+        .map(|p| match &p.content {
+            PartContent::Raw(data) => data.len() as u64,
+            _ => 0,
+        })
+        .sum();
 
-    let ids: Vec<Uuid> = params
+    let mut ids: Vec<Uuid> = Vec::new();
+    let listed = params
         .metadata
         .as_ref()
         .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array())
-        .map(|list| {
-            list.iter()
-                .filter_map(|v| v.as_str())
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .take(MAX_ATTACHED_FILES)
-                .collect()
-        })
-        .unwrap_or_default();
+        .and_then(|v| v.as_array());
+    for value in listed.into_iter().flatten() {
+        let raw = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
+        let id = Uuid::parse_str(&raw).map_err(|_| {
+            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
+        })?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.len() + parts.len() > MAX_ATTACHED_FILES {
+        return Err(A2aDispatchError::InvalidRequest(format!(
+            "at most {MAX_ATTACHED_FILES} attachments per message"
+        )));
+    }
     if ids.is_empty() {
+        check_attached_total(inline_bytes)?;
         return Ok(parts);
     }
 
@@ -2321,37 +2315,61 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
-    if total > MAX_ATTACHED_BYTES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
-        )));
-    }
-
     let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
         rows.iter().map(|r| (r.0, r)).collect();
+    let mut resolved = Vec::with_capacity(ids.len());
     for id in &ids {
-        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
-            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
-            continue;
+        let Some(&row) = by_id.get(id) else {
+            return Err(A2aDispatchError::InvalidRequest(format!(
+                "attachment {id} was not found"
+            )));
         };
-        if storage_uri.starts_with("workspace://") {
-            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
-            continue;
+        if !row.4.starts_with(CHAT_UPLOAD_PREFIX) {
+            return Err(A2aDispatchError::InvalidRequest(format!(
+                "'{}' can't be attached to a message",
+                row.1
+            )));
         }
+        resolved.push(row);
+    }
+    let stored_bytes: u64 = resolved.iter().map(|row| row.3.max(0) as u64).sum();
+    check_attached_total(inline_bytes + stored_bytes)?;
+
+    for (id, filename, mime_type, _, storage_uri) in resolved {
         match state.oci_storage.get_blob(storage_uri).await {
             Ok(bytes) => parts.push(a2a::file_part(
                 bytes.to_vec(),
                 Some(filename.clone()),
                 Some(mime_type.clone()),
             )),
+            Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
+                return Err(A2aDispatchError::InvalidRequest(format!(
+                    "attachment '{filename}' is no longer stored"
+                )));
+            }
             Err(e) => {
-                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
+                tracing::warn!(%id, %e, "attachment bytes unreadable");
+                return Err(A2aDispatchError::Unavailable(format!(
+                    "attachment '{filename}' could not be read; try again"
+                )));
             }
         }
     }
 
     Ok(parts)
+}
+
+const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
+
+fn check_attached_total(total: u64) -> Result<(), A2aDispatchError> {
+    if total > MAX_ATTACHED_BYTES {
+        return Err(A2aDispatchError::InvalidRequest(format!(
+            "attachments total {:.1} MB, over the {} MB per-message limit",
+            total as f64 / (1024.0 * 1024.0),
+            MAX_ATTACHED_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -2708,17 +2726,6 @@ fn non_streaming_reply_outcome(status_ok: bool, body: &serde_json::Value) -> Req
     RequestOutcome::from_success(status_ok && body.get("error").is_none() && !task_failed)
 }
 
-/// Why the agent's reply stream ended before its final event, in words for the user.
-fn stream_cut_reason(err: &reqwest::Error, call_timeout_secs: u64) -> String {
-    if err.is_timeout() {
-        format!(
-            "The agent did not finish within the {call_timeout_secs}-second limit, so its reply was cut off."
-        )
-    } else {
-        "The connection to the agent was lost before it finished replying.".to_string()
-    }
-}
-
 fn extract_failure_message(data: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
     let status_update = parsed
@@ -3071,9 +3078,6 @@ pub enum A2aDispatchError {
     NoAgents,
     AgentNotFound(String),
     Internal(String),
-    /// The agent cannot take the call right now. The message comes from the
-    /// [`crate::agent_wake::AgentWake`] seam and is already caller-safe.
-    Unavailable(String),
     /// A `reconnect_after_hitl_id` reconnect was for a HITL row that exists but isn't the
     /// caller's — same rule `authorize_hitl_action` enforces for every other `/api/hitl/*` route.
     Forbidden(String),
@@ -3085,6 +3089,7 @@ pub enum A2aDispatchError {
         status: StatusCode,
         message: String,
     },
+    Unavailable(String),
 }
 
 impl IntoResponse for A2aDispatchError {
@@ -3388,50 +3393,5 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod stream_cut_tests {
-    use super::*;
-    use tokio::io::AsyncWriteExt;
-
-    /// HD-04: an agent that is still working when the agent-call budget runs out. The relay's
-    /// stream read fails with a timeout, and the user must be told so, not shown "completed".
-    #[tokio::test]
-    async fn a_reply_cut_off_by_the_time_limit_is_reported_as_such() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
-            // Headers and the first event, then silence: the agent is still working.
-            let _ = socket
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {}\n\n",
-                )
-                .await;
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-        });
-
-        let client = reqwest::Client::new();
-        let response = client
-            .get(format!("http://{addr}/"))
-            .timeout(std::time::Duration::from_millis(300))
-            .send()
-            .await
-            .unwrap();
-        let mut stream = response.bytes_stream();
-        let err = loop {
-            match stream.next().await {
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => break e,
-                None => panic!("the stream ended without the timeout error"),
-            }
-        };
-
-        let reason = stream_cut_reason(&err, 180);
-        assert!(reason.contains("180-second limit"), "{reason}");
     }
 }
