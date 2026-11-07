@@ -723,3 +723,179 @@ async fn a_routed_turn_gives_the_chosen_agent_the_signed_line_for_its_flow() {
 
     server.cleanup().await;
 }
+
+#[derive(Clone)]
+struct TextOnlyAgent {
+    router_url: String,
+    token: Arc<Mutex<String>>,
+    router_replies: Arc<Mutex<Vec<(u16, String)>>>,
+}
+
+async fn text_only_agent_handler(
+    State(agent): State<TextOnlyAgent>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    let req: Value = serde_json::from_slice(&body).unwrap_or_default();
+    let user_input = req["params"]["message"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let traceparent = headers
+        .get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let token = agent.token.lock().unwrap().clone();
+    let reply = reqwest::Client::new()
+        .post(format!("{}/v1/chat/completions", agent.router_url))
+        .bearer_auth(token)
+        .header("traceparent", traceparent)
+        .json(&json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": user_input}],
+        }))
+        .send()
+        .await
+        .unwrap();
+    let status = reply.status().as_u16();
+    let text = reply.text().await.unwrap_or_default();
+    agent.router_replies.lock().unwrap().push((status, text));
+
+    let task_id = req["params"]["message"]["taskId"]
+        .as_str()
+        .unwrap_or("stub-task")
+        .to_string();
+    let context_id = req["params"]["message"]["contextId"]
+        .as_str()
+        .unwrap_or("stub-ctx")
+        .to_string();
+    let event =
+        nasiko_types::a2a::status_event(nasiko_types::a2a::completed(&task_id, &context_id));
+    axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .body(axum::body::Body::from(format!(
+            "data: {}\n\n",
+            serde_json::to_string(&event).unwrap()
+        )))
+        .unwrap()
+}
+
+const E2E_ENV: [&str; 5] = [
+    "AGENT_JWT_SECRET",
+    "OPENAI_API_BASE",
+    "PLATFORM_OPENAI_API_KEY",
+    "DEFAULT_PROVIDER",
+    "DEFAULT_MODEL",
+];
+
+#[tokio::test]
+#[serial]
+async fn an_agent_with_no_media_code_gets_the_image_to_its_model_through_the_router() {
+    let mut provider = mockito::Server::new_async().await;
+    let seen_by_provider = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let capture = Arc::clone(&seen_by_provider);
+    let _provider_mock = provider
+        .mock("POST", "/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body_from_request(move |request| {
+            let body = request.body().map(Vec::as_slice).unwrap_or_default();
+            capture
+                .lock()
+                .unwrap()
+                .push(serde_json::from_slice(body).unwrap_or(Value::Null));
+            json!({
+                "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-4o-mini",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "blue and yellow"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13}
+            })
+            .to_string()
+            .into_bytes()
+        })
+        .create_async()
+        .await;
+    unsafe {
+        std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
+        std::env::set_var("OPENAI_API_BASE", provider.url());
+        std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-test-platform");
+        std::env::set_var("DEFAULT_PROVIDER", "openai");
+        std::env::set_var("DEFAULT_MODEL", "gpt-4o-mini");
+    }
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    let (_, user) = admin_and_member(&server, "att-e2e").await;
+    let sid = create_session(&server, &user).await;
+
+    let agent = TextOnlyAgent {
+        router_url: server.base_url.clone(),
+        token: Arc::new(Mutex::new(String::new())),
+        router_replies: Arc::new(Mutex::new(Vec::new())),
+    };
+    let app = Router::new()
+        .route("/", post(text_only_agent_handler))
+        .with_state(agent.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let agent_url = format!("http://{}", listener.local_addr().unwrap());
+    let _agent_task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let agent_id = seed_running_agent(&server, &user, &agent_url).await;
+    *agent.token.lock().unwrap() = nasiko_llm_router::auth::mint_agent_token(
+        &agent_id.to_string(),
+        &user.id,
+        JWT_SECRET,
+        600,
+        jsonwebtoken::Algorithm::HS256,
+    )
+    .unwrap();
+
+    let png = png_of(64);
+    let file = upload(&server, &user, &sid, png.clone(), "fact.png", "image/png").await;
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[file], vec![]).await;
+    unsafe {
+        for key in E2E_ENV {
+            std::env::remove_var(key);
+        }
+    }
+    assert_eq!(status, 200, "{body}");
+
+    let router_replies = agent.router_replies.lock().unwrap().clone();
+    assert_eq!(router_replies.len(), 1);
+    assert_eq!(router_replies[0].0, 200, "{}", router_replies[0].1);
+    assert!(router_replies[0].1.contains("blue and yellow"));
+
+    let sent = seen_by_provider.lock().unwrap().clone();
+    assert_eq!(sent.len(), 1, "expected exactly one provider call");
+    let parts = sent[0]["messages"][0]["content"]
+        .as_array()
+        .unwrap_or_else(|| panic!("the model got no media parts: {}", sent[0]["messages"]))
+        .clone();
+    let image_urls: Vec<&str> = parts
+        .iter()
+        .filter(|p| p["type"] == "image_url")
+        .filter_map(|p| p["image_url"]["url"].as_str())
+        .collect();
+    assert_eq!(
+        image_urls,
+        vec![format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        )]
+    );
+    assert!(
+        !sent[0].to_string().contains("nasiko-file://"),
+        "the token must not reach the provider"
+    );
+    assert!(
+        parts
+            .iter()
+            .filter_map(|p| p["text"].as_str())
+            .any(|t| t.contains("what is in the attachment?"))
+    );
+
+    server.cleanup().await;
+}
