@@ -79,8 +79,8 @@ pub(crate) async fn turn_usage_row(
         output_tokens: sum(|call| call.output_tokens),
         cache_read_tokens: sum(|call| call.cache_read_tokens),
         cache_creation_tokens: sum(|call| call.cache_creation_tokens),
-        // The exporter emits every tool call as one `execute_tool` span, which
-        // the read-back counts.
+        // The exporter emits one `execute_tool` span per tool call, and the
+        // read-back counts each of them.
         tool_call_count: u32::try_from(event.turn.tool_calls.len()).unwrap_or(u32::MAX),
         cost_estimated: cost.estimated,
         cost_usd: cost.total_usd,
@@ -89,7 +89,79 @@ pub(crate) async fn turn_usage_row(
         latency_ms: Some((ended_at - started_at).num_milliseconds().max(0)),
         started_at,
         error_count: u32::try_from(unrecovered_tool_errors(event)).unwrap_or(u32::MAX),
+        // Coding-agent tool calls are written by ingest (`write_tool_calls`), with full bodies.
+        tool_calls: Vec::new(),
     })
+}
+
+/// What the router has already booked, live, for a coding agent's calls inside
+/// one turn's window: the `router_*` share (0080) of its other rows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, sqlx::FromRow)]
+pub(crate) struct RoutedShare {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub cost_usd: f64,
+    pub prompt_cost_usd: f64,
+    pub completion_cost_usd: f64,
+}
+
+/// The router's share of `agent_id`'s spend booked on rows other than `row`
+/// within `row`'s window, or `None` when the agent is not a coding agent.
+///
+/// A local coding agent that both routes through us and reports turns has each
+/// call booked twice: live by the router (`direct:<id>` rows, or its session
+/// flow's row) and again in the turn's receipt estimate. The router's figure is
+/// the billed one, so the turn row keeps only what the router did not see.
+pub(crate) async fn routed_share_within(
+    conn: &mut sqlx::PgConnection,
+    agent_id: uuid::Uuid,
+    row: &TraceUsageRow,
+) -> Result<Option<RoutedShare>, sqlx::Error> {
+    let tolerance = crate::coding_agent_otlp::ROUTER_MATCH_TOLERANCE;
+    let ended_at = row.started_at + chrono::Duration::milliseconds(row.latency_ms.unwrap_or(0));
+    sqlx::query_as(
+        r#"SELECT COALESCE(SUM(o.router_input_tokens), 0)::bigint          AS input_tokens,
+                  COALESCE(SUM(o.router_output_tokens), 0)::bigint         AS output_tokens,
+                  COALESCE(SUM(o.router_cache_read_tokens), 0)::bigint     AS cache_read_tokens,
+                  COALESCE(SUM(o.router_cache_creation_tokens), 0)::bigint AS cache_creation_tokens,
+                  COALESCE(SUM(o.router_cost_usd), 0)::float8              AS cost_usd,
+                  COALESCE(SUM(o.router_prompt_cost_usd), 0)::float8       AS prompt_cost_usd,
+                  COALESCE(SUM(o.router_completion_cost_usd), 0)::float8   AS completion_cost_usd
+             FROM agents a
+             LEFT JOIN trace_usage o
+                    ON o.agent_id = a.id
+                   AND o.trace_id <> $2
+                   AND o.priced_by = 'router'
+                   AND o.started_at BETWEEN $3 AND $4
+            WHERE a.id = $1 AND a.coding_agent_integration_id IS NOT NULL
+            GROUP BY a.id"#,
+    )
+    .bind(agent_id)
+    .bind(&row.trace_id)
+    .bind(row.started_at - tolerance)
+    .bind(ended_at + tolerance)
+    .fetch_optional(&mut *conn)
+    .await
+}
+
+/// `row` less what the router already booked, never below zero. With nothing
+/// routed (a reporting-only install) the receipt's estimate stands as is.
+pub(crate) fn net_of_routed(row: &TraceUsageRow, routed: &RoutedShare) -> TraceUsageRow {
+    let less =
+        |reported: u64, booked: i64| reported.saturating_sub(u64::try_from(booked).unwrap_or(0));
+    let less_usd = |reported: f64, booked: f64| (reported - booked).max(0.0);
+    TraceUsageRow {
+        input_tokens: less(row.input_tokens, routed.input_tokens),
+        output_tokens: less(row.output_tokens, routed.output_tokens),
+        cache_read_tokens: less(row.cache_read_tokens, routed.cache_read_tokens),
+        cache_creation_tokens: less(row.cache_creation_tokens, routed.cache_creation_tokens),
+        cost_usd: less_usd(row.cost_usd, routed.cost_usd),
+        prompt_cost_usd: less_usd(row.prompt_cost_usd, routed.prompt_cost_usd),
+        completion_cost_usd: less_usd(row.completion_cost_usd, routed.completion_cost_usd),
+        ..row.clone()
+    }
 }
 
 fn has_tokens(call: &CodingAgentLlmCall) -> bool {
@@ -175,6 +247,79 @@ mod tests {
         CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCall,
         CodingAgentToolCallStatus, CodingAgentTurn,
     };
+
+    fn usage_row(tokens: u64, cost: f64) -> TraceUsageRow {
+        TraceUsageRow {
+            trace_id: "t".into(),
+            agent_name: "claude".into(),
+            session_id: None,
+            model: None,
+            provider: None,
+            input_tokens: tokens,
+            output_tokens: tokens,
+            cache_read_tokens: tokens,
+            cache_creation_tokens: tokens,
+            tool_call_count: 0,
+            cost_estimated: false,
+            cost_usd: cost,
+            prompt_cost_usd: cost / 2.0,
+            completion_cost_usd: cost / 2.0,
+            latency_ms: Some(1_000),
+            started_at: at(0),
+            error_count: 0,
+            tool_calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn reporting_only_turn_keeps_its_estimate() {
+        let net = net_of_routed(&usage_row(100, 2.0), &RoutedShare::default());
+        assert_eq!(
+            (net.input_tokens, net.output_tokens, net.cache_read_tokens),
+            (100, 100, 100)
+        );
+        assert_eq!(
+            (net.cost_usd, net.prompt_cost_usd, net.completion_cost_usd),
+            (2.0, 1.0, 1.0)
+        );
+    }
+
+    #[test]
+    fn routed_turn_drops_what_the_router_booked() {
+        let routed = RoutedShare {
+            input_tokens: 100,
+            output_tokens: 100,
+            cache_read_tokens: 100,
+            cache_creation_tokens: 100,
+            cost_usd: 2.0,
+            prompt_cost_usd: 1.0,
+            completion_cost_usd: 1.0,
+        };
+        let net = net_of_routed(&usage_row(100, 2.0), &routed);
+        assert_eq!((net.input_tokens, net.output_tokens), (0, 0));
+        assert_eq!((net.cache_read_tokens, net.cache_creation_tokens), (0, 0));
+        assert_eq!(net.cost_usd, 0.0);
+    }
+
+    #[test]
+    fn partly_routed_turn_keeps_the_rest_and_never_goes_negative() {
+        let routed = RoutedShare {
+            input_tokens: 40,
+            output_tokens: 500,
+            cost_usd: 0.5,
+            prompt_cost_usd: 3.0,
+            ..RoutedShare::default()
+        };
+        let net = net_of_routed(&usage_row(100, 2.0), &routed);
+        assert_eq!(
+            (net.input_tokens, net.output_tokens, net.cache_read_tokens),
+            (60, 0, 100)
+        );
+        assert_eq!(
+            (net.cost_usd, net.prompt_cost_usd, net.completion_cost_usd),
+            (1.5, 0.0, 1.0)
+        );
+    }
 
     fn at(secs: i64) -> DateTime<Utc> {
         Utc.timestamp_opt(1_700_000_000 + secs, 0).unwrap()

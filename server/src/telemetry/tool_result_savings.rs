@@ -38,7 +38,7 @@ const CHARS_PER_TOKEN: usize = 4;
 pub struct ToolResultRecord {
     pub user_id: Uuid,
     /// The orchestrator turn has no single agent — it calls whichever ones it routes to — so this
-    /// is `None` on the chat path and the per-agent breakdown resolves it through `session_traces`,
+    /// is `None` on the chat path and the per-agent breakdown resolves it through `flows`,
     /// exactly as the context report does.
     pub agent_id: Option<Uuid>,
     pub session_id: Option<String>,

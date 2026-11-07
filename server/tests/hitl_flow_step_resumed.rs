@@ -66,7 +66,7 @@ async fn start_mock_agent() -> String {
 }
 
 /// Everything `orchestrator_stream` durably writes when a delegated agent pauses, seeded directly:
-/// the chat session, its `session_traces` entry for the paused turn's flow, the flow itself, the
+/// the chat session, the paused turn's flow (filed under that session via `flows.session_id`), the
 /// `flow_steps` row stuck at `awaiting_human`, and the orchestrator-origin `hitl_requests` row.
 /// Returns `(hitl_request_id, flow_step_id)`.
 #[allow(clippy::too_many_arguments)]
@@ -88,24 +88,15 @@ async fn seed_paused_orchestrator_turn(
     .expect("seed chat_sessions");
 
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status) \
-         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused')",
+        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, session_id) \
+         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused', $3)",
     )
     .bind(paused_flow_id)
     .bind(user_id)
+    .bind(chat_session_id)
     .execute(&server.db)
     .await
     .expect("seed flows");
-
-    sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator')",
-    )
-    .bind(chat_session_id)
-    .bind(paused_flow_id)
-    .execute(&server.db)
-    .await
-    .expect("seed session_traces");
 
     let flow_step_id: Uuid = sqlx::query_scalar(
         "INSERT INTO flow_steps \
@@ -150,24 +141,15 @@ async fn seed_second_paused_turn_in_the_same_chat(
     paused_flow_id: &str,
 ) -> (Uuid, Uuid) {
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status) \
-         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused')",
+        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, session_id) \
+         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused', $3)",
     )
     .bind(paused_flow_id)
     .bind(user_id)
+    .bind(chat_session_id)
     .execute(&server.db)
     .await
     .expect("seed flows");
-
-    sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator')",
-    )
-    .bind(chat_session_id)
-    .bind(paused_flow_id)
-    .execute(&server.db)
-    .await
-    .expect("seed session_traces");
 
     let flow_step_id: Uuid = sqlx::query_scalar(
         "INSERT INTO flow_steps \

@@ -2246,7 +2246,7 @@ async fn get_execution_usage(
                       COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
                       COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION    AS cost_usd,
                       CASE WHEN COUNT(DISTINCT model) = 1 THEN MIN(model) END AS model
-               FROM trace_usage
+               FROM (SELECT trace_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens, cache_read_tokens::bigint AS cache_read_tokens, cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd, model FROM trace_usage UNION ALL SELECT trace_id, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, model FROM trace_totals) u
                WHERE trace_id = ANY($1)
                GROUP BY trace_id"#,
         )

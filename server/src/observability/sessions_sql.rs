@@ -10,7 +10,7 @@
 //!
 //! | Field | Source | Written by |
 //! |---|---|---|
-//! | `num_traces` | `session_traces` | `agent_proxy`, at forward time |
+//! | `num_traces` | `flows` | `flows` row by `session_id`, at turn start |
 //! | tokens, cost, latency, window | `trace_usage` | `trace_materializer` |
 //! | `first_input` / `last_output` | `chat_messages` | the chat path |
 //! | `status`, `failed_flows` | `flows` | `agent_proxy`, `router::a2a_dispatch` |
@@ -18,7 +18,7 @@
 //!
 //! A **coding-agent session** (one with `coding_agent_telemetry_events`
 //! receipts) is the exception for turns, tokens, duration and status. Its
-//! turns never cross the proxy, so it has no `session_traces` or `flows` rows,
+//! turns never cross the proxy, so it has no `flows` rows,
 //! and its `trace_usage` arrives only as `receipt_materializer` works through
 //! a Tempo backlog. The receipts are exact and immediate, so for those
 //! sessions:
@@ -30,7 +30,7 @@
 //! | cost | `chat_messages.cost_usd` of the imported turns, else `trace_usage` |
 //! | `status` | `failed` if any turn had an erroring tool call, else `ok` |
 //!
-//! `session_traces` is the authoritative session-to-trace index rather than
+//! `flows` is the authoritative session-to-trace index rather than
 //! `trace_usage`, which only has rows for token-bearing traces: counting from
 //! it would hide every session whose agent never made an LLM call.
 //!
@@ -432,8 +432,8 @@ SELECT p.session_id,
   LEFT JOIN agents a ON a.id = p.agent_id
   LEFT JOIN LATERAL (
         SELECT count(*)::bigint AS trace_count
-          FROM session_traces st
-         WHERE st.session_id = p.session_id
+          FROM flows f
+         WHERE f.session_id = p.session_id
   ) tr ON TRUE
   LEFT JOIN LATERAL (
         -- trace_usage is keyed (trace_id, agent_name), so a multi-agent trace
@@ -456,7 +456,7 @@ SELECT p.session_id,
                        min(u.started_at) AS started,
                        max(u.latency_ms) AS latency,
                        sum(u.error_count)::bigint AS errors
-                  FROM trace_usage u
+                  FROM (SELECT trace_id, session_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens, cache_read_tokens::bigint AS cache_read_tokens, cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd, started_at, latency_ms::bigint AS latency_ms, error_count FROM trace_usage UNION ALL SELECT trace_id, session_id, tokens, 0::bigint, 0::bigint, 0::bigint, cost_usd, first_at, max_latency_ms, errors::int FROM trace_totals) u
                  WHERE u.session_id = p.session_id
                  GROUP BY u.trace_id
           ) t

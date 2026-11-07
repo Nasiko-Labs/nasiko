@@ -24,7 +24,6 @@ use uuid::Uuid;
 
 use super::{OverviewError, Range, Scope};
 use crate::catalog::routes::{agent_access_predicate, live_status};
-use crate::observability::savings::{PRICE_JOIN, PRICED_COST};
 use crate::state::AppState;
 
 /// The days the history slider and every trend cover, today included.
@@ -441,7 +440,7 @@ pub(super) async fn snapshot(
             expired_connections(db, scope.me),
             enabled_access(db, &ids),
             tool_calls(
-                db,
+                state,
                 &ids,
                 Window {
                     from: w.earliest(),
@@ -708,9 +707,9 @@ async fn agent_models(
     w: Window,
 ) -> Result<Vec<AgentModelRow>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT agent_id, model, COUNT(*)::bigint AS calls, COALESCE(SUM(cost_usd), 0)::float8 AS spend \
-           FROM trace_usage \
-          WHERE agent_id = ANY($1) AND model IS NOT NULL AND started_at >= $2 AND started_at < $3 \
+        "SELECT agent_id, model, SUM(traces)::bigint AS calls, COALESCE(SUM(cost_usd), 0)::float8 AS spend \
+           FROM trace_spend \
+          WHERE agent_id = ANY($1) AND model IS NOT NULL AND ts >= $2 AND ts < $3 \
           GROUP BY 1, 2",
     )
     .bind(ids)
@@ -850,14 +849,68 @@ struct RawToolCall {
     errors: i64,
 }
 
-async fn tool_calls(db: &PgPool, ids: &[Uuid], w: Window) -> Result<Vec<RawToolCall>, sqlx::Error> {
+/// Gateway tool calls per agent/tool/day. New calls are hot in `tool_calls`; calls recorded
+/// before 0082 are `mcp_tool_call` rows of the retired call log, drained to the cold
+/// `token_usage` dataset (0079), so both are read.
+async fn tool_calls(
+    state: &AppState,
+    ids: &[Uuid],
+    w: Window,
+) -> Result<Vec<RawToolCall>, sqlx::Error> {
+    let mut out: Vec<RawToolCall> = tool_calls_hot(&state.db, ids, w).await?;
+    let filter = nasiko_event_store::UsageFilter {
+        operation_type: Some("mcp_tool_call".into()),
+        ..Default::default()
+    };
+    let range = nasiko_event_store::UsageRange {
+        from: w.from,
+        to: w.to,
+    };
+    let cold: Vec<nasiko_event_store::token_usage::TokenUsageRow> =
+        match state.event_store().cold_rows(&filter, range).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(%e, "cold tool-call read failed; hot rows only");
+                Vec::new()
+            }
+        };
+    let mut agg: std::collections::HashMap<(Uuid, String, NaiveDate), (i64, i64)> =
+        std::collections::HashMap::new();
+    for r in cold {
+        let Some(agent_id) = r.agent_id.filter(|a| ids.contains(a)) else {
+            continue;
+        };
+        let e = agg
+            .entry((agent_id, r.model, r.created_at.date_naive()))
+            .or_default();
+        e.0 += 1;
+        e.1 += i64::from(r.finish_reason.as_deref() == Some("error"));
+    }
+    out.extend(
+        agg.into_iter()
+            .map(|((agent_id, tool, day), (calls, errors))| RawToolCall {
+                agent_id,
+                tool,
+                day,
+                calls,
+                errors,
+            }),
+    );
+    Ok(out)
+}
+
+async fn tool_calls_hot(
+    db: &PgPool,
+    ids: &[Uuid],
+    w: Window,
+) -> Result<Vec<RawToolCall>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT agent_id, model AS tool, (created_at AT TIME ZONE 'UTC')::date AS day, \
+        "SELECT agent_id, tool_name AS tool, (started_at AT TIME ZONE 'UTC')::date AS day, \
                 COUNT(*)::bigint AS calls, \
-                COUNT(*) FILTER (WHERE finish_reason = 'error')::bigint AS errors \
-           FROM token_usage \
-          WHERE operation_type = 'mcp_tool_call' AND agent_id = ANY($1) \
-            AND created_at >= $2 AND created_at < $3 \
+                COUNT(*) FILTER (WHERE status = 'error')::bigint AS errors \
+           FROM tool_calls \
+          WHERE tool_kind = 'mcp' AND agent_id = ANY($1) \
+            AND started_at >= $2 AND started_at < $3 \
           GROUP BY 1, 2, 3",
     )
     .bind(ids)
@@ -1000,14 +1053,12 @@ async fn saved_daily(
     ids: &[Uuid],
     w: Window,
 ) -> Result<Vec<DayAmount>, sqlx::Error> {
-    let sql = format!(
-        "SELECT (ts.created_at AT TIME ZONE 'UTC')::date AS day, {PRICED_COST} AS amount \
-           FROM token_savings ts {PRICE_JOIN} \
-          WHERE ts.created_at >= $1 AND ts.created_at < $2 \
-            AND ($3::uuid IS NULL OR ts.user_id = $3 OR ts.agent_id = ANY($4)) \
-          GROUP BY 1"
-    );
-    sqlx::query_as(&sql)
+    let sql: &str = "SELECT (ss.ts AT TIME ZONE 'UTC')::date AS day, COALESCE(SUM(ss.priced_cost_usd), 0)::FLOAT8 AS amount \
+           FROM savings_spend ss \
+          WHERE ss.ts >= $1 AND ss.ts < $2 \
+            AND ($3::uuid IS NULL OR ss.user_id = $3 OR ss.agent_id = ANY($4)) \
+          GROUP BY 1";
+    sqlx::query_as(sql)
         .bind(w.from)
         .bind(w.to)
         .bind(scope.listing_user())
@@ -1028,15 +1079,13 @@ async fn compression_rate(
         .filter(|a| a.compress_enabled)
         .map(|a| a.id)
         .collect();
-    let sql = format!(
-        "SELECT COALESCE((SELECT {PRICED_COST} FROM token_savings ts {PRICE_JOIN} \
-                           WHERE ts.layer = 'compress_payload' AND ts.agent_id = ANY($1) \
-                             AND ts.created_at >= $2 AND ts.created_at < $3), 0)::float8 AS saved, \
-                COALESCE((SELECT SUM(cost_usd) FROM token_usage \
-                           WHERE agent_id = ANY($1) AND operation_type <> 'mcp_tool_call' \
-                             AND created_at >= $2 AND created_at < $3), 0)::float8 AS spend"
-    );
-    sqlx::query_as(&sql)
+    let sql: &str = "SELECT COALESCE((SELECT SUM(ss.priced_cost_usd) FROM savings_spend ss \
+                           WHERE ss.layer = 'compress_payload' AND ss.agent_id = ANY($1) \
+                             AND ss.ts >= $2 AND ss.ts < $3), 0)::float8 AS saved, \
+                COALESCE((SELECT SUM(cost_usd) FROM trace_spend \
+                           WHERE agent_id = ANY($1) \
+                             AND ts >= $2 AND ts < $3), 0)::float8 AS spend";
+    sqlx::query_as(sql)
         .bind(&on)
         .bind(w.from)
         .bind(w.to)
@@ -1051,9 +1100,9 @@ async fn routed_spend(
     w: Window,
 ) -> Result<Vec<AgentAmount>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT agent_id, COALESCE(SUM(cost_usd), 0)::float8 AS amount FROM token_usage \
-          WHERE agent_id = ANY($1) AND operation_type <> 'mcp_tool_call' \
-            AND created_at >= $2 AND created_at < $3 GROUP BY 1",
+        "SELECT agent_id, COALESCE(SUM(cost_usd), 0)::float8 AS amount FROM trace_spend \
+          WHERE agent_id = ANY($1) \
+            AND ts >= $2 AND ts < $3 GROUP BY 1",
     )
     .bind(ids)
     .bind(w.from)

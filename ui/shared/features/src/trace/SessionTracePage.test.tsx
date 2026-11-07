@@ -300,3 +300,52 @@ describe('Session trace: the Optimization block', () => {
     expect(screen.queryByText(optimizationCopy.trace.pointer)).toBeNull()
   })
 })
+
+describe('Expired trace', () => {
+  const call = (over: Record<string, unknown>) => ({
+    trace_id: data.showcaseTraceId,
+    call_id: 'c1',
+    agent_name: null,
+    tool_name: 'read_file',
+    tool_kind: null,
+    status: 'succeeded',
+    error: null,
+    arguments: null,
+    output: null,
+    duration_ms: 120,
+    started_at: '2026-07-01T10:00:00Z',
+    ...over,
+  })
+  const expire = (calls: unknown[]) =>
+    server.use(
+      http.get('/api/observability/trace/:traceId', () =>
+        HttpResponse.json({ detail: 'not found' }, { status: 404 }),
+      ),
+      http.get('/api/observability/session/:sessionId/tool-calls', ({ params }) =>
+        HttpResponse.json({ session_id: params.sessionId, tool_calls: calls }),
+      ),
+    )
+
+  it('a 404 trace lists its stored tool calls, failed ones marked', async () => {
+    expire([
+      call({}),
+      call({ call_id: 'c2', tool_name: 'run_shell', status: 'failed' }),
+      call({ call_id: 'c3', tool_name: 'other_trace_tool', trace_id: 'other' }),
+    ])
+    renderApp(`/sessions/${SHOWCASE_SESSION}?trace=${data.showcaseTraceId}`)
+    expect(
+      await screen.findByText(copy.traceExpiredTools, {}, { timeout: 8000 }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('read_file')).toBeInTheDocument()
+    expect(screen.getByText('run_shell')).toBeInTheDocument()
+    expect(screen.queryByText('other_trace_tool')).toBeNull()
+  })
+
+  it('a 404 trace with no stored tool calls says so', async () => {
+    expire([])
+    renderApp(`/sessions/${SHOWCASE_SESSION}?trace=${data.showcaseTraceId}`)
+    expect(
+      await screen.findByText(copy.traceExpiredNoTools, {}, { timeout: 8000 }),
+    ).toBeInTheDocument()
+  })
+})

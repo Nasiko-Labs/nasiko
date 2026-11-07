@@ -41,18 +41,19 @@ async fn extracted_usage_reconciles_with_token_usage() {
         .await
         .expect("connect");
 
-    // Every trace the llm-router billed. `token_usage` is written from the provider's own
-    // usage object, so it is the reference the trace-derived figures have to agree with.
+    // Every trace the llm-router billed. Its `router_*` share is written from the
+    // provider's own usage object, so it is the reference the trace-derived figures have
+    // to agree with. `direct:` rows carry no trace to read back.
     let billed: Vec<(String, i64, i64, i64)> = sqlx::query_as(
-        "SELECT session_id, sum(input_tokens)::int8, sum(cache_read_input_tokens)::int8,
-                sum(output_tokens)::int8
-           FROM token_usage
-          WHERE session_id IS NOT NULL AND operation_type = 'direct_llm'
-          GROUP BY session_id",
+        "SELECT trace_id, sum(router_input_tokens)::int8, sum(router_cache_read_tokens)::int8,
+                sum(router_output_tokens)::int8
+           FROM trace_usage
+          WHERE priced_by = 'router' AND trace_id NOT LIKE 'direct:%'
+          GROUP BY trace_id",
     )
     .fetch_all(&pool)
     .await
-    .expect("read token_usage");
+    .expect("read trace_usage");
     assert!(!billed.is_empty(), "no billed traces to reconcile against");
 
     let p = provider().await;

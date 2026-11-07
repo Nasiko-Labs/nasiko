@@ -2650,7 +2650,7 @@ export interface components {
             /** Format: double */
             avg_latency_ms?: number | null;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -2908,7 +2908,7 @@ export interface components {
             /** Format: date */
             date: string;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -3353,7 +3353,7 @@ export interface components {
             model: string;
             provider: string;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -4216,7 +4216,7 @@ export interface components {
             /** Format: int64 */
             period_days: number;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */

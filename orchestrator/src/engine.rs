@@ -266,8 +266,9 @@ impl RoutingEngine for OssRoutingEngine {
                 // before the log row rather than after, because the row points
                 // at it; skipping this is what made a tuning session's rejected
                 // calls free in FinOps.
-                let selection_token_usage_id =
-                    write_selector_token_usage(pool, req.user_id, &req.session_id, &usage).await;
+                write_selector_usage(pool, req.user_id, &req.session_id, &usage).await;
+                // trace_usage rows are keyed (trace_id, agent_name), not by uuid.
+                let selection_token_usage_id: Option<Uuid> = None;
                 // A refusal is still a routing decision: log it like any other,
                 // so it isn't invisible to /api/orchestrator/stats and FinOps —
                 // only successful selections used to reach this log table.
@@ -314,12 +315,12 @@ impl RoutingEngine for OssRoutingEngine {
         );
         tracing::info!(total_elapsed_ms = total_ms, "routing_engine: route() done");
 
-        // Write selector token usage to the token_usage table (fire-and-forget)
-        let selection_token_usage_id: Option<Uuid> = if let Some(ref cr) = selector_usage {
-            write_selector_token_usage(pool, req.user_id, &req.session_id, cr).await
-        } else {
-            None
-        };
+        // Add selector usage to trace_usage (non-fatal). The log row's
+        // selection_token_usage_id stays NULL: trace_usage has no row uuid.
+        if let Some(ref cr) = selector_usage {
+            write_selector_usage(pool, req.user_id, &req.session_id, cr).await;
+        }
+        let selection_token_usage_id: Option<Uuid> = None;
 
         // Fire-and-forget log insert (never blocks the response)
         let entry = RouterLogEntry {
@@ -407,43 +408,35 @@ fn spawn_router_log(pool: &PgPool, entry: RouterLogEntry) {
     });
 }
 
-/// Writes the Stage 3 selector's token usage to the `token_usage` table.
-/// Returns the UUID of the inserted row, or None on failure.
-async fn write_selector_token_usage(
+/// Adds the Stage 3 selector's token usage to `trace_usage` under
+/// `(session_id, "router_selection")`. Failures are logged and swallowed.
+async fn write_selector_usage(
     pool: &PgPool,
     user_id: Uuid,
     session_id: &str,
     cr: &crate::providers::CompletionResult,
-) -> Option<Uuid> {
-    let input = cr.usage.prompt_tokens;
-    let output = cr.usage.completion_tokens;
-    let total = cr.usage.total_tokens;
-
-    let result = sqlx::query_scalar::<_, Uuid>(
-        r#"INSERT INTO token_usage (
-            user_id, operation_type, session_id, provider, model,
-            input_tokens, output_tokens, total_tokens,
-            latency_ms, streaming, metadata
-        ) VALUES ($1, 'router_selection', $2, $3, $4, $5, $6, $7, $8, false, '{}'::jsonb)
-        RETURNING id"#,
+) {
+    let usage = crate::maf::llm::LlmUsage {
+        input_tokens: cr.usage.prompt_tokens as i64,
+        output_tokens: cr.usage.completion_tokens as i64,
+        total_tokens: cr.usage.total_tokens as i64,
+        cached_tokens: 0,
+        model: cr.model.clone(),
+        latency_ms: cr.latency_ms as i64,
+    };
+    let metadata = serde_json::json!({ "operation_type": "router_selection" });
+    let result = crate::maf::executor::insert_trace_usage(
+        pool,
+        user_id,
+        Some(session_id),
+        "router_selection",
+        &cr.provider,
+        &usage,
+        metadata,
     )
-    .bind(user_id)
-    .bind(session_id)
-    .bind(&cr.provider)
-    .bind(&cr.model)
-    .bind(input)
-    .bind(output)
-    .bind(total)
-    .bind(cr.latency_ms)
-    .fetch_one(pool)
     .await;
-
-    match result {
-        Ok(id) => Some(id),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to write selector token usage (non-fatal)");
-            None
-        }
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "failed to write selector usage (non-fatal)");
     }
 }
 

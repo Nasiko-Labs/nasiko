@@ -9,6 +9,7 @@ pub mod savings;
 pub mod savings_factors;
 pub mod service;
 pub mod session_resolver;
+pub mod session_store;
 pub mod sessions_sql;
 pub mod subagents_sql;
 pub mod trace_materializer;

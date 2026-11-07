@@ -81,3 +81,6 @@ gke-key.json
 /codex-agent/
 /opencode-agent/
 /*-agent.zip
+
+# lakehouse local cold data
+/data/

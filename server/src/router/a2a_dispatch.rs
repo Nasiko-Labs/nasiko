@@ -24,9 +24,9 @@ use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse
 use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
-use nasiko_llm_router::attachments::{AttachmentRef, MARKER_TTL_SECS, MarkerClaims, MarkerSigner};
 
 use crate::acl::CpCallGuard;
+use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::orchestrator_policy::TurnKind;
 use crate::state::AppState;
@@ -217,10 +217,7 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let InboundAttachments {
-        parts: file_parts,
-        chat_files,
-    } = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -262,7 +259,7 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store();
+    let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
         user_id,
@@ -324,7 +321,6 @@ pub async fn a2a_dispatch_handler(
             &context_id,
             user_id,
             &file_parts,
-            &chat_files,
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -343,7 +339,6 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts,
-                attached_files: chat_files,
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -471,7 +466,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
-    pub(crate) attached_files: Vec<AttachedFile>,
     /// Whether this turn was started by the user or reports on work an earlier
     /// turn already did. The operator's policy may treat the two differently —
     /// see [`TurnKind`].
@@ -521,7 +515,6 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
-        attached_files,
         kind,
         context_report,
     } = turn;
@@ -690,7 +683,7 @@ pub(crate) async fn orchestrator_stream(
         }
     };
 
-    let mut config = OrchestratorConfig {
+    let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
         // default rather than re-reading the env var here with a placeholder
@@ -699,13 +692,14 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+            .await
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
         preamble,
         outbound_prefix: org_context,
-        attachment_note: None,
         // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
         // deliberately inert — without this the compressor is compiled in but unreachable.
         context: nasiko_react_agent::ContextConfig {
@@ -755,7 +749,7 @@ pub(crate) async fn orchestrator_stream(
 
     // Selection ran in the caller, before any of this existed; `dispatch_span` is the span the
     // trace page looks for, so the report is attached here. `agent_id` stays unset — routing has
-    // not chosen one yet — and the read path resolves it through `session_traces`, which this turn
+    // not chosen one yet — and the read path resolves it through `flows`, which this turn
     // writes as soon as it dispatches.
     if let Some(report) = context_report {
         crate::telemetry::record_context_report(
@@ -796,26 +790,10 @@ pub(crate) async fn orchestrator_stream(
             root_agent_name: "orchestrator",
             title: Some(query),
             metadata: &flow_metadata,
-            session_id: None,
+            session_id: Some(context_id),
         },
     )
     .await?;
-    config.attachment_note =
-        attachment_note(state.marker_signer.as_deref(), &attached_files, &flow_id);
-
-    // `flow_id` doubles as the trace id (see comment below) — index it against
-    // the session so `nasiko history`'s Tempo-miss fallback
-    // (`PgSessionIdResolver::traces_for_session`) can find it, the same way
-    // `agent_proxy.rs` indexes every direct-agent call.
-    let _ = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator') \
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(&flow_id)
-    .execute(&state.db)
-    .await;
 
     // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
     // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
@@ -840,6 +818,7 @@ pub(crate) async fn orchestrator_stream(
         user_id,
         context_id.to_string(),
         state.genai_metrics.agent_call_meter(),
+        state.agent_wake.clone(),
     );
 
     // `A2aClient`'s own default is deliberately short — it is shared with agent
@@ -907,7 +886,7 @@ pub(crate) async fn orchestrator_stream(
         let mut content_started = false;
         // Persist on Usage, before yielding a terminal event. Only attribution
         // waits for the next ToolCall; client disconnect cannot lose a pending row.
-        let mut pending_usage: Option<Uuid> = None;
+        let mut pending_usage: Option<crate::usage::TraceUsageKey> = None;
 
         loop {
             tokio::select! {
@@ -921,10 +900,10 @@ pub(crate) async fn orchestrator_stream(
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolCall { agent, message, turn, policy_score } => {
-                            if let Some(usage_id) = pending_usage.take() {
+                            if let Some(key) = pending_usage.take() {
                                 let result = sqlx::query(
-                                    "UPDATE token_usage SET agent_id = (SELECT id FROM agents WHERE name = $2 AND status = 'running') WHERE id = $1 AND user_id = $3",
-                                ).bind(usage_id).bind(&agent).bind(user_id).execute(&db).await;
+                                    "UPDATE trace_usage SET agent_id = COALESCE(agent_id, (SELECT id FROM agents WHERE name = $3 AND status = 'running')) WHERE trace_id = $1 AND agent_name = $2 AND user_id = $4",
+                                ).bind(&key.trace_id).bind(&key.agent_name).bind(&agent).bind(user_id).execute(&db).await;
                                 if let Err(error) = result {
                                     tracing::warn!(%error, "failed to attribute orchestrator usage");
                                 }
@@ -1447,7 +1426,6 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
-    attached_files: &[AttachedFile],
     // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
     // address history by contextId alone. Threaded through purely so a HITL pause created on
     // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
@@ -1564,7 +1542,7 @@ async fn agent_stream(
             root_agent_name: &agent.name,
             title: Some(query),
             metadata: &flow_metadata,
-            session_id: None,
+            session_id: Some(context_id),
         },
     )
     .await?;
@@ -1572,30 +1550,11 @@ async fn agent_stream(
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
-    let attachment_note = attachment_note(state.marker_signer.as_deref(), attached_files, &flow_id);
-
-    // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
-    // `agent_proxy.rs` already do. Without it this branch — every "chat with
-    // this specific agent" request — had no DB record at all, so
-    // `/api/observability/session/{id}` could only resolve it through the
-    // Tempo `session.id` attribute and returned 404 the moment that lookup
-    // missed. `flow_id` doubles as the trace id (see the flow-origin note).
-    let _ = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(&flow_id)
-    .bind(agent.id)
-    .bind(&agent.name)
-    .execute(&state.db)
-    .await;
 
     // Minimal-code ladder injection: only what's actually FORWARDED to the
     // agent gets the addendum appended — `query` itself stays untouched, so
     // everything above that already used it (the flow title, the span's
-    // captured input, session_traces) keeps showing the real conversation,
+    // captured input, flows) keeps showing the real conversation,
     // not an implementation detail. The agent needs zero code of its own to
     // support this: it just sees a longer task description, exactly as it
     // would if a human had pasted the same extra paragraph in by hand.
@@ -1647,7 +1606,6 @@ async fn agent_stream(
             file_parts,
         )
     };
-    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -1674,6 +1632,12 @@ async fn agent_stream(
         }
         req
     };
+
+    state
+        .agent_wake
+        .before_forward(agent.id)
+        .await
+        .map_err(A2aDispatchError::Unavailable)?;
 
     // In flight until the agent's reply is complete. Starts as `Error`, so the early returns
     // below count as failures.
@@ -1721,6 +1685,7 @@ async fn agent_stream(
     let hitl_store = state.hitl_store.clone();
     let agent_id_for_hitl = agent.id;
     let agent_start = Instant::now();
+    let call_timeout_secs = state.config.agent_call_timeout_secs;
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
@@ -1764,8 +1729,13 @@ async fn agent_stream(
                         };
                         let chunk = match chunk_result {
                             Ok(c) => c,
-                            Err(_) => {
+                            Err(e) => {
                                 request_guard.set_outcome(RequestOutcome::Error);
+                                // The reply was cut off, so the turn did not complete. Without a
+                                // reason here the tail below would report it "completed".
+                                if agent_error.is_none() {
+                                    agent_error = Some(stream_cut_reason(&e, call_timeout_secs));
+                                }
                                 agent_done = true;
                                 continue;
                             }
@@ -1871,20 +1841,22 @@ async fn agent_stream(
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                 }
 
-                if let Some(err) = agent_error {
-                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
+                if let Some(err) = &agent_error {
+                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, err))));
                 } else {
                     yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                 }
 
                 // Guarded on 'running' like the other completion sites: a terminal
-                // 'failed'/'paused' is never downgraded by a later completion.
+                // 'failed'/'paused' is never downgraded by a later completion. A turn that ended
+                // in an error is recorded as failed, with the reason the user was shown.
                 let _ = sqlx::query(
-                    r#"UPDATE flows SET status = 'completed',
+                    r#"UPDATE flows SET status = CASE WHEN $2::TEXT IS NULL THEN 'completed' ELSE 'failed' END,
+                       error_message = $2,
                        duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                        completed_at = now()
                        WHERE flow_id = $1 AND status = 'running'"#,
-                ).bind(&flow_id_cleanup).execute(&db).await;
+                ).bind(&flow_id_cleanup).bind(agent_error.as_deref()).execute(&db).await;
                 flow_events.remove(&flow_id_cleanup).await;
             }
         };
@@ -1908,7 +1880,6 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
-            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2234,7 +2205,6 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
-            attached_files: Vec::new(),
             kind: TurnKind::User,
             // This path mints a fresh context id, so no history was selected and there is nothing
             // to report. A zero row here would count as a request that optimized nothing.
@@ -2253,9 +2223,10 @@ const MAX_ATTACHED_FILES: usize = 10;
 /// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
 /// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
 /// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB). Over it, the turn is refused with a message
-/// the user can act on rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
+/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
+/// the storage limit would be. Over it, the turn is refused with a message the user can act on
+/// rather than quietly reaching the agent without the file it was about.
+const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
 
 /// What the caller attached to this turn, in the two forms this endpoint accepts.
 ///
@@ -2267,13 +2238,18 @@ const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
 ///   than that same 2 MiB limit can be sent at all.
 ///
 /// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage. Order follows the caller's list.
+/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
+/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
+///
+/// An id that resolves to nothing is skipped rather than failing the turn: the text still
+/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
+/// budget is the opposite — the turn is about the file, so it fails loudly.
 async fn inbound_file_parts(
     state: &AppState,
     params: &nasiko_types::a2a::SendMessageRequest,
     session_id: Option<&str>,
     user_id: Uuid,
-) -> Result<InboundAttachments, A2aDispatchError> {
+) -> Result<Vec<a2a::Part>, A2aDispatchError> {
     let mut parts: Vec<a2a::Part> = params
         .message
         .parts
@@ -2281,48 +2257,26 @@ async fn inbound_file_parts(
         .filter(|p| matches!(p.content, PartContent::Raw(_)))
         .cloned()
         .collect();
-    let inline_bytes: u64 = parts
-        .iter()
-        .map(|p| match &p.content {
-            PartContent::Raw(data) => data.len() as u64,
-            _ => 0,
-        })
-        .sum();
 
-    let mut ids: Vec<Uuid> = Vec::new();
-    let listed = params
+    let ids: Vec<Uuid> = params
         .metadata
         .as_ref()
         .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array());
-    for value in listed.into_iter().flatten() {
-        let raw = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        let id = Uuid::parse_str(&raw).map_err(|_| {
-            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
-        })?;
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    if ids.len() + parts.len() > MAX_ATTACHED_FILES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "at most {MAX_ATTACHED_FILES} attachments per message"
-        )));
-    }
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .take(MAX_ATTACHED_FILES)
+                .collect()
+        })
+        .unwrap_or_default();
     if ids.is_empty() {
-        check_attached_total(inline_bytes)?;
-        return Ok(InboundAttachments {
-            parts,
-            chat_files: Vec::new(),
-        });
+        return Ok(parts);
     }
 
-    let rows = sqlx::query_as::<_, AttachedRow>(
-        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
-                cmf.storage_uri \
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
+        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
            FROM chat_message_files cmf \
            JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
           WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
@@ -2335,133 +2289,37 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let mut by_id: std::collections::HashMap<Uuid, AttachedRow> =
-        rows.into_iter().map(|row| (row.id, row)).collect();
-    let mut resolved = Vec::with_capacity(ids.len());
-    for id in &ids {
-        let Some(row) = by_id.remove(id) else {
-            return Err(A2aDispatchError::InvalidRequest(format!(
-                "attachment {id} was not found"
-            )));
-        };
-        if !row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
-            return Err(A2aDispatchError::InvalidRequest(format!(
-                "'{}' can't be attached to a message",
-                row.filename
-            )));
-        }
-        resolved.push(row);
-    }
-    let stored_bytes: u64 = resolved
-        .iter()
-        .map(|row| row.size_bytes.max(0) as u64)
-        .sum();
-    check_attached_total(inline_bytes + stored_bytes)?;
-
-    let mut chat_files = Vec::with_capacity(resolved.len());
-    for row in resolved {
-        match state.oci_storage.get_blob(&row.storage_uri).await {
-            Ok(bytes) => parts.push(a2a::file_part(
-                bytes.to_vec(),
-                Some(row.filename.clone()),
-                Some(row.mime_type.clone()),
-            )),
-            Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
-                return Err(A2aDispatchError::InvalidRequest(format!(
-                    "attachment '{}' is no longer stored",
-                    row.filename
-                )));
-            }
-            Err(e) => {
-                tracing::warn!(id = %row.id, %e, "attachment bytes unreadable");
-                return Err(A2aDispatchError::Unavailable(format!(
-                    "attachment '{}' could not be read; try again",
-                    row.filename
-                )));
-            }
-        }
-        chat_files.push(AttachedFile {
-            reference: AttachmentRef::ChatUpload {
-                session_id: row.session_id,
-                file_id: row.id,
-            },
-            filename: row.filename,
-            media_type: row.mime_type,
-            size_bytes: row.size_bytes.max(0) as u64,
-        });
-    }
-
-    Ok(InboundAttachments { parts, chat_files })
-}
-
-#[derive(sqlx::FromRow)]
-struct AttachedRow {
-    id: Uuid,
-    session_id: String,
-    filename: String,
-    mime_type: String,
-    size_bytes: i64,
-    storage_uri: String,
-}
-
-pub(crate) struct InboundAttachments {
-    pub(crate) parts: Vec<a2a::Part>,
-    pub(crate) chat_files: Vec<AttachedFile>,
-}
-
-pub(crate) struct AttachedFile {
-    reference: AttachmentRef,
-    filename: String,
-    media_type: String,
-    size_bytes: u64,
-}
-
-fn attachment_note(
-    signer: Option<&MarkerSigner>,
-    files: &[AttachedFile],
-    flow_id: &str,
-) -> Option<String> {
-    let signer = signer?;
-    if files.is_empty() {
-        return None;
-    }
-    let expires_at = chrono::Utc::now().timestamp() + MARKER_TTL_SECS;
-    let lines: Vec<String> = files
-        .iter()
-        .map(|file| {
-            signer.marker_line(&MarkerClaims {
-                reference: file.reference.clone(),
-                filename: file.filename.clone(),
-                media_type: file.media_type.clone(),
-                size_bytes: file.size_bytes,
-                flow_id: flow_id.to_string(),
-                expires_at,
-            })
-        })
-        .collect();
-    Some(lines.join("\n"))
-}
-
-fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
-    let Some(note) = note else { return };
-    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
-    let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
-        return;
-    };
-    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
-}
-
-const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
-
-fn check_attached_total(total: u64) -> Result<(), A2aDispatchError> {
+    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
     if total > MAX_ATTACHED_BYTES {
         return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {:.1} MB, over the {} MB per-message limit",
-            total as f64 / (1024.0 * 1024.0),
-            MAX_ATTACHED_BYTES / (1024 * 1024)
+            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
         )));
     }
-    Ok(())
+
+    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
+        rows.iter().map(|r| (r.0, r)).collect();
+    for id in &ids {
+        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
+            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
+            continue;
+        };
+        if storage_uri.starts_with("workspace://") {
+            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
+            continue;
+        }
+        match state.oci_storage.get_blob(storage_uri).await {
+            Ok(bytes) => parts.push(a2a::file_part(
+                bytes.to_vec(),
+                Some(filename.clone()),
+                Some(mime_type.clone()),
+            )),
+            Err(e) => {
+                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
+            }
+        }
+    }
+
+    Ok(parts)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -2636,8 +2494,8 @@ async fn coding_agent_stream(
     state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
     let flow_metadata = json!({ "context_id": context_id, "user_message": user_message });
     let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata, session_id)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
            ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
     )
     .bind(&flow_id)
@@ -2646,6 +2504,7 @@ async fn coding_agent_stream(
     .bind(&agent.name)
     .bind(query)
     .bind(&flow_metadata)
+    .bind(context_id)
     .execute(&state.db)
     .await;
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
@@ -2818,6 +2677,17 @@ fn non_streaming_reply_outcome(status_ok: bool, body: &serde_json::Value) -> Req
     RequestOutcome::from_success(status_ok && body.get("error").is_none() && !task_failed)
 }
 
+/// Why the agent's reply stream ended before its final event, in words for the user.
+fn stream_cut_reason(err: &reqwest::Error, call_timeout_secs: u64) -> String {
+    if err.is_timeout() {
+        format!(
+            "The agent did not finish within the {call_timeout_secs}-second limit, so its reply was cut off."
+        )
+    } else {
+        "The connection to the agent was lost before it finished replying.".to_string()
+    }
+}
+
 fn extract_failure_message(data: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(data).ok()?;
     let status_update = parsed
@@ -2964,7 +2834,7 @@ pub(crate) async fn persist_direct_chat_pause(
         // `.with_chat_session_id` on BOTH arms: the id is computed and FK-validated above for every
         // origin, and applying it to only one silently cost the proxy path two things (found in
         // review) — the row missed `list_for_chat_session`, so a proxy pause never appeared on
-        // session load, and `deliver`'s `session_traces` insert is guarded on this being `Some`,
+        // session load, and `deliver`'s flow registration is guarded on this being `Some`,
         // so every MCP tool-approval retry after the resume resolved to a fresh trace id and
         // re-asked the human to approve the same tool.
         nasiko_hitl::HitlOrigin::AgentProxy => nasiko_hitl::NewHitlRequest::agent_proxy(
@@ -3170,6 +3040,9 @@ pub enum A2aDispatchError {
     NoAgents,
     AgentNotFound(String),
     Internal(String),
+    /// The agent cannot take the call right now. The message comes from the
+    /// [`crate::agent_wake::AgentWake`] seam and is already caller-safe.
+    Unavailable(String),
     /// A `reconnect_after_hitl_id` reconnect was for a HITL row that exists but isn't the
     /// caller's — same rule `authorize_hitl_action` enforces for every other `/api/hitl/*` route.
     Forbidden(String),
@@ -3181,7 +3054,6 @@ pub enum A2aDispatchError {
         status: StatusCode,
         message: String,
     },
-    Unavailable(String),
 }
 
 impl IntoResponse for A2aDispatchError {
@@ -3485,5 +3357,50 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_cut_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// HD-04: an agent that is still working when the agent-call budget runs out. The relay's
+    /// stream read fails with a timeout, and the user must be told so, not shown "completed".
+    #[tokio::test]
+    async fn a_reply_cut_off_by_the_time_limit_is_reported_as_such() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            // Headers and the first event, then silence: the agent is still working.
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {}\n\n",
+                )
+                .await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_millis(300))
+            .send()
+            .await
+            .unwrap();
+        let mut stream = response.bytes_stream();
+        let err = loop {
+            match stream.next().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!("the stream ended without the timeout error"),
+            }
+        };
+
+        let reason = stream_cut_reason(&err, 180);
+        assert!(reason.contains("180-second limit"), "{reason}");
     }
 }

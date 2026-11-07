@@ -9,10 +9,9 @@
 //! keyed by `(trace_id, agent_name)`. Multi-agent traces are correctly
 //! split so each agent's spend is attributed independently.
 //!
-//! **Coding-agent direct calls** (Claude Code, Codex, OpenCode) bypass the
-//! A2A proxy entirely and have no OTel traces. They are picked up by a
-//! second pass (`sync_direct_token_usage`) that reads `token_usage` rows for
-//! coding agents and upserts them with a synthetic `direct:<id>` trace key.
+//! **Spend** is written live by the LLM router (`priced_by='router'`); this
+//! pass only fills latency, errors and tool counts on those rows, and prices
+//! rows the router never saw (`priced_by='tempo'`).
 //!
 //! Pattern: same as `hours_meter` / catalog-sync — a polling loop with
 //! `MissedTickBehavior::Skip`, fail-soft per tick, never panics.
@@ -26,11 +25,6 @@ use nasiko_observability::provider::SessionIdResolver;
 use nasiko_observability::{ObservabilityProvider, TraceUsageRow};
 use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
-
-/// Prefix applied to the synthetic `trace_id` for direct coding-agent calls.
-/// Kept short and unambiguous: real Tempo trace ids are 32 lowercase hex
-/// characters and never contain a colon.
-const DIRECT_TRACE_PREFIX: &str = "direct:";
 
 /// Run the trace-usage materializer loop. Exits only on shutdown (task drop).
 pub async fn run(
@@ -70,9 +64,6 @@ pub async fn run(
         {
             tracing::warn!(error = %e, "trace_materializer: pass failed");
         }
-        if let Err(e) = sync_direct_token_usage(&db).await {
-            tracing::warn!(error = %e, "trace_materializer: direct-usage sync failed");
-        }
     }
 }
 
@@ -102,11 +93,11 @@ async fn materialize_once(
         .await
         .map_err(|e| format!("search: {e}"))?;
 
-    // 3. Union with session_traces DB index (uninstrumented agents).
+    // 3. Union with the server's `flows` rows (flow_id = trace_id; covers uninstrumented agents).
     let indexed: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT trace_id FROM session_traces \
+        "SELECT flow_id FROM flows \
          WHERE created_at >= $1 AND created_at <= $2 \
-         ORDER BY trace_id \
+         ORDER BY flow_id \
          LIMIT 1000",
     )
     .bind(query_start)
@@ -298,13 +289,97 @@ async fn write_resolved_row(
             .ok()
             .flatten(),
     };
-
+    // Tool calls carry bodies (arguments, output), so they are filed only under
+    // the session the server's records tie this trace to, never under a span's
+    // unverified `session.id` claim, and attributed to that session's owner.
+    let tool_session: Option<String> = if row.tool_calls.is_empty() {
+        None
+    } else {
+        super::session_resolver::canonical_session(db, &row.trace_id, session_id.as_deref())
+            .await
+            .map_err(|e| e.to_string())?
+    };
+    let tool_user: Option<uuid::Uuid> = if tool_session == session_id {
+        user_id
+    } else {
+        match &tool_session {
+            Some(sid) => sqlx::query_scalar(
+                "SELECT user_id FROM chat_sessions WHERE session_id = $1 LIMIT 1",
+            )
+            .bind(sid)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| e.to_string())?,
+            None => None,
+        }
+    };
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
-    write_usage_row(&mut tx, row, session_id.as_deref(), agent_id, user_id)
+    let written = write_usage_row(
+        &mut tx,
+        row,
+        UsageSource::Agent,
+        session_id.as_deref(),
+        agent_id,
+        user_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    // A tiered trace's tool calls were tiered with it: re-inserting them would
+    // put a second copy in hot storage beside the cold one.
+    let tool_calls: &[_] = if written { &row.tool_calls } else { &[] };
+    for call in tool_calls {
+        sqlx::query(
+            "INSERT INTO tool_calls (trace_id, call_id, user_id, agent_id, agent_name, session_id,
+                 tool_name, status, error, arguments, output, duration_ms, started_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,to_jsonb($10::text),to_jsonb($11::text),$12,$13)
+             ON CONFLICT (trace_id, call_id) DO UPDATE SET
+                 status = EXCLUDED.status,
+                 -- A span may carry less than ingest stored (coding agents write
+                 -- full bodies at ingest): never replace a body with nothing.
+                 error = COALESCE(EXCLUDED.error, tool_calls.error),
+                 arguments = COALESCE(EXCLUDED.arguments, tool_calls.arguments),
+                 output = COALESCE(EXCLUDED.output, tool_calls.output),
+                 duration_ms = COALESCE(EXCLUDED.duration_ms, tool_calls.duration_ms)",
+        )
+        .bind(&row.trace_id)
+        .bind(&call.call_id)
+        .bind(tool_user)
+        .bind(agent_id)
+        .bind(&row.agent_name)
+        .bind(tool_session.as_deref())
+        .bind(&call.tool_name)
+        .bind(&call.status)
+        .bind(&call.error)
+        .bind(&call.arguments)
+        .bind(&call.output)
+        .bind(call.duration_ms)
+        .bind(call.started_at)
+        .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    }
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Producer of a `trace_usage` row; stored in `trace_usage.source` so budgets
+/// and dashboards can split spend by origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsageSource {
+    /// Materialized from Tempo spans of a deployed agent.
+    Agent,
+    /// Coding agent (Claude Code, Codex, OpenCode) via telemetry or router sync.
+    Coding,
+}
+
+impl UsageSource {
+    /// Value of the `trace_usage.source` column (CHECK-constrained in 0080).
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            UsageSource::Agent => "agent",
+            UsageSource::Coding => "coding",
+        }
+    }
 }
 
 /// Upsert one `trace_usage` row with its owners already resolved, inside the
@@ -313,13 +388,55 @@ async fn write_resolved_row(
 /// writes a turn's row in the same transaction as its receipt. Keyed
 /// `(trace_id, agent_name)`, so a second producer of the same trace replaces the
 /// row rather than adding to it.
-pub(crate) async fn write_usage_row(
+///
+/// Returns `false`, writing nothing, for a key whose trace was already tiered
+/// (rolled into `trace_totals`) and has no hot row: this row would be the full
+/// trace total again, on top of the copy the rollups already hold. Router calls
+/// still add to a tiered trace (as a new hot row holding only their increment);
+/// only a producer that re-totals the trace is refused.
+///
+/// `started_at` is set on insert and never changed: the budget ledger keys each
+/// hot row by it, so a row's start must not move under the copy already taken.
+#[doc(hidden)]
+pub async fn write_usage_row(
     conn: &mut sqlx::PgConnection,
     row: &TraceUsageRow,
+    source: UsageSource,
     session_id: Option<&str>,
     agent_id: Option<uuid::Uuid>,
     user_id: Option<uuid::Uuid>,
-) -> Result<(), sqlx::Error> {
+) -> Result<bool, sqlx::Error> {
+    let tiered: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM trace_totals WHERE trace_id = $1)
+            AND NOT EXISTS (SELECT 1 FROM trace_usage WHERE trace_id = $1 AND agent_name = $2)",
+    )
+    .bind(&row.trace_id)
+    .bind(&row.agent_name)
+    .fetch_one(&mut *conn)
+    .await?;
+    if tiered {
+        tracing::debug!(
+            trace_id = %row.trace_id,
+            agent = %row.agent_name,
+            "trace already tiered: not re-totalling it"
+        );
+        return Ok(false);
+    }
+    // A coding agent's turn row must not re-count calls the router already booked.
+    // Here, not at ingest only, so a Tempo rescan of the turn's trace nets them too.
+    let netted;
+    let row = match agent_id {
+        Some(agent) => {
+            match crate::coding_agent_usage::routed_share_within(conn, agent, row).await? {
+                Some(routed) => {
+                    netted = crate::coding_agent_usage::net_of_routed(row, &routed);
+                    &netted
+                }
+                None => row,
+            }
+        }
+        None => row,
+    };
     // A price-book match is not evidence of who served this request.
     let provider = &row.provider;
     let count = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -330,24 +447,28 @@ pub(crate) async fn write_usage_row(
                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                    tool_call_count,
                    cost_usd, prompt_cost_usd, completion_cost_usd,
-                   latency_ms, started_at, error_count, materialized_at
-               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now())
+                   latency_ms, started_at, error_count, source, materialized_at
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
                ON CONFLICT (trace_id, agent_name) DO UPDATE SET
+                   -- Spend: Tempo's aggregate covers routed and own-key calls alike,
+                   -- and the router's share (`router_*`, 0080) is the routed part
+                   -- priced live. GREATEST keeps the router's figure while Tempo lags
+                   -- and adds the own-key remainder once Tempo has seen more.
+                   source = CASE WHEN EXCLUDED.source = 'agent' THEN trace_usage.source ELSE EXCLUDED.source END,
                    session_id = COALESCE(EXCLUDED.session_id, trace_usage.session_id),
                    agent_id = COALESCE(EXCLUDED.agent_id, trace_usage.agent_id),
                    user_id = COALESCE(EXCLUDED.user_id, trace_usage.user_id),
-                   model = EXCLUDED.model,
-                   provider = EXCLUDED.provider,
-                   input_tokens = EXCLUDED.input_tokens,
-                   output_tokens = EXCLUDED.output_tokens,
-                   cache_read_tokens = EXCLUDED.cache_read_tokens,
-                   cache_creation_tokens = EXCLUDED.cache_creation_tokens,
+                   model = CASE WHEN trace_usage.priced_by = 'router' THEN trace_usage.model ELSE EXCLUDED.model END,
+                   provider = CASE WHEN trace_usage.priced_by = 'router' THEN trace_usage.provider ELSE EXCLUDED.provider END,
+                   input_tokens = GREATEST(EXCLUDED.input_tokens, trace_usage.router_input_tokens),
+                   output_tokens = GREATEST(EXCLUDED.output_tokens, trace_usage.router_output_tokens),
+                   cache_read_tokens = GREATEST(EXCLUDED.cache_read_tokens, trace_usage.router_cache_read_tokens),
+                   cache_creation_tokens = GREATEST(EXCLUDED.cache_creation_tokens, trace_usage.router_cache_creation_tokens),
                    tool_call_count = EXCLUDED.tool_call_count,
-                   cost_usd = EXCLUDED.cost_usd,
-                   prompt_cost_usd = EXCLUDED.prompt_cost_usd,
-                   completion_cost_usd = EXCLUDED.completion_cost_usd,
+                   cost_usd = GREATEST(EXCLUDED.cost_usd, trace_usage.router_cost_usd),
+                   prompt_cost_usd = GREATEST(EXCLUDED.prompt_cost_usd, trace_usage.router_prompt_cost_usd),
+                   completion_cost_usd = GREATEST(EXCLUDED.completion_cost_usd, trace_usage.router_completion_cost_usd),
                    latency_ms = EXCLUDED.latency_ms,
-                   started_at = EXCLUDED.started_at,
                    error_count = EXCLUDED.error_count,
                    materialized_at = now()"#,
         )
@@ -369,6 +490,7 @@ pub(crate) async fn write_usage_row(
         .bind(row.latency_ms)
         .bind(row.started_at)
         .bind(row.error_count as i32)
+        .bind(source.as_str())
         .execute(&mut *conn)
         .await?;
     sqlx::query("UPDATE trace_usage SET cost_estimated=$3 WHERE trace_id=$1 AND agent_name=$2")
@@ -377,136 +499,7 @@ pub(crate) async fn write_usage_row(
         .bind(row.cost_estimated)
         .execute(&mut *conn)
         .await?;
-    Ok(())
-}
-
-/// Sync `token_usage` rows for coding agents (Claude Code, Codex, OpenCode)
-/// that have no OTel trace and therefore no `trace_usage` entry.
-///
-/// These agents call `/v1/responses` or `/v1/chat/completions` directly,
-/// bypassing the A2A proxy entirely, so `session.id` is never set on any span
-/// and `session_traces` never receives a mapping. The Tempo pass misses them
-/// entirely. This pass bridges the gap: it reads every unseen coding-agent
-/// `token_usage` row and upserts a `trace_usage` row with a synthetic
-/// `direct:<token_usage.id>` trace key.
-///
-/// The synthetic key is stable across reruns (it is the UUID primary key of
-/// the source row), so the `ON CONFLICT … DO UPDATE` in `upsert_row` makes
-/// this idempotent: running it twice produces one row, not two.
-async fn sync_direct_token_usage(db: &PgPool) -> Result<(), String> {
-    // Read coding-agent token_usage rows not yet in trace_usage.
-    // `is_coding_agent` is not a column on `token_usage`; we join on
-    // `agents.metadata->>'integration_id' IS NOT NULL` — every coding-agent
-    // row is registered with an `integration_id` by `nasiko connect`.
-    #[derive(sqlx::FromRow)]
-    struct Row {
-        id: uuid::Uuid,
-        agent_id: uuid::Uuid,
-        agent_name: String,
-        user_id: uuid::Uuid,
-        model: String,
-        provider: String,
-        input_tokens: i64,
-        output_tokens: i64,
-        cache_read: i64,
-        cache_creation: i64,
-        cost_usd: f64,
-        latency_ms: Option<i64>,
-        created_at: DateTime<Utc>,
-    }
-
-    let rows: Vec<Row> = sqlx::query_as(
-        r#"SELECT
-               tu.id,
-               tu.agent_id,
-               a.name AS agent_name,
-               tu.user_id,
-               tu.model,
-               tu.provider,
-               tu.input_tokens::BIGINT  AS input_tokens,
-               tu.output_tokens::BIGINT AS output_tokens,
-               COALESCE(tu.cache_read_input_tokens, 0)::BIGINT AS cache_read,
-               COALESCE(tu.cache_creation_input_tokens, 0)::BIGINT AS cache_creation,
-               COALESCE(tu.cost_usd, 0)::FLOAT8 AS cost_usd,
-               tu.latency_ms::BIGINT AS latency_ms,
-               tu.created_at
-           FROM token_usage tu
-           JOIN agents a ON a.id = tu.agent_id
-                        AND a.deleted_at IS NULL
-                        AND a.metadata->>'integration_id' IS NOT NULL
-           WHERE NOT EXISTS (
-               SELECT 1 FROM trace_usage
-               WHERE trace_id = $1 || tu.id::TEXT
-                 AND agent_name = a.name
-           )
-           ORDER BY tu.created_at
-           LIMIT 500"#,
-    )
-    .bind(DIRECT_TRACE_PREFIX)
-    .fetch_all(db)
-    .await
-    .map_err(|e| format!("direct-usage read: {e}"))?;
-
-    if rows.is_empty() {
-        return Ok(());
-    }
-
-    let count = rows.len();
-    for row in rows {
-        let trace_id = format!("{DIRECT_TRACE_PREFIX}{}", row.id);
-        // Prompt vs completion split: `token_usage` stores `cost_usd` as the
-        // total; prompt/completion breakdown requires the pricing engine.
-        // We store zeros for the split and the full total in `cost_usd`,
-        // matching what the dashboard actually uses (it sums `cost_usd`).
-        let result = sqlx::query(
-            r#"INSERT INTO trace_usage (
-                   trace_id, agent_name, agent_id, user_id,
-                   model, provider,
-                   input_tokens, output_tokens,
-                   cache_read_tokens, cache_creation_tokens,
-                   cost_usd, prompt_cost_usd, completion_cost_usd,
-                   latency_ms, started_at, materialized_at
-               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,0,$12,$13,now())
-               ON CONFLICT (trace_id, agent_name) DO UPDATE SET
-                   model       = EXCLUDED.model,
-                   provider    = EXCLUDED.provider,
-                   input_tokens  = EXCLUDED.input_tokens,
-                   output_tokens = EXCLUDED.output_tokens,
-                   cache_read_tokens    = EXCLUDED.cache_read_tokens,
-                   cache_creation_tokens = EXCLUDED.cache_creation_tokens,
-                   cost_usd    = EXCLUDED.cost_usd,
-                   latency_ms  = EXCLUDED.latency_ms,
-                   started_at  = EXCLUDED.started_at,
-                   materialized_at = now()"#,
-        )
-        .bind(&trace_id)
-        .bind(&row.agent_name)
-        .bind(row.agent_id)
-        .bind(row.user_id)
-        .bind(&row.model)
-        .bind(&row.provider)
-        .bind(row.input_tokens)
-        .bind(row.output_tokens)
-        .bind(row.cache_read)
-        .bind(row.cache_creation)
-        .bind(row.cost_usd)
-        .bind(row.latency_ms)
-        .bind(row.created_at)
-        .execute(db)
-        .await;
-
-        if let Err(e) = result {
-            tracing::warn!(
-                %trace_id,
-                agent = %row.agent_name,
-                error = %e,
-                "direct-usage upsert failed"
-            );
-        }
-    }
-
-    tracing::info!(count, "trace_materializer: direct-usage sync complete");
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -532,6 +525,7 @@ mod merge_tests {
             latency_ms: Some(5),
             started_at: Utc::now(),
             error_count: 0,
+            tool_calls: Vec::new(),
         }
     }
 

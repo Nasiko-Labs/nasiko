@@ -1,0 +1,32 @@
+[package]
+name = "nasiko-event-store"
+edition.workspace = true
+version.workspace = true
+
+# Cold tier for append-only event tables (docs/LAKEHOUSE_TRD.md). The only crate
+# that opens Lance; everything else goes through `EventStore`.
+# Lance builds need `protoc` on PATH.
+
+[dependencies]
+lance = { workspace = true }
+lance-io = { workspace = true }
+lance-index = { workspace = true }
+lance-linalg = { workspace = true }
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+futures = { workspace = true }
+opentelemetry = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+rust_decimal = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

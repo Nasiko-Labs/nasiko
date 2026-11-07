@@ -250,13 +250,22 @@ async fn seed_session_trace(
     trace_id: &str,
     agent_id: Uuid,
 ) {
-    sqlx::query("INSERT INTO session_traces (session_id, trace_id, agent_id) VALUES ($1, $2, $3)")
-        .bind(session_id)
-        .bind(trace_id)
-        .bind(agent_id)
-        .execute(&server.db)
-        .await
-        .unwrap();
+    let user_id: Uuid =
+        sqlx::query_scalar("SELECT user_id FROM chat_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO flows (flow_id, user_id, session_id, root_agent_id) VALUES ($1, $2, $3, $4)",
+    )
+    .bind(trace_id)
+    .bind(user_id)
+    .bind(session_id)
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
 }
 
 /// `resolve_stable_session_context` used to fall back to "most recent session for this

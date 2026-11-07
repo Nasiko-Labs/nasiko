@@ -30,7 +30,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000003",
         "agent_name": "seed-code-reviewer",
-        "request_count": 987,
+        "traces": 987,
         "total_input_tokens": 7743647,
         "total_output_tokens": 1740062,
         "total_tokens": 9483709,
@@ -40,7 +40,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000011",
         "agent_name": "seed-qa-tester",
-        "request_count": 1012,
+        "traces": 1012,
         "total_input_tokens": 6172046,
         "total_output_tokens": 1484527,
         "total_tokens": 7656573,
@@ -50,7 +50,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000009",
         "agent_name": "seed-translator",
-        "request_count": 734,
+        "traces": 734,
         "total_input_tokens": 5994294,
         "total_output_tokens": 1402573,
         "total_tokens": 7396867,
@@ -60,7 +60,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000a",
         "agent_name": "seed-summarizer",
-        "request_count": 713,
+        "traces": 713,
         "total_input_tokens": 4903774,
         "total_output_tokens": 1164176,
         "total_tokens": 6067950,
@@ -70,7 +70,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000010",
         "agent_name": "seed-pricing-engine",
-        "request_count": 417,
+        "traces": 417,
         "total_input_tokens": 3766503,
         "total_output_tokens": 835568,
         "total_tokens": 4602071,
@@ -80,7 +80,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000e",
         "agent_name": "seed-meeting-notes",
-        "request_count": 376,
+        "traces": 376,
         "total_input_tokens": 3614498,
         "total_output_tokens": 857220,
         "total_tokens": 4471718,
@@ -90,7 +90,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000008",
         "agent_name": "seed-invoice-parser",
-        "request_count": 428,
+        "traces": 428,
         "total_input_tokens": 3088694,
         "total_output_tokens": 718192,
         "total_tokens": 3806886,
@@ -100,7 +100,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000005",
         "agent_name": "seed-triage-router",
-        "request_count": 990,
+        "traces": 990,
         "total_input_tokens": 2662616,
         "total_output_tokens": 623605,
         "total_tokens": 3286221,
@@ -110,7 +110,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000006",
         "agent_name": "seed-doc-writer",
-        "request_count": 275,
+        "traces": 275,
         "total_input_tokens": 2629900,
         "total_output_tokens": 613937,
         "total_tokens": 3243837,
@@ -120,7 +120,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000014",
         "agent_name": "seed-legacy-migrator",
-        "request_count": 251,
+        "traces": 251,
         "total_input_tokens": 2486565,
         "total_output_tokens": 585149,
         "total_tokens": 3071714,
@@ -130,7 +130,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000007",
         "agent_name": "seed-sales-assistant",
-        "request_count": 210,
+        "traces": 210,
         "total_input_tokens": 2030717,
         "total_output_tokens": 477471,
         "total_tokens": 2508188,
@@ -140,7 +140,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000002",
         "agent_name": "seed-research-agent",
-        "request_count": 795,
+        "traces": 795,
         "total_input_tokens": 2026920,
         "total_output_tokens": 479907,
         "total_tokens": 2506827,
@@ -150,7 +150,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000004",
         "agent_name": "seed-sql-analyst",
-        "request_count": 275,
+        "traces": 275,
         "total_input_tokens": 1974143,
         "total_output_tokens": 431371,
         "total_tokens": 2405514,
@@ -160,7 +160,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000c",
         "agent_name": "seed-security-scanner",
-        "request_count": 189,
+        "traces": 189,
         "total_input_tokens": 1643093,
         "total_output_tokens": 387080,
         "total_tokens": 2030173,
@@ -170,7 +170,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000012",
         "agent_name": "seed-legal-reviewer",
-        "request_count": 646,
+        "traces": 646,
         "total_input_tokens": 1604222,
         "total_output_tokens": 394040,
         "total_tokens": 1998262,
@@ -180,7 +180,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000f",
         "agent_name": "seed-hr-helpdesk",
-        "request_count": 419,
+        "traces": 419,
         "total_input_tokens": 1386062,
         "total_output_tokens": 336361,
         "total_tokens": 1722423,
@@ -190,7 +190,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000d",
         "agent_name": "seed-data-cleaner",
-        "request_count": 587,
+        "traces": 587,
         "total_input_tokens": 1027415,
         "total_output_tokens": 244327,
         "total_tokens": 1271742,
@@ -200,7 +200,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000001",
         "agent_name": "seed-support-bot",
-        "request_count": 222,
+        "traces": 222,
         "total_input_tokens": 946473,
         "total_output_tokens": 228540,
         "total_tokens": 1175013,
@@ -210,7 +210,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-00000000000b",
         "agent_name": "seed-onboarding-guide",
-        "request_count": 157,
+        "traces": 157,
         "total_input_tokens": 351120,
         "total_output_tokens": 76894,
         "total_tokens": 428014,
@@ -220,7 +220,7 @@
       {
         "agent_id": "5eed0000-0001-4000-8000-000000000013",
         "agent_name": "seed-growth-analyst",
-        "request_count": 52,
+        "traces": 52,
         "total_input_tokens": 192691,
         "total_output_tokens": 50205,
         "total_tokens": 242896,

@@ -107,13 +107,16 @@ async fn seed_session(server: &common::TestServer, session: &str, user: Uuid) {
         .unwrap();
 }
 
-async fn seed_flow(server: &common::TestServer, flow: &str, user: Uuid) {
-    sqlx::query("INSERT INTO flows (flow_id, user_id, status) VALUES ($1, $2, 'completed')")
-        .bind(flow)
-        .bind(user)
-        .execute(&server.db)
-        .await
-        .unwrap();
+async fn seed_flow(server: &common::TestServer, flow: &str, user: Uuid, session: &str) {
+    sqlx::query(
+        "INSERT INTO flows (flow_id, user_id, status, session_id) VALUES ($1, $2, 'completed', $3)",
+    )
+    .bind(flow)
+    .bind(user)
+    .bind(session)
+    .execute(&server.db)
+    .await
+    .unwrap();
 }
 
 async fn get_as(server: &common::TestServer, user: Uuid, path: &str) -> (u16, String) {
@@ -158,14 +161,9 @@ async fn fixture() -> Fixture {
     let mallory = seed_user(&server, "dummy-mallory").await;
     seed_session(&server, &alice_session, alice).await;
     seed_session(&server, &mallory_session, mallory).await;
-    seed_flow(&server, ALICE_TRACE, alice).await;
-    seed_flow(&server, ALICE_UNINDEXED_TRACE, alice).await;
-    sqlx::query("INSERT INTO session_traces (session_id, trace_id) VALUES ($1, $2)")
-        .bind(&alice_session)
-        .bind(ALICE_TRACE)
-        .execute(&server.db)
-        .await
-        .unwrap();
+    seed_flow(&server, ALICE_TRACE, alice, &alice_session).await;
+    // Legacy backfill shape (0085): no session known, the flow is its own session.
+    seed_flow(&server, ALICE_UNINDEXED_TRACE, alice, ALICE_UNINDEXED_TRACE).await;
 
     Fixture {
         server,

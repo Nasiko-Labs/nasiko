@@ -123,6 +123,15 @@ pub struct Config {
     /// `MEMORY_ENABLED=false`, where the route is never mounted at all).
     pub injection_proxy_token: String,
     pub seed_agents: Option<String>,
+    /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
+    /// event rows older than 30 days from Postgres to Lance and deletes them
+    /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
+    pub tiering_enabled: bool,
+    /// `NASIKO_TIERING_INTERVAL_SECS` (default 24h = 86400s).
+    pub tiering_interval_secs: u64,
+    /// `NASIKO_COLD_PATH`: root of the Lance datasets (dir, `file://` or `s3://`).
+    /// Must be set explicitly when tiering is on (see [`validate_tiering`]).
+    pub cold_path: String,
     pub openai_api_key: Option<String>,
     pub openai_base_url: Option<String>,
     pub openai_model: String,
@@ -611,6 +620,13 @@ fn coding_agent_otlp_fallback() -> Option<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        let tiering_enabled = env_bool("NASIKO_TIERING_ENABLED", false);
+        let tiering_interval_secs = std::env::var("NASIKO_TIERING_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(24 * 3600);
+        let cold_path_set = std::env::var("NASIKO_COLD_PATH").ok();
+        validate_tiering(tiering_enabled, cold_path_set.as_deref()).map_err(anyhow::Error::msg)?;
         Ok(Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
@@ -664,6 +680,9 @@ impl Config {
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
+            tiering_enabled,
+            tiering_interval_secs,
+            cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
             openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
@@ -919,6 +938,20 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
     trimmed.strip_suffix("/v1").unwrap_or(trimmed)
 }
 
+/// Tiering deletes rows from Postgres once they are in the cold store, so the
+/// cold store must be a location the operator chose. The `./data/cold` default
+/// is fine for reads and manual runs, but with the daily job on it would put the
+/// only copy on whichever replica holds the lock, on disk that may not survive a
+/// restart and that other replicas cannot read.
+fn validate_tiering(enabled: bool, cold_path: Option<&str>) -> Result<(), String> {
+    if enabled && cold_path.is_none_or(|p| p.trim().is_empty()) {
+        return Err("NASIKO_TIERING_ENABLED=true requires NASIKO_COLD_PATH \
+                    (s3://<bucket>/<prefix> or a durable shared directory)"
+            .into());
+    }
+    Ok(())
+}
+
 fn validate_secrets_key_format(key: &str) -> Result<(), String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -935,6 +968,14 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tiering_requires_an_explicit_cold_path() {
+        assert!(super::validate_tiering(true, None).is_err());
+        assert!(super::validate_tiering(true, Some("  ")).is_err());
+        assert!(super::validate_tiering(true, Some("s3://b/cold")).is_ok());
+        assert!(super::validate_tiering(false, None).is_ok());
+    }
+
     #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(

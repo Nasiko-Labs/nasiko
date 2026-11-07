@@ -7,7 +7,8 @@
  * Default trace: the failing one if known, else the one with the most tokens. Default span:
  * failing, then most tokens, then slowest. `?span=` is the HEX span id.
  */
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { sessionToolCallsQuery, toolCallsOfTrace } from '@nasiko/features/sessions/api'
 import { Link, useNavigate, useRouter } from '@tanstack/react-router'
 import { Link2, ListTree, Rows3, Table2, Workflow } from 'lucide-react'
 import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
@@ -461,11 +462,15 @@ export function SessionTracePage({
           ) : null}
 
           {trace.isError ? (
-            <ErrorState
-              error={trace.error}
-              onRetry={() => void trace.refetch()}
-              notFound={copy.traceNotFound}
-            />
+            trace.error instanceof ApiError && trace.error.status === 404 && traceId ? (
+              <StoredToolCalls sessionId={sessionId} traceId={traceId} />
+            ) : (
+              <ErrorState
+                error={trace.error}
+                onRetry={() => void trace.refetch()}
+                notFound={copy.traceNotFound}
+              />
+            )
           ) : !trace.data ? (
             <PageLoader label="Loading trace" />
           ) : (
@@ -751,5 +756,42 @@ function TraceSwitcher({
         </Toggle>
       ))}
     </div>
+  )
+}
+
+/** Tempo no longer has this trace: list its tool calls from the stored `tool_calls` (hot + cold). */
+function StoredToolCalls({ sessionId, traceId }: { sessionId: string; traceId: string }) {
+  const q = useQuery(sessionToolCallsQuery(sessionId))
+  if (q.isPending) return <PageLoader label="Loading tool calls" />
+  // A failed read is not evidence the trace stored nothing: offer a retry instead.
+  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+  const calls = toolCallsOfTrace(q.data, traceId)
+  if (calls.length === 0)
+    return (
+      <EmptyState icon={ListTree} title={copy.traceNotFound}>
+        {copy.traceExpiredNoTools}
+      </EmptyState>
+    )
+  return (
+    <section
+      aria-label="Stored tool calls"
+      className="flex flex-col gap-2 rounded-lg border border-border p-3"
+    >
+      <p role="status" className="text-sm text-muted-foreground">
+        {copy.traceExpiredTools}
+      </p>
+      <ul className="flex flex-col gap-1 text-sm">
+        {calls.map((c) => (
+          <li key={c.call_id} className="flex flex-wrap gap-x-3">
+            <span className="font-medium">{c.tool_name}</span>
+            <span className={c.status === 'failed' ? 'text-destructive' : ''}>{c.status}</span>
+            <span className="text-muted-foreground tabular-nums">
+              {c.duration_ms != null ? `${c.duration_ms} ms` : ''}
+            </span>
+            <span className="text-muted-foreground">{new Date(c.started_at).toLocaleString()}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

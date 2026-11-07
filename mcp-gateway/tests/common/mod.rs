@@ -180,8 +180,8 @@ impl TestDb {
         }
     }
 
-    /// Seed a `chat_sessions` + `session_traces` row so `trace_id` resolves to `session_id` (the
-    /// A2A contextId) via `session::resolve_context_id`.
+    /// Seed a `chat_sessions` + `flows` row (`flow_id = trace_id`) so `trace_id` resolves to
+    /// `session_id` (the A2A contextId) via `session::resolve_context_id`.
     #[allow(dead_code)] // `hidden_toolkit.rs` refuses before any HITL row, so has no trace to seed
     pub async fn seed_session_trace(&self, session_id: &str, trace_id: &str) {
         sqlx::query(
@@ -193,12 +193,13 @@ impl TestDb {
         .await
         .expect("seed chat_sessions row");
 
-        sqlx::query("INSERT INTO session_traces (session_id, trace_id) VALUES ($1, $2)")
-            .bind(session_id)
+        sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ($1, $2, $3)")
             .bind(trace_id)
+            .bind(self.owner_user_id)
+            .bind(session_id)
             .execute(&self.state.db)
             .await
-            .expect("seed session_traces row");
+            .expect("seed flows row");
     }
 
     /// Seeds a minimal, real `mcp_connectors` row and returns its id — needed by any test that

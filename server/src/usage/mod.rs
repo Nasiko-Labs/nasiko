@@ -3,4 +3,4 @@ pub mod routes;
 mod tracker;
 
 pub use models::*;
-pub use tracker::UsageTracker;
+pub use tracker::{ToolCallRecord, TraceUsageKey, UsageTracker};

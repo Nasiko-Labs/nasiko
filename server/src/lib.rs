@@ -3,6 +3,7 @@
 // large-Err-variant lint doesn't fit that idiom, which is used pervasively
 // across this crate's routes.
 #![allow(clippy::result_large_err)]
+#![recursion_limit = "256"]
 
 pub mod acl;
 pub mod admin;
@@ -12,6 +13,7 @@ pub mod agent_lifecycle;
 pub mod agent_proxy;
 pub mod agent_scaling;
 pub mod agent_state;
+pub mod agent_wake;
 pub mod agents;
 pub mod assessment;
 pub mod auth;
@@ -28,6 +30,7 @@ pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
 pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
+pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
 pub mod flow_sweeper;
@@ -175,11 +178,11 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Spawn the MAF worker — requires an OpenAI API key for prompt generation,
-    // extraction, and final output synthesis. Degrades gracefully rather than
-    // panicking: MAF routes still work (create/list/run) without a key, jobs
-    // just queue in Redis unprocessed until one is configured.
-    if let Some(api_key) = state.config.openai_api_key.clone() {
+    // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
+    // output synthesis: the one the execution's owner saved from the UI, else the server's
+    // `OPENAI_API_KEY`. With neither, an execution fails with the provider's error.
+    {
+        let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
@@ -221,10 +224,6 @@ where
             state.hitl_store.clone(),
             state.maf_executor.clone(),
         );
-    } else {
-        tracing::warn!(
-            "OPENAI_API_KEY not set — MAF worker not started; MAF executions will queue but not run"
-        );
     }
 
     // Container lifecycle mutations (deploy/destroy/stop/start/restart/scale):
@@ -238,6 +237,15 @@ where
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 auth::rbac::require_deployer,
+            ));
+
+    // Operator maintenance (tiering trigger): admin only.
+    let admin_routes =
+        Router::new()
+            .nest("/admin", admin::admin_router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::rbac::require_admin,
             ));
 
     // Pool/scaling: read-only stub in OSS (EE's real scaling lives at
@@ -329,9 +337,13 @@ where
         .route("/me", get(me))
         .merge(router::router_routes(a2a_limiter))
         .merge(agent_deploy_routes)
-        .nest("/agents", agents::user_routes())
+        .nest(
+            "/agents",
+            agents::user_routes().merge(agents::capability_routes()),
+        )
         .merge(catalog::router())
         .merge(container_routes)
+        .merge(admin_routes)
         .merge(pool_routes)
         .merge(user_routes)
         .merge(build_routes)
@@ -394,7 +406,11 @@ where
         .nest("/api", agent_state::router(&state))
         .with_state(state.clone());
 
-    let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    let oci_state = nasiko_oci::OciState::new(
+        state.db.clone(),
+        state.oci_storage.clone(),
+        state.config.agent_image_registry.clone(),
+    );
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
@@ -436,9 +452,7 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
-        .with_config_cache(state.llm_config_cache.clone())
-        .with_attachment_store(state.attachment_store.clone());
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();

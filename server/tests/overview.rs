@@ -160,12 +160,14 @@ async fn the_estate_draws_what_ran_and_finds_a_failing_agent() {
     .unwrap();
     // The gateway names an MCP server's tools `{first 16 hex of its id}__{tool}`.
     let tool = format!("{}__create_issue", &jira.simple().to_string()[..16]);
-    for ok in [true, false, true] {
+    // Gateway tool calls, as the MCP gateway records them in `tool_calls`.
+    for (i, ok) in [true, false, true].into_iter().enumerate() {
         sqlx::query(
-            "INSERT INTO token_usage (user_id, agent_id, operation_type, provider, model, \
-                 input_tokens, output_tokens, total_tokens, cost_usd, finish_reason) \
-             VALUES ($1, $2, 'mcp_tool_call', 'mcp', $3, 0, 0, 0, 0, $4)",
+            "INSERT INTO tool_calls (trace_id, call_id, user_id, agent_id, agent_name, \
+                 tool_name, tool_kind, status, started_at) \
+             VALUES ('ov-trace', $1, $2, $3, 'pricing-engine', $4, 'mcp', $5, now())",
         )
+        .bind(format!("call-{i}"))
         .bind(admin)
         .bind(pricing)
         .bind(&tool)

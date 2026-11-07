@@ -700,6 +700,43 @@ pub(crate) async fn delete_user(
             .into_response();
     }
 
+    // GDPR: record the erasure and drop hot rows while `user_id` still matches
+    // (`trace_usage.user_id` is ON DELETE SET NULL). Cold rows go after.
+    let store: nasiko_event_store::EventStore = crate::state::event_store(&state.config, &state.db);
+    if let Err(e) = store.request_erasure(id).await {
+        tracing::error!(%e, %id, "delete_user: record erasure");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+    // Stop new writes first: deactivate and revoke live tokens so no request can
+    // add hot rows between `erase_hot` and the user delete.
+    if let Err(e) = sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%e, %id, "delete_user: deactivate failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+    revoke_sessions(&state, id).await;
+    // Must succeed before the user row goes: once `user_id` is nulled, retries
+    // filtering by this id can no longer find the rows. The request stays recorded.
+    if let Err(e) = store.erase_hot(id).await {
+        tracing::error!(%e, %id, "delete_user: hot erase failed, user kept");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+
     match sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -710,7 +747,10 @@ pub(crate) async fn delete_user(
             Json(serde_json::json!({"error": "user not found"})),
         )
             .into_response(),
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            spawn_cold_erasure(store, id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             tracing::error!(%e, %id, "delete_user: db error");
             (
@@ -720,6 +760,18 @@ pub(crate) async fn delete_user(
                 .into_response()
         }
     }
+}
+
+/// Finishes erasure (cold + rollups) off the request path. Failure or a busy
+/// tiering lock leaves the `erasure_requests` row for the tiering worker.
+pub fn spawn_cold_erasure(store: nasiko_event_store::EventStore, id: Uuid) {
+    tokio::spawn(async move {
+        match store.erase_user(id).await {
+            Ok(true) => tracing::info!(%id, "user erased hot + cold"),
+            Ok(false) => tracing::info!(%id, "erasure pending: tiering lock busy"),
+            Err(e) => tracing::warn!(%e, %id, "erasure pending: will retry"),
+        }
+    });
 }
 
 // ─── POST /users/{id}/deactivate ────────────────────────────────────────────

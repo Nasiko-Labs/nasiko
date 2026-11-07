@@ -100,15 +100,19 @@ async fn call(server: &TestServer, path: &str, bearer: &str, traceparent: &str) 
         .as_u16()
 }
 
-/// Usage rows are written fire-and-forget: wait for `want`, then a little longer
-/// so a stray extra row would also land.
-async fn usage_rows_settled(server: &TestServer, agent: Uuid, want: i64) -> i64 {
+/// Tokens billed to `agent`. Usage is written fire-and-forget: wait for `want`, then
+/// a little longer so a stray extra call would also land. Calls in one flow share
+/// one `trace_usage` row, so tokens, not rows, count the calls billed.
+async fn billed_tokens_settled(server: &TestServer, agent: Uuid, want: i64) -> i64 {
     let count = || async {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM token_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap()
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)::BIGINT FROM trace_usage \
+             WHERE agent_id = $1 AND priced_by = 'router'",
+        )
+        .bind(agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
     };
     for _ in 0..50 {
         if count().await >= want {
@@ -137,7 +141,8 @@ async fn a_token_from_before_a_transfer_is_refused() {
         200
     );
 
-    assert_eq!(usage_rows_settled(&server, agent, 1).await, 1);
+    // The stub answers each chat call with 3 + 2 tokens.
+    assert_eq!(billed_tokens_settled(&server, agent, 5).await, 5);
 
     sqlx::query("UPDATE agents SET owner_id = $2 WHERE id = $1")
         .bind(agent)
@@ -160,8 +165,8 @@ async fn a_token_from_before_a_transfer_is_refused() {
         200
     );
 
-    // Two served calls, two usage rows: the refused ones billed nothing.
-    assert_eq!(usage_rows_settled(&server, agent, 2).await, 2);
+    // Two served chat calls, 5 tokens each: the refused ones billed nothing.
+    assert_eq!(billed_tokens_settled(&server, agent, 10).await, 10);
 
     server.cleanup().await;
 }

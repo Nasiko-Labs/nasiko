@@ -62,7 +62,7 @@ async fn post_as(server: &common::TestServer, agent: Uuid, user: Uuid, body: Val
 }
 
 async fn traces(server: &common::TestServer, session: &str) -> i64 {
-    sqlx::query_scalar("SELECT COUNT(*) FROM session_traces WHERE session_id = $1")
+    sqlx::query_scalar("SELECT COUNT(*) FROM flows WHERE session_id = $1")
         .bind(session)
         .fetch_one(&server.db)
         .await

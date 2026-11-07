@@ -176,19 +176,6 @@ export interface LayerTour {
  * Every member is a hook or a component, and the OSS answer (`NO_BUDGETS`) is a real implementation returning
  * "off", not `null`: the core calls these unconditionally, so a nullable slot would make them conditional hooks.
  */
-export type BudgetCrossing = { kind: 'reached' } | { kind: 'crosses'; date: string }
-
-/** One budget's use this period, as the home's table cell and the hub read it. */
-export interface RowBudget {
-  used: number
-  limit: number
-  /** When the period resets (ISO), for the month name. */
-  resetsAt: string
-  /** Calls with no price this period: counted as $0, so use is a floor. */
-  unpriced: boolean
-  crossing: BudgetCrossing | null
-}
-
 /** A budget that needs the viewer, as a Needs you row. */
 export interface BudgetItem {
   id: string
@@ -209,20 +196,6 @@ export interface BudgetItem {
   /** For the detail line: what period and population it counts. */
   period: 'month' | 'quarter' | 'session'
   covers: 'routed_calls' | 'all_priced'
-}
-
-/** Where budgets stand on this server: `off` covers both "no layer" and "this server has none" (a bare 404). */
-export type BudgetsState = 'off' | 'loading' | 'failed' | 'stale' | 'ok'
-
-export interface HomeBudgets {
-  state: BudgetsState
-  /** Agent budgets by agent id; null until both reads answered. */
-  byAgent: ReadonlyMap<string, RowBudget> | null
-  /** The viewer's own monthly budget, when they set one. */
-  own: RowBudget | null
-  updatedAt: number
-  /** Mock data (a preview of the contract): the page labels it so. */
-  preview: boolean
 }
 
 /** What the Overview's fleet-health rating needs from budgets: a stopped or exceeded budget is an agent's reason. */
@@ -252,8 +225,6 @@ export interface HubBudgetAgent {
 }
 
 export interface BudgetsSurface {
-  /** The home's budget column and the viewer's own budget. */
-  useHomeBudgets: (enabled: boolean, meSub: string) => HomeBudgets
   /** The Overview's rating inputs. */
   useOverviewBudgets: (enabled: boolean) => OverviewBudgets
   /** Needs you's budget rows. */
@@ -342,7 +313,6 @@ const NO_LEDGER_BUDGETS = { shares: null, headline: null, panel: null }
 const NO_RETRY = () => {}
 /** The OSS answer: budgets do not exist in this build, so every surface is off and nothing is ever read. */
 export const NO_BUDGETS: BudgetsSurface = {
-  useHomeBudgets: () => ({ state: 'off', byAgent: null, own: null, updatedAt: 0, preview: false }),
   useOverviewBudgets: () => ({
     byAgent: new Map(),
     settled: true,

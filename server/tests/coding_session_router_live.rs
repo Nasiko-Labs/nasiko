@@ -102,13 +102,15 @@ async fn wait_for_usage_row(
 ) -> Option<(Option<Uuid>, Option<String>, i32)> {
     for _ in 0..50 {
         let row: Option<(Option<Uuid>, Option<String>, i32)> = sqlx::query_as(
-            "SELECT user_id, session_id, total_tokens \
-               FROM token_usage WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+            "SELECT user_id, session_id, \
+                    (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::int \
+               FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router' \
+              ORDER BY materialized_at DESC LIMIT 1",
         )
         .bind(agent_id)
         .fetch_optional(&server.db)
         .await
-        .expect("query token_usage");
+        .expect("query trace_usage");
         if row.is_some() {
             return row;
         }

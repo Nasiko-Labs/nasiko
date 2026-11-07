@@ -528,8 +528,8 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
     // An indexed trace, so the detail resolves the session without searching Tempo.
     for session in [&parent, &explore] {
         sqlx::query(
-            "INSERT INTO session_traces (session_id, trace_id, created_at) \
-             SELECT session_id, md5(session_id), created_at FROM chat_sessions WHERE session_id = $1",
+            "INSERT INTO flows (flow_id, user_id, session_id, created_at) \
+             SELECT md5(session_id), user_id, session_id, created_at FROM chat_sessions WHERE session_id = $1",
         )
         .bind(session)
         .execute(&server.db)

@@ -125,12 +125,13 @@ async fn a_compressed_call_writes_both_the_usage_row_and_its_savings_row() {
     .await
     .unwrap();
 
-    let usage_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM token_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    let usage_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router'",
+    )
+    .bind(agent)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
     assert_eq!(usage_rows, 1, "the usage row must still be written");
 
     let rows = saved_rows(&server.db, agent).await;
@@ -177,12 +178,13 @@ async fn a_call_with_no_compression_writes_usage_but_no_savings_row() {
     .await
     .unwrap();
 
-    let usage_rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM token_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    let usage_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router'",
+    )
+    .bind(agent)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
     assert_eq!(usage_rows, 1);
     assert!(saved_rows(&server.db, agent).await.is_empty());
 }
@@ -228,12 +230,13 @@ async fn the_saving_is_priced_through_the_same_engine_that_priced_the_call() {
     .unwrap();
 
     let rows = saved_rows(&server.db, agent).await;
-    let cost: Option<f64> =
-        sqlx::query_scalar("SELECT cost_usd::FLOAT8 FROM token_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    let cost: Option<f64> = sqlx::query_scalar(
+        "SELECT cost_usd::FLOAT8 FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router'",
+    )
+    .bind(agent)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
 
     // Both are finite and non-negative, and the saving is priced on the prompt side only, so it
     // cannot exceed what the whole call cost.

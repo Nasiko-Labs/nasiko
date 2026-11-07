@@ -81,7 +81,7 @@ impl PricedTurn {
         user_id: uuid::Uuid,
         flow_id: &str,
         agent_id: Option<uuid::Uuid>,
-    ) -> Result<uuid::Uuid, sqlx::Error> {
+    ) -> Result<crate::usage::TraceUsageKey, sqlx::Error> {
         let count = |value: u64| value.min(i32::MAX as u64) as i32;
         // Set the full total directly: the general-purpose builder also serves
         // older callers whose input still includes cache and must not change here.
@@ -196,13 +196,13 @@ async fn platform_paid_agent_usage(db: &PgPool, flow_id: &str) -> AgentUsage {
     let sums: Result<(i64, i64, i64, i64, f64, bool), sqlx::Error> = sqlx::query_as(
         r#"SELECT COALESCE(SUM(input_tokens), 0)::BIGINT,
                   COALESCE(SUM(output_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cache_read_input_tokens), 0)::BIGINT,
-                  COALESCE(SUM(cache_creation_input_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_read_tokens), 0)::BIGINT,
+                  COALESCE(SUM(cache_creation_tokens), 0)::BIGINT,
                   COALESCE(SUM(cost_usd), 0)::FLOAT8,
-                  COALESCE(BOOL_OR((metadata->'pricing'->>'estimated')::BOOLEAN), false)
-           FROM token_usage
+                  COALESCE(BOOL_OR(cost_estimated), false)
+           FROM trace_usage
            WHERE session_id = $1
-             AND operation_type = 'direct_llm'
+             AND metadata->>'operation_type' = 'direct_llm'
              AND metadata->>'key_source' = 'platform'"#,
     )
     .bind(flow_id)

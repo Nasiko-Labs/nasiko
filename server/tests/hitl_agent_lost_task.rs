@@ -560,23 +560,15 @@ async fn seed_paused_orchestrator_turn(
     .await
     .expect("seed chat_sessions");
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status) \
-         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused')",
+        "INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, session_id) \
+         VALUES ($1, $2, 'orchestrator', 'paused turn', 'paused', $3)",
     )
     .bind(&flow_id)
     .bind(user_id)
+    .bind(&session_id)
     .execute(&server.db)
     .await
     .expect("seed flows");
-    sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator')",
-    )
-    .bind(&session_id)
-    .bind(&flow_id)
-    .execute(&server.db)
-    .await
-    .expect("seed session_traces");
     let step_id: Uuid = sqlx::query_scalar(
         "INSERT INTO flow_steps \
             (flow_id, step_order, depth, agent_name, caller_agent_name, input_summary, status) \

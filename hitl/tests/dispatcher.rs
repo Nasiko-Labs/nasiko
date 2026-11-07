@@ -447,12 +447,14 @@ async fn resume_nudge_never_adopts_another_users_flow_via_context_id() {
         .expect("seed victim user");
 
     let victim_flow_id = Uuid::new_v4().simple().to_string();
-    sqlx::query("INSERT INTO flows (flow_id, user_id, status) VALUES ($1, $2, 'completed')")
-        .bind(&victim_flow_id)
-        .bind(victim_id)
-        .execute(&db.pool)
-        .await
-        .expect("seed victim flow");
+    sqlx::query(
+        "INSERT INTO flows (flow_id, user_id, status, session_id) VALUES ($1, $2, 'completed', $1)",
+    )
+    .bind(&victim_flow_id)
+    .bind(victim_id)
+    .execute(&db.pool)
+    .await
+    .expect("seed victim flow");
 
     // This fixture's own agent/owner stand in for the coding-agent row and
     // its real owner — the HITL row is persisted exactly as
@@ -624,17 +626,6 @@ async fn resume_nudge_aborts_when_context_id_names_another_users_chat_session() 
     assert!(
         err.is_permanent(),
         "ownership of a chat session never changes on retry"
-    );
-
-    let session_traces_count: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM session_traces WHERE session_id = $1")
-            .bind(&victim_session_id)
-            .fetch_one(&db.pool)
-            .await
-            .expect("count query");
-    assert_eq!(
-        session_traces_count, 0,
-        "no session_traces mapping must be written for the victim's session"
     );
 
     let flows_count: i64 = sqlx::query_scalar("SELECT count(*) FROM flows")
@@ -856,8 +847,8 @@ const GATEWAY_FLOW_TIMEOUT_SECS: i64 = 120;
 /// tool call's own flow, which is what `is_raw_trace_id` collides with.
 async fn seed_flow(db: &TestDb, flow_id: &str, status: &str, age_secs: i64) {
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_id, title, status, created_at)
-         VALUES ($1, $2, $3, 'original call', $4, now() - make_interval(secs => $5))",
+        "INSERT INTO flows (flow_id, user_id, root_agent_id, title, status, created_at, session_id)
+         VALUES ($1, $2, $3, 'original call', $4, now() - make_interval(secs => $5), $1)",
     )
     .bind(flow_id)
     .bind(db.owner_user_id)

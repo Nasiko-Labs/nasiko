@@ -126,6 +126,9 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
+        tiering_enabled: false,
+        tiering_interval_secs: 86400,
+        cold_path: String::new(),
         // Dummy but non-empty — ee build_ee_app requires Some(), and a
         // non-empty api_key is also what lets Stage 1 (VectorStore) attempt
         // real calls; Stage 1 is instead kept skipped by seeding fewer agents

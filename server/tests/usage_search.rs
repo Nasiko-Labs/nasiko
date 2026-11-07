@@ -34,9 +34,9 @@ const SEEDED: [(&str, &str, i32); 3] = [
     ("openai", "gpt-4o-mini", 300),
 ];
 
-/// One user owning one `token_usage` row per seeded model. `created_at`
-/// defaults to `now()`, so every row falls inside the route's fixed 30-day
-/// look-back and the window never enters into what these tests measure.
+/// One user owning one `trace_usage` row per seeded model. `started_at` is
+/// `now()`, so every row falls inside the route's fixed 30-day look-back and
+/// the window never enters into what these tests measure.
 async fn seed(server: &TestServer) -> Uuid {
     let user_id: Uuid =
         sqlx::query_scalar("INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id")
@@ -48,18 +48,18 @@ async fn seed(server: &TestServer) -> Uuid {
 
     for (provider, model, tokens) in SEEDED {
         sqlx::query(
-            "INSERT INTO token_usage \
-             (user_id, operation_type, provider, model, input_tokens, output_tokens, \
-              total_tokens, cost_usd, latency_ms) \
-             VALUES ($1, 'chat', $2, $3, $4, 0, $4, 0.001, 100)",
+            "INSERT INTO trace_usage \
+             (trace_id, agent_name, user_id, provider, model, input_tokens, output_tokens, \
+              cost_usd, latency_ms, started_at) \
+             VALUES ($3, 'usage-search-agent', $1, $2, $3, $4, 0, 0.001, 100, now())",
         )
         .bind(user_id)
         .bind(provider)
         .bind(model)
-        .bind(tokens)
+        .bind(i64::from(tokens))
         .execute(&server.db)
         .await
-        .expect("seed token_usage");
+        .expect("seed trace_usage");
     }
 
     user_id

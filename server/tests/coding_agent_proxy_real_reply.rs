@@ -17,7 +17,7 @@
 //! session token (and, when HITL is on, an `OPENCODE_CONFIG_CONTENT` permission
 //! flip, which merges over that baked config). So this test needs an ACP image
 //! that bakes the routed model; point `OPENCODE_IMAGE` at one. Under ACP the
-//! model call then flows through the router and a `token_usage` row is written,
+//! model call then flows through the router and a `trace_usage` row is written,
 //! which this test asserts. The session-token to router to billing path itself
 //! is also proven in isolation by `coding_session_router_live.rs`.
 
@@ -75,7 +75,7 @@ async fn coding_agent_turn_streams_a_real_completion() {
     // routed `openai-chat/gpt-4o` provider as its default model in the
     // `opencode.json` it reads under `$HOME/.config/opencode/`. An image that
     // defaults to OpenCode's built-in model bypasses the router and this test's
-    // `token_usage` assertion fails.
+    // `trace_usage` assertion fails.
     let image = std::env::var("OPENCODE_IMAGE").unwrap_or_else(|_| "opencode:0.1.0".to_owned());
     let agent_id: Uuid = sqlx::query_scalar(
         "INSERT INTO agents (name, owner_id, image, status, workload_kind) \
@@ -133,19 +133,20 @@ async fn coding_agent_turn_streams_a_real_completion() {
     );
 
     // The model call must route through Nasiko (session token → router → billing).
-    // A `token_usage` row billed to the turn's user is the proof; the proxy forces
+    // A router-priced `trace_usage` row billed to the turn's user is the proof; the proxy forces
     // the routed model so OpenCode under ACP no longer falls back to its free
     // built-in model (see the module docs).
     let billed: Option<Uuid> = {
         let mut found = None;
         for _ in 0..30 {
             found = sqlx::query_scalar(
-                "SELECT user_id FROM token_usage WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+                "SELECT user_id FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router' \
+                 ORDER BY materialized_at DESC LIMIT 1",
             )
             .bind(agent_id)
             .fetch_optional(&server.db)
             .await
-            .expect("query token_usage");
+            .expect("query trace_usage");
             if found.is_some() {
                 break;
             }
@@ -158,7 +159,7 @@ async fn coding_agent_turn_streams_a_real_completion() {
         billed,
         Some(uid),
         "the model call must route through Nasiko and bill the turn's user: a \
-         token_usage row for {uid} is required (got {billed:?})",
+         trace_usage row for {uid} is required (got {billed:?})",
     );
 
     let _ = std::process::Command::new("docker")

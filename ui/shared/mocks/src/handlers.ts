@@ -1962,7 +1962,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
             ...Array.from({ length: SPEND_LIMIT }, (_, i) => ({
               agent_id: null,
               agent_name: null,
-              request_count: 1,
+              traces: 1,
               total_input_tokens: 10,
               total_output_tokens: 5,
               total_tokens: 15 - (i % 5),

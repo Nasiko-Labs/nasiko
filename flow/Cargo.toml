@@ -5,12 +5,12 @@ version.workspace = true
 
 [dependencies]
 redis = { workspace = true }
-nasiko-redis-conn = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+sqlx = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

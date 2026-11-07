@@ -264,7 +264,7 @@ pub async fn agent_proxy(
     }
 
     // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
-    // behaviour). No trace_id column: session_traces (below) is the
+    // behaviour). No trace_id column: flows is the
     // authoritative session↔trace mapping now.
     //
     // The 10s dedup guard exists because the CLI's A2A method negotiation
@@ -349,7 +349,12 @@ pub async fn agent_proxy(
         // stays as it is: `derive_boundary_signals` and the LLM gateway read it
         // from there, and the column is written on this same insert so the two
         // can never disagree.
-        let session_id = persist_info.as_ref().map(|i| i.session_id.as_str());
+        // Non-send requests (passthrough) name no conversation: the flow is its own
+        // single-run session, same rule as the 0085 backfill.
+        let session_id = Some(crate::flows::session_or_self(
+            persist_info.as_ref().map(|i| i.session_id.as_str()),
+            flow_ctx.flow_id.as_str(),
+        ));
         let opened = crate::flows::open_flow(
             &state.db,
             crate::flows::NewFlow {
@@ -487,33 +492,8 @@ pub async fn agent_proxy(
     // can map Tempo traces back to chat sessions for agents that don't set
     // session.id on their spans (anything not running the Python patch).
     // Fire-and-forget so it never delays the proxy.
-    //
-    // Only the session `ensure_chat_session` verified belongs to the caller.
-    // The raw `contextId` of other methods (`tasks/get`, `tasks/cancel`, …) is
-    // unchecked caller input: recording it let anyone who knew another user's
-    // session id attach traces to that user's session view.
-    if let Some(info) = persist_info.as_ref() {
-        let ctx_id = info.session_id.clone();
-        let trace_id = flow_ctx.flow_id.clone();
-        let agent_name = agent.name.clone();
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            if let Err(e) = sqlx::query(
-                "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (session_id, trace_id) DO NOTHING",
-            )
-            .bind(&ctx_id)
-            .bind(&trace_id)
-            .bind(agent_id)
-            .bind(&agent_name)
-            .execute(&db)
-            .await
-            {
-                tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
-            }
-        });
-    }
+    // Flows are now the single source of truth for session trace mapping.
+    // The flow record created by `open_flow` already has `session_id` populated.
 
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);

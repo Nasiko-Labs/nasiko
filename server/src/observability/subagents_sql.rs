@@ -48,7 +48,7 @@ pub(crate) fn coding_totals(session: &str) -> String {
                      AND m.external_turn_id IS NOT NULL) priced
             CROSS JOIN LATERAL (
                   SELECT sum(u.cost_usd)::float8 AS cost
-                    FROM trace_usage u
+                    FROM (SELECT trace_id, session_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens, cache_read_tokens::bigint AS cache_read_tokens, cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd, started_at, latency_ms::bigint AS latency_ms, error_count FROM trace_usage UNION ALL SELECT trace_id, session_id, tokens, 0::bigint, 0::bigint, 0::bigint, cost_usd, first_at, max_latency_ms, errors::int FROM trace_totals) u
                    WHERE u.session_id = {session}) traced"#
     )
 }

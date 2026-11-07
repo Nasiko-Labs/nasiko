@@ -282,6 +282,37 @@ export function traceQuery(id: string) {
   }
 }
 
+/** One stored tool call (`GET /session/{id}/tool-calls`): Postgres plus Lance, kept after Tempo expires. */
+export interface StoredToolCall {
+  trace_id: string
+  call_id: string
+  agent_name: string | null
+  tool_name: string
+  tool_kind: string | null
+  status: string
+  error: string | null
+  arguments: string | null
+  output: string | null
+  duration_ms: number | null
+  started_at: string
+}
+
+export function sessionToolCallsQuery(id: string) {
+  const path = `${OBS}/session/${encodeURIComponent(id)}/tool-calls`
+  return {
+    queryKey: ['sessions', 'tool-calls', id] as const,
+    queryFn: ({ signal }: { signal: AbortSignal }) =>
+      apiFetch<{ session_id: string; tool_calls: StoredToolCall[] }>(path, { signal }).then(
+        (b) => b.tool_calls,
+      ),
+    meta: { path },
+  }
+}
+
+/** Stored tool calls of one trace; pure, so the fallback list is unit-testable. */
+export const toolCallsOfTrace = (calls: StoredToolCall[], traceId: string) =>
+  calls.filter((c) => c.trace_id === traceId)
+
 const inProgress = (s: SessionSummary, now: number) =>
   !s.end_time || now - Date.parse(s.end_time) < IN_PROGRESS_MS
 

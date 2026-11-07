@@ -2865,7 +2865,7 @@ mod tests {
         // gate in `handle_tools_call` were ever loosened to match on
         // `Some(_)` instead of `AuthRequired` specifically, this would start
         // touching `state.db` (`session::resolve_context_id`'s
-        // `session_traces` lookup) — and, since `test_state()`'s pool can't
+        // `flows.session_id` lookup) — and, since `test_state()`'s pool can't
         // reach a real Postgres, still degrade to the same generic error
         // (not crash), but the whole point of the gate is to skip that DB
         // work entirely for non-AuthRequired reasons. Passing `None` here would

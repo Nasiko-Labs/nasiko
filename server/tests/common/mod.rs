@@ -741,6 +741,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
+        tiering_enabled: false,
+        tiering_interval_secs: 86400,
+        cold_path: String::new(),
         agent_platform_key_fallback: true,
         openai_api_key: None,
         openai_base_url: None,
@@ -986,8 +989,8 @@ pub async fn open_flow(
 ) -> (String, String) {
     let flow_id = uuid::Uuid::new_v4().simple().to_string();
     sqlx::query(
-        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata)
-         VALUES ($1, $2, $3, 'running', '{}'::jsonb)",
+        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, metadata, session_id)
+         VALUES ($1, $2, $3, 'running', '{}'::jsonb, $1)",
     )
     .bind(&flow_id)
     .bind(user_id)

@@ -8,7 +8,7 @@
 //! `session::resolve_session`'s real connector/credential resolution,
 //! already covered by `credentials.rs`'s own tests) so these tests exercise
 //! exactly the new code: `protocol::handle_tools_call`'s AuthRequired
-//! branch, `session::resolve_context_id`'s `session_traces` lookup, and
+//! branch, `session::resolve_context_id`'s `flows.session_id` lookup, and
 //! `nasiko_hitl::repo::create_pending_auth_required`'s real persistence.
 
 use std::collections::HashMap;
@@ -107,7 +107,7 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
     assert_eq!(row.owner_user_id, db.owner_user_id);
     assert_eq!(row.connector_id, Some(connector_id));
     // The trace_id resolves to the seeded chat session — the A2A contextId —
-    // not the raw trace_id, proving the session_traces lookup actually ran.
+    // not the raw trace_id, proving the flows.session_id lookup actually ran.
     assert_eq!(row.context_id.as_deref(), Some(session_id));
 }
 

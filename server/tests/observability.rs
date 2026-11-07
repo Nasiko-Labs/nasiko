@@ -1310,15 +1310,6 @@ async fn session_list_aggregates_metrics_without_the_trace_store() {
     let agent = seed_agent(&server, uuid, "metrics-agent").await;
     seed_session_with_flows(&server, uuid, agent, "ses-metrics", &["completed"]).await;
 
-    sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ('ses-metrics', 'trace-m', $1, 'metrics-agent')",
-    )
-    .bind(agent)
-    .execute(&server.db)
-    .await
-    .expect("seed session_trace");
-
     // trace_usage is keyed (trace_id, agent_name): one trace crossing two agents
     // is two rows. Tokens and cost must sum across them while the trace counts
     // once toward the latency percentiles.
@@ -1329,7 +1320,7 @@ async fn session_list_aggregates_metrics_without_the_trace_store() {
         sqlx::query(
             "INSERT INTO trace_usage (trace_id, agent_name, session_id, input_tokens, output_tokens, \
              cost_usd, latency_ms, started_at) \
-             VALUES ('trace-m', $1, 'ses-metrics', $2, 0, $3, $4, now())",
+             VALUES ('ses-metrics-flow-0', $1, 'ses-metrics', $2, 0, $3, $4, now())",
         )
         .bind(name)
         .bind(input)

@@ -345,14 +345,14 @@ function SpendCell({ agentId, spend }: { agentId: string; spend: SpendState }) {
       </span>
     )
   const u = spend.byAgent.get(agentId)
-  if (!u || u.request_count === 0) return <span>{copy.spendNone}</span>
+  if (!u || u.traces === 0) return <span>{copy.spendNone}</span>
   // COALESCE(SUM(cost_usd), 0): calls with no price add $0, so $0 with calls means unpriced.
   const unpriced = u.total_cost_usd === 0
   return (
     <span>
       {copy.spendValue(
         `${fmtMoney(u.total_cost_usd)}${unpriced ? copy.unpricedMark : ''}`,
-        fmtInt(u.request_count),
+        fmtInt(u.traces),
       )}
     </span>
   )
@@ -385,8 +385,8 @@ function FoldedRow({
       return u
         ? {
             cost: t.cost + u.total_cost_usd,
-            calls: t.calls + u.request_count,
-            unpriced: t.unpriced || (u.request_count > 0 && u.total_cost_usd === 0),
+            calls: t.calls + u.traces,
+            unpriced: t.unpriced || (u.traces > 0 && u.total_cost_usd === 0),
           }
         : t
     },

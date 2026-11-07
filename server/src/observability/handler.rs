@@ -163,6 +163,8 @@ pub struct FinopsSpendCalendarParams {
     pub agent_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// "agent" | "coding" | "acp" — restricts spend to one `trace_usage.source`.
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -792,6 +794,15 @@ pub async fn get_finops_spend_calendar(
     if let Err(r) = validate_range(params.range.as_deref()) {
         return r;
     }
+    if let Some(s) = params.source.as_deref()
+        && !matches!(s, "agent" | "coding" | "acp")
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("invalid source '{s}' — expected agent, coding, or acp"),
+        )
+            .into_response();
+    }
     let agent_name = match resolve_agent_filter(&state.db, params.agent_id.as_deref()).await {
         Ok(n) => n,
         Err(r) => return r,
@@ -811,6 +822,7 @@ pub async fn get_finops_spend_calendar(
             agent_name.as_deref(),
             params.model.as_deref(),
             params.provider.as_deref(),
+            params.source.as_deref(),
             access,
         )
         .await
@@ -1515,5 +1527,98 @@ pub async fn get_context_savings_top_requests(
     match super::context_savings::get_top_requests(&state.db, &query).await {
         Ok(data) => context_envelope(data),
         Err(e) => context_failure(e, "context savings top requests"),
+    }
+}
+
+/// Every tool call of a session: recent rows from Postgres plus rows tiered to
+/// Lance (docs/LAKEHOUSE_TRD.md). No Tempo dependency, so it outlives trace retention.
+pub async fn get_session_tool_calls(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(session_id): Path<String>,
+) -> Response {
+    if let Err(error) = svc(&state)
+        .authorize_session_access(&session_id, &claims.sub, claims.is_superuser)
+        .await
+    {
+        return obs_err(error);
+    }
+    let cfg = nasiko_event_store::TieringConfig {
+        cold_path: state.config.cold_path.clone(),
+        storage_options: crate::state::cold_storage_options(&state.config),
+        ..Default::default()
+    };
+    let store = nasiko_event_store::EventStore::new(state.db.clone(), cfg);
+    let rows = match store.session_tool_calls_all(&session_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(%e, "session tool calls query failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    // Stored rows may carry a session an agent claimed on its spans (rows written
+    // before the materializer canonicalized it, or tiered with that value): keep
+    // only calls whose trace the server's own records tie to this session.
+    let mut trace_ids: Vec<String> = rows.iter().map(|r| r.trace_id.clone()).collect();
+    trace_ids.sort_unstable();
+    trace_ids.dedup();
+    let allowed = match super::session_resolver::traces_of_session(
+        &state.db,
+        &session_id,
+        &trace_ids,
+    )
+    .await
+    {
+        Ok(allowed) => allowed,
+        Err(e) => {
+            tracing::error!(%e, "session tool calls authorization failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+    let rows: Vec<_> = rows
+        .into_iter()
+        .filter(|r| allowed.contains(&r.trace_id))
+        .collect();
+    Json(serde_json::json!({
+        "session_id": session_id,
+        "tool_calls": rows.iter().map(|r| serde_json::json!({
+            "trace_id": r.trace_id,
+            "call_id": r.call_id,
+            "agent_name": r.agent_name,
+            "tool_name": r.tool_name,
+            "tool_kind": r.tool_kind,
+            "status": r.status,
+            "error": r.error,
+            "arguments": r.arguments,
+            "output": r.output,
+            "duration_ms": r.duration_ms,
+            "started_at": r.started_at,
+        })).collect::<Vec<_>>(),
+    }))
+    .into_response()
+}
+
+/// Superuser-only: run one locked tiering pass now, through the server's own
+/// config (cold path, storage options). Same code path as the daily loop, so
+/// live tests see exactly what production tiering does. 409 if another
+/// process holds the `tiering_job` lock.
+pub(crate) async fn trigger_tiering(State(state): State<AppState>, claims: Claims) -> Response {
+    if !claims.is_superuser {
+        return (StatusCode::FORBIDDEN, "superuser only").into_response();
+    }
+    let store: nasiko_event_store::EventStore = state.event_store();
+    // Boxed: the tiering future is deep enough to overflow the layout query depth.
+    let run: std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>> =
+        Box::pin(async move { store.run_once(chrono::Utc::now()).await });
+    match run.await {
+        Ok(Some(report)) => {
+            Json(serde_json::json!({ "tiered": true, "report": format!("{report:?}") }))
+                .into_response()
+        }
+        Ok(None) => (StatusCode::CONFLICT, "tiering lock held by another process").into_response(),
+        Err(e) => {
+            tracing::error!(%e, "manual tiering run failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }

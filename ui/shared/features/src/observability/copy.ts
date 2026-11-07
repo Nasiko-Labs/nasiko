@@ -95,6 +95,8 @@ export const copy = {
     `Is nasiko-server running at ${apiUrl}? Run \`just run-stack\` in nasiko-cloud-rs.`,
 
   traceNotFound: 'Trace not found, or not visible to you.',
+  traceExpiredTools: 'The full trace has expired. Its tool calls are kept and listed below.',
+  traceExpiredNoTools: 'The full trace has expired and no tool calls were stored for it.',
   noTraces: 'No traces recorded for this session',
   noTracesBody:
     'The agent may not export traces, or they are still on their way: check back in a minute.',

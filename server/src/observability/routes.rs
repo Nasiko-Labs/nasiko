@@ -218,12 +218,18 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
         .route(
+            "/session/{session_id}/tool-calls",
+            get(handler::get_session_tool_calls),
+        )
+        .route(
             "/session/{session_id}/turns",
             get(handler::get_session_turns),
         )
         .route("/trace/{trace_id}", get(handler::get_trace_details))
         .route("/span/{trace_id}/{span_id}", get(handler::get_span_details))
         .route("/agent/{agent_id}/stats", get(handler::get_agent_stats))
+        // Superuser-only: one locked tiering run now (local/live lakehouse testing).
+        .route("/lakehouse/tier", post(handler::trigger_tiering))
         // Coding-harness usage (H-1). Any signed-in caller, narrowed inside the
         // handler: OSS answers only the caller's own level.
         .route(
@@ -540,10 +546,13 @@ async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
         .await
         .unwrap_or(0);
 
-    let token_usage_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM token_usage")
-        .fetch_one(&state.db)
-        .await
-        .unwrap_or(0);
+    let token_usage_total: i64 = sqlx::query_scalar(
+        // Hot trace_usage rows plus tiered trace_usage_daily rows.
+        "SELECT COALESCE(SUM(traces), 0)::bigint FROM trace_spend",
+    )
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(0);
 
     Json(Metrics {
         agents_total,

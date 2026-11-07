@@ -10,7 +10,7 @@
 //! Every branch of `attribution::resolve` is unit-tested inside the router
 //! crate. What was untested is the part those unit tests cannot reach: that a
 //! real HTTP request, through the real handler, against a real database,
-//! actually writes a `token_usage` row billed to the *flow's* user — and that a
+//! actually writes a `trace_usage` row billed to the *flow's* user — and that a
 //! refused call writes none at all. That is what this file covers.
 //!
 //! Every test is `#[serial]`: `GatewayConfig::from_env()` is read once when the
@@ -136,13 +136,16 @@ async fn wait_for_usage_row(
 ) -> Option<(Option<Uuid>, Option<String>, i32, serde_json::Value)> {
     for _ in 0..50 {
         let row: Option<(Option<Uuid>, Option<String>, i32, serde_json::Value)> = sqlx::query_as(
-            "SELECT user_id, session_id, total_tokens, metadata
-               FROM token_usage WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+            "SELECT user_id, session_id,
+                    (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::int,
+                    metadata
+               FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router'
+              ORDER BY materialized_at DESC LIMIT 1",
         )
         .bind(agent_id)
         .fetch_optional(&server.db)
         .await
-        .expect("query token_usage");
+        .expect("query trace_usage");
         if row.is_some() {
             return row;
         }
@@ -152,11 +155,13 @@ async fn wait_for_usage_row(
 }
 
 async fn usage_row_count(server: &TestServer, agent_id: Uuid) -> i64 {
-    sqlx::query_scalar("SELECT count(*) FROM token_usage WHERE agent_id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .expect("count token_usage")
+    sqlx::query_scalar(
+        "SELECT count(*) FROM trace_usage WHERE agent_id = $1 AND priced_by = 'router'",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .expect("count trace_usage")
 }
 
 // ─── The billing rule ────────────────────────────────────────────────────────

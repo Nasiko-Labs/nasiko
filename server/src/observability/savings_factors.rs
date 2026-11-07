@@ -112,9 +112,9 @@ async fn minimal_code_arms(db: &PgPool, window_days: i64) -> Result<Vec<ArmRow>,
                     SUM(tu.output_tokens) AS total_output,
                     BOOL_OR(f.metadata->'minimal_code'->>'applied' = 'true') AS applied,
                     BOOL_OR(f.metadata->'minimal_code'->>'skipped' = 'holdout') AS is_holdout
-             FROM token_usage tu
-             JOIN flows f ON f.flow_id = tu.session_id
-             WHERE tu.created_at > now() - make_interval(days => $1::int)
+             FROM trace_usage tu
+             JOIN flows f ON f.flow_id = tu.trace_id
+             WHERE tu.started_at > now() - make_interval(days => $1::int)
                AND tu.output_tokens > 0
                AND f.metadata ? 'minimal_code'
              GROUP BY f.flow_id
@@ -189,8 +189,8 @@ async fn arms(db: &PgPool, window_days: i64) -> Result<Vec<ArmRow>, sqlx::Error>
                   AVG(output_tokens) FILTER (WHERE metadata->'brevity'->>'applied' = 'true')::FLOAT8 AS applied_avg,
                   COUNT(*) FILTER (WHERE metadata->'brevity'->>'skipped' = 'holdout')::BIGINT AS holdout_n,
                   AVG(output_tokens) FILTER (WHERE metadata->'brevity'->>'skipped' = 'holdout')::FLOAT8 AS holdout_avg
-           FROM token_usage
-           WHERE created_at > now() - make_interval(days => $1::int)
+           FROM trace_usage
+           WHERE started_at > now() - make_interval(days => $1::int)
              AND output_tokens > 0
            GROUP BY model"#,
     )

@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod common;
 
 use chrono::{TimeZone, Utc};
@@ -2153,5 +2154,212 @@ async fn member_finops_summary_counts_only_the_callers_agents() {
     assert_eq!(theirs["unpriced_calls"], 1, "{theirs}");
     assert_eq!(theirs["estimated_cost"].as_f64(), Some(1.5), "{theirs}");
     assert_eq!(theirs["unknown_confidence_calls"], 1, "{theirs}");
+    server.cleanup().await;
+}
+
+async fn tool_calls_api(server: &common::TestServer, user_id: Uuid, session: &str) -> Value {
+    let resp = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/observability/session/{session}/tool-calls"))),
+        &user_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    serde_json::from_str(&body).unwrap_or_else(|_| panic!("{status}: {body}"))
+}
+
+/// ACP turn → `tool_calls` → tiering to Lance: the API answers the same before and after.
+#[tokio::test]
+#[serial]
+async fn tool_calls_survive_tiering_through_the_api() {
+    let cold = std::env::temp_dir().join(format!("nasiko-cold-{}", Uuid::new_v4()));
+    let cold_path = cold.to_string_lossy().to_string();
+    let cp = cold_path.clone();
+    let server = common::TestServer::start_with(move |c| c.cold_path = cp).await;
+    let (user_id, _agent_id) = setup(&server).await;
+    let mut ev = event("tiered-tools", "turn-1", CapturePolicy::Content);
+    ev.turn.tool_calls.push(CodingAgentToolCall {
+        id: "tool/1".into(),
+        name: "read_file".into(),
+        kind: "tool".into(),
+        model_call_id: Some("call-turn-1".into()),
+        status: CodingAgentToolCallStatus::Succeeded,
+        arguments: Some(json!({"path": "a.rs"})),
+        output: Some(json!("ok")),
+        raw: None,
+        error: None,
+        started_at: Some(ev.turn.started_at),
+        ended_at: Some(ev.turn.ended_at),
+        duration_ms: Some(2000),
+        association: CodingAgentToolAssociation::Exact,
+        timestamp_quality: CodingAgentTimestampQuality::Exact,
+    });
+    post(&server, user_id, &[ev]).await;
+    let session: String = sqlx::query_scalar("SELECT session_id FROM tool_calls LIMIT 1")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+
+    let count = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tool_calls")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+    assert_eq!(count().await, 1);
+    let before = tool_calls_api(&server, user_id, &session).await;
+    let calls = before["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1, "{before}");
+    assert_eq!(calls[0]["tool_name"], "read_file");
+    assert_eq!(calls[0]["call_id"], "tool/1");
+    assert_eq!(calls[0]["status"], "succeeded");
+
+    sqlx::query(
+        "UPDATE tool_calls SET created_at = now() - interval '100 days', \
+         started_at = now() - interval '100 days'",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let after_age = tool_calls_api(&server, user_id, &session).await;
+    let store = nasiko_event_store::EventStore::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with((*server.db.connect_options()).clone())
+            .await
+            .unwrap(),
+        nasiko_event_store::TieringConfig {
+            cold_path,
+            ..Default::default()
+        },
+    );
+    store.run_once(Utc::now()).await.unwrap().unwrap();
+    assert_eq!(count().await, 0, "row left Postgres");
+
+    let after = tool_calls_api(&server, user_id, &session).await;
+    assert_eq!(after, after_age, "API answer unchanged by tiering");
+    let _ = std::fs::remove_dir_all(&cold);
+}
+
+/// A container ACP turn persists its telemetry once (replays are no-ops) and
+/// writes no spend: the router owns ACP spend in `trace_usage`.
+#[tokio::test]
+#[serial]
+async fn container_acp_turn_persists_telemetry_without_spend() {
+    let server = common::TestServer::start().await;
+    let (user_id, agent_id) = setup(&server).await;
+    let source = event("acp-session", "turn-1", CapturePolicy::MetadataOnly);
+    // The agent proxy writes the chat session before the turn persists.
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_url, title, session_type) \
+         VALUES ('acp-context', $1, '/api/agents/acp', 'acp chat', 'orchestrator')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        nasiko_server::coding_agent_telemetry::persist_coding_turn_telemetry(
+            &server.db,
+            user_id,
+            agent_id,
+            "acp-context",
+            &source,
+        )
+        .await
+        .unwrap();
+    }
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM coding_agent_telemetry_events WHERE agent_id = $1",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(events, 1, "replay must not duplicate telemetry");
+    let spend: i64 = sqlx::query_scalar("SELECT count(*) FROM trace_usage WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(spend, 0, "spend comes from the router, not telemetry");
+    server.cleanup().await;
+}
+
+/// A stored tool call is filed under whatever `session.id` its spans claimed,
+/// and any agent can claim a session its own owner controls. The endpoint must
+/// return only calls whose trace the server's records tie to the session, so a
+/// claim cannot surface another user's tool arguments and output.
+#[tokio::test]
+#[serial]
+async fn tool_calls_ignore_a_span_claim_the_server_records_contradict() {
+    let server = common::TestServer::start().await;
+    let (owner, agent_id) = setup(&server).await;
+    let victim = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, username, email) VALUES ($1, 'victim', 'victim@test.local')",
+    )
+    .bind(victim)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    for (session, user) in [("claimed", owner), ("victims", victim)] {
+        sqlx::query("INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 't')")
+            .bind(session)
+            .bind(user)
+            .execute(&server.db)
+            .await
+            .unwrap();
+    }
+    // The server recorded each trace's real session (or, for the flow, its owner).
+    for (trace, session, user) in [
+        ("own-trace", "claimed", owner),
+        ("victim-trace", "victims", victim),
+    ] {
+        sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ($1, $2, $3)")
+            .bind(trace)
+            .bind(user)
+            .bind(session)
+            .execute(&server.db)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ('victim-flow', $1, 'victim-flow')")
+        .bind(victim)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    // Every row claims the owner's session, as a span-derived write would.
+    for trace in ["own-trace", "victim-trace", "victim-flow", "unrecorded"] {
+        sqlx::query(
+            "INSERT INTO tool_calls (trace_id, call_id, user_id, agent_id, agent_name, session_id, \
+                                     tool_name, status, arguments, output, started_at) \
+             VALUES ($1, 'c1', $2, $3, 'coding-agent', 'claimed', 'read', 'ok', \
+                     '{\"secret\": true}', '\"body\"', now())",
+        )
+        .bind(trace)
+        .bind(owner)
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+
+    let body = tool_calls_api(&server, owner, "claimed").await;
+    let mut traces: Vec<&str> = body["tool_calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{body}"))
+        .iter()
+        .map(|c| c["trace_id"].as_str().unwrap())
+        .collect();
+    traces.sort_unstable();
+    // Recorded for this session, or recorded nowhere (coding-agent turns): kept.
+    // Recorded for another session, or a flow of another user: refused.
+    assert_eq!(traces, vec!["own-trace", "unrecorded"], "{body}");
     server.cleanup().await;
 }

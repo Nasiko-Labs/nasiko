@@ -1,7 +1,7 @@
 //! Synthetic FinOps/usage data seeder for local demos of the weave TokenOps
-//! dashboard. Populates `trace_usage` (fleet-wide FinOps endpoints) and
-//! `token_usage` (per-caller usage endpoints) with plausible multi-agent,
-//! multi-week data — both tables are otherwise empty until real agent
+//! dashboard. Populates `trace_usage`, which both the fleet-wide FinOps endpoints
+//! and the per-caller usage endpoints (`trace_spend`) read, with plausible
+//! multi-agent, multi-week data — it is otherwise empty until real agent
 //! traffic/materialization happens (see plan doc for the verified reason).
 //!
 //! Idempotent: re-running clears its own previously-seeded rows first
@@ -27,7 +27,7 @@ const DAYS_BACK: i64 = 365;
 /// weight). Provider/model pairs match real rows in `model_pricing`
 /// (`oss/migrations/0006_seed_model_pricing.sql`) so a real cost lookup would
 /// agree with the hand-computed `cost_usd` this seeder writes for
-/// `trace_usage` (which has no cost trigger, unlike `token_usage`).
+/// `trace_usage` (which has no cost trigger).
 ///
 /// 24 agents, not 5: `get_finops_attributions`'s default "agent" view is one
 /// row per agent (`service.rs::get_finops_attributions`) — 5 agents means
@@ -216,10 +216,6 @@ async fn main() -> anyhow::Result<()> {
         .bind(format!("{SEED_PREFIX}%"))
         .execute(&db)
         .await?;
-    sqlx::query("DELETE FROM token_usage WHERE session_id LIKE $1")
-        .bind(format!("{SEED_PREFIX}%"))
-        .execute(&db)
-        .await?;
 
     // `get_finops_dashboard`/`get_finops_attributions` (agent view) enumerate
     // the real `agents` table and match `trace_usage.agent_name` against
@@ -243,7 +239,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mut rng = rand::rng();
     let mut trace_rows = 0u32;
-    let mut usage_rows = 0u32;
 
     let mut tx = db.begin().await?;
     let now = Utc::now();
@@ -308,35 +303,6 @@ async fn main() -> anyhow::Result<()> {
                 .execute(&mut *tx)
                 .await?;
                 trace_rows += 1;
-
-                // A "my usage" row for the same event, scoped to the same
-                // demo user. `cost_usd` is set explicitly rather than left for
-                // `token_usage`'s own cost trigger: that trigger looks up
-                // `model_pricing` by `effective_from <= created_at`, and this
-                // dev DB's `model_pricing` rows only became effective when
-                // migration 0006 first ran — so historical backdated rows
-                // (anything before that moment) would price as NULL even
-                // though a real price for the model exists today.
-                sqlx::query(
-                    "INSERT INTO token_usage \
-                       (user_id, operation_type, session_id, provider, model, \
-                        input_tokens, output_tokens, total_tokens, cost_usd, \
-                        latency_ms, created_at) \
-                     VALUES ($1,'chat',$2,$3,$4,$5,$6,$7,$8,$9,$10)",
-                )
-                .bind(user_id)
-                .bind(&session_id)
-                .bind(provider)
-                .bind(model)
-                .bind(input_tokens as i32)
-                .bind(output_tokens as i32)
-                .bind((input_tokens + output_tokens) as i32)
-                .bind(cost)
-                .bind(latency_ms as i32)
-                .bind(started_at)
-                .execute(&mut *tx)
-                .await?;
-                usage_rows += 1;
             }
         }
     }
@@ -344,7 +310,7 @@ async fn main() -> anyhow::Result<()> {
     tx.commit().await?;
 
     println!(
-        "Seeded {trace_rows} trace_usage rows and {usage_rows} token_usage rows across \
+        "Seeded {trace_rows} trace_usage rows across \
          {DAYS_BACK} days for {} synthetic agents.",
         AGENTS.len()
     );

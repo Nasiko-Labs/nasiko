@@ -45,7 +45,7 @@ async fn a_superuser_may_open_and_extend_a_flow_that_is_not_theirs() {
     let owner = seed_user(&server, "flow-owner").await;
     let other = seed_user(&server, "flow-other").await;
     let root = seed_user(&server, "flow-root").await;
-    sqlx::query("INSERT INTO flows (flow_id, user_id, status) VALUES ('f1', $1, 'completed')")
+    sqlx::query("INSERT INTO flows (flow_id, user_id, status, session_id) VALUES ('f1', $1, 'completed', 'f1')")
         .bind(owner)
         .execute(&server.db)
         .await

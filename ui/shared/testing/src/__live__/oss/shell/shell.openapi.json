@@ -6402,7 +6402,7 @@
         "AgentUsage": {
           "type": "object",
           "required": [
-            "request_count",
+            "traces",
             "total_input_tokens",
             "total_output_tokens",
             "total_tokens",
@@ -6429,7 +6429,7 @@
               ],
               "format": "double"
             },
-            "request_count": {
+            "traces": {
               "type": "integer",
               "format": "int64"
             },
@@ -7091,7 +7091,7 @@
           "type": "object",
           "required": [
             "date",
-            "request_count",
+            "traces",
             "total_tokens",
             "total_cost_usd"
           ],
@@ -7100,7 +7100,7 @@
               "type": "string",
               "format": "date"
             },
-            "request_count": {
+            "traces": {
               "type": "integer",
               "format": "int64"
             },
@@ -8106,7 +8106,7 @@
           "required": [
             "provider",
             "model",
-            "request_count",
+            "traces",
             "total_input_tokens",
             "total_output_tokens",
             "total_tokens",
@@ -8126,7 +8126,7 @@
             "provider": {
               "type": "string"
             },
-            "request_count": {
+            "traces": {
               "type": "integer",
               "format": "int64"
             },
@@ -10512,7 +10512,7 @@
         "UsageSummaryResponse": {
           "type": "object",
           "required": [
-            "request_count",
+            "traces",
             "total_input_tokens",
             "total_output_tokens",
             "total_tokens",
@@ -10531,7 +10531,7 @@
               "type": "integer",
               "format": "int64"
             },
-            "request_count": {
+            "traces": {
               "type": "integer",
               "format": "int64"
             },

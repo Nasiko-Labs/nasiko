@@ -710,6 +710,67 @@ pub struct TraceUsageRow {
     /// is keyed `(trace_id, agent_name)`, so a trace-wide figure here would be
     /// multiplied by the agent count by anything that sums it.
     pub error_count: u32,
+    /// One entry per tool span this agent emitted, for the `tool_calls` table.
+    pub tool_calls: Vec<ToolCallSpan>,
+}
+
+/// A tool span read back from Tempo, written to `tool_calls` by the materializer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolCallSpan {
+    pub call_id: String,
+    pub tool_name: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub arguments: Option<String>,
+    pub output: Option<String>,
+    pub duration_ms: Option<i64>,
+    pub started_at: DateTime<Utc>,
+}
+
+impl ToolCallSpan {
+    /// Pure mapping from a span; attribute names cover GenAI semconv and OpenInference.
+    pub fn from_span(span: &Span) -> Self {
+        let attr = |keys: &[&str]| {
+            keys.iter().find_map(|k| {
+                span.attributes.get(*k).map(|v| match v.as_str() {
+                    Some(s) => s.to_string(),
+                    None => v.to_string(),
+                })
+            })
+        };
+        // `tool.status` is set by the coding-agent OTLP bridge (oss/server/src/coding_agent_otlp.rs);
+        // OTLP status code is the fallback for other emitters.
+        let status: String = match (span.status_code, attr(&["tool.status"])) {
+            (2, _) => "failed".into(),
+            (_, Some(s)) => s,
+            (1, None) => "succeeded".into(),
+            _ => "unknown".into(),
+        };
+        let failed: bool = status == "failed";
+        ToolCallSpan {
+            call_id: attr(&["gen_ai.tool.call.id", "tool.call.id"])
+                .unwrap_or_else(|| span.span_id.clone()),
+            tool_name: attr(&["gen_ai.tool.name", "tool.name"])
+                .unwrap_or_else(|| span.name.clone()),
+            error: (!span.status_message.is_empty() && failed)
+                .then(|| span.status_message.clone())
+                .or_else(|| attr(&["error.message"])),
+            status,
+            arguments: attr(&[
+                "gen_ai.tool.call.arguments",
+                "tool.arguments",
+                "input.value",
+            ]),
+            output: attr(&[
+                "gen_ai.tool.call.result",
+                "tool.result",
+                "tool.output",
+                "output.value",
+            ]),
+            duration_ms: span.duration_ms.map(|d| d as i64),
+            started_at: span.started_at,
+        }
+    }
 }
 
 /// Gap tolerance when deciding whether one span started after another ended.
@@ -1236,6 +1297,98 @@ mod unrecovered_error_tests {
         let mut s = span("a", Some("p"), "call", 0, 10, false);
         s.status_code = 0;
         assert_eq!(count(&[s]), 0);
+    }
+}
+
+#[cfg(test)]
+mod tool_call_span_tests {
+    use super::*;
+
+    fn span(status: u8, msg: &str, attrs: &[(&str, &str)]) -> Span {
+        Span {
+            span_id: "sp1".into(),
+            parent_span_id: None,
+            name: "execute_tool Bash".into(),
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            duration_ms: Some(12.0 as _),
+            service_name: "agent".into(),
+            kind: 1,
+            status_code: status,
+            status_message: msg.into(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| (k.to_string(), serde_json::Value::String(v.to_string())))
+                .collect(),
+            events: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn genai_semconv_attributes() {
+        let t = ToolCallSpan::from_span(&span(
+            1,
+            "",
+            &[
+                ("gen_ai.tool.call.id", "call-1"),
+                ("gen_ai.tool.name", "Bash"),
+                ("gen_ai.tool.call.arguments", "{\"cmd\":\"ls\"}"),
+                ("gen_ai.tool.call.result", "ok"),
+            ],
+        ));
+        assert_eq!(t.call_id, "call-1");
+        assert_eq!(t.tool_name, "Bash");
+        assert_eq!(t.status, "succeeded");
+        assert_eq!(t.arguments.as_deref(), Some("{\"cmd\":\"ls\"}"));
+        assert_eq!(t.output.as_deref(), Some("ok"));
+        assert_eq!(t.duration_ms, Some(12));
+        assert!(t.error.is_none());
+    }
+
+    /// Attributes as emitted by `coding_agent_otlp::trace_payload` for an ACP tool call.
+    #[test]
+    fn coding_agent_bridge_span() {
+        let t = ToolCallSpan::from_span(&span(
+            0,
+            "",
+            &[
+                ("gen_ai.operation.name", "execute_tool"),
+                ("tool.call.id", "toolu_01ABC"),
+                ("tool.name", "Read"),
+                ("tool.kind", "read"),
+                ("tool.status", "succeeded"),
+                ("tool.association", "turn"),
+                ("tool.arguments", "{\"path\":\"src/lib.rs\"}"),
+                ("tool.result", "\"fn main() {}\""),
+            ],
+        ));
+        assert_eq!(t.call_id, "toolu_01ABC");
+        assert_eq!(t.tool_name, "Read");
+        assert_eq!(t.status, "succeeded");
+        assert_eq!(t.arguments.as_deref(), Some("{\"path\":\"src/lib.rs\"}"));
+        assert_eq!(t.output.as_deref(), Some("\"fn main() {}\""));
+        let failed = ToolCallSpan::from_span(&span(
+            2,
+            "",
+            &[("tool.status", "failed"), ("error.message", "ENOENT")],
+        ));
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.error.as_deref(), Some("ENOENT"));
+    }
+
+    #[test]
+    fn openinference_and_fallbacks() {
+        let t = ToolCallSpan::from_span(&span(
+            2,
+            "boom",
+            &[("input.value", "q"), ("output.value", "r")],
+        ));
+        assert_eq!(t.call_id, "sp1");
+        assert_eq!(t.tool_name, "execute_tool Bash");
+        assert_eq!(t.status, "failed");
+        assert_eq!(t.error.as_deref(), Some("boom"));
+        assert_eq!(t.arguments.as_deref(), Some("q"));
+        assert_eq!(t.output.as_deref(), Some("r"));
     }
 }
 

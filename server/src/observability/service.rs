@@ -518,39 +518,6 @@ pub struct Pagination {
 
 // session/{session_id}
 
-/// What the Postgres receipts say a session consumed, for the detail page when
-/// the trace store has no trace for it. The caller has authorized `session_id`.
-#[derive(Debug, sqlx::FromRow)]
-struct ReceiptTotals {
-    pub turns: Option<i64>,
-    pub tokens: Option<i64>,
-    pub cost: Option<f64>,
-}
-
-async fn session_receipt_totals(
-    db: &PgPool,
-    session_id: &str,
-) -> Result<ReceiptTotals, ObservabilityError> {
-    sqlx::query_as(&format!(
-        "SELECT k.turns, k.tokens, k.cost FROM ({}) k",
-        super::subagents_sql::coding_totals("$1")
-    ))
-    .bind(session_id)
-    .fetch_one(db)
-    .await
-    .map_err(|e| ObservabilityError::Internal(e.to_string()))
-}
-
-/// One trace's `trace_usage` rows, summed, for the detail page's fallback.
-#[derive(sqlx::FromRow)]
-struct UsageRow {
-    session_id: Option<String>,
-    total: f64,
-    prompt: f64,
-    completion: f64,
-    latency_ms: Option<i64>,
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct SessionDetailResponse {
     pub data: SessionDetailData,
@@ -1255,6 +1222,7 @@ pub struct ObservabilityService {
     db: PgPool,
     http_client: reqwest::Client,
     config: Arc<Config>,
+    store: nasiko_event_store::EventStore,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1312,13 +1280,23 @@ impl ObservabilityService {
         let turns = sqlx::query_as::<_, TurnUsage>(
             r#"SELECT f.title                         AS title,
                       t.session_id                    AS flow_id,
-                      count(*)::bigint                AS calls,
+                      sum(t.calls)::bigint            AS calls,
                       sum(t.total_tokens)::bigint     AS tokens,
                       round(sum(t.cost_usd), 6)::float8 AS cost_usd,
                       min(t.created_at)               AS turn_start
-               FROM token_usage t
+               -- Hot trace_usage rows plus per-trace totals of tiered rows (trace_totals),
+               -- counted the same way on both sides: one call per row, tokens including
+               -- both cache counts, so tiering a turn never changes its figures.
+               FROM (SELECT trace_id AS session_id, started_at AS created_at, 1::bigint AS calls,
+                            (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::bigint
+                                AS total_tokens,
+                            cost_usd::numeric AS cost_usd
+                       FROM trace_usage
+                     UNION ALL
+                     SELECT trace_id, first_at, row_count, tokens, cost_usd::numeric
+                       FROM trace_totals) t
                JOIN flows f ON f.flow_id = t.session_id
-               WHERE f.metadata->>'context_id' = $1
+               WHERE f.session_id = $1
                  AND ($3 OR f.user_id = $2::uuid)
                GROUP BY f.flow_id, f.title, t.session_id
                ORDER BY turn_start"#,
@@ -1338,6 +1316,7 @@ impl ObservabilityService {
             db: state.db.clone(),
             http_client: state.http_client.clone(),
             config: state.config.clone(),
+            store: state.event_store(),
         }
     }
 
@@ -1384,7 +1363,7 @@ impl ObservabilityService {
         // fleet totals (the name-keyed `agent_finops`/`count_user_traces` queries
         // return identical results for every duplicate). Historical spend of
         // deleted agents still counts toward the fleet figures via the
-        // `token_usage`/`session_traces` queries, which are name/agent_id-keyed,
+        // `token_usage`/`flows` queries, which are name/agent_id-keyed,
         // not row-keyed.
         sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
             "SELECT id, name, COALESCE(display_name, name), version FROM agents \
@@ -1484,9 +1463,9 @@ impl ObservabilityService {
 
     /// The session a trace belongs to, for authorizing the trace view.
     ///
-    /// The server's own `session_traces` record is the authority: every server
-    /// path that starts or forwards a turn writes it after checking the caller
-    /// owns the session. Span attributes are written by agents, and any agent
+    /// The server's own `flows` row (`flow_id` = trace id) is the authority:
+    /// every server path that starts or forwards a turn writes its `session_id`
+    /// after checking the caller owns the session. Span attributes are written by agents, and any agent
     /// in a flow can set `session.id` to a session its own owner controls, so
     /// a span's claim is used only when the server recorded nothing. Even then
     /// it is refused when the trace is a flow the server knows belongs to
@@ -1500,7 +1479,7 @@ impl ObservabilityService {
         let not_found = || ObservabilityError::NotFound("trace not found".into());
 
         let recorded: Option<String> =
-            sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1 LIMIT 1")
+            sqlx::query_scalar("SELECT session_id FROM flows WHERE flow_id = $1 LIMIT 1")
                 .bind(trace_id)
                 .fetch_optional(&self.db)
                 .await
@@ -1671,8 +1650,8 @@ impl ObservabilityService {
     /// The trace store is queried over a window, and this used to hardcode
     /// `now() - 7d`: opening any session older than a week returned an empty
     /// trace list. The session's own rows say when it actually ran —
-    /// `chat_sessions` for chat-originated sessions, `session_traces` (written
-    /// by agent_proxy for every forwarded query) for the rest — so take the
+    /// `chat_sessions` for chat-originated sessions, `flows` (one row per
+    /// turn, keyed by `session_id`) for the rest — so take the
     /// window from whichever exists, padded for clock skew between the control
     /// plane and the agents' exporters.
     ///
@@ -1696,7 +1675,7 @@ impl ObservabilityService {
                       LEAST(c.created_at, t.lo) AS lo,
                       GREATEST(c.updated_at, t.hi) AS hi
                  FROM (SELECT MIN(created_at) AS lo, MAX(created_at) AS hi
-                         FROM session_traces WHERE session_id = $1) t
+                         FROM flows WHERE session_id = $1) t
                  LEFT JOIN chat_sessions c ON c.session_id = $1"#,
         )
         .bind(session_id)
@@ -1756,19 +1735,27 @@ impl ObservabilityService {
         // than to today. Otherwise an old session that still exists in
         // Postgres can never find its historical traces.
         let (title, start, end) = self.session_window(session_id).await;
+        // Traces, tokens and cost come from `flows` + `trace_usage` (hot + cold), so
+        // sessions older than Tempo's retention, seeded or tiered, still list them.
+        // Tempo only adds span attributes and prompt/completion text while it has them.
+        let flows = self
+            .store
+            .load_flows_for_session(session_id)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        let flow_ids: Vec<String> = flows.iter().map(|f| f.flow_id.clone()).collect();
+        let usage = self
+            .store
+            .load_trace_usage_for_session(session_id, &flow_ids)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        let mut details = super::session_store::session_from_rows(session_id, &flows, &usage);
+        match self.provider.get_session(session_id, start, end).await {
+            Ok(live) if flows.is_empty() => details = live,
+            Ok(live) => super::session_store::enrich_from_tempo(&mut details, &live),
+            Err(e) => tracing::debug!(%session_id, error = %e, "tempo enrichment skipped"),
+        }
         let lineage = super::subagents_sql::session_lineage(&self.db, session_id).await?;
-        let details = match self.provider.get_session(session_id, start, end).await {
-            Ok(details) => details,
-            // The session is in Postgres (it was just authorized) but the trace
-            // store holds nothing for it: its turns never crossed the proxy. The
-            // list is served from the same receipts, so the page must be too.
-            Err(ObservabilityError::NotFound(_)) => {
-                return self
-                    .session_from_receipts(session_id, title, agent_name, lineage)
-                    .await;
-            }
-            Err(other) => return Err(other),
-        };
 
         let trace_entries: Vec<TraceEntry> = details
             .traces
@@ -1888,117 +1875,6 @@ impl ObservabilityService {
         })
     }
 
-    /// A session detail with no traces, totalled from the receipts. The token
-    /// and cost breakdowns are not recorded there, so `metrics_complete` is
-    /// false and only the totals are filled.
-    async fn session_from_receipts(
-        &self,
-        session_id: &str,
-        title: Option<String>,
-        agent_name: Option<String>,
-        lineage: super::subagents_sql::SessionLineage,
-    ) -> Result<SessionDetailResponse, ObservabilityError> {
-        let totals = session_receipt_totals(&self.db, session_id).await?;
-        let tokens = u64::try_from(totals.tokens.unwrap_or(0).max(0)).unwrap_or(0);
-        let zero = || CostWithTokens {
-            cost: 0.0,
-            tokens: 0,
-        };
-        Ok(SessionDetailResponse {
-            data: SessionDetailData {
-                session: SessionDetail {
-                    id: session_id.to_string(),
-                    session_id: session_id.to_string(),
-                    title,
-                    agent_name,
-                    num_traces: usize::try_from(totals.turns.unwrap_or(0).max(0)).unwrap_or(0),
-                    token_usage: TokenUsageSummary { total: None },
-                    cost_summary: FullCostSummary {
-                        total: CostWithTokens {
-                            cost: totals.cost.unwrap_or(0.0),
-                            tokens,
-                        },
-                        prompt: zero(),
-                        completion: zero(),
-                        cache_read: zero(),
-                        cache_creation: zero(),
-                    },
-                    latency_p50: None,
-                    latency_p99: None,
-                    latency_avg: None,
-                    cache_read_tokens: 0,
-                    cache_creation_tokens: 0,
-                    metrics_complete: false,
-                    parent_session_id: lineage.parent_session_id,
-                    spawn_tool_call_id: lineage.spawn_tool_call_id,
-                    subagent_type: lineage.subagent_type,
-                    subagents: lineage.subagents,
-                    traces: vec![],
-                    pagination: Pagination {
-                        end_cursor: None,
-                        has_next_page: false,
-                    },
-                },
-            },
-        })
-    }
-
-    /// A trace the trace store does not hold, described from its `trace_usage`
-    /// row: no spans, but the session, cost and latency the server recorded.
-    /// `None` when the server recorded nothing for it either.
-    async fn trace_from_usage(
-        &self,
-        trace_id: &str,
-        user_id: &str,
-        is_superuser: bool,
-    ) -> Result<Option<TraceDetailResponse>, ObservabilityError> {
-        let row: Option<UsageRow> = sqlx::query_as(
-            r#"SELECT max(session_id) AS session_id,
-                      COALESCE(sum(cost_usd), 0)::float8 AS total,
-                      COALESCE(sum(prompt_cost_usd), 0)::float8 AS prompt,
-                      COALESCE(sum(completion_cost_usd), 0)::float8 AS completion,
-                      max(latency_ms) AS latency_ms
-                 FROM trace_usage WHERE trace_id = $1
-               HAVING count(*) > 0"#,
-        )
-        .bind(trace_id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        let Some(UsageRow {
-            session_id: Some(session_id),
-            total,
-            prompt,
-            completion,
-            latency_ms,
-        }) = row
-        else {
-            return Ok(None);
-        };
-        self.authorize_session(&session_id, user_id, is_superuser, "trace")
-            .await?;
-        Ok(Some(TraceDetailResponse {
-            data: TraceDetailData {
-                trace: TraceDetail {
-                    id: trace_id.to_string(),
-                    project_session_id: Some(session_id),
-                    num_spans: 0,
-                    latency_ms: latency_ms.map(|ms| ms as f64),
-                    cost_summary: NestedCostSummary {
-                        total: CostOnly { cost: total },
-                        prompt: CostOnly { cost: prompt },
-                        completion: CostOnly { cost: completion },
-                        cache_read: CostOnly { cost: 0.0 },
-                        cache_creation: CostOnly { cost: 0.0 },
-                    },
-                    root_spans: RootSpansWrapper { edges: vec![] },
-                    spans: vec![],
-                    span_lookup: HashMap::new(),
-                },
-            },
-        }))
-    }
-
     // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
@@ -2007,17 +1883,39 @@ impl ObservabilityService {
         user_id: &str,
         is_superuser: bool,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
+        // Tempo first; when it no longer has the trace (retention, seeded or tiered
+        // turns), rebuild it from the flow + `trace_usage` rows, hot + cold.
+        let mut sql_cost: Option<CostBreakdown> = None;
         let mut trace = match self.provider.get_trace(trace_id).await {
-            Ok(trace) => trace,
-            // Not in the trace store: a turn that never crossed the proxy has
-            // only the row the server wrote at ingest.
-            Err(ObservabilityError::NotFound(_)) => {
-                return self
-                    .trace_from_usage(trace_id, user_id, is_superuser)
-                    .await?
-                    .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()));
+            Ok(t) if !t.spans.is_empty() => t,
+            // Any Tempo miss or failure (retention, non-hex seeded ids, outage) falls
+            // back to SQL; a trace with no flow row is still a 404.
+            Ok(_) | Err(_) => {
+                let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
+                let flow = self
+                    .store
+                    .load_flow(trace_id)
+                    .await
+                    .map_err(internal)?
+                    .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))?;
+                let usage = self
+                    .store
+                    .load_trace_usage_for_session(
+                        &flow.session_id,
+                        std::slice::from_ref(&flow.flow_id),
+                    )
+                    .await
+                    .map_err(internal)?;
+                let (mut t, c) = super::session_store::trace_from_rows(&flow, &usage);
+                let calls = self
+                    .store
+                    .session_tool_calls_all(&flow.session_id)
+                    .await
+                    .map_err(internal)?;
+                super::session_store::add_tool_call_spans(&mut t, &calls);
+                sql_cost = Some(c);
+                t
             }
-            Err(other) => return Err(other),
         };
         let mut seen_spans = HashSet::new();
         trace
@@ -2027,9 +1925,10 @@ impl ObservabilityService {
         self.authorize_session(&project_session_id, user_id, is_superuser, "trace")
             .await?;
 
-        let mut cost = CostBreakdown::default();
+        let from_sql = sql_cost.is_some();
+        let mut cost = sql_cost.unwrap_or_default();
         let mut seen_spans = HashSet::new();
-        for span in &trace.spans {
+        for span in trace.spans.iter().filter(|_| !from_sql) {
             if !seen_spans.insert(&span.span_id) {
                 continue;
             }
@@ -2112,16 +2011,27 @@ impl ObservabilityService {
     ) -> Result<SpanDetailResponse, ObservabilityError> {
         // Resolve and authorize the trace's session before looking up the span
         // or its Loki content, so inaccessible traces reveal no span existence.
-        let trace = self
-            .provider
-            .get_trace(trace_id)
-            .await
-            .map_err(|e| match e {
-                ObservabilityError::NotFound(_) => {
-                    ObservabilityError::NotFound("span not found".into())
-                }
-                other => other,
-            })?;
+        let span_nf = || ObservabilityError::NotFound("span not found".into());
+        let (trace, from_sql) = match self.provider.get_trace(trace_id).await {
+            Ok(t) if !t.spans.is_empty() => (t, false),
+            Ok(_) | Err(_) => {
+                let flow = self
+                    .store
+                    .load_flow(trace_id)
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+                    .ok_or_else(span_nf)?;
+                let usage = self
+                    .store
+                    .load_trace_usage_for_session(
+                        &flow.session_id,
+                        std::slice::from_ref(&flow.flow_id),
+                    )
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+                (super::session_store::trace_from_rows(&flow, &usage).0, true)
+            }
+        };
         let session_id = self
             .trace_session_id(trace_id, &trace)
             .await
@@ -2133,16 +2043,23 @@ impl ObservabilityService {
             })?;
         self.authorize_session(&session_id, user_id, is_superuser, "span")
             .await?;
-        let details = self
-            .provider
-            .get_span(trace_id, span_id)
-            .await
-            .map_err(|e| match e {
-                ObservabilityError::NotFound(_) => {
-                    ObservabilityError::NotFound("span not found".into())
-                }
-                other => other,
-            })?;
+        let details = if from_sql {
+            let span = trace
+                .spans
+                .iter()
+                .find(|s| s.span_id == span_id)
+                .cloned()
+                .ok_or_else(span_nf)?;
+            super::session_store::span_details_from_sql(span)
+        } else {
+            self.provider
+                .get_span(trace_id, span_id)
+                .await
+                .map_err(|e| match e {
+                    ObservabilityError::NotFound(_) => span_nf(),
+                    other => other,
+                })?
+        };
         let span = &details.span;
 
         // Token counts come from the provider (it rolls the span's children up);
@@ -2519,28 +2436,49 @@ impl ObservabilityService {
         // Shared WHERE fragment: agent, model, provider, user_id filters.
         // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
         // $6 = has_user_filter (bool), $7 = user_id_list (uuid[]).
-        const TRACE_USAGE_AGG_QUERY: &str = r#"SELECT agent_name,
-                      COUNT(*)::BIGINT AS operations,
-                      COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
-                      COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
-                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                      COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
-                      COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
-                      COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count,
-                      percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
-                      percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
-                      percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency,
-                      BOOL_AND(agent_id IS NULL) AS platform
-               FROM trace_usage
-               WHERE started_at >= $1 AND started_at < $2
-                 AND ($3::TEXT IS NULL OR agent_name = $3)
-                 AND ($4::TEXT IS NULL OR model = $4)
-                 AND ($5::TEXT IS NULL OR provider = $5)
-                 AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
-               GROUP BY agent_name"#;
+        // Counts, tokens and cost come from `trace_spend` (hot rows + tiered days), so
+        // the totals survive tiering. Cost confidence and latency percentiles exist only
+        // per hot row, so they describe the hot part of the window.
+        const TRACE_USAGE_AGG_QUERY: &str = r#"WITH s AS (
+                 SELECT agent_name,
+                        COALESCE(SUM(traces), 0)::BIGINT AS operations,
+                        COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                        COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                        COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count
+                 FROM trace_spend
+                 WHERE ts >= $1 AND ts < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
+                 GROUP BY agent_name),
+               h AS (
+                 SELECT agent_name,
+                        COALESCE(SUM(cost_usd) FILTER (WHERE cost_estimated), 0)::FLOAT8 AS estimated_cost,
+                        COUNT(*) FILTER (WHERE cost_estimated IS NULL)::BIGINT AS unknown_confidence_calls,
+                        percentile_cont(0.5)  WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50_latency,
+                        percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p95_latency,
+                        percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99_latency,
+                        BOOL_AND(agent_id IS NULL) AS platform
+                 FROM trace_usage
+                 WHERE started_at >= $1 AND started_at < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
+                 GROUP BY agent_name)
+               SELECT s.agent_name, s.operations, s.input_tokens, s.output_tokens,
+                      s.cache_read_tokens, s.cache_creation_tokens, s.total_cost,
+                      COALESCE(h.estimated_cost, 0)::FLOAT8 AS estimated_cost,
+                      COALESCE(h.unknown_confidence_calls, 0)::BIGINT AS unknown_confidence_calls,
+                      s.tool_call_count, h.p50_latency, h.p95_latency, h.p99_latency,
+                       COALESCE(h.platform, false) AS platform
+               FROM s LEFT JOIN h USING (agent_name)"#;
 
         // 1. Current window
         let current_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
@@ -3212,6 +3150,7 @@ impl ObservabilityService {
 
     // ── 6c. finops/spend-calendar ─────────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_spend_calendar(
         &self,
         month: &str,
@@ -3219,6 +3158,7 @@ impl ObservabilityService {
         agent_name: Option<&str>,
         model: Option<&str>,
         provider: Option<&str>,
+        source: Option<&str>,
         access: FinopsAccess<'_>,
     ) -> Result<FinopsSpendCalendarResponse, ObservabilityError> {
         let scope = self.scope_binds(access).await?;
@@ -3244,17 +3184,18 @@ impl ObservabilityService {
         }
 
         let rows: Vec<DayRow> = sqlx::query_as(
-            r#"SELECT DATE(started_at) AS date,
+            r#"SELECT DATE(ts) AS date,
                       COALESCE(SUM(cost_usd), 0)::FLOAT8 AS spend_usd,
-                      COUNT(*)::BIGINT AS operations
-               FROM trace_usage
-               WHERE started_at >= $1 AND started_at < $2
+                      COALESCE(SUM(traces), 0)::BIGINT AS operations
+               FROM trace_spend
+               WHERE ts >= $1 AND ts < $2
                  AND ($3::TEXT IS NULL OR agent_name = $3)
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND ($6::TEXT[] IS NULL OR agent_name = ANY($6::TEXT[]))
                  AND (NOT $7::BOOL OR user_id = ANY($8::UUID[]))
-               GROUP BY DATE(started_at)
+                 AND ($9::TEXT IS NULL OR source = $9)
+               GROUP BY DATE(ts)
                ORDER BY date"#,
         )
         .bind(month_start)
@@ -3265,6 +3206,7 @@ impl ObservabilityService {
         .bind(&scope.agent_names)
         .bind(scope.has_user_filter)
         .bind(&scope.user_ids)
+        .bind(source)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;

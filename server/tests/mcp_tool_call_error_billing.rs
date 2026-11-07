@@ -155,8 +155,8 @@ async fn call_tool_through_gateway(call_reply: Value) -> (Value, String, bool) {
 async fn recorded_outcome(db: &sqlx::PgPool, agent_id: Uuid) -> (String, bool) {
     for _ in 0..100 {
         let row: Option<(String, bool)> = sqlx::query_as(
-            "SELECT finish_reason, (metadata->>'success')::boolean FROM token_usage \
-             WHERE agent_id = $1 AND operation_type = 'mcp_tool_call'",
+            "SELECT status, (arguments->>'success')::boolean FROM tool_calls \
+             WHERE agent_id = $1 AND tool_kind = 'mcp'",
         )
         .bind(agent_id)
         .fetch_optional(db)

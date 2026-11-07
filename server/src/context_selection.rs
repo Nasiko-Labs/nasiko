@@ -120,10 +120,10 @@ pub(crate) async fn get_settings_history(
         .unwrap_or_else(|| Utc::now() - Duration::days(days));
     let end = parse_rfc3339(params.end_time.as_deref()).unwrap_or_else(Utc::now);
 
-    let rows: Vec<(DateTime<Utc>, String, String, String)> = sqlx::query_as(
-        "SELECT changed_at, field, from_value, to_value FROM user_setting_changes \
-          WHERE user_id = $1 AND changed_at >= $2 AND changed_at < $3 \
-          ORDER BY changed_at DESC",
+    // Hot rows plus rows tiered to Lance after 90 days (no rollup exists for this table).
+    let hot: Vec<(Uuid, DateTime<Utc>, String, String, String)> = sqlx::query_as(
+        "SELECT id, changed_at, field, from_value, to_value FROM user_setting_changes \
+          WHERE user_id = $1 AND changed_at >= $2 AND changed_at < $3",
     )
     .bind(user_id)
     .bind(start)
@@ -131,10 +131,28 @@ pub(crate) async fn get_settings_history(
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
+    let cold: Vec<nasiko_event_store::user_setting_changes::SettingChangeRow> = state
+        .event_store()
+        .user_setting_changes(user_id, start, end)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(%e, "cold user_setting_changes read failed; hot rows only");
+            Vec::new()
+        });
+    let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+    let mut rows: Vec<(Uuid, DateTime<Utc>, String, String, String)> = hot
+        .into_iter()
+        .chain(
+            cold.into_iter()
+                .map(|r| (r.id, r.changed_at, r.field, r.from_value, r.to_value)),
+        )
+        .filter(|r| seen.insert(r.0))
+        .collect();
+    rows.sort_by_key(|r| std::cmp::Reverse((r.1, r.0)));
 
     Json(
         rows.into_iter()
-            .map(|(at, field, from, to)| SettingsChange {
+            .map(|(_, at, field, from, to)| SettingsChange {
                 at,
                 field,
                 from,

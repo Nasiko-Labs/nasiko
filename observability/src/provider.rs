@@ -416,6 +416,7 @@ impl TempoLokiProvider {
             mixed_provider: bool,
             cost: CostBreakdown,
             tool_calls: u32,
+            tool_spans: Vec<crate::types::ToolCallSpan>,
             /// Tool calls the model asked for, as the LLM router saw them in its replies.
             requested_tool_calls: u32,
         }
@@ -528,7 +529,10 @@ impl TempoLokiProvider {
             if name.is_empty() {
                 continue;
             }
-            by_agent.entry(name.to_string()).or_default().tool_calls += 1;
+            let acc = by_agent.entry(name.to_string()).or_default();
+            acc.tool_calls += 1;
+            acc.tool_spans
+                .push(crate::types::ToolCallSpan::from_span(span));
         }
 
         // Unrecovered error spans (SE-3), attributed to the agent that emitted
@@ -602,6 +606,7 @@ impl TempoLokiProvider {
                 latency_ms,
                 started_at,
                 error_count,
+                tool_calls: acc.tool_spans,
             });
         }
         rows
@@ -1704,6 +1709,22 @@ pub fn find_root_span(spans: &[Span]) -> Option<&Span> {
     })
 }
 
+/// A tool-call span: `gen_ai.operation.name` `execute_tool` (GenAI semconv; what
+/// the ACP OTLP bridge and the server's own spans emit) or the older `call_tool`,
+/// or `openinference.span.kind` `TOOL` (OpenInference).
+#[cfg(test)]
+fn is_tool_call_span(span: &Span) -> bool {
+    span.attributes
+        .get("gen_ai.operation.name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == "execute_tool" || s == "call_tool")
+        || span
+            .attributes
+            .get("openinference.span.kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.eq_ignore_ascii_case("tool"))
+}
+
 #[cfg(test)]
 mod tests {
     /// List prices only — hermetic, per the repo's unit-test rule.
@@ -2005,6 +2026,32 @@ mod tests {
         assert_eq!(child_usage.total_tokens, 20);
         assert_eq!(zero_usage.total_tokens, 0);
         assert_eq!(zero_cost, Default::default());
+    }
+
+    #[test]
+    fn execute_tool_spans_are_tool_calls_and_persist() {
+        let mut span = trace_with_sessions(&[("tool", None)]).spans.remove(0);
+        span.name = "execute_tool Bash".into();
+        span.attributes.insert(
+            "gen_ai.operation.name".into(),
+            serde_json::json!("execute_tool"),
+        );
+        span.attributes
+            .insert("gen_ai.tool.name".into(), serde_json::json!("Bash"));
+        assert!(is_tool_call_span(&span));
+        let stored = crate::types::ToolCallSpan::from_span(&span);
+        assert_eq!(stored.tool_name, "Bash");
+
+        for (key, value) in [
+            ("gen_ai.operation.name", "call_tool"),
+            ("openinference.span.kind", "TOOL"),
+        ] {
+            let mut s = trace_with_sessions(&[("t", None)]).spans.remove(0);
+            s.attributes.insert(key.into(), serde_json::json!(value));
+            assert!(is_tool_call_span(&s), "{key}={value}");
+        }
+        let chat = model_span("llm", None, "gpt-4o", (1, 1, 0, 0));
+        assert!(!is_tool_call_span(&chat));
     }
 
     #[test]

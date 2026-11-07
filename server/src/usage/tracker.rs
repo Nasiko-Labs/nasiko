@@ -1,12 +1,35 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::models::{CreateRouterRequestLog, CreateTokenUsage, TokenUsage};
+use super::models::{CreateRouterRequestLog, CreateTokenUsage};
 
-/// Service for tracking token usage and orchestrator requests
+/// Service for tracking spend (`trace_usage`), tool calls (`tool_calls`) and orchestrator requests.
 #[derive(Clone)]
 pub struct UsageTracker {
     db: PgPool,
+}
+
+/// Primary key of the `trace_usage` row a call was added to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceUsageKey {
+    pub trace_id: String,
+    pub agent_name: String,
+}
+
+/// One MCP tool call. Carries no tokens, so it lands in `tool_calls`, not `trace_usage`.
+#[derive(Debug, Clone)]
+pub struct ToolCallRecord {
+    /// Shared with the exported `execute_tool` span (`gen_ai.tool.call.id`) so the materializer
+    /// and this row key the same call.
+    pub call_id: String,
+    pub user_id: Uuid,
+    pub agent_id: Uuid,
+    pub tool_name: String,
+    pub success: bool,
+    pub latency_ms: i32,
+    pub metadata: serde_json::Value,
+    /// Flow verified against `flows`/`flow_participants`, never a raw traceparent.
+    pub verified_flow_id: Option<String>,
 }
 
 impl UsageTracker {
@@ -14,70 +37,116 @@ impl UsageTracker {
         Self { db }
     }
 
-    /// Track token usage for an LLM call
-    pub async fn track_tokens(&self, usage: CreateTokenUsage) -> Result<Uuid, sqlx::Error> {
-        self.insert_tokens(usage, None).await
+    /// Record one MCP tool call in `tool_calls`. Trace id is `mcp:<call id>`: gateway calls carry
+    /// no traceparent here, and a fresh id keeps each call its own row.
+    pub async fn track_tool_call(&self, call: ToolCallRecord) -> Result<(), sqlx::Error> {
+        let call_id: String = call.call_id.clone();
+        let trace_id: String = match call.verified_flow_id.as_deref() {
+            Some(flow) => flow.to_string(),
+            None => format!("mcp:{call_id}"),
+        };
+        sqlx::query(
+            r#"INSERT INTO tool_calls (
+                   trace_id, call_id, user_id, agent_id, agent_name, tool_name, tool_kind,
+                   status, arguments, duration_ms, started_at, session_id
+               ) VALUES (
+                   $1, $2, $3, $4,
+                   COALESCE((SELECT name FROM agents WHERE id = $4), $4::text),
+                   $5, 'mcp', $6, $7, $8, now() - make_interval(secs => $8::double precision / 1000),
+                     (SELECT session_id FROM flows WHERE flow_id = $9)
+               )
+               ON CONFLICT (trace_id, call_id) DO NOTHING"#,
+        )
+        .bind(&trace_id)
+        .bind(&call_id)
+        .bind(call.user_id)
+        .bind(call.agent_id)
+        .bind(&call.tool_name)
+        .bind(if call.success { "ok" } else { "error" })
+        .bind(sqlx::types::Json(call.metadata))
+        .bind(i64::from(call.latency_ms))
+        .bind(call.verified_flow_id.as_deref())
+        .execute(&self.db)
+        .await?;
+        Ok(())
     }
 
-    /// Persist a completion priced by the caller's shared engine.
+    /// Add a completion priced by the caller's shared engine to its `trace_usage` row.
+    ///
+    /// Keyed `(session_id, agent name)` like the LLM router's live writer, `direct:<uuid>` when
+    /// there is no flow. Tokens and cost accumulate; metadata merges with `||`.
     pub async fn track_priced_tokens(
         &self,
         usage: CreateTokenUsage,
         cost_usd: f64,
-    ) -> Result<Uuid, sqlx::Error> {
-        self.insert_tokens(usage, Some(cost_usd)).await
-    }
-
-    async fn insert_tokens(
-        &self,
-        usage: CreateTokenUsage,
-        cost_usd: Option<f64>,
-    ) -> Result<Uuid, sqlx::Error> {
-        let id: Uuid = sqlx::query_scalar(
-            r#"
-            INSERT INTO token_usage (
-                user_id, agent_id, operation_type, request_id, session_id,
-                provider, model,
-                input_tokens, output_tokens, total_tokens,
-                cache_creation_input_tokens, cache_read_input_tokens,
-                cached_tokens, audio_tokens, reasoning_tokens,
-                accepted_prediction_tokens, rejected_prediction_tokens,
-                completion_tokens_details, prompt_tokens_details,
-                latency_ms, ttft_ms, streaming, finish_reason, metadata, cost_usd
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
-            RETURNING id
-            "#,
+    ) -> Result<TraceUsageKey, sqlx::Error> {
+        let trace_id: String = match usage.session_id.as_deref() {
+            Some(flow) if !flow.is_empty() => flow.to_string(),
+            _ => format!("direct:{}", Uuid::new_v4()),
+        };
+        let agent_name: String = match usage.agent_id {
+            Some(id) => sqlx::query_scalar("SELECT name FROM agents WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&self.db)
+                .await?
+                .unwrap_or_else(|| id.to_string()),
+            None => usage.operation_type.clone(),
+        };
+        let mut metadata: serde_json::Value = usage.metadata;
+        if let Some(map) = metadata.as_object_mut() {
+            map.insert("operation_type".into(), usage.operation_type.clone().into());
+        }
+        sqlx::query(
+            r#"INSERT INTO trace_usage (
+                   trace_id, agent_name, session_id, agent_id, user_id, model, provider,
+                   input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                   cost_usd, latency_ms, started_at, priced_by, metadata, materialized_at,
+                   router_input_tokens, router_output_tokens, router_cache_read_tokens,
+                   router_cache_creation_tokens, router_cost_usd
+               ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,now(),'router',$14,now(),
+                         $8,$9,$10,$11,$12)
+               ON CONFLICT (trace_id, agent_name) DO UPDATE SET
+                   -- Added to the visible columns and the router share alike (0080):
+                   -- a Tempo-priced row keeps what Tempo counted.
+                   input_tokens          = trace_usage.input_tokens + EXCLUDED.input_tokens,
+                   output_tokens         = trace_usage.output_tokens + EXCLUDED.output_tokens,
+                   cache_read_tokens     = trace_usage.cache_read_tokens + EXCLUDED.cache_read_tokens,
+                   cache_creation_tokens = trace_usage.cache_creation_tokens + EXCLUDED.cache_creation_tokens,
+                   cost_usd              = COALESCE(trace_usage.cost_usd, 0) + EXCLUDED.cost_usd,
+                   router_input_tokens          = trace_usage.router_input_tokens + EXCLUDED.router_input_tokens,
+                   router_output_tokens         = trace_usage.router_output_tokens + EXCLUDED.router_output_tokens,
+                   router_cache_read_tokens     = trace_usage.router_cache_read_tokens + EXCLUDED.router_cache_read_tokens,
+                   router_cache_creation_tokens = trace_usage.router_cache_creation_tokens + EXCLUDED.router_cache_creation_tokens,
+                   router_cost_usd              = trace_usage.router_cost_usd + EXCLUDED.router_cost_usd,
+                   model                 = EXCLUDED.model,
+                   provider              = EXCLUDED.provider,
+                   agent_id              = COALESCE(trace_usage.agent_id, EXCLUDED.agent_id),
+                   user_id               = COALESCE(trace_usage.user_id, EXCLUDED.user_id),
+                   latency_ms            = COALESCE(trace_usage.latency_ms, 0) + COALESCE(EXCLUDED.latency_ms, 0),
+                   metadata              = trace_usage.metadata || EXCLUDED.metadata,
+                   priced_by             = 'router',
+                   materialized_at       = now()"#,
         )
-        .bind(usage.user_id)
+        .bind(&trace_id)
+        .bind(&agent_name)
+        .bind(usage.session_id.as_deref())
         .bind(usage.agent_id)
-        .bind(usage.operation_type)
-        .bind(usage.request_id)
-        .bind(usage.session_id)
-        .bind(usage.provider)
-        .bind(usage.model)
-        .bind(usage.input_tokens)
-        .bind(usage.output_tokens)
-        .bind(usage.total_tokens)
-        .bind(usage.cache_creation_input_tokens)
-        .bind(usage.cache_read_input_tokens)
-        .bind(usage.cached_tokens)
-        .bind(usage.audio_tokens)
-        .bind(usage.reasoning_tokens)
-        .bind(usage.accepted_prediction_tokens)
-        .bind(usage.rejected_prediction_tokens)
-        .bind(usage.completion_tokens_details.map(sqlx::types::Json))
-        .bind(usage.prompt_tokens_details.map(sqlx::types::Json))
-        .bind(usage.latency_ms)
-        .bind(usage.ttft_ms)
-        .bind(usage.streaming)
-        .bind(usage.finish_reason)
-        .bind(sqlx::types::Json(usage.metadata))
+        .bind(usage.user_id)
+        .bind(&usage.model)
+        .bind(&usage.provider)
+        .bind(i64::from(usage.input_tokens))
+        .bind(i64::from(usage.output_tokens))
+        .bind(i64::from(usage.cache_read_input_tokens.unwrap_or(0)))
+        .bind(i64::from(usage.cache_creation_input_tokens.unwrap_or(0)))
         .bind(cost_usd)
-        .fetch_one(&self.db)
+        .bind(usage.latency_ms.map(i64::from))
+        .bind(sqlx::types::Json(metadata))
+        .execute(&self.db)
         .await?;
-
-        Ok(id)
+        Ok(TraceUsageKey {
+            trace_id,
+            agent_name,
+        })
     }
 
     /// Track a orchestrator request
@@ -126,70 +195,4 @@ impl UsageTracker {
 
         Ok(id)
     }
-
-    /// Get token usage for a specific request
-    pub async fn get_token_usage(&self, id: Uuid) -> Result<TokenUsage, sqlx::Error> {
-        sqlx::query_as::<_, TokenUsage>("SELECT * FROM token_usage WHERE id = $1")
-            .bind(id)
-            .fetch_one(&self.db)
-            .await
-    }
-
-    /// Get token usage summary for a user in a date range
-    pub async fn get_user_usage_summary(
-        &self,
-        user_id: Uuid,
-        from: chrono::DateTime<chrono::Utc>,
-        to: chrono::DateTime<chrono::Utc>,
-    ) -> Result<UsageSummary, sqlx::Error> {
-        let row = sqlx::query_as::<_, UsageSummaryRow>(
-            r#"
-            SELECT
-                COUNT(*)::bigint as request_count,
-                COALESCE(SUM(input_tokens), 0)::bigint as total_input,
-                COALESCE(SUM(output_tokens), 0)::bigint as total_output,
-                COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
-                COALESCE(SUM(cost_usd), 0) as total_cost,
-                AVG(latency_ms)::double precision as avg_latency
-            FROM token_usage
-            WHERE user_id = $1
-              AND created_at >= $2
-              AND created_at <= $3
-            "#,
-        )
-        .bind(user_id)
-        .bind(from)
-        .bind(to)
-        .fetch_one(&self.db)
-        .await?;
-
-        Ok(UsageSummary {
-            request_count: row.request_count.unwrap_or(0),
-            total_input_tokens: row.total_input.unwrap_or(0),
-            total_output_tokens: row.total_output.unwrap_or(0),
-            total_tokens: row.total_tokens.unwrap_or(0),
-            total_cost: row.total_cost.unwrap_or_default(),
-            avg_latency_ms: row.avg_latency,
-        })
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct UsageSummaryRow {
-    request_count: Option<i64>,
-    total_input: Option<i64>,
-    total_output: Option<i64>,
-    total_tokens: Option<i64>,
-    total_cost: Option<rust_decimal::Decimal>,
-    avg_latency: Option<f64>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct UsageSummary {
-    pub request_count: i64,
-    pub total_input_tokens: i64,
-    pub total_output_tokens: i64,
-    pub total_tokens: i64,
-    pub total_cost: rust_decimal::Decimal,
-    pub avg_latency_ms: Option<f64>,
 }

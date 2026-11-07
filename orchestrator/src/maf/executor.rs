@@ -101,7 +101,7 @@ async fn timed<T>(
 /// not double counting.
 ///
 /// Metering must never break a run: a failed usage write is logged and
-/// swallowed, matching `write_selector_token_usage` and the router's
+/// swallowed, matching `write_selector_usage` and the router's
 /// `spawn_log`.
 pub async fn metered_llm<T>(
     phase: &'static str,
@@ -173,7 +173,7 @@ pub async fn metered_call<T, E>(
         span.record("gen_ai.usage.input_tokens", usage.input_tokens);
         span.record("gen_ai.usage.output_tokens", usage.output_tokens);
         span.record("gen_ai.usage.cached_tokens", usage.cached_tokens);
-        write_token_usage(db, execution_id, user_id, phase, step_index, source, usage).await;
+        write_trace_usage(db, execution_id, user_id, phase, step_index, source, usage).await;
     }
 
     tracing::info!(
@@ -187,13 +187,13 @@ pub async fn metered_call<T, E>(
     result
 }
 
-/// Insert one `token_usage` row for a MAF orchestration LLM call.
+/// Add one MAF orchestration LLM call to `trace_usage`.
 ///
 /// `session_id` is the execution id, which is also the A2A `contextId` MAF
 /// sends its step agents — so MAF's own spend and its agents' spend aggregate
 /// under one session, the same convention the LLM router follows by writing
 /// the flow id there.
-async fn write_token_usage(
+async fn write_trace_usage(
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
@@ -211,10 +211,12 @@ async fn write_token_usage(
     });
 
     let session_id = execution_id.to_string();
-    let result = insert_token_usage(
+    let agent_name: String = maf_agent_name(step_index);
+    let result = insert_trace_usage(
         db,
         user_id,
         Some(&session_id),
+        &agent_name,
         source.provider,
         usage,
         metadata,
@@ -226,23 +228,35 @@ async fn write_token_usage(
             execution_id = %execution_id,
             phase,
             error = %e,
-            "maf: token_usage write failed (non-fatal)"
+            "maf: trace_usage write failed (non-fatal)"
         );
     }
 }
 
-/// The `token_usage` row of one MAF orchestration LLM call, `maf_orchestration`
-/// for `user_id`. The one place the row's columns are written, so every MAF call
-/// is recorded and priced alike; each caller describes its call in `metadata`.
-/// `session_id` is `None` for a call that belongs to no run.
+/// `trace_usage.agent_name` for a MAF call: `maf:step<i>` for a step phase,
+/// `maf` for run-level phases (planning, synthesis) and branch-condition writes.
+/// Per-step rows keep [`platform_spend`]'s step split readable from the upsert.
+pub fn maf_agent_name(step_index: Option<i32>) -> String {
+    match step_index {
+        Some(i) => format!("maf:step{i}"),
+        None => "maf".to_string(),
+    }
+}
+
+/// Add one MAF orchestration LLM call to its `trace_usage` row
+/// `(session_id or direct:<uuid v4>, agent_name)`, source `agent`, priced_by `router`.
+/// The one place MAF's spend columns are written; each caller describes its call
+/// in `metadata` (merged into the row's metadata, later keys win).
+///
 ///
 /// The row is priced here, by the same engine and with the same `metadata.pricing`
-/// record as the LLM router's rows: the database trigger that once priced rows left
-/// with no cost was dropped (migration 0043), so an unpriced row now stays at $0.
-pub async fn insert_token_usage(
+/// record as the LLM router's rows: an unpriced row would stay at $0 (the pricing
+/// trigger was dropped in migration 0043).
+pub async fn insert_trace_usage(
     db: &PgPool,
     user_id: Uuid,
     session_id: Option<&str>,
+    agent_name: &str,
     provider: &str,
     usage: &LlmUsage,
     mut metadata: serde_json::Value,
@@ -258,7 +272,6 @@ pub async fn insert_token_usage(
                 cache_creation: 0,
                 total: Some(usage.total_tokens.max(0) as u64),
             },
-            // The planner's `input_tokens` is OpenAI's `prompt_tokens`, which counts the cached part.
             nasiko_pricing::PromptConvention::Inclusive,
             chrono::Utc::now(),
         )
@@ -266,23 +279,45 @@ pub async fn insert_token_usage(
     if let Some(fields) = metadata.as_object_mut() {
         fields.insert("pricing".into(), priced.provenance());
     }
+    let trace_id: String = match session_id {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => format!("direct:{}", Uuid::new_v4()),
+    };
     sqlx::query(
-        r#"INSERT INTO token_usage
-               (user_id, operation_type, session_id, provider, model,
-                input_tokens, output_tokens, total_tokens,
-                cached_tokens, cache_read_input_tokens,
-                latency_ms, streaming, metadata, cost_usd)
-           VALUES ($1, 'maf_orchestration', $2, $3, $4, $5, $6, $7, $8, $8, $9, false, $10, $11)"#,
+        r#"INSERT INTO trace_usage (
+               trace_id, agent_name, session_id, user_id, model, provider,
+               input_tokens, output_tokens, cache_read_tokens,
+               latency_ms, started_at, source, priced_by, materialized_at, metadata,
+               router_input_tokens, router_output_tokens, router_cache_read_tokens, cost_usd
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,now(),'agent','router',now(),$11,$7,$8,$9,$12)
+           ON CONFLICT (trace_id, agent_name) DO UPDATE SET
+               -- Visible columns and the router share alike (0080): a Tempo-priced
+               -- row keeps what Tempo counted.
+               input_tokens             = trace_usage.input_tokens + EXCLUDED.input_tokens,
+               output_tokens            = trace_usage.output_tokens + EXCLUDED.output_tokens,
+               cache_read_tokens        = trace_usage.cache_read_tokens + EXCLUDED.cache_read_tokens,
+               router_input_tokens      = trace_usage.router_input_tokens + EXCLUDED.router_input_tokens,
+               router_output_tokens     = trace_usage.router_output_tokens + EXCLUDED.router_output_tokens,
+               router_cache_read_tokens = trace_usage.router_cache_read_tokens + EXCLUDED.router_cache_read_tokens,
+               model             = EXCLUDED.model,
+               provider          = EXCLUDED.provider,
+               user_id           = COALESCE(trace_usage.user_id, EXCLUDED.user_id),
+               latency_ms        = COALESCE(trace_usage.latency_ms, 0) + EXCLUDED.latency_ms,
+               priced_by         = 'router',
+               materialized_at   = now(),
+               cost_usd          = COALESCE(trace_usage.cost_usd, 0) + EXCLUDED.cost_usd,
+               metadata          = trace_usage.metadata || EXCLUDED.metadata"#,
     )
-    .bind(user_id)
+    .bind(&trace_id)
+    .bind(agent_name)
     .bind(session_id)
-    .bind(provider)
+    .bind(user_id)
     .bind(&usage.model)
-    .bind(usage.input_tokens as i32)
-    .bind(usage.output_tokens as i32)
-    .bind(usage.total_tokens as i32)
-    .bind(usage.cached_tokens as i32)
-    .bind(usage.latency_ms as i32)
+    .bind(provider)
+    .bind(usage.input_tokens)
+    .bind(usage.output_tokens)
+    .bind(usage.cached_tokens)
+    .bind(usage.latency_ms)
     .bind(metadata)
     .bind(priced.cost.total_usd)
     .execute(db)
@@ -813,8 +848,8 @@ pub async fn execute_step(
         "mode": "free_flowing",
     });
     let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, 'running', $5)
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata, session_id)
+           VALUES ($1, $2, $3, $4, 'running', $5, $6)
            ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&trace_id)
@@ -822,6 +857,8 @@ pub async fn execute_step(
     .bind(&step.agent_name)
     .bind(&step.task_description)
     .bind(&flow_metadata)
+    // A MAF run has no chat session; the execution is the session (same key as `context_id`).
+    .bind(execution_id.to_string())
     .execute(db)
     .await;
     // Participant record — the MCP gateway / LLM router only authorize this
@@ -840,38 +877,6 @@ pub async fn execute_step(
         tracing::warn!(
             error = %e, flow_id = %trace_id, agent_id = %step.agent_id,
             "flow participant record failed — the step agent's MCP/LLM calls will be denied"
-        );
-    }
-
-    // Index this step's trace against the run so the platform can FIND it.
-    //
-    // The trace-usage materializer discovers work two ways: a TraceQL
-    // search for `{span.session.id != ""}`, unioned with this table. A
-    // step's trace contains only the agent's own spans — MAF's `maf.step`
-    // span lives on the execution trace, not this one — and agents that
-    // don't run the instrumentation patch never set `session.id`, which is
-    // exactly the gap this index exists to cover.
-    //
-    // Without this row a step's agent spend reaches Tempo and is never
-    // found, so `trace_usage` stays empty and the usage API can never
-    // resolve the step. `agent_proxy.rs` and `a2a_dispatch.rs` both write
-    // it; MAF did not, which is why it kept missing pieces of what the
-    // proxy does. Best-effort: a failed index only costs visibility.
-    if let Err(e) = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(execution_id.to_string())
-    .bind(&trace_id)
-    .bind(step.agent_id)
-    .bind(&step.agent_name)
-    .execute(db)
-    .await
-    {
-        tracing::warn!(
-            error = %e, execution_id = %execution_id, %trace_id,
-            "maf: session trace index failed — this step's agent spend will not be discoverable"
         );
     }
 
@@ -1490,7 +1495,7 @@ pub async fn persist_output_generation(db: &PgPool, execution_id: Uuid, output_g
 ///
 /// Read back rather than accumulated in memory, so the number MAF reports is
 /// the same one the platform bills from. A locally-summed total can silently
-/// disagree with `token_usage` (a metering write that failed, a partially
+/// disagree with `trace_usage` (a metering write that failed, a partially
 /// completed run, a retry that re-ran some steps); reading makes the two
 /// agree by construction, and there is exactly one source of truth.
 ///
@@ -1506,11 +1511,11 @@ pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformS
 
     let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
         "SELECT (metadata->>'step_index')::int,
-                COALESCE(SUM(total_tokens), 0)::BIGINT,
+                COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0)::BIGINT,
                 COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
-           FROM token_usage
-          WHERE operation_type = 'maf_orchestration'
-            AND session_id = $1
+           FROM trace_usage
+          WHERE trace_id = $1
+            AND (agent_name = 'maf' OR agent_name LIKE 'maf:step%')
           GROUP BY 1",
     )
     .bind(execution_id.to_string())

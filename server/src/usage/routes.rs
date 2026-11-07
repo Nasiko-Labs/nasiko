@@ -21,21 +21,11 @@ pub fn router() -> Router<AppState> {
         .route("/usage/by-model", get(by_model))
 }
 
-/// `token_usage` is a shared sink: as well as model spend it carries MCP tool
-/// calls, which are latency records with no tokens and no cost
-/// (`oss/docs/MCP_GATEWAY_DESIGN.md` §14 routes them here deliberately, so that
-/// per-agent reporting covers tool use without a second query surface).
-///
-/// Spend queries exclude them. Left in, a tool call counts as a request against
-/// a model, and because `TokenUsageBuilder` requires a model the tool's *name*
-/// lands in that column — so `GROUP BY model` reports `SLACK_LIST_CONVERSATIONS`
-/// beside `gpt-4o-mini`.
-///
-/// Excluding by name rather than selecting an allow-list of spend types is
-/// deliberate: a new spend type added later must not silently vanish from every
-/// cost figure. This way a new *non*-spend type inflates a request count
-/// instead, which is visible and harmless by comparison.
-const EXCLUDE_NON_SPEND: &str = "operation_type <> 'mcp_tool_call'";
+// `total_tokens` keeps the retired `token_usage.total_tokens` meaning: input and
+// output plus both cache counts, which `trace_usage.input_tokens` excludes.
+// All routes read `trace_spend` (migration 0080): hot `trace_usage` rows
+// plus tiered days from `trace_usage_daily`. MCP tool calls live in `tool_calls`.
+const AVG_LATENCY: &str = "(SUM(latency_sum)::double precision / NULLIF(SUM(latency_count), 0))";
 
 // ─── GET /usage/summary ────────────────────────────────────────────────────
 
@@ -51,7 +41,7 @@ fn default_days() -> i64 {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub(crate) struct UsageSummaryResponse {
-    request_count: i64,
+    traces: i64,
     total_input_tokens: i64,
     total_output_tokens: i64,
     total_tokens: i64,
@@ -85,14 +75,14 @@ pub(crate) async fn summary(
 
     let row = sqlx::query_as::<_, SummaryRow>(&format!(
         r#"SELECT
-            COUNT(*)::bigint as request_count,
+            COALESCE(SUM(traces), 0)::bigint as traces,
             COALESCE(SUM(input_tokens), 0)::bigint as total_input,
             COALESCE(SUM(output_tokens), 0)::bigint as total_output,
-            COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
+            COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)::bigint as total_tokens,
             COALESCE(SUM(cost_usd)::double precision, 0) as total_cost,
-            AVG(latency_ms)::double precision as avg_latency
-        FROM token_usage
-        WHERE user_id = $1 AND created_at >= $2 AND {EXCLUDE_NON_SPEND}"#
+            {AVG_LATENCY} as avg_latency
+        FROM trace_spend
+        WHERE user_id = $1 AND ts >= $2"#
     ))
     .bind(user_id)
     .bind(from)
@@ -101,7 +91,7 @@ pub(crate) async fn summary(
 
     match row {
         Ok(r) => Json(UsageSummaryResponse {
-            request_count: r.request_count.unwrap_or(0),
+            traces: r.traces.unwrap_or(0),
             total_input_tokens: r.total_input.unwrap_or(0),
             total_output_tokens: r.total_output.unwrap_or(0),
             total_tokens: r.total_tokens.unwrap_or(0),
@@ -119,7 +109,7 @@ pub(crate) async fn summary(
 
 #[derive(sqlx::FromRow)]
 struct SummaryRow {
-    request_count: Option<i64>,
+    traces: Option<i64>,
     total_input: Option<i64>,
     total_output: Option<i64>,
     total_tokens: Option<i64>,
@@ -139,7 +129,7 @@ pub(crate) struct HistoryQuery {
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
 pub(crate) struct DailyUsage {
     date: chrono::NaiveDate,
-    request_count: i64,
+    traces: i64,
     total_tokens: i64,
     total_cost_usd: f64,
 }
@@ -167,17 +157,17 @@ pub(crate) async fn history(
 
     let from = Utc::now() - Duration::days(q.days);
 
-    let rows = sqlx::query_as::<_, DailyUsage>(&format!(
+    let rows = sqlx::query_as::<_, DailyUsage>(
         r#"SELECT
-            DATE(created_at) as date,
-            COUNT(*)::bigint as request_count,
-            COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
+            DATE(ts) as date,
+            COALESCE(SUM(traces), 0)::bigint as traces,
+            COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)::bigint as total_tokens,
             COALESCE(SUM(cost_usd)::double precision, 0) as total_cost_usd
-        FROM token_usage
-        WHERE user_id = $1 AND created_at >= $2 AND {EXCLUDE_NON_SPEND}
-        GROUP BY DATE(created_at)
-        ORDER BY date ASC"#
-    ))
+        FROM trace_spend
+        WHERE user_id = $1 AND ts >= $2
+        GROUP BY DATE(ts)
+        ORDER BY date ASC"#,
+    )
     .bind(user_id)
     .bind(from)
     .fetch_all(&state.db)
@@ -217,7 +207,7 @@ fn default_limit() -> i64 {
 pub(crate) struct AgentUsage {
     agent_id: Option<Uuid>,
     agent_name: Option<String>,
-    request_count: i64,
+    traces: i64,
     total_input_tokens: i64,
     total_output_tokens: i64,
     total_tokens: i64,
@@ -257,25 +247,24 @@ pub(crate) async fn by_agent(
 
     let from = Utc::now() - Duration::days(q.days);
 
-    let rows = sqlx::query_as::<_, AgentUsage>(&format!(
+    let rows = sqlx::query_as::<_, AgentUsage>(
         r#"SELECT
             tu.agent_id,
             a.name as agent_name,
-            COUNT(*)::bigint as request_count,
+            COALESCE(SUM(tu.traces), 0)::bigint as traces,
             COALESCE(SUM(tu.input_tokens), 0)::bigint as total_input_tokens,
             COALESCE(SUM(tu.output_tokens), 0)::bigint as total_output_tokens,
-            COALESCE(SUM(tu.total_tokens), 0)::bigint as total_tokens,
+            COALESCE(SUM(tu.input_tokens + tu.output_tokens + tu.cache_read_tokens + tu.cache_creation_tokens), 0)::bigint as total_tokens,
             COALESCE(SUM(tu.cost_usd)::double precision, 0) as total_cost_usd,
-            AVG(tu.latency_ms)::double precision as avg_latency_ms
-        FROM token_usage tu
+            (SUM(tu.latency_sum)::double precision / NULLIF(SUM(tu.latency_count), 0)) as avg_latency_ms
+        FROM trace_spend tu
         LEFT JOIN agents a ON a.id = tu.agent_id
-        WHERE tu.user_id = $1 AND tu.created_at >= $2
+        WHERE tu.user_id = $1 AND tu.ts >= $2
           AND ($3::text IS NULL OR a.name ILIKE '%' || $3 || '%')
-          AND tu.{EXCLUDE_NON_SPEND}
         GROUP BY tu.agent_id, a.name
         ORDER BY total_tokens DESC
-        LIMIT $4 OFFSET $5"#
-    ))
+        LIMIT $4 OFFSET $5"#,
+    )
     .bind(user_id)
     .bind(from)
     .bind(&q.q)
@@ -299,7 +288,7 @@ pub(crate) async fn by_agent(
 pub(crate) struct ModelUsage {
     provider: String,
     model: String,
-    request_count: i64,
+    traces: i64,
     total_input_tokens: i64,
     total_output_tokens: i64,
     total_tokens: i64,
@@ -343,14 +332,14 @@ pub(crate) async fn by_model(
         r#"SELECT
             provider,
             model,
-            COUNT(*)::bigint as request_count,
+            COALESCE(SUM(traces), 0)::bigint as traces,
             COALESCE(SUM(input_tokens), 0)::bigint as total_input_tokens,
             COALESCE(SUM(output_tokens), 0)::bigint as total_output_tokens,
-            COALESCE(SUM(total_tokens), 0)::bigint as total_tokens,
+            COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)::bigint as total_tokens,
             COALESCE(SUM(cost_usd)::double precision, 0) as total_cost_usd,
-            AVG(latency_ms)::double precision as avg_latency_ms
-        FROM token_usage
-        WHERE user_id = $1 AND created_at >= $2 AND {EXCLUDE_NON_SPEND}
+            {AVG_LATENCY} as avg_latency_ms
+        FROM trace_spend
+        WHERE user_id = $1 AND ts >= $2
           AND ($3::text IS NULL OR model ILIKE '%' || $3 || '%')
         GROUP BY provider, model
         ORDER BY total_tokens DESC

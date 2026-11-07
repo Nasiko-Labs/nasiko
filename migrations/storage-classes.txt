@@ -1,0 +1,11 @@
+# Storage class of every tiered table (docs/LAKEHOUSE_TRD.md §3, §10).
+# Not a migration (sqlx only loads NNNN_*.sql). Kept here because editing an
+# applied migration, even a comment, changes its sqlx checksum.
+# Format: <table> -- storage: <metric|content|derived>   (created in <migration>)
+token_usage -- storage: metric (0001_schema.sql)
+token_usage_legacy -- storage: metric (0079_lakehouse.sql: token_usage renamed; drained to cold token_usage, then dropped)
+trace_usage -- storage: metric (0013_trace_usage.sql)
+token_savings -- storage: metric (0052_token_savings.sql)
+context_reports -- storage: metric (0056_context_reports.sql)
+user_setting_changes -- storage: metric (0057_context_preferences.sql)
+tool_calls -- storage: metric (0079_lakehouse.sql)

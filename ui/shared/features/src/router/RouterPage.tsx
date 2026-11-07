@@ -139,7 +139,7 @@ function Page({
     let dropped = 0
     for (const u of usage.data ?? []) {
       if (u.agent_id && owned.has(u.agent_id)) byAgent.set(u.agent_id, u)
-      else dropped += u.request_count
+      else dropped += u.traces
     }
     return {
       byAgent,
@@ -147,7 +147,7 @@ function Page({
       failed: usage.isError,
       pending: usage.isPending && ids.length > 0,
       partial: (usage.data?.length ?? 0) >= SPEND_LIMIT,
-      anyUnpriced: [...byAgent.values()].some((u) => u.request_count > 0 && u.total_cost_usd === 0),
+      anyUnpriced: [...byAgent.values()].some((u) => u.traces > 0 && u.total_cost_usd === 0),
     }
   }, [usage.data, usage.isError, usage.isPending, ids])
 

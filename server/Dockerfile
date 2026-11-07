@@ -40,6 +40,10 @@ RUN node scripts/app.ts build oss
 # ── Stage 2: build ──────────────────────────────────────────────────────────
 FROM rust:latest AS builder
 
+# `lance` (oss/event-store) compiles protobufs at build time and needs `protoc`.
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 COPY . .
 

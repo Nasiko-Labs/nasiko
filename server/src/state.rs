@@ -11,7 +11,6 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
-use crate::chat::attachment_store::{ChatUploadStore, SwappableAttachmentStore};
 use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
@@ -48,6 +47,17 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// Where a downstream reader of hot `trace_usage` rows has read up to, so
+    /// tiering never moves rows it has not seen. OSS wires `NoTieringHold` (no such
+    /// reader); the EE composition root replaces it before `init`.
+    pub tiering_hold: Arc<dyn nasiko_event_store::TieringHold>,
+    /// Called just before forwarding a request to an agent container. OSS default is a no-op
+    /// (`NoAgentWake`); the EE composition root installs the real implementation through this
+    /// cell (`SwappableAgentWake::install`, not a plain reassignment) for the same reason
+    /// `prompt_context` does - the HITL resume dispatcher forwards to agents too, and holds an
+    /// `AppState` clone taken before that root runs. See that field's doc comment and the
+    /// `agent_wake` module docs.
+    pub agent_wake: Arc<crate::agent_wake::SwappableAgentWake>,
     /// What the MAF worker runs each queued workflow through. OSS wires
     /// `LinearMafExecutor` (steps in array order); the EE composition root
     /// replaces it before the app is built, the same way it replaces
@@ -84,9 +94,6 @@ pub struct AppState {
     /// same reason `prompt_context` does — see that field's doc comment and the
     /// `chat::turn_artifacts` module docs.
     pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
-    pub attachment_store: Arc<SwappableAttachmentStore>,
-    pub marker_signer: Option<Arc<nasiko_llm_router::attachments::MarkerSigner>>,
-    pub llm_config_cache: Arc<nasiko_llm_router::ConfigCache>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -128,13 +135,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Handle over hot Postgres rows and the cold Lance tier (docs/LAKEHOUSE_TRD.md),
+    /// tiering behind this state's `tiering_hold`. Cheap: a pool clone plus config;
+    /// readers merging both tiers build one per call.
+    pub fn event_store(&self) -> nasiko_event_store::EventStore {
+        event_store(&self.config, &self.db).with_hold(self.tiering_hold.clone())
+    }
+
     /// The embedding client the chat handlers hand to
     /// `context_selection::fetch_for_user`. Built per call (it is a thin
     /// handle over the shared `history_embedding_cache`, not a connection),
-    /// so the two call sites don't each re-derive the provider settings.
-    pub fn history_vector_store(&self) -> VectorStore {
+    /// so the call sites don't each re-derive the provider settings. Embeds with the key `user_id`
+    /// saved from the UI when there is one, else the server's.
+    pub async fn history_vector_store(&self, user_id: uuid::Uuid) -> VectorStore {
+        let server_key = self.config.openai_api_key.as_deref().unwrap_or_default();
         VectorStore::for_embedding(
-            self.config.openai_api_key.clone().unwrap_or_default(),
+            nasiko_orchestrator::user_key::openai_key(&self.db, user_id, server_key).await,
             self.config
                 .openai_base_url
                 .clone()
@@ -236,6 +252,11 @@ impl AppState {
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
             Arc::new(crate::spend_gate::NoSpendGate);
+        let tiering_hold: Arc<dyn nasiko_event_store::TieringHold> =
+            Arc::new(nasiko_event_store::NoTieringHold);
+        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
+            crate::agent_wake::NoAgentWake,
+        )));
         let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
             Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
         let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
@@ -248,12 +269,6 @@ impl AppState {
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
         let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
-        let attachment_store = Arc::new(SwappableAttachmentStore::new(Arc::new(
-            ChatUploadStore::new(oci_storage.clone()),
-        )));
-        let marker_signer =
-            nasiko_llm_router::attachments::MarkerSigner::from_secret(&config.agent_jwt_secret)
-                .map(Arc::new);
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -273,7 +288,7 @@ impl AppState {
 
         // Tempo+Loki observability backend. Model pricing resolves through
         // the model_pricing DB table with the static table as fallback; the
-        // session_traces resolver maps session ↔ trace both ways for agents
+        // session resolver maps session ↔ trace both ways for agents
         // that never set session.id on their spans.
         let pricing = Arc::new(nasiko_pricing::PricingEngine::new(db.clone()));
 
@@ -367,19 +382,14 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
+            tiering_hold,
+            agent_wake,
             maf_executor,
             maf_policy,
             prompt_context,
             agent_deletion_hook,
             agent_scaling,
             turn_artifacts,
-            attachment_store,
-            marker_signer,
-            llm_config_cache: Arc::new(nasiko_llm_router::ConfigCache::new(
-                std::time::Duration::from_secs(
-                    nasiko_llm_router::config::GatewayConfig::llm_config_cache_ttl_secs_from_env(),
-                ),
-            )),
             history_embedding_cache,
             observability,
             github_svc,
@@ -520,7 +530,10 @@ impl AppState {
             state.db.clone(),
             std::time::Duration::from_secs(state.config.savings_factor_refresh_secs),
             state.config.savings_factor_min_samples,
-            state.config.savings_factor_window_days,
+            effective_factor_window(
+                state.config.savings_factor_window_days,
+                state.config.tiering_enabled,
+            ),
         ));
 
         state
@@ -538,12 +551,45 @@ impl AppState {
             tracing::warn!(%e, "admin bootstrap failed (may already exist)");
         }
 
+        // Before the seeding below, which needs the key to register toolkits.
+        crate::composio_settings::apply_stored_key(self).await;
+        tokio::spawn(crate::composio_settings::watch_stored_key(self.clone()));
+
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
         });
 
+        // Lakehouse tiering (docs/LAKEHOUSE_TRD.md §8). Every replica spawns the
+        // loop; only the holder of the `tiering_job` advisory lock does work.
+        // With tiering off the tiering run never happens, so pending erasures get a
+        // loop of their own: a recorded erasure always completes.
+        if self.config.tiering_enabled {
+            self.event_store().spawn_tiering();
+        } else {
+            self.event_store().spawn_erasure_retries();
+        }
+
+        // Resumed tiered sessions: orchestrator history reads merge Lance rows.
+        let store: nasiko_event_store::EventStore = event_store(&self.config, &self.db);
+        nasiko_orchestrator::session_history::set_cold_history_loader(std::sync::Arc::new(
+            move |session_id: String| {
+                let store: nasiko_event_store::EventStore = store.clone();
+                Box::pin(async move {
+                    let rows = store.load_session(&session_id).await.ok()?;
+                    Some(
+                        rows.into_iter()
+                            .map(|r| nasiko_orchestrator::session_history::ColdHistoryRow {
+                                role: r.role,
+                                content: r.content,
+                                metadata: r.metadata,
+                            })
+                            .collect(),
+                    )
+                })
+            },
+        ));
         // Separate task: a slow third-party MCP server must not wait behind,
         // or delay, the agent and toolkit seeding above.
         let state = self.clone();
@@ -559,17 +605,14 @@ impl AppState {
             crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
         });
 
-        // Periodic refresh of materialized views (token_usage_daily, agent_selection_stats).
+        // Periodic refresh of materialized views (agent_selection_stats).
         let db = self.db.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
             interval.tick().await; // first tick fires immediately — skip it to avoid startup load
             loop {
                 interval.tick().await;
-                let views = [
-                    "REFRESH MATERIALIZED VIEW CONCURRENTLY token_usage_daily",
-                    "REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats",
-                ];
+                let views = ["REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats"];
                 for sql in views {
                     if let Err(e) = sqlx::query(sql).execute(&db).await {
                         tracing::warn!(view = sql, error = %e, "materialized view refresh failed (non-fatal)");
@@ -585,15 +628,12 @@ impl AppState {
     /// (`GET /api/agents/dev-env`, deployer+) so `nasiko run` can give local
     /// containers the same defaults a CP deployment would get.
     pub fn platform_fallback_env(&self) -> std::collections::HashMap<String, String> {
-        let mut env = std::collections::HashMap::new();
-        if let Some(ref key) = self.config.openai_api_key {
-            env.insert("OPENAI_API_KEY".into(), key.clone());
-        }
-        if let Some(ref url) = self.config.openai_base_url {
-            env.insert("OPENAI_BASE_URL".into(), url.clone());
-        }
-        env.insert("OPENAI_MODEL".into(), self.config.openai_model.clone());
-        env
+        build_platform_fallback_env(
+            self.config.agent_platform_key_fallback,
+            self.config.openai_api_key.as_deref(),
+            self.config.openai_base_url.as_deref(),
+            &self.config.openai_model,
+        )
     }
 
     /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
@@ -661,6 +701,27 @@ impl AppState {
         );
         env
     }
+}
+
+/// Builds the platform fallback environment map for agent deployments.
+///
+/// When `agent_platform_key_fallback` is false, `OPENAI_API_KEY` is omitted.
+/// `OPENAI_BASE_URL` and `OPENAI_MODEL` are always included when set.
+fn build_platform_fallback_env(
+    agent_platform_key_fallback: bool,
+    openai_api_key: Option<&str>,
+    openai_base_url: Option<&str>,
+    openai_model: &str,
+) -> std::collections::HashMap<String, String> {
+    let mut env = std::collections::HashMap::new();
+    if agent_platform_key_fallback && let Some(key) = openai_api_key {
+        env.insert("OPENAI_API_KEY".into(), key.to_string());
+    }
+    if let Some(url) = openai_base_url {
+        env.insert("OPENAI_BASE_URL".into(), url.to_string());
+    }
+    env.insert("OPENAI_MODEL".into(), openai_model.to_string());
+    env
 }
 
 /// Postgres extensions the migrations require (`0001_schema.sql` runs
@@ -747,5 +808,100 @@ mod tests {
         assert!(msg.contains("\"vector\""));
         assert!(msg.contains("permission denied"));
         assert!(msg.contains("azure.extensions"));
+    }
+
+    #[test]
+    fn platform_fallback_env_omits_key_when_flag_is_false() {
+        let env = build_platform_fallback_env(
+            false,
+            Some("test-key"),
+            Some("https://api.test.com"),
+            "test-model",
+        );
+        assert!(
+            !env.contains_key("OPENAI_API_KEY"),
+            "OPENAI_API_KEY should be omitted when flag is false"
+        );
+        assert_eq!(
+            env.get("OPENAI_BASE_URL"),
+            Some(&"https://api.test.com".to_string())
+        );
+        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
+    }
+
+    #[test]
+    fn platform_fallback_env_includes_key_when_flag_is_true() {
+        let env = build_platform_fallback_env(true, Some("test-key"), None, "test-model");
+        assert_eq!(
+            env.get("OPENAI_API_KEY"),
+            Some(&"test-key".to_string()),
+            "OPENAI_API_KEY should be present when flag is true"
+        );
+        assert_eq!(env.get("OPENAI_MODEL"), Some(&"test-model".to_string()));
+        assert!(!env.contains_key("OPENAI_BASE_URL"));
+    }
+}
+
+/// `s3://` cold paths reuse the server's `S3_*` settings (rustfs/MinIO/AWS).
+/// Event store over the configured cold path (erasure, cold reads).
+pub fn event_store(c: &nasiko_config::Config, db: &sqlx::PgPool) -> nasiko_event_store::EventStore {
+    let cfg = nasiko_event_store::TieringConfig {
+        cold_path: c.cold_path.clone(),
+        storage_options: cold_storage_options(c),
+        interval: std::time::Duration::from_secs(c.tiering_interval_secs),
+        ..Default::default()
+    };
+    nasiko_event_store::EventStore::new(db.clone(), cfg)
+}
+
+pub(crate) fn cold_storage_options(
+    c: &nasiko_config::Config,
+) -> std::collections::HashMap<String, String> {
+    if !c.cold_path.starts_with("s3://") {
+        return Default::default();
+    }
+    [
+        ("aws_access_key_id", c.s3_access_key.clone()),
+        ("aws_secret_access_key", c.s3_secret_key.clone()),
+        ("aws_region", c.s3_region.clone()),
+        ("aws_endpoint", c.s3_endpoint.clone()),
+        (
+            "allow_http",
+            c.s3_endpoint.starts_with("http://").to_string(),
+        ),
+        ("aws_virtual_hosted_style_request", "false".into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .collect()
+}
+
+/// Hot window kept in Postgres when tiering is on (`TieringConfig::min_hot_days`).
+const TIERING_HOT_DAYS: i64 = 30;
+
+/// `savings_factors` reads raw `token_usage` metadata, which only covers the hot
+/// window once tiering runs. A longer window would silently lose samples, so it is
+/// capped (with a warning) instead (NAS-1163).
+fn effective_factor_window(days: i64, tiering_enabled: bool) -> i64 {
+    if tiering_enabled && days > TIERING_HOT_DAYS {
+        tracing::warn!(
+            requested = days,
+            capped = TIERING_HOT_DAYS,
+            "SAVINGS_FACTOR_WINDOW_DAYS exceeds the tiering hot window; capping"
+        );
+        return TIERING_HOT_DAYS;
+    }
+    days
+}
+
+#[cfg(test)]
+mod factor_window_tests {
+    use super::effective_factor_window;
+
+    #[test]
+    fn capped_only_when_tiering() {
+        assert_eq!(effective_factor_window(90, true), 30);
+        assert_eq!(effective_factor_window(90, false), 90);
+        assert_eq!(effective_factor_window(14, true), 14);
     }
 }

@@ -167,6 +167,9 @@ impl From<sqlx::Error> for ProcessError {
 /// attached to the proxy's existing `session_id` (the A2A contextId). No chat
 /// session or message is written here, avoiding duplicates. Idempotent on
 /// `(user_id, event_id)`; failures are the caller's to log, never fatal to a turn.
+///
+/// Spend is not written here: the container's LLM calls go through the router,
+/// which upserts `trace_usage` with `source='acp'` per call.
 pub async fn persist_coding_turn_telemetry(
     db: &sqlx::PgPool,
     user_id: Uuid,
@@ -383,12 +386,22 @@ async fn process_event(
         crate::observability::trace_materializer::write_usage_row(
             &mut tx,
             usage,
+            crate::observability::trace_materializer::UsageSource::Coding,
             Some(&server_session_id),
             Some(agent_id),
             Some(user_id),
         )
         .await?;
     }
+    crate::coding_agent_otlp::write_tool_calls(
+        &mut tx,
+        event,
+        &server_session_id,
+        agent_id,
+        user_id,
+        event.capture_policy == CapturePolicy::Content,
+    )
+    .await?;
     tx.commit().await?;
     Ok(CodingAgentEventStatus::Accepted)
 }

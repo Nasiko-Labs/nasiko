@@ -111,10 +111,10 @@ pub async fn invalidate_session_cache(state: &McpState, user_id: Uuid) {
 
 /// Resolve the conversation id a paused `auth_required`/`tool_approval` HITL
 /// request should be recorded against — the closest thing MCP has to an A2A
-/// `contextId`, via `session_traces` (populated by `agent_proxy` on every
-/// forwarded user query: `trace_id -> chat_sessions.session_id`). Falls back
-/// to the raw `trace_id` when no such row exists yet (e.g. a call made
-/// before `agent_proxy`'s insert lands, or in a test harness) — still a
+/// `contextId`, via `flows.session_id` (a flow's `flow_id` is its trace id, and
+/// every flow-creating path writes a NOT NULL `session_id`). Falls back
+/// to the raw `trace_id` when no such flow row exists yet (e.g. a call made
+/// before the flow insert lands, or in a test harness) — still a
 /// stable, per-conversation value a future resume dispatcher can push
 /// against, just not yet resolved to the human-facing chat session. `None`
 /// only when there is no verified flow at all, i.e. nothing to correlate
@@ -137,7 +137,7 @@ pub async fn resolve_context_id(
 ) -> Option<String> {
     let trace_id = verified_flow_id?;
     let session_id: Option<String> =
-        sqlx::query_scalar("SELECT session_id FROM session_traces WHERE trace_id = $1")
+        sqlx::query_scalar("SELECT session_id FROM flows WHERE flow_id = $1")
             .bind(trace_id)
             .fetch_optional(&state.db)
             .await

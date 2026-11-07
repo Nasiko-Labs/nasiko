@@ -143,7 +143,7 @@ async fn messages(server: &common::TestServer, id: &str) -> i64 {
 async fn traces(server: &common::TestServer, id: &str) -> i64 {
     count(
         server,
-        "SELECT COUNT(*) FROM session_traces WHERE session_id = $1",
+        "SELECT COUNT(*) FROM flows WHERE session_id = $1",
         id,
     )
     .await

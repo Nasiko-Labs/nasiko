@@ -24,7 +24,6 @@ use nasiko_mcp_gateway::types::codes;
 
 use crate::mcp::identity::deny;
 use crate::state::AppState;
-use crate::usage::TokenUsageBuilder;
 
 /// Agent-facing MCP JSON-RPC gateway. Generic `tools/list` / `tools/call`
 /// JSON-RPC 2.0; request and response bodies are protocol-defined, not
@@ -349,6 +348,9 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     // content flag the hop and LLM spans honour, so a deployment that opts out
     // of content capture gets the Tool lane without the payloads.
     let capture_content = state.config.otel_capture_content;
+    // One id for the exported span and the stored row, so the Tempo materializer's
+    // `gen_ai.tool.call.id` and `tool_calls.call_id` name the same call.
+    let call_id: String = Uuid::new_v4().to_string();
     let tool_span = (method == "tools/call").then(|| {
         let span = tracing::info_span!(
             "execute_tool",
@@ -367,6 +369,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             gen_ai.operation.name = "execute_tool",
             gen_ai.agent.id = %agent_id,
             tool.name = %tool_name,
+            gen_ai.tool.call.id = %call_id,
             tool.success = tracing::field::Empty,
             tool.arguments = tracing::field::Empty,
             tool.result = tracing::field::Empty,
@@ -454,6 +457,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             latency_ms,
             success,
             verified_flow_id.as_deref(),
+            &call_id,
         );
 
         if result
@@ -740,6 +744,8 @@ fn tool_call_succeeded(response: &Value) -> bool {
             != Some(true)
 }
 
+// One value per field of the stored call; a params struct would only repeat them.
+#[allow(clippy::too_many_arguments)]
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -748,6 +754,7 @@ fn record_tool_usage(
     latency_ms: i32,
     success: bool,
     flow_id: Option<&str>,
+    call_id: &str,
 ) {
     state.genai_metrics.record_tool_call(
         latency_ms as f64 / 1000.0,
@@ -755,25 +762,20 @@ fn record_tool_usage(
         &agent_id.to_string(),
     );
 
-    // `session_id` carries the flow id (= trace id), exactly as the LLM rows do
-    // (`router/usage_meta.rs` stamps `.session_id(flow_id)`), so a tool call joins
-    // its turn in SQL the same way — via `token_usage.session_id = <trace_id>`.
-    // Only the server-proven `verified_flow_id` is used, never the raw inbound
-    // `traceparent`: an owner-fallback coding-agent row has no proven flow, so it
-    // stays unstamped rather than naming a turn it can't be shown to belong to.
-    let mut builder = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
-        .agent_id(agent_id)
-        .latency_ms(latency_ms)
-        .finish_reason(if success { "ok" } else { "error" })
-        .metadata(json!({ "tool": tool_name, "success": success, "team_id": null }));
-    if let Some(flow_id) = flow_id {
-        builder = builder.session_id(flow_id);
-    }
-    let usage = builder.build();
+    let call = crate::usage::ToolCallRecord {
+        call_id: call_id.to_string(),
+        user_id,
+        agent_id,
+        tool_name: tool_name.to_string(),
+        success,
+        latency_ms,
+        metadata: json!({ "tool": tool_name, "success": success, "team_id": null, "flow_id": flow_id }),
+        verified_flow_id: flow_id.map(str::to_string),
+    };
 
     let tracker = state.usage_tracker.clone();
     tokio::spawn(async move {
-        if let Err(e) = tracker.track_tokens(usage).await {
+        if let Err(e) = tracker.track_tool_call(call).await {
             tracing::warn!(error = %e, "failed to record mcp_tool_call usage");
         }
     });

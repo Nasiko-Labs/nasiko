@@ -671,7 +671,7 @@ export function usageByAgent(
     const row = by.get(t.agent_id) ?? {
       agent_id: t.agent_id,
       agent_name: names.get(t.agent_id) ?? null,
-      request_count: 0,
+      traces: 0,
       total_input_tokens: 0,
       total_output_tokens: 0,
       total_tokens: 0,
@@ -679,7 +679,7 @@ export function usageByAgent(
       avg_latency_ms: null,
       _lat: 0,
     }
-    row.request_count++
+    row.traces++
     row.total_input_tokens += t.input_tokens
     row.total_output_tokens += t.output_tokens
     row.total_tokens += t.input_tokens + t.output_tokens
@@ -691,7 +691,7 @@ export function usageByAgent(
     .map(({ _lat, ...r }) => ({
       ...r,
       total_cost_usd: Math.round(r.total_cost_usd * 1e6) / 1e6,
-      avg_latency_ms: r.request_count ? _lat / r.request_count : null,
+      avg_latency_ms: r.traces ? _lat / r.traces : null,
     }))
     .sort((a, b) => b.total_tokens - a.total_tokens)
 }

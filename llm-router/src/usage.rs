@@ -1,7 +1,7 @@
-//! Fire-and-forget usage logging to the `token_usage` table.
+//! Fire-and-forget usage logging to the `trace_usage` spend table.
 //!
-//! Writes one row per LLM call, priced here in Rust through the platform's
-//! single cost engine. Failures are logged and swallowed — usage logging must
+//! Adds each LLM call to its `(trace_id, agent_name)` row, priced here in Rust
+//! through the platform's single cost engine. Failures are logged and swallowed — usage logging must
 //! never break or delay the response.
 //!
 //! Missing exact prices fall back through the shared engine. Pricing provenance
@@ -23,7 +23,7 @@ pub struct UsageRecord {
     /// was attributed to a flow, else the agent owner from the JWT.
     pub owner_id: String,
     pub agent_id: String,
-    /// `token_usage.operation_type`, e.g. `"direct_llm"` (chat) or `"embedding"`.
+    /// `trace_usage.metadata.operation_type`, e.g. `"direct_llm"` (chat) or `"embedding"`.
     pub operation_type: &'static str,
     pub provider: String,
     /// Bare provider-native model id (no prefix).
@@ -36,7 +36,7 @@ pub struct UsageRecord {
     pub finish_reason: Option<String>,
     /// The flow this call belongs to — named by the agent-forwarded
     /// `traceparent` (strict attribution rejects calls without one, so served
-    /// calls always carry it). Written to `token_usage.session_id` — the same
+    /// calls always carry it). Written to `trace_usage.trace_id`/`session_id` — the same
     /// key the orchestrator uses — so per-message usage aggregates across the
     /// platform and its agents.
     pub flow_id: Option<String>,
@@ -61,7 +61,7 @@ pub struct UsageRecord {
     /// `token_savings` ledger. Two integers rather than the compression module's type, so this
     /// module stays a pure DB concern.
     ///
-    /// The ledger write lives here, beside the `token_usage` write, because pricing the saving
+    /// The ledger write lives here, beside the `trace_usage` write, because pricing the saving
     /// needs the same `PricingEngine` result that prices the call — computing it anywhere else
     /// would price a saving at a different rate than the spend it is subtracted from, and the
     /// reduction percentage would stop being coherent.
@@ -80,13 +80,13 @@ pub fn spawn_log(db: PgPool, pricing: Arc<PricingEngine>, record: UsageRecord) {
     });
 }
 
-/// Insert one priced `token_usage` row.
+/// Add one priced call to its `trace_usage` row.
 pub async fn log_usage(
     db: PgPool,
     pricing: &PricingEngine,
     record: UsageRecord,
 ) -> Result<(), String> {
-    // token_usage.user_id is NOT NULL + FK to users(id); without a valid owner we
+    // trace_usage.user_id and token_savings.user_id are FKs to users(id); without a valid owner we
     // cannot write a row, so skip (best-effort logging must never surface an error).
     let Ok(owner) = Uuid::parse_str(&record.owner_id) else {
         tracing::debug!(owner_id = %record.owner_id, "skipping usage row: owner_id is not a uuid");
@@ -154,7 +154,8 @@ pub async fn log_usage(
         request_bytes: record.request_bytes,
     };
 
-    let metadata = build_metadata(MetadataInputs {
+    let metadata: serde_json::Value = build_metadata(MetadataInputs {
+        operation_type: record.operation_type,
         platform_paid: record.platform_paid,
         attribution_source: record.attribution_source,
         pricing: priced.provenance(),
@@ -163,39 +164,30 @@ pub async fn log_usage(
         brevity: record.brevity_metadata,
     });
 
-    sqlx::query(
-        r#"INSERT INTO token_usage
-               (user_id, agent_id, operation_type, provider, model,
-                input_tokens, output_tokens, total_tokens,
-                cache_read_input_tokens, cache_creation_input_tokens,
-                cached_tokens, reasoning_tokens,
-                latency_ms, streaming, finish_reason, session_id, metadata,
-                cost_usd)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)"#,
-    )
-    .bind(owner)
-    .bind(agent)
-    .bind(record.operation_type)
-    .bind(&record.provider)
-    .bind(&record.model)
-    .bind(saturating_i32(input.unwrap_or(0)))
-    .bind(saturating_i32(output.unwrap_or(0)))
-    .bind(saturating_i32(total.unwrap_or(0)))
-    .bind(saturating_i32(cache_read.unwrap_or(0)))
-    .bind(saturating_i32(cache_creation.unwrap_or(0)))
-    .bind(saturating_i32(
-        record.cached_tokens.unwrap_or(cache_read.unwrap_or(0)),
-    ))
-    .bind(saturating_i32(record.reasoning_tokens.unwrap_or(0)))
-    .bind(saturating_i32(record.latency_ms))
-    .bind(record.streaming)
-    .bind(record.finish_reason)
-    .bind(record.flow_id)
-    .bind(metadata)
-    .bind(priced.cost.total_usd)
-    .execute(&db)
-    .await
-    .map_err(|e| e.to_string())?;
+    let live: LiveSpend = LiveSpend {
+        metadata,
+        owner,
+        agent,
+        flow_id: record.flow_id.clone(),
+        model: record.model.clone(),
+        provider: record.provider.clone(),
+        input_tokens: input.unwrap_or(0).max(0),
+        output_tokens: output.unwrap_or(0).max(0),
+        cache_read_tokens: cache_read.unwrap_or(0).max(0),
+        cache_creation_tokens: cache_creation.unwrap_or(0).max(0),
+        cost_usd: priced.cost.total_usd,
+        prompt_cost_usd: priced.cost.input_usd
+            + priced.cost.cache_read_usd
+            + priced.cost.cache_creation_usd,
+        completion_cost_usd: priced.cost.output_usd,
+        latency_ms: record.latency_ms,
+    };
+
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    write_trace_usage(&mut tx, &live)
+        .await
+        .map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     write_savings(
         &db,
@@ -206,6 +198,147 @@ pub async fn log_usage(
         cache_creation,
     )
     .await;
+    Ok(())
+}
+
+/// One priced LLM call, added live to its `trace_usage` row so budgets read
+/// spend with no materializer lag.
+struct LiveSpend {
+    /// Per-call metadata, merged into `trace_usage.metadata` (later call wins per key).
+    metadata: serde_json::Value,
+    owner: Uuid,
+    agent: Option<Uuid>,
+    flow_id: Option<String>,
+    model: String,
+    provider: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    cost_usd: f64,
+    prompt_cost_usd: f64,
+    completion_cost_usd: f64,
+    latency_ms: i64,
+}
+
+/// `trace_usage.source` for an agent row: ACP containers, local coding agents
+/// (`nasiko connect`), or regular agents.
+fn source_for(workload_kind: Option<&str>, is_coding: bool) -> &'static str {
+    match (workload_kind, is_coding) {
+        (Some("acp_coding_agent"), _) => "acp",
+        (_, true) => "coding",
+        _ => "agent",
+    }
+}
+
+/// Key for a call: the flow's trace id, or `direct:<fresh uuid v4>` when the
+/// call carried no `traceparent` (local coding agents) — one row per such call.
+fn trace_key(flow_id: Option<&str>) -> String {
+    match flow_id {
+        Some(f) if !f.is_empty() => f.to_string(),
+        _ => format!("direct:{}", Uuid::new_v4()),
+    }
+}
+
+/// Add one call to its `(trace_id, agent_name)` row, marking it router-priced.
+///
+/// The call is added to both the visible spend columns and the row's `router_*`
+/// share. A Tempo-priced row keeps what Tempo already counted (the agent's own-key
+/// calls among it); the materializer later sets each visible column to
+/// `GREATEST(tempo, router_*)`, so neither half of a mixed trace is lost.
+async fn write_trace_usage(
+    tx: &mut sqlx::PgConnection,
+    live: &LiveSpend,
+) -> Result<(), sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct AgentInfo {
+        name: String,
+        workload_kind: Option<String>,
+        is_coding: bool,
+    }
+    let info: Option<AgentInfo> = match live.agent {
+        Some(id) => {
+            // `coding_agent_integration_id` is server-managed; `metadata` is
+            // owner-editable, and a `coding` label exempts spend from routed
+            // budgets, so it must not be self-assignable (resolver/mod.rs does the same).
+            sqlx::query_as(
+                "SELECT name, workload_kind, \
+                        coding_agent_integration_id IS NOT NULL AS is_coding \
+                 FROM agents WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        None => None,
+    };
+    let agent_name: String = match (&info, live.agent) {
+        (Some(i), _) => i.name.clone(),
+        (None, Some(id)) => id.to_string(),
+        (None, None) => String::new(),
+    };
+    let source: &'static str = info
+        .as_ref()
+        .map(|i| source_for(i.workload_kind.as_deref(), i.is_coding))
+        .unwrap_or("agent");
+    let trace_id: String = trace_key(live.flow_id.as_deref());
+
+    sqlx::query(
+        r#"INSERT INTO trace_usage (
+               trace_id, agent_name, session_id, agent_id, user_id, model, provider,
+               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+               cost_usd, prompt_cost_usd, completion_cost_usd,
+               router_input_tokens, router_output_tokens, router_cache_read_tokens,
+               router_cache_creation_tokens, router_cost_usd, router_prompt_cost_usd,
+               router_completion_cost_usd,
+               latency_ms, started_at, source, priced_by, materialized_at, metadata
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+                     $8,$9,$10,$11,$12,$13,$14,
+                     $15,now(),$16,'router',now(),$17)
+           ON CONFLICT (trace_id, agent_name) DO UPDATE SET
+               input_tokens                 = trace_usage.input_tokens + EXCLUDED.input_tokens,
+               output_tokens                = trace_usage.output_tokens + EXCLUDED.output_tokens,
+               cache_read_tokens            = trace_usage.cache_read_tokens + EXCLUDED.cache_read_tokens,
+               cache_creation_tokens        = trace_usage.cache_creation_tokens + EXCLUDED.cache_creation_tokens,
+               cost_usd                     = COALESCE(trace_usage.cost_usd, 0) + EXCLUDED.cost_usd,
+               prompt_cost_usd              = COALESCE(trace_usage.prompt_cost_usd, 0) + EXCLUDED.prompt_cost_usd,
+               completion_cost_usd          = COALESCE(trace_usage.completion_cost_usd, 0) + EXCLUDED.completion_cost_usd,
+               router_input_tokens          = trace_usage.router_input_tokens + EXCLUDED.router_input_tokens,
+               router_output_tokens         = trace_usage.router_output_tokens + EXCLUDED.router_output_tokens,
+               router_cache_read_tokens     = trace_usage.router_cache_read_tokens + EXCLUDED.router_cache_read_tokens,
+               router_cache_creation_tokens = trace_usage.router_cache_creation_tokens + EXCLUDED.router_cache_creation_tokens,
+               router_cost_usd              = trace_usage.router_cost_usd + EXCLUDED.router_cost_usd,
+               router_prompt_cost_usd       = trace_usage.router_prompt_cost_usd + EXCLUDED.router_prompt_cost_usd,
+               router_completion_cost_usd   = trace_usage.router_completion_cost_usd + EXCLUDED.router_completion_cost_usd,
+               model                        = EXCLUDED.model,
+               provider                     = EXCLUDED.provider,
+               agent_id                     = COALESCE(trace_usage.agent_id, EXCLUDED.agent_id),
+               user_id                      = COALESCE(trace_usage.user_id, EXCLUDED.user_id),
+               latency_ms                   = COALESCE(trace_usage.latency_ms, 0) + EXCLUDED.latency_ms,
+               source                       = CASE WHEN EXCLUDED.source = 'agent' THEN trace_usage.source ELSE EXCLUDED.source END,
+               priced_by                    = 'router',
+               materialized_at              = now(),
+               metadata                     = trace_usage.metadata || EXCLUDED.metadata"#,
+    )
+    .bind(&trace_id)
+    .bind(&agent_name)
+    .bind(live.flow_id.as_deref())
+    .bind(info.as_ref().and(live.agent))
+    .bind(live.owner)
+    .bind(&live.model)
+    .bind(&live.provider)
+    .bind(live.input_tokens)
+    .bind(live.output_tokens)
+    .bind(live.cache_read_tokens)
+    .bind(live.cache_creation_tokens)
+    .bind(live.cost_usd)
+    .bind(live.prompt_cost_usd)
+    .bind(live.completion_cost_usd)
+    .bind(live.latency_ms)
+    .bind(source)
+    .bind(&live.metadata)
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 
@@ -223,7 +356,7 @@ struct SavingsIds {
 
 /// Write the per-layer savings row for this call, if any layer saved anything.
 ///
-/// Separate from the `token_usage` insert and best-effort within an already best-effort path: a
+/// Separate from the `trace_usage` upsert and best-effort within an already best-effort path: a
 /// missing savings row costs a dashboard a data point, while a failed one must not cost a request
 /// that has already succeeded.
 async fn write_savings(
@@ -271,6 +404,8 @@ async fn write_savings(
 /// A struct rather than five parameters, and pre-serialized `Value`s rather than the pricing and
 /// compression types, so this module stays a pure DB concern.
 struct MetadataInputs {
+    /// e.g. `"direct_llm"` (chat) or `"embedding"`; was `token_usage.operation_type`.
+    operation_type: &'static str,
     platform_paid: bool,
     attribution_source: Option<AttributionSource>,
     /// Which rates priced the call, and whether each was matched or inferred.
@@ -285,11 +420,12 @@ struct MetadataInputs {
 
 /// The row's `metadata` JSONB.
 ///
-/// Extracted so the shape is assertable without a database — `token_usage.metadata` is read back
+/// Extracted so the shape is assertable without a database — `trace_usage.metadata` is read back
 /// by `platform_paid_agent_usage` (`oss/server/src/router/usage_meta.rs`), so a change to
 /// `key_source` here silently breaks flow billing.
 fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     let mut metadata = serde_json::json!({
+        "operation_type": inputs.operation_type,
         "key_source": if inputs.platform_paid { "platform" } else { "user_secret" },
         "attribution": inputs.attribution_source.map(|s| s.as_label()),
         "pricing": inputs.pricing,
@@ -304,17 +440,14 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     metadata
 }
 
-fn saturating_i32(value: i64) -> i32 {
-    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{MetadataInputs, build_metadata, saturating_i32};
+    use super::{MetadataInputs, build_metadata};
 
     /// A call that was priced but neither compressed nor cache-split.
     fn inputs(platform_paid: bool) -> MetadataInputs {
         MetadataInputs {
+            operation_type: "direct_llm",
             platform_paid,
             attribution_source: None,
             pricing: serde_json::json!({ "source": "Db", "estimated": false }),
@@ -324,13 +457,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn usage_values_saturate_without_wrapping() {
-        assert_eq!(saturating_i32(i64::MAX), i32::MAX);
-        assert_eq!(saturating_i32(i64::MIN), i32::MIN);
-        assert_eq!(saturating_i32(42), 42);
-    }
-
     /// The zero-behaviour-change guard: with no compression, the row carries exactly the billing
     /// and pricing-provenance keys and nothing else.
     #[test]
@@ -338,6 +464,7 @@ mod tests {
         assert_eq!(
             build_metadata(inputs(true)),
             serde_json::json!({
+                "operation_type": "direct_llm",
                 "key_source": "platform",
                 "attribution": null,
                 "pricing": { "source": "Db", "estimated": false },

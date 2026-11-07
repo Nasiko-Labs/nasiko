@@ -80,21 +80,23 @@ async fn priced_calls_persist_cache_split_and_match_the_chat_summary() {
         assert!(!priced.estimated);
         expected_cost += priced.cost_usd;
         turns.add(&priced);
-        let id = priced
+        let key = priced
             .persist(&tracker, user_id, "usage-flow", attributed)
             .await
             .unwrap();
-        let row: Value = sqlx::query_scalar("SELECT to_jsonb(t) FROM token_usage t WHERE id = $1")
-            .bind(id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+        let row: Value = sqlx::query_scalar(
+            "SELECT to_jsonb(t) FROM trace_usage t WHERE trace_id = $1 AND agent_name = $2",
+        )
+        .bind(&key.trace_id)
+        .bind(&key.agent_name)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
         assert_eq!(row["input_tokens"], 764);
-        assert_eq!(row["cache_read_input_tokens"], 3968);
-        assert_eq!(row["cache_creation_input_tokens"], 100);
+        assert_eq!(row["cache_read_tokens"], 3968);
+        assert_eq!(row["cache_creation_tokens"], 100);
         assert_eq!(row["output_tokens"], 110);
-        assert_eq!(row["total_tokens"], 4942);
-        assert_eq!(row["streaming"], streaming);
+        assert_eq!(row["priced_by"], "router");
         assert_eq!(
             row["agent_id"],
             attributed.map(|id| json!(id)).unwrap_or(Value::Null)
@@ -113,8 +115,9 @@ async fn priced_calls_persist_cache_split_and_match_the_chat_summary() {
     assert_eq!(summary.to_data_part("trace")["total_tokens"], 9884);
     assert!((summary.cost_usd - expected_cost).abs() < 1e-9);
     assert!(!summary.estimated);
+    // One row per (flow, agent): the attributed call and the unattributed one.
     let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM token_usage WHERE session_id = 'usage-flow'")
+        sqlx::query_scalar("SELECT COUNT(*) FROM trace_usage WHERE trace_id = 'usage-flow'")
             .fetch_one(&server.db)
             .await
             .unwrap();
