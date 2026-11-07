@@ -45,6 +45,8 @@ futures = { workspace = true }
 async-stream = { workspace = true }
 bytes = { workspace = true }
 base64 = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 # Auth (agent-identity JWT verify)
 jsonwebtoken = { workspace = true }

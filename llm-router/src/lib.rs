@@ -26,6 +26,7 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
+pub mod attachments;
 pub mod auth;
 mod brevity;
 mod compact_tools;
