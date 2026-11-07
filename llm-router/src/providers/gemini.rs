@@ -20,6 +20,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
+use super::media::{self, DocumentKind, document_kind};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
@@ -327,6 +328,25 @@ fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
     }
 }
 
+const GEMINI_IMAGE_TYPES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/webp",
+    "image/heic",
+    "image/heif",
+];
+const GEMINI_INLINE_REQUEST_MAX_BYTES: usize = 20_000_000;
+
+fn inline_data_bytes(contents: &[Value]) -> usize {
+    contents
+        .iter()
+        .filter_map(|turn| turn["parts"].as_array())
+        .flatten()
+        .filter_map(|part| part["inlineData"]["data"].as_str())
+        .map(str::len)
+        .sum()
+}
+
 /// A part the hub carries but Gemini cannot, rendered onto this edge's error type.
 fn unsupported(err: UnsupportedPart) -> ProviderError {
     ProviderError::Rejected(format!(
@@ -354,14 +374,32 @@ fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
     };
     match part {
         ContentPart::Text(text) => Ok(json!({ "text": text })),
-        ContentPart::Image { source, .. } => inline(
-            source,
-            "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
-        ),
-        ContentPart::File { source, .. } => inline(
-            source,
-            "unsupported file_data format (must be base64 data URL)",
-        ),
+        ContentPart::Image { source, .. } => {
+            if let Some(media_type) = source.media_type()
+                && !GEMINI_IMAGE_TYPES.contains(&media_type)
+            {
+                return Err(UnsupportedPart::new(format!(
+                    "'{media_type}' images (it reads png, jpeg, webp, heic and heif)"
+                )));
+            }
+            inline(
+                source,
+                "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
+            )
+        }
+        ContentPart::File { source, filename } => match source.media_type().map(document_kind) {
+            Some(DocumentKind::TextLike) => Ok(json!({
+                "text": media::text_document(source, filename.as_deref())?
+            })),
+            Some(DocumentKind::Other) => Err(UnsupportedPart::new(format!(
+                "'{}' documents (it reads PDF and text documents)",
+                source.media_type().unwrap_or_default()
+            ))),
+            _ => inline(
+                source,
+                "unsupported file_data format (must be base64 data URL)",
+            ),
+        },
         ContentPart::Audio { data, format } => Ok(json!({
             "inlineData": { "mimeType": format!("audio/{format}"), "data": data },
         })),
@@ -468,6 +506,11 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, P
         }
     }
     flush_fn_responses(&mut pending_fn_responses, &mut contents);
+    if inline_data_bytes(&contents) > GEMINI_INLINE_REQUEST_MAX_BYTES {
+        return Err(unsupported(UnsupportedPart::new(
+            "more than 20 MB of inline data in one request",
+        )));
+    }
 
     let mut body = json!({ "contents": contents });
     if !system_parts.is_empty() {
@@ -1309,6 +1352,82 @@ mod tests {
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0]["inlineData"]["mimeType"], "application/pdf");
         assert_eq!(parts[0]["inlineData"]["data"], "JVBERi0xLjQKJeLjz9MK");
+    }
+
+    fn with_parts(parts: Vec<Value>) -> ChatRequest {
+        let mut content = vec![json!({ "type": "text", "text": "what does it say?" })];
+        content.extend(parts);
+        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": content }] }))
+            .unwrap()
+    }
+
+    fn b64(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
+    fn gemini_rejection(req: &ChatRequest) -> String {
+        match to_gemini_request(req, &resolved()) {
+            Err(ProviderError::Rejected(message)) => message,
+            other => panic!("expected a by-name refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_image_type_gemini_cannot_read_is_refused_and_heic_is_sent() {
+        let gif = with_parts(vec![json!({ "type": "image_url", "image_url": {
+            "url": "data:image/gif;base64,R0lGOD"
+        }})]);
+        let message = gemini_rejection(&gif);
+        assert!(
+            message.starts_with("Gemini does not accept this input"),
+            "{message}"
+        );
+        assert!(message.contains("image/gif"), "{message}");
+
+        let heic = with_parts(vec![json!({ "type": "image_url", "image_url": {
+            "url": "data:image/heic;base64,AAAA"
+        }})]);
+        let body = to_gemini_request(&heic, &resolved()).unwrap();
+        assert_eq!(
+            body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
+            "image/heic"
+        );
+    }
+
+    #[test]
+    fn a_text_document_reaches_gemini_as_text_and_others_are_refused() {
+        let csv = with_parts(vec![json!({ "type": "file", "file": {
+            "file_data": format!("data:text/csv;base64,{}", b64(b"region,q2\nEMEA,913")),
+            "filename": "data.csv"
+        }})]);
+        let body = to_gemini_request(&csv, &resolved()).unwrap();
+        assert_eq!(
+            body["contents"][0]["parts"][1]["text"],
+            "File: data.csv\n\nregion,q2\nEMEA,913"
+        );
+
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let message = gemini_rejection(&with_parts(vec![json!({ "type": "file", "file": {
+            "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
+        }})]));
+        assert!(message.contains(docx), "{message}");
+    }
+
+    #[test]
+    fn more_than_20_mb_of_inline_data_is_refused_before_sending() {
+        let chunk = "A".repeat(10_000_000);
+        let image = |data: &str| {
+            json!({ "type": "image_url", "image_url": {
+                "url": format!("data:image/png;base64,{data}")
+            }})
+        };
+        let at_limit = with_parts(vec![image(&chunk), image(&chunk)]);
+        assert!(to_gemini_request(&at_limit, &resolved()).is_ok());
+
+        let over = with_parts(vec![image(&chunk), image(&chunk), image("AAAA")]);
+        let message = gemini_rejection(&over);
+        assert!(message.contains("20 MB"), "{message}");
     }
 
     #[test]

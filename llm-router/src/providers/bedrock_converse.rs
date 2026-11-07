@@ -28,6 +28,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
+use super::media;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
     CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, Choice, ContentPart, ContentView, Delta,
@@ -850,6 +851,45 @@ fn without_empty_text(blocks: Vec<Value>) -> Vec<Value> {
     kept
 }
 
+const BEDROCK_IMAGE_MAX_BYTES: u64 = 3_750_000;
+const BEDROCK_DOCUMENT_MAX_BYTES: u64 = 4_500_000;
+const BEDROCK_MAX_IMAGES: usize = 20;
+const BEDROCK_MAX_DOCUMENTS: usize = 5;
+
+fn check_media_limits(messages: &[Value]) -> Result<(), UnsupportedPart> {
+    let mut images = 0;
+    let mut documents = 0;
+    let blocks = messages
+        .iter()
+        .filter_map(|m| m["content"].as_array())
+        .flatten()
+        .flat_map(|block| {
+            let nested = block["toolResult"]["content"].as_array();
+            std::iter::once(block).chain(nested.into_iter().flatten())
+        });
+    for block in blocks {
+        if let Some(data) = block["image"]["source"]["bytes"].as_str() {
+            images += 1;
+            if media::decoded_len(data) > BEDROCK_IMAGE_MAX_BYTES {
+                return Err(UnsupportedPart::new("an image over 3.75 MB"));
+            }
+        }
+        if let Some(data) = block["document"]["source"]["bytes"].as_str() {
+            documents += 1;
+            if media::decoded_len(data) > BEDROCK_DOCUMENT_MAX_BYTES {
+                return Err(UnsupportedPart::new("a document over 4.5 MB"));
+            }
+        }
+    }
+    if images > BEDROCK_MAX_IMAGES {
+        return Err(UnsupportedPart::new("more than 20 images in one request"));
+    }
+    if documents > BEDROCK_MAX_DOCUMENTS {
+        return Err(UnsupportedPart::new("more than 5 documents in one request"));
+    }
+    Ok(())
+}
+
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
 fn to_converse_request_inner(
@@ -907,6 +947,7 @@ fn to_converse_request_inner(
         }
     }
     flush_tool_results(&mut pending_tool_results, &mut messages);
+    check_media_limits(&messages).map_err(unsupported)?;
 
     let max_tokens = cfg
         .max_tokens
@@ -1708,6 +1749,61 @@ mod tests {
 
     fn cache_point() -> Value {
         json!({ "cachePoint": { "type": "default" } })
+    }
+
+    fn converse_rejection(parts: Vec<Value>) -> Option<String> {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": parts }]
+        }))
+        .unwrap();
+        match to_converse_request(&req, &resolved("us.anthropic.claude-haiku-5-5")) {
+            Ok(_) => None,
+            Err(ProviderError::Rejected(message)) => Some(message),
+            Err(other) => panic!("expected Ok or a by-name refusal, got {other:?}"),
+        }
+    }
+
+    fn png_of(decoded_bytes: usize) -> Value {
+        let data = "A".repeat(decoded_bytes.div_ceil(3) * 4);
+        json!({ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{data}") } })
+    }
+
+    fn pdf_of(decoded_bytes: usize, name: &str) -> Value {
+        let data = "A".repeat(decoded_bytes.div_ceil(3) * 4);
+        json!({ "type": "file", "file": {
+            "file_data": format!("data:application/pdf;base64,{data}"), "filename": name
+        }})
+    }
+
+    #[test]
+    fn bedrock_media_over_its_size_limits_is_refused_before_sending() {
+        assert_eq!(converse_rejection(vec![png_of(3_750_000)]), None);
+        let message = converse_rejection(vec![png_of(3_750_003)]).unwrap();
+        assert!(
+            message.starts_with("Bedrock does not accept this input"),
+            "{message}"
+        );
+        assert!(message.contains("3.75 MB"), "{message}");
+
+        assert_eq!(converse_rejection(vec![pdf_of(4_500_000, "a.pdf")]), None);
+        let message = converse_rejection(vec![pdf_of(4_500_003, "a.pdf")]).unwrap();
+        assert!(message.contains("4.5 MB"), "{message}");
+    }
+
+    #[test]
+    fn bedrock_media_over_its_count_limits_is_refused_before_sending() {
+        assert_eq!(converse_rejection(vec![png_of(3); 20]), None);
+        let message = converse_rejection(vec![png_of(3); 21]).unwrap();
+        assert!(message.contains("20 images"), "{message}");
+
+        let docs = |n: usize| {
+            (0..n)
+                .map(|i| pdf_of(3, &format!("d{i}.pdf")))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(converse_rejection(docs(5)), None);
+        let message = converse_rejection(docs(6)).unwrap();
+        assert!(message.contains("5 documents"), "{message}");
     }
 
     #[test]

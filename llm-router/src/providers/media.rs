@@ -51,6 +51,17 @@ pub(crate) fn decode_text(source: &DataSource) -> Result<String, UnsupportedPart
     Ok(text)
 }
 
+pub(crate) fn text_document(
+    source: &DataSource,
+    filename: Option<&str>,
+) -> Result<String, UnsupportedPart> {
+    let name = filename
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or("document");
+    Ok(format!("File: {name}\n\n{}", decode_text(source)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
