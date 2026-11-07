@@ -145,6 +145,7 @@ pub mod bedrock_converse;
 pub mod dialect;
 pub mod fallback;
 pub mod gemini;
+pub(crate) mod media;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;

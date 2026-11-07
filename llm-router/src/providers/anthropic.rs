@@ -20,6 +20,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
+use super::media::{self, DocumentKind};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
@@ -405,14 +406,23 @@ fn anthropic_source(source: &DataSource) -> Value {
 fn anthropic_block(part: &ContentPart) -> Result<Value, UnsupportedPart> {
     match part {
         ContentPart::Text(text) => Ok(json!({ "type": "text", "text": text })),
-        ContentPart::Image { source, .. } => Ok(json!({
-            "type": "image",
-            "source": anthropic_source(source),
-        })),
-        ContentPart::File { source, .. } => Ok(json!({
-            "type": "document",
-            "source": anthropic_source(source),
-        })),
+        ContentPart::Image { source, .. } => {
+            if let Some((media_type, data)) = source.inline() {
+                if !ANTHROPIC_IMAGE_TYPES.contains(&media_type) {
+                    return Err(UnsupportedPart::new(format!(
+                        "'{media_type}' images (it reads jpeg, png, gif and webp)"
+                    )));
+                }
+                if data.len() > ANTHROPIC_IMAGE_MAX_ENCODED_BYTES {
+                    return Err(UnsupportedPart::new("an image over 10 MB as base64"));
+                }
+            }
+            Ok(json!({
+                "type": "image",
+                "source": anthropic_source(source),
+            }))
+        }
+        ContentPart::File { source, filename } => anthropic_document(source, filename.as_deref()),
         ContentPart::Audio { .. } => Err(UnsupportedPart::new(
             "unsupported content part type: 'input_audio'",
         )),
@@ -420,6 +430,38 @@ fn anthropic_block(part: &ContentPart) -> Result<Value, UnsupportedPart> {
         ContentPart::Video { .. } => Err(UnsupportedPart::new(
             "unsupported content part type: 'video_url'",
         )),
+    }
+}
+
+const ANTHROPIC_IMAGE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/gif", "image/webp"];
+const ANTHROPIC_IMAGE_MAX_ENCODED_BYTES: usize = 10_000_000;
+
+fn anthropic_document(
+    source: &DataSource,
+    filename: Option<&str>,
+) -> Result<Value, UnsupportedPart> {
+    let Some(media_type) = source.media_type() else {
+        return Ok(json!({ "type": "document", "source": anthropic_source(source) }));
+    };
+    match media::document_kind(media_type) {
+        DocumentKind::Pdf => Ok(json!({ "type": "document", "source": anthropic_source(source) })),
+        DocumentKind::TextLike => {
+            let mut block = json!({
+                "type": "document",
+                "source": {
+                    "type": "text",
+                    "media_type": "text/plain",
+                    "data": media::decode_text(source)?,
+                },
+            });
+            if let Some(name) = filename.map(str::trim).filter(|n| !n.is_empty()) {
+                block["title"] = json!(name);
+            }
+            Ok(block)
+        }
+        DocumentKind::Other => Err(UnsupportedPart::new(format!(
+            "'{media_type}' documents (it reads PDF and text documents)"
+        ))),
     }
 }
 
@@ -2210,6 +2252,88 @@ mod tests {
         assert_eq!(blocks[0]["source"]["type"], "base64");
         assert_eq!(blocks[0]["source"]["media_type"], "application/pdf");
         assert_eq!(blocks[0]["source"]["data"], "JVBERi0xLjQK");
+    }
+
+    fn one_part(part: Value) -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "what does it say?" },
+                part
+            ]}]
+        }))
+        .unwrap()
+    }
+
+    fn file_part(media_type: &str, bytes: &[u8], filename: &str) -> Value {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+        json!({ "type": "file", "file": {
+            "file_data": format!("data:{media_type};base64,{data}"),
+            "filename": filename
+        }})
+    }
+
+    fn rejection(req: &ChatRequest) -> String {
+        match to_anthropic_request(req, &resolved()) {
+            Err(ProviderError::Rejected(message)) => message,
+            other => panic!("expected a by-name refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_text_document_reaches_anthropic_as_a_text_source() {
+        let req = one_part(file_part("text/csv", b"region,q2\nEMEA,913", "data.csv"));
+
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+
+        let block = &body["messages"][0]["content"][1];
+        assert_eq!(block["type"], "document");
+        assert_eq!(block["source"]["type"], "text");
+        assert_eq!(block["source"]["media_type"], "text/plain");
+        assert_eq!(block["source"]["data"], "region,q2\nEMEA,913");
+        assert_eq!(block["title"], "data.csv");
+    }
+
+    #[test]
+    fn a_document_anthropic_cannot_read_is_refused_by_name() {
+        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let message = rejection(&one_part(file_part(docx, b"PK\x03\x04", "report.docx")));
+        assert!(
+            message.starts_with("Anthropic does not accept this input"),
+            "{message}"
+        );
+        assert!(message.contains(docx), "{message}");
+    }
+
+    #[test]
+    fn a_text_document_that_is_not_utf8_or_over_1_mib_is_refused_by_name() {
+        let message = rejection(&one_part(file_part(
+            "text/plain",
+            &[0xff, 0xfe, 0x00],
+            "x.txt",
+        )));
+        assert!(message.contains("UTF-8"), "{message}");
+
+        let big = vec![b'a'; 1024 * 1024 + 1];
+        let message = rejection(&one_part(file_part("text/plain", &big, "big.txt")));
+        assert!(message.contains("1 MiB"), "{message}");
+    }
+
+    #[test]
+    fn an_image_type_anthropic_cannot_read_is_refused_by_name() {
+        let message = rejection(&one_part(json!({ "type": "image_url", "image_url": {
+            "url": "data:image/heic;base64,AAAA"
+        }})));
+        assert!(message.contains("image/heic"), "{message}");
+    }
+
+    #[test]
+    fn an_image_over_anthropics_10_mb_encoded_limit_is_refused_by_name() {
+        let data = "A".repeat(10_000_004);
+        let message = rejection(&one_part(json!({ "type": "image_url", "image_url": {
+            "url": format!("data:image/png;base64,{data}")
+        }})));
+        assert!(message.contains("10 MB"), "{message}");
     }
 
     #[test]
