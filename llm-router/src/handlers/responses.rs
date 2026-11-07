@@ -1004,6 +1004,12 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::SecretNotFound(_, _)
         | GatewayError::NoApiKey => "routing_configuration_error",
         GatewayError::Upstream(_) => "upstream_error",
+        GatewayError::Provider { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
+            "rate_limit_exceeded"
+        }
+        GatewayError::Provider { .. } => "invalid_request_error",
+        GatewayError::PayloadTooLarge { .. } => "request_too_large",
+        GatewayError::StorageUnavailable | GatewayError::Busy => "service_unavailable",
         GatewayError::Internal(_) => "internal_error",
     }
 }

@@ -247,10 +247,21 @@ impl ProviderError {
     }
 }
 
+fn passes_through(status: u16) -> bool {
+    matches!(status, 400 | 404 | 409 | 413 | 415 | 422 | 429)
+}
+
 impl From<ProviderError> for GatewayError {
     fn from(e: ProviderError) -> Self {
         match e {
             ProviderError::Rejected(message) => GatewayError::BadRequest(message),
+            ProviderError::Status { status, .. } if passes_through(status) => {
+                GatewayError::Provider {
+                    status: axum::http::StatusCode::from_u16(status)
+                        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
+                    message: format!("Upstream LLM error: {e}"),
+                }
+            }
             other => GatewayError::Upstream(other.to_string()),
         }
     }
@@ -337,6 +348,40 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    fn status_error(status: u16, message: &str) -> GatewayError {
+        ProviderError::Status {
+            status,
+            message: message.into(),
+            retryable: status == 429 || status >= 500,
+        }
+        .into()
+    }
+
+    #[test]
+    fn a_provider_status_the_caller_can_act_on_reaches_the_caller_unchanged() {
+        for status in [400u16, 404, 409, 413, 415, 422, 429] {
+            let g = status_error(status, r#"{"error":{"message":"bad image"}}"#);
+            assert_eq!(g.status().as_u16(), status, "provider status {status}");
+            assert_eq!(
+                g.to_string(),
+                format!(
+                    r#"Upstream LLM error: provider returned {status}: {{"error":{{"message":"bad image"}}}}"#
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn a_provider_credential_or_server_failure_stays_a_502() {
+        for status in [401u16, 403, 405, 500, 502, 503, 529] {
+            assert_eq!(
+                status_error(status, "x").status(),
+                axum::http::StatusCode::BAD_GATEWAY,
+                "provider status {status}"
+            );
+        }
     }
 
     #[test]

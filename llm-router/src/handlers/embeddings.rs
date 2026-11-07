@@ -441,7 +441,8 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert!(matches!(err, GatewayError::Upstream(_)));
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("unknown model"));
         mock.assert_async().await;
     }
 
