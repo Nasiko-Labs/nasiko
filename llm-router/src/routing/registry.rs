@@ -68,6 +68,7 @@ fn is_chat_model(model: &str) -> bool {
         "transcribe",
         "babbage",
         "davinci",
+        "sora",
     ];
     let m = model.to_ascii_lowercase();
     !NON_CHAT.iter().any(|s| m.contains(s))
@@ -282,6 +283,20 @@ mod tests {
             ("gpt-4o-mini".to_string(), 0.75),
             ("gpt-5.5".to_string(), 30.0),
             ("dall-e-3".to_string(), 0.04),
+        ];
+        let (t1, _, t3) = tiers_from_priced_catalog(priced).unwrap();
+        assert_eq!(t1, "gpt-5.5");
+        assert_eq!(t3, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn a_video_model_never_wins_a_tier() {
+        assert!(!is_chat_model("sora-2"));
+        assert!(!is_chat_model("Sora-2-Pro"));
+        let priced = vec![
+            ("sora-2-pro".to_string(), 120.0),
+            ("gpt-5.5".to_string(), 30.0),
+            ("gpt-4o-mini".to_string(), 0.75),
         ];
         let (t1, _, t3) = tiers_from_priced_catalog(priced).unwrap();
         assert_eq!(t1, "gpt-5.5");

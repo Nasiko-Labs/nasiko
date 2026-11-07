@@ -48,6 +48,7 @@ pub(crate) struct RoutedRequest {
     /// What payload compression did to this request, for its usage rows. Set by the Responses
     /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
     pub compression: crate::compress::Ledger,
+    pub sticky_conv_id: Option<String>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -422,6 +423,7 @@ async fn chat_core_as(
         flow_id,
         attribution_source,
         compression: _,
+        sticky_conv_id,
     } = routed;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
@@ -588,6 +590,14 @@ async fn chat_core_as(
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
                 .instrument(llm_span.clone())
                 .await?;
+        forget_route_that_did_not_answer(
+            ctx,
+            &agent_id,
+            sticky_conv_id.as_deref(),
+            &resolved,
+            (&provider, &model),
+        )
+        .await;
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
@@ -617,6 +627,14 @@ async fn chat_core_as(
         fallback::execute_chat_by(&ctx.http, &ctx.cfg, &resolved, &req, deadline)
             .instrument(llm_span.clone())
             .await?;
+    forget_route_that_did_not_answer(
+        ctx,
+        &agent_id,
+        sticky_conv_id.as_deref(),
+        &resolved,
+        (&provider, &model),
+    )
+    .await;
 
     // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
     // the failed attempt is billed as its own row and the original native request is re-sent.
@@ -803,6 +821,7 @@ pub(crate) async fn resolve_routed_request(
         model_overridden = decision.model != resolved.model,
         "chat_core: model routing decision"
     );
+    let mut sticky_conv_id = None;
     if decision.model != resolved.model {
         tracing::info!(
             target: "nasiko::llm_router::chat",
@@ -810,6 +829,13 @@ pub(crate) async fn resolve_routed_request(
             from = %resolved.model, to = %decision.model,
             "chat_core: router overrode the resolved model"
         );
+        keep_configured_model_as_fallback(&mut resolved);
+        if matches!(
+            decision.source,
+            routing::RouteSource::CacheHit | routing::RouteSource::Classified
+        ) {
+            sticky_conv_id = boundary.conv_id;
+        }
         resolved.litellm_model = format!("{}/{}", resolved.provider, decision.model);
         resolved.model = decision.model;
     }
@@ -830,7 +856,40 @@ pub(crate) async fn resolve_routed_request(
         flow_id,
         attribution_source,
         compression: crate::compress::Ledger::default(),
+        sticky_conv_id,
     })
+}
+
+fn keep_configured_model_as_fallback(resolved: &mut crate::resolver::ResolvedConfig) {
+    let configured = format!("{}/{}", resolved.provider, resolved.model);
+    let listed = resolved
+        .fallback_models
+        .iter()
+        .any(|entry| *entry == configured || *entry == resolved.model);
+    if !listed {
+        resolved.fallback_models.insert(0, configured);
+    }
+}
+
+pub(crate) async fn forget_route_that_did_not_answer(
+    ctx: &LlmRouterCtx,
+    agent_id: &str,
+    sticky_conv_id: Option<&str>,
+    routed: &crate::resolver::ResolvedConfig,
+    answered: (&str, &str),
+) {
+    let Some(conv_id) = sticky_conv_id else {
+        return;
+    };
+    if answered == (routed.provider.as_str(), routed.model.as_str()) {
+        return;
+    }
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id, routed_model = %routed.model, answered_model = %answered.1,
+        "chat_core: routed model did not answer; dropping its sticky decision"
+    );
+    ctx.router_cache.forget(conv_id, agent_id).await;
 }
 
 /// The text the salience gate and classifier score for an in-flow call: the end user's
@@ -1057,6 +1116,7 @@ mod tests {
     use crate::config::GatewayConfig;
     use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
     use async_trait::async_trait;
+    use axum::http::StatusCode;
     use jsonwebtoken::Algorithm;
     use serde_json::json;
     use sqlx::PgPool;
@@ -1936,6 +1996,197 @@ mod tests {
             "expected a classifier-selected tier model, got {}",
             routed.resolved.model
         );
+    }
+
+    use crate::routing::cache::test_support::ForgetLog;
+
+    const STUB_OPENAI_TIERS: [&str; 3] = ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"];
+
+    fn tiered_store(fallback_models: Vec<String>, pinned_model: Option<&str>) -> Store {
+        let mut config = openai_config();
+        config.model = Some("static-configured-model".into());
+        config.fallback_models = fallback_models;
+        config.pinned = pinned_model.is_some();
+        config.pinned_model = pinned_model.map(str::to_string);
+        Store {
+            config: Some(config),
+            is_coding_agent: true,
+            compress_enabled: false,
+        }
+    }
+
+    fn tiered_ctx(base: String) -> (LlmRouterCtx, Arc<ForgetLog>) {
+        let mut ctx = ctx_with(base);
+        ctx.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
+        let log = Arc::new(ForgetLog::default());
+        ctx.router_cache = log.clone();
+        (ctx, log)
+    }
+
+    async fn route_tiered(ctx: &LlmRouterCtx, store: &Store) -> RoutedRequest {
+        resolve_routed_request(
+            ctx,
+            store,
+            &HeaderMap::new(),
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint {
+                provider: Some("openai"),
+                model: None,
+            },
+            RequestSignals {
+                query: Some("write a function that reverses a string".into()),
+                turn_ordinal: 1,
+                is_tool_continuation: false,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_tier_model_keeps_the_configured_model_as_its_first_fallback() {
+        let (ctx, _) = tiered_ctx("http://unused".into());
+        let routed = route_tiered(
+            &ctx,
+            &tiered_store(vec!["anthropic/claude-haiku-4-5".into()], None),
+        )
+        .await;
+        assert!(STUB_OPENAI_TIERS.contains(&routed.resolved.model.as_str()));
+        assert_eq!(
+            routed.resolved.fallback_models,
+            vec![
+                "openai/static-configured-model".to_string(),
+                "anthropic/claude-haiku-4-5".to_string(),
+            ]
+        );
+        assert!(routed.sticky_conv_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_configured_model_already_in_the_fallbacks_is_not_added_twice() {
+        for listed in ["static-configured-model", "openai/static-configured-model"] {
+            let (ctx, _) = tiered_ctx("http://unused".into());
+            let routed = route_tiered(&ctx, &tiered_store(vec![listed.into()], None)).await;
+            assert_eq!(routed.resolved.fallback_models, vec![listed.to_string()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pinned_agent_still_gets_no_fallbacks() {
+        let (ctx, _) = tiered_ctx("http://unused".into());
+        let routed = route_tiered(
+            &ctx,
+            &tiered_store(vec!["openai/gpt-4o".into()], Some("gpt-4.1")),
+        )
+        .await;
+        assert_eq!(routed.resolved.model, "gpt-4.1");
+        assert!(routed.resolved.fallback_models.is_empty());
+        assert!(routed.sticky_conv_id.is_none());
+    }
+
+    async fn tier_models_answer(server: &mut mockito::ServerGuard, status: usize, body: &str) {
+        for model in STUB_OPENAI_TIERS {
+            server
+                .mock("POST", "/chat/completions")
+                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                .with_status(status)
+                .with_header("content-type", "application/json")
+                .with_body(body)
+                .create_async()
+                .await;
+        }
+    }
+
+    const MODEL_GONE: &str =
+        r#"{"error":{"message":"The model does not exist","code":"model_not_found"}}"#;
+
+    fn completion(model: &str) -> String {
+        json!({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": model,
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    fn reverse_question() -> Value {
+        json!({ "messages": [{ "role": "user", "content": "write a function that reverses a string" }] })
+    }
+
+    fn agent_only_headers() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", token()).parse().unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn a_missing_tier_model_falls_back_to_the_configured_model_and_drops_the_sticky_choice() {
+        for stream in [false, true] {
+            let mut server = mockito::Server::new_async().await;
+            tier_models_answer(&mut server, 404, MODEL_GONE).await;
+            let configured = server
+                .mock("POST", "/chat/completions")
+                .match_body(mockito::Matcher::PartialJson(
+                    json!({ "model": "static-configured-model" }),
+                ))
+                .with_status(200)
+                .with_header(
+                    "content-type",
+                    if stream {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .with_body(if stream {
+                    "data: [DONE]\n\n".to_string()
+                } else {
+                    completion("static-configured-model")
+                })
+                .expect(1)
+                .create_async()
+                .await;
+            let (ctx, log) = tiered_ctx(server.url());
+            let resp = chat_core(
+                &ctx,
+                &tiered_store(vec![], None),
+                &agent_only_headers(),
+                reverse_question(),
+                InboundFormat::OpenAi,
+                Some(stream),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "stream={stream}");
+            configured.assert_async().await;
+            let forgotten = log.forgotten.lock().unwrap().clone();
+            assert_eq!(forgotten.len(), 1, "stream={stream}");
+            assert_eq!(forgotten[0].1, AGENT);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tier_model_that_answers_keeps_its_sticky_choice() {
+        let mut server = mockito::Server::new_async().await;
+        tier_models_answer(&mut server, 200, &completion("gpt-5.5")).await;
+        let (ctx, log) = tiered_ctx(server.url());
+        let resp = chat_core(
+            &ctx,
+            &tiered_store(vec![], None),
+            &agent_only_headers(),
+            reverse_question(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(log.forgotten.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

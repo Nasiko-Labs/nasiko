@@ -481,18 +481,12 @@ async fn small_talk_model(registry: &dyn TierRegistry, inputs: &RouteInputs<'_>)
 /// When the agent forwards that blob as a single `user` message to the LLM router,
 /// the salience gate and classifier would see the entire transcript instead of just the
 /// current turn. Detect the `\n\nCurrent message: ` marker and extract only the tail.
-///
-/// Coding harnesses wrap the user's words too: Claude Code puts `<system-reminder>` blocks
-/// (its instructions, attribution rules) in front of every prompt and wraps its title side call
-/// in `<session>`. Judging those would classify the harness's boilerplate instead of the
-/// request, so [`strip_harness_wrappers`] removes them first.
 pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
     let text = messages
         .iter()
         .rev()
         .find(|m| m.role == "user")
         .and_then(|m| m.text())?;
-    let text = strip_harness_wrappers(&text)?;
 
     // Strip history prefix injected by `SessionHistory::with_current_query`.
     if let Some(pos) = text.find("\n\nCurrent message: ") {
@@ -502,37 +496,6 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
         }
     }
     Some(text)
-}
-
-/// `text` without coding-harness wrappers: every `<system-reminder>…</system-reminder>` span
-/// removed, and only the inside of a `<session>…</session>` span kept. `None` when nothing but
-/// whitespace is left, so the caller falls back as it does for a turn with no text.
-fn strip_harness_wrappers(text: &str) -> Option<String> {
-    const REMINDER_OPEN: &str = "<system-reminder>";
-    const REMINDER_CLOSE: &str = "</system-reminder>";
-    const SESSION_OPEN: &str = "<session>";
-    const SESSION_CLOSE: &str = "</session>";
-
-    let mut rest = text;
-    let mut kept = String::with_capacity(text.len());
-    while let Some(start) = rest.find(REMINDER_OPEN) {
-        kept.push_str(&rest[..start]);
-        rest = match rest[start..].find(REMINDER_CLOSE) {
-            Some(end) => &rest[start + end + REMINDER_CLOSE.len()..],
-            // An unclosed reminder runs to the end of the text.
-            None => "",
-        };
-    }
-    kept.push_str(rest);
-
-    let kept = match (kept.find(SESSION_OPEN), kept.find(SESSION_CLOSE)) {
-        (Some(open), Some(close)) if open < close => {
-            kept[open + SESSION_OPEN.len()..close].to_string()
-        }
-        _ => kept,
-    };
-    let kept = kept.trim();
-    (!kept.is_empty()).then(|| kept.to_string())
 }
 
 /// Number of top-level user turns so far (count of `role == "user"` messages). Tool results
@@ -595,6 +558,7 @@ mod tests {
                 decision.model.clone(),
             ));
         }
+        async fn forget(&self, _conv_id: &str, _agent_id: &str) {}
     }
 
     /// A gate that always judges the turn small talk — exercises the Level 2.5 branch.
@@ -1083,45 +1047,6 @@ mod tests {
             picks.len(),
             1,
             "same seed + inputs must pick one model: {picks:?}"
-        );
-    }
-
-    /// BUG-24: Claude Code's own turn shapes, as recorded on 4 Nov (TO-15).
-    #[test]
-    fn latest_user_query_ignores_claude_code_reminders() {
-        let blocks = |texts: &[&str]| Message {
-            role: "user".into(),
-            content: Some(Value::Array(
-                texts
-                    .iter()
-                    .map(|t| serde_json::json!({"type": "text", "text": t}))
-                    .collect(),
-            )),
-            name: None,
-            tool_calls: None,
-            tool_call_id: None,
-            extra: Map::new(),
-        };
-        let prompt = "Add a mul(a, b) function to ops.py and a test for it.";
-        let turn = blocks(&[
-            "<system-reminder>\nCodebase and user instructions are shown below.\n</system-reminder>\n",
-            "<system-reminder>\nAttribution for git commits.\n</system-reminder>\n",
-            prompt,
-        ]);
-        assert_eq!(latest_user_query(&[turn]).as_deref(), Some(prompt));
-
-        let title_call = blocks(&[&format!(
-            "<session>\n{prompt}\n</session>\n\nWrite the title in the predominant language of the session."
-        )]);
-        assert_eq!(latest_user_query(&[title_call]).as_deref(), Some(prompt));
-
-        let only_reminder = blocks(&["<system-reminder>\nnothing else\n</system-reminder>"]);
-        assert_eq!(latest_user_query(&[only_reminder]), None);
-
-        let unclosed = blocks(&["fix the build <system-reminder>\ntrailing"]);
-        assert_eq!(
-            latest_user_query(&[unclosed]).as_deref(),
-            Some("fix the build")
         );
     }
 

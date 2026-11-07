@@ -176,7 +176,10 @@ async fn responses_core_as(
             };
             let started = Instant::now();
             match translated_attempt(ctx, &routed, &attempt, parsed, started).await {
-                Ok(response) => return Ok(response),
+                Ok(response) => {
+                    forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
+                    return Ok(response);
+                }
                 Err(TranslatedAttemptError::Terminal(response)) => return Ok(*response),
                 Err(TranslatedAttemptError::Configuration(error)) => return Err(error),
                 Err(TranslatedAttemptError::Retry(error)) => {
@@ -222,12 +225,13 @@ async fn responses_core_as(
         if !status.is_success() {
             guard.fail_status(status.as_u16());
             let response = passthrough_error(upstream).await?;
-            if status.as_u16() == 429 || status.is_server_error() {
+            if matches!(status.as_u16(), 404 | 429) || status.is_server_error() {
                 last_response = Some(response);
                 continue;
             }
             return Ok(response);
         }
+        forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
         return if stream {
             guard.disarm();
@@ -426,8 +430,23 @@ async fn translated_attempt(
     }
 }
 
+async fn forget_unless_routed_model_answered(
+    ctx: &LlmRouterCtx,
+    routed: &RoutedRequest,
+    attempt: &crate::resolver::ResolvedConfig,
+) {
+    super::chat::forget_route_that_did_not_answer(
+        ctx,
+        &routed.agent_id,
+        routed.sticky_conv_id.as_deref(),
+        &routed.resolved,
+        (&attempt.provider, &attempt.model),
+    )
+    .await;
+}
+
 fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
-    if error.retryable() {
+    if error.retryable() || matches!(error, ProviderError::Status { status: 404, .. }) {
         return TranslatedAttemptError::Retry(error);
     }
     let (status, message) = match &error {
@@ -1619,6 +1638,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
+            sticky_conv_id: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1785,6 +1805,97 @@ mod tests {
         assert_eq!(value["model"], "claude-opus-4");
         assert_eq!(value["output"][0]["content"][0]["text"], "from claude");
         anthropic.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_missing_tier_model_falls_back_to_the_configured_model_and_drops_the_sticky_choice() {
+        let mut server = mockito::Server::new_async().await;
+        for model in ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"] {
+            server
+                .mock("POST", "/responses")
+                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                .with_status(404)
+                .with_header("content-type", "application/json")
+                .with_body(
+                    r#"{"error":{"message":"The model does not exist","code":"model_not_found"}}"#,
+                )
+                .create_async()
+                .await;
+        }
+        let configured = server
+            .mock("POST", "/responses")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({"model":"resolved-model"}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"id":"resp_configured","usage":{}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let mut context = ctx(server.url());
+        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
+        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
+        context.router_cache = log.clone();
+        let response = responses_core(
+            &context,
+            &Store::new("openai"),
+            &headers(),
+            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        configured.assert_async().await;
+        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_missing_translated_tier_model_falls_back_to_the_configured_model() {
+        let mut server = mockito::Server::new_async().await;
+        for model in ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] {
+            server
+                .mock("POST", "/messages")
+                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                .with_status(404)
+                .with_header("content-type", "application/json")
+                .with_body(r#"{"type":"error","error":{"type":"not_found_error","message":"model: not found"}}"#)
+                .create_async()
+                .await;
+        }
+        let configured = server
+            .mock("POST", "/messages")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({"model":"resolved-model"}),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id":"msg_configured","type":"message","role":"assistant",
+                    "content":[{"type":"text","text":"ok"}],
+                    "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":2}
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let mut context = ctx(server.url());
+        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
+        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
+        context.router_cache = log.clone();
+        let response = responses_core(
+            &context,
+            &Store::new("anthropic"),
+            &headers(),
+            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        configured.assert_async().await;
+        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -2005,6 +2116,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
+            sticky_conv_id: None,
         };
         let mut guard =
             AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);
