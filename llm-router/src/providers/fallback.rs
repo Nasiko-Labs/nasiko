@@ -1405,6 +1405,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_fallback_that_takes_forced_tool_choice_answers_after_claude_refuses_it() {
+        let mut anthropic = mockito::Server::new_async().await;
+        anthropic
+            .mock("POST", "/messages")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({"type": "error", "error": {"type": "invalid_request_error",
+                    "message": "tool_choice: type \"tool\" and \"any\" are not supported for this model"}})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let mut openai = mockito::Server::new_async().await;
+        let answered = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let cfg = GatewayConfig {
+            anthropic_api_base: anthropic.url(),
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("anthropic", vec!["openai/gpt-4o-mini"]);
+        primary.model = "claude-sonnet-5-5".into();
+        let mut req = chat_req();
+        req.tool_choice = Some(json!("required"));
+
+        let (_, (provider, _)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "openai");
+        answered.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn a_payload_error_ends_the_chain_and_is_what_the_caller_sees() {
         let mut openai = mockito::Server::new_async().await;
         let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();

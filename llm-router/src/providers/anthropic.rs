@@ -93,11 +93,7 @@ impl ProviderClient for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                message: text,
-                retryable: status.as_u16() == 429 || status.is_server_error(),
-            });
+            return Err(status_error(status, text, req, cfg));
         }
 
         let value: Value = resp
@@ -128,11 +124,7 @@ impl ProviderClient for AnthropicProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                message: text,
-                retryable: status.as_u16() == 429 || status.is_server_error(),
-            });
+            return Err(status_error(status, text, req, cfg));
         }
 
         let model = cfg.model.clone();
@@ -341,6 +333,41 @@ impl ProviderClient for AnthropicProvider {
         let body: serde_json::Value = serde_json::from_str(message).ok()?;
         let detail = body.get("error")?.get("message")?.as_str()?;
         super::param_rejection(detail)
+    }
+}
+
+const FORCED_TOOL_CHOICE_REFUSED: &str = "tool_choice: type \"tool\" and \"any\" are not supported";
+
+fn status_error(
+    status: reqwest::StatusCode,
+    text: String,
+    req: &ChatRequest,
+    cfg: &ResolvedConfig,
+) -> ProviderError {
+    let refuses_forced_choice = status == reqwest::StatusCode::BAD_REQUEST
+        && serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|body| {
+                body.pointer("/error/message")?
+                    .as_str()
+                    .map(|m| m.contains(FORCED_TOOL_CHOICE_REFUSED))
+            })
+            .unwrap_or(false);
+    if refuses_forced_choice {
+        let choice = req
+            .tool_choice
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "\"required\"".to_string());
+        return ProviderError::Rejected(format!(
+            "Anthropic model {} does not support tool_choice {choice}; use \"auto\" or a model that supports forced tool use",
+            cfg.model
+        ));
+    }
+    ProviderError::Status {
+        status: status.as_u16(),
+        message: text,
+        retryable: status.as_u16() == 429 || status.is_server_error(),
     }
 }
 
@@ -1688,6 +1715,48 @@ mod tests {
         assert_eq!(resp.model, "claude-3-5-sonnet-20241022");
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("नमस्ते"));
         assert_eq!(resp.usage.unwrap().total_tokens, Some(13));
+    }
+
+    #[tokio::test]
+    async fn a_model_that_refuses_forced_tool_choice_is_named_with_the_choice() {
+        for stream in [false, true] {
+            let mut server = mockito::Server::new_async().await;
+            server
+                .mock("POST", "/messages")
+                .with_status(400)
+                .with_header("content-type", "application/json")
+                .with_body(
+                    json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "tool_choice: type \"tool\" and \"any\" are not supported for this model"
+                        }
+                    })
+                    .to_string(),
+                )
+                .create_async()
+                .await;
+            let provider = AnthropicProvider::new(reqwest::Client::new(), server.url());
+            let req: ChatRequest = serde_json::from_value(json!({
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tool_choice": "required",
+                "tools": [{ "type": "function", "function": { "name": "lookup", "parameters": { "type": "object" } } }]
+            }))
+            .unwrap();
+
+            let err = if stream {
+                provider.chat_stream(&req, &resolved()).await.err().unwrap()
+            } else {
+                provider.chat(&req, &resolved()).await.unwrap_err()
+            };
+
+            let ProviderError::Rejected(message) = err else {
+                panic!("stream={stream}: expected a by-name refusal, got {err:?}");
+            };
+            assert!(message.contains("claude-3-5-sonnet-20241022"), "{message}");
+            assert!(message.contains("tool_choice \"required\""), "{message}");
+        }
     }
 
     /// The body the provider sends with `TOKEN_CACHE_MARKERS` on.
