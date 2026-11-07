@@ -434,7 +434,7 @@ async fn create_session(
     // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
         Some(prompt) if !prompt.is_empty() => {
-            crate::titling::title_from_prompt(&state, user_id, prompt).await
+            crate::titling::title_from_prompt(&state, prompt).await
         }
         _ => "New chat".to_string(),
     };
@@ -1522,13 +1522,17 @@ async fn upload_files(
         let data = buf.freeze();
 
         let file_id = Uuid::new_v4();
-        let storage_key = format!("chat-files/{session_id}/{file_id}");
+        let storage_key = super::attachment_store::chat_file_key(&session_id, file_id);
         let size_bytes = data.len() as i64;
 
         if let Err(e) = state.oci_storage.put_blob(&storage_key, data).await {
             tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed; rolling back previous uploads");
             cleanup_uploaded(&state, &uploaded).await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "file storage is unavailable; try again",
+            )
+                .into_response();
         }
 
         let record = sqlx::query_as::<_, ChatMessageFile>(
@@ -1622,6 +1626,7 @@ fn download_target_response(target: DownloadTarget) -> axum::response::Response 
                 (header::CONTENT_TYPE, mime),
                 (header::CONTENT_LENGTH, size.to_string()),
                 (header::CONTENT_DISPOSITION, content_disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
             ],
             Body::from_stream(body),
         )
@@ -1848,6 +1853,13 @@ mod tests {
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|v| v.to_str().ok()),
             Some("attachment; filename*=UTF-8''a.txt")
+        );
+        assert_eq!(
+            stream
+                .headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
         );
 
         assert_eq!(

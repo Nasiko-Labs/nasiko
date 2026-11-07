@@ -437,7 +437,8 @@ where
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
     let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
-        .with_config_cache(state.llm_config_cache.clone());
+        .with_config_cache(state.llm_config_cache.clone())
+        .with_attachment_store(state.attachment_store.clone());
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
