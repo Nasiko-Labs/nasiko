@@ -117,7 +117,14 @@ pub async fn apply_llm_wiring(
     agent_id: Uuid,
     owner_id: Uuid,
 ) {
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, env, agent_id, Some(owner_id)).await;
+    crate::llm_router::wiring::inject_agent_llm_env(
+        &state.db,
+        env,
+        agent_id,
+        Some(owner_id),
+        state.config.openai_api_key.clone(),
+    )
+    .await;
 }
 
 /// Gives the agent its state API address and credential, and, for a deploy that

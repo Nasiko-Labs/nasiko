@@ -32,6 +32,7 @@ pub struct LlmInjectCtx {
     pub owner_id: String,
     /// Which SDK the agent speaks; determines the env-var names written.
     pub inbound_format: InboundFormat,
+    pub platform_openai_key: Option<String>,
 }
 
 /// Mint an agent JWT and inject the base-URL + key env vars into `env_vars`.
@@ -70,6 +71,16 @@ pub fn inject_llm_env(
     // the provider key. The base-URL mapping is shared with the coding-agent
     // per-turn path via `inject_llm_base_url`.
     inject_llm_base_url(env_vars, &cfg.llm_gateway_base_url, ctx.inbound_format);
+
+    let holds_platform_openai_key = ctx
+        .platform_openai_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .is_some_and(|key| env_vars.get("OPENAI_API_KEY").map(String::as_str) == Some(key));
+    if ctx.inbound_format != InboundFormat::OpenAi && holds_platform_openai_key {
+        inject_llm_base_url(env_vars, &cfg.llm_gateway_base_url, InboundFormat::OpenAi);
+        env_vars.insert("OPENAI_API_KEY".into(), token.clone());
+    }
 
     match ctx.inbound_format {
         InboundFormat::OpenAi => {
@@ -134,7 +145,96 @@ mod tests {
             agent_id: "11111111-1111-1111-1111-111111111111".into(),
             owner_id: "22222222-2222-2222-2222-222222222222".into(),
             inbound_format: InboundFormat::OpenAi,
+            platform_openai_key: None,
         }
+    }
+
+    const PLATFORM_KEY: &str = "sk-platform-real";
+
+    fn with_platform_openai_env(key: &str) -> HashMap<String, String> {
+        HashMap::from([
+            ("OPENAI_API_KEY".to_string(), key.to_string()),
+            (
+                "OPENAI_BASE_URL".to_string(),
+                "https://api.openai.com/v1".to_string(),
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_non_openai_agent_gets_the_router_in_place_of_the_platform_openai_key() {
+        let c = cfg();
+        for format in [InboundFormat::Anthropic, InboundFormat::Gemini] {
+            let mut env = with_platform_openai_env(PLATFORM_KEY);
+            let ctx = LlmInjectCtx {
+                inbound_format: format,
+                platform_openai_key: Some(PLATFORM_KEY.into()),
+                ..ctx()
+            };
+            inject_llm_env(&mut env, &ctx, &c).unwrap();
+            assert!(env.values().all(|v| v != PLATFORM_KEY), "{format:?}");
+            assert_eq!(env["OPENAI_BASE_URL"], "http://gateway:8080/v1");
+            let bearer = format!("Bearer {}", env["OPENAI_API_KEY"]);
+            let (agent_id, _) = verify_agent_jwt(Some(&bearer), &c).unwrap();
+            assert_eq!(agent_id, "11111111-1111-1111-1111-111111111111");
+        }
+    }
+
+    #[test]
+    fn an_agents_own_openai_key_is_left_alone() {
+        let mut env = with_platform_openai_env("sk-the-users-own");
+        let ctx = LlmInjectCtx {
+            inbound_format: InboundFormat::Anthropic,
+            platform_openai_key: Some(PLATFORM_KEY.into()),
+            ..ctx()
+        };
+        inject_llm_env(&mut env, &ctx, &cfg()).unwrap();
+        assert_eq!(env["OPENAI_API_KEY"], "sk-the-users-own");
+        assert_eq!(env["OPENAI_BASE_URL"], "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn no_openai_vars_are_added_when_the_agent_had_none() {
+        for platform_openai_key in [None, Some(PLATFORM_KEY.to_string()), Some(String::new())] {
+            let mut env = HashMap::new();
+            let ctx = LlmInjectCtx {
+                inbound_format: InboundFormat::Anthropic,
+                platform_openai_key,
+                ..ctx()
+            };
+            inject_llm_env(&mut env, &ctx, &cfg()).unwrap();
+            assert!(!env.contains_key("OPENAI_API_KEY"));
+            assert!(!env.contains_key("OPENAI_BASE_URL"));
+        }
+    }
+
+    #[test]
+    fn an_empty_platform_key_never_matches_an_empty_agent_key() {
+        let mut env = with_platform_openai_env("");
+        let ctx = LlmInjectCtx {
+            inbound_format: InboundFormat::Gemini,
+            platform_openai_key: Some(String::new()),
+            ..ctx()
+        };
+        inject_llm_env(&mut env, &ctx, &cfg()).unwrap();
+        assert_eq!(env["OPENAI_API_KEY"], "");
+        assert_eq!(env["OPENAI_BASE_URL"], "https://api.openai.com/v1");
+    }
+
+    #[test]
+    fn a_router_that_is_not_configured_changes_nothing() {
+        let mut env = with_platform_openai_env(PLATFORM_KEY);
+        let ctx = LlmInjectCtx {
+            inbound_format: InboundFormat::Anthropic,
+            platform_openai_key: Some(PLATFORM_KEY.into()),
+            ..ctx()
+        };
+        let unwired = GatewayConfig {
+            agent_jwt_secret: String::new(),
+            ..cfg()
+        };
+        assert!(inject_llm_env(&mut env, &ctx, &unwired).is_err());
+        assert_eq!(env, with_platform_openai_env(PLATFORM_KEY));
     }
 
     #[test]

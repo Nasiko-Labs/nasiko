@@ -28,6 +28,7 @@ pub async fn inject_agent_llm_env(
     env_vars: &mut HashMap<String, String>,
     agent_id: Uuid,
     owner_id: Option<Uuid>,
+    platform_openai_key: Option<String>,
 ) {
     let inbound_format = fetch_inbound_format(db, agent_id).await;
     let cfg = nasiko_llm_router::GatewayConfig::from_env();
@@ -35,6 +36,7 @@ pub async fn inject_agent_llm_env(
         agent_id: agent_id.to_string(),
         owner_id: owner_id.map(|u| u.to_string()).unwrap_or_default(),
         inbound_format,
+        platform_openai_key,
     };
     match nasiko_llm_router::inject_llm_env(env_vars, &ctx, &cfg) {
         Ok(()) => tracing::info!(%agent_id, ?inbound_format, "injected LLM gateway wiring"),
