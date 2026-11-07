@@ -343,6 +343,7 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts,
+                attached_files: chat_files,
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -470,6 +471,7 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
+    pub(crate) attached_files: Vec<AttachedFile>,
     /// Whether this turn was started by the user or reports on work an earlier
     /// turn already did. The operator's policy may treat the two differently —
     /// see [`TurnKind`].
@@ -519,6 +521,7 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
+        attached_files,
         kind,
         context_report,
     } = turn;
@@ -687,7 +690,7 @@ pub(crate) async fn orchestrator_stream(
         }
     };
 
-    let config = OrchestratorConfig {
+    let mut config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
         // default rather than re-reading the env var here with a placeholder
@@ -702,6 +705,7 @@ pub(crate) async fn orchestrator_stream(
         policy: policy.clone(),
         preamble,
         outbound_prefix: org_context,
+        attachment_note: None,
         // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
         // deliberately inert — without this the compressor is compiled in but unreachable.
         context: nasiko_react_agent::ContextConfig {
@@ -796,6 +800,8 @@ pub(crate) async fn orchestrator_stream(
         },
     )
     .await?;
+    config.attachment_note =
+        attachment_note(state.marker_signer.as_deref(), &attached_files, &flow_id);
 
     // `flow_id` doubles as the trace id (see comment below) — index it against
     // the session so `nasiko history`'s Tempo-miss fallback
@@ -2228,6 +2234,7 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
+            attached_files: Vec::new(),
             kind: TurnKind::User,
             // This path mints a fresh context id, so no history was selected and there is nothing
             // to report. A zero row here would count as a request that optimized nothing.

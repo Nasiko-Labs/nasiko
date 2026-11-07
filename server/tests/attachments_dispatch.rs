@@ -602,3 +602,124 @@ async fn a_turn_without_files_gets_no_attachment_line() {
 
     server.cleanup().await;
 }
+
+fn streamed_tool_call(tool_name: &str, message: &str) -> String {
+    let chunk = json!({
+        "id": "chatcmpl-1",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json!({ "message": message }).to_string()
+                    }
+                }]
+            }
+        }]
+    });
+    format!("data: {chunk}\n\n")
+}
+
+#[tokio::test]
+#[serial]
+async fn a_routed_turn_gives_the_chosen_agent_the_signed_line_for_its_flow() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    let (_, user) = admin_and_member(&server, "att-routed").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_name = "att-routed-agent";
+    sqlx::query("INSERT INTO agents (name, owner_id, url, status) VALUES ($1, $2, $3, 'running')")
+        .bind(agent_name)
+        .bind(Uuid::parse_str(&user.id).unwrap())
+        .bind(&url)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let png = upload(&server, &user, &sid, png_of(64), "fact.png", "image/png").await;
+
+    let mut llm = mockito::Server::new_async().await;
+    let llm_mock = llm
+        .mock("POST", "/chat/completions")
+        .expect_at_least(1)
+        .with_status(200)
+        .with_body(streamed_tool_call(
+            &format!("call_agent_{}", agent_name.replace('-', "_")),
+            "describe the picture",
+        ))
+        .create_async()
+        .await;
+    unsafe {
+        std::env::set_var("OPENAI_BASE_URL", llm.url());
+        std::env::set_var("OPENAI_API_KEY", "test-key-for-attachments");
+    }
+
+    let (status, body) = send_turn(
+        &server,
+        &user,
+        None,
+        &sid,
+        std::slice::from_ref(&png),
+        vec![],
+    )
+    .await;
+    unsafe {
+        std::env::remove_var("OPENAI_BASE_URL");
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        llm_mock.matched_async().await,
+        "the orchestrator model was never called"
+    );
+
+    let first_call = agent
+        .seen
+        .lock()
+        .unwrap()
+        .first()
+        .cloned()
+        .unwrap_or_else(|| panic!("the routed agent was never called: {body}"));
+    let texts: Vec<&str> = first_call["params"]["message"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.get("text").and_then(Value::as_str))
+        .collect();
+    assert_eq!(texts[0], "describe the picture");
+    let note = texts
+        .iter()
+        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
+        .expect("the routed agent got no attachment line");
+    let spans = nasiko_llm_router::attachments::token_spans(note);
+    assert_eq!(spans.len(), 1);
+    let signer = nasiko_llm_router::attachments::MarkerSigner::from_secret(JWT_SECRET).unwrap();
+    let claims = signer
+        .verify(
+            &note[spans[0].token.clone()],
+            &flow_id_seen(&agent),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+    assert_eq!(
+        claims.reference,
+        nasiko_llm_router::attachments::AttachmentRef::ChatUpload {
+            session_id: sid.clone(),
+            file_id: Uuid::parse_str(&png).unwrap(),
+        }
+    );
+    let files: Vec<&Value> = first_call["params"]["message"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p.get("file").is_some())
+        .collect();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["file"]["name"], "fact.png");
+
+    server.cleanup().await;
+}
