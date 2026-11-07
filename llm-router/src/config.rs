@@ -67,6 +67,7 @@ pub struct GatewayConfig {
     pub max_body_bytes: usize,
     pub max_inflight_body_bytes: usize,
     pub attachment_cache_bytes: usize,
+    pub attachment_max_bytes: usize,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
@@ -242,6 +243,7 @@ impl Default for GatewayConfig {
             max_body_bytes: 48 * 1024 * 1024,
             max_inflight_body_bytes: 256 * 1024 * 1024,
             attachment_cache_bytes: 256 * 1024 * 1024,
+            attachment_max_bytes: 30 * 1024 * 1024,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -346,6 +348,10 @@ impl GatewayConfig {
             attachment_cache_bytes: env_usize(
                 "LLM_ROUTER_ATTACHMENT_CACHE_BYTES",
                 d.attachment_cache_bytes,
+            ),
+            attachment_max_bytes: env_usize(
+                "LLM_ROUTER_ATTACHMENT_MAX_BYTES",
+                d.attachment_max_bytes,
             ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()

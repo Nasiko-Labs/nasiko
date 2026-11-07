@@ -404,7 +404,7 @@ async fn chat_core_as(
         model: req.model.as_deref(),
     };
     let signals = RequestSignals {
-        query: routing::latest_user_query(&req.messages),
+        query: routing::latest_user_query(&req.messages).map(crate::attachments::strip_markers),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -425,6 +425,9 @@ async fn chat_core_as(
         compression: _,
         sticky_conv_id,
     } = routed;
+
+    crate::attachments::expand::attach_marked_files(ctx, &mut req, flow_id.as_deref(), &agent_id)
+        .await?;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
     // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
@@ -2622,6 +2625,112 @@ mod tests {
             result["content"].as_str().unwrap().contains("lines elided"),
             "the marked tool result was not compressed: {result}"
         );
+    }
+
+    struct OneFile(&'static [u8]);
+
+    #[async_trait]
+    impl crate::attachments::AttachmentStore for OneFile {
+        async fn fetch(
+            &self,
+            _: &crate::attachments::AttachmentRef,
+        ) -> Result<bytes::Bytes, crate::attachments::AttachmentFetchError> {
+            Ok(bytes::Bytes::from_static(self.0))
+        }
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png";
+
+    fn png_marker_line() -> String {
+        crate::attachments::MarkerSigner::from_secret(SECRET)
+            .unwrap()
+            .marker_line(&crate::attachments::MarkerClaims {
+                reference: crate::attachments::AttachmentRef::ChatUpload {
+                    session_id: "sess".into(),
+                    file_id: Uuid::from_u128(1),
+                },
+                filename: "fact.png".into(),
+                media_type: "image/png".into(),
+                size_bytes: PNG.len() as u64,
+                flow_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
+                expires_at: chrono::Utc::now().timestamp() + 600,
+            })
+    }
+
+    fn anthropic_turn_with_marker() -> Value {
+        json!({
+            "model": "claude-haiku-5-5",
+            "max_tokens": 64,
+            "messages": [{ "role": "user", "content": format!("What is in this?\n{}", png_marker_line()) }]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_marked_chat_file_reaches_anthropic_as_an_image_block() {
+        use base64::Engine as _;
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+        let mut ctx = anthropic_ctx(server.url());
+        ctx.marker_signer = crate::attachments::MarkerSigner::from_secret(SECRET).map(Arc::new);
+        ctx.attachment_store = Arc::new(OneFile(PNG));
+
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            anthropic_turn_with_marker(),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = &sent(&seen)["messages"][0]["content"];
+        assert_eq!(
+            content[0],
+            json!({ "type": "text", "text": "What is in this?\n" })
+        );
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(
+            content[1]["source"],
+            json!({
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode(PNG)
+            })
+        );
+        assert!(
+            !content
+                .to_string()
+                .contains(crate::attachments::TOKEN_PREFIX)
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_signing_key_a_marker_stays_plain_text() {
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+        let mut ctx = anthropic_ctx(server.url());
+        ctx.attachment_store = Arc::new(OneFile(PNG));
+
+        let turn = anthropic_turn_with_marker();
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            turn.clone(),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = &sent(&seen)["messages"][0]["content"];
+        let text = content
+            .as_str()
+            .or_else(|| content[0]["text"].as_str())
+            .unwrap();
+        assert_eq!(text, turn["messages"][0]["content"].as_str().unwrap());
     }
 
     #[tokio::test]

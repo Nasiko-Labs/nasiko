@@ -1,0 +1,918 @@
+use std::collections::HashMap;
+use std::ops::Range;
+use std::sync::Arc;
+
+use futures::{StreamExt, TryStreamExt, stream};
+use serde_json::{Map, Value, json};
+
+use super::cache::AttachmentCache;
+use super::marker::{
+    AttachmentRef, MarkerClaims, MarkerSigner, TOKEN_PREFIX, human_size, shown_above_line,
+    token_spans,
+};
+use super::store::{AttachmentFetchError, AttachmentStore};
+use crate::error::GatewayError;
+use crate::ir::{ChatRequest, Message};
+
+const CURRENT_MESSAGE: &str = "\n\nCurrent message: ";
+const FETCH_CONCURRENCY: usize = 4;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ExpandReport {
+    pub attached: usize,
+    pub skipped_media_present: usize,
+    pub repeated: usize,
+    pub invalid: usize,
+    pub bytes: u64,
+    pub cache_hits: usize,
+}
+
+pub async fn expand(
+    req: &mut ChatRequest,
+    flow_id: &str,
+    now: i64,
+    signer: &MarkerSigner,
+    store: &dyn AttachmentStore,
+    cache: &AttachmentCache,
+    max_total_bytes: u64,
+) -> Result<ExpandReport, GatewayError> {
+    let mut report = ExpandReport::default();
+    let turn = current_turn(&req.messages);
+    if !turn.iter().any(|&i| mentions_token(&req.messages[i])) {
+        return Ok(report);
+    }
+
+    let mut files: Vec<MarkerClaims> = Vec::new();
+    let mut slots: HashMap<AttachmentRef, usize> = HashMap::new();
+    let mut edits: Vec<(usize, Vec<TextEdit>)> = Vec::new();
+    for &index in &turn {
+        let message = &req.messages[index];
+        let media_present = has_media(message);
+        let mut texts = Vec::new();
+        for (part, text, from) in scannable_texts(message) {
+            let mut cuts = Vec::new();
+            for span in token_spans(&text[from..]) {
+                let token = &text[from + span.token.start..from + span.token.end];
+                let Ok(claims) = signer.verify(token, flow_id, now) else {
+                    report.invalid += 1;
+                    continue;
+                };
+                let action = if media_present {
+                    report.skipped_media_present += 1;
+                    Action::Remove
+                } else if let Some(&slot) = slots.get(&claims.reference) {
+                    report.repeated += 1;
+                    Action::Repeat(slot)
+                } else {
+                    let slot = files.len();
+                    slots.insert(claims.reference.clone(), slot);
+                    files.push(claims);
+                    Action::Attach(slot)
+                };
+                cuts.push(Cut {
+                    line: from + span.line.start..from + span.line.end,
+                    action,
+                });
+            }
+            if !cuts.is_empty() {
+                texts.push(TextEdit { part, cuts });
+            }
+        }
+        if !texts.is_empty() {
+            edits.push((index, texts));
+        }
+    }
+
+    let total: u64 = files
+        .iter()
+        .map(|f| f.size_bytes)
+        .fold(0, u64::saturating_add);
+    if total > max_total_bytes {
+        return Err(GatewayError::BadRequest(format!(
+            "the attached files total {}, over the {} limit for one model call",
+            human_size(total),
+            human_size(max_total_bytes)
+        )));
+    }
+
+    let fetches: Vec<_> = files
+        .iter()
+        .map(|file| fetch_one(file, store, cache))
+        .collect();
+    let fetched: Vec<(Arc<str>, bool)> = stream::iter(fetches)
+        .buffered(FETCH_CONCURRENCY)
+        .try_collect()
+        .await?;
+
+    report.attached = files.len();
+    report.bytes = total;
+    report.cache_hits = fetched.iter().filter(|(_, hit)| *hit).count();
+    let mut media: Vec<Option<Value>> = files
+        .iter()
+        .zip(&fetched)
+        .map(|(file, (base64, _))| Some(media_part(file, base64)))
+        .collect();
+    drop(fetched);
+    for (index, texts) in edits {
+        apply(&mut req.messages[index], texts, &files, &mut media);
+    }
+    Ok(report)
+}
+
+pub(crate) async fn attach_marked_files(
+    ctx: &crate::LlmRouterCtx,
+    req: &mut ChatRequest,
+    flow_id: Option<&str>,
+    agent_id: &str,
+) -> Result<(), GatewayError> {
+    let (Some(flow_id), Some(signer)) = (flow_id, ctx.marker_signer.as_deref()) else {
+        return Ok(());
+    };
+    let report = expand(
+        req,
+        flow_id,
+        chrono::Utc::now().timestamp(),
+        signer,
+        ctx.attachment_store.as_ref(),
+        &ctx.attachment_cache,
+        ctx.cfg.attachment_max_bytes as u64,
+    )
+    .await?;
+    if report != ExpandReport::default() {
+        tracing::info!(
+            target: "nasiko::llm_router::attachments",
+            %agent_id,
+            attached = report.attached,
+            skipped_media_present = report.skipped_media_present,
+            repeated = report.repeated,
+            invalid = report.invalid,
+            bytes = report.bytes,
+            cache_hits = report.cache_hits,
+            "attachments: marked files placed into the model call"
+        );
+    }
+    Ok(())
+}
+
+enum Action {
+    Attach(usize),
+    Repeat(usize),
+    Remove,
+}
+
+struct Cut {
+    line: Range<usize>,
+    action: Action,
+}
+
+struct TextEdit {
+    part: Option<usize>,
+    cuts: Vec<Cut>,
+}
+
+fn current_turn(messages: &[Message]) -> Vec<usize> {
+    let opens_turn =
+        |i: usize| messages[i].role == "user" && (i == 0 || messages[i - 1].role != "tool");
+    let Some(start) = (0..messages.len())
+        .rev()
+        .find(|&i| opens_turn(i))
+        .or_else(|| messages.iter().rposition(|m| m.role == "user"))
+    else {
+        return Vec::new();
+    };
+    (start..messages.len())
+        .filter(|&i| matches!(messages[i].role.as_str(), "user" | "tool"))
+        .collect()
+}
+
+fn mentions_token(message: &Message) -> bool {
+    match &message.content {
+        Some(Value::String(text)) => text.contains(TOKEN_PREFIX),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(Value::as_str))
+            .any(|text| text.contains(TOKEN_PREFIX)),
+        _ => false,
+    }
+}
+
+fn has_media(message: &Message) -> bool {
+    matches!(&message.content, Some(Value::Array(parts))
+        if parts.iter().any(|p| p.get("type").and_then(Value::as_str) != Some("text")))
+}
+
+fn scannable_texts(message: &Message) -> Vec<(Option<usize>, &str, usize)> {
+    let texts: Vec<(Option<usize>, &str)> = match &message.content {
+        Some(Value::String(text)) => vec![(None, text.as_str())],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|(i, p)| p.get("text").and_then(Value::as_str).map(|t| (Some(i), t)))
+            .collect(),
+        _ => Vec::new(),
+    };
+    if message.role != "user" {
+        return texts
+            .into_iter()
+            .map(|(part, text)| (part, text, 0))
+            .collect();
+    }
+    let cutoff = texts.iter().enumerate().rev().find_map(|(n, (_, text))| {
+        text.rfind(CURRENT_MESSAGE)
+            .map(|pos| (n, pos + CURRENT_MESSAGE.len()))
+    });
+    texts
+        .into_iter()
+        .enumerate()
+        .filter_map(|(n, (part, text))| match cutoff {
+            Some((at, _)) if n < at => None,
+            Some((at, from)) if n == at => Some((part, text, from)),
+            _ => Some((part, text, 0)),
+        })
+        .collect()
+}
+
+async fn fetch_one(
+    file: &MarkerClaims,
+    store: &dyn AttachmentStore,
+    cache: &AttachmentCache,
+) -> Result<(Arc<str>, bool), GatewayError> {
+    cache
+        .get_or_fetch(&file.reference, store)
+        .await
+        .map(|got| (got.base64, got.from_cache))
+        .map_err(|e| fetch_failure(file, e))
+}
+
+fn fetch_failure(file: &MarkerClaims, error: AttachmentFetchError) -> GatewayError {
+    match error {
+        AttachmentFetchError::NotFound => GatewayError::BadRequest(format!(
+            "attached file '{}' is no longer available",
+            file.filename
+        )),
+        AttachmentFetchError::Unsupported => GatewayError::BadRequest(format!(
+            "attached file '{}' cannot be read on this server",
+            file.filename
+        )),
+        AttachmentFetchError::Storage(detail) => {
+            tracing::warn!(
+                target: "nasiko::llm_router::attachments",
+                reference = ?file.reference,
+                error = %detail,
+                "attachments: reading an attached file failed"
+            );
+            GatewayError::StorageUnavailable
+        }
+    }
+}
+
+fn media_part(file: &MarkerClaims, base64: &str) -> Value {
+    let declared = file
+        .media_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let media_type = if declared.is_empty() {
+        "application/octet-stream"
+    } else {
+        declared.as_str()
+    };
+    let data_url = || format!("data:{media_type};base64,{base64}");
+    match media_type.split_once('/') {
+        Some(("image", _)) => json!({"type": "image_url", "image_url": {"url": data_url()}}),
+        Some(("audio", subtype)) => json!({
+            "type": "input_audio",
+            "input_audio": {"data": base64, "format": audio_format(subtype)},
+        }),
+        Some(("video", _)) => json!({"type": "video_url", "video_url": {"url": data_url()}}),
+        _ => {
+            let name = file.filename.trim();
+            json!({
+                "type": "file",
+                "file": {
+                    "file_data": data_url(),
+                    "filename": if name.is_empty() { "document" } else { name },
+                },
+            })
+        }
+    }
+}
+
+fn audio_format(subtype: &str) -> &str {
+    match subtype {
+        "mpeg" | "mp3" => "mp3",
+        "wav" | "x-wav" | "wave" | "vnd.wave" => "wav",
+        other => other.trim_start_matches("x-"),
+    }
+}
+
+fn apply(
+    message: &mut Message,
+    texts: Vec<TextEdit>,
+    files: &[MarkerClaims],
+    media: &mut [Option<Value>],
+) {
+    let attaches = texts
+        .iter()
+        .flat_map(|t| &t.cuts)
+        .any(|cut| matches!(cut.action, Action::Attach(_)));
+    match message.content.take() {
+        Some(Value::String(text)) => {
+            let edit = texts.into_iter().next().map(|t| t.cuts).unwrap_or_default();
+            message.content = Some(if attaches {
+                Value::Array(split(&text, &edit, files, media, Map::new()))
+            } else {
+                Value::String(rewritten(&text, &edit, files))
+            });
+        }
+        Some(Value::Array(parts)) => {
+            let mut by_part: HashMap<usize, Vec<Cut>> = texts
+                .into_iter()
+                .filter_map(|t| t.part.map(|p| (p, t.cuts)))
+                .collect();
+            let mut out = Vec::with_capacity(parts.len() + files.len());
+            for (i, part) in parts.into_iter().enumerate() {
+                match by_part.remove(&i) {
+                    Some(cuts) => {
+                        let Value::Object(mut fields) = part else {
+                            continue;
+                        };
+                        let text = match fields.remove("text") {
+                            Some(Value::String(text)) => text,
+                            _ => String::new(),
+                        };
+                        fields.remove("type");
+                        out.extend(split(&text, &cuts, files, media, fields));
+                    }
+                    None => out.push(part),
+                }
+            }
+            message.content = Some(Value::Array(out));
+        }
+        other => message.content = other,
+    }
+}
+
+fn rewritten(text: &str, cuts: &[Cut], files: &[MarkerClaims]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut from = 0;
+    for cut in cuts {
+        out.push_str(&text[from..cut.line.start]);
+        if let Action::Repeat(slot) = cut.action {
+            out.push_str(&shown_above_line(&files[slot]));
+        }
+        from = cut.line.end;
+    }
+    out.push_str(&text[from..]);
+    out
+}
+
+fn split(
+    text: &str,
+    cuts: &[Cut],
+    files: &[MarkerClaims],
+    media: &mut [Option<Value>],
+    extras: Map<String, Value>,
+) -> Vec<Value> {
+    let mut pieces = Vec::new();
+    let mut buffer = String::new();
+    let mut from = 0;
+    for cut in cuts {
+        buffer.push_str(&text[from..cut.line.start]);
+        match cut.action {
+            Action::Attach(slot) => {
+                flush_text(&mut buffer, &mut pieces);
+                pieces.extend(media[slot].take());
+            }
+            Action::Repeat(slot) => buffer.push_str(&shown_above_line(&files[slot])),
+            Action::Remove => {}
+        }
+        from = cut.line.end;
+    }
+    buffer.push_str(&text[from..]);
+    flush_text(&mut buffer, &mut pieces);
+    if let Some(Value::Object(last)) = pieces.last_mut() {
+        last.extend(extras);
+    }
+    pieces
+}
+
+fn flush_text(buffer: &mut String, pieces: &mut Vec<Value>) {
+    if !buffer.trim().is_empty() {
+        pieces.push(json!({"type": "text", "text": std::mem::take(buffer)}));
+    }
+    buffer.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    use bytes::Bytes;
+    use serde_json::{Value, json};
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::attachments::cache::ATTACHMENT_CACHE_TTL;
+    use crate::attachments::marker::{AttachmentRef, MARKER_TTL_SECS, MarkerClaims};
+    use crate::attachments::store::AttachmentFetchError;
+    use crate::ir::{ContentPart, DataSource};
+
+    const FLOW: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    const NOW: i64 = 1_800_000_000;
+    const LIMIT: u64 = 30 * 1024 * 1024;
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png";
+    const PDF: &[u8] = b"%PDF-1.7 fake";
+
+    fn signer() -> MarkerSigner {
+        MarkerSigner::from_secret("expand-test-secret").unwrap()
+    }
+
+    #[derive(Default)]
+    struct FakeStore {
+        files: HashMap<AttachmentRef, Result<Bytes, &'static str>>,
+        fetched: Mutex<Vec<AttachmentRef>>,
+    }
+
+    impl FakeStore {
+        fn with(mut self, reference: AttachmentRef, bytes: &'static [u8]) -> Self {
+            self.files.insert(reference, Ok(Bytes::from_static(bytes)));
+            self
+        }
+
+        fn failing(mut self, reference: AttachmentRef, how: &'static str) -> Self {
+            self.files.insert(reference, Err(how));
+            self
+        }
+
+        fn fetch_count(&self) -> usize {
+            self.fetched.lock().unwrap().len()
+        }
+    }
+
+    #[async_trait]
+    impl AttachmentStore for FakeStore {
+        async fn fetch(&self, reference: &AttachmentRef) -> Result<Bytes, AttachmentFetchError> {
+            self.fetched.lock().unwrap().push(reference.clone());
+            match self.files.get(reference) {
+                Some(Ok(bytes)) => Ok(bytes.clone()),
+                Some(Err("storage")) => Err(AttachmentFetchError::Storage("down".into())),
+                Some(Err("unsupported")) => Err(AttachmentFetchError::Unsupported),
+                _ => Err(AttachmentFetchError::NotFound),
+            }
+        }
+    }
+
+    fn chat_file(n: u128) -> AttachmentRef {
+        AttachmentRef::ChatUpload {
+            session_id: "sess".into(),
+            file_id: Uuid::from_u128(n),
+        }
+    }
+
+    fn workspace_file(n: u128) -> AttachmentRef {
+        AttachmentRef::Workspace {
+            agent_id: Uuid::from_u128(1),
+            user_id: Uuid::from_u128(2),
+            blob_id: Uuid::from_u128(n),
+        }
+    }
+
+    fn claims(reference: AttachmentRef, name: &str, media_type: &str, size: u64) -> MarkerClaims {
+        MarkerClaims {
+            reference,
+            filename: name.into(),
+            media_type: media_type.into(),
+            size_bytes: size,
+            flow_id: FLOW.into(),
+            expires_at: NOW + MARKER_TTL_SECS,
+        }
+    }
+
+    fn png_line(n: u128) -> String {
+        signer().marker_line(&claims(
+            chat_file(n),
+            "fact.png",
+            "image/png",
+            PNG.len() as u64,
+        ))
+    }
+
+    fn pdf_line(n: u128) -> String {
+        signer().marker_line(&claims(
+            chat_file(n),
+            "q3.pdf",
+            "application/pdf",
+            PDF.len() as u64,
+        ))
+    }
+
+    fn request(messages: Value) -> ChatRequest {
+        serde_json::from_value(json!({ "model": "m", "messages": messages })).unwrap()
+    }
+
+    fn cache() -> AttachmentCache {
+        AttachmentCache::new(1024 * 1024, ATTACHMENT_CACHE_TTL)
+    }
+
+    async fn run(req: &mut ChatRequest, store: &FakeStore) -> Result<ExpandReport, GatewayError> {
+        expand(req, FLOW, NOW, &signer(), store, &cache(), LIMIT).await
+    }
+
+    fn content(req: &ChatRequest, index: usize) -> Value {
+        req.messages[index].content.clone().unwrap()
+    }
+
+    fn data_url(media_type: &str, bytes: &[u8]) -> String {
+        format!("data:{media_type};base64,{}", STANDARD.encode(bytes))
+    }
+
+    #[tokio::test]
+    async fn a_request_without_markers_is_left_exactly_as_it_was() {
+        let messages = json!([
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}}]},
+        ]);
+        let mut req = request(messages.clone());
+        let store = FakeStore::default();
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report, ExpandReport::default());
+        assert_eq!(serde_json::to_value(&req.messages).unwrap(), messages);
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_marked_image_in_the_user_message_becomes_an_image_part() {
+        let mut req = request(json!([
+            {"role": "user", "content": format!("What is in this?\n{}", png_line(1))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "text", "text": "What is in this?\n"},
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+            ])
+        );
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.bytes, PNG.len() as u64);
+        let parts: Vec<ContentPart> = content(&req, 0)
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| ContentPart::from_openai_part(p).unwrap())
+            .collect();
+        assert!(
+            matches!(&parts[1], ContentPart::Image { source: DataSource::Inline { media_type, .. }, .. } if media_type == "image/png")
+        );
+    }
+
+    #[tokio::test]
+    async fn each_media_type_gets_the_part_shape_the_providers_read() {
+        let cases: [(&str, &str, Value); 6] = [
+            (
+                "q3.pdf",
+                "application/pdf",
+                json!({"type": "file", "file": {"file_data": data_url("application/pdf", PDF), "filename": "q3.pdf"}}),
+            ),
+            (
+                "notes.csv",
+                "text/csv; charset=utf-8",
+                json!({"type": "file", "file": {"file_data": data_url("text/csv", PDF), "filename": "notes.csv"}}),
+            ),
+            (
+                "tone.mp3",
+                "audio/mpeg",
+                json!({"type": "input_audio", "input_audio": {"data": STANDARD.encode(PDF), "format": "mp3"}}),
+            ),
+            (
+                "tone.wav",
+                "audio/x-wav",
+                json!({"type": "input_audio", "input_audio": {"data": STANDARD.encode(PDF), "format": "wav"}}),
+            ),
+            (
+                "clip.mp4",
+                "video/mp4",
+                json!({"type": "video_url", "video_url": {"url": data_url("video/mp4", PDF)}}),
+            ),
+            (
+                "",
+                "",
+                json!({"type": "file", "file": {"file_data": data_url("application/octet-stream", PDF), "filename": "document"}}),
+            ),
+        ];
+        for (name, media_type, expected) in cases {
+            let line =
+                signer().marker_line(&claims(chat_file(9), name, media_type, PDF.len() as u64));
+            let mut req = request(json!([{"role": "user", "content": line}]));
+            let store = FakeStore::default().with(chat_file(9), PDF);
+            run(&mut req, &store).await.unwrap();
+            assert_eq!(content(&req, 0), json!([expected]), "{media_type}");
+            ContentPart::from_openai_part(&content(&req, 0)[0]).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_marker_in_a_tool_result_of_this_turn_is_placed_in_that_tool_message() {
+        let ws = signer().marker_line(&claims(
+            workspace_file(5),
+            "fact.png",
+            "image/png",
+            PNG.len() as u64,
+        ));
+        let mut req = request(json!([
+            {"role": "user", "content": "describe img/fact.png"},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": format!("Image `img/fact.png`:\n{ws}")},
+        ]));
+        let store = FakeStore::default().with(workspace_file(5), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(
+            content(&req, 2),
+            json!([
+                {"type": "text", "text": "Image `img/fact.png`:\n"},
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+            ])
+        );
+        assert_eq!(content(&req, 0), json!("describe img/fact.png"));
+    }
+
+    #[tokio::test]
+    async fn markers_from_earlier_turns_stay_text_and_are_never_fetched() {
+        let old_user = format!("first question\n{}", png_line(1));
+        let old_tool = pdf_line(2);
+        let mut req = request(json!([
+            {"role": "user", "content": old_user},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": old_tool},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "and now?"},
+        ]));
+        let store = FakeStore::default()
+            .with(chat_file(1), PNG)
+            .with(chat_file(2), PDF);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report, ExpandReport::default());
+        assert_eq!(content(&req, 0), json!(old_user));
+        assert_eq!(content(&req, 2), json!(old_tool));
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn only_text_after_the_current_message_label_is_this_turn() {
+        let history = format!("History:\nuser: earlier {}", png_line(1));
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{history}\n\nCurrent message: and this one\n{}", pdf_line(2))},
+        ]));
+        let store = FakeStore::default()
+            .with(chat_file(1), PNG)
+            .with(chat_file(2), PDF);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 1);
+        assert_eq!(*store.fetched.lock().unwrap(), vec![chat_file(2)]);
+        let parts = content(&req, 0);
+        assert_eq!(
+            parts[0]["text"],
+            json!(format!("{history}\n\nCurrent message: and this one\n"))
+        );
+        assert_eq!(parts[1]["type"], "file");
+    }
+
+    #[tokio::test]
+    async fn text_sent_beside_tool_results_does_not_end_the_turn() {
+        let ws = signer().marker_line(&claims(
+            workspace_file(5),
+            "fact.png",
+            "image/png",
+            PNG.len() as u64,
+        ));
+        let mut req = request(json!([
+            {"role": "user", "content": format!("read both\n{}", pdf_line(2))},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": ws},
+            {"role": "user", "content": "keep going"},
+        ]));
+        let store = FakeStore::default()
+            .with(chat_file(2), PDF)
+            .with(workspace_file(5), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 2);
+        assert_eq!(content(&req, 0)[1]["type"], "file");
+        assert_eq!(content(&req, 2)[0]["type"], "image_url");
+        assert_eq!(content(&req, 3), json!("keep going"));
+    }
+
+    #[tokio::test]
+    async fn an_agent_that_attached_media_itself_gets_the_line_removed_and_nothing_fetched() {
+        let mut req = request(json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": format!("What is this?\n{}", png_line(1))},
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+            ]},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.skipped_media_present, 1);
+        assert_eq!(report.attached, 0);
+        assert_eq!(store.fetch_count(), 0);
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "text", "text": "What is this?\n"},
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_file_twice_is_sent_once_and_named_the_second_time() {
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{}\nagain: {}", png_line(1), png_line(1))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.repeated, 1);
+        assert_eq!(store.fetch_count(), 1);
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+                {"type": "text", "text": "\nagain: [Attached file: fact.png (shown above)]"},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn two_files_keep_their_order_and_blank_text_between_them_is_dropped() {
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{}\n{}", png_line(1), pdf_line(2))},
+        ]));
+        let store = FakeStore::default()
+            .with(chat_file(1), PNG)
+            .with(chat_file(2), PDF);
+        run(&mut req, &store).await.unwrap();
+        let parts = content(&req, 0);
+        assert_eq!(parts.as_array().unwrap().len(), 2);
+        assert_eq!(parts[0]["type"], "image_url");
+        assert_eq!(parts[1]["type"], "file");
+    }
+
+    #[tokio::test]
+    async fn files_over_the_limit_are_refused_by_size_before_any_fetch() {
+        let big = signer().marker_line(&claims(
+            chat_file(1),
+            "big.pdf",
+            "application/pdf",
+            20 * 1024 * 1024,
+        ));
+        let bigger = signer().marker_line(&claims(
+            chat_file(2),
+            "bigger.pdf",
+            "application/pdf",
+            11 * 1024 * 1024,
+        ));
+        let mut req = request(json!([{"role": "user", "content": format!("{big}\n{bigger}")}]));
+        let store = FakeStore::default();
+        let err = run(&mut req, &store).await.unwrap_err();
+        match err {
+            GatewayError::BadRequest(message) => assert_eq!(
+                message,
+                "the attached files total 31.0 MB, over the 30.0 MB limit for one model call"
+            ),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_missing_or_unreadable_file_is_named_and_storage_trouble_is_a_503() {
+        let line = pdf_line(1);
+        let cases = [
+            ("missing", "attached file 'q3.pdf' is no longer available"),
+            (
+                "unsupported",
+                "attached file 'q3.pdf' cannot be read on this server",
+            ),
+        ];
+        for (how, expected) in cases {
+            let mut req = request(json!([{"role": "user", "content": line.clone()}]));
+            let store = FakeStore::default().failing(chat_file(1), how);
+            match run(&mut req, &store).await.unwrap_err() {
+                GatewayError::BadRequest(message) => assert_eq!(message, expected),
+                other => panic!("{how}: {other:?}"),
+            }
+        }
+        let mut req = request(json!([{"role": "user", "content": line}]));
+        let store = FakeStore::default().failing(chat_file(1), "storage");
+        assert!(matches!(
+            run(&mut req, &store).await.unwrap_err(),
+            GatewayError::StorageUnavailable
+        ));
+    }
+
+    #[tokio::test]
+    async fn tokens_that_do_not_verify_stay_text_and_are_counted() {
+        let mut other_flow = claims(chat_file(1), "a.png", "image/png", 3);
+        other_flow.flow_id = "00000000000000000000000000000000".into();
+        let mut expired = claims(chat_file(2), "b.png", "image/png", 3);
+        expired.expires_at = NOW - 1;
+        let foreign = MarkerSigner::from_secret("someone-else")
+            .unwrap()
+            .marker_line(&claims(chat_file(3), "c.png", "image/png", 3));
+        let text = format!(
+            "{}\n{}\n{foreign}",
+            signer().marker_line(&other_flow),
+            signer().marker_line(&expired)
+        );
+        let mut req = request(json!([{"role": "user", "content": text.clone()}]));
+        let store = FakeStore::default();
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.invalid, 3);
+        assert_eq!(report.attached, 0);
+        assert_eq!(content(&req, 0), json!(text));
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cache_marker_on_the_text_stays_on_the_last_piece() {
+        let marker = json!({"type": "ephemeral"});
+        let mut req = request(json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": format!("look\n{}\nthanks", png_line(1)), "cache_control": marker},
+            ]},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "text", "text": "look\n"},
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+                {"type": "text", "text": "\nthanks", "cache_control": marker},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_marker_inside_a_quoted_json_tool_result_is_still_found() {
+        let ws = signer().marker_line(&claims(
+            workspace_file(5),
+            "fact.png",
+            "image/png",
+            PNG.len() as u64,
+        ));
+        let quoted = format!(
+            r#"{{"content":[{{"type":"text","text":{}}}]}}"#,
+            serde_json::to_string(&format!("Image:\n{ws}")).unwrap()
+        );
+        let mut req = request(json!([
+            {"role": "user", "content": "read it"},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": quoted},
+        ]));
+        let store = FakeStore::default().with(workspace_file(5), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 1);
+        let parts = content(&req, 2);
+        assert_eq!(
+            parts[0]["text"],
+            r#"{"content":[{"type":"text","text":"Image:\n"#
+        );
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[2]["text"], r#""}]}"#);
+    }
+
+    #[tokio::test]
+    async fn a_second_call_in_the_same_turn_reads_the_file_from_the_cache() {
+        let cache = cache();
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        for expected_hits in [0, 1] {
+            let mut req = request(json!([{"role": "user", "content": png_line(1)}]));
+            let report = expand(&mut req, FLOW, NOW, &signer(), &store, &cache, LIMIT)
+                .await
+                .unwrap();
+            assert_eq!(report.cache_hits, expected_hits);
+        }
+        assert_eq!(store.fetch_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_with_no_user_message_is_untouched() {
+        let mut req = request(json!([{"role": "system", "content": png_line(1)}]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        assert_eq!(
+            run(&mut req, &store).await.unwrap(),
+            ExpandReport::default()
+        );
+        assert_eq!(store.fetch_count(), 0);
+    }
+}

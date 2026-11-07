@@ -157,6 +157,25 @@ pub fn token_spans(text: &str) -> Vec<TokenSpan> {
     spans
 }
 
+pub fn strip_markers(text: String) -> String {
+    let spans = token_spans(&text);
+    if spans.is_empty() {
+        return text;
+    }
+    let mut kept = String::with_capacity(text.len());
+    let mut from = 0;
+    for span in spans {
+        kept.push_str(&text[from..span.line.start]);
+        from = span.line.end;
+    }
+    kept.push_str(&text[from..]);
+    kept.trim().to_string()
+}
+
+pub(crate) fn shown_above_line(claims: &MarkerClaims) -> String {
+    format!("{LINE_OPEN}{} (shown above)]", shown(&claims.filename))
+}
+
 fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')
 }
@@ -186,7 +205,7 @@ fn shown(value: &str) -> String {
         .collect()
 }
 
-fn human_size(bytes: u64) -> String {
+pub(crate) fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 3] = ["KB", "MB", "GB"];
     if bytes < 1024 {
         return format!("{bytes} B");
@@ -544,5 +563,24 @@ mod tests {
         );
         assert_eq!(&line[spans[1].token.clone()], token);
         assert_eq!(spans[1].line, 0..line.len());
+    }
+
+    #[test]
+    fn stripping_removes_marker_lines_and_bare_tokens_only() {
+        let line = signer().marker_line(&claims());
+        let token = signer().token(&workspace_claims());
+        let text = format!("What is in this?\n{line}\nand {token} please");
+        assert_eq!(strip_markers(text), "What is in this?\n\nand  please");
+        assert_eq!(strip_markers("plain text".into()), "plain text");
+        assert_eq!(strip_markers(format!("\n{line}\n")), "");
+    }
+
+    #[test]
+    fn a_shown_above_line_carries_the_clean_name_and_no_token() {
+        let mut odd = claims();
+        odd.filename = "a]\nb.pdf".into();
+        let line = shown_above_line(&odd);
+        assert_eq!(line, "[Attached file: a  b.pdf (shown above)]");
+        assert!(token_spans(&line).is_empty());
     }
 }
