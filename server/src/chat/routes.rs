@@ -16,11 +16,11 @@ use crate::auth::Claims;
 use crate::chat::turn_artifacts::DownloadTarget;
 use crate::state::AppState;
 
+use super::attachment_policy::{MAX_UPLOAD_FILE_BYTES, classify};
 use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
-const MAX_FILE_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
 /// Upper bound on how long the per-turn workspace capture may hold the chat
 /// persist path. The reader is a long-lived singleton, so after its first start
@@ -48,7 +48,7 @@ pub fn router() -> Router<AppState> {
             // Bound the multipart body to the file policy (count × per-file cap +
             // small overhead) so a chat upload can't buffer unbounded bytes (SRV-4).
             axum::routing::post(upload_files).layer(axum::extract::DefaultBodyLimit::max(
-                MAX_FILES_PER_UPLOAD * MAX_FILE_BYTES + 1024 * 1024,
+                MAX_FILES_PER_UPLOAD * MAX_UPLOAD_FILE_BYTES + 1024 * 1024,
             )),
         )
         .route(
@@ -1492,7 +1492,7 @@ async fn upload_files(
         }
 
         let filename = field.file_name().unwrap_or("upload").to_string();
-        let mime_type = field
+        let declared_type = field
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
@@ -1503,13 +1503,8 @@ async fn upload_files(
             match field.chunk().await {
                 Ok(Some(chunk)) => {
                     buf.extend_from_slice(&chunk);
-                    if buf.len() > MAX_FILE_BYTES {
-                        cleanup_uploaded(&state, &uploaded).await;
-                        return (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            format!("file '{filename}' exceeds 50 MB limit"),
-                        )
-                            .into_response();
+                    if buf.len() > MAX_UPLOAD_FILE_BYTES {
+                        break;
                     }
                 }
                 Ok(None) => break,
@@ -1518,6 +1513,19 @@ async fn upload_files(
                     return StatusCode::BAD_REQUEST.into_response();
                 }
             }
+        }
+        let (class, mime_type) = classify(&buf, &declared_type, &filename);
+        if buf.len() > class.limit() {
+            cleanup_uploaded(&state, &uploaded).await;
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "file '{filename}' is over the {} MB limit for {} files",
+                    class.limit() / (1024 * 1024),
+                    class.label()
+                ),
+            )
+                .into_response();
         }
         let data = buf.freeze();
 

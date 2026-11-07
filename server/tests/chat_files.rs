@@ -488,6 +488,126 @@ async fn too_many_files_rejected() {
     server.cleanup().await;
 }
 
+async fn upload_bytes(
+    server: &common::TestServer,
+    user_id: &str,
+    session_id: &str,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+) -> (u16, String) {
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str(mime)
+        .unwrap();
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/chat/sessions/{session_id}/files"))),
+        user_id,
+        "admin",
+    )
+    .multipart(reqwest::multipart::Form::new().part("file", part))
+    .send()
+    .await
+    .unwrap();
+    (res.status().as_u16(), res.text().await.unwrap_or_default())
+}
+
+fn png_of(len: usize) -> Vec<u8> {
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.resize(len, 0);
+    bytes
+}
+
+#[tokio::test]
+#[serial]
+async fn an_upload_is_typed_and_limited_by_its_own_bytes() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+    let mib = 1024 * 1024;
+
+    let stored_mime = |body: &str| -> String {
+        serde_json::from_str::<Value>(body).unwrap()[0]["mime_type"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+
+    let (status, body) = upload_bytes(
+        &server,
+        uid,
+        sid,
+        png_of(64),
+        "photo.pdf",
+        "application/pdf",
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(stored_mime(&body), "image/png");
+
+    let html = b"<html><script>alert(1)</script></html>".to_vec();
+    let (status, body) = upload_bytes(&server, uid, sid, html, "x.png", "image/png").await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(stored_mime(&body), "application/octet-stream");
+
+    let (status, body) = upload_bytes(
+        &server,
+        uid,
+        sid,
+        b"# notes\n".to_vec(),
+        "notes.md",
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(status, 201, "{body}");
+    assert_eq!(stored_mime(&body), "text/markdown");
+
+    let (status, body) =
+        upload_bytes(&server, uid, sid, png_of(2 * mib), "big.png", "image/png").await;
+    assert_eq!(status, 201, "a 2 MB image is under the image limit: {body}");
+
+    let (status, body) = upload_bytes(
+        &server,
+        uid,
+        sid,
+        vec![b'a'; mib + mib / 2],
+        "big.txt",
+        "text/plain",
+    )
+    .await;
+    assert_eq!(status, 413);
+    assert_eq!(body, "file 'big.txt' is over the 1 MB limit for text files");
+
+    let (status, body) = upload_bytes(
+        &server,
+        uid,
+        sid,
+        vec![0; 11 * mib],
+        "blob.bin",
+        "application/octet-stream",
+    )
+    .await;
+    assert_eq!(status, 413);
+    assert_eq!(
+        body,
+        "file 'blob.bin' is over the 10 MB limit for other files"
+    );
+
+    let (status, body) =
+        upload_bytes(&server, uid, sid, png_of(26 * mib), "huge.png", "image/png").await;
+    assert_eq!(status, 413);
+    assert_eq!(
+        body,
+        "file 'huge.png' is over the 25 MB limit for image files"
+    );
+
+    server.cleanup().await;
+}
+
 // ─── Additional coverage ─────────────────────────────────────────────────────
 
 #[tokio::test]
