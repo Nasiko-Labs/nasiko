@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
+use nasiko_llm_router::attachments::AttachmentRef;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -43,6 +44,22 @@ pub trait TurnArtifactSource: Send + Sync {
         requester: Uuid,
         file: &ChatMessageFile,
     ) -> Option<DownloadTarget>;
+
+    async fn attachment(&self, _db: &PgPool, _requester: Uuid, _storage_uri: &str) -> Attachable {
+        Attachable::Refused
+    }
+}
+
+pub enum Attachable {
+    File(AttachableFile),
+    Refused,
+    Unavailable,
+}
+
+pub struct AttachableFile {
+    pub reference: AttachmentRef,
+    pub media_type: String,
+    pub size_bytes: u64,
 }
 
 /// How a download whose storage scheme the chat crate does not own should be

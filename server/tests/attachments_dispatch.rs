@@ -480,6 +480,141 @@ async fn unreadable_storage_is_a_503_naming_the_file() {
 
 const JWT_SECRET: &str = "attachments-dispatch-secret";
 
+struct ChipSource;
+
+fn chip_reference() -> nasiko_llm_router::attachments::AttachmentRef {
+    nasiko_llm_router::attachments::AttachmentRef::Workspace {
+        agent_id: Uuid::from_u128(1),
+        user_id: Uuid::from_u128(2),
+        blob_id: Uuid::from_u128(3),
+    }
+}
+
+#[async_trait::async_trait]
+impl nasiko_server::chat::turn_artifacts::TurnArtifactSource for ChipSource {
+    async fn capture(&self, _: &sqlx::PgPool, _: &str, _: Uuid) -> Vec<Value> {
+        Vec::new()
+    }
+
+    async fn resolve_download(
+        &self,
+        _: &sqlx::PgPool,
+        _: Uuid,
+        _: &nasiko_server::chat::turn_artifacts::ChatMessageFile,
+    ) -> Option<nasiko_server::chat::turn_artifacts::DownloadTarget> {
+        None
+    }
+
+    async fn attachment(
+        &self,
+        _: &sqlx::PgPool,
+        _: Uuid,
+        storage_uri: &str,
+    ) -> nasiko_server::chat::turn_artifacts::Attachable {
+        use nasiko_server::chat::turn_artifacts::{Attachable, AttachableFile};
+        let file = |size_bytes| {
+            Attachable::File(AttachableFile {
+                reference: chip_reference(),
+                media_type: "image/png".into(),
+                size_bytes,
+            })
+        };
+        match storage_uri {
+            "workspace-file://ok" => file(1536),
+            "workspace-file://huge" => file(31 * 1024 * 1024),
+            "workspace-file://down" => Attachable::Unavailable,
+            _ => Attachable::Refused,
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn a_workspace_chip_reaches_the_agent_as_a_signed_workspace_line() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    server.state.turn_artifacts.install(Arc::new(ChipSource));
+    let (_, user) = admin_and_member(&server, "att-chip").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+    let png = upload(&server, &user, &sid, png_of(64), "fact.png", "image/png").await;
+    let chip = seed_file_row(&server, &sid, "chart.png", "workspace-file://ok").await;
+
+    let (status, body) =
+        send_turn(&server, &user, Some(agent_id), &sid, &[chip, png], vec![]).await;
+    assert_eq!(status, 200, "{body}");
+
+    let texts = text_parts_seen(&agent);
+    let note = texts
+        .iter()
+        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
+        .expect("the agent got no attachment line");
+    let lines: Vec<&str> = note.lines().collect();
+    assert_eq!(lines.len(), 2, "{note}");
+    assert!(
+        lines[0].starts_with("[Attached file: chart.png (image/png, 1.5 KB) "),
+        "{note}"
+    );
+    assert!(
+        lines[1].starts_with("[Attached file: fact.png (image/png, 64 B) "),
+        "{note}"
+    );
+    assert_eq!(raw_parts_seen(&agent).len(), 1);
+
+    let signer = nasiko_llm_router::attachments::MarkerSigner::from_secret(JWT_SECRET).unwrap();
+    let spans = nasiko_llm_router::attachments::token_spans(lines[0]);
+    let claims = signer
+        .verify(
+            &lines[0][spans[0].token.clone()],
+            &flow_id_seen(&agent),
+            chrono::Utc::now().timestamp(),
+        )
+        .unwrap();
+    assert_eq!(claims.reference, chip_reference());
+    assert_eq!(claims.filename, "chart.png");
+    assert_eq!(claims.size_bytes, 1536);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_chip_the_source_refuses_is_named_and_a_failing_source_is_a_503() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    server.state.turn_artifacts.install(Arc::new(ChipSource));
+    let (_, user) = admin_and_member(&server, "att-chip-no").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+
+    let refused = seed_file_row(&server, &sid, "gone.png", "workspace-file://denied").await;
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[refused], vec![]).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "'gone.png' can't be attached to a message"
+    );
+
+    let huge = seed_file_row(&server, &sid, "huge.png", "workspace-file://huge").await;
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[huge], vec![]).await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "attachments total 31.0 MB, over the 30 MB per-message limit"
+    );
+
+    let down = seed_file_row(&server, &sid, "chart.png", "workspace-file://down").await;
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[down], vec![]).await;
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(
+        error_message(&body),
+        "attachment 'chart.png' could not be read; try again"
+    );
+    assert!(agent.seen.lock().unwrap().is_empty());
+
+    server.cleanup().await;
+}
+
 fn text_parts_seen(agent: &StubAgent) -> Vec<String> {
     let seen = agent.seen.lock().unwrap();
     assert_eq!(seen.len(), 1, "the agent should be called once");
