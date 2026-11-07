@@ -144,6 +144,8 @@ impl OpenAiProvider {
 
 const OPENAI_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 const OPENAI_FILES_MAX_BYTES: u64 = 50_000_000;
+const TOOL_MEDIA_NOTE: &str = "The tool returned images; they are in the next message.";
+const TOOL_MEDIA_HEADER: &str = "Images from the tool results above:";
 
 fn refused(err: UnsupportedPart) -> ProviderError {
     ProviderError::Rejected(format!(
@@ -201,7 +203,58 @@ fn prepare_media(out: &mut ChatRequest) -> Result<(), ProviderError> {
             "more than 50 MB of files in one request",
         )));
     }
+    move_tool_media(out);
     Ok(())
+}
+
+fn move_tool_media(out: &mut ChatRequest) {
+    let mut i = 0;
+    while i < out.messages.len() {
+        if out.messages[i].role != "tool" {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < out.messages.len() && out.messages[i].role == "tool" {
+            i += 1;
+        }
+        let mut moved = Vec::new();
+        for message in &mut out.messages[start..i] {
+            let Some(Value::Array(parts)) = message.content.as_mut() else {
+                continue;
+            };
+            let (text, media): (Vec<Value>, Vec<Value>) = parts
+                .drain(..)
+                .partition(|p| p.get("type").and_then(Value::as_str) == Some("text"));
+            if media.is_empty() {
+                *parts = text;
+                continue;
+            }
+            moved.extend(media);
+            *parts = if text.is_empty() {
+                vec![json!({ "type": "text", "text": TOOL_MEDIA_NOTE })]
+            } else {
+                text
+            };
+        }
+        if moved.is_empty() {
+            continue;
+        }
+        let mut content = vec![json!({ "type": "text", "text": TOOL_MEDIA_HEADER })];
+        content.extend(moved);
+        out.messages.insert(
+            i,
+            Message {
+                role: "user".into(),
+                content: Some(Value::Array(content)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+                extra: serde_json::Map::new(),
+            },
+        );
+        i += 1;
+    }
 }
 
 /// The field an OpenAI request keys its prompt cache with.
@@ -815,6 +868,71 @@ mod tests {
             assert!(message.contains(named), "{message}");
             mock.assert_async().await;
         }
+    }
+
+    fn tool_call(id: &str) -> Value {
+        json!({ "id": id, "type": "function", "function": { "name": "read_file", "arguments": "{}" } })
+    }
+
+    fn image(data: &str) -> Value {
+        json!({ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{data}") } })
+    }
+
+    #[tokio::test]
+    async fn images_in_tool_results_follow_the_tool_run_as_one_user_message() {
+        let mut server = mockito::Server::new_async().await;
+        let (provider, mock) = builtin_openai(
+            &mut server,
+            json!([
+                { "role": "user", "content": "compare the two files" },
+                { "role": "assistant", "tool_calls": [tool_call("c1"), tool_call("c2")] },
+                { "role": "tool", "tool_call_id": "c1", "content": [{ "type": "text", "text": "first" }] },
+                { "role": "tool", "tool_call_id": "c2", "content": [
+                    { "type": "text", "text": "The tool returned images; they are in the next message." }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "text", "text": "Images from the tool results above:" },
+                    image("AAAA"), image("BBBB"), image("CCCC")
+                ]}
+            ]),
+            1,
+        )
+        .await;
+        let req: ChatRequest = serde_json::from_value(json!({ "messages": [
+            { "role": "user", "content": "compare the two files" },
+            { "role": "assistant", "tool_calls": [tool_call("c1"), tool_call("c2")] },
+            { "role": "tool", "tool_call_id": "c1", "content": [
+                { "type": "text", "text": "first" }, image("AAAA")
+            ]},
+            { "role": "tool", "tool_call_id": "c2", "content": [image("BBBB"), image("CCCC")] }
+        ]}))
+        .unwrap();
+
+        provider
+            .chat(&req, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_tool_run_without_images_is_sent_unchanged() {
+        let mut server = mockito::Server::new_async().await;
+        let messages = json!([
+            { "role": "user", "content": "hi" },
+            { "role": "assistant", "tool_calls": [tool_call("c1")] },
+            { "role": "tool", "tool_call_id": "c1", "content": "plain result" }
+        ]);
+        let (provider, mock) = builtin_openai(&mut server, messages.clone(), 1).await;
+        let req: ChatRequest = serde_json::from_value(json!({ "messages": messages })).unwrap();
+
+        provider
+            .chat(&req, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
     }
 
     #[test]
