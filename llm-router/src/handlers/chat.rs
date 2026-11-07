@@ -1356,6 +1356,12 @@ mod tests {
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
             body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
+            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
+            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
+                1024 * 1024,
+                crate::attachments::ATTACHMENT_CACHE_TTL,
+            )),
+            marker_signer: None,
         }
     }
 

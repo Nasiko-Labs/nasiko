@@ -17,6 +17,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use attachments::{
+    ATTACHMENT_CACHE_TTL, AttachmentCache, AttachmentStore, MarkerSigner, NoAttachmentStore,
+};
 use axum::{
     Json, Router,
     routing::{get, post},
@@ -94,6 +97,9 @@ pub struct LlmRouterCtx {
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
     pub body_permits: Arc<tokio::sync::Semaphore>,
+    pub attachment_store: Arc<dyn AttachmentStore>,
+    pub attachment_cache: Arc<AttachmentCache>,
+    pub marker_signer: Option<Arc<MarkerSigner>>,
 }
 
 impl LlmRouterCtx {
@@ -144,6 +150,11 @@ impl LlmRouterCtx {
         let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
         let body_permits = handlers::auth_layer::body_permit_pool(cfg.max_inflight_body_bytes);
+        let attachment_cache = Arc::new(AttachmentCache::new(
+            cfg.attachment_cache_bytes,
+            ATTACHMENT_CACHE_TTL,
+        ));
+        let marker_signer = MarkerSigner::from_secret(&cfg.agent_jwt_secret).map(Arc::new);
         Self {
             db,
             http,
@@ -156,11 +167,19 @@ impl LlmRouterCtx {
             classifier,
             pricing,
             body_permits,
+            attachment_store: Arc::new(NoAttachmentStore),
+            attachment_cache,
+            marker_signer,
         }
     }
 
     pub fn with_config_cache(mut self, cache: Arc<ConfigCache>) -> Self {
         self.cache = cache;
+        self
+    }
+
+    pub fn with_attachment_store(mut self, store: Arc<dyn AttachmentStore>) -> Self {
+        self.attachment_store = store;
         self
     }
 }
