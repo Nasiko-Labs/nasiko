@@ -11,20 +11,22 @@
 //! With `TOKEN_CACHE_MARKERS` on, the built-in OpenAI provider also keys the prompt cache by
 //! the agent ([`add_cache_key`]); custom endpoints get no key.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde_json::{Value, json};
+use serde::Serialize;
+use serde_json::{Map, Value, json};
 
 use super::dialect::ProviderDialect;
 use super::media::{self, DocumentKind, document_kind};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{
-    ChatChunk, ChatRequest, ChatResponse, ContentPart, EmbeddingsRequest, EmbeddingsResponse,
-    Message, ToolDef, UnsupportedPart,
+    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, ContentPart, EmbeddingsRequest,
+    EmbeddingsResponse, Message, ToolDef, UnsupportedPart,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -73,13 +75,82 @@ impl OpenAiProvider {
         self
     }
 
-    fn outbound(&self, req: &ChatRequest) -> Result<ChatRequest, ProviderError> {
+    fn outbound<'a>(
+        &self,
+        req: &'a ChatRequest,
+        cfg: &'a ResolvedConfig,
+        stream: bool,
+    ) -> Result<Outbound<'a>, ProviderError> {
         self.check_documents(req)?;
-        let mut out = req.clone();
+        let mut messages: Vec<Cow<'a, Message>> = req
+            .messages
+            .iter()
+            .map(|message| {
+                if !message.has_cache_markers() {
+                    return Cow::Borrowed(message);
+                }
+                let mut owned = message.clone();
+                owned.strip_cache_markers();
+                Cow::Owned(owned)
+            })
+            .collect();
         if self.strict_media {
-            prepare_media(&mut out)?;
+            prepare_media(&mut messages)?;
         }
-        Ok(out)
+        let mut extra = req.extra.clone();
+        if let Some(max_tokens) = cfg.max_tokens.or(req.max_tokens) {
+            extra.insert("max_completion_tokens".to_string(), json!(max_tokens));
+        }
+        if stream {
+            extra.insert(
+                "stream_options".to_string(),
+                json!({ "include_usage": true }),
+            );
+        }
+        if self.cache_key {
+            add_cache_key(&mut extra, cfg);
+        }
+        let tools = self.outbound_tools(req, &messages, &cfg.model);
+        Ok(Outbound {
+            model: &cfg.model,
+            messages,
+            tools,
+            tool_choice: req.tool_choice.as_ref(),
+            temperature: cfg.temperature.or(req.temperature),
+            stream,
+            extra,
+        })
+    }
+
+    fn outbound_tools<'a>(
+        &self,
+        req: &'a ChatRequest,
+        messages: &[Cow<'_, Message>],
+        model: &str,
+    ) -> Option<Cow<'a, [ToolDef]>> {
+        let tools = req.tools.as_deref()?;
+        let over_cap = self.max_tools != 0 && tools.len() > self.max_tools;
+        let marked = tools
+            .iter()
+            .any(|tool| tool.extra.contains_key(CACHE_CONTROL));
+        if !over_cap && !marked {
+            return Some(Cow::Borrowed(tools));
+        }
+        let mut owned = tools.to_vec();
+        for tool in &mut owned {
+            tool.extra.remove(CACHE_CONTROL);
+        }
+        let (kept, dropped) = fit_tools(owned, self.max_tools, &latest_user_text(messages));
+        if !dropped.is_empty() {
+            tracing::warn!(
+                target: "nasiko::llm_router::provider",
+                model, cap = self.max_tools, kept = kept.len(), dropped = dropped.len(),
+                by_server = %dropped_by_server(&dropped),
+                "tool array exceeds this endpoint's cap; forwarding the most relevant \
+                 subset — a tool trimmed here cannot be called this turn"
+            );
+        }
+        Some(Cow::Owned(kept))
     }
 
     fn check_documents(&self, req: &ChatRequest) -> Result<(), ProviderError> {
@@ -112,25 +183,6 @@ impl OpenAiProvider {
         self
     }
 
-    /// Fit the outbound tool array into this endpoint's cap, logging what was trimmed.
-    fn apply_tool_budget(&self, out: &mut ChatRequest, model: &str) {
-        let Some(tools) = out.tools.take() else {
-            return;
-        };
-        let query = latest_user_text(&out.messages);
-        let (kept, dropped) = fit_tools(tools, self.max_tools, &query);
-        if !dropped.is_empty() {
-            tracing::warn!(
-                target: "nasiko::llm_router::provider",
-                model, cap = self.max_tools, kept = kept.len(), dropped = dropped.len(),
-                by_server = %dropped_by_server(&dropped),
-                "tool array exceeds this endpoint's cap; forwarding the most relevant \
-                 subset — a tool trimmed here cannot be called this turn"
-            );
-        }
-        out.tools = Some(kept);
-    }
-
     /// Map a non-2xx provider response to a [`ProviderError`]. 429 and 5xx are
     /// retryable (transient); other 4xx are request-shape errors and are not.
     fn status_error(status: reqwest::StatusCode, body: String) -> ProviderError {
@@ -147,6 +199,21 @@ const OPENAI_FILES_MAX_BYTES: u64 = 50_000_000;
 const TOOL_MEDIA_NOTE: &str = "The tool returned images; they are in the next message.";
 const TOOL_MEDIA_HEADER: &str = "Images from the tool results above:";
 
+#[derive(Serialize)]
+struct Outbound<'a> {
+    model: &'a str,
+    messages: Vec<Cow<'a, Message>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Cow<'a, [ToolDef]>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<&'a Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f64>,
+    stream: bool,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
 fn refused(err: UnsupportedPart) -> ProviderError {
     ProviderError::Rejected(format!(
         "OpenAI does not accept this input: {}",
@@ -154,47 +221,24 @@ fn refused(err: UnsupportedPart) -> ProviderError {
     ))
 }
 
-fn prepare_media(out: &mut ChatRequest) -> Result<(), ProviderError> {
+fn prepare_media(messages: &mut Vec<Cow<'_, Message>>) -> Result<(), ProviderError> {
     let mut file_bytes = 0;
-    for message in &mut out.messages {
-        let Some(Value::Array(parts)) = message.content.as_mut() else {
+    for message in messages.iter_mut() {
+        let Some(Value::Array(parts)) = message.content.as_ref() else {
             continue;
         };
-        for part in parts.iter_mut() {
-            match ContentPart::from_openai_part(part) {
-                Ok(ContentPart::File { source, filename }) => {
-                    let Some((media_type, data)) = source.inline() else {
-                        continue;
-                    };
-                    match document_kind(media_type) {
-                        DocumentKind::TextLike => {
-                            let text = media::text_document(&source, filename.as_deref())
-                                .map_err(refused)?;
-                            *part = json!({ "type": "text", "text": text });
-                        }
-                        DocumentKind::Pdf => file_bytes += media::decoded_len(data),
-                        DocumentKind::Other => {
-                            return Err(refused(UnsupportedPart::new(format!(
-                                "'{media_type}' files (it reads PDF; text files are sent as text)"
-                            ))));
-                        }
-                    }
-                }
-                Ok(image @ ContentPart::Image { .. }) => {
-                    let ContentPart::Image { source, .. } = &image else {
-                        continue;
-                    };
-                    let Some(media_type) = source.media_type() else {
-                        continue;
-                    };
-                    if !OPENAI_IMAGE_TYPES.contains(&media_type) {
-                        return Err(refused(UnsupportedPart::new(format!(
-                            "'{media_type}' images (it reads png, jpeg, gif and webp)"
-                        ))));
-                    }
-                    *part = image.to_openai_part();
-                }
-                _ => {}
+        let mut rewrites = Vec::new();
+        for (index, part) in parts.iter().enumerate() {
+            if let Some(rewritten) = media_rewrite(part, &mut file_bytes)? {
+                rewrites.push((index, rewritten));
+            }
+        }
+        if rewrites.is_empty() {
+            continue;
+        }
+        if let Some(Value::Array(parts)) = message.to_mut().content.as_mut() {
+            for (index, rewritten) in rewrites {
+                parts[index] = rewritten;
             }
         }
     }
@@ -203,33 +247,76 @@ fn prepare_media(out: &mut ChatRequest) -> Result<(), ProviderError> {
             "more than 50 MB of files in one request",
         )));
     }
-    move_tool_media(out);
+    move_tool_media(messages);
     Ok(())
 }
 
-fn move_tool_media(out: &mut ChatRequest) {
+fn media_rewrite(part: &Value, file_bytes: &mut u64) -> Result<Option<Value>, ProviderError> {
+    match ContentPart::from_openai_part(part) {
+        Ok(ContentPart::File { source, filename }) => {
+            let Some((media_type, data)) = source.inline() else {
+                return Ok(None);
+            };
+            match document_kind(media_type) {
+                DocumentKind::TextLike => {
+                    let text =
+                        media::text_document(&source, filename.as_deref()).map_err(refused)?;
+                    Ok(Some(json!({ "type": "text", "text": text })))
+                }
+                DocumentKind::Pdf => {
+                    *file_bytes += media::decoded_len(data);
+                    Ok(None)
+                }
+                DocumentKind::Other => Err(refused(UnsupportedPart::new(format!(
+                    "'{media_type}' files (it reads PDF; text files are sent as text)"
+                )))),
+            }
+        }
+        Ok(image @ ContentPart::Image { .. }) => {
+            let ContentPart::Image { source, .. } = &image else {
+                return Ok(None);
+            };
+            let Some(media_type) = source.media_type() else {
+                return Ok(None);
+            };
+            if !OPENAI_IMAGE_TYPES.contains(&media_type) {
+                return Err(refused(UnsupportedPart::new(format!(
+                    "'{media_type}' images (it reads png, jpeg, gif and webp)"
+                ))));
+            }
+            let rendered = image.to_openai_part();
+            Ok((rendered != *part).then_some(rendered))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn is_text_part(part: &Value) -> bool {
+    part.get("type").and_then(Value::as_str) == Some("text")
+}
+
+fn move_tool_media(messages: &mut Vec<Cow<'_, Message>>) {
     let mut i = 0;
-    while i < out.messages.len() {
-        if out.messages[i].role != "tool" {
+    while i < messages.len() {
+        if messages[i].role != "tool" {
             i += 1;
             continue;
         }
         let start = i;
-        while i < out.messages.len() && out.messages[i].role == "tool" {
+        while i < messages.len() && messages[i].role == "tool" {
             i += 1;
         }
         let mut moved = Vec::new();
-        for message in &mut out.messages[start..i] {
-            let Some(Value::Array(parts)) = message.content.as_mut() else {
-                continue;
-            };
-            let (text, media): (Vec<Value>, Vec<Value>) = parts
-                .drain(..)
-                .partition(|p| p.get("type").and_then(Value::as_str) == Some("text"));
-            if media.is_empty() {
-                *parts = text;
+        for message in &mut messages[start..i] {
+            let has_media = matches!(message.content.as_ref(), Some(Value::Array(parts))
+                if parts.iter().any(|part| !is_text_part(part)));
+            if !has_media {
                 continue;
             }
+            let Some(Value::Array(parts)) = message.to_mut().content.as_mut() else {
+                continue;
+            };
+            let (text, media): (Vec<Value>, Vec<Value>) = parts.drain(..).partition(is_text_part);
             moved.extend(media);
             *parts = if text.is_empty() {
                 vec![json!({ "type": "text", "text": TOOL_MEDIA_NOTE })]
@@ -242,16 +329,16 @@ fn move_tool_media(out: &mut ChatRequest) {
         }
         let mut content = vec![json!({ "type": "text", "text": TOOL_MEDIA_HEADER })];
         content.extend(moved);
-        out.messages.insert(
+        messages.insert(
             i,
-            Message {
+            Cow::Owned(Message {
                 role: "user".into(),
                 content: Some(Value::Array(content)),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
                 extra: serde_json::Map::new(),
-            },
+            }),
         );
         i += 1;
     }
@@ -263,15 +350,14 @@ const PROMPT_CACHE_KEY: &str = "prompt_cache_key";
 /// Key the prompt cache by the agent unless the agent set its own key. Before GPT-5.6, OpenAI
 /// routes requests with the same key and prefix to the same cache; from GPT-5.6 it needs no
 /// key, so those models get none. OpenAI's docs suggest about 15 requests a minute per key.
-fn add_cache_key(out: &mut ChatRequest, cfg: &ResolvedConfig) {
+fn add_cache_key(extra: &mut Map<String, Value>, cfg: &ResolvedConfig) {
     if cfg.agent_id.is_empty()
         || !routes_by_cache_key(&cfg.model)
-        || out.extra.contains_key(PROMPT_CACHE_KEY)
+        || extra.contains_key(PROMPT_CACHE_KEY)
     {
         return;
     }
-    out.extra
-        .insert(PROMPT_CACHE_KEY.to_string(), json!(cfg.agent_id));
+    extra.insert(PROMPT_CACHE_KEY.to_string(), json!(cfg.agent_id));
 }
 
 /// Whether OpenAI routes `model` to its cache by `prompt_cache_key`: the models before GPT-5.6,
@@ -501,12 +587,12 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 /// The latest user turn — what the tools for *this* request should be relevant to.
-fn latest_user_text(messages: &[Message]) -> String {
+fn latest_user_text(messages: &[Cow<'_, Message>]) -> String {
     messages
         .iter()
         .rev()
         .find(|m| m.role == "user")
-        .and_then(Message::text)
+        .and_then(|m| m.text())
         .unwrap_or_default()
 }
 
@@ -542,24 +628,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let mut out = self.outbound(req)?;
-        out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
-        out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
-        // OpenAI deprecated `max_tokens`; newer models reject it. Emit the current
-        // `max_completion_tokens` param instead (via passthrough; the named field is
-        // cleared so it doesn't also serialize).
-        out.max_tokens = None;
-        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
-            out.extra
-                .insert("max_completion_tokens".to_string(), json!(mt));
-        }
-        out.stream = Some(false);
-        // OpenAI caches without markers; an Anthropic-SDK agent's `cache_control` is not its API.
-        out.strip_cache_markers();
-        if self.cache_key {
-            add_cache_key(&mut out, cfg);
-        }
-        self.apply_tool_budget(&mut out, &cfg.model);
+        let out = self.outbound(req, cfg, false)?;
 
         let resp = self
             .dialect
@@ -592,26 +661,7 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let mut out = self.outbound(req)?;
-        out.model = Some(cfg.model.clone());
-        out.temperature = cfg.temperature.or(req.temperature);
-        // See `chat` — OpenAI wants `max_completion_tokens`, not the deprecated `max_tokens`.
-        out.max_tokens = None;
-        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
-            out.extra
-                .insert("max_completion_tokens".to_string(), json!(mt));
-        }
-        out.stream = Some(true);
-        // Ask OpenAI to emit a final usage chunk (off by default when streaming).
-        out.extra.insert(
-            "stream_options".to_string(),
-            json!({ "include_usage": true }),
-        );
-        out.strip_cache_markers(); // see `chat`
-        if self.cache_key {
-            add_cache_key(&mut out, cfg);
-        }
-        self.apply_tool_budget(&mut out, &cfg.model);
+        let out = self.outbound(req, cfg, true)?;
 
         let resp = self
             .dialect
@@ -2011,7 +2061,7 @@ mod tests {
     #[test]
     fn the_router_keys_the_prompt_cache_by_agent_unless_the_agent_did() {
         let mut out = plain_request();
-        add_cache_key(&mut out, &agent_call("gpt-5.5"));
+        add_cache_key(&mut out.extra, &agent_call("gpt-5.5"));
         assert_eq!(out.extra[PROMPT_CACHE_KEY], AGENT);
 
         let mut own: ChatRequest = serde_json::from_value(json!({
@@ -2019,16 +2069,69 @@ mod tests {
             "prompt_cache_key": "user-7"
         }))
         .unwrap();
-        add_cache_key(&mut own, &agent_call("gpt-5.5"));
+        add_cache_key(&mut own.extra, &agent_call("gpt-5.5"));
         assert_eq!(own.extra[PROMPT_CACHE_KEY], "user-7");
+    }
+
+    #[test]
+    fn only_the_messages_and_tools_that_change_are_copied_for_openai() {
+        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://unused".into())
+            .with_strict_media(true)
+            .with_max_tools(2);
+        let png = "iVBORw0KGgo=";
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "be brief" },
+                { "role": "user", "content": [{ "type": "text", "text": "old turn" }, image(png)] },
+                { "role": "user", "content": [{ "type": "text", "text": "marked", "cache_control": { "type": "ephemeral" } }] },
+                { "role": "user", "content": [{ "type": "image_url", "image_url": { "url": format!("data:IMAGE/PNG;base64,{png}") } }] },
+                { "role": "user", "content": "plain" }
+            ],
+            "tools": [
+                { "type": "function", "function": { "name": "a", "parameters": {} } },
+                { "type": "function", "function": { "name": "b", "parameters": {} } }
+            ]
+        }))
+        .unwrap();
+        let cfg = resolved("gpt-4o", None);
+
+        let out = provider.outbound(&req, &cfg, false).unwrap();
+        let copied: Vec<bool> = out
+            .messages
+            .iter()
+            .map(|m| matches!(m, Cow::Owned(_)))
+            .collect();
+        assert_eq!(copied, [false, false, true, true, false]);
+        assert!(matches!(out.tools, Some(Cow::Borrowed(_))));
+        let body = serde_json::to_value(&out).unwrap();
+        assert!(
+            body["messages"][2]["content"][0]
+                .get("cache_control")
+                .is_none()
+        );
+        assert_eq!(
+            body["messages"][3]["content"][0]["image_url"]["url"],
+            format!("data:image/png;base64,{png}")
+        );
+
+        let mut over_cap = req.clone();
+        over_cap.messages.truncate(1);
+        over_cap.tools.as_mut().unwrap().push(
+            serde_json::from_value(
+                json!({ "type": "function", "function": { "name": "c", "parameters": {} } }),
+            )
+            .unwrap(),
+        );
+        let out = provider.outbound(&over_cap, &cfg, false).unwrap();
+        assert!(matches!(out.tools, Some(Cow::Owned(ref kept)) if kept.len() == 2));
     }
 
     #[test]
     fn gpt_5_6_and_a_call_without_an_agent_get_no_cache_key() {
         let mut newer = plain_request();
-        add_cache_key(&mut newer, &agent_call("gpt-5.6"));
+        add_cache_key(&mut newer.extra, &agent_call("gpt-5.6"));
         let mut no_agent = plain_request();
-        add_cache_key(&mut no_agent, &resolved("gpt-5.5", None));
+        add_cache_key(&mut no_agent.extra, &resolved("gpt-5.5", None));
 
         assert!(!newer.extra.contains_key(PROMPT_CACHE_KEY));
         assert!(!no_agent.extra.contains_key(PROMPT_CACHE_KEY));
