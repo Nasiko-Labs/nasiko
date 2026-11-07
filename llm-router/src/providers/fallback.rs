@@ -154,7 +154,9 @@ async fn chat_attempts(
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
-                    warn_attempt(attempt, &e, i, total);
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
                     if let Some(stop) = failures.note(attempt, e) {
                         return Err(stop);
                     }
@@ -273,7 +275,9 @@ async fn chat_stream_attempts(
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
-                    warn_attempt(attempt, &e, i, total);
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
                     if let Some(stop) = failures.note(attempt, e) {
                         return Err(stop);
                     }
@@ -1477,6 +1481,84 @@ mod tests {
         assert!(err.to_string().contains("could not be processed"), "{err}");
         first.assert_async().await;
         fallback.assert_async().await;
+    }
+
+    #[derive(Clone, Default)]
+    struct LoggedMessages(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing::field::Visit for LoggedMessages {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.lock().unwrap().push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedMessages {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            event.record(&mut self.clone());
+        }
+    }
+
+    impl LoggedMessages {
+        fn any(&self, needle: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|m| m.contains(needle))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_stops_never_logs_that_it_is_trying_a_fallback() {
+        use tracing_subscriber::prelude::*;
+        let logged = LoggedMessages::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(logged.clone()));
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 400, corrupt, 2).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+        let http = reqwest::Client::new();
+
+        execute_chat(&http, &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+        assert!(
+            execute_chat_stream(&http, &cfg, &primary, &hi())
+                .await
+                .is_err()
+        );
+
+        assert!(logged.any("not re-sending it to a fallback"));
+        assert!(
+            !logged.any("trying fallback"),
+            "{:?}",
+            logged.0.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_moves_on_still_logs_that_it_is_trying_a_fallback() {
+        use tracing_subscriber::prelude::*;
+        let logged = LoggedMessages::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(logged.clone()));
+        let mut openai = mockito::Server::new_async().await;
+        let missing =
+            json!({"error": {"message": "The model `gpt-4o` does not exist."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 404, missing, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert!(logged.any("llm attempt failed; trying fallback"));
+        assert!(!logged.any("not re-sending"));
     }
 
     #[tokio::test]
