@@ -22,7 +22,8 @@ use attachments::{
 };
 use axum::{
     Json, Router,
-    routing::{get, post},
+    http::{Method, StatusCode, Uri},
+    routing::{any, get, post},
 };
 use nasiko_pricing::PricingEngine;
 use serde_json::{Value, json};
@@ -376,6 +377,10 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
+        .route(
+            "/v1/messages/count_tokens",
+            post(handlers::chat::count_tokens),
+        )
         // Gemini `generateContent` surface — a Gemini-SDK agent (`GOOGLE_GEMINI_BASE_URL`)
         // POSTs to `…/v1beta/models/{model}:generateContent` (or `:streamGenerateContent`);
         // the `{model}:{method}` segment is captured and the method picks (non-)streaming (P2.4).
@@ -395,6 +400,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         .merge(llm_routes)
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
+        .route("/v1/{*rest}", any(unknown_endpoint))
+        .route("/v1beta/{*rest}", any(unknown_endpoint))
         .with_state(ctx)
         .layer(RequestDecompressionLayer::new())
 }
@@ -402,6 +409,13 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
+}
+
+async fn unknown_endpoint(method: Method, uri: Uri) -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({ "detail": format!("no such router endpoint: {method} {}", uri.path()) })),
+    )
 }
 
 #[cfg(test)]

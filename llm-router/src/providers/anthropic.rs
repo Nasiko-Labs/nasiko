@@ -72,6 +72,35 @@ impl AnthropicProvider {
     }
 }
 
+pub(crate) async fn count_tokens(
+    http: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    body: &Value,
+) -> Result<Value, ProviderError> {
+    let resp = http
+        .post(format!("{base}/messages/count_tokens"))
+        .header("x-api-key", api_key)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .json(body)
+        .send()
+        .await
+        .map_err(|e| ProviderError::Transport(e.to_string()))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| ProviderError::Transport(e.to_string()))?;
+    if !status.is_success() {
+        return Err(ProviderError::Status {
+            status: status.as_u16(),
+            message: text,
+            retryable: false,
+        });
+    }
+    serde_json::from_str(&text).map_err(|e| ProviderError::Parse(e.to_string()))
+}
+
 #[async_trait]
 impl ProviderClient for AnthropicProvider {
     async fn chat(

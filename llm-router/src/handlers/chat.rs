@@ -300,6 +300,64 @@ pub async fn messages(
     .await
 }
 
+pub async fn count_tokens(
+    State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<Response, GatewayError> {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return Ok(rejected_body(
+                rejection,
+                ctx.cfg.max_body_bytes,
+                IntoResponse::into_response,
+            ));
+        }
+    };
+    let store = PgRegistry::new(ctx.db.clone());
+    count_tokens_as(&ctx, &store, caller, body).await
+}
+
+async fn count_tokens_as(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    caller: AuthedCaller,
+    mut body: Value,
+) -> Result<Response, GatewayError> {
+    let (agent_id, owner_id) = match caller {
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id),
+        AuthedCaller::Session(claims) => {
+            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
+            (claims.agent_id, owner_id)
+        }
+    };
+    let hint = RequestHint {
+        provider: Some(InboundFormat::Anthropic.provider_label()),
+        model: body["model"].as_str(),
+    };
+    let resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
+    if resolved.provider != "anthropic" {
+        return Ok((
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            Json(serde_json::json!({"detail": format!(
+                "count_tokens is available only when the agent's model is served by Anthropic (this agent uses {})",
+                resolved.provider
+            )})),
+        )
+            .into_response());
+    }
+    body["model"] = Value::String(resolved.model);
+    let counted = crate::providers::anthropic::count_tokens(
+        &ctx.http,
+        &ctx.cfg.anthropic_api_base,
+        &resolved.api_key,
+        &body,
+    )
+    .await?;
+    Ok(Json(counted).into_response())
+}
+
 /// Axum handler for the Gemini surface (`POST /v1beta/models/{model}:{method}`). Gemini
 /// signals streaming by the endpoint method (`:streamGenerateContent`), not a body field,
 /// so we force the stream flag from the path (P2.4).
@@ -2625,6 +2683,141 @@ mod tests {
             result["content"].as_str().unwrap().contains("lines elided"),
             "the marked tool result was not compressed: {result}"
         );
+    }
+
+    fn agent_caller() -> AuthedCaller {
+        AuthedCaller::Agent {
+            agent_id: AGENT.into(),
+            owner_id: OWNER.into(),
+        }
+    }
+
+    fn count_request(model: &str) -> Value {
+        json!({
+            "model": model,
+            "system": "be brief",
+            "messages": [{"role": "user", "content": "how many tokens is this?"}]
+        })
+    }
+
+    async fn response_json(response: Response) -> Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn count_tokens_reaches_anthropic_with_the_agents_model_and_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages/count_tokens")
+            .match_header("x-api-key", "sk-ant-platform")
+            .match_header("anthropic-version", "2023-06-01")
+            .match_body(mockito::Matcher::Json(count_request("claude-haiku-5-5")))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"input_tokens":42}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let response = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &anthropic_store(vec![]),
+            agent_caller(),
+            count_request("claude-opus-4-1"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!({"input_tokens": 42}));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn count_tokens_keeps_an_anthropic_refusal_status() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/messages/count_tokens")
+            .with_status(400)
+            .with_body(r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}"#)
+            .create_async()
+            .await;
+
+        let err = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &anthropic_store(vec![]),
+            agent_caller(),
+            json!({"model": "x"}),
+        )
+        .await
+        .unwrap_err();
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let detail = response_json(response).await["detail"].to_string();
+        assert!(detail.contains("messages: field required"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn count_tokens_for_an_agent_not_on_anthropic_is_501_and_calls_nothing() {
+        let server = mockito::Server::new_async().await;
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let response = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &store,
+            agent_caller(),
+            count_request("claude-haiku-5-5"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            response_json(response).await["detail"],
+            "count_tokens is available only when the agent's model is served by Anthropic (this agent uses openai)"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_router_paths_answer_a_json_404_and_known_ones_are_untouched() {
+        let send = |method: &str, path: &str| {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            tower::ServiceExt::oneshot(crate::router(ctx_with("http://unused".into())), request)
+        };
+
+        for (method, path) in [
+            ("GET", "/v1/nope"),
+            ("POST", "/v1/messages/batches"),
+            ("POST", "/v1beta/nope"),
+            ("GET", "/v1beta/models/gemini:generateContent/extra"),
+        ] {
+            let response = send(method, path).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            assert_eq!(
+                response_json(response).await,
+                json!({"detail": format!("no such router endpoint: {method} {path}")})
+            );
+        }
+
+        let wrong_method = send("GET", "/v1/chat/completions").await.unwrap();
+        assert_eq!(wrong_method.status(), StatusCode::UNAUTHORIZED);
+        let unauthenticated = send("POST", "/v1/messages/count_tokens").await.unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let health = send("GET", "/v1/health").await.unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
     }
 
     struct OneFile(&'static [u8]);
