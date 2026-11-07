@@ -1851,6 +1851,29 @@ mod tests {
     }
 
     #[test]
+    fn an_anthropic_text_document_goes_back_to_anthropic_as_a_text_document() {
+        use crate::inbound::InboundParser;
+        let ir = crate::inbound::anthropic::AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": [
+                    { "type": "document", "title": "sales.csv",
+                      "source": { "type": "text", "media_type": "text/plain", "data": "region,q2\nEMEA,913" } }
+                ] }]
+            }))
+            .unwrap();
+        let body = to_anthropic_request(&ir, &resolved()).unwrap();
+        let block = &body["messages"][0]["content"][0];
+        assert_eq!(block["type"], "document");
+        assert_eq!(
+            block["source"],
+            json!({ "type": "text", "media_type": "text/plain", "data": "region,q2\nEMEA,913" })
+        );
+        assert_eq!(block["title"], "sales.csv");
+    }
+
+    #[test]
     fn an_empty_text_part_beside_an_image_is_left_out() {
         let body = anthropic_body(json!({ "messages": [{ "role": "user", "content": [
             { "type": "text", "text": "" },

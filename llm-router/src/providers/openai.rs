@@ -835,6 +835,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_anthropic_text_document_reaches_openai_as_a_text_part() {
+        use crate::inbound::InboundParser;
+        let mut server = mockito::Server::new_async().await;
+        let (provider, mock) = builtin_openai(
+            &mut server,
+            json!([{ "role": "user", "content": [
+                { "type": "text", "text": "File: sales.csv\n\nregion,q2\nEMEA,913" }
+            ]}]),
+            1,
+        )
+        .await;
+        let req = crate::inbound::anthropic::AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-haiku-5-5",
+                "max_tokens": 64,
+                "messages": [{ "role": "user", "content": [
+                    { "type": "document", "title": "sales.csv",
+                      "source": { "type": "text", "data": "region,q2\nEMEA,913" } }
+                ] }]
+            }))
+            .unwrap();
+
+        provider
+            .chat(&req, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn a_file_or_image_type_openai_cannot_read_is_refused_before_sending() {
         let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
         let cases = [
