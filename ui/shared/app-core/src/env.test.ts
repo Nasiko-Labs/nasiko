@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
-import { isPreview, MOCKABLE, readEnv } from './env'
+import { isPreview, MOCKABLE, readClient, readEnv } from './env'
 
 describe('env', () => {
   it('waitlist: an http(s) URL gets ref=oss-app (its own query and hash kept); the Nasiko waitlist page by default', () => {
@@ -162,5 +162,14 @@ describe('env', () => {
         DEV: true,
       }).partialMocks.sort(),
     ).toEqual(['agents', 'optimization'])
+  })
+})
+
+describe('readClient', () => {
+  it('is desktop only when the desktop build says so', () => {
+    expect(readClient({ VITE_NASIKO_CLIENT: 'desktop' })).toBe('desktop')
+    expect(readClient({ VITE_NASIKO_CLIENT: ' desktop ' })).toBe('desktop')
+    expect(readClient({})).toBe('web')
+    expect(readClient({ VITE_NASIKO_CLIENT: 'tauri' })).toBe('web')
   })
 })

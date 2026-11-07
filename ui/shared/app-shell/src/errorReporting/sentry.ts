@@ -9,7 +9,7 @@ import * as Sentry from '@sentry/react'
 import replayWorkerUrl from '@sentry/replay/worker-bundler?url'
 import type { AnyRouter } from '@tanstack/react-router'
 import { apiUrl } from '@nasiko/data-access/client'
-import { uiRelease } from '@nasiko/app-core/env'
+import { uiClient, uiRelease } from '@nasiko/app-core/env'
 import { attachSink } from './queue'
 import { scrubBreadcrumb, scrubEvent, scrubSpan } from './scrub'
 import type { ErrorReportingSettings } from './settings'
@@ -60,6 +60,7 @@ export function startSentry(settings: ErrorReportingSettings, router: AnyRouter,
     beforeBreadcrumb: scrubBreadcrumb,
   })
   Sentry.setTag('edition', edition)
+  Sentry.setTag('client', uiClient)
   attachSink(({ error, componentStack, handled }) => {
     const mechanism = { handled, type: componentStack ? 'react.root' : 'onerror' }
     if (componentStack) Sentry.captureReactException(error, { componentStack }, { mechanism })

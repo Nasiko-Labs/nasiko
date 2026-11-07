@@ -8,6 +8,7 @@
  * VITE_NASIKO_WAITLIST_URL      http(s) URL    the Nasiko waitlist page the OSS app links to (default https://nasiko-waitlist.vercel.app);
  *                                              `off` (any non-URL) hides every waitlist link, as the desktop app's build does
  * VITE_NASIKO_RELEASE           string         this bundle's release name for error reports (vite.shared.ts sets it at build time)
+ * VITE_NASIKO_CLIENT            desktop        the shell this bundle ships in, tagged on error reports (default: web)
  * NASIKO_API_URL                (vite.config.ts) proxy target for /api — server-side only
  */
 type ApiMode = 'mock' | 'live'
@@ -231,6 +232,13 @@ function readRelease(env: RawEnv = import.meta.env): string | null {
 }
 
 export const uiRelease = readRelease()
+
+/** Where this bundle runs, for error reports: `desktop` in the desktop app's build (web-build.env), else `web`. */
+export function readClient(env: RawEnv = import.meta.env): 'desktop' | 'web' {
+  return String(env.VITE_NASIKO_CLIENT ?? '').trim() === 'desktop' ? 'desktop' : 'web'
+}
+
+export const uiClient = readClient()
 
 /**
  * A preview section may render (plans/feat-agent-centric.md eng, preview policy): true only in full mock mode or when
