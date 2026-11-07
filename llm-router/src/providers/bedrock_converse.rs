@@ -71,9 +71,8 @@ impl BedrockConverseProvider {
         &self,
         req: &ChatRequest,
         cfg: &ResolvedConfig,
-        allow_temperature: bool,
     ) -> Result<(Value, HashMap<String, String>), ProviderError> {
-        let (mut body, name_map) = to_converse_request_inner(req, cfg, allow_temperature)?;
+        let (mut body, name_map) = to_converse_request_inner(req, cfg)?;
         if self.cache_markers {
             add_cache_points(&mut body, CacheSupport::for_router(&cfg.model));
         }
@@ -131,7 +130,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = self.request_body(req, cfg, true)?;
+        let (body, name_map) = self.request_body(req, cfg)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -152,9 +151,6 @@ impl ProviderClient for BedrockConverseProvider {
                     return self.chat_with_model(req, cfg, &prefixed).await;
                 }
             }
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.chat_no_temperature(req, cfg, &model_id).await;
-            }
             return Err(Self::status_error(status, text));
         }
 
@@ -171,7 +167,7 @@ impl ProviderClient for BedrockConverseProvider {
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
         let model_id = converse_model_id(&cfg.model, &self.base);
-        let (body, name_map) = self.request_body(req, cfg, true)?;
+        let (body, name_map) = self.request_body(req, cfg)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -246,9 +242,6 @@ impl ProviderClient for BedrockConverseProvider {
                     return self.stream_with_model(req, cfg, &prefixed).await;
                 }
             }
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.stream_no_temperature(req, cfg, &model_id).await;
-            }
             return Err(Self::status_error(status, text));
         }
 
@@ -271,6 +264,22 @@ impl ProviderClient for BedrockConverseProvider {
             retryable: false,
         })
     }
+
+    fn droppable_param(&self, err: &ProviderError) -> Option<String> {
+        let ProviderError::Status {
+            status: 400,
+            message,
+            ..
+        } = err
+        else {
+            return None;
+        };
+        let detail = serde_json::from_str::<Value>(message)
+            .ok()
+            .and_then(|body| body.get("message")?.as_str().map(str::to_string))
+            .unwrap_or_else(|| message.clone());
+        super::param_rejection(&detail)
+    }
 }
 
 impl BedrockConverseProvider {
@@ -281,42 +290,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = self.request_body(req, cfg, true)?;
-        let url = format!("{}/model/{}/converse", self.base, model_id);
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.chat_no_temperature(req, cfg, model_id).await;
-            }
-            return Err(Self::status_error(status, text));
-        }
-
-        let value: Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        from_converse_response(&value, &cfg.model, &name_map)
-    }
-
-    /// Retry chat without the temperature field (some models reject it).
-    async fn chat_no_temperature(
-        &self,
-        req: &ChatRequest,
-        cfg: &ResolvedConfig,
-        model_id: &str,
-    ) -> Result<ChatResponse, ProviderError> {
-        let (body, name_map) = self.request_body(req, cfg, false)?;
+        let (body, name_map) = self.request_body(req, cfg)?;
         let url = format!("{}/model/{}/converse", self.base, model_id);
 
         let resp = self
@@ -339,88 +313,6 @@ impl BedrockConverseProvider {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
         from_converse_response(&value, &cfg.model, &name_map)
-    }
-
-    /// Retry streaming without the temperature field (some models reject it).
-    async fn stream_no_temperature(
-        &self,
-        req: &ChatRequest,
-        cfg: &ResolvedConfig,
-        model_id: &str,
-    ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, _name_map) = self.request_body(req, cfg, false)?;
-        let url = format!("{}/model/{}/converse-stream", self.base, model_id);
-
-        let body_str = serde_json::to_string(&body).unwrap_or_default();
-        let tool_count = body
-            .pointer("/toolConfig/tools")
-            .and_then(|t| t.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            model = %model_id,
-            body_bytes = body_str.len(),
-            tool_count,
-            "bedrock converse-stream (no-temp retry): outgoing request stats"
-        );
-
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("(none)")
-            .to_string();
-        let amzn_error = resp
-            .headers()
-            .get("x-amzn-errortype")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        tracing::info!(
-            target: "nasiko::llm_router::bedrock",
-            %status,
-            content_type = %content_type,
-            amzn_error = %amzn_error,
-            model = %model_id,
-            tool_count,
-            "bedrock converse-stream (no-temp retry): response status"
-        );
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            tracing::error!(
-                target: "nasiko::llm_router::bedrock",
-                %status,
-                model = %model_id,
-                body_preview = &text[..text.len().min(500)],
-                "bedrock converse-stream (no-temp retry): error — this is the FINAL retry"
-            );
-            return Err(Self::status_error(status, text));
-        }
-
-        // `_name_map` was discarded above. Rebuild so tool names are properly unsanitized in
-        // the response.
-        let name_map = req
-            .tools
-            .as_ref()
-            .map(|t| build_tool_name_map(t))
-            .unwrap_or_default();
-        Ok(Box::pin(converse_event_stream(
-            resp.bytes_stream(),
-            cfg.model.clone(),
-            name_map,
-            "no-temp-retry",
-        )))
     }
 
     /// Stream with an explicit model ID (used for prefix retry).
@@ -430,7 +322,7 @@ impl BedrockConverseProvider {
         cfg: &ResolvedConfig,
         model_id: &str,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let (body, name_map) = self.request_body(req, cfg, true)?;
+        let (body, name_map) = self.request_body(req, cfg)?;
         let url = format!("{}/model/{}/converse-stream", self.base, model_id);
 
         let body_str = serde_json::to_string(&body).unwrap_or_default();
@@ -486,9 +378,6 @@ impl BedrockConverseProvider {
                 body_preview = &text[..text.len().min(500)],
                 "bedrock converse-stream (prefix retry): error body"
             );
-            if is_temperature_unsupported(status.as_u16(), &text) {
-                return self.stream_no_temperature(req, cfg, model_id).await;
-            }
             return Err(Self::status_error(status, text));
         }
 
@@ -501,9 +390,8 @@ impl BedrockConverseProvider {
     }
 }
 
-/// Whether Bedrock rejected the request because the model doesn't support temperature.
 /// Shared event-stream decoder for all Bedrock Converse streaming paths (primary,
-/// prefix-retry, no-temperature-retry). Handles text content, tool-use blocks,
+/// prefix-retry). Handles text content, tool-use blocks,
 /// exception frames, and terminal usage/finish events.
 fn converse_event_stream(
     bytes_stream: impl futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
@@ -743,10 +631,6 @@ fn converse_usage(value: &Value) -> Usage {
     }
 }
 
-fn is_temperature_unsupported(status: u16, body: &str) -> bool {
-    status == 400 && body.contains("doesn't support the temperature field")
-}
-
 /// Whether a failed Bedrock call should be retried with a region-prefixed model ID.
 fn should_retry_with_prefix(status: u16, body: &str, model_id: &str) -> bool {
     if status != 400 && status != 404 {
@@ -942,12 +826,35 @@ fn converse_content(
     }
 }
 
+fn without_empty_text(blocks: Vec<Value>) -> Vec<Value> {
+    let is_empty_text = |block: &Value| block.get("text").and_then(Value::as_str) == Some("");
+    if !blocks
+        .iter()
+        .any(|block| block.get("cachePoint").is_none() && !is_empty_text(block))
+    {
+        return blocks;
+    }
+    let mut kept = Vec::with_capacity(blocks.len());
+    let mut after_dropped_text = false;
+    for block in blocks {
+        if is_empty_text(&block) {
+            after_dropped_text = true;
+            continue;
+        }
+        let its_cache_point = after_dropped_text && block.get("cachePoint").is_some();
+        after_dropped_text = false;
+        if !its_cache_point {
+            kept.push(block);
+        }
+    }
+    kept
+}
+
 /// Returns `(body, tool_name_map)` where `tool_name_map` maps sanitized names
 /// back to the originals (only entries that changed).
 fn to_converse_request_inner(
     req: &ChatRequest,
     cfg: &ResolvedConfig,
-    allow_temperature: bool,
 ) -> Result<(Value, HashMap<String, String>), ProviderError> {
     let caching = CacheSupport::of(&cfg.model);
     let mut system_parts: Vec<Value> = Vec::new();
@@ -980,7 +887,7 @@ fn to_converse_request_inner(
                 pending_tool_results.push(json!({
                     "toolResult": {
                         "toolUseId": m.tool_call_id.clone().unwrap_or_default(),
-                        "content": converse_content(m, &mut doc_names)?,
+                        "content": without_empty_text(converse_content(m, &mut doc_names)?),
                     }
                 }));
                 pending_tool_results.extend(caching.after_tool_block(m.last_cache_marker()));
@@ -992,7 +899,9 @@ fn to_converse_request_inner(
             _ => {
                 // "user" and any unexpected role → user turn.
                 flush_tool_results(&mut pending_tool_results, &mut messages);
-                let content = caching.with_cache_points(m, converse_content(m, &mut doc_names)?);
+                let content = without_empty_text(
+                    caching.with_cache_points(m, converse_content(m, &mut doc_names)?),
+                );
                 messages.push(json!({ "role": "user", "content": content }));
             }
         }
@@ -1011,7 +920,7 @@ fn to_converse_request_inner(
         },
     });
 
-    if allow_temperature && let Some(t) = cfg.temperature.or(req.temperature) {
+    if let Some(t) = cfg.temperature.or(req.temperature) {
         body["inferenceConfig"]["temperature"] = json!(t);
     }
     if !system_parts.is_empty() {
@@ -1218,7 +1127,7 @@ fn add_cache_points(body: &mut Value, caching: CacheSupport) {
     }
     if free > 0
         && !turns_hold_long_point
-        && let Some(system) = body["system"].as_array_mut()
+        && let Some(system) = body.get_mut("system").and_then(Value::as_array_mut)
         && system
             .last()
             .and_then(|block| block["text"].as_str())
@@ -1639,7 +1548,7 @@ mod tests {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<(Value, HashMap<String, String>), ProviderError> {
-        to_converse_request_inner(req, cfg, true)
+        to_converse_request_inner(req, cfg)
     }
 
     fn resolved(model: &str) -> ResolvedConfig {
@@ -2443,7 +2352,6 @@ mod tests {
                 name: "query-docs".to_string(),
                 description: None,
                 parameters: None,
-                strict: None,
             },
             extra: Map::new(),
         }];
@@ -2458,7 +2366,7 @@ mod tests {
     fn with_router_points(req: &ChatRequest, model: &str) -> Value {
         BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into())
             .with_cache_markers(true)
-            .request_body(req, &resolved(model), true)
+            .request_body(req, &resolved(model))
             .unwrap()
             .0
     }
@@ -2499,6 +2407,121 @@ mod tests {
                 json!([{ "text": "You are a coding agent." }, cache_point()]),
                 "{model}"
             );
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([{ "text": "Fix the failing test." }, cache_point()]),
+                "{model}"
+            );
+        }
+    }
+
+    const PNG: &str = "data:image/png;base64,iVBORw0KGgo=";
+    const CLAUDE: &str = "us.anthropic.claude-haiku-5-5";
+
+    fn converse_body(request: Value, model: &str) -> Value {
+        let ir: ChatRequest = serde_json::from_value(request).unwrap();
+        BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into())
+            .request_body(&ir, &resolved(model))
+            .unwrap()
+            .0
+    }
+
+    fn png_block() -> Value {
+        json!({ "image": { "format": "png", "source": { "bytes": "iVBORw0KGgo=" } } })
+    }
+
+    #[test]
+    fn an_empty_text_part_beside_an_image_is_left_out_with_its_cache_point() {
+        let ephemeral = json!({ "type": "ephemeral" });
+        for (model, expected) in [
+            (
+                CLAUDE,
+                json!([{ "text": "Look." }, cache_point(), png_block()]),
+            ),
+            (
+                "us.amazon.nova-pro-v1:0",
+                json!([{ "text": "Look." }, cache_point(), png_block()]),
+            ),
+        ] {
+            let body = converse_body(
+                json!({ "messages": [{ "role": "user", "content": [
+                    { "type": "text", "text": "Look.", "cache_control": ephemeral },
+                    { "type": "text", "text": "", "cache_control": ephemeral },
+                    { "type": "image_url", "image_url": { "url": PNG } }
+                ]}]}),
+                model,
+            );
+
+            assert_eq!(body["messages"][0]["content"], expected, "{model}");
+        }
+    }
+
+    #[test]
+    fn an_empty_text_part_inside_a_tool_result_with_an_image_is_left_out() {
+        let body = converse_body(
+            json!({ "messages": [
+                { "role": "user", "content": "Read the chart." },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "toolu_1", "type": "function",
+                    "function": { "name": "read_file", "arguments": "{}" }
+                }]},
+                { "role": "tool", "tool_call_id": "toolu_1", "content": [
+                    { "type": "text", "text": "" },
+                    { "type": "image_url", "image_url": { "url": PNG } }
+                ]}
+            ]}),
+            CLAUDE,
+        );
+
+        assert_eq!(
+            body["messages"][2]["content"][0]["toolResult"]["content"],
+            json!([png_block()])
+        );
+    }
+
+    #[test]
+    fn a_mixed_case_data_url_media_type_maps_to_its_bedrock_format() {
+        let body = converse_body(
+            json!({ "messages": [{ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "data:Image/PNG;base64,iVBORw0KGgo=" } },
+                { "type": "file", "file": { "file_data": "data:application/pdf;name=q3.pdf;base64,JVBERi0=" } }
+            ]}]}),
+            CLAUDE,
+        );
+
+        let content = &body["messages"][0]["content"];
+        assert_eq!(content[0], png_block());
+        assert_eq!(content[1]["document"]["format"], "pdf");
+        assert_eq!(content[1]["document"]["name"], "q3 pdf");
+    }
+
+    #[test]
+    fn content_with_nothing_but_empty_text_keeps_its_one_empty_block() {
+        for content in [json!(""), json!([{ "type": "text", "text": "" }])] {
+            let body = converse_body(
+                json!({ "messages": [{ "role": "user", "content": content }] }),
+                CLAUDE,
+            );
+
+            assert_eq!(
+                body["messages"][0]["content"],
+                json!([{ "text": "" }]),
+                "{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_a_system_prompt_is_sent_without_a_system_field() {
+        let request: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "Fix the failing test." }]
+        }))
+        .unwrap();
+
+        for model in ["us.anthropic.claude-haiku-5-5", "us.amazon.nova-pro-v1:0"] {
+            let body = with_router_points(&request, model);
+
+            assert!(body.get("system").is_none(), "{model}");
             assert_eq!(
                 body["messages"][0]["content"],
                 json!([{ "text": "Fix the failing test." }, cache_point()]),
@@ -2667,7 +2690,7 @@ mod tests {
         let off = BedrockConverseProvider::new(reqwest::Client::new(), "http://x".into());
         let claude = "us.anthropic.claude-haiku-5-5";
         assert_eq!(
-            off.request_body(&plain_request(), &resolved(claude), true)
+            off.request_body(&plain_request(), &resolved(claude))
                 .unwrap()
                 .0,
             to_converse_request(&plain_request(), &resolved(claude))

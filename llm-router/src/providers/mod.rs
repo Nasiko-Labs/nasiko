@@ -247,6 +247,28 @@ impl ProviderError {
     }
 }
 
+pub(crate) fn param_rejection(detail: &str) -> Option<String> {
+    let lower = detail.to_ascii_lowercase();
+    if lower.contains("doesn't support the temperature field") {
+        return Some("temperature".to_string());
+    }
+    if ![
+        "deprecated",
+        "unsupported",
+        "not supported",
+        "does not support",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+    {
+        return None;
+    }
+    let start = detail.find('`')? + 1;
+    let end = start + detail[start..].find('`')?;
+    let param = detail[start..end].trim();
+    (!param.is_empty()).then(|| param.to_string())
+}
+
 fn passes_through(status: u16) -> bool {
     matches!(status, 400 | 404 | 409 | 413 | 415 | 422 | 429)
 }

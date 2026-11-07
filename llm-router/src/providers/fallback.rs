@@ -1144,6 +1144,95 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
     }
 
+    fn bedrock_primary(base: String) -> ResolvedConfig {
+        let mut p = primary("my-bedrock", vec![]);
+        p.model = "global.anthropic.claude-haiku-5-5".into();
+        p.temperature = Some(0.3);
+        p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
+            base_url: base,
+            dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+        });
+        p
+    }
+
+    async fn bedrock_refuses_temperature(
+        server: &mut mockito::ServerGuard,
+        path: &str,
+        wording: &str,
+    ) -> (mockito::Mock, mockito::Mock) {
+        let rejected = server
+            .mock("POST", path)
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "inferenceConfig": { "temperature": 0.3 } }),
+            ))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "message": wording }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("POST", path)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "output": { "message": { "role": "assistant", "content": [{ "text": "ok" }] } },
+                    "stopReason": "end_turn",
+                    "usage": { "inputTokens": 5, "outputTokens": 1, "totalTokens": 6 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        (rejected, ok)
+    }
+
+    #[tokio::test]
+    async fn bedrock_retries_without_a_temperature_its_claude_5_models_call_deprecated() {
+        for wording in [
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+            "This model doesn't support the temperature field.",
+        ] {
+            let mut bedrock = mockito::Server::new_async().await;
+            let path = "/model/global.anthropic.claude-haiku-5-5/converse";
+            let (rejected, ok) = bedrock_refuses_temperature(&mut bedrock, path, wording).await;
+            let primary = bedrock_primary(bedrock.url());
+
+            let (resp, _) = execute_chat(&reqwest::Client::new(), &cfg(""), &primary, &hi())
+                .await
+                .unwrap_or_else(|e| panic!("{wording}: {e}"));
+
+            rejected.assert_async().await;
+            ok.assert_async().await;
+            assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+        }
+    }
+
+    #[tokio::test]
+    async fn bedrock_streaming_retries_without_a_deprecated_temperature() {
+        let mut bedrock = mockito::Server::new_async().await;
+        let path = "/model/global.anthropic.claude-haiku-5-5/converse-stream";
+        let (rejected, ok) = bedrock_refuses_temperature(
+            &mut bedrock,
+            path,
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+        )
+        .await;
+        let primary = bedrock_primary(bedrock.url());
+
+        let established =
+            execute_chat_stream(&reqwest::Client::new(), &cfg(""), &primary, &hi()).await;
+
+        assert!(
+            established.is_ok(),
+            "stream was not retried without temperature"
+        );
+        rejected.assert_async().await;
+        ok.assert_async().await;
+    }
+
     #[tokio::test]
     async fn anthropic_deprecated_param_is_dropped_and_retried_on_same_model() {
         // claude-opus-4-8 rejects `temperature` with a 400 naming it in the message text
