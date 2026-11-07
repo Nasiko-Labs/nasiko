@@ -57,8 +57,7 @@ import {
 } from './api'
 import { FirstRunHero, FirstRunPreview } from './components/FirstRun'
 import { FleetHealth } from './components/FleetHealth'
-import { HarnessActivity, PreviewActivity } from './components/HarnessActivity'
-import { PreviewHeader, PreviewProvider } from './components/HarnessPreview'
+import { HarnessActivity } from './components/HarnessActivity'
 import { NeedsYou } from './components/NeedsYou'
 import { usePausedFlows } from '@nasiko/features/flows/paused'
 import { RecentChats } from './components/RecentChats'
@@ -119,16 +118,11 @@ function Frame({
   actions?: ReactNode
   children: ReactNode
 }) {
-  // The coding harness preview plays on the page itself (HarnessPreview.tsx), its bar in the header's place.
   return (
-    <PreviewProvider>
-      <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
-        <PreviewHeader>
-          <PageHeader title={copy.title} description={description} actions={actions} />
-        </PreviewHeader>
-        {children}
-      </div>
-    </PreviewProvider>
+    <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
+      <PageHeader title={copy.title} description={description} actions={actions} />
+      {children}
+    </div>
   )
 }
 
@@ -585,11 +579,6 @@ function Overview({
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
         {/* Right after setup, before anything has run: the call to run the agent they picked, first in line. */}
         {tryRun ? <TryAgentRun userId={me.sub} className={PLACE.tryRun} /> : null}
-        {/* The coding harness preview's sample card (HarnessPreview.tsx), right under the summary it plays in (user
-            2026-11-06; the real card sits below the inbox). Shown where the real one would be. */}
-        {harnesses.ownOnly || harnesses.notVisible ? null : (
-          <PreviewActivity days={days} className={PLACE.harness} />
-        )}
         <NeedsYou
           data={needsYou}
           now={now.getTime()}
