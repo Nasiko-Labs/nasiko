@@ -11,12 +11,21 @@ use uuid::Uuid;
 #[derive(Clone, Default)]
 struct StubAgent {
     seen: Arc<Mutex<Vec<Value>>>,
+    traceparents: Arc<Mutex<Vec<String>>>,
 }
 
 async fn stub_agent_handler(
     State(agent): State<StubAgent>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
+    if let Some(traceparent) = headers.get("traceparent").and_then(|v| v.to_str().ok()) {
+        agent
+            .traceparents
+            .lock()
+            .unwrap()
+            .push(traceparent.to_string());
+    }
     let req: Value = serde_json::from_slice(&body).unwrap_or_default();
     let task_id = req["params"]["message"]["taskId"]
         .as_str()
@@ -465,6 +474,131 @@ async fn unreadable_storage_is_a_503_naming_the_file() {
         "attachment 'fact.png' could not be read; try again"
     );
     assert!(!body.contains("connection refused"), "{body}");
+
+    server.cleanup().await;
+}
+
+const JWT_SECRET: &str = "attachments-dispatch-secret";
+
+fn text_parts_seen(agent: &StubAgent) -> Vec<String> {
+    let seen = agent.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "the agent should be called once");
+    seen[0]["params"]["message"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.get("text").and_then(Value::as_str).map(str::to_string))
+        .collect()
+}
+
+fn flow_id_seen(agent: &StubAgent) -> String {
+    let traceparents = agent.traceparents.lock().unwrap();
+    traceparents[0].split('-').nth(1).unwrap().to_string()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_direct_turn_gives_the_agent_one_signed_line_per_file_for_this_flow() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    let (_, user) = admin_and_member(&server, "att-note").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+    let png = upload(&server, &user, &sid, png_of(64), "fact.png", "image/png").await;
+    let pdf_bytes = b"%PDF-1.7\nfake".to_vec();
+    let pdf_len = pdf_bytes.len() as u64;
+    let pdf = upload(&server, &user, &sid, pdf_bytes, "q3.pdf", "application/pdf").await;
+
+    let (status, body) = send_turn(
+        &server,
+        &user,
+        Some(agent_id),
+        &sid,
+        &[png.clone(), pdf.clone()],
+        vec![],
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    let texts = text_parts_seen(&agent);
+    let note = texts
+        .iter()
+        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
+        .expect("the agent got no attachment line");
+    assert!(texts[0].contains("what is in the attachment?"));
+    let lines: Vec<&str> = note.lines().collect();
+    assert_eq!(lines.len(), 2, "{note}");
+    assert!(lines[0].starts_with("[Attached file: fact.png (image/png, 64 B) "));
+    assert!(lines[1].starts_with(&format!(
+        "[Attached file: q3.pdf (application/pdf, {pdf_len} B) "
+    )));
+    assert_eq!(raw_parts_seen(&agent).len(), 2);
+
+    let signer = nasiko_llm_router::attachments::MarkerSigner::from_secret(JWT_SECRET).unwrap();
+    let flow_id = flow_id_seen(&agent);
+    let now = chrono::Utc::now().timestamp();
+    let spans = nasiko_llm_router::attachments::token_spans(note);
+    assert_eq!(spans.len(), 2);
+    let claims: Vec<_> = spans
+        .iter()
+        .map(|span| {
+            signer
+                .verify(&note[span.token.clone()], &flow_id, now)
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        claims[0].reference,
+        nasiko_llm_router::attachments::AttachmentRef::ChatUpload {
+            session_id: sid.clone(),
+            file_id: Uuid::parse_str(&png).unwrap(),
+        }
+    );
+    assert_eq!(claims[1].media_type, "application/pdf");
+    assert!(claims[0].expires_at > now && claims[0].expires_at <= now + 3600);
+    assert!(
+        signer
+            .verify(&note[spans[0].token.clone()], "0".repeat(32).as_str(), now)
+            .is_err()
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn without_a_signing_key_the_agent_gets_no_attachment_line() {
+    let server = common::TestServer::start().await;
+    let (_, user) = admin_and_member(&server, "att-nokey").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+    let png = upload(&server, &user, &sid, png_of(64), "fact.png", "image/png").await;
+
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[png], vec![]).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        text_parts_seen(&agent)
+            .iter()
+            .all(|t| !t.contains("nasiko-file://"))
+    );
+    assert_eq!(raw_parts_seen(&agent).len(), 1);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_turn_without_files_gets_no_attachment_line() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    let (_, user) = admin_and_member(&server, "att-none").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(text_parts_seen(&agent).len(), 1);
 
     server.cleanup().await;
 }

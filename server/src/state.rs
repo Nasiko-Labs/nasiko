@@ -85,6 +85,7 @@ pub struct AppState {
     /// `chat::turn_artifacts` module docs.
     pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
     pub attachment_store: Arc<SwappableAttachmentStore>,
+    pub marker_signer: Option<Arc<nasiko_llm_router::attachments::MarkerSigner>>,
     pub llm_config_cache: Arc<nasiko_llm_router::ConfigCache>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
@@ -250,6 +251,9 @@ impl AppState {
         let attachment_store = Arc::new(SwappableAttachmentStore::new(Arc::new(
             ChatUploadStore::new(oci_storage.clone()),
         )));
+        let marker_signer =
+            nasiko_llm_router::attachments::MarkerSigner::from_secret(&config.agent_jwt_secret)
+                .map(Arc::new);
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -370,6 +374,7 @@ impl AppState {
             agent_scaling,
             turn_artifacts,
             attachment_store,
+            marker_signer,
             llm_config_cache: Arc::new(nasiko_llm_router::ConfigCache::new(
                 std::time::Duration::from_secs(
                     nasiko_llm_router::config::GatewayConfig::llm_config_cache_ttl_secs_from_env(),

@@ -24,6 +24,7 @@ use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse
 use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
+use nasiko_llm_router::attachments::{AttachmentRef, MARKER_TTL_SECS, MarkerClaims, MarkerSigner};
 
 use crate::acl::CpCallGuard;
 use crate::auth::Claims;
@@ -216,7 +217,10 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let InboundAttachments {
+        parts: file_parts,
+        chat_files,
+    } = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -320,6 +324,7 @@ pub async fn a2a_dispatch_handler(
             &context_id,
             user_id,
             &file_parts,
+            &chat_files,
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -1436,6 +1441,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
+    attached_files: &[AttachedFile],
     // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
     // address history by contextId alone. Threaded through purely so a HITL pause created on
     // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
@@ -1560,6 +1566,7 @@ async fn agent_stream(
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
+    let attachment_note = attachment_note(state.marker_signer.as_deref(), attached_files, &flow_id);
 
     // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
     // `agent_proxy.rs` already do. Without it this branch — every "chat with
@@ -1634,6 +1641,7 @@ async fn agent_stream(
             file_parts,
         )
     };
+    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -1894,6 +1902,7 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
+            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2257,7 +2266,7 @@ async fn inbound_file_parts(
     params: &nasiko_types::a2a::SendMessageRequest,
     session_id: Option<&str>,
     user_id: Uuid,
-) -> Result<Vec<a2a::Part>, A2aDispatchError> {
+) -> Result<InboundAttachments, A2aDispatchError> {
     let mut parts: Vec<a2a::Part> = params
         .message
         .parts
@@ -2298,11 +2307,15 @@ async fn inbound_file_parts(
     }
     if ids.is_empty() {
         check_attached_total(inline_bytes)?;
-        return Ok(parts);
+        return Ok(InboundAttachments {
+            parts,
+            chat_files: Vec::new(),
+        });
     }
 
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
-        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
+    let rows = sqlx::query_as::<_, AttachedRow>(
+        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
+                cmf.storage_uri \
            FROM chat_message_files cmf \
            JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
           WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
@@ -2315,48 +2328,120 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
-        rows.iter().map(|r| (r.0, r)).collect();
+    let mut by_id: std::collections::HashMap<Uuid, AttachedRow> =
+        rows.into_iter().map(|row| (row.id, row)).collect();
     let mut resolved = Vec::with_capacity(ids.len());
     for id in &ids {
-        let Some(&row) = by_id.get(id) else {
+        let Some(row) = by_id.remove(id) else {
             return Err(A2aDispatchError::InvalidRequest(format!(
                 "attachment {id} was not found"
             )));
         };
-        if !row.4.starts_with(CHAT_UPLOAD_PREFIX) {
+        if !row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
             return Err(A2aDispatchError::InvalidRequest(format!(
                 "'{}' can't be attached to a message",
-                row.1
+                row.filename
             )));
         }
         resolved.push(row);
     }
-    let stored_bytes: u64 = resolved.iter().map(|row| row.3.max(0) as u64).sum();
+    let stored_bytes: u64 = resolved
+        .iter()
+        .map(|row| row.size_bytes.max(0) as u64)
+        .sum();
     check_attached_total(inline_bytes + stored_bytes)?;
 
-    for (id, filename, mime_type, _, storage_uri) in resolved {
-        match state.oci_storage.get_blob(storage_uri).await {
+    let mut chat_files = Vec::with_capacity(resolved.len());
+    for row in resolved {
+        match state.oci_storage.get_blob(&row.storage_uri).await {
             Ok(bytes) => parts.push(a2a::file_part(
                 bytes.to_vec(),
-                Some(filename.clone()),
-                Some(mime_type.clone()),
+                Some(row.filename.clone()),
+                Some(row.mime_type.clone()),
             )),
             Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
                 return Err(A2aDispatchError::InvalidRequest(format!(
-                    "attachment '{filename}' is no longer stored"
+                    "attachment '{}' is no longer stored",
+                    row.filename
                 )));
             }
             Err(e) => {
-                tracing::warn!(%id, %e, "attachment bytes unreadable");
+                tracing::warn!(id = %row.id, %e, "attachment bytes unreadable");
                 return Err(A2aDispatchError::Unavailable(format!(
-                    "attachment '{filename}' could not be read; try again"
+                    "attachment '{}' could not be read; try again",
+                    row.filename
                 )));
             }
         }
+        chat_files.push(AttachedFile {
+            reference: AttachmentRef::ChatUpload {
+                session_id: row.session_id,
+                file_id: row.id,
+            },
+            filename: row.filename,
+            media_type: row.mime_type,
+            size_bytes: row.size_bytes.max(0) as u64,
+        });
     }
 
-    Ok(parts)
+    Ok(InboundAttachments { parts, chat_files })
+}
+
+#[derive(sqlx::FromRow)]
+struct AttachedRow {
+    id: Uuid,
+    session_id: String,
+    filename: String,
+    mime_type: String,
+    size_bytes: i64,
+    storage_uri: String,
+}
+
+pub(crate) struct InboundAttachments {
+    pub(crate) parts: Vec<a2a::Part>,
+    pub(crate) chat_files: Vec<AttachedFile>,
+}
+
+pub(crate) struct AttachedFile {
+    reference: AttachmentRef,
+    filename: String,
+    media_type: String,
+    size_bytes: u64,
+}
+
+fn attachment_note(
+    signer: Option<&MarkerSigner>,
+    files: &[AttachedFile],
+    flow_id: &str,
+) -> Option<String> {
+    let signer = signer?;
+    if files.is_empty() {
+        return None;
+    }
+    let expires_at = chrono::Utc::now().timestamp() + MARKER_TTL_SECS;
+    let lines: Vec<String> = files
+        .iter()
+        .map(|file| {
+            signer.marker_line(&MarkerClaims {
+                reference: file.reference.clone(),
+                filename: file.filename.clone(),
+                media_type: file.media_type.clone(),
+                size_bytes: file.size_bytes,
+                flow_id: flow_id.to_string(),
+                expires_at,
+            })
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
+fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
+    let Some(note) = note else { return };
+    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
+    let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
+        return;
+    };
+    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
 }
 
 const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
