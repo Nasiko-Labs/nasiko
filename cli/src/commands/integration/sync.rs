@@ -177,7 +177,16 @@ fn sync_records(
 ) -> Result<Pass> {
     let mut pass = Pass::default();
     let mut groups: BTreeMap<(String, String, Uuid), Vec<(PathBuf, QueueRecord)>> = BTreeMap::new();
-    for record in records {
+    for (path, record) in records {
+        // A turn queued by an older CLI may still hold its conversation; it never leaves this
+        // machine. Only what prices the turn is sent.
+        let record = (
+            path,
+            QueueRecord {
+                event: record.event.without_content(),
+                ..record
+            },
+        );
         if record.1.delivery_state == DeliveryState::Rejected {
             queue::quarantine(&record.0, &record.1)?;
             pass.set_aside += 1;
@@ -635,18 +644,21 @@ mod tests {
         assert!(!dropped_for_size(&timed_out, 2, large));
     }
 
+    /// A turn an older CLI queued with its conversation could be over the server's limit; without
+    /// the conversation it is small, so it is delivered rather than set aside.
     #[test]
-    fn a_turn_over_the_server_limit_is_set_aside_without_being_sent() {
+    fn a_turn_too_large_only_for_its_conversation_is_delivered_without_it() {
         let mut server = mockito::Server::new();
         let dir = tempfile::tempdir().unwrap();
-        let huge = padded(record("bound", &server.url(), "s", "huge"), 9 * 1024 * 1024);
+        let huge = with_conversation(record("bound", &server.url(), "s", "huge"), 9 * 1024 * 1024);
         let huge_path = queue::enqueue_at(dir.path(), &huge).unwrap();
-        let small_path =
-            queue::enqueue_at(dir.path(), &record("bound", &server.url(), "s", "small")).unwrap();
-        let small_id = queue::load(&small_path).unwrap().event.event_id;
+        let huge_id = huge.event.event_id.clone();
         let delivery = server
             .mock("POST", "/api/telemetry/coding-agent/events/batch")
-            .match_request(move |request| requested_ids(request) == [small_id.clone()])
+            .match_request(move |request| {
+                request.body().expect("request body").len() < 1024 * 1024
+                    && requested_ids(request) == [huge_id.clone()]
+            })
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body_from_request(accepted)
@@ -663,20 +675,13 @@ mod tests {
         .unwrap();
 
         delivery.assert();
-        assert_eq!((pass.delivered, pass.set_aside), (1, 1));
+        assert_eq!((pass.delivered, pass.set_aside), (1, 0));
         assert!(!huge_path.exists());
-        let set_aside = only(&dir.path().join("rejected"));
-        assert_eq!(set_aside.event.event_id, huge.event.event_id);
-        assert_eq!(
-            set_aside.last_error.as_deref(),
-            Some("permanently rejected: turn is larger than the server accepts (9.0 MiB > 8 MiB)")
-        );
     }
 
-    /// `record` with its content captured and tool calls added until its event takes about `bytes`
-    /// (each tool call's raw transcript is at most 512 KiB, as an event's fields have limits of their
-    /// own).
-    fn padded(mut record: QueueRecord, bytes: usize) -> QueueRecord {
+    /// `record` captured with its conversation, tool-call transcripts added until its event takes
+    /// about `bytes` (each at most 512 KiB, within the contract's per-field limit).
+    fn with_conversation(mut record: QueueRecord, bytes: usize) -> QueueRecord {
         const PIECE: usize = 512 * 1024;
         record.event.capture_policy = CapturePolicy::Content;
         record.event.turn.prompt = Some("p".into());
@@ -684,23 +689,50 @@ mod tests {
         let mut left = bytes;
         while left > 0 {
             let size = left.min(PIECE);
-            let id = format!("tool-{}", record.event.turn.tool_calls.len());
-            record.event.turn.tool_calls.push(CodingAgentToolCall {
-                id,
-                name: "read".into(),
-                kind: "read".into(),
-                model_call_id: None,
-                status: CodingAgentToolCallStatus::Succeeded,
-                arguments: None,
-                output: None,
+            let tool = CodingAgentToolCall {
+                id: format!("tool-{}", record.event.turn.tool_calls.len()),
                 raw: Some("x".repeat(size)),
-                error: None,
-                started_at: None,
-                ended_at: None,
-                duration_ms: None,
-                association: CodingAgentToolAssociation::Unknown,
-                timestamp_quality: CodingAgentTimestampQuality::Unknown,
-            });
+                ..padding_tool()
+            };
+            record.event.turn.tool_calls.push(tool);
+            left -= size;
+        }
+        record
+    }
+
+    fn padding_tool() -> CodingAgentToolCall {
+        CodingAgentToolCall {
+            id: "tool".into(),
+            name: "read".into(),
+            kind: "read".into(),
+            model_call_id: None,
+            status: CodingAgentToolCallStatus::Succeeded,
+            arguments: None,
+            output: None,
+            raw: None,
+            error: None,
+            started_at: None,
+            ended_at: None,
+            duration_ms: None,
+            association: CodingAgentToolAssociation::Unknown,
+            timestamp_quality: CodingAgentTimestampQuality::Unknown,
+        }
+    }
+
+    /// `record` with tool calls added until its event takes about `bytes`. The bulk is in the tool
+    /// names — metadata, which delivery keeps — so the event stays this large on its way out. Names
+    /// that long are over the event contract's limit: queue it with `queue::enqueue_unchecked_at`.
+    fn padded(mut record: QueueRecord, bytes: usize) -> QueueRecord {
+        const PIECE: usize = 512 * 1024;
+        let mut left = bytes;
+        while left > 0 {
+            let size = left.min(PIECE);
+            let tool = CodingAgentToolCall {
+                id: format!("tool-{}", record.event.turn.tool_calls.len()),
+                name: "x".repeat(size),
+                ..padding_tool()
+            };
+            record.event.turn.tool_calls.push(tool);
             left -= size;
         }
         record
@@ -763,7 +795,7 @@ mod tests {
         let records: Vec<_> = (0..3)
             .map(|turn| {
                 let record = padded(record("bound", &url, "s", &format!("t{turn}")), 600_000);
-                let path = queue::enqueue_at(dir.path(), &record).unwrap();
+                let path = queue::enqueue_unchecked_at(dir.path(), &record).unwrap();
                 (path, record)
             })
             .collect();
@@ -957,6 +989,41 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("changed"));
+    }
+
+    #[test]
+    fn a_turn_queued_with_its_conversation_is_sent_without_it() {
+        let mut server = mockito::Server::new();
+        let dir = tempfile::tempdir().unwrap();
+        let mut old = record("bound", &server.url(), "s", "old");
+        old.event.capture_policy = CapturePolicy::Content;
+        old.event.session.title = Some("private title".into());
+        old.event.turn.prompt = Some("private prompt".into());
+        old.event.turn.response = Some("private answer".into());
+        queue::enqueue_at(dir.path(), &old).unwrap();
+        let delivery = server
+            .mock("POST", "/api/telemetry/coding-agent/events/batch")
+            .match_request(|request| {
+                let body = String::from_utf8_lossy(request.body().expect("request body"));
+                !body.contains("private") && body.contains("\"metadata_only\"")
+            })
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(accepted)
+            .expect(1)
+            .create();
+        let config = config("bound", &server.url(), Some(&token(Uuid::nil())));
+
+        let pass = deliver_at(
+            dir.path(),
+            || Ok(config.clone()),
+            &mut Pace::default(),
+            Backoff::Honour,
+        )
+        .unwrap();
+
+        delivery.assert();
+        assert_eq!(pass.delivered, 1);
     }
 
     #[test]

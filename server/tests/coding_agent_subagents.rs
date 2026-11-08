@@ -218,9 +218,10 @@ fn listed(body: &Value, session_id: &str) -> bool {
     rows(body).iter().any(|s| s["session_id"] == session_id)
 }
 
-/// Pins every imported turn's cost, so totals do not depend on the pricing table.
+/// Pins every imported turn's cost — the `trace_usage` row ingest wrote for it — so totals do not
+/// depend on the pricing table.
 async fn pin_turn_cost(server: &common::TestServer, cost: f64) {
-    sqlx::query("UPDATE chat_messages SET cost_usd = $1 WHERE role = 'assistant'")
+    sqlx::query("UPDATE trace_usage SET cost_usd = $1")
         .bind(cost)
         .execute(&server.db)
         .await
@@ -537,7 +538,7 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
         .unwrap();
     }
 
-    // The importer stores a subagent's description as its session title.
+    // A titled child session (coding-agent ingest stores no title; set here to cover the read).
     sqlx::query("UPDATE chat_sessions SET title = 'Map the auth flow' WHERE session_id = $1")
         .bind(&explore)
         .execute(&server.db)

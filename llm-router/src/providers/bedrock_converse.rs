@@ -530,12 +530,11 @@ fn converse_event_stream(
             };
             if first_chunk {
                 first_chunk = false;
-                let preview = String::from_utf8_lossy(&chunk[..chunk.len().min(256)]);
+                // Its length only: the chunk is the start of the model's reply.
                 tracing::info!(
                     target: "nasiko::llm_router::bedrock",
                     chunk_len = chunk.len(),
                     label,
-                    preview = %preview,
                     "bedrock converse stream: first chunk received"
                 );
             }

@@ -41,8 +41,6 @@ pub use setup::SetupOptions;
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
-    /// Keep prompt and response text out of exported spans.
-    pub no_content: bool,
     /// Report under this already-registered agent (the one LLM routing uses) instead of
     /// registering the account's default integration agent.
     pub agent_name: Option<&'a str>,
@@ -134,7 +132,7 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
-                capture_content: state.is_none_or(|state| state.capture_content),
+                capture_content: state.is_some_and(|state| state.capture_content),
                 hook_location: tildify(&agent.config_path()),
                 reporting_destination: state
                     .and_then(|state| state.binding.as_ref())
@@ -204,7 +202,8 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
             save_agent_state(
                 agent,
                 &registration.agent_name,
-                !options.no_content,
+                // Prompt and response text is never reported.
+                false,
                 &registration.binding,
             )
         },
@@ -282,7 +281,7 @@ pub(super) fn auto_install_detected() -> Result<()> {
             crate::commands::local_agents::cli_name(),
             spec.id
         );
-        let capture_content = match setup_step(settings.get(spec.id), &here) {
+        match setup_step(settings.get(spec.id), &here) {
             SetupStep::Keep => {
                 println!(
                     "{} already reports sessions to {}.",
@@ -291,21 +290,14 @@ pub(super) fn auto_install_detected() -> Result<()> {
                 installed += 1;
                 continue;
             }
-            SetupStep::Install => true,
-            SetupStep::Move {
-                from,
-                capture_content,
-            } => {
-                println!(
-                    "{} reports sessions to {from}; moving it to {}.",
-                    spec.display_name, here.cluster_name
-                );
-                capture_content
-            }
-        };
+            SetupStep::Install => {}
+            SetupStep::Move { from } => println!(
+                "{} reports sessions to {from}; moving it to {}.",
+                spec.display_name, here.cluster_name
+            ),
+        }
         match install(InstallOptions {
             agent_id: spec.id,
-            no_content: !capture_content,
             agent_name: None,
         }) {
             Ok(()) => installed += 1,
@@ -323,13 +315,12 @@ pub(super) fn auto_install_detected() -> Result<()> {
 /// What `nasiko agents setup` does with one detected agent's reporting.
 #[derive(Debug, PartialEq, Eq)]
 enum SetupStep {
-    /// Nothing installed yet: install it here, with prompt and response text.
+    /// Nothing installed yet: install it here.
     Install,
     /// Already reporting to this cluster and account.
     Keep,
-    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
-    /// here, keeping its content setting.
-    Move { from: String, capture_content: bool },
+    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it here.
+    Move { from: String },
 }
 
 /// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
@@ -345,10 +336,7 @@ fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupS
         Some(binding) => binding.cluster_name.clone(),
         None => "an older install with no cluster recorded".to_string(),
     };
-    SetupStep::Move {
-        from,
-        capture_content: state.capture_content,
-    }
+    SetupStep::Move { from }
 }
 
 /// `nasiko agents sync` — see [`setup::sync`].
@@ -833,10 +821,7 @@ mod tests {
         );
         assert_eq!(
             setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move {
-                from: "cp".into(),
-                capture_content: true
-            }
+            SetupStep::Move { from: "cp".into() }
         );
     }
 
@@ -850,7 +835,6 @@ mod tests {
             setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
             SetupStep::Move {
                 from: "an older install with no cluster recorded".into(),
-                capture_content: false
             }
         );
     }

@@ -61,7 +61,9 @@ pub async fn export_once(
                 return Ok::<(), anyhow::Error>(());
             }
         };
-        let mut event = event;
+        // A receipt stored before conversations stopped being kept may still hold one: it is
+        // exported without it, like every receipt since.
+        let mut event = event.without_content();
         event.session.id = row.session_id.clone();
         relabel_from_router(db, row.agent_id, &mut event).await;
         let delivery = async {
@@ -691,15 +693,15 @@ pub(crate) fn bounded_json(value: &Value) -> String {
     )
 }
 
-/// Upsert one `tool_calls` row per turn tool call, inside the ingest transaction.
-/// Bodies (`arguments`, `output`) only under the content capture policy.
+/// Upsert one `tool_calls` row per turn tool call, inside the ingest transaction. A coding
+/// agent's tool bodies (`arguments`, `output`) and error text are its conversation, so they are
+/// never stored: the row carries the name, kind, status and timing only.
 pub(crate) async fn write_tool_calls(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &CodingAgentEventV1,
     session_id: &str,
     agent_id: uuid::Uuid,
     user_id: uuid::Uuid,
-    with_bodies: bool,
 ) -> Result<(), sqlx::Error> {
     let trace_id = trace_id_for_event(event);
     for tool in &event.turn.tool_calls {
@@ -726,9 +728,9 @@ pub(crate) async fn write_tool_calls(
         .bind(&tool.name)
         .bind(&tool.kind)
         .bind(tool_status(tool.status))
-        .bind(&tool.error)
-        .bind(with_bodies.then(|| tool.arguments.clone()).flatten())
-        .bind(with_bodies.then(|| tool.output.clone()).flatten())
+        .bind(None::<String>)
+        .bind(None::<serde_json::Value>)
+        .bind(None::<serde_json::Value>)
         .bind(duration)
         .bind(started_at)
         .execute(&mut **tx)

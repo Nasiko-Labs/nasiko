@@ -113,6 +113,16 @@ pub(super) fn enqueue_at(root: &Path, record: &QueueRecord) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// [`enqueue_at`] without validating the event: for tests of delivery mechanics (an event over the
+/// server's size limit) that no valid event can reach.
+#[cfg(test)]
+pub(super) fn enqueue_unchecked_at(root: &Path, record: &QueueRecord) -> Result<PathBuf> {
+    let path = record_path(root, &record.destination, &record.event.event_id);
+    create_owner_dirs(&root.join("queue"))?;
+    atomic_owner_write(&path, &serde_json::to_vec(record)?)?;
+    Ok(path)
+}
+
 /// Every queued record file, whatever its retry time — without reading, moving or rewriting any.
 pub fn queued_count() -> Result<usize> {
     queued_count_at(&super::state::integrations_dir(), None)

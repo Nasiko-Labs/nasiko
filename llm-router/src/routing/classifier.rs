@@ -325,12 +325,11 @@ pub fn classify<R: Rng + ?Sized>(
 ) -> (Tier, RequestType) {
     let request_type = classify_request_type(query);
     let tier = classify_typed(request_type, cells, rng);
-    let preview: String = query.chars().take(120).collect();
+    // The query itself is never logged: it is the user's prompt.
     tracing::info!(
         target: "nasiko::llm_router::classifier",
         provider = %provider,
         query_chars = query.chars().count(),
-        query_preview = %preview,
         request_type = %request_type.as_str(),
         learned_cells = cells.len(),
         classified_tier = ?tier,

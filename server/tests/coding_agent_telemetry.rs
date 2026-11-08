@@ -3,10 +3,10 @@ mod common;
 
 use chrono::{TimeZone, Utc};
 use nasiko_types::{
-    CODING_AGENT_EVENT_VERSION, CODING_AGENT_SESSION_TITLE_MAX_BYTES, CapturePolicy,
-    CodingAgentEventV1, CodingAgentLlmCall, CodingAgentSession, CodingAgentSource,
-    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCall,
-    CodingAgentToolCallStatus, CodingAgentTurn, coding_agent_event_id, coding_agent_session_id,
+    CODING_AGENT_EVENT_VERSION, CapturePolicy, CodingAgentEventV1, CodingAgentLlmCall,
+    CodingAgentSession, CodingAgentSource, CodingAgentTimestampQuality, CodingAgentToolAssociation,
+    CodingAgentToolCall, CodingAgentToolCallStatus, CodingAgentTurn, coding_agent_event_id,
+    coding_agent_session_id,
 };
 use serde_json::{Value, json};
 use serial_test::serial;
@@ -324,20 +324,23 @@ async fn tokenless_receipt_completes_without_fabricated_usage() {
 
 #[tokio::test]
 #[serial]
-async fn accepts_content_and_metadata_and_handles_replays_independently() {
+async fn only_what_prices_a_turn_is_stored_whatever_the_client_sends() {
     let server = common::TestServer::start().await;
     let (user_id, agent_id) = setup(&server).await;
+    // An older CLI still sends a turn's conversation: prompt, response, session title, and a
+    // tool call's arguments, output and error text.
     let mut content = event("content-session", "turn-1", CapturePolicy::Content);
+    content.session.title = Some("Private session title".into());
     content.turn.tool_calls.push(CodingAgentToolCall {
         id: "native-tool".into(),
         name: "read_file".into(),
         kind: "tool".into(),
         model_call_id: Some("call-turn-1".into()),
-        status: CodingAgentToolCallStatus::Succeeded,
-        arguments: Some(json!({"path": "redacted"})),
-        output: Some(json!("ok")),
+        status: CodingAgentToolCallStatus::Failed,
+        arguments: Some(json!({"path": "secret.rs"})),
+        output: Some(json!("fn secret() {}")),
         raw: None,
-        error: None,
+        error: Some("permission denied: secret.rs".into()),
         started_at: Some(content.turn.started_at),
         ended_at: Some(content.turn.ended_at),
         duration_ms: Some(2000),
@@ -356,69 +359,78 @@ async fn accepts_content_and_metadata_and_handles_replays_independently() {
             .await
             .unwrap();
     assert_eq!(receipt_count, 2);
-    let content_session_id: String = sqlx::query_scalar(
-        "SELECT session_id FROM coding_agent_telemetry_events WHERE user_id = $1 AND event_id = $2",
+
+    // The receipt is the turn without its conversation.
+    let (content_session_id, payload): (String, Value) = sqlx::query_as(
+        "SELECT session_id, payload FROM coding_agent_telemetry_events \
+         WHERE user_id = $1 AND event_id = $2",
     )
     .bind(user_id)
     .bind(&content.event_id)
     .fetch_one(&server.db)
     .await
     .unwrap();
-    let metadata_session_id: String = sqlx::query_scalar(
-        "SELECT session_id FROM coding_agent_telemetry_events WHERE user_id = $1 AND event_id = $2",
-    )
-    .bind(user_id)
-    .bind(&metadata.event_id)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-    let content_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE session_id = $1")
-            .bind(&content_session_id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    let metadata_messages: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE session_id = $1")
-            .bind(&metadata_session_id)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(content_messages, 2);
-    assert_eq!(metadata_messages, 0);
-    let assistant_metadata: Value = sqlx::query_scalar(
-        "SELECT metadata FROM chat_messages WHERE session_id = $1 AND role = 'assistant'",
-    )
-    .bind(&content_session_id)
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
     assert_eq!(
-        assistant_metadata["coding_agent"]["capture_policy"],
-        "content"
+        payload,
+        serde_json::to_value(content.clone().without_content()).unwrap()
     );
+    assert_eq!(payload["capture_policy"], "metadata_only");
+
+    // No chat history, and no session title.
+    let messages: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_messages \
+         WHERE session_id IN (SELECT session_id FROM chat_sessions WHERE agent_id = $1)",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(messages, 0);
+    let titles: Vec<String> =
+        sqlx::query_scalar("SELECT title FROM chat_sessions WHERE agent_id = $1")
+            .bind(agent_id)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(titles, ["Coding session", "Coding session"]);
+
+    // The tool call is kept by name, status and timing only.
+    let tool: (String, String, Option<String>, Option<Value>, Option<Value>) = sqlx::query_as(
+        "SELECT tool_name, status, error, arguments, output FROM tool_calls WHERE call_id = $1",
+    )
+    .bind("native-tool")
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
     assert_eq!(
-        assistant_metadata["coding_agent"]["tool_calls"][0]["id"],
-        "native-tool"
+        tool,
+        ("read_file".into(), "failed".into(), None, None, None)
     );
 
-    let usage: (i32, i32, i32, i32, Option<rust_decimal::Decimal>, Option<bool>) = sqlx::query_as(
-        "SELECT input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, usage_estimated \
-         FROM chat_messages WHERE session_id = $1 AND role = 'assistant'",
+    // What prices the turn is all there.
+    let usage: (i64, i64, i64, i64, f64) = sqlx::query_as(
+        "SELECT input_tokens::bigint, output_tokens::bigint, cache_read_tokens::bigint, \
+                cache_creation_tokens::bigint, cost_usd::float8 \
+           FROM trace_usage WHERE session_id = $1",
     )
     .bind(&content_session_id)
     .fetch_one(&server.db)
     .await
     .unwrap();
     assert_eq!((usage.0, usage.1, usage.2, usage.3), (10, 5, 2, 3));
-    assert!(usage.4.unwrap() > rust_decimal::Decimal::ZERO);
-    assert_eq!(usage.5, Some(true));
+    assert!(usage.4 > 0.0);
 
+    // A replay is a duplicate — even with other text, which is dropped — but other usage is a
+    // different turn under the same id.
     let replay = post(&server, user_id, std::slice::from_ref(&content)).await;
     assert_eq!(replay["data"]["results"][0]["status"], "duplicate");
-    let mut changed = content.clone();
-    changed.turn.response = Some("changed".into());
-    let conflict = post(&server, user_id, &[changed]).await;
+    let mut other_text = content.clone();
+    other_text.turn.response = Some("changed".into());
+    let replay = post(&server, user_id, &[other_text]).await;
+    assert_eq!(replay["data"]["results"][0]["status"], "duplicate");
+    let mut other_usage = content.clone();
+    other_usage.turn.llm_calls[0].output_tokens += 1;
+    let conflict = post(&server, user_id, &[other_usage]).await;
     assert_eq!(conflict["data"]["results"][0]["status"], "rejected");
 
     let other_user = Uuid::new_v4();
@@ -451,156 +463,14 @@ async fn accepts_content_and_metadata_and_handles_replays_independently() {
     server.cleanup().await;
 }
 
-async fn session_title(server: &common::TestServer, agent_id: Uuid) -> String {
-    sqlx::query_scalar("SELECT title FROM chat_sessions WHERE agent_id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .expect("session exists")
-}
-
 #[tokio::test]
 #[serial]
-async fn inserts_exact_external_title_and_preserves_it_on_later_turns() {
+async fn a_turn_cannot_land_in_a_session_another_user_owns() {
     let server = common::TestServer::start().await;
     let (user_id, agent_id) = setup(&server).await;
-    let title = format!(
-        "  {}  ",
-        "é".repeat((CODING_AGENT_SESSION_TITLE_MAX_BYTES - 4) / 2)
-    );
-    let mut first = event("titled", "turn-1", CapturePolicy::Content);
-    first.session.title = Some(title.clone());
+    let first = event("ownership", "turn-1", CapturePolicy::MetadataOnly);
     assert_eq!(
         post(&server, user_id, &[first]).await["data"]["results"][0]["status"],
-        "accepted"
-    );
-    assert_eq!(session_title(&server, agent_id).await, title);
-
-    let mut later = event("titled", "turn-2", CapturePolicy::Content);
-    later.session.title = Some("Replacement title".into());
-    let missing = event("titled", "turn-3", CapturePolicy::Content);
-    let result = post(&server, user_id, &[later, missing]).await;
-    assert_eq!(result["data"]["results"][0]["status"], "accepted");
-    assert_eq!(result["data"]["results"][1]["status"], "accepted");
-    assert_eq!(session_title(&server, agent_id).await, title);
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn upgrades_only_the_coding_session_placeholder_on_a_new_event() {
-    let server = common::TestServer::start().await;
-    let (user_id, agent_id) = setup(&server).await;
-    let metadata = event("placeholder", "turn-1", CapturePolicy::MetadataOnly);
-    let missing = event("placeholder", "turn-2", CapturePolicy::Content);
-    let result = post(&server, user_id, &[metadata, missing]).await;
-    assert_eq!(result["data"]["results"][0]["status"], "accepted");
-    assert_eq!(result["data"]["results"][1]["status"], "accepted");
-    assert_eq!(session_title(&server, agent_id).await, "Coding session");
-
-    let mut titled = event("placeholder", "turn-3", CapturePolicy::Content);
-    titled.session.title = Some("Native title".into());
-    assert_eq!(
-        post(&server, user_id, &[titled]).await["data"]["results"][0]["status"],
-        "accepted"
-    );
-    assert_eq!(session_title(&server, agent_id).await, "Native title");
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn title_replays_cannot_rename_a_session() {
-    let server = common::TestServer::start().await;
-    let (user_id, agent_id) = setup(&server).await;
-    let original = event("replay-title", "turn-1", CapturePolicy::Content);
-    assert_eq!(
-        post(&server, user_id, std::slice::from_ref(&original)).await["data"]["results"][0]["status"],
-        "accepted"
-    );
-    assert_eq!(
-        post(&server, user_id, std::slice::from_ref(&original)).await["data"]["results"][0]["status"],
-        "duplicate"
-    );
-
-    let mut changed = original;
-    changed.session.title = Some("Replay must not upgrade".into());
-    let rejected = post(&server, user_id, &[changed]).await;
-    assert_eq!(rejected["data"]["results"][0]["status"], "rejected");
-    assert_eq!(
-        rejected["data"]["results"][0]["error"],
-        "event_id already exists with a different payload"
-    );
-    assert_eq!(session_title(&server, agent_id).await, "Coding session");
-
-    let mut titled = event("replay-title", "turn-2", CapturePolicy::Content);
-    titled.session.title = Some("Accepted title".into());
-    assert_eq!(
-        post(&server, user_id, std::slice::from_ref(&titled)).await["data"]["results"][0]["status"],
-        "accepted"
-    );
-    // A replay cannot restore a title even if the session is now a placeholder.
-    sqlx::query("UPDATE chat_sessions SET title = 'Coding session' WHERE agent_id = $1")
-        .bind(agent_id)
-        .execute(&server.db)
-        .await
-        .expect("reset session title");
-    assert_eq!(
-        post(&server, user_id, &[titled]).await["data"]["results"][0]["status"],
-        "duplicate"
-    );
-    assert_eq!(session_title(&server, agent_id).await, "Coding session");
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn conflicting_content_rolls_back_title_upgrade_and_receipt() {
-    let server = common::TestServer::start().await;
-    let (user_id, agent_id) = setup(&server).await;
-    let metadata = event("rollback-title", "turn-1", CapturePolicy::MetadataOnly);
-    assert_eq!(
-        post(&server, user_id, &[metadata]).await["data"]["results"][0]["status"],
-        "accepted"
-    );
-    // Simulate a pre-existing incomplete external turn, which rejects after receipt insertion.
-    sqlx::query(
-        "INSERT INTO chat_messages (session_id, external_turn_id, role, content) \
-         SELECT session_id, 'turn-2', 'user', 'existing question' FROM chat_sessions WHERE agent_id = $1",
-    )
-    .bind(agent_id)
-    .execute(&server.db)
-    .await
-    .expect("insert incomplete turn");
-    let mut titled = event("rollback-title", "turn-2", CapturePolicy::Content);
-    titled.session.title = Some("Must roll back".into());
-    let result = post(&server, user_id, std::slice::from_ref(&titled)).await;
-    assert_eq!(result["data"]["results"][0]["status"], "rejected");
-    assert_eq!(
-        result["data"]["results"][0]["error"],
-        "external turn is incomplete"
-    );
-    assert_eq!(session_title(&server, agent_id).await, "Coding session");
-    let receipt_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM coding_agent_telemetry_events WHERE user_id = $1 AND event_id = $2)",
-    )
-    .bind(user_id)
-    .bind(&titled.event_id)
-    .fetch_one(&server.db)
-    .await
-    .expect("query rolled back receipt");
-    assert!(!receipt_exists);
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn title_upgrade_cannot_bypass_session_ownership_check() {
-    let server = common::TestServer::start().await;
-    let (user_id, agent_id) = setup(&server).await;
-    let metadata = event("ownership-title", "turn-1", CapturePolicy::MetadataOnly);
-    assert_eq!(
-        post(&server, user_id, &[metadata]).await["data"]["results"][0]["status"],
         "accepted"
     );
     let other_user = Uuid::new_v4();
@@ -615,99 +485,14 @@ async fn title_upgrade_cannot_bypass_session_ownership_check() {
         .execute(&server.db)
         .await
         .expect("change session owner");
-    let mut titled = event("ownership-title", "turn-2", CapturePolicy::Content);
-    titled.session.title = Some("Unauthorized title".into());
-    let result = post(&server, user_id, &[titled]).await;
+    let second = event("ownership", "turn-2", CapturePolicy::MetadataOnly);
+    let result = post(&server, user_id, &[second]).await;
     assert_eq!(result["data"]["results"][0]["status"], "rejected");
     assert_eq!(
         result["data"]["results"][0]["error"],
         "session already belongs to a different user or agent"
     );
-    assert_eq!(session_title(&server, agent_id).await, "Coding session");
     server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn invalid_titles_are_rejected_before_creating_sessions() {
-    let server = common::TestServer::start().await;
-    let (user_id, agent_id) = setup(&server).await;
-    for (index, title) in [
-        " \n".into(),
-        "title\0nul".into(),
-        "x".repeat(CODING_AGENT_SESSION_TITLE_MAX_BYTES + 1),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut invalid = event(
-            "invalid-title",
-            &format!("turn-{index}"),
-            CapturePolicy::Content,
-        );
-        invalid.session.title = Some(title);
-        assert_eq!(
-            post(&server, user_id, &[invalid]).await["data"]["results"][0]["status"],
-            "rejected"
-        );
-    }
-    let mut private = event("private-title", "turn", CapturePolicy::MetadataOnly);
-    private.session.title = Some("Private content".into());
-    assert_eq!(
-        post(&server, user_id, &[private]).await["data"]["results"][0]["status"],
-        "rejected"
-    );
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_sessions WHERE agent_id = $1")
-        .bind(agent_id)
-        .fetch_one(&server.db)
-        .await
-        .expect("count sessions");
-    assert_eq!(count, 0);
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn content_turns_keep_source_order_when_ingested_out_of_order() {
-    let server = common::TestServer::start().await;
-    let (user_id, _) = setup(&server).await;
-    let mut earlier = event("ordered-session", "turn-1", CapturePolicy::Content);
-    earlier.turn.prompt = Some("first question".into());
-    earlier.turn.response = Some("first answer".into());
-    let mut later = event("ordered-session", "turn-2", CapturePolicy::Content);
-    later.turn.started_at += chrono::Duration::minutes(1);
-    later.turn.ended_at += chrono::Duration::minutes(1);
-    later.captured_at = later.turn.ended_at;
-    later.turn.prompt = Some("second question".into());
-    later.turn.response = Some("second answer".into());
-
-    let response = post(&server, user_id, &[later, earlier]).await;
-    assert_eq!(response["data"]["results"][0]["status"], "accepted");
-    assert_eq!(response["data"]["results"][1]["status"], "accepted");
-    let contents: Vec<String> =
-        sqlx::query_scalar("SELECT content FROM chat_messages ORDER BY timestamp, id")
-            .fetch_all(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(
-        contents,
-        [
-            "first question",
-            "first answer",
-            "second question",
-            "second answer"
-        ]
-    );
-    let bounds: (chrono::DateTime<Utc>, chrono::DateTime<Utc>) = sqlx::query_as(
-        "SELECT created_at, updated_at FROM chat_sessions WHERE title = 'Coding session'",
-    )
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
-    assert_eq!(bounds.0, Utc.timestamp_opt(1_700_000_000, 0).unwrap());
-    assert!(
-        bounds.1 >= Utc.timestamp_opt(1_700_000_002, 0).unwrap() + chrono::Duration::minutes(1)
-    );
 }
 
 #[tokio::test]
@@ -1173,14 +958,14 @@ async fn session_list_totals_a_coding_session_from_its_turns() {
     let (user_id, _) = setup(&server).await;
     let turns = (0..3).map(|i| turn_at("three-turns", i, vec![])).collect();
     let session = ingest_session(&server, user_id, "three-turns", turns).await;
-    // Pin the per-turn cost so the sum does not depend on the pricing table.
-    sqlx::query(
-        "UPDATE chat_messages SET cost_usd = 0.25 WHERE session_id = $1 AND role = 'assistant'",
-    )
-    .bind(&session)
-    .execute(&server.db)
-    .await
-    .unwrap();
+    // Pin the per-turn cost, which ingest wrote to `trace_usage` (no chat message carries it —
+    // a coding agent's conversation is never stored), so the sum does not depend on the
+    // pricing table.
+    sqlx::query("UPDATE trace_usage SET cost_usd = 0.25 WHERE session_id = $1")
+        .bind(&session)
+        .execute(&server.db)
+        .await
+        .unwrap();
 
     let body = list_sessions(&server, user_id, LIST_SINCE).await;
     let row = find(&body, &session);

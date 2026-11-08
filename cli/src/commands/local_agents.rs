@@ -48,18 +48,19 @@ pub struct ConnectOptions {
     /// Don't give the agent your MCP connectors through the Nasiko gateway
     #[arg(long, conflicts_with = "no_routing", help_heading = HELP_HEADING)]
     pub no_mcp: bool,
-    /// Report sessions to Nasiko observability — tokens, latency and cost; add --content for
-    /// prompt and response text (asked on a terminal, off otherwise)
+    /// Report sessions to Nasiko observability — tokens, latency and cost only; prompt and
+    /// response text never leaves this machine
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
     pub reporting: bool,
     /// Don't report sessions
     #[arg(long, help_heading = HELP_HEADING)]
     pub no_reporting: bool,
-    /// Report sessions including prompt and response text (implies --reporting)
-    #[arg(long, conflicts_with_all = ["no_reporting", "no_content"], help_heading = HELP_HEADING)]
+    /// No longer reports prompt or response text; the same as --reporting. Kept so existing
+    /// scripts still run
+    #[arg(long, hide = true, conflicts_with_all = ["no_reporting", "no_content"])]
     pub content: bool,
-    /// Report tokens, latency and cost only — no prompt or response text (implies --reporting)
-    #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
+    /// The same as --reporting: tokens, latency and cost only. Kept so existing scripts still run
+    #[arg(long, hide = true, conflicts_with = "no_reporting")]
     pub no_content: bool,
     /// Reconnect even when the coding agent is still running
     #[arg(long, help_heading = HELP_HEADING)]
@@ -100,18 +101,6 @@ impl ConnectOptions {
         if self.no_mcp {
             Some(false)
         } else if self.mcp {
-            Some(true)
-        } else {
-            None
-        }
-    }
-
-    /// The content setting the flags ask for, if any. `--reporting` alone has none, so reporting
-    /// that is already on keeps its own.
-    fn content_choice(&self) -> Option<bool> {
-        if self.no_content {
-            Some(false)
-        } else if self.content {
             Some(true)
         } else {
             None
@@ -1277,18 +1266,11 @@ fn build_plan(
             false
         };
         if report {
-            let capture_content = match options.content_choice() {
-                Some(choice) => choice,
-                None if prompter.interactive() => prompter.confirm(
-                    "Include prompt and response text? (No sends only tokens, latency and cost)",
-                    true,
-                )?,
-                // A script asked for reporting, not for text: that takes --content.
-                None => false,
-            };
+            // Reporting carries what prices a session — tokens, latency and cost — and never its
+            // prompt or response text, so there is nothing to ask.
             for &i in &unreported {
                 agents[i].reporting = ReportingStep::Install {
-                    capture_content,
+                    capture_content: false,
                     moving_from: None,
                 };
             }
@@ -1304,9 +1286,8 @@ fn build_plan(
 /// Installed reporting stays as it is, unless it delivers to another cluster or account than
 /// the active one (moved when asked, or when the flags ask for reporting), its hook needs
 /// reinstalling (likewise), it runs under another agent than the LLM routing that is kept
-/// (likewise — one coding agent is one control-plane agent), or the flags ask for a different
-/// content setting. Whatever is reinstalled keeps the saved content setting unless `--content`
-/// or `--no-content` says otherwise, so prompt and response text is never turned on unasked.
+/// (likewise — one coding agent is one control-plane agent), or it was saved reporting prompt and
+/// response text, which is never reported now (reinstalled without it).
 fn existing_reporting_step(
     agent: &AgentPlan,
     options: &ConnectOptions,
@@ -1317,7 +1298,8 @@ fn existing_reporting_step(
     if options.no_reporting {
         return Ok(ReportingStep::Keep);
     }
-    let capture_content = options.content_choice().unwrap_or(local.capture_content);
+    // Text is never reported now: an install saved with content on is reinstalled without it.
+    let capture_content = false;
     let asked = |question: String| -> Result<bool> {
         Ok(options.mentions_reporting()
             || (prompter.interactive() && prompter.confirm(&question, true)?))
@@ -1848,9 +1830,7 @@ fn apply_agent(
         }
     })?;
     match agent.reporting {
-        ReportingStep::Install {
-            capture_content, ..
-        } => install_reporting(agent, capture_content, routed),
+        ReportingStep::Install { .. } => install_reporting(agent, routed),
         ReportingStep::Keep if routed.is_some() && agent.reporting_follows_routing => {
             follow_routing_agent(agent, destination)
         }
@@ -1919,15 +1899,10 @@ fn apply_routing(
 /// Installs or reinstalls reporting. If that fails, routing this run connected from nothing is
 /// removed again with the LLM config change it made, so the agent isn't left half-connected;
 /// routing it replaced is kept (the old one is gone).
-fn install_reporting(
-    agent: &AgentPlan,
-    capture_content: bool,
-    routed: Option<Routed>,
-) -> Result<()> {
+fn install_reporting(agent: &AgentPlan, routed: Option<Routed>) -> Result<()> {
     let result = reporting_agent_name(agent).and_then(|agent_name| {
         integration::install(InstallOptions {
             agent_id: agent.view.local.id,
-            no_content: !capture_content,
             agent_name: agent_name.as_deref(),
         })
     });
@@ -1959,8 +1934,7 @@ fn install_reporting(
 }
 
 /// After routing was replaced: reporting that delivers here but runs under another agent than
-/// routing now uses is moved under it, keeping its content setting — one coding agent stays
-/// one control-plane agent.
+/// routing now uses is moved under it — one coding agent stays one control-plane agent.
 fn follow_routing_agent(
     agent: &AgentPlan,
     destination: Option<&ReportingDestination>,
@@ -1984,7 +1958,6 @@ fn follow_routing_agent(
     ));
     integration::install(InstallOptions {
         agent_id: local.id,
-        no_content: !local.capture_content,
         agent_name: Some(&routing.agent_name),
     })
     .with_context(|| {
@@ -2321,14 +2294,8 @@ fn print_reporting_details(local: &LocalAgent) {
     println!("Reporting hook:    {}", local.hook_location);
     match &local.reporting_destination {
         Some(destination) => println!(
-            "Reporting to:      {} ({}){}",
-            destination.cluster_name,
-            destination.cluster_url,
-            if local.capture_content {
-                ""
-            } else {
-                ", tokens, latency and cost only"
-            }
+            "Reporting to:      {} ({}), tokens, latency and cost only",
+            destination.cluster_name, destination.cluster_url,
         ),
         None => println!(
             "Reporting to:      no cluster recorded; reinstall with: {} connect {} --no-routing --reporting",
@@ -2386,11 +2353,7 @@ fn agent_row(view: &AgentView) -> AgentRow {
         ),
     };
     let reporting = if view.local.reporting_active {
-        if view.local.capture_content {
-            "on".to_string()
-        } else {
-            "on (no content)".to_string()
-        }
+        "on (no content)".to_string()
     } else if view.local.reporting_installed {
         view.local.reporting_status.clone()
     } else {
@@ -2510,7 +2473,7 @@ mod tests {
                     "not installed"
                 }
                 .into(),
-                capture_content: true,
+                capture_content: false,
                 hook_location: format!("~/.{id}"),
                 reporting_destination: reporting.then(here),
             },
@@ -2781,7 +2744,7 @@ mod tests {
         assert_eq!(
             moved.agents[0].reporting,
             ReportingStep::Install {
-                capture_content: true,
+                capture_content: false,
                 moving_from: Some("staging".into())
             }
         );
@@ -2842,79 +2805,77 @@ mod tests {
     }
 
     #[test]
-    fn content_flags_change_reporting_that_is_already_on() {
-        let tokens_only = plan_for(
-            vec![view("claude", false, true)],
-            &ConnectOptions {
-                no_content: true,
-                no_routing: true,
-                ..ConnectOptions::default()
-            },
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(
-            tokens_only.agents[0].reporting,
-            ReportingStep::Install {
-                capture_content: false,
-                moving_from: None
-            }
-        );
-
-        let mut without_content = view("claude", false, true);
-        without_content.local.capture_content = false;
-        let with_content = plan_for(
-            vec![without_content.clone()],
-            &ConnectOptions {
-                content: true,
-                no_routing: true,
-                ..ConnectOptions::default()
-            },
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(
-            with_content.agents[0].reporting,
-            ReportingStep::Install {
-                capture_content: true,
-                moving_from: None
-            }
-        );
-
-        // `--reporting` alone never turns prompt and response text back on.
-        let kept = plan_for(
-            vec![without_content],
-            &ConnectOptions {
+    fn reporting_saved_with_content_is_reinstalled_without_it() {
+        let mut saved_with_content = view("claude", false, true);
+        saved_with_content.local.capture_content = true;
+        for options in [
+            ConnectOptions::default(),
+            ConnectOptions {
                 reporting: true,
-                no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(kept.agents[0].reporting, ReportingStep::Keep);
+            ConnectOptions {
+                content: true,
+                ..ConnectOptions::default()
+            },
+        ] {
+            let plan = plan_for(
+                vec![saved_with_content.clone()],
+                &ConnectOptions {
+                    no_routing: true,
+                    ..options
+                },
+                &Unattended,
+                &no_configs_expected,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.agents[0].reporting,
+                ReportingStep::Install {
+                    capture_content: false,
+                    moving_from: None
+                }
+            );
+        }
     }
 
     #[test]
-    fn a_content_flag_alone_turns_reporting_on() {
-        for (options, capture_content) in [
-            (
-                ConnectOptions {
-                    no_content: true,
-                    ..ConnectOptions::default()
+    fn content_flags_never_turn_prompt_and_response_text_on() {
+        for options in [
+            ConnectOptions {
+                content: true,
+                ..ConnectOptions::default()
+            },
+            ConnectOptions {
+                no_content: true,
+                ..ConnectOptions::default()
+            },
+        ] {
+            let plan = plan_for(
+                vec![view("claude", false, true)],
+                &ConnectOptions {
+                    no_routing: true,
+                    ..options
                 },
-                false,
-            ),
-            (
-                ConnectOptions {
-                    content: true,
-                    ..ConnectOptions::default()
-                },
-                true,
-            ),
+                &Unattended,
+                &no_configs_expected,
+            )
+            .unwrap();
+            assert_eq!(plan.agents[0].reporting, ReportingStep::Keep);
+        }
+    }
+
+    #[test]
+    fn a_content_flag_alone_turns_reporting_on_without_text() {
+        for options in [
+            ConnectOptions {
+                no_content: true,
+                ..ConnectOptions::default()
+            },
+            ConnectOptions {
+                content: true,
+                ..ConnectOptions::default()
+            },
         ] {
             let plan = plan_for(
                 vec![view("claude", false, false)],
@@ -2926,7 +2887,7 @@ mod tests {
             assert_eq!(
                 plan.agents[0].reporting,
                 ReportingStep::Install {
-                    capture_content,
+                    capture_content: false,
                     moving_from: None
                 }
             );
@@ -3641,10 +3602,10 @@ mod tests {
     }
 
     #[test]
-    fn after_logging_in_picked_agents_move_here_keeping_their_content_setting() {
-        let mut no_text = reporting_to("codex", Some(elsewhere()));
-        no_text.local.capture_content = false;
-        let targets = vec![reporting_to("claude", Some(elsewhere())), no_text];
+    fn after_logging_in_picked_agents_move_here_without_text() {
+        let mut saved_with_text = reporting_to("claude", Some(elsewhere()));
+        saved_with_text.local.capture_content = true;
+        let targets = vec![saved_with_text, reporting_to("codex", Some(elsewhere()))];
 
         let (offer, declined) = login_offer(
             targets,
@@ -3661,7 +3622,7 @@ mod tests {
             steps,
             [
                 &ReportingStep::Install {
-                    capture_content: true,
+                    capture_content: false,
                     moving_from: Some("staging".into())
                 },
                 &ReportingStep::Install {
@@ -3949,7 +3910,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_hook_is_reinstalled_with_its_saved_content_setting() {
+    fn a_stale_hook_is_reinstalled_without_text() {
         let reporting = ConnectOptions {
             reporting: true,
             no_routing: true,
@@ -3983,25 +3944,28 @@ mod tests {
         .unwrap();
         assert_eq!(asked.agents[0].reporting, plan.agents[0].reporting);
 
-        // Only --content turns text on.
-        let with_content = plan_for(
-            vec![stale(false)],
-            &ConnectOptions {
-                content: true,
-                no_routing: true,
-                ..ConnectOptions::default()
-            },
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(
-            with_content.agents[0].reporting,
-            ReportingStep::Install {
-                capture_content: true,
-                moving_from: None
-            }
-        );
+        // Neither --content nor a hook saved with text turns text on.
+        for (saved_with_text, content) in [(false, true), (true, false)] {
+            let plan = plan_for(
+                vec![stale(saved_with_text)],
+                &ConnectOptions {
+                    content,
+                    reporting: true,
+                    no_routing: true,
+                    ..ConnectOptions::default()
+                },
+                &Unattended,
+                &no_configs_expected,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.agents[0].reporting,
+                ReportingStep::Install {
+                    capture_content: false,
+                    moving_from: None
+                }
+            );
+        }
     }
 
     #[test]
