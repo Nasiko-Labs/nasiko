@@ -129,7 +129,7 @@ pub struct Config {
     pub tiering_enabled: bool,
     /// `NASIKO_TIERING_INTERVAL_SECS` (default 24h = 86400s).
     pub tiering_interval_secs: u64,
-    /// `NASIKO_COLD_PATH`: root of the Lance datasets (dir, `file://` or `s3://`).
+    /// `NASIKO_COLD_PATH`: root of the Lance datasets (dir, `file://`, `s3://` or `gs://`).
     /// Must be set explicitly when tiering is on (see [`validate_tiering`]).
     pub cold_path: String,
     pub openai_api_key: Option<String>,
@@ -946,7 +946,7 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
 fn validate_tiering(enabled: bool, cold_path: Option<&str>) -> Result<(), String> {
     if enabled && cold_path.is_none_or(|p| p.trim().is_empty()) {
         return Err("NASIKO_TIERING_ENABLED=true requires NASIKO_COLD_PATH \
-                    (s3://<bucket>/<prefix> or a durable shared directory)"
+                    (s3://<bucket>/<prefix>, gs://<bucket>/<prefix> or a durable shared directory)"
             .into());
     }
     Ok(())
@@ -973,6 +973,7 @@ mod tests {
         assert!(super::validate_tiering(true, None).is_err());
         assert!(super::validate_tiering(true, Some("  ")).is_err());
         assert!(super::validate_tiering(true, Some("s3://b/cold")).is_ok());
+        assert!(super::validate_tiering(true, Some("gs://b/cold")).is_ok());
         assert!(super::validate_tiering(false, None).is_ok());
     }
 

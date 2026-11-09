@@ -85,11 +85,12 @@ const TIERING_LOCK: i64 = 0x0074_6965_7269_6e67; // "tiering"
 
 #[derive(Debug, Clone)]
 pub struct TieringConfig {
-    /// `NASIKO_COLD_PATH`: local dir, `file://` or `s3://` root of the datasets.
+    /// `NASIKO_COLD_PATH`: local dir, `file://`, `s3://` or `gs://` root of the datasets.
     pub cold_path: String,
     /// Object-store options for `s3://` cold paths (Lance/object_store keys:
     /// `aws_access_key_id`, `aws_secret_access_key`, `aws_region`, `aws_endpoint`,
-    /// `allow_http`). Empty for local paths.
+    /// `allow_http`). Empty for local and `gs://` paths (GCS uses Application
+    /// Default Credentials).
     pub storage_options: std::collections::HashMap<String, String>,
     pub min_hot_days: i64,
     /// Hot window for `trace_usage`. Longer than `min_hot_days` because overview

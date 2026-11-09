@@ -171,8 +171,10 @@ bytes = "1"
 
 # ─── Columnar cold tier (oss/event-store only) ─────────────────────────────
 # Lance builds need `protoc` on PATH. Arrow must match the version Lance links.
-lance = { version = "13.0.0", default-features = false, features = ["aws"] }
-lance-io = { version = "13.0.0", default-features = false, features = ["aws"] }
+# `gcp` for native `gs://` cold paths: GCS's S3 API ignores If-None-Match, so
+# commits there are atomic only through the native API.
+lance = { version = "13.0.0", default-features = false, features = ["aws", "gcp"] }
+lance-io = { version = "13.0.0", default-features = false, features = ["aws", "gcp"] }
 lance-index = "13.0.0"
 lance-linalg = "13.0.0"
 arrow-array = "58"

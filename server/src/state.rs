@@ -843,6 +843,8 @@ mod tests {
 }
 
 /// `s3://` cold paths reuse the server's `S3_*` settings (rustfs/MinIO/AWS).
+/// `gs://` paths get no options: Lance's native GCS store authenticates with
+/// Application Default Credentials (Workload Identity, or the `GOOGLE_*` env).
 /// Event store over the configured cold path (erasure, cold reads).
 pub fn event_store(c: &nasiko_config::Config, db: &sqlx::PgPool) -> nasiko_event_store::EventStore {
     let cfg = nasiko_event_store::TieringConfig {
