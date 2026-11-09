@@ -178,15 +178,7 @@ fn sync_records(
     let mut pass = Pass::default();
     let mut groups: BTreeMap<(String, String, Uuid), Vec<(PathBuf, QueueRecord)>> = BTreeMap::new();
     for (path, record) in records {
-        // A turn queued by an older CLI may still hold its conversation; it never leaves this
-        // machine. Only what prices the turn is sent.
-        let record = (
-            path,
-            QueueRecord {
-                event: record.event.without_content(),
-                ..record
-            },
-        );
+        let record = (path, without_chat_history_unless_local(record));
         if record.1.delivery_state == DeliveryState::Rejected {
             queue::quarantine(&record.0, &record.1)?;
             pass.set_aside += 1;
@@ -224,6 +216,18 @@ fn sync_records(
         pass.absorb(deliver_destination(&client, &records, pace)?);
     }
     Ok(pass)
+}
+
+/// `record` as it may leave this machine: a turn bound for a hosted control plane carries no chat
+/// history, even one queued with it (by an older CLI, or before the cluster moved).
+fn without_chat_history_unless_local(record: QueueRecord) -> QueueRecord {
+    if super::is_local_cluster(&record.destination.cluster_url) {
+        return record;
+    }
+    QueueRecord {
+        event: record.event.without_content(),
+        ..record
+    }
 }
 
 /// Sends one destination's due turns, one batch at a time at the size `pace` allows: a batch refused
@@ -644,21 +648,18 @@ mod tests {
         assert!(!dropped_for_size(&timed_out, 2, large));
     }
 
-    /// A turn an older CLI queued with its conversation could be over the server's limit; without
-    /// the conversation it is small, so it is delivered rather than set aside.
     #[test]
-    fn a_turn_too_large_only_for_its_conversation_is_delivered_without_it() {
+    fn a_turn_over_the_server_limit_is_set_aside_without_being_sent() {
         let mut server = mockito::Server::new();
         let dir = tempfile::tempdir().unwrap();
-        let huge = with_conversation(record("bound", &server.url(), "s", "huge"), 9 * 1024 * 1024);
+        let huge = padded(record("bound", &server.url(), "s", "huge"), 9 * 1024 * 1024);
         let huge_path = queue::enqueue_at(dir.path(), &huge).unwrap();
-        let huge_id = huge.event.event_id.clone();
+        let small_path =
+            queue::enqueue_at(dir.path(), &record("bound", &server.url(), "s", "small")).unwrap();
+        let small_id = queue::load(&small_path).unwrap().event.event_id;
         let delivery = server
             .mock("POST", "/api/telemetry/coding-agent/events/batch")
-            .match_request(move |request| {
-                request.body().expect("request body").len() < 1024 * 1024
-                    && requested_ids(request) == [huge_id.clone()]
-            })
+            .match_request(move |request| requested_ids(request) == [small_id.clone()])
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body_from_request(accepted)
@@ -675,13 +676,20 @@ mod tests {
         .unwrap();
 
         delivery.assert();
-        assert_eq!((pass.delivered, pass.set_aside), (1, 0));
+        assert_eq!((pass.delivered, pass.set_aside), (1, 1));
         assert!(!huge_path.exists());
+        let set_aside = only(&dir.path().join("rejected"));
+        assert_eq!(set_aside.event.event_id, huge.event.event_id);
+        assert_eq!(
+            set_aside.last_error.as_deref(),
+            Some("permanently rejected: turn is larger than the server accepts (9.0 MiB > 8 MiB)")
+        );
     }
 
-    /// `record` captured with its conversation, tool-call transcripts added until its event takes
-    /// about `bytes` (each at most 512 KiB, within the contract's per-field limit).
-    fn with_conversation(mut record: QueueRecord, bytes: usize) -> QueueRecord {
+    /// `record` with its content captured and tool calls added until its event takes about `bytes`
+    /// (each tool call's raw transcript is at most 512 KiB, as an event's fields have limits of their
+    /// own).
+    fn padded(mut record: QueueRecord, bytes: usize) -> QueueRecord {
         const PIECE: usize = 512 * 1024;
         record.event.capture_policy = CapturePolicy::Content;
         record.event.turn.prompt = Some("p".into());
@@ -689,50 +697,23 @@ mod tests {
         let mut left = bytes;
         while left > 0 {
             let size = left.min(PIECE);
-            let tool = CodingAgentToolCall {
-                id: format!("tool-{}", record.event.turn.tool_calls.len()),
+            let id = format!("tool-{}", record.event.turn.tool_calls.len());
+            record.event.turn.tool_calls.push(CodingAgentToolCall {
+                id,
+                name: "read".into(),
+                kind: "read".into(),
+                model_call_id: None,
+                status: CodingAgentToolCallStatus::Succeeded,
+                arguments: None,
+                output: None,
                 raw: Some("x".repeat(size)),
-                ..padding_tool()
-            };
-            record.event.turn.tool_calls.push(tool);
-            left -= size;
-        }
-        record
-    }
-
-    fn padding_tool() -> CodingAgentToolCall {
-        CodingAgentToolCall {
-            id: "tool".into(),
-            name: "read".into(),
-            kind: "read".into(),
-            model_call_id: None,
-            status: CodingAgentToolCallStatus::Succeeded,
-            arguments: None,
-            output: None,
-            raw: None,
-            error: None,
-            started_at: None,
-            ended_at: None,
-            duration_ms: None,
-            association: CodingAgentToolAssociation::Unknown,
-            timestamp_quality: CodingAgentTimestampQuality::Unknown,
-        }
-    }
-
-    /// `record` with tool calls added until its event takes about `bytes`. The bulk is in the tool
-    /// names — metadata, which delivery keeps — so the event stays this large on its way out. Names
-    /// that long are over the event contract's limit: queue it with `queue::enqueue_unchecked_at`.
-    fn padded(mut record: QueueRecord, bytes: usize) -> QueueRecord {
-        const PIECE: usize = 512 * 1024;
-        let mut left = bytes;
-        while left > 0 {
-            let size = left.min(PIECE);
-            let tool = CodingAgentToolCall {
-                id: format!("tool-{}", record.event.turn.tool_calls.len()),
-                name: "x".repeat(size),
-                ..padding_tool()
-            };
-            record.event.turn.tool_calls.push(tool);
+                error: None,
+                started_at: None,
+                ended_at: None,
+                duration_ms: None,
+                association: CodingAgentToolAssociation::Unknown,
+                timestamp_quality: CodingAgentTimestampQuality::Unknown,
+            });
             left -= size;
         }
         record
@@ -795,7 +776,7 @@ mod tests {
         let records: Vec<_> = (0..3)
             .map(|turn| {
                 let record = padded(record("bound", &url, "s", &format!("t{turn}")), 600_000);
-                let path = queue::enqueue_unchecked_at(dir.path(), &record).unwrap();
+                let path = queue::enqueue_at(dir.path(), &record).unwrap();
                 (path, record)
             })
             .collect();
@@ -992,38 +973,26 @@ mod tests {
     }
 
     #[test]
-    fn a_turn_queued_with_its_conversation_is_sent_without_it() {
-        let mut server = mockito::Server::new();
-        let dir = tempfile::tempdir().unwrap();
-        let mut old = record("bound", &server.url(), "s", "old");
-        old.event.capture_policy = CapturePolicy::Content;
-        old.event.session.title = Some("private title".into());
-        old.event.turn.prompt = Some("private prompt".into());
-        old.event.turn.response = Some("private answer".into());
-        queue::enqueue_at(dir.path(), &old).unwrap();
-        let delivery = server
-            .mock("POST", "/api/telemetry/coding-agent/events/batch")
-            .match_request(|request| {
-                let body = String::from_utf8_lossy(request.body().expect("request body"));
-                !body.contains("private") && body.contains("\"metadata_only\"")
-            })
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body_from_request(accepted)
-            .expect(1)
-            .create();
-        let config = config("bound", &server.url(), Some(&token(Uuid::nil())));
+    fn a_turn_queued_with_chat_history_leaves_it_behind_unless_bound_for_localhost() {
+        let with_history = |url: &str| {
+            let mut queued = record("bound", url, "s", "t");
+            queued.event.capture_policy = CapturePolicy::Content;
+            queued.event.session.title = Some("private title".into());
+            queued.event.turn.prompt = Some("private prompt".into());
+            queued.event.turn.response = Some("private answer".into());
+            queued
+        };
 
-        let pass = deliver_at(
-            dir.path(),
-            || Ok(config.clone()),
-            &mut Pace::default(),
-            Backoff::Honour,
-        )
-        .unwrap();
+        let hosted = without_chat_history_unless_local(with_history("https://nasiko.example"));
+        assert_eq!(hosted.event.capture_policy, CapturePolicy::MetadataOnly);
+        assert_eq!(hosted.event.turn.prompt, None);
+        assert_eq!(hosted.event.session.title, None);
 
-        delivery.assert();
-        assert_eq!(pass.delivered, 1);
+        let local = with_history("http://localhost:8080");
+        assert_eq!(
+            without_chat_history_unless_local(local.clone()).event,
+            local.event
+        );
     }
 
     #[test]

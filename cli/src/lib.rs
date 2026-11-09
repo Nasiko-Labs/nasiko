@@ -805,7 +805,7 @@ pub enum AgentsCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// Ignored: reporting never sends conversation content
+        /// Report tokens, latency and cost, but omit conversation content
         #[arg(long)]
         no_content: bool,
     },
@@ -1488,7 +1488,9 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 commands::local_agents::note_renamed("agents discover", "status");
                 commands::local_agents::print_overview()
             }
-            AgentsCommands::Install { agent, .. } => install_reporting_renamed("agents", &agent),
+            AgentsCommands::Install { agent, no_content } => {
+                install_reporting_renamed("agents", &agent, no_content)
+            }
             AgentsCommands::Uninstall { agent } => uninstall_reporting_renamed("agents", &agent),
             AgentsCommands::Sync { retry_rejected } => commands::integration::sync(retry_rejected),
             AgentsCommands::Setup {
@@ -1781,13 +1783,18 @@ pub fn dispatch_registry(cmd: RegistrySubCommands) -> Result<()> {
 // ─── Coding-agent integrations ──────────────────────────────────────────────
 
 /// `agents install` / `integration install`, now `connect <agent> --no-routing --reporting`:
-/// runs exactly the command the note names. Reporting sends tokens, latency and cost only, so the
-/// old command's `--no-content` changes nothing.
+/// runs exactly the command the note names. The old command reported prompt and response text
+/// unless `--no-content`, so the new one says which explicitly.
 /// `old` is the group the caller used (`agents` or `integration`), for the note.
-pub fn install_reporting_renamed(old: &str, agent: &str) -> Result<()> {
+pub fn install_reporting_renamed(old: &str, agent: &str, no_content: bool) -> Result<()> {
+    let content = if no_content {
+        " --no-content"
+    } else {
+        " --content"
+    };
     commands::local_agents::note_renamed(
         &format!("{old} install"),
-        &format!("connect {agent} --no-routing --reporting -y"),
+        &format!("connect {agent} --no-routing --reporting{content} -y"),
     );
     // Exactly the command the note names, so the two never behave differently.
     commands::local_agents::connect(
@@ -1795,6 +1802,8 @@ pub fn install_reporting_renamed(old: &str, agent: &str) -> Result<()> {
         &commands::local_agents::ConnectOptions {
             no_routing: true,
             reporting: true,
+            content: !no_content,
+            no_content,
             yes: true,
             ..Default::default()
         },
@@ -1843,8 +1852,8 @@ pub fn dispatch_integration(cmd: IntegrationSubCommands) -> Result<()> {
             commands::local_agents::note_renamed("integration status", "status");
             commands::local_agents::print_overview()
         }
-        IntegrationSubCommands::Install { agent, .. } => {
-            install_reporting_renamed("integration", &agent)
+        IntegrationSubCommands::Install { agent, no_content } => {
+            install_reporting_renamed("integration", &agent, no_content)
         }
         IntegrationSubCommands::Uninstall { agent } => {
             uninstall_reporting_renamed("integration", &agent)

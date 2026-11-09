@@ -31,9 +31,12 @@ struct ClaimedEvent {
     otlp_log_delivered_at: Option<DateTime<Utc>>,
 }
 
-pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String) {
+/// Exports pending receipts forever. `accept_chat_history` is the server's
+/// `CodingAgentIngestConfig::accept_chat_history`: off, a receipt stored before it was
+/// turned off is exported without its chat history.
+pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String, accept_chat_history: bool) {
     loop {
-        match export_once(&db, &http, &endpoint).await {
+        match export_batch(&db, &http, &endpoint, accept_chat_history).await {
             Ok(0) => tokio::time::sleep(POLL_INTERVAL).await,
             Ok(_) => {}
             Err(error) => {
@@ -44,12 +47,23 @@ pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String) {
     }
 }
 
-/// Claims and exports one bounded batch. Claims are committed before any HTTP
-/// call; the claim UUID prevents a stale worker from finalizing a reclaimed row.
+/// [`export_batch`] on a server that keeps chat history (the open-source default).
 pub async fn export_once(
     db: &PgPool,
     http: &reqwest::Client,
     endpoint: &str,
+) -> anyhow::Result<usize> {
+    export_batch(db, http, endpoint, true).await
+}
+
+/// Claims and exports one bounded batch. Claims are committed before any HTTP
+/// call; the claim UUID prevents a stale worker from finalizing a reclaimed row.
+/// Without `accept_chat_history`, each receipt is exported without its chat history.
+pub async fn export_batch(
+    db: &PgPool,
+    http: &reqwest::Client,
+    endpoint: &str,
+    accept_chat_history: bool,
 ) -> anyhow::Result<usize> {
     let claimed = claim_batch(db).await?;
     let count = claimed.len();
@@ -61,9 +75,11 @@ pub async fn export_once(
                 return Ok::<(), anyhow::Error>(());
             }
         };
-        // A receipt stored before conversations stopped being kept may still hold one: it is
-        // exported without it, like every receipt since.
-        let mut event = event.without_content();
+        let mut event = if accept_chat_history {
+            event
+        } else {
+            event.without_content()
+        };
         event.session.id = row.session_id.clone();
         relabel_from_router(db, row.agent_id, &mut event).await;
         let delivery = async {
@@ -693,15 +709,15 @@ pub(crate) fn bounded_json(value: &Value) -> String {
     )
 }
 
-/// Upsert one `tool_calls` row per turn tool call, inside the ingest transaction. A coding
-/// agent's tool bodies (`arguments`, `output`) and error text are its conversation, so they are
-/// never stored: the row carries the name, kind, status and timing only.
+/// Upsert one `tool_calls` row per turn tool call, inside the ingest transaction.
+/// Bodies (`arguments`, `output`) only under the content capture policy.
 pub(crate) async fn write_tool_calls(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     event: &CodingAgentEventV1,
     session_id: &str,
     agent_id: uuid::Uuid,
     user_id: uuid::Uuid,
+    with_bodies: bool,
 ) -> Result<(), sqlx::Error> {
     let trace_id = trace_id_for_event(event);
     for tool in &event.turn.tool_calls {
@@ -728,9 +744,9 @@ pub(crate) async fn write_tool_calls(
         .bind(&tool.name)
         .bind(&tool.kind)
         .bind(tool_status(tool.status))
-        .bind(None::<String>)
-        .bind(None::<serde_json::Value>)
-        .bind(None::<serde_json::Value>)
+        .bind(&tool.error)
+        .bind(with_bodies.then(|| tool.arguments.clone()).flatten())
+        .bind(with_bodies.then(|| tool.output.clone()).flatten())
         .bind(duration)
         .bind(started_at)
         .execute(&mut **tx)

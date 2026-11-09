@@ -14,6 +14,7 @@ import { copy as pageCopy } from '../copy'
 import type { AgentsOnboarding, CardView, DesktopControl } from '../onboarding'
 import { rejectedTurns, shownPhase, type SyncRun } from '../runs'
 import { RunBlock } from './AgentsOnboardingRun'
+import { ChatHistoryNotice } from './ChatHistoryNotice'
 import { HarnessOptimization } from './HarnessOptimization'
 
 const copy = pageCopy.agentsOnboarding
@@ -52,6 +53,7 @@ function CardBody({ view, onboarding }: { view: CardView; onboarding: AgentsOnbo
         <>
           <Title>{copy.title}</Title>
           <p className="max-w-[70ch] text-sm text-muted-foreground">{copy.body}</p>
+          <ChatHistoryNotice />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" disabled={busy} onClick={() => desktop?.act('start')}>
               {copy.yes}
@@ -144,6 +146,7 @@ function Command() {
         </pre>
         <CopyButton text={copy.command} label={copy.copyCommand} />
       </div>
+      <ChatHistoryNotice />
     </div>
   )
 }

@@ -16,6 +16,7 @@ mod courier;
 mod import;
 mod launcher;
 mod ledger;
+mod locality;
 mod model;
 mod onboarding;
 mod pace;
@@ -36,11 +37,16 @@ use catalog::Support;
 use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
 
+pub use locality::{
+    CHAT_HISTORY_QUESTION, CHAT_HISTORY_WARNING, CONTENT_REFUSED, HOSTED_NOTICE, is_local_cluster,
+};
 pub use setup::SetupOptions;
 
 /// Options accepted by `nasiko agents install`.
 pub struct InstallOptions<'a> {
     pub agent_id: &'a str,
+    /// Keep prompt and response text out of exported spans.
+    pub no_content: bool,
     /// Report under this already-registered agent (the one LLM routing uses) instead of
     /// registering the account's default integration agent.
     pub agent_name: Option<&'a str>,
@@ -132,7 +138,7 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
-                capture_content: state.is_some_and(|state| state.capture_content),
+                capture_content: state.is_none_or(|state| state.capture_content),
                 hook_location: tildify(&agent.config_path()),
                 reporting_destination: state
                     .and_then(|state| state.binding.as_ref())
@@ -202,8 +208,7 @@ pub fn install(options: InstallOptions<'_>) -> Result<()> {
             save_agent_state(
                 agent,
                 &registration.agent_name,
-                // Prompt and response text is never reported.
-                false,
+                !options.no_content,
                 &registration.binding,
             )
         },
@@ -272,6 +277,8 @@ pub(super) fn auto_install_detected() -> Result<()> {
     }
 
     let here = ReportingDestination::current()?;
+    let here_is_local = is_local_cluster(&here.cluster_url);
+    let chat_history = chat_history_for_setup(here_is_local)?;
     println!("\nConfiguring detected coding agents for this account...");
     let mut installed = 0usize;
     for agent in agents {
@@ -281,7 +288,7 @@ pub(super) fn auto_install_detected() -> Result<()> {
             crate::commands::local_agents::cli_name(),
             spec.id
         );
-        match setup_step(settings.get(spec.id), &here) {
+        let capture_content = match setup_step(settings.get(spec.id), &here) {
             SetupStep::Keep => {
                 println!(
                     "{} already reports sessions to {}.",
@@ -290,14 +297,22 @@ pub(super) fn auto_install_detected() -> Result<()> {
                 installed += 1;
                 continue;
             }
-            SetupStep::Install => {}
-            SetupStep::Move { from } => println!(
-                "{} reports sessions to {from}; moving it to {}.",
-                spec.display_name, here.cluster_name
-            ),
-        }
+            SetupStep::Install => chat_history,
+            SetupStep::Move {
+                from,
+                capture_content,
+            } => {
+                println!(
+                    "{} reports sessions to {from}; moving it to {}.",
+                    spec.display_name, here.cluster_name
+                );
+                // Chat history moves only to a control plane on this machine.
+                capture_content && here_is_local
+            }
+        };
         match install(InstallOptions {
             agent_id: spec.id,
+            no_content: !capture_content,
             agent_name: None,
         }) {
             Ok(()) => installed += 1,
@@ -312,15 +327,37 @@ pub(super) fn auto_install_detected() -> Result<()> {
     Ok(())
 }
 
+/// Whether `nasiko agents setup` syncs chat history for the agents it newly connects. A hosted
+/// control plane never gets it (and is told so); one on this machine is asked once, on a terminal,
+/// defaulting to no. Without a terminal (the desktop app, a script), tokens only.
+fn chat_history_for_setup(here_is_local: bool) -> Result<bool> {
+    use std::io::IsTerminal;
+    if !here_is_local {
+        term::print_info(HOSTED_NOTICE);
+        return Ok(false);
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    term::print_warning(CHAT_HISTORY_WARNING);
+    Ok(
+        dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt(CHAT_HISTORY_QUESTION)
+            .default(false)
+            .interact()?,
+    )
+}
+
 /// What `nasiko agents setup` does with one detected agent's reporting.
 #[derive(Debug, PartialEq, Eq)]
 enum SetupStep {
-    /// Nothing installed yet: install it here.
+    /// Nothing installed yet: install it here, with prompt and response text.
     Install,
     /// Already reporting to this cluster and account.
     Keep,
-    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it here.
-    Move { from: String },
+    /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
+    /// here, keeping its content setting.
+    Move { from: String, capture_content: bool },
 }
 
 /// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
@@ -336,7 +373,10 @@ fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupS
         Some(binding) => binding.cluster_name.clone(),
         None => "an older install with no cluster recorded".to_string(),
     };
-    SetupStep::Move { from }
+    SetupStep::Move {
+        from,
+        capture_content: state.capture_content,
+    }
 }
 
 /// `nasiko agents sync` — see [`setup::sync`].
@@ -821,7 +861,10 @@ mod tests {
         );
         assert_eq!(
             setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move { from: "cp".into() }
+            SetupStep::Move {
+                from: "cp".into(),
+                capture_content: true
+            }
         );
     }
 
@@ -835,6 +878,7 @@ mod tests {
             setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
             SetupStep::Move {
                 from: "an older install with no cluster recorded".into(),
+                capture_content: false
             }
         );
     }

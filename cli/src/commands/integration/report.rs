@@ -152,14 +152,20 @@ fn capture_locked(
         pending: pending.len(),
         ..Captured::default()
     };
+    // Chat history only ever goes to a control plane on this machine, whatever was saved: a
+    // hosted one gets what prices the turn.
+    let capture_content =
+        agent_state.capture_content && super::is_local_cluster(&destination.cluster_url);
     for turn in &pending {
         let record = QueueRecord::new(
             destination.clone(),
-            // Only what prices the turn leaves this machine: never the conversation.
-            sanitized(
-                canonical_event(agent_id, &agent_state.agent_name, snapshot, turn)
-                    .without_content(),
-            ),
+            sanitized(canonical_event(
+                agent_id,
+                &agent_state.agent_name,
+                snapshot,
+                turn,
+                capture_content,
+            )),
         );
         if let Err(error) = record.event.validate() {
             queue::reject_invalid(&record, &error)?;
@@ -207,6 +213,7 @@ fn canonical_event(
     agent_name: &str,
     snapshot: &SessionSnapshot,
     turn: &Turn,
+    capture_content: bool,
 ) -> CodingAgentEventV1 {
     let source_session_id = snapshot.session_id.as_str();
     let title = snapshot.title.as_deref();
@@ -221,15 +228,15 @@ fn canonical_event(
         session: CodingAgentSession {
             id: coding_agent_session_id(agent_id, source_session_id),
             source_id: source_session_id.to_string(),
-            title: title.map(|title| {
+            title: title.filter(|_| capture_content).map(|title| {
                 bounded_text_to(title, nasiko_types::CODING_AGENT_SESSION_TITLE_MAX_BYTES)
             }),
             parent: snapshot.parent.clone(),
         },
         turn: CodingAgentTurn {
             id: turn.uuid.clone(),
-            prompt: Some(turn.prompt.clone()),
-            response: turn.response.clone(),
+            prompt: capture_content.then(|| turn.prompt.clone()),
+            response: capture_content.then(|| turn.response.clone()).flatten(),
             started_at: turn.started_at,
             ended_at: turn.ended_at,
             llm_calls: turn
@@ -257,10 +264,18 @@ fn canonical_event(
                     kind: tool.kind.clone(),
                     model_call_id: tool.model_call_id.clone(),
                     status: tool.status,
-                    arguments: tool.arguments.as_ref().map(bounded_value),
-                    output: tool.output.as_ref().map(bounded_value),
-                    raw: tool.raw.as_deref().map(bounded_text),
-                    error: tool.error.as_deref().map(bounded_text),
+                    arguments: capture_content
+                        .then(|| tool.arguments.as_ref().map(bounded_value))
+                        .flatten(),
+                    output: capture_content
+                        .then(|| tool.output.as_ref().map(bounded_value))
+                        .flatten(),
+                    raw: capture_content
+                        .then(|| tool.raw.as_deref().map(bounded_text))
+                        .flatten(),
+                    error: capture_content
+                        .then(|| tool.error.as_deref().map(bounded_text))
+                        .flatten(),
                     started_at: tool.started_at,
                     ended_at: tool.ended_at,
                     duration_ms: tool.duration_ms,
@@ -269,7 +284,11 @@ fn canonical_event(
                 })
                 .collect(),
         },
-        capture_policy: CapturePolicy::Content,
+        capture_policy: if capture_content {
+            CapturePolicy::Content
+        } else {
+            CapturePolicy::MetadataOnly
+        },
     }
 }
 
@@ -279,7 +298,7 @@ pub(super) fn canonical_event_for_test(
     snapshot: &SessionSnapshot,
     turn: &Turn,
 ) -> CodingAgentEventV1 {
-    canonical_event("cursor", "cursor", snapshot, turn)
+    canonical_event("cursor", "cursor", snapshot, turn, true)
 }
 
 fn bounded_value(value: &serde_json::Value) -> serde_json::Value {
@@ -399,8 +418,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_turn_is_queued_without_its_conversation_even_when_content_was_turned_on() {
+    /// Captures one turn (with NUL characters in its prompt and title) for an agent saved with chat
+    /// history on, bound to `cluster_url`; returns what was queued.
+    fn capture_with_content_on(cluster_url: &str) -> Vec<CodingAgentEventV1> {
         let dir = tempfile::tempdir().unwrap();
         let lock =
             SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
@@ -412,7 +432,7 @@ mod tests {
         };
         let destination = QueueDestination {
             cluster_name: "cluster".into(),
-            cluster_url: "https://cluster.example".into(),
+            cluster_url: cluster_url.into(),
             principal_id: uuid::Uuid::new_v4(),
         };
         let mut dirty = turn("a", true);
@@ -440,16 +460,28 @@ mod tests {
         .unwrap();
 
         assert_eq!((captured.queued.len(), captured.rejected), (1, 0));
-        let event = &queued.borrow()[0];
+        let queued = queued.into_inner();
+        assert_eq!(captured.queued[0], queued[0].event_id);
+        queued
+    }
+
+    #[test]
+    fn a_turn_with_nul_characters_is_queued_clean_instead_of_quarantined() {
+        let event = &capture_with_content_on("http://localhost:8080")[0];
+        assert_eq!(event.turn.prompt.as_deref(), Some("readthis"));
+        assert_eq!(event.session.title.as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn a_hosted_cluster_never_gets_chat_history_even_when_it_was_turned_on() {
+        let event = &capture_with_content_on("https://cluster.example")[0];
         assert_eq!(event.capture_policy, CapturePolicy::MetadataOnly);
-        assert_eq!(event.turn.prompt, None);
-        assert_eq!(event.turn.response, None);
+        assert_eq!((&event.turn.prompt, &event.turn.response), (&None, &None));
         assert_eq!(event.session.title, None);
         assert!(
             !event.turn.llm_calls.is_empty(),
             "token usage is still reported"
         );
-        assert_eq!(captured.queued[0], event.event_id);
     }
 
     #[test]
@@ -660,8 +692,8 @@ mod tests {
             turns: vec![turn.clone()],
             parent: None,
         };
-        let first = canonical_event("claude", "claude-code", &session, &turn).without_content();
-        let second = canonical_event("claude", "claude-code", &session, &turn).without_content();
+        let first = canonical_event("claude", "claude-code", &session, &turn, false);
+        let second = canonical_event("claude", "claude-code", &session, &turn, false);
         assert_eq!(first.event_id, second.event_id);
         assert_eq!(first, second);
         assert_eq!(first.session.id, "claude:same");
@@ -675,9 +707,9 @@ mod tests {
         assert!(first.validate().is_ok());
         assert_ne!(
             first.event_id,
-            canonical_event("opencode", "opencode", &session, &turn).event_id
+            canonical_event("opencode", "opencode", &session, &turn, false).event_id
         );
-        let content = canonical_event("claude", "claude-code", &session, &turn);
+        let content = canonical_event("claude", "claude-code", &session, &turn, true);
         assert_eq!(
             content.turn.tool_calls[0].arguments,
             Some(serde_json::json!({"path": "secret"}))
@@ -704,7 +736,7 @@ mod tests {
             ),
         };
 
-        let event = canonical_event("claude", "claude-code", &session, &child);
+        let event = canonical_event("claude", "claude-code", &session, &child, true);
 
         let parent = event.session.parent.as_ref().unwrap();
         assert_eq!(parent.source_id, "parent");

@@ -133,6 +133,9 @@ export interface CodingAgentsState {
   runs: MockSyncRun[]
   /** A server without the routes: every read and write is a bare 404. */
   absent: boolean
+  /** `GET /api/me/coding-agents/privacy`: whether the server keeps chat history (OSS on localhost: true; a hosted
+   *  server, EE: false; coding_agent_onboarding.rs `coding_agent_privacy`). */
+  chatHistory: boolean
   /** Browser demo: when the scripted client started (ms), or null. */
   scriptStart: number | null
   /** When a Retry was asked of the scripted client (ms), or null. */
@@ -456,6 +459,7 @@ export function buildCodingAgentsState(
   const base: CodingAgentsState = {
     runs: [],
     absent: false,
+    chatHistory: true,
     scriptStart: null,
     retryAt: null,
     desktop: null,
@@ -707,6 +711,11 @@ export function codingAgentsHandlers(ctx: Ctx): HttpHandler[] {
   }
   return [
     ...desktopHandlers(ctx),
+    http.get('/api/me/coding-agents/privacy', () => {
+      const stop = gate()
+      if (stop) return stop
+      return HttpResponse.json({ chat_history: ctx.state().chatHistory })
+    }),
     http.get('/api/me/coding-agents/sync', () => {
       const stop = gate()
       if (stop) return stop

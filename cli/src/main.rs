@@ -95,8 +95,10 @@ Config: ~/.nasiko/config.json
 Coding agents get up to three things: LLM routing through the Nasiko LLM router, your MCP
 connectors through the Nasiko gateway, and session reporting to Nasiko observability.
 On a terminal, connect asks about each; flags answer the same questions in scripts.
-Without a terminal, new routing gets MCP and reporting is off unless --reporting is given.
-Reporting sends tokens, latency and cost only: prompt and response text never leaves this machine.
+Without a terminal, new routing gets MCP and reporting is off unless --reporting, --content
+or --no-content is given. Chat history (prompt and response text) is only ever synced to a
+Nasiko on this machine (localhost, any port), after asking or with --content; a hosted cluster
+gets tokens, latency and cost only.
 
 Examples:
   nasiko connect                       pick from the coding agents on this machine

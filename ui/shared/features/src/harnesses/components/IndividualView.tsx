@@ -13,6 +13,7 @@ import { copy } from '../copy'
 import { harnessStyle } from '../rollup'
 import type { UsageResponse } from '../types'
 import { HarnessLabel } from './bits'
+import { ChatHistoryNotice } from './ChatHistoryNotice'
 
 export interface SessionItem {
   session_id: string
@@ -230,6 +231,7 @@ export function ConnectHelp({
           {copy.installCli}
         </Link>
       </p>
+      <ChatHistoryNotice />
     </div>
   )
 }

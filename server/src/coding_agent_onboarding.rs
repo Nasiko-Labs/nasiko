@@ -46,6 +46,7 @@ const MAX_SYNC_RUNS_RETURNED: i64 = 100;
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/me/coding-agents/privacy", get(coding_agent_privacy))
         .route("/me/coding-agents/sync", get(list_sync_runs))
         .route("/me/coding-agents/sync/{device_id}", put(report_sync))
         .route(
@@ -538,6 +539,33 @@ pub(crate) async fn list_sync_runs(State(state): State<AppState>, claims: Claims
         Ok(runs) => Json(SyncRunsResponse { runs }).into_response(),
         Err(e) => internal_error("list_sync_runs: decode", e),
     }
+}
+
+/// What this server keeps of a local coding agent's sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct CodingAgentPrivacy {
+    /// Whether chat history — prompts, responses, tool output — is kept. When false (every hosted
+    /// server), only what prices a session is: tokens, model, cost, timings, tool names.
+    pub chat_history: bool,
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/me/coding-agents/privacy",
+    tag = "coding-agents",
+    responses(
+        (status = 200, description = "Whether this server keeps coding agents' chat history", body = CodingAgentPrivacy),
+    ),
+    security(("bearer_auth" = []))
+)]
+pub(crate) async fn coding_agent_privacy(
+    State(state): State<AppState>,
+    _claims: Claims,
+) -> Response {
+    Json(CodingAgentPrivacy {
+        chat_history: state.config.coding_agent_ingest.accept_chat_history,
+    })
+    .into_response()
 }
 
 #[cfg(test)]

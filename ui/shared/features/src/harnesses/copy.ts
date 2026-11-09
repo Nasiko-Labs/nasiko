@@ -180,6 +180,15 @@ export const copy = {
     failed: (n: number, reason: string) =>
       `Couldn't change Token optimization for ${n === 1 ? 'one coding agent' : `${n} coding agents`}: ${reason}`,
   },
+  // What this server keeps of a coding agent's sessions (components/ChatHistoryNotice.tsx, from the server's own policy).
+  chatHistory: {
+    hostedTitle: 'Only usage is synced',
+    hostedBody:
+      "Nasiko syncs your coding agents' tokens, cost, models and timings — never their chat history. Prompts, responses and tool output stay on your computer.",
+    localTitle: 'Chat history can sync to this Nasiko',
+    localBody:
+      "This Nasiko runs on your computer, so `nasiko connect` asks whether to sync your coding agents' chat history — prompts, responses and tool output — too. Say no to sync only tokens, cost and timings.",
+  },
   // Monitor's note while the desktop app imports coding agents (components/ImportNotice.tsx).
   importNotice: {
     title: 'Bringing in your coding agents',
