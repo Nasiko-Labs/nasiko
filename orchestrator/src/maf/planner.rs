@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, LlmClient};
+use super::llm::{ChatMessage, LlmClient, LlmUsage};
 
 /// Minimal agent info needed for planning.
 #[derive(Debug, Clone, Serialize)]
@@ -73,11 +73,15 @@ Schema:
 }"#;
 
 /// Plan a MAF from a natural language description + list of available agents.
+///
+/// Returns the plan and what the model call cost. The usage is `Some` whenever the model
+/// answered, including when its answer could not be turned into a plan: that call was still
+/// paid for, and the caller meters it either way.
 pub async fn plan_maf(
     description: &str,
     agents: &[AgentInfo],
     llm: &LlmClient,
-) -> Result<MafPlan, String> {
+) -> (Result<MafPlan, String>, Option<LlmUsage>) {
     // Build a simple table so the LLM sees UUID → name clearly
     let agent_table = agents
         .iter()
@@ -99,7 +103,14 @@ pub async fn plan_maf(
         ChatMessage::user(user_msg),
     ];
 
-    let (json, _tokens) = llm.chat_json(messages).await?;
+    match llm.chat_json(messages).await {
+        Ok((json, usage)) => (parse_plan(json, agents), Some(usage)),
+        Err(e) => (Err(e), None),
+    }
+}
+
+/// Turn the planner model's JSON into a plan whose every step names one of `agents`.
+fn parse_plan(json: serde_json::Value, agents: &[AgentInfo]) -> Result<MafPlan, String> {
     let raw: RawMafPlan =
         serde_json::from_value(json).map_err(|e| format!("planner output parse error: {e}"))?;
 
@@ -137,4 +148,49 @@ pub async fn plan_maf(
         output_generation: raw.output_generation,
         steps,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(name: &str) -> AgentInfo {
+        AgentInfo {
+            id: Uuid::new_v4(),
+            name: name.to_string(),
+            description: None,
+        }
+    }
+
+    fn plan_json(agent_ids: &[&str]) -> serde_json::Value {
+        let steps: Vec<_> = agent_ids
+            .iter()
+            .map(|id| serde_json::json!({"agent_id": id, "task_description": "do it"}))
+            .collect();
+        serde_json::json!({
+            "name": "n", "description": "d", "output_generation": "o", "steps": steps,
+        })
+    }
+
+    #[test]
+    fn steps_resolve_by_uuid_or_case_insensitive_name() {
+        let agents = [agent("Weather"), agent("Writer")];
+        let by_id = agents[0].id.to_string();
+        let plan = parse_plan(plan_json(&[&by_id, "WRITER"]), &agents).expect("valid plan");
+        let ids: Vec<Uuid> = plan.steps.iter().map(|s| s.agent_id).collect();
+        assert_eq!(ids, vec![agents[0].id, agents[1].id]);
+    }
+
+    #[test]
+    fn a_step_naming_no_offered_agent_is_refused() {
+        let agents = [agent("Weather")];
+        let err = parse_plan(plan_json(&["Nobody"]), &agents).expect_err("unknown agent");
+        assert!(err.contains("does not match any available agent"), "{err}");
+    }
+
+    #[test]
+    fn a_plan_with_no_steps_is_refused() {
+        let err = parse_plan(plan_json(&[]), &[agent("Weather")]).expect_err("zero steps");
+        assert_eq!(err, "planner returned zero steps");
+    }
 }
