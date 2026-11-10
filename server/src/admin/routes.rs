@@ -1255,30 +1255,8 @@ async fn resolve_full_env(
     owner_id: Uuid,
     agent_id: Uuid,
 ) -> std::collections::HashMap<String, String> {
-    use nasiko_secrets::SecretsCrypto;
-
-    let crypto = SecretsCrypto::for_user(owner_id);
-    let mut env = std::collections::HashMap::new();
-
-    // 1. Vault secrets (user-level, lower precedence)
-    let vault_rows: Vec<(String, String)> =
-        sqlx::query_as("SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1")
-            .bind(owner_id)
-            .fetch_all(&state.db)
-            .await
-            .unwrap_or_default();
-
-    for (name, encrypted) in vault_rows {
-        if let Ok(value) = crypto.decrypt(&encrypted) {
-            env.insert(name, value);
-        }
-    }
-
-    // 2. Agent secrets (higher precedence — overrides vault)
-    let agent_secrets = agent_secrets::resolve_agent_env(&state.db, agent_id).await;
-    for (k, v) in agent_secrets {
-        env.insert(k, v);
-    }
+    // 1-2. Vault secrets, then agent secrets on top.
+    let mut env = agent_secrets::resolve_secret_env(&state.db, owner_id, agent_id).await;
 
     // 3. Platform-level LLM config — only fills gaps left by vault/agent
     // secrets. `AppState::agent_env` (used by the deployment-scoped restart

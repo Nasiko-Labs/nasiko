@@ -332,6 +332,35 @@ describe('settings', () => {
     expect(within(section).queryByText(/next time the agent is deployed/)).toBeNull()
   })
 
+  // NAS-1458: the owner's Settings → Secrets reach the agent unless it sets its own of the same name.
+  it('lists the owner’s secrets as inherited, and as overridden once the agent sets its own', async () => {
+    renderApp(url(1, 'settings'))
+    const section = await screen.findByRole('region', { name: 'Secrets' })
+    expect(
+      within(section).getByText(/A secret set here overrides one of the same name there/),
+    ).toBeInTheDocument()
+    const inherited = await within(section).findByRole('region', {
+      name: 'From the owner’s secrets',
+    })
+    const row = async (name: string) =>
+      (await within(inherited).findByText(name)).closest('li') as HTMLElement
+    expect(await row('ANTHROPIC_API_KEY')).toHaveTextContent('Inherited')
+    expect(
+      within(inherited).getByRole('link', { name: 'Manage in Settings → Secrets' }),
+    ).toHaveAttribute('href', '/settings/secrets')
+
+    await userEvent.type(
+      within(section).getByRole('textbox', { name: 'Name' }),
+      'ANTHROPIC_API_KEY',
+    )
+    await userEvent.type(within(section).getByLabelText('Value'), 'agent-only')
+    await userEvent.click(within(section).getByRole('button', { name: 'Add or replace' }))
+    await waitFor(async () =>
+      expect(await row('ANTHROPIC_API_KEY')).toHaveTextContent('Overridden here'),
+    )
+    expect(await within(section).findByText('Overrides owner’s secret')).toBeInTheDocument()
+  })
+
   it('leaves self-review off, but usable, when minimal-code mode goes on', async () => {
     // The agent reads an unset CODING_AGENT_SELF_REVIEW as ON, so enabling the ladder used to
     // silently start an extra model call on every edit. Enabling one feature must not enable a

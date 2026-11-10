@@ -679,13 +679,29 @@ impl AppState {
         )
     }
 
-    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
-    /// + feature flags from metadata.
+    /// Build the full environment for an agent container: the owner's secrets with the agent's own
+    /// on top (`agent_secrets::resolve_secret_env`), platform-level vars where neither sets one,
+    /// and feature flags from metadata.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
     ) -> std::collections::HashMap<String, String> {
-        let mut env = crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await;
+        let owner_id: Option<uuid::Uuid> =
+            sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
+                .bind(agent_id)
+                .fetch_optional(&self.db)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!(%e, %agent_id, "agent_env: could not read the agent's owner");
+                    None
+                });
+        let mut env = match owner_id {
+            Some(owner_id) => {
+                crate::catalog::agent_secrets::resolve_secret_env(&self.db, owner_id, agent_id)
+                    .await
+            }
+            None => crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await,
+        };
         for (key, value) in self.platform_fallback_env() {
             env.entry(key).or_insert(value);
         }
