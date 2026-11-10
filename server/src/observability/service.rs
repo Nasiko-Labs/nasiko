@@ -11,8 +11,6 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use nasiko_config::Config;
-use nasiko_event_store::flows::FlowRow;
-use nasiko_event_store::trace_usage::TraceUsageRow;
 use nasiko_observability::{
     CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
     extract_usage_attrs,
@@ -1760,9 +1758,7 @@ impl ObservabilityService {
             .load_trace_usage_for_session(session_id, &flow_ids)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        // A coding-agent session (a subagent's included) has no flows: its turns are its usage rows.
-        let turns = super::session_store::flows_with_usage_turns(&flows, &usage);
-        let mut details = super::session_store::session_from_rows(session_id, &turns, &usage);
+        let mut details = super::session_store::session_from_rows(session_id, &flows, &usage);
         match self.provider.get_session(session_id, start, end).await {
             Ok(live) if flows.is_empty() => details = live,
             Ok(live) => super::session_store::enrich_from_tempo(&mut details, &live),
@@ -1888,30 +1884,6 @@ impl ObservabilityService {
         })
     }
 
-    /// What the server recorded of one turn, for a trace Tempo cannot serve: its
-    /// `flows` row, else (a coding-agent turn, which never crosses the proxy) a
-    /// turn rebuilt from its `trace_usage` rows. `None` when it recorded neither.
-    async fn recorded_turn(
-        &self,
-        trace_id: &str,
-    ) -> Result<Option<(FlowRow, Vec<TraceUsageRow>)>, ObservabilityError> {
-        let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
-        if let Some(flow) = self.store.load_flow(trace_id).await.map_err(internal)? {
-            let usage = self
-                .store
-                .load_trace_usage_for_session(&flow.session_id, std::slice::from_ref(&flow.flow_id))
-                .await
-                .map_err(internal)?;
-            return Ok(Some((flow, usage)));
-        }
-        let usage = self
-            .store
-            .load_trace_usage_for_trace(trace_id)
-            .await
-            .map_err(internal)?;
-        Ok(super::session_store::flow_from_usage(trace_id, &usage).map(|flow| (flow, usage)))
-    }
-
     // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
@@ -1926,13 +1898,23 @@ impl ObservabilityService {
         let mut trace = match self.provider.get_trace(trace_id).await {
             Ok(t) if !t.spans.is_empty() => t,
             // Any Tempo miss or failure (retention, non-hex seeded ids, outage) falls
-            // back to SQL; a trace the server recorded nothing for is still a 404.
+            // back to SQL; a trace with no flow row is still a 404.
             Ok(_) | Err(_) => {
                 let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
-                let (flow, usage) = self
-                    .recorded_turn(trace_id)
-                    .await?
+                let flow = self
+                    .store
+                    .load_flow(trace_id)
+                    .await
+                    .map_err(internal)?
                     .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))?;
+                let usage = self
+                    .store
+                    .load_trace_usage_for_session(
+                        &flow.session_id,
+                        std::slice::from_ref(&flow.flow_id),
+                    )
+                    .await
+                    .map_err(internal)?;
                 let (mut t, c) = super::session_store::trace_from_rows(&flow, &usage);
                 let calls = self
                     .store
@@ -2042,7 +2024,20 @@ impl ObservabilityService {
         let (trace, from_sql) = match self.provider.get_trace(trace_id).await {
             Ok(t) if !t.spans.is_empty() => (t, false),
             Ok(_) | Err(_) => {
-                let (flow, usage) = self.recorded_turn(trace_id).await?.ok_or_else(span_nf)?;
+                let flow = self
+                    .store
+                    .load_flow(trace_id)
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?
+                    .ok_or_else(span_nf)?;
+                let usage = self
+                    .store
+                    .load_trace_usage_for_session(
+                        &flow.session_id,
+                        std::slice::from_ref(&flow.flow_id),
+                    )
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
                 (super::session_store::trace_from_rows(&flow, &usage).0, true)
             }
         };
@@ -2066,26 +2061,13 @@ impl ObservabilityService {
                 .ok_or_else(span_nf)?;
             super::session_store::span_details_from_sql(span)
         } else {
-            match self.provider.get_span(trace_id, span_id).await {
-                Ok(details) => details,
-                Err(ObservabilityError::NotFound(_)) => return Err(span_nf()),
-                // The trace was just read, so this is the trace store failing the
-                // second read (an overloaded Tempo answers 429). Serve the span from
-                // that read, without the prompt and completion text, rather than a 500.
-                Err(e) => {
-                    tracing::warn!(
-                        %trace_id, %span_id, error = %e,
-                        "span read failed; serving the span from its trace"
-                    );
-                    let span = trace
-                        .spans
-                        .iter()
-                        .find(|s| s.span_id == span_id)
-                        .cloned()
-                        .ok_or_else(span_nf)?;
-                    super::session_store::span_details_from_sql(span)
-                }
-            }
+            self.provider
+                .get_span(trace_id, span_id)
+                .await
+                .map_err(|e| match e {
+                    ObservabilityError::NotFound(_) => span_nf(),
+                    other => other,
+                })?
         };
         let span = &details.span;
 
@@ -2307,7 +2289,7 @@ impl ObservabilityService {
     #[allow(clippy::too_many_arguments)]
     pub async fn get_finops_dashboard(
         &self,
-        _user_id: &str,
+        user_id: &str,
         _role: Option<&str>,
         _department_id: Option<&str>,
         _team_id: Option<&str>,
@@ -2333,6 +2315,11 @@ impl ObservabilityService {
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
         let accessible: Option<HashSet<uuid::Uuid>> =
             accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let own_platform_user = own_platform_rows_user(
+            accessible.is_some(),
+            parsed_owner_id.is_some() || agent_name.is_some(),
+            user_id,
+        );
         let all_agents = self.get_agent_names(parsed_owner_id).await?;
         let mut agents: Vec<_> = match agent_name {
             Some(name) => all_agents
@@ -2432,7 +2419,10 @@ impl ObservabilityService {
         let hours_by_agent: HashMap<uuid::Uuid, f64> =
             hours_rows.iter().map(|r| (r.agent_id, r.hours)).collect();
 
-        if agents.is_empty() {
+        // A scoped caller with no agents can still have spent through the platform (a chat the
+        // orchestrator answered itself, a generated MAF plan), so only skip the queries when
+        // those rows could not be in view.
+        if agents.is_empty() && own_platform_user.is_none() {
             return Ok(empty_finops_response(
                 total_container_hours,
                 total_sandbox_minutes,
@@ -2501,7 +2491,8 @@ impl ObservabilityService {
                    AND ($4::TEXT IS NULL OR model = $4)
                    AND ($5::TEXT IS NULL OR provider = $5)
                    AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
                  GROUP BY agent_name),
                h AS (
                  SELECT agent_name,
@@ -2517,7 +2508,8 @@ impl ObservabilityService {
                    AND ($4::TEXT IS NULL OR model = $4)
                    AND ($5::TEXT IS NULL OR provider = $5)
                    AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
                  GROUP BY agent_name)
                SELECT s.agent_name, s.operations, s.input_tokens, s.output_tokens,
                       s.cache_read_tokens, s.cache_creation_tokens, s.total_cost,
@@ -2537,6 +2529,9 @@ impl ObservabilityService {
             .bind(has_user_filter)
             .bind(&user_id_list)
             .bind(&scoped_names)
+            .bind(own_platform_user)
+            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2551,6 +2546,9 @@ impl ObservabilityService {
             .bind(has_user_filter)
             .bind(&user_id_list)
             .bind(&scoped_names)
+            .bind(own_platform_user)
+            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2569,7 +2567,8 @@ impl ObservabilityService {
                  AND ($3::TEXT IS NULL OR model = $3)
                  AND ($4::TEXT IS NULL OR provider = $4)
                  AND (NOT $5::BOOL OR user_id = ANY($6::UUID[]))
-                 AND ($7::TEXT[] IS NULL OR agent_name = ANY($7))
+                 AND ($7::TEXT[] IS NULL OR agent_name = ANY($7)
+                      OR (user_id = $8 AND (agent_name = ANY($9) OR agent_name LIKE $10)))
                GROUP BY agent_name"#,
         )
         .bind(last_24h)
@@ -2579,6 +2578,9 @@ impl ObservabilityService {
         .bind(has_user_filter)
         .bind(&user_id_list)
         .bind(&scoped_names)
+        .bind(own_platform_user)
+        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2596,7 +2598,8 @@ impl ObservabilityService {
                  AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
                  AND COALESCE(cost_usd, 0) = 0
                  AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0
-                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8))"#,
+                 AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                      OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))"#,
         )
         .bind(start)
         .bind(now)
@@ -2606,6 +2609,9 @@ impl ObservabilityService {
         .bind(has_user_filter)
         .bind(&user_id_list)
         .bind(&scoped_names)
+        .bind(own_platform_user)
+        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -2747,9 +2753,11 @@ impl ObservabilityService {
 
         // The platform's own calls are real spend under no registered agent, so the loop above
         // never meets them. A caller who sees the whole fleet gets them in the totals, and as
-        // one slice of the spend chart.
+        // one slice of the spend chart; a scoped caller gets the same for their own calls only,
+        // which is all the queries above let through for them.
         let mut platform_cost = 0.0;
-        if accessible.is_none() && parsed_owner_id.is_none() && agent_name.is_none() {
+        let fleet_view = accessible.is_none() && parsed_owner_id.is_none() && agent_name.is_none();
+        if fleet_view || own_platform_user.is_some() {
             let registered: HashSet<&str> =
                 agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
             let is_platform =
@@ -3885,6 +3893,30 @@ fn empty_agent_hours_response(
 
 /// `total_container_hours` is threaded in rather than zeroed: a deployment
 /// whose agents were all hard-deleted still has billable session history.
+/// The `trace_usage.agent_name`s the platform's own model calls are written under, which belong
+/// to no registered agent: the chat orchestrator (`router::usage_meta::PricedTurn::persist`), the
+/// routing selector (`nasiko_orchestrator` `write_selector_usage`) and MAF's run-level phases
+/// (`executor::maf_agent_name(None)`). MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
+const PLATFORM_ROW_NAMES: [&str; 3] = ["orchestrator", "router_selection", "maf"];
+
+/// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
+const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
+
+/// The caller whose own platform rows a scoped FinOps view keeps, or `None` when it keeps none.
+///
+/// A scoped caller sees only the agents they may access, which a filter on agent name enforces;
+/// platform rows carry no agent, so that filter dropped them all, and a member's own
+/// orchestrator turns never reached their dashboard. They are matched on the row's user
+/// instead, so a caller sees their own and never anyone else's. An unscoped caller already sees
+/// every platform row, and a view narrowed to one agent or to the caller's own agents is about
+/// agents, so neither needs this.
+fn own_platform_rows_user(scoped: bool, narrowed: bool, caller: &str) -> Option<uuid::Uuid> {
+    if !scoped || narrowed {
+        return None;
+    }
+    caller.parse().ok()
+}
+
 fn empty_finops_response(
     total_container_hours: f64,
     total_sandbox_minutes: f64,
@@ -3944,6 +3976,36 @@ mod tests {
     use nasiko_observability::Span;
 
     use super::*;
+
+    #[test]
+    fn a_scoped_caller_keeps_their_own_platform_rows() {
+        let caller = uuid::Uuid::new_v4();
+        assert_eq!(
+            own_platform_rows_user(true, false, &caller.to_string()),
+            Some(caller)
+        );
+    }
+
+    #[test]
+    fn an_unscoped_or_narrowed_view_adds_no_own_platform_rows() {
+        let caller = uuid::Uuid::new_v4().to_string();
+        assert_eq!(own_platform_rows_user(false, false, &caller), None);
+        assert_eq!(own_platform_rows_user(true, true, &caller), None);
+    }
+
+    #[test]
+    fn a_caller_without_a_user_id_sees_no_platform_rows() {
+        assert_eq!(own_platform_rows_user(true, false, ""), None);
+    }
+
+    /// The names are matched by value in SQL, so they must stay the ones the writers use.
+    #[test]
+    fn platform_row_names_match_the_maf_writers() {
+        use nasiko_orchestrator::maf::executor::maf_agent_name;
+        assert!(PLATFORM_ROW_NAMES.contains(&maf_agent_name(None).as_str()));
+        let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
+        assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
+    }
 
     #[test]
     fn session_trace_window_is_anchored_to_historical_session() {

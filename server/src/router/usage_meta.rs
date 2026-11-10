@@ -39,6 +39,38 @@ impl TurnUsage {
     }
 }
 
+/// Whose key paid for an orchestrator turn, as `trace_usage.metadata.key_source` records it.
+///
+/// The labels are the LLM router's (`nasiko_llm_router::usage`), so a reader of the column
+/// treats an orchestrator row the way it treats a gateway row: only `platform` is the
+/// deployment's spend. Recording `platform` for a turn the user's own key paid for would bill
+/// the deployment for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeySource {
+    /// The server's own provider key.
+    Platform,
+    /// The calling user's saved key.
+    UserSecret,
+}
+
+impl KeySource {
+    /// The source for a turn that found the user's saved key or not.
+    pub fn for_saved_key(found: bool) -> Self {
+        if found {
+            Self::UserSecret
+        } else {
+            Self::Platform
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Platform => "platform",
+            Self::UserSecret => "user_secret",
+        }
+    }
+}
+
 /// A single priced call, shared by the live summary and delayed agent attribution.
 pub struct PricedTurn {
     pub usage: nasiko_react_agent::CallUsage,
@@ -75,26 +107,42 @@ impl PricedTurn {
         }
     }
 
+    /// The row's `metadata`: who paid, and how the call was priced.
+    fn metadata(&self, key_source: KeySource) -> serde_json::Value {
+        serde_json::json!({
+            "key_source": key_source.label(),
+            "estimated": self.estimated,
+            "usage_estimated": self.usage.estimated,
+            "started_at": self.usage.started_at,
+            "pricing": self.provenance,
+        })
+    }
+
     pub async fn persist(
         self,
         tracker: &crate::usage::UsageTracker,
         user_id: uuid::Uuid,
         flow_id: &str,
         agent_id: Option<uuid::Uuid>,
+        key_source: KeySource,
     ) -> Result<crate::usage::TraceUsageKey, sqlx::Error> {
         let count = |value: u64| value.min(i32::MAX as u64) as i32;
         // Set the full total directly: the general-purpose builder also serves
         // older callers whose input still includes cache and must not change here.
-        let mut row = crate::usage::TokenUsageBuilder::new(user_id, "orchestrator", self.usage.provider.as_deref().unwrap_or("unknown"), &self.usage.model)
-            .tokens(0, 0)
-            .cache_read_tokens(count(self.usage.cache_read_tokens))
-            .cache_creation_tokens(count(self.usage.cache_creation_tokens))
-            .cached_tokens(count(self.usage.cache_read_tokens))
-            .session_id(flow_id)
-            .streaming(self.usage.streaming)
-            .metadata(serde_json::json!({"key_source": "platform", "estimated": self.estimated,
-                "usage_estimated": self.usage.estimated, "started_at": self.usage.started_at, "pricing": self.provenance}))
-            .build();
+        let mut row = crate::usage::TokenUsageBuilder::new(
+            user_id,
+            "orchestrator",
+            self.usage.provider.as_deref().unwrap_or("unknown"),
+            &self.usage.model,
+        )
+        .tokens(0, 0)
+        .cache_read_tokens(count(self.usage.cache_read_tokens))
+        .cache_creation_tokens(count(self.usage.cache_creation_tokens))
+        .cached_tokens(count(self.usage.cache_read_tokens))
+        .session_id(flow_id)
+        .streaming(self.usage.streaming)
+        .metadata(self.metadata(key_source))
+        .build();
         row.input_tokens = count(self.usage.input_tokens);
         row.output_tokens = count(self.usage.output_tokens);
         row.total_tokens = count(self.usage.total_tokens);
@@ -371,6 +419,41 @@ mod tests {
             "an all-cache turn reported no tokens, so it would render as duration-only"
         );
         assert_eq!(s.to_data_part("t")["total_tokens"], 4108);
+    }
+
+    fn priced_turn() -> PricedTurn {
+        PricedTurn {
+            usage: nasiko_react_agent::CallUsage {
+                input_tokens: 10,
+                output_tokens: 2,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
+                total_tokens: 12,
+                model: "gpt-4o-mini".into(),
+                provider: Some("openai".into()),
+                started_at: chrono::Utc::now(),
+                streaming: false,
+                estimated: false,
+            },
+            cost_usd: 0.0,
+            estimated: false,
+            provenance: serde_json::json!({ "source": "Db" }),
+        }
+    }
+
+    #[test]
+    fn a_turn_on_the_users_saved_key_is_not_recorded_as_platform_spend() {
+        let source = KeySource::for_saved_key(true);
+        assert_eq!(source, KeySource::UserSecret);
+        assert_eq!(priced_turn().metadata(source)["key_source"], "user_secret");
+    }
+
+    #[test]
+    fn a_turn_on_the_server_key_is_recorded_as_platform_spend() {
+        let source = KeySource::for_saved_key(false);
+        let metadata = priced_turn().metadata(source);
+        assert_eq!(metadata["key_source"], "platform");
+        assert_eq!(metadata["pricing"]["source"], "Db");
     }
 
     #[test]

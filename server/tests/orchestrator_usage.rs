@@ -6,7 +6,7 @@ use nasiko_observability::TempoLokiProvider;
 use nasiko_pricing::PricingEngine;
 use nasiko_react_agent::CallUsage;
 use nasiko_server::{
-    router::usage_meta::{PricedTurn, TurnUsage, summarize_flow_usage},
+    router::usage_meta::{KeySource, PricedTurn, TurnUsage, summarize_flow_usage},
     usage::UsageTracker,
 };
 use serde_json::{Value, json};
@@ -81,7 +81,13 @@ async fn priced_calls_persist_cache_split_and_match_the_chat_summary() {
         expected_cost += priced.cost_usd;
         turns.add(&priced);
         let key = priced
-            .persist(&tracker, user_id, "usage-flow", attributed)
+            .persist(
+                &tracker,
+                user_id,
+                "usage-flow",
+                attributed,
+                KeySource::Platform,
+            )
             .await
             .unwrap();
         let row: Value = sqlx::query_scalar(
