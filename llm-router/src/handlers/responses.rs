@@ -25,10 +25,9 @@ use crate::inbound::responses::{
     ResponsesRequest, ResponsesStreamRenderer, TerminalOutcome, parse_request, render_response,
 };
 use crate::ir::Usage;
-use crate::providers::attempts::{failure_of, mid_stream_failure};
 use crate::providers::{ProviderError, fallback, provider_for};
 use crate::resolver::{PgRegistry, RegistryStore, RequestHint};
-use crate::usage::{self, CallFailure, UsageRecord};
+use crate::usage::{self, UsageRecord};
 
 const MAX_INSPECTION_BYTES: usize = 1024 * 1024;
 const TRANSLATION_HEADER: &str = "x-nasiko-responses-translation";
@@ -176,8 +175,7 @@ async fn responses_core(
             object.insert("max_output_tokens".into(), json!(max_tokens));
         }
         let started = Instant::now();
-        let request_bytes = serde_json::to_string(&body).ok().map(|s| s.len());
-        let mut guard = AttemptGuard::new(ctx, &routed, &attempt, started, stream, request_bytes);
+        let mut guard = AttemptGuard::new(ctx, &routed, &attempt, started, stream);
         let mut request = ctx
             .http
             .post(format!(
@@ -190,7 +188,7 @@ async fn responses_core(
         let upstream = match request.send().await {
             Ok(upstream) => upstream,
             Err(error) => {
-                guard.fail("send", Some(CallFailure::new("transport", None)), &error);
+                guard.fail("send", &error);
                 let retryable = is_retryable_transport_error(&error);
                 let error = GatewayError::Upstream(error.to_string());
                 if retryable {
@@ -213,15 +211,7 @@ async fn responses_core(
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
         return if stream {
             guard.disarm();
-            stream_response(
-                ctx,
-                upstream,
-                routed,
-                attempt.clone(),
-                started,
-                status,
-                request_bytes,
-            )
+            stream_response(ctx, upstream, routed, attempt.clone(), started, status)
         } else {
             nonstream_response(
                 ctx,
@@ -324,14 +314,7 @@ async fn translated_attempt(
             "lossy Responses translation accepted advisory controls"
         );
     }
-    let mut guard = AttemptGuard::new(
-        ctx,
-        routed,
-        attempt,
-        started,
-        parsed.stream,
-        Some(crate::brevity::estimated_bytes(&parsed.chat)),
-    );
+    let mut guard = AttemptGuard::new(ctx, routed, attempt, started, parsed.stream);
     let provider = provider_for(
         &attempt.provider,
         attempt.custom_endpoint.as_ref(),
@@ -339,8 +322,7 @@ async fn translated_attempt(
         &ctx.cfg,
     )
     .map_err(|error| {
-        // Nothing was sent: a row, but not a failed call.
-        guard.fail("routing", None, &error);
+        guard.fail("routing", &error);
         TranslatedAttemptError::Configuration(error)
     })?;
     let mut request = parsed.chat.clone();
@@ -353,11 +335,7 @@ async fn translated_attempt(
                     let response =
                         translated_stream_response(ctx, routed, attempt, parsed, stream, started)
                             .map_err(|error| {
-                            guard.fail(
-                                "stream_setup",
-                                Some(CallFailure::new("stream", None)),
-                                &error,
-                            );
+                            guard.fail("stream_setup", &error);
                             TranslatedAttemptError::Retry(ProviderError::Parse(error.to_string()))
                         })?;
                     guard.disarm();
@@ -373,7 +351,7 @@ async fn translated_attempt(
                     ) {
                         continue;
                     }
-                    guard.fail("provider", failure_of(&error), &error);
+                    guard.fail("provider", &error);
                     return Err(classify_translated_error(error));
                 }
             }
@@ -391,12 +369,13 @@ async fn translated_attempt(
                     });
                     let value = render_response(chat, &attempt.model, &parsed.tool_kinds).map_err(
                         |error| {
-                            guard.fail("render", Some(CallFailure::new("parse", None)), &error);
+                            guard.fail("render", &error);
                             classify_translated_error(ProviderError::Parse(error.to_string()))
                         },
                     )?;
-                    let outcome = response_outcome(&value);
-                    let finish_reason = outcome.map(outcome_finish_reason).or(finish_reason);
+                    let finish_reason = response_outcome(&value)
+                        .map(outcome_finish_reason)
+                        .or(finish_reason);
                     guard.disarm();
                     log_response_usage(
                         ctx,
@@ -404,12 +383,8 @@ async fn translated_attempt(
                         attempt,
                         started,
                         false,
-                        ResponseStreamState {
-                            details: usage,
-                            finish_reason,
-                            failure: outcome.and_then(outcome_failure),
-                            request_bytes: Some(crate::brevity::estimated_bytes(&parsed.chat)),
-                        },
+                        usage,
+                        finish_reason,
                     );
                     return Ok(mark_lossy(Json(value).into_response()));
                 }
@@ -423,7 +398,7 @@ async fn translated_attempt(
                     ) {
                         continue;
                     }
-                    guard.fail("provider", failure_of(&error), &error);
+                    guard.fail("provider", &error);
                     return Err(classify_translated_error(error));
                 }
             }
@@ -467,10 +442,7 @@ fn translated_stream_response(
     >,
     started: Instant,
 ) -> Result<Response, GatewayError> {
-    let usage_state = Arc::new(Mutex::new(ResponseStreamState {
-        request_bytes: Some(crate::brevity::estimated_bytes(&parsed.chat)),
-        ..Default::default()
-    }));
+    let usage_state = Arc::new(Mutex::new(ResponseStreamState::default()));
     let guard = ResponsesUsageGuard {
         ctx: ctx.clone(),
         routed: Some((routed.clone(), attempt.clone())),
@@ -500,11 +472,7 @@ fn translated_stream_response(
                     for frame in renderer.render(chunk) { yield Ok(frame); }
                 }
                 Err(error) => {
-                    {
-                        let mut state = usage_state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        state.finish_reason = Some("failed:stream".into());
-                        state.failure = Some(mid_stream_failure(&error));
-                    }
+                    usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason = Some("failed:stream".into());
                     for frame in renderer.fail(error.to_string()) { yield Ok(frame); }
                     return;
                 }
@@ -512,9 +480,8 @@ fn translated_stream_response(
         }
         for frame in renderer.finish() { yield Ok(frame); }
         if let Some(outcome) = renderer.outcome() {
-            let mut state = usage_state.lock().unwrap_or_else(|error| error.into_inner());
-            state.finish_reason = Some(outcome_finish_reason(outcome));
-            state.failure = outcome_failure(outcome);
+            usage_state.lock().unwrap_or_else(|error| error.into_inner()).finish_reason =
+                Some(outcome_finish_reason(outcome));
         }
     };
     Response::builder()
@@ -560,11 +527,7 @@ async fn nonstream_response(
     let bytes = match upstream.bytes().await {
         Ok(bytes) => bytes,
         Err(error) => {
-            guard.fail(
-                "body_read",
-                Some(CallFailure::new("transport", None)),
-                &error,
-            );
+            guard.fail("body_read", &error);
             return Err(GatewayError::Upstream(error.to_string()));
         }
     };
@@ -572,8 +535,10 @@ async fn nonstream_response(
     let details = parsed
         .as_ref()
         .and_then(|value| response_usage(value.get("usage")));
-    let outcome = parsed.as_ref().and_then(response_outcome);
-    let request_bytes = guard.request_bytes();
+    let finish_reason = parsed
+        .as_ref()
+        .and_then(response_outcome)
+        .map(outcome_finish_reason);
     guard.disarm();
     log_response_usage(
         ctx,
@@ -581,12 +546,8 @@ async fn nonstream_response(
         &attempt,
         started,
         false,
-        ResponseStreamState {
-            details,
-            finish_reason: outcome.map(outcome_finish_reason),
-            failure: outcome.and_then(outcome_failure),
-            request_bytes,
-        },
+        details,
+        finish_reason,
     );
     build_success_response(status, &headers, Body::from(bytes))
 }
@@ -598,13 +559,9 @@ fn stream_response(
     attempt: crate::resolver::ResolvedConfig,
     started: Instant,
     status: StatusCode,
-    request_bytes: Option<usize>,
 ) -> Result<Response, GatewayError> {
     let headers = upstream.headers().clone();
-    let state = Arc::new(Mutex::new(ResponseStreamState {
-        request_bytes,
-        ..Default::default()
-    }));
+    let state = Arc::new(Mutex::new(ResponseStreamState::default()));
     let guard = ResponsesUsageGuard {
         ctx: ctx.clone(),
         routed: Some((routed, attempt)),
@@ -624,8 +581,6 @@ fn stream_response(
                 }
                 Err(error) => {
                     tracing::warn!(error = %error, "Responses upstream stream failed midstream");
-                    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).failure =
-                        Some(CallFailure::new("stream", None));
                     yield Err(std::io::Error::other(error));
                     return;
                 }
@@ -778,7 +733,6 @@ fn inspect_event(event: &[u8], state: &Arc<Mutex<ResponseStreamState>>) {
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     state.details = details;
     state.finish_reason = Some(outcome_finish_reason(outcome));
-    state.failure = outcome_failure(outcome);
 }
 
 fn terminal_event_outcome(kind: Option<&str>) -> Option<TerminalOutcome> {
@@ -808,21 +762,10 @@ fn outcome_finish_reason(outcome: TerminalOutcome) -> String {
     .into()
 }
 
-/// How a Responses call ended, as its usage row records it.
 #[derive(Clone, Default)]
 struct ResponseStreamState {
     details: Option<ResponseUsage>,
     finish_reason: Option<String>,
-    /// Set when the stream broke off, or the provider ended it as `response.failed`.
-    failure: Option<CallFailure>,
-    /// The bytes sent, for a failed call's prompt estimate when no usage was reported.
-    request_bytes: Option<usize>,
-}
-
-/// A response the provider itself reported as failed is a failed call; its usage, when
-/// reported, is priced as usual.
-fn outcome_failure(outcome: TerminalOutcome) -> Option<CallFailure> {
-    matches!(outcome, TerminalOutcome::Failed).then_some(CallFailure::new("response_failed", None))
 }
 
 #[derive(Clone)]
@@ -872,7 +815,15 @@ impl Drop for ResponsesUsageGuard {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
-        log_response_usage(&self.ctx, routed, &attempt, self.started, true, state);
+        log_response_usage(
+            &self.ctx,
+            routed,
+            &attempt,
+            self.started,
+            true,
+            state.details,
+            state.finish_reason,
+        );
     }
 }
 
@@ -889,8 +840,6 @@ impl AttemptGuard {
         attempt: &crate::resolver::ResolvedConfig,
         started: Instant,
         streaming: bool,
-        // What this attempt sends, so a failure with no reported usage can estimate its prompt.
-        request_bytes: Option<usize>,
     ) -> Self {
         Self {
             ctx: ctx.clone(),
@@ -915,26 +864,16 @@ impl AttemptGuard {
                 // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
                 compress_bytes: routed.compression.bytes,
-                // Only ever written for a failed attempt (a success disarms the guard), where it
-                // is the basis of the prompt estimate.
-                request_bytes,
-                failure: None,
+                // Unmeasured here: savings fall back to their fixed chars-per-token divisor.
+                request_bytes: None,
             }),
         }
     }
 
-    /// The attempt failed at `stage`. `failure` is `None` when nothing reached the provider
-    /// (the row is still written, as before, but is not a failed call).
-    fn fail(
-        &mut self,
-        stage: &'static str,
-        failure: Option<CallFailure>,
-        error: &dyn std::fmt::Display,
-    ) {
+    fn fail(&mut self, stage: &'static str, error: &dyn std::fmt::Display) {
         if let Some(record) = &mut self.record {
             record.latency_ms = record.latency_ms.max(1);
             record.finish_reason = Some(format!("failed:{stage}"));
-            record.failure = failure;
             tracing::warn!(stage, model = %record.model, error = %error, "Responses upstream attempt failed");
         }
     }
@@ -943,18 +882,12 @@ impl AttemptGuard {
         if let Some(record) = &mut self.record {
             record.latency_ms = record.latency_ms.max(1);
             record.finish_reason = Some(format!("http:{status}"));
-            record.failure = Some(CallFailure::new("status", Some(status)));
             tracing::warn!(status, model = %record.model, "Responses upstream attempt returned non-success status");
         }
     }
 
     fn disarm(&mut self) {
         self.record = None;
-    }
-
-    /// What this attempt sent, for the row written once it is known how the call ended.
-    fn request_bytes(&self) -> Option<usize> {
-        self.record.as_ref().and_then(|record| record.request_bytes)
     }
 }
 
@@ -975,14 +908,9 @@ fn log_response_usage(
     attempt: &crate::resolver::ResolvedConfig,
     started: Instant,
     streaming: bool,
-    end: ResponseStreamState,
+    details: Option<ResponseUsage>,
+    finish_reason: Option<String>,
 ) {
-    let ResponseStreamState {
-        details,
-        finish_reason,
-        failure,
-        request_bytes,
-    } = end;
     let cached_tokens = details.as_ref().and_then(|details| details.cached_tokens);
     let reasoning_tokens = details
         .as_ref()
@@ -1008,10 +936,7 @@ fn log_response_usage(
             compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
             compress_bytes: routed.compression.bytes,
-            // Only a failed call carries it (its prompt estimate); a success keeps the savings
-            // ledger's fixed divisor, as before.
-            request_bytes: failure.and(request_bytes),
-            failure,
+            request_bytes: None,
         },
     );
 }
@@ -1077,7 +1002,8 @@ fn error_code(error: &GatewayError) -> &'static str {
         GatewayError::BadRequest(_) => "invalid_request_error",
         GatewayError::NoRegistryEntry(_)
         | GatewayError::SecretNotFound(_, _)
-        | GatewayError::NoApiKey => "routing_configuration_error",
+        | GatewayError::NoApiKey
+        | GatewayError::NoSharedUserConfig => "routing_configuration_error",
         GatewayError::Upstream(_) => "upstream_error",
         GatewayError::Internal(_) => "internal_error",
     }
@@ -2052,68 +1978,14 @@ mod tests {
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
         };
-        let mut guard = AttemptGuard::new(
-            &context,
-            &routed,
-            &routed.resolved,
-            Instant::now(),
-            false,
-            Some(400),
-        );
+        let mut guard =
+            AttemptGuard::new(&context, &routed, &routed.resolved, Instant::now(), false);
         let record = guard.record.as_ref().unwrap();
         assert_eq!(record.provider, "openai");
         assert_eq!(record.model, "model");
         assert!(record.platform_paid);
         assert!(record.finish_reason.is_none());
-        assert!(record.failure.is_none(), "armed is not yet failed");
         guard.disarm();
         assert!(guard.record.is_none());
-    }
-
-    /// An attempt the provider answered with an error is a failed call; one never sent is not.
-    #[tokio::test]
-    async fn attempt_guard_marks_only_calls_that_reached_the_provider_as_failed() {
-        let context = ctx("http://unused".into());
-        let routed = RoutedRequest {
-            agent_id: AGENT.into(),
-            owner_id: OWNER.into(),
-            resolved: crate::resolver::ResolvedConfig {
-                agent_id: String::new(),
-                provider: "openai".into(),
-                model: "model".into(),
-                litellm_model: "openai/model".into(),
-                api_key: "key".into(),
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                has_llm_config: true,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-                platform_paid: true,
-                custom_endpoint: None,
-                is_coding_agent: false,
-                compress_enabled: false,
-            },
-            flow_id: None,
-            attribution_source: None,
-            compression: crate::compress::Ledger::default(),
-        };
-        let mut guard = AttemptGuard::new(
-            &context,
-            &routed,
-            &routed.resolved,
-            Instant::now(),
-            false,
-            Some(400),
-        );
-        guard.fail_status(503);
-        let record = guard.record.as_ref().unwrap();
-        assert_eq!(record.failure, Some(CallFailure::new("status", Some(503))));
-        assert_eq!(record.request_bytes, Some(400));
-        guard.fail("routing", None, &"no provider");
-        assert!(guard.record.as_ref().unwrap().failure.is_none());
-        guard.disarm();
     }
 }

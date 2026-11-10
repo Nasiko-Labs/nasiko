@@ -31,7 +31,7 @@ use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
 use crate::providers::{ProviderError, fallback};
-use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, RequestHint, resolve_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
 use crate::usage::{self, UsageRecord};
@@ -655,8 +655,8 @@ pub(crate) async fn resolve_routed_request(
     signals: RequestSignals,
     session: Option<SessionClaims>,
 ) -> Result<RoutedRequest, GatewayError> {
-    let mut resolved = resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
-    // Model routing: the resolver fixed provider/key/params; routing may override only model.
+    // Attribution runs before config resolution: the attributed user decides whose config and
+    // keys pay (a shared agent runs on its caller's own, `ConfigSubject::for_call`).
     //
     // A coding-agent CLI (Claude Code, Codex, OpenCode, Cursor) is never dispatched through
     // the orchestrator, so it never has a `flows` row — derive_boundary_signals's
@@ -664,7 +664,7 @@ pub(crate) async fn resolve_routed_request(
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
     // itself instead for these agents.
-    let (boundary, flow_id, billed_user_id, attribution_source, query) =
+    let (boundary, flow_id, billed_user_id, attribution_source, query, acting_user) =
         if let Some(s) = session.as_ref() {
             // Session-bound coding agent: the signed token names the user, so bill that
             // user. The token's flow is the first turn's; the flow is resolved from the
@@ -686,8 +686,12 @@ pub(crate) async fn resolve_routed_request(
                 s.user_id.clone(),
                 Some(attributed.source.into()),
                 signals.query,
+                // A session token's agent is the user's own coding-agent integration or a
+                // platform harness; neither is an agent shared through access settings, so it
+                // keeps resolving on the agent owner.
+                None,
             )
-        } else if resolved.is_coding_agent {
+        } else if is_coding_agent(store, &agent_id).await? {
             (
                 BoundarySignals::for_coding_agent(
                     &agent_id,
@@ -699,6 +703,7 @@ pub(crate) async fn resolve_routed_request(
                 owner_id.clone(),
                 None,
                 signals.query,
+                None,
             )
         } else {
             let raw_traceparent = headers
@@ -728,8 +733,12 @@ pub(crate) async fn resolve_routed_request(
                 billed_user_id,
                 Some(attribution.source),
                 routing_query(attribution.user_message, signals.query),
+                attribution.user_id,
             )
         };
+    let subject = ConfigSubject::for_call(&owner_id, acting_user);
+    let mut resolved = resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint).await?;
+    // Model routing: the resolver fixed provider/key/params; routing may override only model.
     let decision = routing::route_model_with(
         ctx.classifier.as_ref(),
         ctx.router_cache.as_ref(),
@@ -789,6 +798,20 @@ pub(crate) async fn resolve_routed_request(
         attribution_source,
         compression: crate::compress::Ledger::default(),
     })
+}
+
+/// Whether the agent is a coding-agent CLI integration, read before its config is resolved
+/// (the config depends on who the call is attributed to, and a coding agent is never
+/// attributed). A missing agent row is `NoRegistryEntry`, as the resolver reports it.
+async fn is_coding_agent(store: &dyn RegistryStore, agent_id: &str) -> Result<bool, GatewayError> {
+    let no_entry = || GatewayError::NoRegistryEntry(agent_id.to_string());
+    let agent_uuid = uuid::Uuid::parse_str(agent_id).map_err(|_| no_entry())?;
+    let flags = store
+        .fetch_agent_flags(agent_uuid)
+        .await
+        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
+        .ok_or_else(no_entry)?;
+    Ok(flags.is_coding_agent)
 }
 
 /// The text the salience gate and classifier score for an in-flow call: the end user's
@@ -1755,6 +1778,73 @@ mod tests {
             }
             other => panic!("expected Forbidden, got {other:?}"),
         }
+    }
+
+    /// A store whose flow was started by a user other than the agent's owner — the agent is
+    /// shared with them — and who has no LLM config of their own.
+    struct SharedCallerStore(Store);
+    #[async_trait]
+    impl RegistryStore for SharedCallerStore {
+        async fn fetch_llm_config(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            self.0.fetch_llm_config(id).await
+        }
+        async fn fetch_agent_owner(&self, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            self.0.fetch_agent_owner(id).await
+        }
+        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
+            panic!("no one's key may be read for a shared caller without a config")
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            Ok(Some(routing::attribution::LiveFlow {
+                user_id: Uuid::parse_str("33333333-3333-3333-3333-333333333333").ok(),
+                context_id: Some("ses_shared".into()),
+                mode: None,
+                user_message: None,
+                agent_is_participant: true,
+            }))
+        }
+        async fn fetch_custom_provider(
+            &self,
+            label: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            self.0.fetch_custom_provider(label).await
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            self.0.fetch_org_embedding_default().await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shared_caller_without_a_config_is_told_to_connect_one_before_any_provider_call() {
+        // The owner has a config with a key; the shared caller must never run on it.
+        let ctx = ctx_with("http://unused".into());
+        let store = SharedCallerStore(Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        });
+        let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
+        let err = chat_core(
+            &ctx,
+            &store,
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, GatewayError::NoSharedUserConfig), "{err:?}");
     }
 
     /// A store whose session-flow lookup answers a fixed later-turn flow.

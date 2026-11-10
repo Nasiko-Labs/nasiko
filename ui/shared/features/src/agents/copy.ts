@@ -267,6 +267,9 @@ export const copy = {
   start: 'Start',
   stopTitle: (name: string) => `Stop ${name}?`,
   stopBody: 'The container stops; callers get errors until you start it again.',
+  stopSharedWarning:
+    'Others use this agent: it is shared with people besides you. They will see it was stopped by its owner and cannot chat with it until you start it again.',
+  stoppedByOwner: 'This agent was stopped by its owner. You can use it again once they start it.',
   restarted: 'Restarted',
   started: 'Started',
   stoppedDone: 'Stopped',
