@@ -87,9 +87,15 @@ impl Resolve for GuardedResolver {
 /// (SSRF + DNS-rebinding hardened), for outbound calls to user-registered MCP
 /// backends. Reuses the platform's rustls stack; per-request timeouts are set by
 /// the caller. Honors the `MCP_ALLOW_PRIVATE_URLS` dev/test bypass.
+///
+/// Connections are never reused. A backend that answers before reading the
+/// whole request body (Azure API Management rejecting a session-less call) can
+/// leave those bytes on a kept-alive socket, and the next request on it (our
+/// `initialize`) then fails with a content-length mismatch.
 pub fn guarded_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .dns_resolver(Arc::new(GuardedResolver))
+        .pool_max_idle_per_host(0)
         .build()
         .expect("failed to build SSRF-guarded reqwest client")
 }
@@ -336,5 +342,44 @@ mod tests {
     #[test]
     fn multicast_v6_is_blocked() {
         assert!(is_blocked_ip("ff02::1".parse::<Ipv6Addr>().unwrap().into()));
+    }
+
+    #[tokio::test]
+    async fn guarded_client_opens_a_new_connection_per_request() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        // Answers every request on a kept-alive connection, as APIM does.
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    while sock.read(&mut buf).await.is_ok_and(|n| n > 0) {
+                        let reply = "HTTP/1.1 400 Bad Request\r\nContent-Length: 7\r\n\r\nsession";
+                        if sock.write_all(reply.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+
+        let client = guarded_http_client();
+        for _ in 0..2 {
+            let resp = client
+                .post(format!("http://{addr}/mcp"))
+                .json(&serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(resp.text().await.unwrap(), "session");
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), 2);
     }
 }
