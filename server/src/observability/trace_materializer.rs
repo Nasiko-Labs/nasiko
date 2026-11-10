@@ -15,12 +15,6 @@
 //!
 //! Pattern: same as `hours_meter` / catalog-sync — a polling loop with
 //! `MissedTickBehavior::Skip`, fail-soft per tick, never panics.
-//!
-//! **Cursor.** `trace_usage_cursor.high_water` is how far Tempo has been
-//! searched. Each pass searches one bounded window ([`next_window`]) and moves
-//! the cursor to its end once the search and writes succeed, whether or not the
-//! window held any traces. A trace whose fetch fails is retried by the next
-//! pass's overlap, never by holding the cursor back.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -32,18 +26,6 @@ use nasiko_observability::{ObservabilityProvider, TraceUsageRow};
 use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 
-/// How far back a pass ever looks. A cursor older than this (a fresh database's
-/// 2020 default, or one left behind by an outage) is read as this long ago:
-/// older traces keep the spend the router wrote live but are not re-scanned.
-const MAX_LOOKBACK_SECS: i64 = 3600;
-
-/// How long before now a window stops, so spans still on their way to Tempo
-/// are picked up whole by a later pass rather than half by this one.
-const SETTLE_SECS: i64 = 30;
-
-/// Most trace ids one pass takes from Tempo's search and from `flows` each.
-const SEARCH_LIMIT: usize = 1000;
-
 /// Run the trace-usage materializer loop. Exits only on shutdown (task drop).
 pub async fn run(
     db: PgPool,
@@ -51,7 +33,6 @@ pub async fn run(
     session_resolver: Arc<dyn SessionIdResolver>,
     interval: Duration,
     overlap: Duration,
-    max_window: Duration,
     batch_size: usize,
 ) {
     let mut tick = tokio::time::interval(interval);
@@ -77,7 +58,6 @@ pub async fn run(
             provider.as_ref(),
             session_resolver.as_ref(),
             overlap,
-            max_window,
             batch_size,
         )
         .await
@@ -87,79 +67,44 @@ pub async fn run(
     }
 }
 
-/// The window one pass searches, `[start, end)`, or `None` when there is
-/// nothing settled to search yet.
-///
-/// It starts `overlap` before the cursor, to re-read traces whose spans reached
-/// Tempo late, but never more than [`MAX_LOOKBACK_SECS`] ago. It is at most
-/// `max_window` long and stops [`SETTLE_SECS`] short of now. The cursor moves
-/// to `end`, so each pass advances by `max_window − overlap` until it has caught
-/// up with now.
-pub fn next_window(
-    cursor: DateTime<Utc>,
-    now: DateTime<Utc>,
-    overlap: Duration,
-    max_window: Duration,
-) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
-    let overlap = chrono::Duration::from_std(overlap).unwrap_or(chrono::Duration::zero());
-    let max_window = chrono::Duration::from_std(max_window).unwrap_or(chrono::Duration::zero());
-    let start = (cursor - overlap).max(now - chrono::Duration::seconds(MAX_LOOKBACK_SECS));
-    let end = (start + max_window).min(now - chrono::Duration::seconds(SETTLE_SECS));
-    (end > start).then_some((start, end))
-}
-
-/// One pass: search the next window, fetch and write its traces, move the cursor.
-#[doc(hidden)]
-pub async fn materialize_once(
+async fn materialize_once(
     db: &PgPool,
     provider: &dyn ObservabilityProvider,
     session_resolver: &dyn SessionIdResolver,
     overlap: Duration,
-    max_window: Duration,
     batch_size: usize,
 ) -> Result<(), String> {
-    let started = std::time::Instant::now();
+    let start = std::time::Instant::now();
 
+    // 1. Read high-water mark.
     let high_water: DateTime<Utc> =
         sqlx::query_scalar("SELECT high_water FROM trace_usage_cursor WHERE id = 1")
             .fetch_one(db)
             .await
             .map_err(|e| format!("cursor read: {e}"))?;
-    let Some((window_start, window_end)) = next_window(high_water, Utc::now(), overlap, max_window)
-    else {
-        return Ok(());
-    };
 
+    let now = Utc::now();
+    let query_start =
+        high_water - chrono::Duration::from_std(overlap).unwrap_or(chrono::Duration::seconds(600));
+
+    // 2. Search Tempo for user-query traces in [query_start, now].
     let mut trace_ids: Vec<String> = provider
-        .search_user_traces(window_start, window_end, SEARCH_LIMIT)
+        .search_user_traces(query_start, now, 1000)
         .await
         .map_err(|e| format!("search: {e}"))?;
-    if trace_ids.len() >= SEARCH_LIMIT {
-        tracing::warn!(
-            %window_start, %window_end, limit = SEARCH_LIMIT,
-            "trace_materializer: Tempo search hit its cap; traces in this window may be missed"
-        );
-    }
 
-    // Union with the server's `flows` rows (flow_id = trace_id; covers uninstrumented agents).
+    // 3. Union with the server's `flows` rows (flow_id = trace_id; covers uninstrumented agents).
     let indexed: Vec<String> = sqlx::query_scalar(
         "SELECT flow_id FROM flows \
-         WHERE created_at >= $1 AND created_at < $2 \
-         ORDER BY created_at DESC \
-         LIMIT $3",
+         WHERE created_at >= $1 AND created_at <= $2 \
+         ORDER BY flow_id \
+         LIMIT 1000",
     )
-    .bind(window_start)
-    .bind(window_end)
-    .bind(SEARCH_LIMIT as i64)
+    .bind(query_start)
+    .bind(now)
     .fetch_all(db)
     .await
-    .map_err(|e| format!("flows read: {e}"))?;
-    if indexed.len() >= SEARCH_LIMIT {
-        tracing::warn!(
-            %window_start, %window_end, limit = SEARCH_LIMIT,
-            "trace_materializer: flows hit the cap; traces in this window may be missed"
-        );
-    }
+    .unwrap_or_default();
 
     let mut seen: HashSet<String> = trace_ids.iter().cloned().collect();
     for id in indexed {
@@ -168,9 +113,16 @@ pub async fn materialize_once(
         }
     }
 
-    // Each trace may produce multiple rows (one per agent).
+    if trace_ids.is_empty() {
+        tracing::debug!("trace_materializer: no traces in window");
+        return Ok(());
+    }
+
+    // 4. Fetch + extract each trace (8-in-flight bounded concurrency).
+    //    Each trace may produce multiple rows (one per agent).
     let mut rows: Vec<TraceUsageRow> = Vec::new();
     let mut errors = 0usize;
+
     for chunk in trace_ids.chunks(batch_size.max(1)) {
         let fetches = chunk.iter().map(|id| provider.extract_trace_usage(id));
         for result in futures::future::join_all(fetches).await {
@@ -183,40 +135,34 @@ pub async fn materialize_once(
             }
         }
     }
-    if errors > 0 {
-        tracing::warn!(
-            errors,
-            "trace_materializer: trace fetches failed; the next pass's overlap retries them"
-        );
-    }
 
-    if !rows.is_empty() {
-        upsert_rows(db, session_resolver, &rows).await?;
-    }
-
-    // GREATEST: a cursor someone set ahead of the window is never moved back.
-    sqlx::query(
-        "UPDATE trace_usage_cursor SET high_water = GREATEST(high_water, $1), updated_at = now() \
-         WHERE id = 1",
-    )
-    .bind(window_end)
-    .execute(db)
-    .await
-    .map_err(|e| format!("cursor write: {e}"))?;
-
-    if trace_ids.is_empty() {
-        tracing::debug!(%window_start, %window_end, "trace_materializer: no traces in window");
-    } else {
-        tracing::info!(
-            %window_start,
-            %window_end,
+    if rows.is_empty() {
+        tracing::debug!(
             traces_found = trace_ids.len(),
-            agent_rows = rows.len(),
             errors,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            "trace_materializer: pass complete"
+            "trace_materializer: no token-bearing traces"
         );
+        return Ok(());
     }
+
+    upsert_rows(db, session_resolver, &rows).await?;
+    let upserted = rows.len();
+
+    // Advance only when every fetch and write succeeded.
+    if errors == 0
+        && let Some(max_ts) = rows.iter().map(|r| r.started_at).max()
+    {
+        sqlx::query("UPDATE trace_usage_cursor SET high_water = GREATEST(high_water, $1), updated_at = now() WHERE id = 1")
+            .bind(max_ts).execute(db).await.map_err(|e| e.to_string())?;
+    }
+    tracing::info!(
+        traces_found = trace_ids.len(),
+        agent_rows = rows.len(),
+        upserted,
+        errors,
+        elapsed_ms = start.elapsed().as_millis() as u64,
+        "trace_materializer: pass complete"
+    );
     Ok(())
 }
 
@@ -451,11 +397,6 @@ impl UsageSource {
 ///
 /// `started_at` is set on insert and never changed: the budget ledger keys each
 /// hot row by it, so a row's start must not move under the copy already taken.
-///
-/// `materialized_at` moves only when the write changed the row. The budget
-/// ledger reads changed rows by it, and the idle reapers read it as a recent
-/// model call, so a Tempo rescan that rewrites the same values must leave it
-/// alone or every rescan would keep an idle agent awake.
 #[doc(hidden)]
 pub async fn write_usage_row(
     conn: &mut sqlx::PgConnection,
@@ -496,14 +437,6 @@ pub async fn write_usage_row(
         }
         None => row,
     };
-    let before: Option<String> = sqlx::query_scalar(&format!(
-        "SELECT {WRITTEN_COLUMNS} FROM trace_usage WHERE trace_id = $1 AND agent_name = $2 \
-         FOR UPDATE"
-    ))
-    .bind(&row.trace_id)
-    .bind(&row.agent_name)
-    .fetch_optional(&mut *conn)
-    .await?;
     // A price-book match is not evidence of who served this request.
     let provider = &row.provider;
     let count = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
@@ -536,7 +469,10 @@ pub async fn write_usage_row(
                    prompt_cost_usd = GREATEST(EXCLUDED.prompt_cost_usd, trace_usage.router_prompt_cost_usd),
                    completion_cost_usd = GREATEST(EXCLUDED.completion_cost_usd, trace_usage.router_completion_cost_usd),
                    latency_ms = EXCLUDED.latency_ms,
-                   error_count = EXCLUDED.error_count"#,
+                   -- A failed call the router booked live (0095) stays counted even when
+                   -- Tempo saw no error span for it, or attributed it elsewhere.
+                   error_count = GREATEST(EXCLUDED.error_count, trace_usage.router_error_count),
+                   materialized_at = now()"#,
         )
         .bind(&row.trace_id)
         .bind(&row.agent_name)
@@ -559,89 +495,17 @@ pub async fn write_usage_row(
         .bind(source.as_str())
         .execute(&mut *conn)
         .await?;
-    sqlx::query("UPDATE trace_usage SET cost_estimated=$3 WHERE trace_id=$1 AND agent_name=$2")
-        .bind(&row.trace_id)
-        .bind(&row.agent_name)
-        .bind(row.cost_estimated)
-        .execute(&mut *conn)
-        .await?;
-    // A new row was stamped by its insert; an existing one only if it changed.
-    if let Some(before) = before {
-        sqlx::query(&format!(
-            "UPDATE trace_usage SET materialized_at = now() \
-             WHERE trace_id = $1 AND agent_name = $2 AND {WRITTEN_COLUMNS} IS DISTINCT FROM $3"
-        ))
-        .bind(&row.trace_id)
-        .bind(&row.agent_name)
-        .bind(before)
-        .execute(&mut *conn)
-        .await?;
-    }
+    // A failed call whose prompt the router could only estimate keeps the row's cost flagged.
+    sqlx::query(
+        "UPDATE trace_usage SET cost_estimated = ($3 OR router_estimated_input_tokens > 0) \
+         WHERE trace_id=$1 AND agent_name=$2",
+    )
+    .bind(&row.trace_id)
+    .bind(&row.agent_name)
+    .bind(row.cost_estimated)
+    .execute(&mut *conn)
+    .await?;
     Ok(true)
-}
-
-/// Every `trace_usage` column [`write_usage_row`] sets on an existing row, as
-/// one comparable value: a rewrite that leaves it unchanged is not a change.
-const WRITTEN_COLUMNS: &str = "ROW(source, session_id, agent_id, user_id, model, provider, \
-     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, tool_call_count, \
-     cost_usd, prompt_cost_usd, completion_cost_usd, latency_ms, error_count, cost_estimated)::text";
-
-#[cfg(test)]
-mod window_tests {
-    use super::*;
-    use chrono::TimeZone;
-
-    const OVERLAP: Duration = Duration::from_secs(180);
-    const MAX_WINDOW: Duration = Duration::from_secs(600);
-
-    fn at(h: u32, m: u32, s: u32) -> DateTime<Utc> {
-        Utc.with_ymd_and_hms(2026, 11, 10, h, m, s).unwrap()
-    }
-
-    #[test]
-    fn a_caught_up_cursor_rereads_the_overlap_and_stops_short_of_now() {
-        assert_eq!(
-            next_window(at(12, 0, 0), at(12, 2, 30), OVERLAP, MAX_WINDOW),
-            Some((at(11, 57, 0), at(12, 2, 0)))
-        );
-    }
-
-    #[test]
-    fn a_cursor_from_2020_searches_one_window_an_hour_back() {
-        let cursor = Utc.with_ymd_and_hms(2020, 1, 1, 0, 0, 0).unwrap();
-        assert_eq!(
-            next_window(cursor, at(12, 0, 0), OVERLAP, MAX_WINDOW),
-            Some((at(11, 0, 0), at(11, 10, 0)))
-        );
-    }
-
-    #[test]
-    fn a_lagging_cursor_advances_by_the_window_minus_the_overlap() {
-        let (_, end) = next_window(at(12, 0, 0), at(12, 30, 30), OVERLAP, MAX_WINDOW).unwrap();
-        assert_eq!(end, at(12, 7, 0));
-        let (start, _) = next_window(end, at(12, 32, 30), OVERLAP, MAX_WINDOW).unwrap();
-        assert_eq!(
-            start,
-            at(12, 4, 0),
-            "consecutive windows overlap, never leave a gap"
-        );
-    }
-
-    #[test]
-    fn a_cursor_at_or_past_now_still_rereads_the_overlap() {
-        assert_eq!(
-            next_window(at(12, 0, 0), at(12, 0, 0), OVERLAP, MAX_WINDOW),
-            Some((at(11, 57, 0), at(11, 59, 30)))
-        );
-    }
-
-    #[test]
-    fn nothing_settled_to_search_is_none() {
-        assert_eq!(
-            next_window(at(12, 0, 0), at(12, 0, 0), Duration::ZERO, MAX_WINDOW),
-            None
-        );
-    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::execute_embeddings_once;
-use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, resolve_embeddings_for};
+use crate::resolver::{PgRegistry, RegistryStore, resolve_embeddings};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
@@ -66,14 +66,12 @@ async fn embeddings_core(
     // fallback.
     let inbound = inbound_for(InboundFormat::OpenAi);
     let req = inbound.parse_embeddings(body)?;
-    // A shared agent embeds on its caller's own config and keys, as it chats on them.
-    let subject = ConfigSubject::for_call(&owner_id, attribution.user_id);
-    let resolved = resolve_embeddings_for(
+    let resolved = resolve_embeddings(
         store,
         &ctx.cache,
         &ctx.cfg,
         &agent_id,
-        subject,
+        &owner_id,
         req.model.as_deref(),
     )
     .await?;
@@ -82,7 +80,27 @@ async fn embeddings_core(
     // embedding model would return vectors in a different space, which is worse than an
     // error because it is silent.
     let started = Instant::now();
-    let resp = execute_embeddings_once(&ctx.http, &ctx.cfg, &resolved, &req).await?;
+    // Billed to the flow's caller (strict attribution guarantees a flow); the JWT's owner is
+    // only the no-user safety net.
+    let owner_id = attribution
+        .user_id
+        .map(|u| u.to_string())
+        .unwrap_or(owner_id);
+    let mut attempts = crate::providers::attempts::AttemptLog::default();
+    let answered =
+        execute_embeddings_once(&ctx.http, &ctx.cfg, &resolved, &req, &mut attempts).await;
+    let failed_scope = usage::CallScope {
+        owner_id: owner_id.clone(),
+        agent_id: agent_id.clone(),
+        operation_type: "embedding",
+        streaming: false,
+        flow_id: Some(attribution.flow_id.clone()),
+        attribution_source: Some(attribution.source),
+        // The input as sent, for the prompt estimate when the provider reports no usage.
+        request_bytes: serde_json::to_string(&req.input).ok().map(|s| s.len()),
+    };
+    usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
+    let resp = answered?;
     let latency_ms = started.elapsed().as_millis() as i64;
     let (provider, model) = (resolved.provider.clone(), resolved.model.clone());
 
@@ -90,12 +108,7 @@ async fn embeddings_core(
         ctx.db.clone(),
         ctx.pricing.clone(),
         UsageRecord {
-            // Billed to the flow's caller (strict attribution guarantees a
-            // flow); the JWT's owner is only the no-user safety net.
-            owner_id: attribution
-                .user_id
-                .map(|u| u.to_string())
-                .unwrap_or(owner_id),
+            owner_id,
             agent_id,
             operation_type: "embedding",
             provider,
@@ -116,6 +129,7 @@ async fn embeddings_core(
             compress_bytes: None,
             request_bytes: None,
             platform_paid: resolved.platform_paid,
+            failure: None,
         },
     );
 

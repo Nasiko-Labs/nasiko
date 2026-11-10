@@ -8,7 +8,7 @@
 #[allow(dead_code)]
 mod common;
 
-use nasiko_llm_router::usage::{UsageRecord, log_usage};
+use nasiko_llm_router::usage::{CallFailure, UsageRecord, log_usage};
 use nasiko_pricing::PricingEngine;
 use serde_json::json;
 use serial_test::serial;
@@ -44,6 +44,18 @@ fn record(owner: Uuid, agent: Uuid, flow_id: Option<&str>, input: i64, output: i
         brevity_metadata: None,
         compress_bytes: None,
         request_bytes: None,
+        failure: None,
+    }
+}
+
+/// A call that reached the provider and failed: no usage reported, `request_bytes` sent.
+fn failed(owner: Uuid, agent: Uuid, request_bytes: usize) -> UsageRecord {
+    UsageRecord {
+        usage: None,
+        finish_reason: Some("failed:status".into()),
+        request_bytes: Some(request_bytes),
+        failure: Some(CallFailure::new("status", Some(503))),
+        ..record(owner, agent, Some(TRACE), 0, 0)
     }
 }
 
@@ -300,6 +312,156 @@ async fn tempo_pass_keeps_router_spend() {
         (latency, errors),
         (Some(1234), Some(1)),
         "tempo still fills latency and errors"
+    );
+    server.cleanup().await;
+}
+
+#[derive(sqlx::FromRow, Debug, PartialEq)]
+struct Failures {
+    error_count: Option<i64>,
+    router_error_count: i64,
+    router_estimated_input_tokens: i64,
+    cost_estimated: Option<bool>,
+}
+
+async fn failures(db: &PgPool, agent: Uuid) -> Failures {
+    sqlx::query_as(
+        "SELECT error_count::int8 AS error_count, router_error_count::int8 AS router_error_count,
+                router_estimated_input_tokens, cost_estimated
+         FROM trace_usage WHERE agent_id = $1",
+    )
+    .bind(agent)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// NAS-1018: a failed provider call is counted on its trace row. Its unreported prompt is
+/// estimated apart from the spend columns and never priced; a success beside it is unchanged.
+#[tokio::test]
+#[serial]
+async fn failed_calls_count_as_errors_without_inventing_spend() {
+    use nasiko_server::observability::trace_materializer::{UsageSource, write_usage_row};
+
+    let server = common::TestServer::start().await;
+    let (user, agent, name) = seed(&server.db, None, json!({})).await;
+    let pricing = PricingEngine::offline();
+
+    // Two failed attempts (4000 bytes ≈ 1000 tokens each), then the fallback that succeeded.
+    for _ in 0..2 {
+        log_usage(server.db.clone(), &pricing, failed(user, agent, 4000))
+            .await
+            .unwrap();
+    }
+    log_usage(
+        server.db.clone(),
+        &pricing,
+        record(user, agent, Some(TRACE), 100, 10),
+    )
+    .await
+    .unwrap();
+
+    let r = rows(&server.db, agent).await;
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        (r[0].input_tokens, r[0].output_tokens),
+        (Some(100), Some(10)),
+        "only reported tokens are spend"
+    );
+    let success_only: f64 =
+        sqlx::query_scalar("SELECT router_cost_usd::float8 FROM trace_usage WHERE agent_id = $1")
+            .bind(agent)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        r[0].cost_usd,
+        Some(success_only),
+        "failed calls add no cost"
+    );
+    assert_eq!(
+        failures(&server.db, agent).await,
+        Failures {
+            error_count: Some(2),
+            router_error_count: 2,
+            router_estimated_input_tokens: 2000,
+            cost_estimated: Some(true),
+        }
+    );
+    let failure: serde_json::Value =
+        sqlx::query_scalar("SELECT metadata->'failure' FROM trace_usage WHERE agent_id = $1")
+            .bind(agent)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(failure["class"], "status");
+    assert_eq!(failure["http_status"], 503);
+    assert_eq!(failure["tokens_estimated"], true);
+
+    // A later Tempo pass that saw no error span must not erase the router's count.
+    let tempo = nasiko_observability::TraceUsageRow {
+        trace_id: TRACE.into(),
+        agent_name: name,
+        session_id: None,
+        model: Some("gpt-4o".into()),
+        provider: Some("openai".into()),
+        input_tokens: 100,
+        output_tokens: 10,
+        cache_read_tokens: 0,
+        cache_creation_tokens: 0,
+        tool_call_count: 0,
+        cost_estimated: false,
+        cost_usd: 0.0,
+        prompt_cost_usd: 0.0,
+        completion_cost_usd: 0.0,
+        latency_ms: Some(5),
+        started_at: chrono::Utc::now(),
+        error_count: 0,
+        tool_calls: vec![],
+    };
+    let mut conn = server.db.acquire().await.unwrap();
+    write_usage_row(
+        &mut conn,
+        &tempo,
+        UsageSource::Agent,
+        None,
+        Some(agent),
+        Some(user),
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let after = failures(&server.db, agent).await;
+    assert_eq!(after.error_count, Some(2), "router-booked failures survive");
+    assert_eq!(
+        after.cost_estimated,
+        Some(true),
+        "the estimate stays flagged"
+    );
+    server.cleanup().await;
+}
+
+/// A success alone leaves `error_count` NULL ("not yet counted"), as before.
+#[tokio::test]
+#[serial]
+async fn a_successful_call_leaves_error_count_uncounted() {
+    let server = common::TestServer::start().await;
+    let (user, agent, _) = seed(&server.db, None, json!({})).await;
+    log_usage(
+        server.db.clone(),
+        &PricingEngine::offline(),
+        record(user, agent, Some(TRACE), 10, 1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        failures(&server.db, agent).await,
+        Failures {
+            error_count: None,
+            router_error_count: 0,
+            router_estimated_input_tokens: 0,
+            cost_estimated: None,
+        }
     );
     server.cleanup().await;
 }

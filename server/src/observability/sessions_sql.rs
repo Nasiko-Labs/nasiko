@@ -14,7 +14,7 @@
 //! | tokens, cost, latency, window | `trace_usage` | `trace_materializer` |
 //! | `first_input` / `last_output` | `chat_messages` | the chat path |
 //! | `status`, `failed_flows` | `flows` | `agent_proxy`, `router::a2a_dispatch` |
-//! | `error_count` | `trace_usage.error_count` | `trace_materializer` |
+//! | `error_count` | `trace_usage.error_count` | `trace_materializer`; the LLM router adds its failed calls live |
 //!
 //! A **coding-agent session** (one with `coding_agent_telemetry_events`
 //! receipts) is the exception for turns, tokens, duration and status. Its

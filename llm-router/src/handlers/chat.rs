@@ -527,12 +527,26 @@ async fn chat_core(
 
     let started = Instant::now();
     let platform_paid = resolved.platform_paid;
+    // Every attempt that reached a provider and failed is billed as its own call, whether or
+    // not a fallback then succeeded (the success row is written below, unchanged).
+    let failed_scope = usage::CallScope {
+        owner_id: owner_id.clone(),
+        agent_id: agent_id.clone(),
+        operation_type: "direct_llm",
+        streaming: req.is_streaming(),
+        flow_id: flow_id.clone(),
+        attribution_source,
+        request_bytes: Some(sent_bytes),
+    };
+    let mut attempts = crate::providers::attempts::AttemptLog::default();
 
     if req.is_streaming() {
-        let (stream, (provider, model)) =
-            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req)
+        let established =
+            fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req, &mut attempts)
                 .instrument(llm_span.clone())
-                .await?;
+                .await;
+        usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
+        let (stream, (provider, model)) = established?;
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
@@ -558,10 +572,18 @@ async fn chat_core(
     // Non-streaming: run with ordered fallbacks; usage records the effective provider/model.
     // One deadline for the whole request, compact-tools re-send included.
     let deadline = fallback::provider_deadline(&ctx.cfg);
-    let (mut resp, (mut provider, mut model)) =
-        fallback::execute_chat_by(&ctx.http, &ctx.cfg, &resolved, &req, deadline)
-            .instrument(llm_span.clone())
-            .await?;
+    let answered = fallback::execute_chat_by(
+        &ctx.http,
+        &ctx.cfg,
+        &resolved,
+        &req,
+        deadline,
+        &mut attempts,
+    )
+    .instrument(llm_span.clone())
+    .await;
+    usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
+    let (mut resp, (mut provider, mut model)) = answered?;
 
     // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
     // the failed attempt is billed as its own row and the original native request is re-sent.
@@ -596,12 +618,22 @@ async fn chat_core(
                 brevity_metadata: brevity_metadata.clone(),
                 compress_bytes,
                 request_bytes: Some(sent_bytes),
+                // The provider answered; only the router could not decode the reply.
+                failure: None,
             },
         );
-        (resp, (provider, model)) =
-            fallback::execute_chat_by(&ctx.http, &ctx.cfg, &resolved, &compacted.native, deadline)
-                .instrument(llm_span.clone())
-                .await?;
+        let resent = fallback::execute_chat_by(
+            &ctx.http,
+            &ctx.cfg,
+            &resolved,
+            &compacted.native,
+            deadline,
+            &mut attempts,
+        )
+        .instrument(llm_span.clone())
+        .await;
+        usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
+        (resp, (provider, model)) = resent?;
     }
     let latency_ms = started.elapsed().as_millis() as i64;
 
@@ -638,6 +670,7 @@ async fn chat_core(
             brevity_metadata: brevity_metadata.clone(),
             compress_bytes,
             request_bytes: Some(sent_bytes),
+            failure: None,
         },
     );
 
@@ -936,8 +969,11 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                     }
                 }
                 Err(e) => {
-                    // Mid-stream provider failure: log and end the stream cleanly.
+                    // Mid-stream provider failure: log and end the stream cleanly. The call
+                    // is billed as failed, with whatever usage the provider reported first.
                     tracing::error!(error = %e, "provider stream error");
+                    state.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).failure =
+                        Some(crate::providers::attempts::mid_stream_failure(&e));
                     break;
                 }
             }
@@ -960,6 +996,8 @@ struct StreamState {
     finish_reason: Option<String>,
     /// Distinct tool calls the model asked for in this reply.
     tool_call_indexes: std::collections::BTreeSet<i64>,
+    /// Set when the provider's stream broke off with an error.
+    failure: Option<usage::CallFailure>,
 }
 
 /// Writes the streaming usage row when dropped (stream completion or client disconnect).
@@ -984,37 +1022,42 @@ struct UsageGuard {
     request_bytes: Option<usize>,
 }
 
-impl Drop for UsageGuard {
-    fn drop(&mut self) {
+impl UsageGuard {
+    /// The row for the stream as it ended. Takes the metadata blocks, so it runs once.
+    fn usage_record(&mut self) -> UsageRecord {
         let compress_metadata = self.compress_metadata.take();
         let brevity_metadata = self.brevity_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         record_tool_calls(&self.span, st.tool_call_indexes.len());
-        usage::spawn_log(
-            self.db.clone(),
-            self.pricing.clone(),
-            UsageRecord {
-                owner_id: self.owner_id.clone(),
-                agent_id: self.agent_id.clone(),
-                operation_type: "direct_llm",
-                provider: self.provider.clone(),
-                model: self.model.clone(),
-                usage: st.usage.clone(),
-                cached_tokens: None,
-                reasoning_tokens: None,
-                latency_ms: self.started.elapsed().as_millis() as i64,
-                streaming: true,
-                finish_reason: st.finish_reason.clone(),
-                flow_id: self.flow_id.clone(),
-                attribution_source: self.attribution_source,
-                platform_paid: self.platform_paid,
-                compress_metadata,
-                brevity_metadata,
-                compress_bytes: self.compress_bytes,
-                request_bytes: self.request_bytes,
-            },
-        );
+        UsageRecord {
+            owner_id: self.owner_id.clone(),
+            agent_id: self.agent_id.clone(),
+            operation_type: "direct_llm",
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            usage: st.usage.clone(),
+            cached_tokens: None,
+            reasoning_tokens: None,
+            latency_ms: self.started.elapsed().as_millis() as i64,
+            streaming: true,
+            finish_reason: st.finish_reason.clone(),
+            flow_id: self.flow_id.clone(),
+            attribution_source: self.attribution_source,
+            platform_paid: self.platform_paid,
+            compress_metadata,
+            brevity_metadata,
+            compress_bytes: self.compress_bytes,
+            request_bytes: self.request_bytes,
+            failure: st.failure,
+        }
+    }
+}
+
+impl Drop for UsageGuard {
+    fn drop(&mut self) {
+        let record = self.usage_record();
+        usage::spawn_log(self.db.clone(), self.pricing.clone(), record);
     }
 }
 
@@ -1148,6 +1191,7 @@ mod tests {
                     ),
                     finish_reason: None,
                     tool_call_indexes: Default::default(),
+                    failure: None,
                 })),
                 flow_id: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
@@ -1193,6 +1237,7 @@ mod tests {
                     usage: None,
                     finish_reason: Some("tool_calls".into()),
                     tool_call_indexes: [0, 1].into_iter().collect(),
+                    failure: None,
                 })),
                 flow_id: None,
                 compress_bytes: None,
@@ -1205,6 +1250,49 @@ mod tests {
             drop(guard);
         });
         assert_eq!(captured.0.lock().unwrap()["nasiko.response.tool_calls"], 2);
+    }
+
+    /// NAS-1018: a stream that broke off mid-reply is billed as a failed call, with the usage
+    /// the provider reported before it broke (so nothing is estimated).
+    #[tokio::test]
+    async fn a_stream_that_broke_off_is_billed_as_failed_with_its_reported_usage() {
+        let ctx = ctx_with("http://unused.invalid".into());
+        let mut guard = UsageGuard {
+            db: ctx.db,
+            pricing: Arc::new(nasiko_pricing::PricingEngine::offline()),
+            span: tracing::Span::none(),
+            owner_id: "no-database-write".into(),
+            agent_id: AGENT.into(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            started: Instant::now(),
+            state: Arc::new(Mutex::new(StreamState {
+                usage: Some(
+                    serde_json::from_value(
+                        json!({ "prompt_tokens": 900, "completion_tokens": 12 }),
+                    )
+                    .unwrap(),
+                ),
+                failure: Some(crate::providers::attempts::mid_stream_failure(
+                    &ProviderError::Transport("connection reset".into()),
+                )),
+                ..Default::default()
+            })),
+            flow_id: None,
+            compress_bytes: None,
+            request_bytes: Some(4000),
+            attribution_source: None,
+            platform_paid: true,
+            compress_metadata: None,
+            brevity_metadata: None,
+        };
+        let record = guard.usage_record();
+        assert_eq!(
+            record.failure,
+            Some(usage::CallFailure::new("stream", None))
+        );
+        assert_eq!(record.usage.and_then(|u| u.prompt_tokens), Some(900));
+        assert!(record.streaming);
     }
 
     const AGENT: &str = "11111111-1111-1111-1111-111111111111";
