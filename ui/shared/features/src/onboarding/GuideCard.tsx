@@ -8,43 +8,58 @@ import { Progress } from '@nasiko/ui/primitives/progress'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { useConfigs } from '@nasiko/features/router/api'
 import { cn } from '@nasiko/ui/lib/utils'
-import { openGuide, useGuide } from './api'
+import { openGuide } from './api'
 import { copy } from './copy'
 import { firstOpenStep, ticks as tick, type Ticks } from './logic'
 
 function useTicks(): Ticks {
-  const { persona } = useGuide()
   const configs = useConfigs().data?.length ?? 0
   const agents = useAgentsDirectory().data?.length ?? 0
-  return tick({ persona, configs, agents })
+  return tick({ configs, agents })
 }
 
+/** Each tick, its row's words and the step it opens: the model and the agent share the Key and agent step. */
+const ROWS = [
+  ['model', copy.card.model, 'start'],
+  ['agent', copy.card.agent, 'start'],
+] as const
+
+const doneCount = (t: Ticks) => ROWS.filter(([id]) => t[id]).length
+
+/** The Overview header's button, with the setup's progress beside its label (user request 2026-11-09), so the home
+ *  screen shows it whether or not the fleet is empty. */
 export function SetupGuideButton({ className }: { className?: string }) {
   const t = useTicks()
+  const done = doneCount(t)
   return (
     <Button
       variant="outline"
       size="sm"
       className={className}
+      // The bar and count are hidden from the name ("Setup guide"); the description carries them.
+      title={copy.card.progress(done, ROWS.length)}
       onClick={() => openGuide(firstOpenStep(t))}
     >
       <BookOpen aria-hidden /> {copy.card.title}
+      {/* Spans, not Progress: its root is a div, which a button can't hold. The label above carries the count. */}
+      <span aria-hidden className="relative h-1.5 w-12 overflow-hidden rounded-full bg-primary/20">
+        <span
+          className="absolute inset-y-0 left-0 rounded-full bg-primary transition-[width]"
+          style={{ width: `${(done / ROWS.length) * 100}%` }}
+        />
+      </span>
+      <span aria-hidden className="text-xs text-muted-foreground tabular-nums">
+        {copy.card.progressShort(done, ROWS.length)}
+      </span>
     </Button>
   )
 }
 
-/** Each tick, its row's words and the step it opens: the model and the agent share the Key and agent step. */
-const ROWS = [
-  ['role', copy.steps.role, 'role'],
-  ['model', copy.card.model, 'start'],
-  ['agent', copy.card.agent, 'start'],
-] as const
-
 export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
   const t = useTicks()
   // "Resume" only once a step is done: before that there is nothing to resume.
-  const started = t.role || t.model || t.agent
-  const done = ROWS.filter(([id]) => t[id]).length
+  const started = t.model || t.agent
+  const done = doneCount(t)
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">{copy.card.intro}</p>

@@ -4,7 +4,6 @@
  * narrative, then what it gets you (user review 2026-11-05).
  */
 import type { StepId } from './logic'
-import type { Persona } from './types'
 
 export const copy = {
   guide: {
@@ -26,7 +25,6 @@ export const copy = {
   },
   steps: {
     welcome: { title: 'Welcome', sub: 'What Nasiko does for you' },
-    role: { title: 'Your role', sub: 'Tailor the guide' },
     start: { title: 'Agent and key', sub: 'A first agent, your key' },
     harness: { title: 'Coding harnesses', sub: 'Your sessions, past and new' },
   } satisfies Record<StepId, { title: string; sub: string }>,
@@ -64,40 +62,6 @@ export const copy = {
         get: 'Claude Code, Codex and Cursor sessions beside your agents',
       },
     ],
-  },
-  role: {
-    title: "What's your role?",
-    intro: "We'll suggest the page you need first.",
-    label: 'Your role',
-    opens: (page: string) => `Opens ${page}`,
-    saveFailed: "Couldn't save your role. Try again.",
-    retry: 'Try again',
-    personas: {
-      developer: {
-        title: 'Developer',
-        line: 'Build, test and ship agents from the CLI and console.',
-      },
-      platform_engineer: {
-        title: 'Platform engineer',
-        line: 'Run the cluster, routing and model providers.',
-      },
-      finance: { title: 'FinOps / Finance', line: 'Track AI spend, budgets and forecasts.' },
-      engineering_manager: {
-        title: 'Engineering manager',
-        line: 'See which coding harnesses your teams use and what they cost.',
-      },
-      product_manager: {
-        title: 'Product manager',
-        line: 'Ask agents about users, funnels and feedback.',
-      },
-      data_analyst: {
-        title: 'Data analyst',
-        line: 'Follow usage and spend across agents and models.',
-      },
-      support_lead: { title: 'Support lead', line: 'Triage tickets and answer customers faster.' },
-      sre: { title: 'SRE / On-call', line: 'Debug slow or failing agent runs from traces.' },
-      leadership: { title: 'Leadership', line: 'One view of adoption, spend and results.' },
-    } satisfies Record<Persona, { title: string; line: string }>,
   },
   start: {
     title: 'Bring an agent, then add your key',
@@ -158,11 +122,16 @@ export const copy = {
     seededLead: (max: number) =>
       `Pick up to ${max}. The one with the best record is always included.`,
     picked: (n: number, max: number) => `${n} of ${max} picked`,
-    full: 'Uncheck one to swap it for another.',
+    full: 'Pick another to swap it in.',
     included: 'Always included',
+    alreadyDeployed: 'Already deployed',
+    deployFailed: (title: string, reason: string) => `Couldn't deploy ${title}: ${reason}`,
     record: (runs: number, success: number) =>
       `${runs.toLocaleString('en-US')} runs · ${Math.round(success * 100)}% succeeded`,
-    deploy: (n: number) => (n === 1 ? 'Deploy 1 agent' : `Deploy ${n} agents`),
+    // The guide's Continue deploys (user request 2026-11-09): the Prebuilt picks, or the mandatory agent from any other
+    // tab; no separate Deploy button.
+    deployAndContinue: (n: number) =>
+      n === 1 ? 'Deploy 1 agent and continue' : `Deploy ${n} agents and continue`,
     deploying: (names: readonly string[]) =>
       names.length === 1
         ? `${names[0]} is on its way. It shows up in Agents once it's running.`
@@ -171,6 +140,19 @@ export const copy = {
     upload: 'Upload a zip',
     github: 'GitHub',
     registry: 'Registry',
+    // How to bring an agent from the public registry (user request 2026-11-09), above the Deploy page's own form.
+    registryHow: {
+      title: 'Copy an agent from the Nasiko registry',
+      site: 'registry.nasiko.dev',
+      siteUrl: 'https://registry.nasiko.dev',
+      open: 'Open',
+      openRest: 'and pick an agent.',
+      copyStep: 'In its Install section, copy the reference after',
+      pull: 'docker pull',
+      example: 'registry.nasiko.dev/acme/support-bot:1.2.0',
+      paste: 'Paste it below and press Import and deploy.',
+      label: 'How to copy from the registry',
+    },
     lifecycle: 'Lifecycle',
     stages: ['Source', 'Build', 'Deploy', 'Live'],
     started: 'Your agent is on its way. We will let you know when the build finishes.',
@@ -207,5 +189,7 @@ export const copy = {
     done: 'Done',
     todo: 'Not yet',
     progress: (done: number, total: number) => `${done} of ${total} done`,
+    // The header button's own count beside its bar (user request 2026-11-09: progress on the home screen).
+    progressShort: (done: number, total: number) => `${done}/${total}`,
   },
 }
