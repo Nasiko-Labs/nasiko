@@ -4,6 +4,7 @@
  * labels and hints live in the status matrix (status.ts), the single status source.
  */
 import { ApiError } from '@nasiko/data-access/client'
+import { isObservabilityUnconfigured } from '@nasiko/features/observability/unconfigured'
 import { SERVER_TEXT_MAX } from './tuning'
 
 export const copy = {
@@ -329,7 +330,7 @@ export function errorCopy(err: unknown, context: ErrorContext = 'read'): ErrorCo
         "The runtime couldn't find this agent's container. Redeploy it with `nasiko deploy`.",
       detail,
     }
-  if (s === 503) return { message: copy.obsOff, detail }
+  if (isObservabilityUnconfigured(api)) return { message: copy.obsOff, detail }
   if (api.isServerUnreachable) return { message: copy.serverDown, detail }
   return { message: copy.somethingWrong, detail }
 }

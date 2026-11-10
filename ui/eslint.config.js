@@ -110,7 +110,17 @@ const PUBLIC = {
     // EE's Budget burn panel draws the Overview's quiet card when nothing is spent.
     'components/Card',
   ],
-  observability: ['StateCard', 'tuning', 'types', 'spans', 'copy', 'sessions', 'limiter'],
+  // Agents word a 503 with `unconfigured` too, so only the missing trace store reads as a missing TEMPO_URL.
+  observability: [
+    'StateCard',
+    'tuning',
+    'types',
+    'spans',
+    'copy',
+    'sessions',
+    'limiter',
+    'unconfigured',
+  ],
   // Budgets (plans/feat-budget-burn.md eng D1) build their sheet from the router's generic sheet parts.
   router: [
     'components/RoutingCard',

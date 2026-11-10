@@ -378,9 +378,9 @@ pub async fn get_session_details(
     {
         return obs_err(error);
     }
-    if !state.config.observability_enabled {
-        return observability_unconfigured();
-    }
+    // No `observability_enabled` gate: the detail is built from Postgres (`flows` +
+    // `trace_usage`) and Tempo only enriches it, skipped when it fails, so a server with no
+    // trace store still opens every session it lists.
     match svc(&state)
         .get_session_details(&session_id, &claims.sub, claims.is_superuser)
         .await

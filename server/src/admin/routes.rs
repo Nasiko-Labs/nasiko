@@ -649,10 +649,11 @@ async fn start(
         Ok(false) => {}
         Err(resp) => return resp,
     }
-    // A resident agent that was stopped with no workload left (its policy flipped while it was
-    // parked, and the reaper released its sandbox) has nothing to scale up: deploy one, from the
-    // stored image and env, as a restart does.
-    if status.as_deref() == Some("stopped")
+    // A resident agent with no workload left has nothing to scale up: deploy one, from the
+    // stored image and env, as a restart does. That is a stopped agent whose policy flipped while
+    // it was parked (the reaper released its sandbox), and any agent whose row was moved to this
+    // server without its workload — stopped, parked or failed where it came from.
+    if status.as_deref() != Some("running")
         && state
             .runtime
             .status(&ContainerId::from_uuid(agent_id))
