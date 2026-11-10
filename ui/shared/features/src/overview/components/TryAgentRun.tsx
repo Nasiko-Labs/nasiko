@@ -1,24 +1,32 @@
 /**
- * Home's call to run the agent the viewer picked during setup: "Run it" plays a run on the button itself (Starting your
- * agent → Running your agent → Your agent completed, then the button leaves), never leaving Home; a line under it then
- * says what the run cost, links to what the agent did and asks for a refresh to see its stats. Then "Run it optimized"
- * becomes the call: the same task with Token optimization on, the same experience, and a refresh to see what it saved.
- * Simulated for now (tryRun.ts): no request is sent and the figures are the demo's.
+ * Home's call to run the agent the viewer picked during setup. "Run it" sends the card's task to the agent for real
+ * (tryRunApi.ts) and plays the run on the button (Starting your agent → Running your agent → Your agent completed),
+ * never leaving Home; a line under it then says what the run cost, from the run itself, and links to what the agent
+ * did. Home refreshes its spend and tokens through `onRan`. Then "Run it optimized" becomes the call: it turns the
+ * agent's Token optimization on, runs the same task, and says how much less it cost than the first run.
  */
 import { Link } from '@tanstack/react-router'
 import { CheckCircle2, Loader2, Play, RotateCw, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Button } from '@nasiko/ui/primitives/button'
-import { cn } from '@nasiko/ui/lib/utils'
+import { fmtCostPerOp, fmtInt } from '@nasiko/ui/lib/format'
+import { cn, uuid } from '@nasiko/ui/lib/utils'
+import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { copy } from '../copy'
 import {
-  nextPhase,
   readDone,
+  readFigures,
+  savedPercent,
   TRY_RUN_AGENT,
   writeDone,
+  writeFigures,
+  type TryRunFigures,
   type TryRunKind,
   type TryRunPhase,
 } from '../tryRun'
+import { runAgentOnce } from '@nasiko/features/chat/runOnce'
+import { enableOptimization } from '../tryRunApi'
+import { TRY_RUN_COMPLETED_MS } from '../tuning'
 import { Card, TOUCH } from './Card'
 
 const t = copy.tryRun
@@ -26,19 +34,17 @@ const t = copy.tryRun
 function RunButton({
   kind,
   phase,
-  primary,
   disabled,
   onRun,
 }: {
   kind: TryRunKind
-  /** The card's call to action: the run still to do. */
-  primary: boolean
   /** This button's run, or idle while the other one runs. */
   phase: TryRunPhase
   disabled: boolean
   onRun(): void
 }) {
   const Icon = kind === 'baseline' ? Play : Sparkles
+  const busy = phase === 'starting' || phase === 'running'
   const label =
     phase === 'starting'
       ? t.starting
@@ -49,13 +55,12 @@ function RunButton({
           : t[kind]
   return (
     <Button
-      variant={primary ? 'default' : 'outline'}
       className={`justify-start ${TOUCH}`}
       disabled={disabled}
-      aria-busy={phase === 'starting' || phase === 'running'}
+      aria-busy={busy}
       onClick={onRun}
     >
-      {phase === 'starting' || phase === 'running' ? (
+      {busy ? (
         <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden />
       ) : phase === 'completed' ? (
         <CheckCircle2 aria-hidden />
@@ -67,51 +72,105 @@ function RunButton({
   )
 }
 
-function Result({ kind }: { kind: TryRunKind }) {
+const figuresText = (f: TryRunFigures | undefined) =>
+  f && f.tokens != null && f.costUsd != null
+    ? t.figures(fmtInt(f.tokens), fmtCostPerOp(f.costUsd))
+    : ''
+
+function Result({
+  kind,
+  figures,
+  sessionId,
+}: {
+  kind: TryRunKind
+  figures: Partial<Record<TryRunKind, TryRunFigures>>
+  sessionId: string | null
+}) {
+  const own = figuresText(figures[kind])
+  const saved = kind === 'optimized' ? savedPercent(figures.baseline, figures.optimized) : null
   return (
     <div className="flex flex-col gap-1 text-sm" data-testid={`try-run-result-${kind}`}>
-      <p>{kind === 'baseline' ? t.baselineDone(TRY_RUN_AGENT) : t.optimizedDone(TRY_RUN_AGENT)}</p>
+      <p>
+        {kind === 'baseline'
+          ? t.baselineDone(TRY_RUN_AGENT, own)
+          : t.optimizedDone(TRY_RUN_AGENT, own)}
+        {saved !== null ? ` ${t.saved(saved)}` : null}
+      </p>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <Link to="/sessions" className="text-primary-text underline underline-offset-4">
-          {t.seeRun}
-        </Link>
-        <span className="text-muted-foreground">
-          {kind === 'baseline' ? t.refreshStats : t.refreshOptimized}
-        </span>
-        <Button size="sm" variant="outline" onClick={() => globalThis.location.reload()}>
-          <RotateCw className="size-3.5" aria-hidden /> {t.refresh}
-        </Button>
+        {sessionId ? (
+          <Link
+            to="/sessions/$sessionId"
+            params={{ sessionId }}
+            className="text-primary-text underline underline-offset-4"
+          >
+            {t.seeRun}
+          </Link>
+        ) : (
+          <Link to="/sessions" className="text-primary-text underline underline-offset-4">
+            {t.seeRun}
+          </Link>
+        )}
+        <span className="text-muted-foreground">{t.updated}</span>
       </div>
     </div>
   )
 }
 
-export function TryAgentRun({ userId, className }: { userId: string; className?: string }) {
-  // Runs finished in this tab (kept through the refresh), and the one playing now.
+export function TryAgentRun({
+  userId,
+  className,
+  onRan,
+}: {
+  userId: string
+  className?: string
+  /** A run finished: Home refreshes what it shows (spend, tokens, runs). */
+  onRan?: () => void
+}) {
+  const agentId = useAgentsDirectory().byName.get(TRY_RUN_AGENT)?.id ?? null
+  // Runs finished in this tab (kept through a refresh), what each cost, and the one running now.
   const [done, setDone] = useState(() => readDone(userId))
+  const [figures, setFigures] = useState(() => readFigures(userId))
   const [active, setActive] = useState<{ kind: TryRunKind; phase: TryRunPhase } | null>(null)
-  // Results shown on this visit, newest last; a refresh starts the card clean.
-  const [shown, setShown] = useState<TryRunKind[]>([])
+  const [failure, setFailure] = useState<string | null>(null)
+  // Results shown on this visit, newest last, with the run's session; a refresh starts the card clean.
+  const [shown, setShown] = useState<{ kind: TryRunKind; sessionId: string | null }[]>([])
 
+  // "Your agent completed" holds for a moment, then the button resets.
   useEffect(() => {
-    if (!active) return
-    const step = nextPhase(active.phase)
-    if (!step) return
-    const timer = setTimeout(() => {
-      if (step.next === 'completed') {
-        writeDone(userId, active.kind)
-        setDone((d) => (d.includes(active.kind) ? d : [...d, active.kind]))
-        setShown((s) => [...s.filter((k) => k !== active.kind), active.kind])
-      }
-      setActive(step.next === 'idle' ? null : { kind: active.kind, phase: step.next })
-    }, step.afterMs)
+    if (active?.phase !== 'completed') return
+    const timer = setTimeout(() => setActive(null), TRY_RUN_COMPLETED_MS)
     return () => clearTimeout(timer)
-  }, [active, userId])
+  }, [active])
 
-  const run = (kind: TryRunKind) => setActive({ kind, phase: 'starting' })
+  const run = async (kind: TryRunKind) => {
+    if (!agentId) return
+    setFailure(null)
+    setActive({ kind, phase: 'starting' })
+    try {
+      if (kind === 'optimized') await enableOptimization(agentId)
+      const result = await runAgentOnce({
+        agentId,
+        text: t.request,
+        newId: uuid,
+        onWorking: () => setActive({ kind, phase: 'running' }),
+      })
+      const own = { tokens: result.tokens, costUsd: result.costUsd }
+      writeDone(userId, kind)
+      writeFigures(userId, kind, own)
+      setDone((d) => (d.includes(kind) ? d : [...d, kind]))
+      setFigures((f) => ({ ...f, [kind]: own }))
+      setShown((s) => [...s.filter((r) => r.kind !== kind), { kind, sessionId: result.sessionId }])
+      setActive({ kind, phase: 'completed' })
+      onRan?.()
+    } catch (e) {
+      setActive(null)
+      setFailure(e instanceof Error ? e.message : String(e))
+    }
+  }
   const phaseOf = (kind: TryRunKind): TryRunPhase => (active?.kind === kind ? active.phase : 'idle')
   // Once the agent has run as it is, the optimized run is the call to action.
   const ranBaseline = done.includes('baseline')
+  const next: TryRunKind = ranBaseline && active?.kind !== 'baseline' ? 'optimized' : 'baseline'
 
   return (
     // A mild gradient border to draw the eye to the button: a thin frame glowing from the bottom-left corner, fading into
@@ -131,37 +190,35 @@ export function TryAgentRun({ userId, className }: { userId: string; className?:
           <p className="text-sm text-muted-foreground">{t.lead}</p>
           <figure className="flex flex-col gap-1">
             <figcaption className="text-xs font-medium">{t.requestLabel}</figcaption>
-            <blockquote className="border-l-2 pl-3 text-xs text-muted-foreground">
+            <blockquote className="max-h-32 overflow-y-auto border-l-2 pl-3 text-xs whitespace-pre-line text-muted-foreground">
               {t.request}
             </blockquote>
           </figure>
+          {!agentId ? (
+            <p className="text-sm text-muted-foreground">{t.notDeployed(TRY_RUN_AGENT)}</p>
+          ) : null}
           {ranBaseline && !done.includes('optimized') && !active ? (
             <p className="text-sm font-medium">{t.nextStep}</p>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            {/* Gone once it has run (after its completed state plays out): the optimized run is what's left to do. */}
-            {!ranBaseline || active?.kind === 'baseline' ? (
-              <RunButton
-                kind="baseline"
-                phase={phaseOf('baseline')}
-                primary
-                disabled={!!active}
-                onRun={() => run('baseline')}
-              />
-            ) : null}
-            {ranBaseline && active?.kind !== 'baseline' ? (
-              <RunButton
-                kind="optimized"
-                phase={phaseOf('optimized')}
-                primary
-                disabled={!!active}
-                onRun={() => run('optimized')}
-              />
-            ) : null}
+            <RunButton
+              kind={next}
+              phase={phaseOf(next)}
+              disabled={!agentId || !!active}
+              onRun={() => void run(next)}
+            />
           </div>
           <div aria-live="polite" className="flex flex-col gap-3 empty:hidden">
-            {shown.map((kind) => (
-              <Result key={kind} kind={kind} />
+            {failure ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+                <span>{t.failed(failure)}</span>
+                <Button size="sm" variant="outline" onClick={() => void run(next)}>
+                  <RotateCw className="size-3.5" aria-hidden /> {t.retry}
+                </Button>
+              </div>
+            ) : null}
+            {shown.map((r) => (
+              <Result key={r.kind} kind={r.kind} figures={figures} sessionId={r.sessionId} />
             ))}
           </div>
         </div>

@@ -2,8 +2,9 @@
 import type { Onboarding, Persona } from './types'
 
 /** `start` is one step for the first agent and the model key (every model call is billed to the user's own key, so Continue
- *  waits for one); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready). */
-export const STEPS = ['welcome', 'role', 'start', 'harness'] as const
+ *  waits for one); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready).
+ *  No role step (user request 2026-11-09): the guide no longer asks for a persona. */
+export const STEPS = ['welcome', 'start', 'harness'] as const
 export type StepId = (typeof STEPS)[number]
 
 /** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. Nobody is sent to
@@ -29,23 +30,21 @@ export function guideDue(data: Onboarding | undefined, skipped: boolean): boolea
 }
 
 export interface Ticks {
-  role: boolean
   model: boolean
   agent: boolean
 }
-export function ticks(v: { persona: Persona | null; configs: number; agents: number }): Ticks {
-  return { role: v.persona !== null, model: v.configs > 0, agent: v.agents > 0 }
+export function ticks(v: { configs: number; agents: number }): Ticks {
+  return { model: v.configs > 0, agent: v.agents > 0 }
 }
 
 /** Resume at the first step not done yet; all done: the coding harnesses step, which has no tick of its own. */
 export function firstOpenStep(t: Ticks): StepId {
-  if (!t.role) return 'role'
   if (!t.model || !t.agent) return 'start'
   return 'harness'
 }
 
-/** Minutes left on step n (1-based) of the two-minute guide: two on Welcome and Role, one from the Agent and key step,
- *  none on the last (user review 2026-11-05). */
+/** Minutes left on step n (1-based) of the two-minute guide: two on Welcome, one on the Agent and key step, none on the
+ *  last (user review 2026-11-05). */
 export const minutesLeft = (n: number) =>
   n >= STEPS.length ? 0 : Math.ceil((STEPS.length - n + 1) / 2)
 
@@ -53,70 +52,89 @@ export const minutesLeft = (n: number) =>
  *  passed (user request 2026-11-05: that step only). */
 export const CONTINUE_HOLD_SECONDS = 5
 
-/** A prebuilt agent the Agent and key step offers to deploy, with its record across workspaces. */
+/** A prebuilt agent the Agent and key step offers to deploy: a Nasiko agent package on the public registry. */
 export interface SeededAgent {
+  /** The agent's name once deployed: the repository's last segment, as the server's registry import names it. */
   name: string
+  /** What the guide shows. */
+  title: string
   line: string
+  /** What the registry import is sent (`host/owner/name:tag`). */
+  reference: string
   runs: number
   /** Share of `runs` that succeeded, 0–1. */
   success: number
 }
 
+const seeded = (
+  name: string,
+  title: string,
+  line: string,
+  runs: number,
+  success: number,
+): SeededAgent => ({
+  name,
+  title,
+  line,
+  reference: `registry.nasiko.dev/nasiko/${name}:1.0.0`,
+  runs,
+  success,
+})
+
 /**
- * The prebuilt agents (seed agent names, mocks/seed.ts). ponytail: a fixed list with demo figures, and deploying it
- * only records the pick; a server list of seeded agents with their real run and usage metrics replaces both.
+ * The prebuilt agents (user request 2026-11-09), Nasiko's packages on registry.nasiko.dev. ponytail: the run and
+ * success figures are demo values; a server list of seeded agents with their real metrics replaces them.
  */
 export const SEEDED_AGENTS: readonly SeededAgent[] = [
-  {
-    name: 'Research Agent',
-    line: 'Digs into a topic and writes a sourced brief.',
-    runs: 4_820,
-    success: 0.97,
-  },
-  {
-    name: 'Support Bot',
-    line: 'Answers customer questions from your docs.',
-    runs: 6_100,
-    success: 0.71,
-  },
-  {
-    name: 'SQL Analyst',
-    line: 'Turns a question into SQL and explains the result.',
-    runs: 2_300,
-    success: 0.99,
-  },
-  {
-    name: 'Doc Writer',
-    line: 'Drafts and tidies docs from notes or code.',
-    runs: 1_950,
-    success: 0.93,
-  },
-  {
-    name: 'Summarizer',
-    line: 'Condenses long threads, calls and reports.',
-    runs: 3_400,
-    success: 0.9,
-  },
-  {
-    name: 'Meeting Notes',
-    line: 'Turns a transcript into decisions and actions.',
-    runs: 1_200,
-    success: 0.95,
-  },
+  seeded(
+    'meeting-notes-processor',
+    'Meeting Notes Processor',
+    'Turns a transcript into decisions and actions.',
+    5_200,
+    0.98,
+  ),
+  seeded('summarizer', 'Summarizer', 'Condenses long threads, calls and reports.', 3_400, 0.9),
+  seeded('reply-drafter', 'Reply Drafter', 'Drafts replies to emails and messages.', 2_900, 0.93),
+  seeded(
+    'task-breakdown',
+    'Task Breakdown',
+    'Splits a goal into ordered, doable tasks.',
+    1_800,
+    0.95,
+  ),
+  seeded('humanizer', 'Humanizer', 'Rewrites stiff text so it reads naturally.', 2_100, 0.92),
+  seeded('translator', 'Translator', 'Translates text while keeping its tone.', 2_600, 0.96),
 ]
 
-/** How many prebuilt agents one pick deploys at most, the mandatory one included (meeting 2026-11-06). */
-export const MAX_SEEDED = 3
+/** How many prebuilt agents one pick deploys at most, the mandatory one included (user request 2026-11-09: was 3). */
+export const MAX_SEEDED = 2
 
-/** The agent every pick includes: the most successful runs (runs × success), so heavy use with a poor record loses. */
-export const mandatoryAgent = (agents: readonly SeededAgent[]): SeededAgent =>
-  agents.reduce((best, a) => (a.runs * a.success > best.runs * best.success ? a : best))
+/** The agent every pick includes and every Continue on the Agent and key step deploys, whatever the tab, so one agent
+ *  is always up (user request 2026-11-09). */
+export const MANDATORY = 'meeting-notes-processor'
 
-/** The picks after toggling `name`: the mandatory one never leaves, and the pick never grows past MAX_SEEDED. */
+/** The Agent and key step's tabs, Prebuilt first: deploying them is the quickest start. */
+export type AgentTab = 'seeded' | 'registry' | 'github' | 'upload'
+
+/** What Continue deploys: the picks on the Prebuilt tab, the mandatory agent on any other; never an agent that already
+ *  exists, so coming back to the guide redeploys nothing (a re-import would redeploy it). */
+export function toDeploy(
+  tab: AgentTab,
+  picks: readonly string[],
+  existing: ReadonlySet<string>,
+): SeededAgent[] {
+  const names = tab === 'seeded' ? picks : [MANDATORY]
+  return SEEDED_AGENTS.filter((a) => names.includes(a.name) && !existing.has(a.name))
+}
+
+/** The picks after toggling `name`: the mandatory one never leaves, and the pick never grows past MAX_SEEDED. A new
+ *  pick when full swaps out the latest one, so any agent can be chosen without unchecking first (user 2026-11-09). */
 export function togglePick(picks: readonly string[], name: string, mandatory: string): string[] {
   if (name === mandatory) return [...picks]
   if (picks.includes(name)) return picks.filter((p) => p !== name)
-  return picks.length >= MAX_SEEDED ? [...picks] : [...picks, name]
+  if (picks.length < MAX_SEEDED) return [...picks, name]
+  const latest = picks.findLast((p) => p !== mandatory)
+  return latest ? [...picks.filter((p) => p !== latest), name] : [...picks]
 }
 
 /** The guide opens on its own once per user (user request 2026-11-05): set when it does, and not under the drafts prefix,

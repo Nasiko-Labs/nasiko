@@ -572,29 +572,44 @@ export const copy = {
   },
   /**
    * The try-a-run card (components/TryAgentRun.tsx): the agent the viewer picked during setup, run once as it is, then
-   * the same task with Token optimization on. Simulated for now: the states play on a timer and the figures are the
-   * demo's, not read from the server.
+   * the same task with Token optimization on. Both runs are real; their tokens and cost come back from the run itself.
    */
   tryRun: {
     title: (agent: string) => `Your ${agent} is ready`,
     lead: 'You picked it during setup. Give it a real task right here, then run the same task with Token optimization on and compare what it costs.',
-    requestLabel: 'Its first task',
-    /** The detailed request the run would send. */
-    request:
-      "Prepare my brief for Thursday's board meeting: last quarter's revenue, margin and cash runway against plan, the three biggest risks with what we're doing about each, how our two main competitors moved this quarter, and five questions the board is likely to ask, with a one-line answer to each. One page, plain language.",
+    requestLabel: 'Its first task: process this meeting transcript',
+    /** A real transcript for the meeting notes processor (it declines anything under about 80 words). */
+    request: `Weekly launch sync, Tuesday 10:00.
+[00:00] Priya: Thanks for joining. Main topic is the Q3 launch. We planned October 6, but the payments API security review is still open.
+[00:42] Sam: Right, I have two findings left on token expiry and the refund endpoint. I will finish the review by Friday.
+[01:15] Priya: If the review closes Friday, can we launch on October 20 instead? That gives QA a full week.
+[01:40] Maria: QA can do it, but I need the staging build by Monday the 13th, not later.
+[02:05] Lee: Marketing can move the campaign to the 20th. Budget for the campaign stays at 40k, no change.
+[02:30] Priya: Okay. Decision: we launch October 20. Sam closes the security review by Friday. Maria gets the staging build by Monday the 13th.
+[02:58] Lee: I will update the campaign plan and send the new dates to the agency this week.
+[03:20] Sam: One risk: if the refund endpoint fix needs a schema change, the review slips again. I'll flag it Wednesday.
+[03:45] Priya: Good. Let's meet again next Tuesday to confirm.`,
     baseline: 'Run it',
     optimized: 'Run it optimized',
     starting: 'Starting your agent…',
     running: 'Running your agent…',
     completed: 'Your agent completed',
-    baselineDone: (agent: string) => `Your ${agent} completed the run with 50 cents spent.`,
-    optimizedDone: (agent: string) =>
-      `Your ${agent} completed the same run with Token optimization on.`,
+    /** `figures` is "1,560 tokens, $0.000448" or empty when the run reported no usage. */
+    baselineDone: (agent: string, figures: string) =>
+      figures ? `Your ${agent} completed the run: ${figures}.` : `Your ${agent} completed the run.`,
+    optimizedDone: (agent: string, figures: string) =>
+      figures
+        ? `Your ${agent} completed the same run with Token optimization on: ${figures}.`
+        : `Your ${agent} completed the same run with Token optimization on.`,
+    figures: (tokens: string, cost: string) => `${tokens} tokens, ${cost}`,
+    saved: (percent: number) => `${percent}% less than the run without it.`,
     seeRun: 'See what it did',
-    refreshStats: "Refresh to see your agent's stats on Home.",
-    refreshOptimized: 'Refresh to see what optimization saved.',
+    updated: "Home's spend and tokens now include this run.",
     nextStep: 'Next: run the same task with Token optimization on.',
-    refresh: 'Refresh',
+    failed: (reason: string) => `The run didn't finish: ${reason}`,
+    retry: 'Try again',
+    notDeployed: (agent: string) =>
+      `${agent} isn't deployed yet. Deploy it from the Setup guide, then run it here.`,
   },
   rating: {
     healthy: 'Healthy',

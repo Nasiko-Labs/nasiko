@@ -5,43 +5,57 @@ import {
   firstOpenStep,
   guideDue,
   guideProviders,
-  mandatoryAgent,
+  MANDATORY,
   MAX_SEEDED,
   minutesLeft,
   opensFor,
   skipKey,
   STEPS,
   ticks,
+  toDeploy,
   togglePick,
 } from './logic'
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
-  it('makes the agent with the most successful runs mandatory, not the most used one', () => {
-    const busy = { name: 'Busy', line: '', runs: 1_000, success: 0.5 }
-    const good = { name: 'Good', line: '', runs: 800, success: 0.9 }
-    expect(mandatoryAgent([busy, good])).toBe(good)
+  it('always deploys the meeting notes processor: the picks on Prebuilt, it alone from any other tab', () => {
+    expect(MANDATORY).toBe('meeting-notes-processor')
+    const none = new Set<string>()
+    expect(toDeploy('seeded', [MANDATORY, 'summarizer'], none).map((a) => a.reference)).toEqual([
+      'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0',
+      'registry.nasiko.dev/nasiko/summarizer:1.0.0',
+    ])
+    for (const tab of ['registry', 'github', 'upload'] as const)
+      expect(toDeploy(tab, [MANDATORY, 'summarizer'], none).map((a) => a.name)).toEqual([MANDATORY])
   })
 
-  it('never drops the mandatory pick and stops at the cap', () => {
+  it('never deploys an agent that already exists', () => {
+    const existing = new Set([MANDATORY])
+    expect(toDeploy('registry', [MANDATORY], existing)).toEqual([])
+    expect(toDeploy('seeded', [MANDATORY, 'translator'], existing).map((a) => a.name)).toEqual([
+      'translator',
+    ])
+  })
+
+  it('never drops the mandatory pick, and a pick at the cap swaps out the latest one', () => {
     expect(togglePick(['M'], 'M', 'M')).toEqual(['M'])
     expect(togglePick(['M'], 'A', 'M')).toEqual(['M', 'A'])
     expect(togglePick(['M', 'A'], 'A', 'M')).toEqual(['M'])
-    expect(MAX_SEEDED).toBe(3)
-    expect(togglePick(['M', 'A', 'B'], 'C', 'M')).toEqual(['M', 'A', 'B'])
+    expect(MAX_SEEDED).toBe(2)
+    expect(togglePick(['M', 'A'], 'B', 'M')).toEqual(['M', 'B'])
   })
 
-  it('has the four steps in order, the first agent and the model key as one', () => {
-    expect(STEPS).toEqual(['welcome', 'role', 'start', 'harness'])
+  it('has the three steps in order, no role, the first agent and the model key as one', () => {
+    expect(STEPS).toEqual(['welcome', 'start', 'harness'])
   })
 
   it('resumes at the coding harnesses once everything is done', () => {
-    expect(firstOpenStep({ role: true, model: true, agent: true })).toBe('harness')
-    expect(firstOpenStep({ role: true, model: true, agent: false })).toBe('start')
+    expect(firstOpenStep({ model: true, agent: true })).toBe('harness')
+    expect(firstOpenStep({ model: true, agent: false })).toBe('start')
   })
 
   it('counts down two minutes', () => {
-    expect(STEPS.map((_, i) => minutesLeft(i + 1))).toEqual([2, 2, 1, 0])
+    expect(STEPS.map((_, i) => minutesLeft(i + 1))).toEqual([2, 1, 0])
   })
 
   it('opens a nav page for every persona', () => {
@@ -61,15 +75,10 @@ describe('onboarding logic', () => {
   })
 
   it('ticks and resumes at the first open step', () => {
-    expect(ticks({ persona: null, configs: 0, agents: 0 })).toEqual({
-      role: false,
-      model: false,
-      agent: false,
-    })
-    expect(firstOpenStep(ticks({ persona: null, configs: 2, agents: 1 }))).toBe('role')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 0, agents: 1 }))).toBe('start')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 0 }))).toBe('start')
-    expect(firstOpenStep(ticks({ persona: 'sre', configs: 1, agents: 1 }))).toBe('harness')
+    expect(ticks({ configs: 0, agents: 0 })).toEqual({ model: false, agent: false })
+    expect(firstOpenStep(ticks({ configs: 0, agents: 1 }))).toBe('start')
+    expect(firstOpenStep(ticks({ configs: 1, agents: 0 }))).toBe('start')
+    expect(firstOpenStep(ticks({ configs: 1, agents: 1 }))).toBe('harness')
   })
 
   it('keeps the shown flag outside the drafts prefix, so sign-out keeps it', () => {

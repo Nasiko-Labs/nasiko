@@ -58,8 +58,5 @@ export const TIP_ROTATE_MS = 6_000
 export const PREVIEW_STEP_MS = 5_000
 /** The preview's clock moves on in steps this long (20 frames a second). */
 export const PREVIEW_TICK_MS = 50
-/** The simulated try-a-run (components/TryAgentRun.tsx): how long each state shows before the next. */
-export const TRY_RUN_STARTING_MS = 1_500
-export const TRY_RUN_RUNNING_MS = 4_000
-/** "Agent completed" stays on the button this long before it resets. */
+/** The try-a-run card (components/TryAgentRun.tsx): "Agent completed" stays on the button this long before it resets. */
 export const TRY_RUN_COMPLETED_MS = 2_000
