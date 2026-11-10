@@ -232,8 +232,8 @@ pub struct Config {
     /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
     /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod`, `shared-pod` or `harness-agent`. Docker is the OSS default and
-    /// needs no cluster; the others are implemented by enterprise crates and
+    /// (default), `pod` or `shared-pod`. Docker is the OSS default and needs no
+    /// cluster; `pod` and `shared-pod` are implemented by enterprise crates and
     /// selected at cluster create. An unknown value fails startup rather than
     /// silently falling back, because running sessions on the wrong provider
     /// changes isolation and cost.
@@ -262,15 +262,6 @@ pub struct Config {
     /// raises it to the effective park TTL plus one reaper interval (never lowers it): a bound
     /// below that would expire the task before the agent can even be considered idle.
     pub agent_open_task_max_age_secs: u64,
-    /// How long a running framework agent whose parking policy is `auto` may go without a request
-    /// before the reaper scales its workload to zero (parks it), from `AGENT_PARK_IDLE_SECS`, the
-    /// one switch for agent parking: `0` turns it off (agents already parked still wake on their
-    /// next request). Unset is `3600`, raised to the floor below; any other set value must be at
-    /// least `AGENT_CALL_TIMEOUT_SECS` plus [`LAST_REQUEST_STAMP_THROTTLE_SECS`] plus one
-    /// `SESSION_REAPER_INTERVAL_SECS` or startup fails: a call on another replica is visible to the
-    /// reaper only through `agents.last_request_at`, which may be up to the throttle older than the
-    /// call, so a shorter window could park an agent under a call still inside its timeout.
-    pub agent_park_idle_secs: u64,
     /// Registry prefix the platform-built harness images are published under, from
     /// `HARNESS_IMAGE_PREFIX`, default `nasiko/harness-`. The catalog's image
     /// names are `<prefix><harness>:<tag>`; override it to pull from a mirror.
@@ -397,12 +388,6 @@ pub struct Config {
     /// waits for a human approval (HITL), and must not exceed the session token's
     /// one-hour lifetime, which would expire mid-wait (checked at startup).
     pub agent_call_timeout_secs: u64,
-    /// How long an agent may take to start and become reachable, from
-    /// `AGENT_STARTUP_BUDGET_SECS` (default 120, clamped to 10..=1800 with a warning). The
-    /// Kubernetes runtime's startup probe restarts a pod that has not opened its port by then,
-    /// and a call to a parked agent waits up to this long for the agent's workload to come back
-    /// (see [`Config::agent_wake_budget_secs`]).
-    pub agent_startup_budget_secs: u64,
     pub github_callback_url: Option<String>,
     /// Central OAuth callback relay URL (multi-tenant deployments): used as the
     /// GitHub `redirect_uri` for both authorize and token exchange instead of
@@ -463,6 +448,10 @@ pub struct Config {
     /// Overlap window in seconds: the materializer re-queries this far before
     /// the high-water mark to catch late-arriving spans and pricing corrections.
     pub trace_usage_overlap_secs: u64,
+    /// Longest window one materializer pass searches. Must exceed the overlap
+    /// (see [`validate_trace_usage_window`]): the excess is how far the cursor
+    /// moves per pass.
+    pub trace_usage_max_window_secs: u64,
     /// Max traces to fetch from Tempo per concurrent batch.
     pub trace_usage_batch_size: usize,
 
@@ -592,8 +581,13 @@ pub struct Config {
     /// logged and ignored.
     /// Static `headers` with `auth_type` `none` send one shared key for every
     /// user; an `oauth2` entry is registered and shared, and each user still
-    /// clicks Connect once. Holds API keys — deliver it as a secret. Example:
-    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","headers":{"Authorization":"Bearer <key>"}},{"name":"Anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
+    /// clicks Connect once. For a per-user key use `auth_type` `bearer` with no
+    /// `headers`: each user enters their own key in the UI; a `bearer`/`basic`
+    /// entry that also carries an `Authorization` header is refused at boot,
+    /// since users without a key would silently run on that shared one.
+    /// Holds API keys — deliver it as a secret. Example:
+    /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
+    /// (both per-user; the Helm chart seeds exactly these by default).
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
@@ -695,18 +689,6 @@ impl Config {
             .unwrap_or(24 * 3600);
         let cold_path_set = std::env::var("NASIKO_COLD_PATH").ok();
         validate_tiering(tiering_enabled, cold_path_set.as_deref()).map_err(anyhow::Error::msg)?;
-        let agent_call_timeout_secs = std::env::var("AGENT_CALL_TIMEOUT_SECS")
-            .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(600);
-        let session_reaper_interval_secs =
-            env_parse("SESSION_REAPER_INTERVAL_SECS", 30).clamp(5, 600);
-        let agent_park_idle_secs = parse_agent_park_idle_secs(
-            nonempty_env("AGENT_PARK_IDLE_SECS").as_deref(),
-            park_idle_floor_secs(agent_call_timeout_secs, session_reaper_interval_secs),
-        )
-        .map_err(anyhow::Error::msg)?;
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
@@ -841,10 +823,10 @@ impl Config {
                 .map_err(anyhow::Error::msg)?,
             session_idle_grace_secs: env_parse("SESSION_IDLE_GRACE_SECS", 120),
             session_cpu_quiescent_millicores: env_parse("SESSION_CPU_QUIESCENT_MILLICORES", 20),
-            session_reaper_interval_secs,
+            session_reaper_interval_secs: env_parse("SESSION_REAPER_INTERVAL_SECS", 30)
+                .clamp(5, 600),
             agent_open_task_max_age_secs: env_parse("AGENT_OPEN_TASK_MAX_AGE_SECS", 3600)
                 .clamp(60, 86400),
-            agent_park_idle_secs,
             harness_image_prefix: env_or("HARNESS_IMAGE_PREFIX", "nasiko/harness-"),
             coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
             coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
@@ -893,8 +875,11 @@ impl Config {
             context_k_medium: env_parse("CONTEXT_K_MEDIUM", 5),
             context_k_high: env_parse("CONTEXT_K_HIGH", 20),
             embedding_model: env_or("EMBEDDING_MODEL", "text-embedding-3-small"),
-            agent_call_timeout_secs,
-            agent_startup_budget_secs: agent_startup_budget_secs_from_env(),
+            agent_call_timeout_secs: std::env::var("AGENT_CALL_TIMEOUT_SECS")
+                .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(600),
             github_callback_url: std::env::var("GITHUB_CALLBACK_URL").ok(),
             github_central_callback_url: std::env::var("GITHUB_CENTRAL_CALLBACK_URL")
                 .ok()
@@ -908,8 +893,9 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
             trace_usage_sync_secs: env_parse("TRACE_USAGE_SYNC_SECS", 120),
-            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 600),
-            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 50),
+            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 180),
+            trace_usage_max_window_secs: env_parse("TRACE_USAGE_MAX_WINDOW_SECS", 600),
+            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 8),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -1005,6 +991,11 @@ impl Config {
         config
             .validate_session_lifecycle()
             .map_err(anyhow::Error::msg)?;
+        validate_trace_usage_window(
+            config.trace_usage_overlap_secs,
+            config.trace_usage_max_window_secs,
+        )
+        .map_err(anyhow::Error::msg)?;
         Ok(config)
     }
 
@@ -1012,8 +1003,7 @@ impl Config {
     /// measures `session_idle_grace_secs` of CPU quiescence *inside*
     /// `coding_agent_idle_ttl_secs`, so a non-zero TTL below the grace could never
     /// be satisfied and would silently disable suspension. `0` (suspension off) is
-    /// always valid. Also checks the lease/heartbeat pair, the call timeout against the session
-    /// token, and the agent park window against the call timeout.
+    /// always valid.
     pub fn validate_session_lifecycle(&self) -> Result<(), String> {
         validate_idle_ttl_covers_grace(
             self.coding_agent_idle_ttl_secs,
@@ -1023,14 +1013,7 @@ impl Config {
             self.coding_agent_turn_lease_secs,
             self.coding_agent_lease_heartbeat_secs,
         )?;
-        validate_call_timeout_within_session_token(self.agent_call_timeout_secs)?;
-        validate_park_idle_covers_a_call(
-            self.agent_park_idle_secs,
-            park_idle_floor_secs(
-                self.agent_call_timeout_secs,
-                self.session_reaper_interval_secs,
-            ),
-        )
+        validate_call_timeout_within_session_token(self.agent_call_timeout_secs)
     }
 
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
@@ -1043,69 +1026,6 @@ impl Config {
     pub fn validate_secrets_key(&self) -> Result<(), String> {
         validate_secrets_key_format(&self.secrets_encryption_key)
     }
-
-    /// Whether the reaper parks idle agents: `AGENT_PARK_IDLE_SECS` is not `0`.
-    pub fn parks_agents(&self) -> bool {
-        self.agent_park_idle_secs > 0
-    }
-
-    /// How long a call waits for a parked agent to wake: the agent startup budget, held below the
-    /// agent call budget so a wake never outlasts the call that waits for it.
-    pub fn agent_wake_budget_secs(&self) -> u64 {
-        wake_budget_secs(self.agent_startup_budget_secs, self.agent_call_timeout_secs)
-    }
-}
-
-/// Default `AGENT_STARTUP_BUDGET_SECS`.
-const DEFAULT_AGENT_STARTUP_BUDGET_SECS: u64 = 120;
-/// Accepted `AGENT_STARTUP_BUDGET_SECS`: a budget under 10 s restarts any agent that boots slowly,
-/// and one over 30 minutes hides a pod that will never start.
-const AGENT_STARTUP_BUDGET_SECS_RANGE: std::ops::RangeInclusive<u64> = 10..=1800;
-
-/// `AGENT_STARTUP_BUDGET_SECS`, with a malformed or out-of-range value replaced, and a warning
-/// rather than a silent fallback.
-fn agent_startup_budget_secs_from_env() -> u64 {
-    let raw = std::env::var("AGENT_STARTUP_BUDGET_SECS").ok();
-    let (secs, problem) = parse_agent_startup_budget(raw.as_deref());
-    if let Some(problem) = problem {
-        tracing::warn!(
-            key = "AGENT_STARTUP_BUDGET_SECS",
-            raw = raw.as_deref().unwrap_or(""),
-            secs,
-            "{problem}"
-        );
-    }
-    secs
-}
-
-fn parse_agent_startup_budget(raw: Option<&str>) -> (u64, Option<&'static str>) {
-    let Some(raw) = raw else {
-        return (DEFAULT_AGENT_STARTUP_BUDGET_SECS, None);
-    };
-    let Ok(parsed) = raw.trim().parse::<u64>() else {
-        return (
-            DEFAULT_AGENT_STARTUP_BUDGET_SECS,
-            Some("not a whole number, using the default"),
-        );
-    };
-    let clamped = parsed.clamp(
-        *AGENT_STARTUP_BUDGET_SECS_RANGE.start(),
-        *AGENT_STARTUP_BUDGET_SECS_RANGE.end(),
-    );
-    if clamped == parsed {
-        (parsed, None)
-    } else {
-        (clamped, Some("outside the accepted range, clamped"))
-    }
-}
-
-/// The startup budget, clamped to at least one second and to under the call budget. Clamped
-/// rather than refused at startup: a startup budget at or above the call timeout is valid for
-/// the runtime's own startup probe, it only cannot all be spent inside one call.
-fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
-    startup_budget_secs
-        .min(call_timeout_secs.saturating_sub(1))
-        .max(1)
 }
 
 /// Strips a trailing `/v1` (and any trailing slashes) from an OpenAI-compatible
@@ -1130,8 +1050,6 @@ pub enum SandboxProviderSetting {
     Docker,
     Pod,
     SharedPod,
-    /// Each user's own harness agent runs every session of that user and harness.
-    HarnessAgent,
 }
 
 impl std::str::FromStr for SandboxProviderSetting {
@@ -1142,9 +1060,8 @@ impl std::str::FromStr for SandboxProviderSetting {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
             "shared-pod" => Ok(Self::SharedPod),
-            "harness-agent" => Ok(Self::HarnessAgent),
             _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, harness-agent, got {raw:?}"
+                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, got {raw:?}"
             )),
         }
     }
@@ -1218,44 +1135,14 @@ fn validate_call_timeout_within_session_token(call_timeout_secs: u64) -> Result<
     Ok(())
 }
 
-/// Default `AGENT_PARK_IDLE_SECS`: an agent nobody has called for an hour is parked.
-const DEFAULT_AGENT_PARK_IDLE_SECS: u64 = 3600;
-
-/// How often at most a served request writes its agent's `last_request_at`, in seconds: a request
-/// within this long of the last stamp leaves it unchanged. The one value both the stamp and the
-/// park window's floor read.
-pub const LAST_REQUEST_STAMP_THROTTLE_SECS: u64 = 60;
-
-/// The shortest park window that cannot park an agent under a call another replica is serving:
-/// that call began at most the stamp throttle after the `last_request_at` the reaper reads, runs
-/// for at most the call timeout, and the reaper looks once per interval.
-fn park_idle_floor_secs(call_timeout_secs: u64, reaper_interval_secs: u64) -> u64 {
-    call_timeout_secs
-        .saturating_add(LAST_REQUEST_STAMP_THROTTLE_SECS)
-        .saturating_add(reaper_interval_secs)
-}
-
-/// `AGENT_PARK_IDLE_SECS` as set, or, when unset, the default raised to `floor_secs`, so a long
-/// call timeout alone never fails startup. A set value is kept as written, for
-/// [`validate_park_idle_covers_a_call`] to judge.
-fn parse_agent_park_idle_secs(raw: Option<&str>, floor_secs: u64) -> Result<u64, String> {
-    match raw {
-        None => Ok(DEFAULT_AGENT_PARK_IDLE_SECS.max(floor_secs)),
-        Some(raw) => raw.trim().parse().map_err(|_| {
-            format!("AGENT_PARK_IDLE_SECS must be a whole number of seconds (got {raw:?})")
-        }),
-    }
-}
-
-/// `0` (parking off) always passes; any other window must cover `floor_secs`.
-fn validate_park_idle_covers_a_call(park_idle_secs: u64, floor_secs: u64) -> Result<(), String> {
-    if park_idle_secs != 0 && park_idle_secs < floor_secs {
+/// Each materializer pass searches `[cursor − overlap, cursor − overlap + window]`
+/// and moves the cursor to the window's end, so a window no longer than the
+/// overlap never moves the cursor past where it was.
+fn validate_trace_usage_window(overlap_secs: u64, max_window_secs: u64) -> Result<(), String> {
+    if max_window_secs <= overlap_secs {
         return Err(format!(
-            "AGENT_PARK_IDLE_SECS ({park_idle_secs}) must be at least AGENT_CALL_TIMEOUT_SECS plus \
-             the {LAST_REQUEST_STAMP_THROTTLE_SECS}s last-request stamp throttle plus one \
-             SESSION_REAPER_INTERVAL_SECS ({floor_secs}), or 0 to turn agent parking off: a call on \
-             another replica is seen only through the agent's last request time, so a shorter \
-             window could park an agent under a call still inside its timeout"
+            "TRACE_USAGE_MAX_WINDOW_SECS ({max_window_secs}) must exceed TRACE_USAGE_OVERLAP_SECS \
+             ({overlap_secs}): the excess is how far the materializer advances per pass"
         ));
     }
     Ok(())
@@ -1301,6 +1188,14 @@ mod tests {
     }
 
     #[test]
+    fn trace_usage_window_must_exceed_the_overlap() {
+        assert!(super::validate_trace_usage_window(180, 600).is_ok());
+        let err = super::validate_trace_usage_window(600, 600).unwrap_err();
+        assert!(err.contains("TRACE_USAGE_MAX_WINDOW_SECS"), "{err}");
+        assert!(super::validate_trace_usage_window(600, 300).is_err());
+    }
+
+    #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(
             super::origin_of("https://acme.nasiko.dev/app?x=1"),
@@ -1313,51 +1208,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unset_startup_budget_is_the_default_silently() {
-        assert_eq!(parse_agent_startup_budget(None), (120, None));
-        assert_eq!(parse_agent_startup_budget(Some(" 300 ")), (300, None));
-    }
-
-    #[test]
-    fn an_out_of_range_startup_budget_is_clamped_with_a_warning() {
-        let (low, low_note) = parse_agent_startup_budget(Some("0"));
-        assert_eq!((low, low_note.is_some()), (10, true));
-        let (high, high_note) = parse_agent_startup_budget(Some("99999"));
-        assert_eq!((high, high_note.is_some()), (1800, true));
-    }
-
-    #[test]
-    fn a_malformed_startup_budget_is_the_default_with_a_warning() {
-        let (secs, note) = parse_agent_startup_budget(Some("two minutes"));
-        assert_eq!((secs, note.is_some()), (120, true));
-    }
-
-    #[test]
-    fn the_wake_budget_is_the_startup_budget_when_it_fits_in_a_call() {
-        assert_eq!(wake_budget_secs(120, 600), 120);
-        assert_eq!(wake_budget_secs(599, 600), 599);
-    }
-
-    #[test]
-    fn the_wake_budget_stays_under_the_call_budget() {
-        assert_eq!(wake_budget_secs(600, 600), 599);
-        assert_eq!(wake_budget_secs(1800, 600), 599);
-    }
-
-    #[test]
-    fn the_wake_budget_is_never_zero() {
-        assert_eq!(wake_budget_secs(0, 600), 1);
-        assert_eq!(wake_budget_secs(120, 1), 1);
-        assert_eq!(wake_budget_secs(120, 0), 1);
-    }
-
-    #[test]
     fn sandbox_provider_parses_each_value_case_insensitively() {
         for (raw, want) in [
             ("docker", SandboxProviderSetting::Docker),
             ("Pod", SandboxProviderSetting::Pod),
             (" Shared-Pod ", SandboxProviderSetting::SharedPod),
-            ("harness-agent", SandboxProviderSetting::HarnessAgent),
         ] {
             assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
         }
@@ -1367,10 +1222,7 @@ mod tests {
     fn unknown_sandbox_provider_names_key_and_allowed_values() {
         let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
         assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(
-            err.contains("docker, pod, shared-pod, harness-agent"),
-            "{err}"
-        );
+        assert!(err.contains("docker, pod, shared-pod"), "{err}");
     }
 
     #[test]
@@ -1393,44 +1245,6 @@ mod tests {
         assert!(validate_idle_ttl_covers_grace(0, 120).is_ok());
         assert!(validate_idle_ttl_covers_grace(120, 120).is_ok());
         assert!(validate_idle_ttl_covers_grace(900, 120).is_ok());
-    }
-
-    #[test]
-    fn the_park_window_floor_is_a_call_plus_the_stamp_throttle_plus_a_reaper_interval() {
-        assert_eq!(LAST_REQUEST_STAMP_THROTTLE_SECS, 60);
-        assert_eq!(park_idle_floor_secs(600, 30), 690);
-        assert_eq!(park_idle_floor_secs(u64::MAX, 30), u64::MAX);
-    }
-
-    #[test]
-    fn an_unset_park_window_is_an_hour_raised_to_the_floor() {
-        assert_eq!(parse_agent_park_idle_secs(None, 690), Ok(3600));
-        assert_eq!(parse_agent_park_idle_secs(None, 3690), Ok(3690));
-    }
-
-    #[test]
-    fn a_set_park_window_is_kept_as_written() {
-        assert_eq!(parse_agent_park_idle_secs(Some(" 900 "), 690), Ok(900));
-        assert_eq!(parse_agent_park_idle_secs(Some("60"), 690), Ok(60));
-        for bad in ["an hour", "-1", "1.5"] {
-            let err = parse_agent_park_idle_secs(Some(bad), 690).unwrap_err();
-            assert!(err.contains("AGENT_PARK_IDLE_SECS"), "{err}");
-        }
-    }
-
-    #[test]
-    fn a_park_window_below_the_floor_fails_startup() {
-        assert!(
-            validate_park_idle_covers_a_call(0, 690).is_ok(),
-            "0 turns parking off"
-        );
-        let err = validate_park_idle_covers_a_call(689, 690).unwrap_err();
-        assert!(err.contains("AGENT_PARK_IDLE_SECS (689)"), "{err}");
-        assert!(err.contains("AGENT_CALL_TIMEOUT_SECS"), "{err}");
-        assert!(err.contains("60s last-request stamp throttle"), "{err}");
-        assert!(err.contains("SESSION_REAPER_INTERVAL_SECS"), "{err}");
-        assert!(validate_park_idle_covers_a_call(690, 690).is_ok());
-        assert!(validate_park_idle_covers_a_call(3600, 690).is_ok());
     }
 
     #[test]

@@ -98,6 +98,7 @@ pub async fn execute_embeddings_once(
     cfg: &GatewayConfig,
     resolved: &ResolvedEmbeddingConfig,
     req: &EmbeddingsRequest,
+    attempts: &mut attempts::AttemptLog,
 ) -> Result<EmbeddingsResponse, GatewayError> {
     tracing::info!(
         target: "nasiko::llm_router::provider",
@@ -112,7 +113,13 @@ pub async fn execute_embeddings_once(
         http,
         cfg,
     )?;
-    match provider.embeddings(req, resolved).await {
+    attempts.start(&resolved.provider, &resolved.model, resolved.platform_paid);
+    let result = provider.embeddings(req, resolved).await;
+    match &result {
+        Ok(_) => attempts.settle(),
+        Err(e) => attempts.fail(e),
+    }
+    match result {
         Ok(resp) => {
             tracing::info!(
                 target: "nasiko::llm_router::provider",
@@ -140,6 +147,7 @@ pub async fn execute_embeddings_once(
 }
 
 pub mod anthropic;
+pub mod attempts;
 pub mod bedrock_converse;
 pub mod dialect;
 pub mod fallback;
