@@ -6,10 +6,6 @@
 //!
 //! Missing exact prices fall back through the shared engine. Pricing provenance
 //! records inferred rates so estimates are distinguishable from matched prices.
-//!
-//! A call that reached the provider and failed is a call too (NAS-1018): it adds to the row's
-//! `error_count`, prices only the usage the provider reported, and when it reported none, books
-//! an estimated prompt in `router_estimated_input_tokens` and flags the row `cost_estimated`.
 
 use std::sync::Arc;
 
@@ -73,115 +69,6 @@ pub struct UsageRecord {
     /// Total text bytes actually sent, after compression and the brevity directive. Calibrates
     /// chars-per-token against this very call rather than a fixed divisor (see `savings.rs`).
     pub request_bytes: Option<usize>,
-    /// Set when the call reached the provider and failed. The row still counts the call: it
-    /// adds to `error_count`, and when the provider reported no usage its prompt is estimated
-    /// from `request_bytes` (never priced, see [`estimated_prompt_tokens`]).
-    pub failure: Option<CallFailure>,
-}
-
-/// Why a call that reached the provider failed, as its usage row records it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CallFailure {
-    /// `status` (the provider answered with an error), `transport`, `parse`, `timeout`
-    /// (the router's deadline cancelled the call), `stream` (it broke after streaming began)
-    /// or `response_failed` (the provider reported the response as failed).
-    pub class: &'static str,
-    /// The provider's HTTP status, when it answered with one.
-    pub http_status: Option<u16>,
-}
-
-impl CallFailure {
-    pub const fn new(class: &'static str, http_status: Option<u16>) -> Self {
-        Self { class, http_status }
-    }
-}
-
-/// The context every call of one request shares, so each failed attempt of a fallback chain can
-/// be written as its own row without repeating the request's identity at every call site.
-pub struct CallScope {
-    pub owner_id: String,
-    pub agent_id: String,
-    pub operation_type: &'static str,
-    pub streaming: bool,
-    pub flow_id: Option<String>,
-    pub attribution_source: Option<AttributionSource>,
-    pub request_bytes: Option<usize>,
-}
-
-/// One provider attempt that reached the provider and failed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FailedAttempt {
-    pub provider: String,
-    pub model: String,
-    pub platform_paid: bool,
-    pub latency_ms: i64,
-    pub failure: CallFailure,
-}
-
-impl UsageRecord {
-    /// The row for one failed attempt: no usage reported (an error answer carries none), no
-    /// compression or savings figures (nothing was delivered to save on).
-    pub fn failed_attempt(scope: &CallScope, attempt: FailedAttempt) -> Self {
-        Self {
-            owner_id: scope.owner_id.clone(),
-            agent_id: scope.agent_id.clone(),
-            operation_type: scope.operation_type,
-            provider: attempt.provider,
-            model: attempt.model,
-            usage: None,
-            cached_tokens: None,
-            reasoning_tokens: None,
-            latency_ms: attempt.latency_ms,
-            streaming: scope.streaming,
-            finish_reason: Some(format!("failed:{}", attempt.failure.class)),
-            flow_id: scope.flow_id.clone(),
-            attribution_source: scope.attribution_source,
-            platform_paid: attempt.platform_paid,
-            compress_metadata: None,
-            brevity_metadata: None,
-            compress_bytes: None,
-            request_bytes: scope.request_bytes,
-            failure: Some(attempt.failure),
-        }
-    }
-}
-
-/// Spawn one usage write per failed attempt. A request whose fallback then succeeded writes
-/// its success row separately and unchanged; each failed attempt is a call of its own.
-pub fn spawn_log_failed(
-    db: &PgPool,
-    pricing: &Arc<PricingEngine>,
-    scope: &CallScope,
-    attempts: Vec<FailedAttempt>,
-) {
-    for attempt in attempts {
-        spawn_log(
-            db.clone(),
-            pricing.clone(),
-            UsageRecord::failed_attempt(scope, attempt),
-        );
-    }
-}
-
-/// The prompt tokens a failed call most likely sent, estimated from the bytes sent at the
-/// fallback chars-per-token ratio (`savings::chars_per_token`, which has no reported count to
-/// calibrate against here). `0` for a call that succeeded, reported usage, or has no byte count.
-fn estimated_prompt_tokens(
-    failure: Option<CallFailure>,
-    usage: Option<&Usage>,
-    request_bytes: Option<usize>,
-) -> i64 {
-    if failure.is_none() || usage.is_some() {
-        return 0;
-    }
-    let Some(bytes) = request_bytes else {
-        return 0;
-    };
-    let (ratio, _estimated) = crate::savings::chars_per_token(crate::savings::CalibrationInputs {
-        request_bytes: Some(bytes),
-        input_tokens: None,
-    });
-    (bytes as f64 / ratio).floor() as i64
 }
 
 /// Spawn the usage write so it never blocks the response.
@@ -206,9 +93,6 @@ pub async fn log_usage(
         return Ok(());
     };
     let agent = Uuid::parse_str(&record.agent_id).ok();
-    let estimated_input_tokens =
-        estimated_prompt_tokens(record.failure, record.usage.as_ref(), record.request_bytes);
-    let reported_usage = record.usage.is_some();
     let cache_details = record.usage.as_ref().and_then(|u| u.cache_creation.clone());
     let (input, output, total, cache_read, cache_creation) = match record.usage {
         Some(mut u) => {
@@ -278,11 +162,6 @@ pub async fn log_usage(
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
-        failure: record.failure.map(|failure| FailureMetadata {
-            failure,
-            reported_usage,
-            estimated_input_tokens,
-        }),
     });
 
     let live: LiveSpend = LiveSpend {
@@ -302,8 +181,6 @@ pub async fn log_usage(
             + priced.cost.cache_creation_usd,
         completion_cost_usd: priced.cost.output_usd,
         latency_ms: record.latency_ms,
-        error_count: i32::from(record.failure.is_some()),
-        estimated_input_tokens,
     };
 
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
@@ -342,11 +219,6 @@ struct LiveSpend {
     prompt_cost_usd: f64,
     completion_cost_usd: f64,
     latency_ms: i64,
-    /// `1` for a failed call, else `0`.
-    error_count: i32,
-    /// A failed call's prompt estimate when the provider reported no usage; kept out of the
-    /// spend columns.
-    estimated_input_tokens: i64,
 }
 
 /// `trace_usage.source` for an agent row: ACP containers, local coding agents
@@ -419,24 +291,11 @@ async fn write_trace_usage(
                router_input_tokens, router_output_tokens, router_cache_read_tokens,
                router_cache_creation_tokens, router_cost_usd, router_prompt_cost_usd,
                router_completion_cost_usd,
-               latency_ms, started_at, source, priced_by, materialized_at, metadata,
-               error_count, router_error_count, router_estimated_input_tokens, cost_estimated
+               latency_ms, started_at, source, priced_by, materialized_at, metadata
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                      $8,$9,$10,$11,$12,$13,$14,
-                     $15,now(),$16,'router',now(),$17,
-                     -- A success leaves error_count NULL: "not yet counted", which the
-                     -- materializer fills; only a failure is evidence on its own.
-                     NULLIF($18, 0), $18, $19,
-                     -- An unreported prompt means the cost may be understated.
-                     CASE WHEN $19 > 0 THEN true END)
+                     $15,now(),$16,'router',now(),$17)
            ON CONFLICT (trace_id, agent_name) DO UPDATE SET
-               error_count                  = CASE WHEN EXCLUDED.router_error_count > 0
-                                                   THEN COALESCE(trace_usage.error_count, 0) + EXCLUDED.router_error_count
-                                                   ELSE trace_usage.error_count END,
-               router_error_count           = trace_usage.router_error_count + EXCLUDED.router_error_count,
-               router_estimated_input_tokens = trace_usage.router_estimated_input_tokens + EXCLUDED.router_estimated_input_tokens,
-               cost_estimated               = CASE WHEN EXCLUDED.router_estimated_input_tokens > 0
-                                                   THEN true ELSE trace_usage.cost_estimated END,
                input_tokens                 = trace_usage.input_tokens + EXCLUDED.input_tokens,
                output_tokens                = trace_usage.output_tokens + EXCLUDED.output_tokens,
                cache_read_tokens            = trace_usage.cache_read_tokens + EXCLUDED.cache_read_tokens,
@@ -478,8 +337,6 @@ async fn write_trace_usage(
     .bind(live.latency_ms)
     .bind(source)
     .bind(&live.metadata)
-    .bind(live.error_count)
-    .bind(live.estimated_input_tokens)
     .execute(&mut *tx)
     .await?;
     Ok(())
@@ -559,17 +416,6 @@ struct MetadataInputs {
     compress: Option<serde_json::Value>,
     /// Always `Some` once the brevity layer exists: it records "skipped, and why" too.
     brevity: Option<serde_json::Value>,
-    /// `None` for a call that succeeded.
-    failure: Option<FailureMetadata>,
-}
-
-/// What `metadata.failure` records about a failed call. The row is per trace and merges keys
-/// later-call-wins, so this is the trace's latest failure; the count is `error_count`.
-struct FailureMetadata {
-    failure: CallFailure,
-    /// Whether the provider reported usage for the call (then its tokens were priced).
-    reported_usage: bool,
-    estimated_input_tokens: i64,
 }
 
 /// The row's `metadata` JSONB.
@@ -591,23 +437,12 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     if let Some(brevity) = inputs.brevity {
         metadata["brevity"] = brevity;
     }
-    if let Some(failure) = inputs.failure {
-        metadata["failure"] = serde_json::json!({
-            "class": failure.failure.class,
-            "http_status": failure.failure.http_status,
-            "tokens_estimated": !failure.reported_usage,
-            "estimated_input_tokens": failure.estimated_input_tokens,
-        });
-    }
     metadata
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CallFailure, CallScope, FailedAttempt, FailureMetadata, MetadataInputs, UsageRecord,
-        build_metadata, estimated_prompt_tokens,
-    };
+    use super::{MetadataInputs, build_metadata};
 
     /// A call that was priced but neither compressed nor cache-split.
     fn inputs(platform_paid: bool) -> MetadataInputs {
@@ -619,7 +454,6 @@ mod tests {
             cache_creation: serde_json::Value::Null,
             compress: None,
             brevity: None,
-            failure: None,
         }
     }
 
@@ -638,76 +472,6 @@ mod tests {
             })
         );
         assert_eq!(build_metadata(inputs(false))["key_source"], "user_secret");
-    }
-
-    /// NAS-1018: only a failed call with no reported usage gets a prompt estimate, at the
-    /// fallback 4 chars per token; a success or a failure that reported usage gets none.
-    #[test]
-    fn only_a_failed_call_without_usage_is_estimated() {
-        let failure = Some(CallFailure::new("status", Some(503)));
-        let reported: crate::ir::Usage =
-            serde_json::from_value(serde_json::json!({ "prompt_tokens": 10 })).unwrap();
-        assert_eq!(estimated_prompt_tokens(failure, None, Some(4002)), 1000);
-        assert_eq!(
-            estimated_prompt_tokens(failure, Some(&reported), Some(4000)),
-            0
-        );
-        assert_eq!(estimated_prompt_tokens(None, None, Some(4000)), 0);
-        assert_eq!(estimated_prompt_tokens(failure, None, None), 0);
-    }
-
-    #[test]
-    fn a_failure_is_recorded_under_its_own_key_and_flagged_estimated() {
-        let metadata = build_metadata(MetadataInputs {
-            failure: Some(FailureMetadata {
-                failure: CallFailure::new("status", Some(429)),
-                reported_usage: false,
-                estimated_input_tokens: 1000,
-            }),
-            ..inputs(true)
-        });
-        assert_eq!(
-            metadata["failure"],
-            serde_json::json!({
-                "class": "status",
-                "http_status": 429,
-                "tokens_estimated": true,
-                "estimated_input_tokens": 1000,
-            })
-        );
-        assert!(build_metadata(inputs(true)).get("failure").is_none());
-    }
-
-    #[test]
-    fn a_failed_attempt_row_carries_the_scope_and_no_usage() {
-        let scope = CallScope {
-            owner_id: "owner".into(),
-            agent_id: "agent".into(),
-            operation_type: "direct_llm",
-            streaming: false,
-            flow_id: Some("flow".into()),
-            attribution_source: None,
-            request_bytes: Some(800),
-        };
-        let record = UsageRecord::failed_attempt(
-            &scope,
-            FailedAttempt {
-                provider: "openai".into(),
-                model: "gpt-4o".into(),
-                platform_paid: false,
-                latency_ms: 29_000,
-                failure: CallFailure::new("status", Some(503)),
-            },
-        );
-        assert!(record.usage.is_none());
-        assert_eq!(record.failure, Some(CallFailure::new("status", Some(503))));
-        assert_eq!(record.finish_reason.as_deref(), Some("failed:status"));
-        assert_eq!(
-            (record.flow_id.as_deref(), record.request_bytes),
-            (Some("flow"), Some(800))
-        );
-        assert!(!record.platform_paid);
-        assert_eq!(record.latency_ms, 29_000);
     }
 
     #[test]

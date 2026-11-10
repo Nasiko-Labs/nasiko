@@ -247,10 +247,6 @@ export const copy = {
   secrets: {
     title: 'Secrets',
     sub: 'API credentials stored in this workspace. Router configs and agents reference secrets by name.',
-    // NAS-1458. agent_secrets.rs `resolve_secret_env`: these first, an agent's own secrets on top.
-    precedence:
-      'Every agent you own gets these as environment variables. A secret set on an agent’s Settings tab overrides one of the same name here, for that agent only. Restart an agent to apply a change.',
-    agentsLink: 'Your agents',
     // Legacy: "Keys are write only … never read back", beside a list that reveals them. The owner can read their own.
     note: 'Values are encrypted at rest. Configs reference a secret by name; only you can read your own secrets back, one at a time.',
     empty: 'No secrets yet',

@@ -132,15 +132,12 @@ async fn a_token_from_before_a_transfer_is_refused() {
     let previous = seed_user(&server, "dummy-previous-owner").await;
     let current = seed_user(&server, "dummy-current-owner").await;
     let agent = seed_agent(&server, previous).await;
-    // Each phase chats as the agent's owner of the moment: a caller who is not the owner is
-    // served on their own LLM config, which these users do not have (NAS-1459).
-    let (_, before_transfer) = common::open_flow(&server.db, previous, agent).await;
     let (_, traceparent) = common::open_flow(&server.db, current, agent).await;
     let stale = token(agent, previous);
 
     // Served while the claim is true.
     assert_eq!(
-        call(&server, "/v1/chat/completions", &stale, &before_transfer).await,
+        call(&server, "/v1/chat/completions", &stale, &traceparent).await,
         200
     );
 
