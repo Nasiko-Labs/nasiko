@@ -27,10 +27,11 @@ use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 use nasiko_flow::FlowContext;
 
 use crate::acl::CpCallGuard;
-use crate::agent_resolver::{Caller, ResolvedTarget, resolve_loaded};
+use crate::agent_resolver::{Caller, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::orchestrator_policy::TurnKind;
+use crate::sessions::admission::SessionAdmission;
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
 
@@ -285,7 +286,7 @@ pub async fn a2a_dispatch_handler(
                 task_id: &task_id,
                 user_id,
             };
-            return harness_agent_stream(&state, target, turn, session_id.is_some()).await;
+            return harness_agent_stream(&state, target, turn, session_id.is_some(), &req.id).await;
         }
         (other, _) => other,
     };
@@ -872,11 +873,11 @@ pub(crate) async fn orchestrator_stream(
         state.genai_metrics.agent_call_meter(),
         state.agent_wake.clone(),
         crate::acl::TurnLegs {
-            // Resolves each leg's target once the call has cleared every gate, waking a parked
-            // agent.
-            targets: Arc::new(crate::agent_resolver::ServerTargetResolver::new(
-                state.clone(),
-            )),
+            // Resolves each leg's target once the call has cleared every gate. The guard asks
+            // the wake seam itself, before it spends flow budget, so the resolver does not.
+            targets: Arc::new(
+                crate::agent_resolver::ServerTargetResolver::after_caller_wake(state.clone()),
+            ),
             user_id,
             // A resumed turn's own prompt tells the model not to call anyone again; the guard
             // makes that binding, so a continuation cannot reach any agent.
@@ -1536,8 +1537,6 @@ async fn agent_stream(
         gen_ai.operation.name = "invoke_agent",
         gen_ai.agent.name = %agent.name,
         session.id = %context_id,
-        sandbox.provider = tracing::field::Empty,
-        sandbox.wake_ms = tracing::field::Empty,
         nasiko.prompt_context.org_applied = org_applied,
         nasiko.prompt_context.org_policy_chars = org_policy_chars,
         gen_ai.input.messages = tracing::field::Empty,
@@ -1559,26 +1558,23 @@ async fn agent_stream(
     // is the race-free backstop.
     refuse_foreign_flow(state, &flow_id, user_id).await?;
 
-    // Resolved by kind once the flow is known, so a wake is announced on its event stream.
+    // Woken, then resolved by kind, once the flow is known, so a wake is announced on its event
+    // stream. The wake comes first: a parked agent has no endpoint until its workload is back.
+    state
+        .agent_wake
+        .before_forward(agent.id, Some(&flow_id))
+        .await
+        .map_err(A2aDispatchError::Unavailable)?;
     let caller = Caller {
-        user_id: Some(user_id),
         flow_id: Some(flow_id.clone()),
     };
-    let target = match resolve_loaded(state, &agent.route, &caller, Some(context_id)).await {
-        Ok(resolved) => {
-            if let ResolvedTarget::Sandbox {
-                wake_ms, provider, ..
-            } = &resolved
-            {
-                crate::telemetry::record_sandbox_on_span(&dispatch_span, *provider, *wake_ms);
-            }
-            resolved.into_forward_target().ok_or_else(|| {
-                A2aDispatchError::Internal(format!(
-                    "agent '{}' is a harness agent and has no endpoint to forward to",
-                    agent.name
-                ))
-            })?
-        }
+    let target = match resolve_loaded(state, &agent.route, &caller).await {
+        Ok(resolved) => resolved.into_forward_target().ok_or_else(|| {
+            A2aDispatchError::Internal(format!(
+                "agent '{}' is a harness agent and has no endpoint to forward to",
+                agent.name
+            ))
+        })?,
         Err(e) => return Err(A2aDispatchError::Resolve(e)),
     };
 
@@ -1730,12 +1726,6 @@ async fn agent_stream(
         }
         req
     };
-
-    state
-        .agent_wake
-        .before_forward(agent.id)
-        .await
-        .map_err(A2aDispatchError::Unavailable)?;
 
     // In flight until the agent's reply is complete. Starts as `Error`, so the early returns
     // below count as failures.
@@ -2665,7 +2655,19 @@ async fn harness_agent_stream(
     target: crate::coding::proxy::HarnessTarget,
     turn: CodingDispatch<'_>,
     client_owns_transcript: bool,
+    request_id: &a2a::JsonRpcId,
 ) -> Result<Response, A2aDispatchError> {
+    // Before the session, the transcript and the flow are written: a refused turn leaves none.
+    if let Some(refusal) = state
+        .session_admission
+        .refuse(turn.user_id, &target.harness_id)
+        .await
+    {
+        return Err(A2aDispatchError::SessionRefused {
+            refusal,
+            id: serde_json::to_value(request_id).unwrap_or(serde_json::Value::Null),
+        });
+    }
     let session = crate::sessions::SessionStore::new(state.db.clone())
         .find_or_create_for_harness(turn.agent.id, turn.user_id, turn.context_id)
         .await
@@ -3210,11 +3212,21 @@ pub enum A2aDispatchError {
     },
     /// The target agent could not be resolved to somewhere to send the request.
     Resolve(crate::agent_resolver::ResolveError),
+    /// The session admission refused the harness turn; answered with its status, and its body as
+    /// the JSON-RPC error's `data`, under the request's own `id`.
+    SessionRefused {
+        refusal: crate::sessions::admission::SessionRefusal,
+        id: serde_json::Value,
+    },
 }
 
 impl IntoResponse for A2aDispatchError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
+            Self::SessionRefused { refusal, id } => {
+                let body = refusal.json_rpc_error(&id);
+                return (refusal.status, Json(body)).into_response();
+            }
             Self::InvalidRequest(e) => (StatusCode::BAD_REQUEST, -32602, e),
             Self::NoAgents => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -3336,6 +3348,30 @@ mod agent_rejection_tests {
             message: "upstream blew up".into(),
         };
         assert_eq!(server.into_response().status(), StatusCode::BAD_GATEWAY);
+    }
+}
+
+#[cfg(test)]
+mod session_refused_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_refused_turn_answers_under_the_request_id_with_the_refusal_status() {
+        let refused = A2aDispatchError::SessionRefused {
+            refusal: crate::sessions::admission::SessionRefusal {
+                status: StatusCode::PAYMENT_REQUIRED,
+                body: json!({ "error": "at the cap", "code": "plan_agent_limit_reached" }),
+            },
+            id: json!("7"),
+        };
+        let response = refused.into_response();
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["id"], "7");
+        assert_eq!(body["error"]["data"]["code"], "plan_agent_limit_reached");
     }
 }
 

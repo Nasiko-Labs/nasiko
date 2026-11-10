@@ -272,7 +272,16 @@ async fn seed_agent_deploy_carries_the_platform_env() {
         std::env::remove_var("SEED_FORCE_PULL");
     }
 
-    assert_platform_env(&f.first_spec(agent_id).await);
+    let spec = f.first_spec(agent_id).await;
+    assert_platform_env(&spec);
+    // A seed is a platform agent: kept resident, so it deploys an always-running workload.
+    assert!(!spec.parkable);
+    let policy: String = sqlx::query_scalar("SELECT parking_policy FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_one(&f.server.db)
+        .await
+        .unwrap();
+    assert_eq!(policy, "resident");
     f.server.cleanup().await;
 }
 
@@ -307,6 +316,7 @@ async fn internal_agent_seed_deploy_carries_the_credentials_and_keeps_its_direct
     assert_eq!(spec.env_vars["OPENAI_API_KEY"], "direct-key");
     assert_eq!(spec.env_vars["OPENAI_BASE_URL"], "http://direct.test/v1");
     assert!(!spec.writable);
+    assert!(!spec.parkable, "an internal agent is resident");
     f.server.cleanup().await;
 }
 

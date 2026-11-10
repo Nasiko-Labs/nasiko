@@ -331,7 +331,7 @@ impl PolicyFilter {
 
 /// The running, parkable framework agents with a workload image whose last request and last row
 /// change are both older than `idle_after`, the longest idle first. With [`PolicyFilter::AutoOnly`]
-/// it is spelled exactly as `idx_agents_parkable_idle` (OSS migration 0095), which serves both the
+/// it is spelled exactly as `idx_agents_parkable_idle` (OSS migration 0096), which serves both the
 /// filter and the order; [`PolicyFilter::Every`] reads the running agents through `idx_agents_status`.
 async fn idle_candidates(
     db: &PgPool,
@@ -378,7 +378,7 @@ async fn newest_pause_ages(db: &PgPool, ids: &[Uuid]) -> sqlx::Result<HashMap<Uu
 /// The agents a model call was attributed to within the last `window`. `trace_usage.agent_id` is
 /// the exact agent the router attributed the call to, and every call stamps `materialized_at` (the
 /// row's `started_at` is its flow's first call, so it cannot bound the window);
-/// `idx_trace_usage_agent_materialized` (OSS migration 0096) keeps the read inside the window.
+/// `idx_trace_usage_agent_materialized` (OSS migration 0097) keeps the read inside the window.
 async fn model_callers(db: &PgPool, ids: &[Uuid], window: Duration) -> sqlx::Result<HashSet<Uuid>> {
     let rows: Vec<Uuid> = sqlx::query_scalar(
         "SELECT c.id FROM unnest($1::uuid[]) AS c(id) \
