@@ -523,6 +523,7 @@ fn build_host_config(
         // ordinary agent deploys (which never set it) are unaffected.
         network_mode: spec.network_override.clone(),
         mounts,
+        runtime: spec.overrides.runtime_class.clone(),
         ..Default::default()
     };
     if !spec.harden && !spec.writable {
@@ -703,6 +704,36 @@ fn extract_endpoint(
 /// against that, avoids the false positive.
 const ENV_VARS_LABEL: &str = "nasiko.com/env-vars";
 
+/// The [`WorkloadOverrides`](crate::WorkloadOverrides) a container was created with, as JSON,
+/// so a later deploy recreates it when its command or runtime changed. A container created before
+/// this label carries none, which reads as the defaults it was in fact created with.
+const OVERRIDES_LABEL: &str = "nasiko.com/workload-overrides";
+
+/// Whether the overrides recorded on a container ([`OVERRIDES_LABEL`]) differ from `wanted`.
+/// Only what Docker applies counts: the command and the runtime.
+fn overrides_changed(
+    config: Option<&bollard::models::ContainerConfig>,
+    wanted: &crate::WorkloadOverrides,
+) -> bool {
+    let recorded: crate::WorkloadOverrides = config
+        .and_then(|c| c.labels.as_ref())
+        .and_then(|l| l.get(OVERRIDES_LABEL))
+        .and_then(|v| serde_json::from_str(v).ok())
+        .unwrap_or_default();
+    recorded.command != wanted.command || recorded.runtime_class != wanted.runtime_class
+}
+
+/// The container's `Entrypoint` and `Cmd` for `command`: none of either for an empty one (the
+/// image's own), else `command` with an empty `Cmd`, so the image's `CMD` is dropped as
+/// Kubernetes drops it when a pod names a `command`.
+fn process_argv(command: &[String]) -> (Option<Vec<String>>, Option<Vec<String>>) {
+    if command.is_empty() {
+        (None, None)
+    } else {
+        (Some(command.to_vec()), Some(Vec::new()))
+    }
+}
+
 /// Read back the env vars recorded in [`ENV_VARS_LABEL`] on a running container.
 /// Returns `None` if the label is missing (pre-fix container) or fails to parse —
 /// callers should treat that as "unknown, assume changed" rather than as "unchanged".
@@ -777,12 +808,19 @@ async fn create_and_start(
     // later deploy() can detect changes without being confused by image-baked-in vars
     // (e.g. PATH) that `inspect_container` reports as part of the merged env.
     let env_json = serde_json::to_string(&spec.env_vars).unwrap_or_default();
-    let labels = HashMap::from([(ENV_VARS_LABEL.to_owned(), env_json)]);
+    let overrides_json = serde_json::to_string(&spec.overrides).unwrap_or_default();
+    let labels = HashMap::from([
+        (ENV_VARS_LABEL.to_owned(), env_json),
+        (OVERRIDES_LABEL.to_owned(), overrides_json),
+    ]);
 
     let user = run_as_user(spec);
+    let (entrypoint, cmd) = process_argv(&spec.overrides.command);
 
     let config = Config {
         image: Some(spec.image.clone()),
+        entrypoint,
+        cmd,
         env: Some(env_vec),
         exposed_ports: Some(exposed_ports),
         host_config: Some(host_config),
@@ -1644,8 +1682,9 @@ impl ContainerRuntime for DockerRuntime {
                 // — recreating once is safe; silently keeping stale env is not.
                 let env_changed = stored_env_vars(existing.config.as_ref())
                     .is_none_or(|stored| stored != spec.env_vars);
+                let process_changed = overrides_changed(existing.config.as_ref(), &spec.overrides);
 
-                if existing_image == spec.image && !env_changed {
+                if existing_image == spec.image && !env_changed && !process_changed {
                     // Same image, same env: ensure the container is running (idempotent).
                     // `spec.force_pull` is NOT consulted here — this branch never touches
                     // the image cache at all. A caller that wants a fresh pull of a mutable
@@ -1671,7 +1710,8 @@ impl ContainerRuntime for DockerRuntime {
                         })?;
                     }
                 } else {
-                    // Different image or changed env/secrets: stop → remove → recreate.
+                    // Different image, changed env/secrets, or a changed command or runtime:
+                    // stop → remove → recreate.
                     // Same container name is reused, so nothing else in the system (which
                     // addresses the agent by ContainerId → container name) needs to know
                     // the container was recreated rather than left running.
@@ -2323,6 +2363,8 @@ mod hardening_tests {
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
             force_pull: false,
+            parkable: false,
+            overrides: Default::default(),
         }
     }
 
@@ -2350,6 +2392,71 @@ mod hardening_tests {
         assert_eq!(hc.tmpfs, None);
         assert_eq!(hc.cap_drop, None);
         assert_eq!(hc.security_opt, None);
+    }
+
+    #[test]
+    fn runtime_class_selects_the_container_runtime_and_defaults_to_none() {
+        let (bindings, _) = build_port_config(&[8080], "127.0.0.1");
+        let hc = build_host_config(&spec(false), bindings.clone(), "nasiko-agent-memory");
+        assert_eq!(hc.runtime, None);
+        let mut gvisor = spec(true);
+        gvisor.overrides.runtime_class = Some("runsc".to_owned());
+        let hc = build_host_config(&gvisor, bindings, "nasiko-agent-memory");
+        assert_eq!(hc.runtime.as_deref(), Some("runsc"));
+    }
+
+    #[test]
+    fn a_command_replaces_the_entrypoint_and_drops_the_images_cmd() {
+        assert_eq!(process_argv(&[]), (None, None));
+        let command = vec!["/usr/bin/tini".to_owned(), "--".to_owned()];
+        assert_eq!(
+            process_argv(&command),
+            (Some(command.clone()), Some(Vec::new()))
+        );
+    }
+
+    fn labelled(overrides: Option<&crate::WorkloadOverrides>) -> bollard::models::ContainerConfig {
+        let labels = overrides.map(|o| {
+            HashMap::from([(
+                OVERRIDES_LABEL.to_owned(),
+                serde_json::to_string(o).unwrap(),
+            )])
+        });
+        bollard::models::ContainerConfig {
+            labels,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_changed_command_or_runtime_recreates_the_container() {
+        let defaults = crate::WorkloadOverrides::default();
+        let supervisor = crate::WorkloadOverrides {
+            command: vec!["harness-supervisor".to_owned()],
+            ..crate::WorkloadOverrides::default()
+        };
+        let gvisor = crate::WorkloadOverrides {
+            runtime_class: Some("runsc".to_owned()),
+            ..crate::WorkloadOverrides::default()
+        };
+        // An unlabelled container was created with the defaults.
+        assert!(!overrides_changed(Some(&labelled(None)), &defaults));
+        assert!(overrides_changed(Some(&labelled(None)), &supervisor));
+        assert!(!overrides_changed(
+            Some(&labelled(Some(&supervisor))),
+            &supervisor
+        ));
+        assert!(overrides_changed(
+            Some(&labelled(Some(&supervisor))),
+            &gvisor
+        ));
+        // Scratch and shutdown are not Docker's to apply, so they never recreate.
+        let scratch = crate::WorkloadOverrides {
+            scratch_bytes: Some(1 << 30),
+            shutdown: crate::Shutdown::Prompt,
+            ..crate::WorkloadOverrides::default()
+        };
+        assert!(!overrides_changed(Some(&labelled(None)), &scratch));
     }
 }
 
@@ -2379,6 +2486,8 @@ mod writable_tests {
             writable_path: None,
             owner_id: TEST_OWNER,
             force_pull: false,
+            parkable: false,
+            overrides: Default::default(),
         }
     }
 

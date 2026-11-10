@@ -217,6 +217,8 @@ fn minimal_spec() -> DeploymentSpec {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     }
 }
 
@@ -261,6 +263,8 @@ fn deployment_spec_with_all_fields() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     assert_eq!(spec.min_replicas, 2);
@@ -367,6 +371,33 @@ fn deployment_spec_validate_env_value_with_control_char_fails() {
     spec.env_vars
         .insert("KEY".to_owned(), "val\x01ue".to_owned());
     assert!(spec.validate().is_err());
+}
+
+#[test]
+fn deployment_spec_validate_empty_runtime_class_fails() {
+    let mut spec = minimal_spec();
+    spec.overrides.runtime_class = Some(String::new());
+    assert!(spec.validate().is_err());
+    spec.overrides.runtime_class = Some("gvisor".to_owned());
+    assert!(spec.validate().is_ok());
+}
+
+#[test]
+fn deployment_spec_validate_zero_scratch_fails() {
+    let mut spec = minimal_spec();
+    spec.overrides.scratch_bytes = Some(0);
+    assert!(spec.validate().is_err());
+    spec.overrides.scratch_bytes = Some(1 << 30);
+    assert!(spec.validate().is_ok());
+}
+
+#[test]
+fn deployment_spec_without_overrides_deserializes_to_the_defaults() {
+    let mut json = serde_json::to_value(minimal_spec()).unwrap();
+    json.as_object_mut().unwrap().remove("overrides");
+    let back: DeploymentSpec = serde_json::from_value(json).unwrap();
+    assert_eq!(back.overrides, nasiko_runtime::WorkloadOverrides::default());
+    assert_eq!(back.overrides.shutdown, nasiko_runtime::Shutdown::Drained);
 }
 
 #[test]

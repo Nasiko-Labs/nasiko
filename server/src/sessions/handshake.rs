@@ -657,6 +657,17 @@ mod tests {
         );
     }
 
+    /// A renewed sandbox token changes the configuration, so a shim still on the old one is
+    /// reconfigured (and its harness restarted) rather than connected to as it is.
+    #[test]
+    fn a_new_sandbox_token_changes_the_configure_hash() {
+        let hash_for = |token: &str| {
+            let env = crate::sessions::identity::session_env(token, "", "");
+            configure_body("bearer", env).env_hash
+        };
+        assert_ne!(hash_for("old-token"), hash_for("new-token"));
+    }
+
     #[test]
     fn decision_table() {
         use Action::*;

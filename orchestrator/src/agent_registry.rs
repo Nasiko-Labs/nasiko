@@ -23,6 +23,10 @@ use crate::types::AgentCard;
 /// them in this join's allowlist would be a silent no-op dressed up as coverage. Real
 /// `org_unit`/`organization` visibility comes entirely from `org_granted_agent_ids` above,
 /// which is what actually reuses `can_access_agent`'s logic instead of re-deriving it.
+///
+/// No grant reaches a harness agent: it belongs to one user, so it is a candidate only for its
+/// owner, or when it is public (a platform catalog row) — the rule `nasiko_auth::sharing` states
+/// for every other access check, repeated here because this crate does not depend on that one.
 pub async fn get_agents_for_user(
     user_id: Uuid,
     org_granted_agent_ids: &[String],
@@ -40,8 +44,8 @@ pub async fn get_agents_for_user(
              AND NOT a.is_internal
              AND (a.owner_id = $1
                   OR a.is_public = true
-                  OR g.grantee_id = $1::text
-                  OR a.id::text = ANY($2))
+                  OR (a.workload_kind <> 'harness'
+                      AND (g.grantee_id = $1::text OR a.id::text = ANY($2))))
            GROUP BY a.id"#,
     )
     .bind(user_id)
@@ -397,6 +401,41 @@ mod tests {
         );
 
         cleanup(&pool, &[agent_id], &[owner, caller]).await;
+    }
+
+    /// A user's harness agent belongs to that user: neither a user grant nor the org list makes
+    /// it a candidate for anyone else, while its owner still sees it.
+    #[tokio::test]
+    async fn a_grant_never_makes_another_users_harness_agent_a_candidate() {
+        let Some(pool) = pool().await else {
+            return;
+        };
+        let suffix = Uuid::new_v4().simple().to_string();
+
+        let owner = create_user(&pool, &format!("owner_h_{suffix}")).await;
+        let caller = create_user(&pool, &format!("caller_h_{suffix}")).await;
+        let agent = create_private_agent(&pool, owner, &format!("harness-{suffix}")).await;
+        sqlx::query("UPDATE agents SET workload_kind = 'harness' WHERE id = $1")
+            .bind(agent)
+            .execute(&pool)
+            .await
+            .expect("make the agent a harness agent");
+        grant(&pool, agent, "user", caller).await;
+
+        let org_granted = vec![agent.to_string()];
+        let visible = get_agents_for_user(caller, &org_granted, &pool)
+            .await
+            .expect("get_agents_for_user must not error");
+        assert!(
+            !visible.iter().any(|a| a.id == agent),
+            "a grant must not make another user's harness agent a routing candidate"
+        );
+        let owned = get_agents_for_user(owner, &[], &pool)
+            .await
+            .expect("get_agents_for_user must not error");
+        assert!(owned.iter().any(|a| a.id == agent));
+
+        cleanup(&pool, &[agent], &[owner, caller]).await;
     }
 
     /// A soft-deleted agent must never be a routing candidate again, regardless of how the

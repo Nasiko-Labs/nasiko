@@ -356,10 +356,10 @@ are indistinguishable from talking to any other A2A agent.
    `tasks/*` methods) is refused with JSON-RPC `-32600` before anything is written. An external agent
    calling a discovered URL must present a user JWT or an agent credential (`MCP_GATEWAY_TOKEN`, with a
    `traceparent` naming a flow it participates in); the in-tree assistant-agent sends its own token.
-5. **Forwards request** — to the target resolved by kind (`server/src/agent_resolver.rs`): a
-   resident agent's live container address, or, for a **parked** agent (no workload while idle),
-   its sandbox, woken by this very request. A harness agent has no address at all; its turns run
-   in a session sandbox. The registry therefore returns the proxy URL
+5. **Forwards request** — to the target resolved by kind (`server/src/agent_resolver.rs`): the
+   agent's own workload at its live address. A **parked** agent (its workload scaled to zero while
+   idle) is woken first by this very request (`server/src/agent_wake.rs`), which waits until it
+   answers. A harness agent has no address at all; its turns run in a session sandbox. The registry therefore returns the proxy URL
    (`{base}/api/agents/{id}`) for **every** agent, never a container address, and calling a
    parked or harness agent at a direct URL is unsupported.
 6. **Returns response** — strips internal headers, returns to caller

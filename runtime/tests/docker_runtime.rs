@@ -89,6 +89,8 @@ fn test_spec() -> DeploymentSpec {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     }
 }
 
@@ -251,6 +253,8 @@ async fn docker_runtime_deploy_and_destroy_alpine() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     // Deploy
@@ -322,6 +326,8 @@ async fn docker_runtime_deploy_recreates_container_when_env_changes() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -383,6 +389,8 @@ async fn docker_runtime_deploy_does_not_recreate_when_unchanged() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     runtime.deploy(&spec).await.expect("initial deploy");
@@ -453,6 +461,8 @@ async fn docker_runtime_writable_persists_across_redeploy_and_is_private_per_age
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
             force_pull: false,
+            parkable: false,
+            overrides: Default::default(),
         }
     }
 
@@ -536,6 +546,8 @@ async fn docker_runtime_reads_workspace_files_even_after_the_agent_is_gone() {
         writable_path: None,
         owner_id,
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
     runtime.deploy(&spec).await.expect("deploy writable agent");
     let container = "nasiko-agent-test-workspace-reader";
@@ -659,6 +671,8 @@ async fn docker_runtime_workspace_read_refuses_symlink_escape() {
         writable_path: None,
         owner_id: owner,
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     // Victim agent, holding a secret only its owner may download.
@@ -803,6 +817,8 @@ async fn coding_agent_attach_stdio_echo() {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     };
 
     // Clean slate, then deploy the container.

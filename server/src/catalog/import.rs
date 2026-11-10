@@ -404,8 +404,8 @@ pub(crate) async fn build_and_deploy(
             .await;
 
     let scaling = state.agent_scaling.begin_deploy(agent_id).await;
-    let replica_bounds = scaling.bounds().await.map_err(|e| {
-        tracing::error!(%e, %agent_id, "build_and_deploy: read replica bounds");
+    let plan = scaling.plan().await.map_err(|e| {
+        tracing::error!(%e, %agent_id, "build_and_deploy: read the deploy plan");
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal error".to_string(),
@@ -432,7 +432,7 @@ pub(crate) async fn build_and_deploy(
         vec![],
         env_vars,
         &state.config.agent_default_memory,
-        replica_bounds,
+        plan,
         // Catalog import has no --writable equivalent yet.
         false,
         None,
@@ -1068,6 +1068,7 @@ pub(crate) async fn import_registry(
                      capabilities = COALESCE($8, agents.capabilities),
                      tags = COALESCE($9, agents.tags),
                      updated_at = now()
+                 WHERE agents.workload_kind <> 'harness'
                RETURNING id"#,
         )
         .bind(&agent_name)
@@ -1089,7 +1090,7 @@ pub(crate) async fn import_registry(
             Ok(None) => {
                 return (
                     StatusCode::CONFLICT,
-                    "agent name already in use by another owner",
+                    "agent name already in use by another owner, or by a harness agent",
                 )
                     .into_response();
             }
@@ -1100,10 +1101,10 @@ pub(crate) async fn import_registry(
         };
 
         let scaling = state.agent_scaling.begin_deploy(agent_id).await;
-        let replica_bounds = match scaling.bounds().await {
-            Ok(bounds) => bounds,
+        let plan = match scaling.plan().await {
+            Ok(plan) => plan,
             Err(e) => {
-                tracing::error!(%e, %agent_id, "import_registry: read replica bounds");
+                tracing::error!(%e, %agent_id, "import_registry: read the deploy plan");
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
@@ -1127,7 +1128,7 @@ pub(crate) async fn import_registry(
             vec![],
             env_vars,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan,
             // Catalog import has no --writable equivalent yet.
             false,
             None,

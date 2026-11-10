@@ -1,6 +1,7 @@
 //! A routed (ReAct) turn offers parked agents as candidates and wakes only the one the model
 //! picks: `CpCallGuard::before_call`, past the ACL and flow guard, resolves the leg's target and
-//! hands it to the call through its handle.
+//! hands it to the call through its handle. The wake is the state's (`common::RowWake` here),
+//! which the server resolver asks before it resolves.
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test routed_turn_wakes_parked_agent -- --test-threads=1
@@ -12,7 +13,6 @@ use std::sync::Arc;
 use axum::{Json, Router, routing::post};
 use nasiko_flow::FlowContext;
 use nasiko_react_agent::CallGuard;
-use nasiko_runtime::SandboxKey;
 use nasiko_server::acl::{CpCallGuard, TurnCandidates, TurnLegs};
 use nasiko_server::agent_resolver::ServerTargetResolver;
 use serde_json::{Value, json};
@@ -107,6 +107,7 @@ async fn guard_with(
 async fn only_the_agent_the_model_picks_is_woken_and_its_address_rides_the_handle() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let picked = seed_parked(&server, owner, "picked-agent").await;
     let idle = seed_parked(&server, owner, "idle-agent").await;
@@ -117,27 +118,16 @@ async fn only_the_agent_the_model_picks_is_woken_and_its_address_rides_the_handl
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         url
     };
-    server
-        .sandbox
-        .set_transport_url(&SandboxKey::Agent { agent_id: picked }, stub.clone());
+    wake.serve_at(picked, &stub);
+    wake.serve_at(idle, &stub);
     let guard = guard_for(&server, owner, picked).await;
 
     let handle = guard.before_call("picked-agent").await.expect("admitted");
 
     let target = handle.target().expect("the resolved address");
     assert_eq!(target.url, stub);
-    assert_eq!(
-        server
-            .sandbox
-            .acquire_count(&SandboxKey::Agent { agent_id: picked }),
-        1
-    );
-    assert_eq!(
-        server
-            .sandbox
-            .acquire_count(&SandboxKey::Agent { agent_id: idle }),
-        0
-    );
+    assert_eq!(wake.woken_count(picked), 1);
+    assert_eq!(wake.woken_count(idle), 0);
     let status: String = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
         .bind(picked)
         .fetch_one(&server.db)
@@ -152,12 +142,11 @@ async fn only_the_agent_the_model_picks_is_woken_and_its_address_rides_the_handl
 async fn a_leg_whose_agent_cannot_be_woken_is_blocked_with_the_reason() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    // No address for the agent: the wake cannot start it.
+    common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let agent = seed_parked(&server, owner, "stuck-agent").await;
     let guard = guard_for(&server, owner, agent).await;
-    server
-        .sandbox
-        .fail_next_acquire(nasiko_runtime::RuntimeError::Timeout("slow".into()));
 
     let blocked = guard
         .before_call("stuck-agent")
@@ -174,18 +163,14 @@ async fn a_leg_whose_agent_cannot_be_woken_is_blocked_with_the_reason() {
 async fn a_blocked_leg_undoes_its_flow_guard_invocation() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let agent = seed_parked(&server, owner, "retry-agent").await;
-    server.sandbox.set_transport_url(
-        &SandboxKey::Agent { agent_id: agent },
-        "http://woken.sandbox:8000".into(),
-    );
     let guard = guard_for(&server, owner, agent).await;
-    server
-        .sandbox
-        .fail_next_acquire(nasiko_runtime::RuntimeError::Timeout("slow".into()));
 
+    // The first wake fails: the agent has nowhere to serve yet.
     assert!(guard.before_call("retry-agent").await.is_err());
+    wake.serve_at(agent, "http://woken.agent:8000");
     // Had the first attempt's invocation stayed on the call stack, this one would be a cycle.
     assert!(
         guard.before_call("retry-agent").await.is_ok(),
@@ -199,6 +184,7 @@ async fn a_blocked_leg_undoes_its_flow_guard_invocation() {
 async fn a_same_named_agent_of_another_owner_is_never_reached() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let mine_owner = init_admin(&server).await;
     let other_owner: Uuid = sqlx::query_scalar(
         "INSERT INTO users (username, email) VALUES ('other', 'other@t.io') RETURNING id",
@@ -209,23 +195,16 @@ async fn a_same_named_agent_of_another_owner_is_never_reached() {
     // Names are unique only per owner: both own an agent called "shared-name".
     let theirs = seed_parked(&server, other_owner, "shared-name").await;
     let mine = seed_parked(&server, mine_owner, "shared-name").await;
-    let mine_key = SandboxKey::Agent { agent_id: mine };
-    server
-        .sandbox
-        .set_transport_url(&mine_key, "http://mine.sandbox:8000".into());
+    wake.serve_at(mine, "http://mine.agent:8000");
+    wake.serve_at(theirs, "http://theirs.agent:8000");
     // The user's turn was offered only their own agent.
     let guard = guard_with(&server, mine_owner, mine, &[]).await;
 
     let handle = guard.before_call("shared-name").await.expect("admitted");
 
-    assert_eq!(handle.target().unwrap().url, "http://mine.sandbox:8000");
-    assert_eq!(server.sandbox.acquire_count(&mine_key), 1);
-    assert_eq!(
-        server
-            .sandbox
-            .acquire_count(&SandboxKey::Agent { agent_id: theirs }),
-        0
-    );
+    assert_eq!(handle.target().unwrap().url, "http://mine.agent:8000");
+    assert_eq!(wake.woken_count(mine), 1);
+    assert_eq!(wake.woken_count(theirs), 0);
     // Something that was not offered is refused outright, never looked up by name.
     assert!(guard.before_call("not-offered").await.is_err());
     server.cleanup().await;
@@ -236,12 +215,10 @@ async fn a_same_named_agent_of_another_owner_is_never_reached() {
 async fn an_agent_whose_name_has_underscores_and_dots_is_reachable() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let agent = seed_parked(&server, owner, "my_agent.v2").await;
-    server.sandbox.set_transport_url(
-        &SandboxKey::Agent { agent_id: agent },
-        "http://dotted.sandbox:8000".into(),
-    );
+    wake.serve_at(agent, "http://dotted.agent:8000");
     let guard = guard_for(&server, owner, agent).await;
 
     // The ReAct loop hands the guard `tool_name` with its prefix stripped and `_` read as `-`.
@@ -249,7 +226,7 @@ async fn an_agent_whose_name_has_underscores_and_dots_is_reachable() {
     assert_eq!(display, "my-agent-v2");
     let handle = guard.before_call(&display).await.expect("admitted");
 
-    assert_eq!(handle.target().unwrap().url, "http://dotted.sandbox:8000");
+    assert_eq!(handle.target().unwrap().url, "http://dotted.agent:8000");
     server.cleanup().await;
 }
 
@@ -268,8 +245,10 @@ fn two_candidates_folding_to_one_display_name_are_both_refused() {
 async fn an_ambiguous_name_gets_its_own_refusal_and_a_continuation_reaches_nobody() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let agent = seed_parked(&server, owner, "solo").await;
+    wake.serve_at(agent, "http://solo.agent:8000");
     let guard = guard_with(&server, owner, agent, &[("a.b", agent), ("a-b", agent)]).await;
     let refusal = guard.before_call("a-b").await.err().expect("refused");
     assert!(refusal.contains("ambiguous"), "{refusal}");
@@ -296,12 +275,7 @@ async fn an_ambiguous_name_gets_its_own_refusal_and_a_continuation_reaches_nobod
         },
     );
     assert!(continuation.before_call("solo").await.is_err());
-    assert_eq!(
-        server
-            .sandbox
-            .acquire_count(&SandboxKey::Agent { agent_id: agent }),
-        0
-    );
+    assert_eq!(wake.woken_count(agent), 0);
     server.cleanup().await;
 }
 
@@ -321,10 +295,10 @@ fn text_chunk(text: &str) -> String {
 }
 
 /// The whole routed path: `orchestrator_stream` lists a parked agent as a `nasiko-leg://`
-/// candidate, the (mocked) model picks it, the guard wakes it and the call lands on its sandbox.
+/// candidate, the (mocked) model picks it, the guard wakes it and the call lands on its workload.
 #[tokio::test]
 #[serial]
-async fn a_routed_turn_offers_a_parked_candidate_and_the_call_reaches_its_sandbox() {
+async fn a_routed_turn_offers_a_parked_candidate_and_the_call_reaches_its_workload() {
     let mut llm = mockito::Server::new_async().await;
     let picked = llm
         .mock("POST", "/chat/completions")
@@ -348,11 +322,12 @@ async fn a_routed_turn_offers_a_parked_candidate_and_the_call_reaches_its_sandbo
     }
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
     let agent = seed_parked(&server, owner, "sleepy-agent").await;
 
-    let mut sandbox_agent = mockito::Server::new_async().await;
-    let reached = sandbox_agent
+    let mut woken_agent = mockito::Server::new_async().await;
+    let reached = woken_agent
         .mock("POST", "/")
         .with_status(200)
         .with_body(
@@ -363,8 +338,7 @@ async fn a_routed_turn_offers_a_parked_candidate_and_the_call_reaches_its_sandbo
         .expect_at_least(1)
         .create_async()
         .await;
-    let key = SandboxKey::Agent { agent_id: agent };
-    server.sandbox.set_transport_url(&key, sandbox_agent.url());
+    wake.serve_at(agent, &woken_agent.url());
 
     let response = common::as_superuser(
         server.client.post(server.url("/api/orchestrator/a2a")),
@@ -390,7 +364,7 @@ async fn a_routed_turn_offers_a_parked_candidate_and_the_call_reaches_its_sandbo
 
     picked.assert_async().await;
     reached.assert_async().await;
-    assert_eq!(server.sandbox.acquire_count(&key), 1, "{body}");
+    assert_eq!(wake.woken_count(agent), 1, "{body}");
     let status: String = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
         .bind(agent)
         .fetch_one(&server.db)

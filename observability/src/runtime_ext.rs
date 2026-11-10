@@ -198,6 +198,10 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         self.inner.troubled().await
     }
 
+    async fn is_serving(&self, container_id: &ContainerId) -> Result<bool> {
+        self.inner.is_serving(container_id).await
+    }
+
     async fn wait_routable(
         &self,
         container_id: &ContainerId,
@@ -376,6 +380,10 @@ impl<P: SandboxProvider + ?Sized> SandboxProvider for InstrumentedSandbox<P> {
         self.inner.release(handle).await
     }
 
+    async fn resume_takes_new_env(&self, handle: &SandboxHandle) -> Result<bool> {
+        self.inner.resume_takes_new_env(handle).await
+    }
+
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats> {
         self.inner.stats(handle).await
     }
@@ -488,6 +496,11 @@ mod tests {
         async fn troubled(&self) -> Result<Option<Vec<ContainerId>>> {
             Ok(Some(vec![ContainerId::new("crashing-agent")]))
         }
+        /// Answers without `status()`, which this double does not implement: the decorator
+        /// reaching the trait's default instead would panic.
+        async fn is_serving(&self, _id: &ContainerId) -> Result<bool> {
+            Ok(true)
+        }
         async fn list_workspace(&self, _w: &WorkspaceRef) -> Result<Vec<WorkspaceEntry>> {
             Ok(vec![WorkspaceEntry {
                 path: "marker-file".to_string(),
@@ -545,6 +558,8 @@ mod tests {
             writable_path: None,
             owner_id: uuid::Uuid::nil(),
             force_pull: false,
+            parkable: false,
+            overrides: Default::default(),
         }
     }
 
@@ -775,6 +790,26 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn is_serving_forwards_to_inner() {
+        let rt = InstrumentedRuntime::new(
+            RecordingRuntime {
+                refreshed: Arc::new(AtomicBool::new(false)),
+                refresh_env: Arc::new(Mutex::new(HashMap::new())),
+            },
+            NoopInjector,
+            "http://collector:4318".to_string(),
+            "http/protobuf".to_string(),
+            false,
+            None,
+        );
+        assert!(
+            rt.is_serving(&ContainerId::new("agent"))
+                .await
+                .expect("is_serving should succeed")
+        );
+    }
+
     /// RUN-1 regression guard: the decorator must forward `list_instances` to the
     /// inner runtime. The trait's default synthesizes entries from `list()` — which
     /// returns `[]` for `RecordingRuntime` — so an empty result here would mean
@@ -926,6 +961,9 @@ mod tests {
             assert!(!sandbox.is_available_for(&key));
             fake.set_unavailable(false);
             let handle = sandbox.acquire(&spec(key, &[])).await.unwrap();
+            assert!(!sandbox.resume_takes_new_env(&handle).await.unwrap());
+            fake.set_resume_takes_new_env(true);
+            assert!(sandbox.resume_takes_new_env(&handle).await.unwrap());
             assert_eq!(sandbox.list().await.unwrap().len(), 1);
             sandbox.release(&handle).await.unwrap();
         }

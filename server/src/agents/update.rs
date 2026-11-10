@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use nasiko_runtime::DeploymentStatus;
 
+use crate::agent_scaling::{ParkingPolicy, save_parking_policy};
 use crate::agents::upload::BuildJobPayload;
 use crate::auth::Claims;
 use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip_to_dir};
@@ -64,7 +65,8 @@ pub struct AgentVersionRow {
 
 /// Multipart form for `PUT /{id}/update` — a `.zip` `source` file plus optional
 /// `version` (a strategy keyword `auto`/`patch`/`minor`/`major`, or an explicit
-/// semver string greater than the current version) and `changelog` fields.
+/// semver string greater than the current version), `changelog` and `parking_policy`
+/// fields.
 #[derive(ToSchema)]
 #[allow(dead_code)]
 pub(crate) struct UpdateAgentForm {
@@ -72,6 +74,8 @@ pub(crate) struct UpdateAgentForm {
     source: Vec<u8>,
     version: Option<String>,
     changelog: Option<String>,
+    /// `auto` | `resident`. Omit to keep the agent's stored policy.
+    parking_policy: Option<String>,
 }
 
 // ─── PUT /{id}/update ─────────────────────────────────────────────────────────
@@ -89,7 +93,7 @@ pub(crate) struct UpdateAgentForm {
     request_body(content = UpdateAgentForm, content_type = "multipart/form-data"),
     responses(
         (status = 202, description = "Build queued", body = UpdateAgentResponse),
-        (status = 400, description = "Invalid version/strategy or non-.zip source"),
+        (status = 400, description = "Invalid version/strategy or parking_policy, or non-.zip source"),
         (status = 403, description = "Caller cannot manage this agent"),
         (status = 404, description = "No such agent"),
         (status = 409, description = "Version already exists or is not greater than current"),
@@ -156,6 +160,7 @@ pub(crate) async fn update_agent(
     let mut source_data: Option<Vec<u8>> = None;
     let mut requested_version: Option<String> = None;
     let mut changelog: Option<String> = None;
+    let mut parking_policy: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
@@ -176,9 +181,14 @@ pub(crate) async fn update_agent(
             "changelog" => {
                 changelog = field.text().await.ok().filter(|s| !s.is_empty());
             }
+            "parking_policy" => parking_policy = field.text().await.ok(),
             _ => {}
         }
     }
+    let parking_policy = match ParkingPolicy::from_request_field(parking_policy.as_deref()) {
+        Ok(policy) => policy,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
 
     // Determine new version.
     // Accepts strategy keywords (auto, patch, minor, major) or an explicit semver string (e.g. "1.2.3").
@@ -287,6 +297,17 @@ pub(crate) async fn update_agent(
     .await
     {
         return (code, msg).into_response();
+    }
+
+    // Stored before the build is queued, so the worker's deploy reads it from the row. Not in
+    // one transaction with the queueing below (this handler writes each row on its own): an
+    // update whose job then fails to queue keeps the new policy, which takes effect at the
+    // agent's next deploy, as one saved through `PUT /api/agents/{id}` would.
+    if let Some(policy) = parking_policy
+        && let Err(e) = save_parking_policy(&state.db, agent_id, policy).await
+    {
+        tracing::error!(%e, %agent_id, "update_agent: save parking policy");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
 
     // Optimistic write — lets the UI show "deploying to <image_tag>".
@@ -473,8 +494,7 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    // `None` in place of the status: the agent was parked instead of deployed (see `parking`).
-    let result: Result<(Option<DeploymentStatus>, Vec<i32>), String> = async {
+    let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             let tmp = tmp_dir.clone();
@@ -539,33 +559,12 @@ pub async fn execute_agent_update(
         )
         .await;
 
-        // Decided before the deploy env is built, which resets the agent's state mode.
-        if super::parking::park_if_eligible(&state, agent_id, Some(&image_tag))
-            .await
-            .map_err(|e| format!("park: {e}"))?
-        {
-            set_upload_status(
-                db,
-                &upload_id,
-                &name,
-                owner_id,
-                "orchestration_processing",
-                None,
-                None,
-            )
-            .await;
-            return Ok((None, Vec::new()));
-        }
-        // A workload deploy of a new image leaves no old sandbox behind to wake instead of it.
-        super::parking::release_agent_sandbox(&state, agent_id)
-            .await
-            .map_err(|e| format!("release sandbox: {e}"))?;
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
-        let replica_bounds = scaling
-            .bounds()
+        let plan = scaling
+            .plan()
             .await
-            .map_err(|e| format!("read replica bounds: {e}"))?;
+            .map_err(|e| format!("read the deploy plan: {e}"))?;
         // Built with agent_owner_id (the agent's real owner), NOT owner_id (the caller) -
         // a superuser/ACL-grantee updating someone else's agent must not cause that
         // agent to resolve the caller's secrets/llm_config instead of its own owner's.
@@ -589,7 +588,7 @@ pub async fn execute_agent_update(
             vec![],
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan,
             writable,
             writable_path.clone(),
             agent_owner_id,
@@ -620,7 +619,7 @@ pub async fn execute_agent_update(
             None,
         )
         .await;
-        Ok((Some(deploy_status), spec_ports))
+        Ok((deploy_status, spec_ports))
     }
     .await;
 
@@ -641,52 +640,49 @@ pub async fn execute_agent_update(
             })
             .await;
 
-            // A parked agent has no workload: no address to record, no card to fetch.
-            if let Some(deploy_status) = deploy_status {
-                let agent_url = crate::agents::resolve_agent_url(
-                    &state.runtime,
-                    &deploy_status,
-                    &nasiko_runtime::ContainerId::from_uuid(agent_id),
-                )
-                .await;
-                let _ = sqlx::query(
-                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
-                )
-                .bind(agent_id)
-                .bind(&agent_url)
-                .execute(db)
-                .await;
-                // Refresh card-derived fields (skills, description, transport_path)
-                // for the newly deployed version.
-                tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                    state.db.clone(),
-                    state.http_client.clone(),
-                    state.runtime.clone(),
-                    agent_id,
-                    agent_url.clone(),
-                ));
+            let agent_url = crate::agents::resolve_agent_url(
+                &state.runtime,
+                &deploy_status,
+                &nasiko_runtime::ContainerId::from_uuid(agent_id),
+            )
+            .await;
+            let _ = sqlx::query(
+                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(agent_id)
+            .bind(&agent_url)
+            .execute(db)
+            .await;
+            // Refresh card-derived fields (skills, description, transport_path)
+            // for the newly deployed version.
+            tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                state.db.clone(),
+                state.http_client.clone(),
+                state.runtime.clone(),
+                agent_id,
+                agent_url.clone(),
+            ));
 
-                // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
-                // so the crash guardian and restart can find/rebuild this workload after an
-                // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
-                // to a hardcoded port 8000 guess instead of the port this deploy actually used.
-                // owner_id here must be the agent's real owner (agent_owner_id), not the
-                // caller who triggered this update — restart_deployment reads this exact
-                // column and re-injects LLM wiring from it, so a wrong value here would
-                // corrupt every future restart's wiring too, not just this one.
-                let _ = sqlx::query(
-                    "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
-                     VALUES ($1, $2, 'running', $3, $4, $5, $6)",
-                )
-                .bind(agent_id)
-                .bind(build_id)
-                .bind(agent_owner_id)
-                .bind(agent_id.to_string())
-                .bind(&image_tag)
-                .bind(&spec_ports)
-                .execute(db)
-                .await;
-            }
+            // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
+            // so the crash guardian and restart can find/rebuild this workload after an
+            // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
+            // to a hardcoded port 8000 guess instead of the port this deploy actually used.
+            // owner_id here must be the agent's real owner (agent_owner_id), not the
+            // caller who triggered this update — restart_deployment reads this exact
+            // column and re-injects LLM wiring from it, so a wrong value here would
+            // corrupt every future restart's wiring too, not just this one.
+            let _ = sqlx::query(
+                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
+                 VALUES ($1, $2, 'running', $3, $4, $5, $6)",
+            )
+            .bind(agent_id)
+            .bind(build_id)
+            .bind(agent_owner_id)
+            .bind(agent_id.to_string())
+            .bind(&image_tag)
+            .bind(&spec_ports)
+            .execute(db)
+            .await;
 
             set_build_status(db, build_id, BuildStatus::Success).await;
             set_upload_status(
@@ -971,52 +967,16 @@ pub async fn execute_agent_rollback(
     // outside the `nasiko/` convention, e.g. upload/reupload's already-qualified tags).
     let image =
         crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
-    // Decided before the deploy env is built, which resets the agent's state mode.
-    match super::parking::park_if_eligible(&state, agent_id, Some(&image)).await {
-        Ok(true) => {
-            activate_rollback_target(db, agent_id, &target.version).await;
-            let _ = sqlx::query("UPDATE agents SET version = $2, updated_at = now() WHERE id = $1")
-                .bind(agent_id)
-                .bind(&target.version)
-                .execute(db)
-                .await;
-            set_build_status(db, rollback_build_id, BuildStatus::Success).await;
-            tracing::info!(build_id = %rollback_build_id, %agent_id, version = %target.version, "agent rollback parked the agent");
-            return;
-        }
-        Ok(false) => {
-            if let Err(e) = super::parking::release_agent_sandbox(&state, agent_id).await {
-                fail_rollback(
-                    db,
-                    rollback_build_id,
-                    agent_id,
-                    &format!("release sandbox: {e}"),
-                )
-                .await;
-                return;
-            }
-        }
-        Err(e) => {
-            fail_rollback(
-                db,
-                rollback_build_id,
-                agent_id,
-                &format!("read parking eligibility: {e}"),
-            )
-            .await;
-            return;
-        }
-    }
     // Read before the deploy env is built: a failed read must not rotate the running
     // agent's credentials or reset its state mode for a deploy that never happens.
-    let replica_bounds = match scaling.bounds().await {
-        Ok(bounds) => bounds,
+    let plan = match scaling.plan().await {
+        Ok(plan) => plan,
         Err(e) => {
             fail_rollback(
                 db,
                 rollback_build_id,
                 agent_id,
-                &format!("read replica bounds: {e}"),
+                &format!("read the deploy plan: {e}"),
             )
             .await;
             return;
@@ -1044,7 +1004,7 @@ pub async fn execute_agent_rollback(
         vec![],
         env,
         &state.config.agent_default_memory,
-        replica_bounds,
+        plan,
         writable,
         writable_path.clone(),
         agent_owner_id,

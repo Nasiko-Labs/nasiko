@@ -1,27 +1,23 @@
 //! One place that turns an agent id into somewhere to send a request, by the agent's kind.
 //!
 //! Every inbound A2A call used to resolve its own endpoint and each assumed a live container.
-//! Now an agent is one of three things, and the answer differs for each:
+//! Now an agent is one of two things, and the answer differs for each:
 //!
 //! - a **harness** agent has no endpoint: its turns run in a per-session sandbox
 //!   (`sessions/turn.rs`), so the caller branches to that path;
-//! - a **resident** agent has a container: the live runtime address, else the stored URL;
-//! - a **parkable** agent has no workload while idle: the sandbox provider wakes it
-//!   (`acquire` is create-or-resume) and its transport URL is the target. One that still has
-//!   a live workload (its first deploy was resident) keeps being served by it.
+//! - any other agent has a workload of its own: the live runtime address, else the stored URL.
+//!
+//! Every forward asks the wake seam (`agent_wake`) before resolving, so an agent parked by scaling
+//! its workload to zero is running again by the time it is resolved here. Every request that is
+//! served stamps `agents.last_request_at`, the idle signal the reaper parks by.
 //!
 //! Routability is exactly `status IN ('running', 'parked')`.
 
 use axum::http::StatusCode;
-use nasiko_flow::FlowEvent;
-use nasiko_runtime::{
-    ContainerId, ForwardTarget, RuntimeError, RuntimeState, SandboxKey, SandboxProviderKind,
-    SandboxTransport,
-};
+use nasiko_runtime::{ContainerId, ForwardTarget, RuntimeState};
 use uuid::Uuid;
 
-use crate::agent_scaling::ParkingEligibility;
-use crate::agents::sandbox_spec::prepare_sandbox_spec;
+use crate::agent_wake::AgentWake;
 use crate::state::AppState;
 
 /// An agent's address: where it listens, and the path its A2A handler is mounted at. Kept apart
@@ -46,17 +42,8 @@ impl Endpoint {
 /// Where a request for an agent goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolvedTarget {
-    /// A resident container (or an external agent's stored URL).
+    /// The agent's workload (or an external agent's stored URL).
     Container(Endpoint),
-    /// A parked-capable agent's sandbox. `woke` is true when this request brought it back, and
-    /// `wake_ms` is then how long the wake took (the figure `AgentWaking` announces).
-    Sandbox {
-        target: Endpoint,
-        woke: bool,
-        wake_ms: Option<u64>,
-        /// The backend that owns the sandbox, for telemetry.
-        provider: SandboxProviderKind,
-    },
     /// A harness agent: the caller drives a session turn instead of forwarding.
     Harness,
 }
@@ -65,10 +52,7 @@ impl ResolvedTarget {
     /// The message URL, or `None` for a harness agent, which has none.
     pub fn into_forward_target(self) -> Option<ForwardTarget> {
         match self {
-            Self::Container(endpoint)
-            | Self::Sandbox {
-                target: endpoint, ..
-            } => Some(endpoint.into_forward_target()),
+            Self::Container(endpoint) => Some(endpoint.into_forward_target()),
             Self::Harness => None,
         }
     }
@@ -77,11 +61,12 @@ impl ResolvedTarget {
 /// Who is asking, as far as the resolver needs to know.
 #[derive(Debug, Clone, Default)]
 pub struct Caller {
-    /// The user the request is for. Required to open a per-conversation sandbox.
-    pub user_id: Option<Uuid>,
     /// The flow the request belongs to, so a wake can be announced on its event stream.
     pub flow_id: Option<String>,
 }
+
+/// The `Retry-After` a request that met a park mid-way is told to wait.
+const PARKED_MID_REQUEST_RETRY_AFTER_SECS: u64 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
@@ -89,16 +74,15 @@ pub enum ResolveError {
     NotFound,
     #[error("agent not running (status: {0})")]
     NotRunning(String),
-    /// The row is parked but its policy is now resident, so nothing will wake it.
-    #[error("agent is parked but its policy is now resident")]
-    ParkedButResident,
     /// The row says running; the runtime says otherwise.
     #[error("agent workload is not running (runtime reports: {0})")]
     WorkloadDown(String),
+    /// The agent is parked, and waking it in this request did not bring it back: the idle reaper
+    /// parked it as the request reached it, or the wake that ran first did not finish.
+    #[error("agent was parked as this request reached it")]
+    ParkedMidRequest,
     #[error("no endpoint found for agent '{0}'")]
     NoEndpoint(String),
-    #[error("sandbox: {0}")]
-    Sandbox(#[from] RuntimeError),
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
 }
@@ -108,13 +92,18 @@ impl ResolveError {
     pub fn http_status(&self) -> StatusCode {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::NotRunning(_) | Self::ParkedButResident | Self::WorkloadDown(_) => {
+            Self::NotRunning(_) | Self::WorkloadDown(_) | Self::ParkedMidRequest => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
-            Self::Sandbox(RuntimeError::Timeout(_)) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::NoEndpoint(_) | Self::Sandbox(_) => StatusCode::BAD_GATEWAY,
+            Self::NoEndpoint(_) => StatusCode::BAD_GATEWAY,
             Self::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
+    }
+
+    /// How many seconds a client should wait before it tries again, for a refusal that a retry
+    /// can get past: a park that raced the request is settled, or the agent woken, by then.
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        matches!(self, Self::ParkedMidRequest).then_some(PARKED_MID_REQUEST_RETRY_AFTER_SECS)
     }
 
     /// What a client is told. Backend and database text stays in the logs.
@@ -122,15 +111,13 @@ impl ResolveError {
         match self {
             Self::NotFound => "agent not found".into(),
             Self::NotRunning(status) => format!("agent not running (status: {status})"),
-            Self::ParkedButResident => {
-                "agent is parked but its policy is now resident; run `nasiko start`".into()
-            }
             Self::WorkloadDown(state) => {
                 format!("agent workload is not running (runtime reports: {state})")
             }
+            Self::ParkedMidRequest => {
+                "the agent was parked as this request reached it; try again shortly".into()
+            }
             Self::NoEndpoint(_) => "agent has no reachable endpoint".into(),
-            Self::Sandbox(RuntimeError::Timeout(_)) => "agent is waking".into(),
-            Self::Sandbox(_) => "agent could not be started".into(),
             Self::Db(_) => "internal error".into(),
         }
     }
@@ -179,26 +166,31 @@ pub fn ensure_routable(row: &AgentRow) -> Result<(), ResolveError> {
     route_without_endpoint(row).map(|_| ())
 }
 
-/// Resolves `agent_id` for a request that is about to be served: a parked agent is woken and
-/// its last-request time stamped, so the idle reaper measures from this request.
+/// Resolves `agent_id` for a request that is about to be served, stamping its last-request time so
+/// the idle reaper measures from this request. Call the wake seam first: a parked agent has no
+/// workload to resolve to until it is woken.
 pub async fn resolve_target(
     state: &AppState,
     agent_id: Uuid,
     caller: &Caller,
-    context_id: Option<&str>,
 ) -> Result<ResolvedTarget, ResolveError> {
     let row = load_agent(state, agent_id).await?;
-    resolve_loaded(state, &row, caller, context_id).await
+    resolve_loaded(state, &row, caller).await
 }
 
-/// [`resolve_target`] for a caller that already holds the agent's row.
+/// [`resolve_target`] for a caller that already holds the agent's row. A row read before the wake
+/// seam ran says `parked` for an agent the wake has since started, so a parked row is read again;
+/// any other row is resolved as it is, without a second read.
 pub async fn resolve_loaded(
     state: &AppState,
     row: &AgentRow,
     caller: &Caller,
-    context_id: Option<&str>,
 ) -> Result<ResolvedTarget, ResolveError> {
-    resolve(state, row, caller, context_id).await
+    if row.status == "parked" {
+        let current = load_agent(state, row.id).await?;
+        return resolve(state, &current, caller).await;
+    }
+    resolve(state, row, caller).await
 }
 
 /// The path appended to an agent's base address: its card's `transport_path`, with a root mount
@@ -214,70 +206,17 @@ async fn resolve(
     state: &AppState,
     row: &AgentRow,
     caller: &Caller,
-    context_id: Option<&str>,
 ) -> Result<ResolvedTarget, ResolveError> {
     if let Some(early) = route_without_endpoint(row)? {
         return Ok(early);
     }
-    if !state
-        .sandbox
-        .is_available_for(&SandboxKey::Agent { agent_id: row.id })
-    {
-        return resident_or_parked(state, row, ParkedWhy::NoSandboxProvider).await;
-    }
-    match state.agent_scaling.parking_eligibility(row.id).await? {
-        ParkingEligibility::Parkable => {
-            // A workload that is still running (the agent's first deploy was resident, then it
-            // registered durable state) keeps serving; the deploy path parks it at its next
-            // deploy or restart. Starting a second copy in a sandbox would split its traffic.
-            if workload_is_running(state, row.id).await {
-                return resident_target(state, row)
-                    .await
-                    .map(ResolvedTarget::Container);
-            }
-            sandbox_target(state, row, caller, context_id).await
-        }
-        ParkingEligibility::Resident(_) => {
-            resident_or_parked(state, row, ParkedWhy::PolicyResident).await
-        }
-    }
-}
-
-enum ParkedWhy {
-    NoSandboxProvider,
-    PolicyResident,
-}
-
-/// The resident path. A row that is `parked` has no workload to reach: with no provider that is
-/// a plain refusal; with a policy that is now resident it is a row nothing will ever wake, so it
-/// is marked `stopped` (an owner's `nasiko start` brings it back) and the caller is told why.
-async fn resident_or_parked(
-    state: &AppState,
-    row: &AgentRow,
-    why: ParkedWhy,
-) -> Result<ResolvedTarget, ResolveError> {
-    if row.status != "parked" {
-        return resident_target(state, row)
-            .await
-            .map(ResolvedTarget::Container);
-    }
-    match why {
-        ParkedWhy::NoSandboxProvider => Err(ResolveError::NotRunning(row.status.clone())),
-        ParkedWhy::PolicyResident => {
-            sqlx::query("UPDATE agents SET status = 'stopped' WHERE id = $1 AND status = 'parked'")
-                .bind(row.id)
-                .execute(&state.db)
-                .await?;
-            Err(ResolveError::ParkedButResident)
-        }
-    }
-}
-
-async fn workload_is_running(state: &AppState, agent_id: Uuid) -> bool {
-    matches!(
-        state.runtime.status(&ContainerId::from_uuid(agent_id)).await,
-        Ok(status) if status.state == RuntimeState::Running
-    )
+    let endpoint = if row.status == "parked" {
+        // The wake this request asked for first did not leave the agent running.
+        resolve_after_park(state, row, caller).await?
+    } else {
+        workload_target(state, row, caller).await?
+    };
+    Ok(ResolvedTarget::Container(endpoint))
 }
 
 /// The outcomes that need no endpoint: a harness agent, or an agent that is not routable.
@@ -292,9 +231,48 @@ fn route_without_endpoint(row: &AgentRow) -> Result<Option<ResolvedTarget>, Reso
     Ok(None)
 }
 
-// ─── Resident agents ─────────────────────────────────────────────────────────
+// ─── Workloads ───────────────────────────────────────────────────────────────
 
-async fn resident_target(state: &AppState, row: &AgentRow) -> Result<Endpoint, ResolveError> {
+/// A running workload's address. Serving from it restarts the agent's idle clock, so the reaper
+/// measures every agent from its last request. A stamp that finds the row parked means the reaper
+/// parked the workload after this request resolved it.
+async fn workload_target(
+    state: &AppState,
+    row: &AgentRow,
+    caller: &Caller,
+) -> Result<Endpoint, ResolveError> {
+    let endpoint = workload_endpoint(state, row).await?;
+    match stamp_last_request(state, row.id).await {
+        Stamp::FoundParked => resolve_after_park(state, row, caller).await,
+        Stamp::Stamped | Stamp::Skipped => Ok(endpoint),
+    }
+}
+
+/// The agent was parked as this request reached it (or the wake asked for first did not finish).
+/// Wake it again, once, and resolve the woken workload; if that does not work out, the caller gets
+/// a 503 to retry on, never a forward to a workload going down.
+async fn resolve_after_park(
+    state: &AppState,
+    row: &AgentRow,
+    caller: &Caller,
+) -> Result<Endpoint, ResolveError> {
+    tracing::info!(agent_id = %row.id, "agent resolver: the agent was parked as this request reached it; waking it again");
+    if let Err(msg) = state
+        .agent_wake
+        .before_forward(row.id, caller.flow_id.as_deref())
+        .await
+    {
+        tracing::warn!(agent_id = %row.id, %msg, "agent resolver: waking a just-parked agent failed");
+        return Err(ResolveError::ParkedMidRequest);
+    }
+    let current = load_agent(state, row.id).await?;
+    if current.status != "running" {
+        return Err(ResolveError::ParkedMidRequest);
+    }
+    workload_endpoint(state, &current).await
+}
+
+async fn workload_endpoint(state: &AppState, row: &AgentRow) -> Result<Endpoint, ResolveError> {
     let mount = mount_path(row.transport_path.as_deref()).to_owned();
     // Prefer the live runtime endpoint (Docker port mapping can change on restart).
     // `forwarding_endpoint()`, not `endpoint()`: this resolves the address an actual outbound
@@ -307,11 +285,11 @@ async fn resident_target(state: &AppState, row: &AgentRow) -> Result<Endpoint, R
             if let Ok(status) = state.runtime.status(&container_id).await
                 && status.state != RuntimeState::Running
             {
-                // A dead resident workload is the caller's error and a log line; the status
-                // column is the reconciler's to change, not a request's.
+                // A dead workload is the caller's error and a log line; the status column is
+                // the reconciler's to change, not a request's.
                 tracing::warn!(
                     agent_id = %row.id, name = %row.name, state = ?status.state,
-                    "agent resolver: resident workload is not running"
+                    "agent resolver: the agent's workload is not running"
                 );
                 return Err(ResolveError::WorkloadDown(format!("{:?}", status.state)));
             }
@@ -338,187 +316,87 @@ async fn resident_target(state: &AppState, row: &AgentRow) -> Result<Endpoint, R
     }
 }
 
-// ─── Parkable agents ─────────────────────────────────────────────────────────
+/// How often at most a served request writes `last_request_at`; the reaper's park window allows
+/// for it (`nasiko_config::LAST_REQUEST_STAMP_THROTTLE_SECS`).
+const STAMP_THROTTLE: std::time::Duration =
+    std::time::Duration::from_secs(nasiko_config::LAST_REQUEST_STAMP_THROTTLE_SECS);
 
-async fn sandbox_target(
-    state: &AppState,
-    row: &AgentRow,
-    caller: &Caller,
-    context_id: Option<&str>,
-) -> Result<ResolvedTarget, ResolveError> {
-    let was_parked = row.status == "parked";
-    let mount = mount_path(row.transport_path.as_deref()).to_owned();
-    let key = sandbox_key(state, row, caller, context_id).await?;
-    let prepared = prepare_sandbox_spec(state, row, key).await?;
-    // Stamped before the wake, so the idle reaper's re-check after it claims the agent sees a
-    // request already under way instead of an agent idle for as long as the wake takes.
-    mark_serving(state, row.id).await;
-    let started = std::time::Instant::now();
-    let handle = acquire_with_one_retry(state, &prepared.spec).await?;
-    let url = http_url(state.sandbox.attach(&handle).await?)?;
+/// A `running` row's idle clock restarts. A `parked` row is matched but keeps its clock and status,
+/// and the status is returned: the reaper parked the workload after this request resolved it (the
+/// park holds the row while it scales, so this write waits for its commit), and reviving the row
+/// would leave it `running` with no workload behind it. So the row is written only when it is due a
+/// stamp, or in that race.
+const STAMP_LAST_REQUEST: &str = "UPDATE agents \
+     SET last_request_at = CASE WHEN status = 'running' THEN now() ELSE last_request_at END \
+     WHERE id = $1 AND status IN ('running', 'parked') \
+       AND (status = 'parked' OR last_request_at IS NULL \
+            OR last_request_at < now() - make_interval(secs => $2)) \
+     RETURNING status";
 
-    let wake_ms = was_parked.then(|| millis_saturating(started.elapsed()));
-    if let Some(wake_ms) = wake_ms {
-        announce_wake(state, row.id, caller, wake_ms);
-    }
-    // Fresh credentials mean the agent was deployed or updated since its last wake (whatever its
-    // status was), and a parked deploy fetches no card.
-    if prepared.credentials_minted {
-        refresh_agent_card(state, row.id, &url);
-    }
-    // TODO NAS-1105: a sandbox target bypasses `forwarding_endpoint()`, so an EE injection proxy
-    // (L1A) never sees calls to a woken agent. The `InstrumentedSandbox` decorator is the fix.
-    Ok(ResolvedTarget::Sandbox {
-        target: Endpoint {
-            base: ForwardTarget::from(url.trim_end_matches('/').to_owned()),
-            mount,
-        },
-        woke: was_parked,
-        wake_ms,
-        provider: handle.provider,
-    })
+/// What the last-request stamp found.
+#[derive(Debug, PartialEq, Eq)]
+enum Stamp {
+    /// A running row, its idle clock restarted.
+    Stamped,
+    /// Nothing written: stamped within the throttle, the status moved on, or the write failed.
+    Skipped,
+    /// The row is parked: the reaper parked the workload this request resolved.
+    FoundParked,
 }
 
-/// Pause before the one retry of a wake that raced the reaper.
-const ACQUIRE_RETRY_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// `acquire`, and once more after a short pause when it fails the way a container the reaper was
-/// suspending at that moment does (seen exiting mid-stop): the second attempt finds it settled.
-async fn acquire_with_one_retry(
-    state: &AppState,
-    spec: &nasiko_runtime::SandboxSpec,
-) -> Result<nasiko_runtime::SandboxHandle, RuntimeError> {
-    match state.sandbox.acquire(spec).await {
-        Err(RuntimeError::SandboxNotRunning(_) | RuntimeError::Internal(_)) => {
-            tokio::time::sleep(ACQUIRE_RETRY_PAUSE).await;
-            state.sandbox.acquire(spec).await
-        }
-        other => other,
-    }
-}
-
-fn http_url(transport: SandboxTransport) -> Result<String, ResolveError> {
-    match transport {
-        SandboxTransport::Http { url } => Ok(url),
-        SandboxTransport::WebSocket { .. } => {
-            Err(RuntimeError::Internal("agent sandbox attached over WebSocket".into()).into())
+/// Guarded so a status that moved on meanwhile (stopped, failed) is not overwritten, and throttled
+/// to one write per [`STAMP_THROTTLE`] per agent: the idle window is an hour by default, so a finer
+/// stamp buys the reaper nothing and costs a write per request. The reaper's park window allows
+/// for the throttle, and a park is fenced on this stamp, so a request inside the throttle window
+/// leaves it unchanged. A failure is logged and the request goes on: the stamp is bookkeeping for
+/// the idle reaper, not a precondition of serving.
+async fn stamp_last_request(state: &AppState, agent_id: Uuid) -> Stamp {
+    let found: sqlx::Result<Option<String>> = sqlx::query_scalar(STAMP_LAST_REQUEST)
+        .bind(agent_id)
+        .bind(STAMP_THROTTLE.as_secs_f64())
+        .fetch_optional(&state.db)
+        .await;
+    match found {
+        Ok(Some(status)) if status == "parked" => Stamp::FoundParked,
+        Ok(Some(_)) => Stamp::Stamped,
+        Ok(None) => Stamp::Skipped,
+        Err(e) => {
+            warn_unstamped(agent_id, &e);
+            Stamp::Skipped
         }
     }
 }
 
-/// A per-conversation sandbox only when the edition asks for one for this agent and the caller
-/// named a conversation they own; otherwise the one shared agent sandbox.
-async fn sandbox_key(
-    state: &AppState,
-    row: &AgentRow,
-    caller: &Caller,
-    context_id: Option<&str>,
-) -> Result<SandboxKey, ResolveError> {
-    let per_context = state.agent_scaling.per_context_sandbox(row.id).await?;
-    let Some(context_id) = context_id.filter(|_| per_context) else {
-        return Ok(SandboxKey::Agent { agent_id: row.id });
-    };
-    let user_id = caller.user_id.ok_or(ResolveError::NotFound)?;
-    ensure_context_owner(&state.db, context_id, user_id, row.id).await?;
-    Ok(SandboxKey::AgentContext {
-        agent_id: row.id,
-        context_id: context_id.to_owned(),
-    })
-}
-
-/// A contextId names a sandbox only for its owner. An unclaimed contextId is claimed for
-/// `user_id` here (the same agent), so a second user cannot slip in between this check and the
-/// chat-session upsert that would otherwise create the row. Someone else's, or one bound to a
-/// different agent, is `NotFound`: indistinguishable from an unknown one, like the agent ACL.
-pub async fn ensure_context_owner(
-    db: &sqlx::PgPool,
-    context_id: &str,
-    user_id: Uuid,
-    agent_id: Uuid,
-) -> Result<(), ResolveError> {
-    sqlx::query(
-        "INSERT INTO chat_sessions (session_id, user_id, agent_id, agent_url, title) \
-         VALUES ($1, $2, $3, $4, 'New chat') ON CONFLICT (session_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(user_id)
-    .bind(agent_id)
-    .bind(format!("/api/agents/{agent_id}"))
-    .execute(db)
-    .await?;
-    let owner: Option<(Uuid, Option<Uuid>)> = sqlx::query_as(
-        "SELECT user_id, agent_id FROM chat_sessions WHERE session_id = $1 AND deleted_at IS NULL",
-    )
-    .bind(context_id)
-    .fetch_optional(db)
-    .await?;
-    match owner {
-        Some((owner, Some(bound_agent))) if owner == user_id && bound_agent == agent_id => Ok(()),
-        _ => Err(ResolveError::NotFound),
-    }
-}
-
-/// The agent is serving: running, and its idle clock restarts. Guarded so a status that moved
-/// on meanwhile (stopped, failed) is not overwritten, and throttled so a busy agent does not
-/// take a write per request. A failure is logged and the request goes on: the stamp is
-/// bookkeeping for the idle reaper, not a precondition of serving.
-async fn mark_serving(state: &AppState, agent_id: Uuid) {
-    let stamped = sqlx::query(
-        "UPDATE agents SET status = 'running', last_request_at = now() \
-         WHERE id = $1 AND status IN ('running', 'parked') \
-           AND (status = 'parked' OR last_request_at IS NULL \
-                OR last_request_at < now() - interval '5 seconds')",
-    )
-    .bind(agent_id)
-    .execute(&state.db)
-    .await;
-    if let Err(e) = stamped {
-        tracing::warn!(%agent_id, error = %e, "could not stamp last_request_at; the idle reaper may park this agent early");
-    }
-}
-
-/// After a parked redeploy no card was fetched, so the stored `transport_path` and skills still
-/// describe the old image: read them once from the freshly woken sandbox, off the request path.
-fn refresh_agent_card(state: &AppState, agent_id: Uuid, sandbox_url: &str) {
-    let (db, http, url) = (
-        state.db.clone(),
-        state.http_client.clone(),
-        sandbox_url.to_owned(),
-    );
-    tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
-        db,
-        http,
-        state.runtime.clone(),
-        agent_id,
-        url,
-    ));
-}
-
-fn millis_saturating(took: std::time::Duration) -> u64 {
-    u64::try_from(took.as_millis()).unwrap_or(u64::MAX)
-}
-
-fn announce_wake(state: &AppState, agent_id: Uuid, caller: &Caller, wake_ms: u64) {
-    let Some(flow_id) = caller.flow_id.clone() else {
-        return;
-    };
-    let bus = state.flow_events.clone();
-    let event = FlowEvent::AgentWaking {
-        agent_id: agent_id.to_string(),
-        wake_ms,
-    };
-    tokio::spawn(async move { bus.publish(&flow_id, event).await });
+fn warn_unstamped(agent_id: Uuid, e: &sqlx::Error) {
+    tracing::warn!(%agent_id, error = %e, "could not stamp last_request_at; the idle reaper may park this agent early");
 }
 
 /// The resolver leaf crates (the MAF executor, the HITL resume notifier) call through: the same
-/// by-kind resolution the proxy and A2A dispatch use, so a parked agent is woken for them too.
+/// wake and by-kind resolution the proxy and A2A dispatch use, so a parked agent is woken for
+/// them too.
 pub struct ServerTargetResolver {
     state: AppState,
+    /// Whether `resolve` asks the wake seam first. Off only for a caller that asks it itself.
+    wakes_first: bool,
 }
 
 impl ServerTargetResolver {
+    /// Asks the wake seam before resolving, as every forward must: MAF steps and HITL nudges
+    /// reach agents only through here.
     pub fn new(state: AppState) -> Self {
-        Self { state }
+        Self {
+            state,
+            wakes_first: true,
+        }
+    }
+
+    /// For a caller that asks the wake seam itself before it resolves (`CpCallGuard::before_call`
+    /// does, ahead of spending flow budget), so the seam is asked once per call.
+    pub fn after_caller_wake(state: AppState) -> Self {
+        Self {
+            state,
+            wakes_first: false,
+        }
     }
 }
 
@@ -528,13 +406,25 @@ impl nasiko_hitl::AgentTargetResolver for ServerTargetResolver {
         &self,
         agent_id: Uuid,
         caller: &nasiko_hitl::ResolveCaller,
-        context_id: Option<&str>,
+        _context_id: Option<&str>,
     ) -> Result<ForwardTarget, nasiko_hitl::ResolveFailure> {
+        if self.wakes_first
+            && let Err(msg) = self
+                .state
+                .agent_wake
+                .before_forward(agent_id, caller.flow_id.as_deref())
+                .await
+        {
+            tracing::warn!(%agent_id, %msg, "agent target resolution: before_forward refused");
+            return Err(nasiko_hitl::ResolveFailure::new(
+                StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                msg,
+            ));
+        }
         let caller = Caller {
-            user_id: caller.user_id,
             flow_id: caller.flow_id.clone(),
         };
-        match resolve_target(&self.state, agent_id, &caller, context_id).await {
+        match resolve_target(&self.state, agent_id, &caller).await {
             Ok(resolved) => resolved.into_forward_target().ok_or_else(|| {
                 nasiko_hitl::ResolveFailure::new(
                     nasiko_hitl::ResolveFailure::HARNESS,
@@ -610,29 +500,35 @@ mod tests {
         let cases = [
             (ResolveError::NotFound, 404),
             (ResolveError::NotRunning("stopped".into()), 503),
-            (ResolveError::ParkedButResident, 503),
             (ResolveError::WorkloadDown("Stopped".into()), 503),
+            (ResolveError::ParkedMidRequest, 503),
             (ResolveError::NoEndpoint("a".into()), 502),
-            (RuntimeError::Timeout("slow".into()).into(), 503),
-            (RuntimeError::BackendUnreachable("down".into()).into(), 502),
             (ResolveError::Db(sqlx::Error::PoolClosed), 500),
         ];
         for (error, expected) in cases {
             assert_eq!(error.http_status().as_u16(), expected, "{error}");
         }
-        assert_eq!(
-            ResolveError::from(RuntimeError::Timeout("t".into())).client_message(),
-            "agent is waking"
-        );
     }
 
     #[test]
-    fn a_parked_resident_agent_is_told_how_to_restart() {
-        assert!(
-            ResolveError::ParkedButResident
-                .client_message()
-                .contains("nasiko start")
+    fn a_request_that_lost_the_park_race_is_told_to_retry_and_when() {
+        let refused = ResolveError::ParkedMidRequest;
+        assert!(refused.client_message().contains("try again"));
+        assert_eq!(
+            refused.retry_after_secs(),
+            Some(PARKED_MID_REQUEST_RETRY_AFTER_SECS)
         );
+        for other in [
+            ResolveError::NotFound,
+            ResolveError::NotRunning("stopped".into()),
+            ResolveError::WorkloadDown("Crashed".into()),
+        ] {
+            assert_eq!(other.retry_after_secs(), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn a_dead_workload_names_what_the_runtime_reports() {
         assert!(
             ResolveError::WorkloadDown("Crashed".into())
                 .client_message()

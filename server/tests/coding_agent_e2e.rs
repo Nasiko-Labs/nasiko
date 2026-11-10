@@ -48,6 +48,8 @@ fn coding_spec(id: &ContainerId) -> DeploymentSpec {
         writable_path: None,
         owner_id: uuid::Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     }
 }
 

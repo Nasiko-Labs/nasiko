@@ -20,8 +20,9 @@ mod simulated;
 
 pub use error::{Result, RuntimeError};
 pub use sandbox::{
-    SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider, SandboxProviderKind, SandboxSpec,
-    SandboxState, SandboxStats, SandboxTransport, TransportKind, TransportTls, WORKSPACE_MOUNT,
+    HARNESS_SCRATCH_DIR, SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider,
+    SandboxProviderKind, SandboxSpec, SandboxState, SandboxStats, SandboxTransport, TransportKind,
+    TransportTls, WORKSPACE_MOUNT,
 };
 pub use sandbox_routed::KeyRoutedSandboxProvider;
 pub use sandbox_unavailable::UnavailableSandboxProvider;
@@ -33,7 +34,7 @@ pub use stdio::{SessionAttach, StdioHandle};
 pub use types::validate_build_inputs;
 pub use types::{
     ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
-    WorkloadKind, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+    Shutdown, WorkloadKind, WorkloadOverrides, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 pub use types::{
     WORKSPACE_CAT_SCRIPT, WORKSPACE_LIST_SCRIPT, WORKSPACE_SETUP_SCRIPT, WORKSPACE_STAT_SCRIPT,
@@ -413,6 +414,16 @@ pub trait ContainerRuntime: Send + Sync {
     /// falls back to checking every agent.
     async fn troubled(&self) -> Result<Option<Vec<ContainerId>>> {
         Ok(None)
+    }
+
+    /// Whether the agent has an instance that can take a request now, for a caller that asks on
+    /// every request and so must not pay for a full [`status`](ContainerRuntime::status).
+    ///
+    /// Default: `status()` reports [`RuntimeState::Running`]. A backend that learns of its
+    /// instances from events answers from them instead. Decorators MUST forward it, or every
+    /// request falls back to `status()`.
+    async fn is_serving(&self, container_id: &ContainerId) -> Result<bool> {
+        Ok(self.status(container_id).await?.state == RuntimeState::Running)
     }
 
     /// Wait until the agent can be reached, then return its [`endpoint`](ContainerRuntime::endpoint).

@@ -13,6 +13,7 @@ use uuid::Uuid;
 use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
+use crate::sessions::admission::SessionAdmission;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -109,9 +110,6 @@ pub async fn agent_proxy(
         gen_ai.operation.name = "invoke_agent",
         agent.id = %agent_id,
         session.id = tracing::field::Empty,
-        // Recorded only when the resolver hands back a sandbox target.
-        sandbox.provider = tracing::field::Empty,
-        sandbox.wake_ms = tracing::field::Empty,
         // Recorded once `ensure_chat_session` below has decided; see `PersistInfo::org_applied`.
         nasiko.prompt_context.org_applied = tracing::field::Empty,
         nasiko.prompt_context.org_policy_chars = tracing::field::Empty,
@@ -197,6 +195,15 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    // A message to a harness starts a turn, which the session admission may refuse (it can need
+    // an agent of the caller's own). Asked before anything is written for the turn: a refused
+    // one leaves no session row, transcript or flow.
+    if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target
+        && let Some(refusal) = refuse_harness_turn(&state, &claims, target, &body_bytes).await?
+    {
+        return Ok(refusal);
+    }
+
     // A harness session's ownership is decided before anything is written under its contextId:
     // `ensure_chat_session` persists the transcript and the flow row below, and a foreign
     // contextId must not collect either.
@@ -230,49 +237,36 @@ pub async fn agent_proxy(
     let (body_bytes, persist_info) = (prepared.body, prepared.persist);
 
     // A coding agent is diverted to the ACP turn path below, so it needs no HTTP endpoint and no
-    // forward headers. Every other agent resolves by kind: a resident one to its live runtime
-    // endpoint (the injection proxy when memory/L1A is enabled, which also returns the headers
-    // to attach), a parked one to its freshly woken sandbox. Resolved after the session is
-    // settled so a per-conversation sandbox is keyed by the contextId the turn really carries,
-    // including one minted just now.
+    // forward headers. Every other agent resolves to its workload's live runtime endpoint (the
+    // injection proxy when memory/L1A is enabled, which also returns the headers to attach).
     let (agent_base, forward_headers) = if coding_target.is_some() {
         (String::new(), Vec::new())
     } else {
-        // Wake a Free-plane agent that was slept for idleness before resolving where the call
-        // goes; a scalability-parked agent is woken by the resolver below instead.
-        if let Err(msg) = state.agent_wake.before_forward(agent_id).await {
+        // Wake a parked agent before resolving where the call goes: until its workload is back
+        // there is nowhere to resolve to.
+        if let Err(msg) = state
+            .agent_wake
+            .before_forward(agent_id, Some(&flow_ctx.flow_id))
+            .await
+        {
             tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
         let caller = Caller {
-            user_id: claims.user_uuid().ok(),
             flow_id: Some(flow_ctx.flow_id.clone()),
         };
-        // An agent's call has no chat session of its own, so it names no conversation either.
-        let context_id = persist_info.as_ref().map(|info| info.session_id.clone());
-        let resolved = resolve_loaded(&state, &agent, &caller, context_id.as_deref())
-            .await
-            .map_err(|e| {
+        let resolved = match resolve_loaded(&state, &agent, &caller).await {
+            Ok(resolved) => resolved,
+            Err(e) => {
                 tracing::error!(error = %e, %agent_id, "agent proxy: target resolution failed");
-                e.http_status()
-            })?;
+                return Ok(resolve_refusal(&e));
+            }
+        };
         match resolved {
             ResolvedTarget::Container(endpoint) => (
                 endpoint.base.url.trim_end_matches('/').to_string(),
                 endpoint.base.headers,
             ),
-            ResolvedTarget::Sandbox {
-                target: endpoint,
-                wake_ms,
-                provider,
-                ..
-            } => {
-                crate::telemetry::record_sandbox_on_span(&proxy_span, provider, wake_ms);
-                (
-                    endpoint.base.url.trim_end_matches('/').to_string(),
-                    endpoint.base.headers,
-                )
-            }
             // The harness case is `coding_target`, resolved above.
             ResolvedTarget::Harness => return Err(StatusCode::BAD_GATEWAY),
         }
@@ -806,6 +800,20 @@ pub async fn agent_proxy(
     })
 }
 
+/// The answer to a request whose agent could not be resolved: its status, and a `Retry-After`
+/// when a retry can get past it (the agent was parked as the request reached it).
+fn resolve_refusal(e: &crate::agent_resolver::ResolveError) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = e.http_status();
+    if let Some(secs) = e.retry_after_secs() {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(secs),
+        );
+    }
+    response
+}
+
 /// Resolves the path segment to append to `agent_base` for this forward. A bare `/` (the chat
 /// call, nothing after `/api/agents/{id}` in the request URI) must land on the agent's actual A2A
 /// mount, which the card advertises as `transport_path` — `/a2a` for the a2a-go agents, root for
@@ -878,6 +886,37 @@ async fn reject_foreign_harness_session(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     session.map(Some).ok_or(StatusCode::NOT_FOUND)
+}
+
+/// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
+/// the other harness errors here, the refusal's body as its `data`. `None` for a request that
+/// sends no message (it starts no turn) and for an admitted one.
+async fn refuse_harness_turn(
+    state: &AppState,
+    claims: &Claims,
+    target: &crate::coding::proxy::HarnessTarget,
+    body: &[u8],
+) -> Result<Option<Response>, StatusCode> {
+    let Some(id) = message_send_id(body) else {
+        return Ok(None);
+    };
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let refusal = state
+        .session_admission
+        .refuse(user_id, &target.harness_id)
+        .await;
+    Ok(refusal.map(|refusal| {
+        axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
+    }))
+}
+
+/// The request id of a message send, `None` for any other request.
+fn message_send_id(body: &[u8]) -> Option<serde_json::Value> {
+    let rpc: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let method = rpc.get("method")?.as_str()?;
+    MESSAGE_SEND_METHODS
+        .contains(&method)
+        .then(|| rpc.get("id").cloned().unwrap_or(serde_json::Value::Null))
 }
 
 /// Refuses a request that would have an agent drive a harness or coding-agent session, with a
@@ -1819,7 +1858,20 @@ impl Drop for SseReplyTap {
 
 #[cfg(test)]
 mod tests {
-    use super::{SseReplyText, message_send_context_id, resolve_forwarded_path};
+    use super::{SseReplyText, message_send_context_id, resolve_forwarded_path, resolve_refusal};
+    use crate::agent_resolver::ResolveError;
+    use axum::http::{StatusCode, header::RETRY_AFTER};
+
+    #[test]
+    fn a_request_that_met_a_park_is_told_when_to_try_again() {
+        let parked = resolve_refusal(&ResolveError::ParkedMidRequest);
+        assert_eq!(parked.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(parked.headers()[RETRY_AFTER], "2");
+
+        let gone = resolve_refusal(&ResolveError::NotFound);
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+        assert!(gone.headers().get(RETRY_AFTER).is_none());
+    }
 
     #[test]
     fn context_id_is_read_only_from_a_message_send() {

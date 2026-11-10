@@ -5,6 +5,32 @@ use uuid::Uuid;
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::build::BuildStatus;
 
+/// How long [`answers_http`] waits for one answer.
+const ANSWER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Where an agent at `agent_url` serves its card: the current well-known name, then the older one.
+fn agent_card_urls(agent_url: &str) -> [String; 2] {
+    let base = agent_url.trim_end_matches('/');
+    [
+        format!("{base}/.well-known/agent-card.json"),
+        format!("{base}/.well-known/agent.json"),
+    ]
+}
+
+/// Whether the agent at `agent_url` is serving: it answers a card request with any HTTP status.
+/// An error status still proves its server is listening, which is all a caller about to forward
+/// to it needs to know; a refused or timed-out connection means it is not up yet. HTTP rather than
+/// a bare TCP connect, because a port mapped by a container runtime's proxy accepts connections
+/// before the agent inside listens.
+pub(crate) async fn answers_http(http: &reqwest::Client, agent_url: &str) -> bool {
+    let [card_url, _] = agent_card_urls(agent_url);
+    http.get(card_url)
+        .timeout(ANSWER_PROBE_TIMEOUT)
+        .send()
+        .await
+        .is_ok()
+}
+
 /// Fetch the agent's card from its runtime endpoint and persist the fields
 /// clients depend on: display_name, description, skills, tags, capabilities,
 /// and `transport_path` (see [`nasiko_types::a2a::extract_transport_path`]).
@@ -22,12 +48,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
         return false;
     }
 
-    let base = agent_url.trim_end_matches('/');
-
-    let urls = [
-        format!("{base}/.well-known/agent-card.json"),
-        format!("{base}/.well-known/agent.json"),
-    ];
+    let urls = agent_card_urls(agent_url);
 
     let mut card: Option<serde_json::Value> = None;
     for url in &urls {

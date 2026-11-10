@@ -16,11 +16,13 @@
 //!   is not released there);
 //! - the turn replaces it (missing, unverifiable, revoked or near expiry), by
 //!   [`revoke_sandbox_token_for_turn`], which only acts for the turn that still holds the lease
-//!   and still sees the token it loaded.
+//!   and still sees the token it loaded. The sandbox is stopped first ([`stop_for_new_env`]) so
+//!   the new token reaches it; its files stay.
 //!
 //! Never because an acquire failed: a container or pod that survived the failure still carries it.
 
 use chrono::{Duration, Utc};
+use nasiko_runtime::{SandboxHandle, SandboxProvider};
 use nasiko_secrets::SecretsCrypto;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -33,7 +35,7 @@ use crate::coding::revocation::revoke_session_token;
 use crate::coding::turn::CodingTurnError;
 use crate::state::AppState;
 
-/// A token with less than this left is replaced (the sandbox is released first so the new env
+/// A token with less than this left is replaced (the sandbox is stopped first so the new env
 /// lands), so a sandbox never runs on a token about to lapse.
 pub const RENEW_WITHIN_SECS: u64 = 24 * 3600;
 const _: () = assert!(RENEW_WITHIN_SECS < SANDBOX_TOKEN_TTL_SECS);
@@ -237,11 +239,11 @@ fn setup(what: &str, error: impl std::fmt::Display) -> CodingTurnError {
 }
 
 /// The session's sandbox token: the stored one when it verifies, is not revoked and has life,
-/// otherwise a new one. Replacing a token that a sandbox may be carrying releases that sandbox
-/// first (the provider applies the env it is given when it creates the sandbox, so the new token
-/// lands with the new sandbox) and revokes the old token. Why a token was replaced is logged.
+/// otherwise a new one. Replacing a token that a sandbox may be carrying stops that sandbox first
+/// ([`stop_for_new_env`], which keeps its files) so the next acquire brings it up on the new
+/// token, and revokes the old token. Why a token was replaced is logged.
 ///
-/// Releasing and revoking are destructive and happen on this turn's say-so, so when there is
+/// Stopping and revoking are destructive and happen on this turn's say-so, so when there is
 /// anything to destroy the lease is confirmed first, and the revoke acts only on the token this
 /// turn loaded.
 pub async fn ensure_sandbox_token(needs: &TokenNeeds<'_>) -> Result<String, CodingTurnError> {
@@ -260,8 +262,8 @@ pub async fn ensure_sandbox_token(needs: &TokenNeeds<'_>) -> Result<String, Codi
             other => format!("{other:?}"),
         },
         Ok(None) => "none stored".to_owned(),
-        // A missing or malformed master key is a deployment fault: releasing the sandbox would
-        // not fix it and would only throw away a working one.
+        // A missing or malformed master key is a deployment fault: replacing the token would
+        // not fix it and would only stop a working sandbox.
         Err(TokenStoreError::Crypto(
             e @ (SecretsError::MissingKey | SecretsError::InvalidKeyLength),
         )) => return Err(setup("sandbox credential", e)),
@@ -272,7 +274,7 @@ pub async fn ensure_sandbox_token(needs: &TokenNeeds<'_>) -> Result<String, Codi
     let old_jti = stored_jti(&state.db, session_id).await?;
     if session.sandbox_ref.is_some() || old_jti.is_some() {
         confirm_lease(state, lease).await?;
-        release_sandbox(state, session).await?;
+        stop_for_new_env(state.sandbox.as_ref(), session).await?;
     }
     if let Some(old) = old_jti
         && !revoke_sandbox_token_for_turn(&state.db, lease, &old).await?
@@ -317,9 +319,9 @@ async fn confirm_lease(state: &AppState, lease: &TurnLease) -> Result<(), Coding
 }
 
 /// Whether a stored token verifies against the current secret, is not revoked and has life
-/// left. A rotated `AGENT_JWT_SECRET` fails verification, which is what rebuilds every sandbox
-/// after a rotation. A database error is an error, not "unusable": it must not release a good
-/// sandbox.
+/// left. A rotated `AGENT_JWT_SECRET` fails verification, which is what puts every sandbox on a
+/// new token after a rotation. A database error is an error, not "unusable": it must not stop a
+/// good sandbox.
 pub async fn token_use(state: &AppState, token: &str) -> Result<TokenUse, CodingTurnError> {
     let algorithm = nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
     let claims = match nasiko_session_token::verify_session_token(
@@ -340,23 +342,166 @@ pub async fn token_use(state: &AppState, token: &str) -> Result<TokenUse, Coding
     })
 }
 
-/// Release the session's sandbox if it has one, so the next acquire builds it fresh. A row with
-/// no recorded `sandbox_ref` (a first acquire that never got to write it) is found by key among
-/// the provider's sandboxes.
-pub async fn release_sandbox(
-    state: &AppState,
+/// Stop the session's sandbox, if it has one, so the next acquire brings it up on a new env, and
+/// keep its files. Where a resumed sandbox runs on the resuming env it is only suspended: the
+/// bare pod recreates its pod from the resuming spec, and on shared runtime pods (which never
+/// read the spec's env) the restarted shim starts unconfigured and the turn's handshake
+/// configures it with the new env. A release there can take the files with it (shared runtime
+/// pods purge the session's directory). Elsewhere (Docker, whose resumed container keeps the env
+/// it was created with) it is released, the only way its env changes; the persistent workspace,
+/// which holds the harness's home too, survives that.
+///
+/// On the bare pod a suspend differs from the release it replaces: the pod is deleted with its
+/// full termination grace (up to 30 s, against 5 s on release), and the resumed pod keeps the
+/// image, command and resources its marker recorded at creation, so a changed harness image is
+/// not picked up here. Both are acceptable for a renewal that comes about once a month.
+///
+/// A row with no recorded `sandbox_ref` (a first acquire that never got to write it) is found by
+/// key among the provider's sandboxes.
+pub async fn stop_for_new_env(
+    provider: &dyn SandboxProvider,
     session: &SessionRow,
 ) -> Result<(), CodingTurnError> {
-    let key = session_key(session);
-    if let Some(sandbox_ref) = session.sandbox_ref.as_deref() {
-        let handle = nasiko_runtime::SandboxHandle::parse(sandbox_ref, key)?;
-        state.sandbox.release(&handle).await?;
-        return Ok(());
-    }
-    for info in state.sandbox.list().await? {
-        if info.handle.key == key {
-            state.sandbox.release(&info.handle).await?;
+    for handle in session_sandboxes(provider, session).await? {
+        if provider.resume_takes_new_env(&handle).await? {
+            provider.suspend(&handle).await?;
+        } else {
+            provider.release(&handle).await?;
         }
     }
     Ok(())
+}
+
+/// The session's sandbox: the one its row records, else every one the provider lists under its
+/// key.
+async fn session_sandboxes(
+    provider: &dyn SandboxProvider,
+    session: &SessionRow,
+) -> Result<Vec<SandboxHandle>, CodingTurnError> {
+    let key = session_key(session);
+    if let Some(sandbox_ref) = session.sandbox_ref.as_deref() {
+        return Ok(vec![SandboxHandle::parse(sandbox_ref, key)?]);
+    }
+    Ok(provider
+        .list()
+        .await?
+        .into_iter()
+        .map(|info| info.handle)
+        .filter(|handle| handle.key == key)
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sessions::identity::session_env;
+    use nasiko_runtime::sandbox_fake::FakeSandboxProvider;
+    use nasiko_runtime::{SandboxKey, SandboxSpec, SandboxState, TransportKind};
+
+    const TOKEN_KEY: &str = "NASIKO_SESSION_TOKEN";
+
+    fn session() -> SessionRow {
+        SessionRow {
+            session_id: Uuid::new_v4().to_string(),
+            user_id: Uuid::nil(),
+            agent_id: Some(Uuid::new_v4()),
+            acp_session_id: None,
+            runtime_handle: None,
+            runtime_state: "running".into(),
+            volume_ref: None,
+            turn_owner: None,
+            lease_expires_at: None,
+            turn_fence: 1,
+            last_turn_at: None,
+            active_turn_id: None,
+            sandbox_ref: None,
+            suspended_at: None,
+            workspace_repo: None,
+            pending_permission: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// The session's sandbox spec, its env carrying `token` as every acquire builds it.
+    fn spec(key: &SandboxKey, token: &str) -> SandboxSpec {
+        SandboxSpec {
+            key: key.clone(),
+            image: "harness:1".into(),
+            command: vec![],
+            env: session_env(token, "", ""),
+            resources: None,
+            workspace: None,
+            runtime_class: None,
+            ports: vec![7000],
+            transport: TransportKind::WebSocket,
+            image_pull_secret: None,
+        }
+    }
+
+    /// A session whose sandbox is up on `old-token`, with its ref recorded.
+    async fn running_on_old_token(fake: &FakeSandboxProvider) -> (SessionRow, SandboxHandle) {
+        let row = session();
+        let handle = fake
+            .acquire(&spec(&session_key(&row), "old-token"))
+            .await
+            .unwrap();
+        let row = SessionRow {
+            sandbox_ref: Some(handle.sandbox_ref()),
+            ..row
+        };
+        (row, handle)
+    }
+
+    fn token_in(fake: &FakeSandboxProvider, key: &SandboxKey) -> String {
+        fake.spec_of(key).expect("sandbox exists").env[TOKEN_KEY].clone()
+    }
+
+    #[tokio::test]
+    async fn a_new_token_suspends_a_sandbox_that_resumes_on_the_new_env_so_its_files_stay() {
+        let fake = FakeSandboxProvider::default();
+        fake.set_resume_takes_new_env(true);
+        let (row, handle) = running_on_old_token(&fake).await;
+
+        stop_for_new_env(&fake, &row).await.unwrap();
+        assert_eq!(
+            fake.status(&handle).await.unwrap(),
+            SandboxState::Suspended,
+            "suspended, not released: the sandbox and its files are kept"
+        );
+
+        let key = session_key(&row);
+        fake.acquire(&spec(&key, "new-token")).await.unwrap();
+        assert_eq!(token_in(&fake, &key), "new-token");
+        assert_eq!(fake.creations(&key), 1, "resumed, not rebuilt");
+    }
+
+    #[tokio::test]
+    async fn a_new_token_releases_a_sandbox_whose_env_is_fixed_and_the_rebuilt_one_carries_it() {
+        let fake = FakeSandboxProvider::default();
+        let (row, handle) = running_on_old_token(&fake).await;
+
+        stop_for_new_env(&fake, &row).await.unwrap();
+        assert_eq!(fake.status(&handle).await.unwrap(), SandboxState::Absent);
+
+        let key = session_key(&row);
+        fake.acquire(&spec(&key, "new-token")).await.unwrap();
+        assert_eq!(token_in(&fake, &key), "new-token");
+        assert_eq!(fake.creations(&key), 2, "rebuilt");
+    }
+
+    #[tokio::test]
+    async fn a_row_without_a_recorded_ref_stops_only_the_sandbox_under_its_key() {
+        let fake = FakeSandboxProvider::default();
+        fake.set_resume_takes_new_env(true);
+        let (_, other) = running_on_old_token(&fake).await;
+        let row = session();
+        let mine = fake
+            .acquire(&spec(&session_key(&row), "old-token"))
+            .await
+            .unwrap();
+
+        stop_for_new_env(&fake, &row).await.unwrap();
+        assert_eq!(fake.status(&mine).await.unwrap(), SandboxState::Suspended);
+        assert_eq!(fake.status(&other).await.unwrap(), SandboxState::Running);
+    }
 }

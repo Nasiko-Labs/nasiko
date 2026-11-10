@@ -406,6 +406,75 @@ async fn reupload_without_writable_field_keeps_stored_writable() {
 
 #[tokio::test]
 #[serial]
+async fn upload_rejects_an_unknown_parking_policy() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let res = upload(
+        &server,
+        uid,
+        vec![
+            ("name", "bad-parking".into()),
+            ("version_tag", "1.0.0".into()),
+            ("parking_policy", "sometimes".into()),
+        ],
+        Some(make_valid_structure_zip()),
+    )
+    .await;
+
+    assert_eq!(res.status(), 400);
+    let registered: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM agents WHERE name = 'bad-parking')")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert!(!registered, "a refused upload registers no agent");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn upload_stores_the_parking_policy_and_keeps_it_when_omitted() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let parking_policy = |agent_id: uuid::Uuid| {
+        sqlx::query_scalar::<_, String>("SELECT parking_policy FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+    };
+    let upload_version = |version: &'static str, policy: Option<&'static str>| {
+        let mut fields = vec![
+            ("name", "parking-choice".to_string()),
+            ("version_tag", version.to_string()),
+        ];
+        if let Some(policy) = policy {
+            fields.push(("parking_policy", policy.to_string()));
+        }
+        upload(&server, uid, fields, Some(make_valid_structure_zip()))
+    };
+
+    // A new agent with no policy gets `auto`.
+    let first: Value = upload_version("1.0.0", None).await.json().await.unwrap();
+    let agent_id: uuid::Uuid = first["data"]["agent_id"].as_str().unwrap().parse().unwrap();
+    assert_eq!(parking_policy(agent_id).await.unwrap(), "auto");
+
+    // A named policy is stored.
+    let res = upload_version("1.0.1", Some("resident")).await;
+    assert_eq!(res.status(), 202);
+    assert_eq!(parking_policy(agent_id).await.unwrap(), "resident");
+
+    // A re-upload that names none keeps it.
+    let res = upload_version("1.0.2", None).await;
+    assert_eq!(res.status(), 202);
+    assert_eq!(parking_policy(agent_id).await.unwrap(), "resident");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn upload_rejects_reused_version_before_build() {
     // Re-uploading a version already in this agent's history must be rejected
     // synchronously, before a build is even queued — otherwise the post-build

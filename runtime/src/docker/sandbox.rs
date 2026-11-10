@@ -22,8 +22,9 @@ use bollard::container::{
     RemoveContainerOptions, StartContainerOptions, StatsOptions, StopContainerOptions,
 };
 use bollard::models::{
-    ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, PortBinding,
+    ContainerInspectResponse, ContainerStateStatusEnum, HostConfig, Mount, PortBinding,
 };
+use bollard::volume::CreateVolumeOptions;
 use futures_util::StreamExt;
 use tokio::net::TcpStream;
 use tracing::warn;
@@ -36,13 +37,16 @@ use super::{
 };
 use crate::error::{Result, RuntimeError};
 use crate::sandbox::{
-    SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider, SandboxProviderKind, SandboxSpec,
-    SandboxState, SandboxStats, SandboxTransport, TransportKind, WORKSPACE_MOUNT,
+    HARNESS_SCRATCH_DIR, SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider,
+    SandboxProviderKind, SandboxSpec, SandboxState, SandboxStats, SandboxTransport, TransportKind,
+    WORKSPACE_MOUNT,
 };
 use crate::stats::cpu_percent;
 use crate::{ImageSource, ResourceLimits};
 
 const NAME_PREFIX: &str = "nasiko-sbx-";
+/// Appended to the container name to name the sandbox's scratch volume.
+const SCRATCH_VOLUME_SUFFIX: &str = "-scratch";
 const LABEL_KEY: &str = "nasiko.com/sandbox-key";
 const LABEL_KIND: &str = "nasiko.com/sandbox-kind";
 const LABEL_ID: &str = "nasiko.com/sandbox-id";
@@ -187,6 +191,35 @@ impl DockerSandboxProvider {
         }
     }
 
+    /// Creates the scratch volume of `key`'s sandbox, labelled with the key, so a volume a failed
+    /// removal leaves behind can still be traced to its sandbox. Idempotent.
+    async fn create_scratch_volume(&self, key: &SandboxKey) -> Result<()> {
+        let options = CreateVolumeOptions {
+            name: scratch_volume(key),
+            labels: scratch_volume_labels(key),
+            ..Default::default()
+        };
+        let call = self.client().create_volume(options);
+        self.bounded("create_volume", call).await.map(drop)
+    }
+
+    /// Removes the scratch volume of `key`'s sandbox (see [`scratch_mount`]), if its key has one.
+    /// Its contents regenerate, so a volume that cannot be removed is logged rather than failing
+    /// the caller, and the next sandbox under the key reuses it.
+    async fn remove_scratch(&self, key: &SandboxKey) {
+        if !key.has_scratch() {
+            return;
+        }
+        let volume = scratch_volume(key);
+        let call = self.client().remove_volume(&volume, None);
+        if let Err(e) = self
+            .bounded_tolerating("remove_volume", call, is_not_found)
+            .await
+        {
+            warn!(%volume, error = %e, "could not remove a sandbox's scratch volume");
+        }
+    }
+
     /// `rm -f`; Ok when the container is already gone.
     async fn remove(&self, name_or_id: &str) -> Result<()> {
         let options = RemoveContainerOptions {
@@ -216,8 +249,8 @@ impl DockerSandboxProvider {
             .map_err(|_| RuntimeError::Timeout("image pull".to_owned()))?
     }
 
-    /// Ensures the image, prepares the per-key workspace subdirectory, creates the
-    /// container. A 409 means a concurrent `acquire` created it first, which is fine.
+    /// Ensures the image, prepares the per-key workspace subdirectory and scratch volume, creates
+    /// the container. A 409 means a concurrent `acquire` created it first, which is fine.
     async fn create(&self, spec: &SandboxSpec) -> Result<()> {
         self.ensure_image(&spec.image).await?;
         if let Some(ws) = &spec.workspace {
@@ -227,6 +260,20 @@ impl DockerSandboxProvider {
                 &self.config().agent_memory_volume,
                 &self.config().agent_memory_init_image,
                 &workspace_subpath(ws.owner_id, &ws.container_id, &spec.key),
+            )
+            .await?;
+        }
+        if spec.key.has_scratch() {
+            self.create_scratch_volume(&spec.key).await?;
+            // The same init helper as the workspace: a fresh volume is root's, and the helper
+            // hands the directory that gets mounted to uid 65534. Its own `create_volume` finds
+            // the volume above, labels and all.
+            ensure_agent_memory_subdir(
+                self.client(),
+                self.config().operation_timeout,
+                &scratch_volume(&spec.key),
+                &self.config().agent_memory_init_image,
+                &spec.key.name(),
             )
             .await?;
         }
@@ -258,11 +305,13 @@ impl DockerSandboxProvider {
         // could not bring up (never ready, or exited at once) would otherwise sit there, and the
         // caller, seeing the error, would treat the sandbox as not existing. A resume that fails
         // leaves the container, which was there before this call and may still be good.
-        if outcome.is_err()
-            && rolls_back(created)
-            && let Err(e) = self.remove(&name).await
-        {
-            warn!(sandbox = %name, error = %e, "could not remove a sandbox that failed to start");
+        if outcome.is_err() && rolls_back(created) {
+            match self.remove(&name).await {
+                Ok(()) => self.remove_scratch(&spec.key).await,
+                Err(e) => {
+                    warn!(sandbox = %name, error = %e, "could not remove a sandbox that failed to start")
+                }
+            }
         }
         outcome
     }
@@ -626,27 +675,52 @@ fn env_vec(spec: &SandboxSpec) -> Vec<String> {
     spec.env.iter().map(|(k, v)| format!("{k}={v}")).collect()
 }
 
-/// Limits, the per-key workspace mount, the configured network and the requested runtime
-/// class (e.g. `runsc`). No hardening: see the module docs.
+/// Limits, the per-key workspace and scratch mounts, the configured network and the requested
+/// runtime class (e.g. `runsc`). No hardening: see the module docs.
 fn sandbox_host_config(spec: &SandboxSpec, config: &DockerRuntimeConfig) -> HostConfig {
     let limits: ResourceLimits = spec.resources.clone().unwrap_or_default();
     let (port_bindings, _) = build_port_config(&spec.ports, &config.bind_host);
-    let mounts = spec.workspace.as_ref().map(|ws| {
-        vec![volume_subpath_mount(
+    let workspace = spec.workspace.as_ref().map(|ws| {
+        volume_subpath_mount(
             WORKSPACE_MOUNT,
             &config.agent_memory_volume,
             &workspace_subpath(ws.owner_id, &ws.container_id, &spec.key),
-        )]
+        )
     });
+    let scratch = spec.key.has_scratch().then(|| scratch_mount(&spec.key));
+    let mounts: Vec<Mount> = workspace.into_iter().chain(scratch).collect();
     HostConfig {
         port_bindings: Some(port_bindings),
         memory: Some(parse_memory_bytes(&limits.memory)),
         nano_cpus: Some(i64::from(limits.cpu_milli) * 1_000_000),
         network_mode: config.network.clone(),
         runtime: spec.runtime_class.clone(),
-        mounts,
+        mounts: (!mounts.is_empty()).then_some(mounts),
         ..Default::default()
     }
+}
+
+/// The sandbox's scratch area at [`HARNESS_SCRATCH_DIR`]: a Docker volume of its own on the
+/// daemon's local disk, kept while the container is stopped and removed with it on `release`.
+/// Docker does not cap a local volume's size. The directory mounted is one inside the volume,
+/// because the init helper hands a directory, not a volume's root, to uid 65534.
+fn scratch_mount(key: &SandboxKey) -> Mount {
+    volume_subpath_mount(HARNESS_SCRATCH_DIR, &scratch_volume(key), &key.name())
+}
+
+/// `nasiko-sbx-<key name>-scratch`: one volume per sandbox, so removing it takes exactly that
+/// sandbox's scratch.
+fn scratch_volume(key: &SandboxKey) -> String {
+    format!("{}{SCRATCH_VOLUME_SUFFIX}", container_name(key))
+}
+
+/// The sandbox key and kind, as its container carries them
+/// (`docker volume ls --filter label=nasiko.com/sandbox-key=<key name>`).
+fn scratch_volume_labels(key: &SandboxKey) -> HashMap<String, String> {
+    HashMap::from([
+        (LABEL_KEY.to_owned(), key.name()),
+        (LABEL_KIND.to_owned(), kind_label(key).to_owned()),
+    ])
 }
 
 /// Sandboxes with a workspace run as uid:gid 65534, the uid `KubeRuntime` gives every pod and
@@ -764,8 +838,17 @@ impl SandboxProvider for DockerSandboxProvider {
     }
 
     async fn release(&self, handle: &SandboxHandle) -> Result<()> {
-        // The workspace subdirectory is left on disk: it is persistent by contract.
-        self.remove(&handle.backend_ref).await
+        // The workspace subdirectory is left on disk: it is persistent by contract. The scratch
+        // volume goes with the container: what it holds regenerates.
+        self.remove(&handle.backend_ref).await?;
+        self.remove_scratch(&handle.key).await;
+        Ok(())
+    }
+
+    /// A resumed container is the one created, env and all: only `release` (which keeps the
+    /// workspace subdirectory) and a fresh `acquire` change its env.
+    async fn resume_takes_new_env(&self, _handle: &SandboxHandle) -> Result<bool> {
+        Ok(false)
     }
 
     /// Samples with `one_shot: false`: the one-shot form returns zeroed `precpu_stats`, which
@@ -1159,6 +1242,68 @@ mod tests {
         let sub = mounts[0].volume_options.as_ref().unwrap().subpath.clone();
         assert_eq!(sub.unwrap(), format!("{0}/{0}", id()));
         assert_eq!(mounts[0].target.as_deref(), Some("/workspace"));
+    }
+
+    fn session_key() -> SandboxKey {
+        SandboxKey::Session { session_id: id() }
+    }
+
+    #[test]
+    fn a_session_sandbox_mounts_its_own_scratch_volume_after_the_workspace() {
+        let mut s = workspace_spec();
+        s.key = session_key();
+        let cfg = container_config(&s, &DockerRuntimeConfig::default());
+        let mounts = cfg.host_config.unwrap().mounts.unwrap();
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].target.as_deref(), Some("/workspace"));
+        let scratch = &mounts[1];
+        assert_eq!(scratch.target.as_deref(), Some("/scratch"));
+        assert_eq!(scratch.typ, Some(bollard::models::MountTypeEnum::VOLUME));
+        let volume = format!("nasiko-sbx-s-{}-scratch", id());
+        assert_eq!(scratch.source.as_deref(), Some(volume.as_str()));
+        let subpath = scratch.volume_options.as_ref().unwrap().subpath.clone();
+        assert_eq!(subpath.unwrap(), format!("s-{}", id()));
+    }
+
+    #[test]
+    fn a_session_sandbox_without_a_workspace_still_gets_scratch() {
+        let cfg = container_config(&spec(session_key()), &DockerRuntimeConfig::default());
+        let mounts = cfg.host_config.unwrap().mounts.unwrap();
+        let targets: Vec<_> = mounts.iter().map(|m| m.target.as_deref()).collect();
+        assert_eq!(targets, [Some("/scratch")]);
+    }
+
+    #[test]
+    fn an_agent_sandbox_gets_no_scratch() {
+        let cfg = container_config(&agent_spec(), &DockerRuntimeConfig::default());
+        assert!(cfg.host_config.unwrap().mounts.is_none());
+        let cfg = container_config(&workspace_spec(), &DockerRuntimeConfig::default());
+        let mounts = cfg.host_config.unwrap().mounts.unwrap();
+        assert!(
+            mounts
+                .iter()
+                .all(|m| m.target.as_deref() != Some("/scratch"))
+        );
+    }
+
+    #[test]
+    fn a_scratch_volume_carries_its_sandboxs_key_and_kind() {
+        let labels = scratch_volume_labels(&session_key());
+        assert_eq!(labels[LABEL_KEY], format!("s-{}", id()));
+        assert_eq!(labels[LABEL_KIND], "session");
+        assert_eq!(labels.len(), 2);
+    }
+
+    #[test]
+    fn each_sandbox_has_a_scratch_volume_of_its_own() {
+        let other = SandboxKey::Session {
+            session_id: Uuid::nil(),
+        };
+        assert_ne!(scratch_volume(&session_key()), scratch_volume(&other));
+        assert_eq!(
+            scratch_volume(&session_key()),
+            format!("{}-scratch", container_name(&session_key()))
+        );
     }
 
     #[test]

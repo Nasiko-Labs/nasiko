@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::catalog::{Harness, HarnessCatalog};
+use super::admission::SessionAdmission;
+use super::catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT};
 use super::model::{ListedSession, SessionFilter, SessionRow, SessionRuntimeState, SessionStore};
 use super::suspend::{ReapError, Suspend, claim_suspend, claim_unaccounted};
 use crate::auth::Claims;
@@ -141,6 +142,9 @@ async fn create_session(
     let user_id = claims.user_uuid().map_err(unauthorized)?;
     let repo = valid_repo(body.repo.as_deref(), &state.config.git_clone_allowed_hosts)?;
     let harness = enabled_harness(&state, &body.harness).await?;
+    if let Some(refusal) = state.session_admission.refuse(user_id, &harness.id).await {
+        return Ok(refusal.into_response());
+    }
     let agent_id = harness_agent(&state, &harness.id).await?;
 
     let row = SessionStore::new(state.db.clone())
@@ -202,12 +206,13 @@ async fn enabled_harness(state: &AppState, id: &str) -> ApiResult<Harness> {
     ))
 }
 
-/// The platform's `agents` row for a harness; created by boot seeding.
+/// The platform's `agents` row for a harness; created by boot seeding. Never a user's own agent
+/// for the harness, which shares its kind and `harness_id`.
 async fn harness_agent(state: &AppState, harness_id: &str) -> ApiResult<Uuid> {
-    sqlx::query_scalar(
-        "SELECT id FROM agents WHERE workload_kind = 'harness' AND harness_id = $1 \
-         AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
-    )
+    sqlx::query_scalar(&format!(
+        "SELECT id FROM agents WHERE {PLATFORM_HARNESS_AGENT} AND harness_id = $1 \
+         AND deleted_at IS NULL ORDER BY created_at LIMIT 1"
+    ))
     .bind(harness_id)
     .fetch_optional(&state.db)
     .await

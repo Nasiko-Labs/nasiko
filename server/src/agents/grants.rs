@@ -8,6 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::sharing::{ensure_may_be_made_private, ensure_shareable};
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -156,6 +157,9 @@ async fn make_public(
     if let Err(r) = check_access(&state, &claims, agent_id).await {
         return r;
     }
+    if let Err(refusal) = ensure_shareable(&state.db, agent_id).await {
+        return refusal.into_response();
+    }
 
     let result = sqlx::query(
         "UPDATE agents SET is_public = true, updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
@@ -193,6 +197,10 @@ async fn make_private(
 ) -> impl IntoResponse {
     if let Err(r) = check_access(&state, &claims, agent_id).await {
         return r;
+    }
+    // The platform's harness agents stay public; any other agent may be made private.
+    if let Err(refusal) = ensure_may_be_made_private(&state.db, agent_id).await {
+        return refusal.into_response();
     }
 
     let result = sqlx::query(
@@ -266,6 +274,9 @@ async fn add_user_grant(
 ) -> impl IntoResponse {
     if let Err(r) = check_access(&state, &claims, agent_id).await {
         return r;
+    }
+    if let Err(refusal) = ensure_shareable(&state.db, agent_id).await {
+        return refusal.into_response();
     }
 
     let user_exists: bool = sqlx::query_scalar(
@@ -446,6 +457,9 @@ async fn transfer_owner(
 ) -> impl IntoResponse {
     if let Err(r) = check_access(&state, &claims, agent_id).await {
         return r;
+    }
+    if let Err(refusal) = ensure_shareable(&state.db, agent_id).await {
+        return refusal.into_response();
     }
 
     let new_owner_exists: bool = sqlx::query_scalar(

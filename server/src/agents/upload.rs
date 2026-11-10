@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use nasiko_runtime::DeploymentStatus;
 
+use crate::agent_scaling::{ParkingPolicy, save_parking_policy};
 use crate::auth::Claims;
 use crate::build::routes::extract_zip_from_file;
 use crate::build::{self, BuildStatus};
@@ -101,6 +102,9 @@ pub(crate) struct UploadAndDeployForm {
     /// existing agent's stored kind (`agent` for a new agent) — the CLI only
     /// sends it when `--coding-agent` (or an AgentCard `workloadKind`) applies.
     workload_kind: Option<String>,
+    /// `auto` (default: the platform parks the agent when idle) | `resident` (always
+    /// running). Omit to keep an existing agent's stored policy.
+    parking_policy: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -353,7 +357,7 @@ const MAX_UPLOAD_BYTES: u64 = 100 * 1024 * 1024; // 100 MiB
     request_body(content = UploadAndDeployForm, content_type = "multipart/form-data"),
     responses(
         (status = 202, description = "Build queued", body = UploadAndDeployResponse),
-        (status = 400, description = "Missing/invalid name, version_tag, or source zip"),
+        (status = 400, description = "Missing/invalid name, version_tag, parking_policy, or source zip"),
         (status = 413, description = "Upload exceeds 100 MiB limit"),
     ),
 )]
@@ -389,6 +393,9 @@ pub(crate) async fn upload_and_deploy(
     // `writable`: None = keep the stored kind (`agent` for a new agent), so a
     // plain re-upload never silently demotes a coding agent back to HTTP.
     let mut workload_kind: Option<String> = None;
+    // `auto`/`resident`. Tri-state like `writable`: None = keep the stored policy (`auto`
+    // for a new agent).
+    let mut parking_policy: Option<String> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
@@ -410,6 +417,7 @@ pub(crate) async fn upload_and_deploy(
             "workload_kind" => {
                 workload_kind = field.text().await.ok().filter(|s| !s.is_empty());
             }
+            "parking_policy" => parking_policy = field.text().await.ok(),
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
                 match stream_field_to_fresh_temp_file(
@@ -499,6 +507,10 @@ pub(crate) async fn upload_and_deploy(
                     .into_response();
             }
         },
+    };
+    let parking_policy = match ParkingPolicy::from_request_field(parking_policy.as_deref()) {
+        Ok(policy) => policy,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
 
     // Validate name charset (RUN-10): flows into the OCI image reference.
@@ -629,6 +641,7 @@ pub(crate) async fn upload_and_deploy(
                            writable_path = COALESCE($7, agents.writable_path), \
                            workload_kind = COALESCE($8, agents.workload_kind), \
                            status = 'deploying', updated_at = now() \
+             WHERE agents.workload_kind <> 'harness' \
              RETURNING id, writable, writable_path, workload_kind",
         )
         .bind(&name)
@@ -639,10 +652,16 @@ pub(crate) async fn upload_and_deploy(
         .bind(writable)
         .bind(&writable_path)
         .bind(&workload_kind)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         {
-            Ok(row) => row,
+            Ok(Some(row)) => row,
+            // The name is the caller's harness agent, which only the platform deploys.
+            Ok(None) => {
+                let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+                return (StatusCode::CONFLICT, crate::agents::HARNESS_AGENT_MANAGED)
+                    .into_response();
+            }
             Err(e) => {
                 tracing::error!(%e, agent_name = %name, "upload: register agent db error");
                 let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
@@ -650,6 +669,14 @@ pub(crate) async fn upload_and_deploy(
             }
         }
     };
+    // Stored before the build is queued: the worker's deploy reads it from the row.
+    if let Some(policy) = parking_policy
+        && let Err(e) = save_parking_policy(&mut *tx, agent_id, policy).await
+    {
+        tracing::error!(%e, %agent_id, "upload: save parking policy db error");
+        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
 
     // Reject a version already recorded in this agent's history — otherwise the
     // post-build write (below) silently overwrites that row via `ON CONFLICT`,
@@ -1025,8 +1052,7 @@ pub async fn execute_upload_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
-    // `None`: the agent was parked instead of deployed (see `parking`).
-    let result: Result<Option<DeploymentStatus>, String> = async {
+    let result: Result<DeploymentStatus, String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
         let td = tmp_dir.clone();
@@ -1067,31 +1093,12 @@ pub async fn execute_upload_and_deploy(
         )
         .await;
 
-        // Decided before the deploy env is built, which resets the agent's state mode.
-        // A caller's own env or ports cannot reach a woken sandbox yet, so they keep a workload.
-        if !super::parking::names_a_workload(&job_env, &ports)
-            && super::parking::park_if_eligible(state, agent_id, Some(&image_tag))
-                .await
-                .map_err(|e| format!("park: {e}"))?
-        {
-            set_upload_status(
-                db,
-                &upload_id,
-                &name,
-                owner_id,
-                "orchestration_processing",
-                None,
-                None,
-            )
-            .await;
-            return Ok(None);
-        }
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
-        let replica_bounds = scaling
-            .bounds()
+        let plan = scaling
+            .plan()
             .await
-            .map_err(|e| format!("read replica bounds: {e}"))?;
+            .map_err(|e| format!("read the deploy plan: {e}"))?;
         // Minted only now that the image exists: this rotates the agent's gateway and state
         // credentials, and a build that failed must leave the running pods' credentials alone.
         // Nothing below can fail before `scaling.deploy` (spec building and the pull
@@ -1114,7 +1121,7 @@ pub async fn execute_upload_and_deploy(
             ports,
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan.for_kind(workload_kind),
             writable,
             writable_path.clone(),
             owner_id,
@@ -1153,7 +1160,7 @@ pub async fn execute_upload_and_deploy(
         )
         .await;
 
-        Ok(Some(deploy_status))
+        Ok(deploy_status)
     }
     .await;
 
@@ -1181,10 +1188,6 @@ pub async fn execute_upload_and_deploy(
             // archives whatever was previously running for (mirroring `update.rs`'s
             // redeploy path). A genuinely first upload has nothing to archive yet.
             record_uploaded_version(db, agent_id, build_id, &image_tag).await;
-            let Some(deploy_status) = deploy_status else {
-                tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy parked the agent");
-                return;
-            };
             let agent_url = crate::agents::resolve_agent_url(
                 runtime,
                 &deploy_status,
@@ -1324,8 +1327,7 @@ pub async fn execute_clone_and_deploy(
     // variant.
     let mut claimed_version: Option<String> = None;
 
-    // `None` in place of the status: the agent was parked instead of deployed (see `parking`).
-    let result: Result<(Option<DeploymentStatus>, String), String> = async {
+    let result: Result<(DeploymentStatus, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
         let tp = tar_gz_path.clone();
         let td = tmp_dir.clone();
@@ -1451,31 +1453,12 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
-        // Decided before the deploy env is built, which resets the agent's state mode.
-        // A caller's own env or ports cannot reach a woken sandbox yet, so they keep a workload.
-        if !super::parking::names_a_workload(&job_env, &ports)
-            && super::parking::park_if_eligible(state, agent_id, Some(&image_tag))
-            .await
-            .map_err(|e| format!("BUILD_FAILED:park: {e}"))?
-        {
-            set_upload_status(
-                db,
-                &upload_id,
-                &name,
-                owner_id,
-                "orchestration_processing",
-                None,
-                None,
-            )
-            .await;
-            return Ok((None, image_tag));
-        }
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
-        let replica_bounds = scaling
-            .bounds()
+        let plan = scaling
+            .plan()
             .await
-            .map_err(|e| format!("BUILD_FAILED:read replica bounds: {e}"))?;
+            .map_err(|e| format!("BUILD_FAILED:read the deploy plan: {e}"))?;
         // Minted only now that the image exists: this rotates the agent's gateway and state
         // credentials, and a clone or build that failed must leave the running pods alone.
         // Nothing below can fail before `scaling.deploy` (spec building and the pull
@@ -1498,7 +1481,7 @@ pub async fn execute_clone_and_deploy(
             ports,
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan,
             // GitHub-clone deploys don't expose a --writable flag yet.
             false,
             None,
@@ -1528,7 +1511,7 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
-        Ok((Some(deploy_status), image_tag))
+        Ok((deploy_status, image_tag))
     }
     .await;
 
@@ -1559,10 +1542,6 @@ pub async fn execute_clone_and_deploy(
             if let Some(ver) = &claimed_version {
                 super::versions::finalize_reserved_version_with_retry(db, agent_id, ver).await;
             }
-            let Some(deploy_status) = deploy_status else {
-                tracing::info!(build_id = %build_id, agent_id = %agent_id, "clone-and-deploy parked the agent");
-                return;
-            };
             let agent_url = crate::agents::resolve_agent_url(
                 runtime,
                 &deploy_status,

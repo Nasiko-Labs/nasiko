@@ -1,7 +1,9 @@
 //! The `AgentWake` seam (`oss/server/src/agent_wake.rs`) on every path that forwards a call to an
-//! agent (the agent proxy, direct dispatch, a routed orchestrator leg, the HITL resume): a seam
-//! that refuses must stop the call before anything reaches the agent, and the seam is asked only
-//! about an agent that is really about to be called, never about one the orchestrator merely lists.
+//! agent (the agent proxy, direct dispatch, a routed orchestrator leg, the HITL resume, and the
+//! `ServerTargetResolver` MAF steps and HITL nudges resolve through): a seam that refuses must stop
+//! the call before anything reaches the agent, it is asked before the agent's address is resolved
+//! (a parked agent has none until it is woken), and it is asked only about an agent that is really
+//! about to be called, never about one the orchestrator merely lists.
 //!
 //! Requires infra (Postgres, Redis, S3) like the rest of the suite:
 //!   cargo test -p nasiko-server --test agent_wake_seam -- --test-threads=1
@@ -15,6 +17,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use axum::{Json, Router, extract::Request, response::IntoResponse, routing::post};
 use nasiko_flow::FlowContext;
+use nasiko_hitl::{AgentTargetResolver, ResolveCaller, ResolveFailure};
 use nasiko_react_agent::CallGuard;
 use nasiko_server::acl::{CpCallGuard, TurnCandidates, TurnLegs};
 use nasiko_server::agent_resolver::ServerTargetResolver;
@@ -53,7 +56,7 @@ impl ScriptedWake {
 
 #[async_trait]
 impl AgentWake for ScriptedWake {
-    async fn before_forward(&self, agent_id: Uuid) -> Result<(), String> {
+    async fn before_forward(&self, agent_id: Uuid, _flow_id: Option<&str>) -> Result<(), String> {
         self.asked.lock().unwrap().push(agent_id);
         if self.refuse.load(Ordering::SeqCst) {
             return Err(REFUSAL.to_string());
@@ -115,6 +118,20 @@ async fn seed_named_agent(server: &common::TestServer, owner: Uuid, name: &str, 
     .bind(name)
     .bind(owner)
     .bind(url)
+    .fetch_one(&server.db)
+    .await
+    .expect("seed agent")
+}
+
+/// A running agent with no address at all: no stored URL, and no container in the fake runtime.
+/// Resolving it fails, so a refusal (rather than that failure) proves the seam was asked first.
+async fn seed_agent_without_address(server: &common::TestServer, owner: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, status) \
+         VALUES ($1, $2, 'x:1.0.0', 'running') RETURNING id",
+    )
+    .bind(format!("wake-seam-{}", Uuid::new_v4().simple()))
+    .bind(owner)
     .fetch_one(&server.db)
     .await
     .expect("seed agent")
@@ -211,6 +228,81 @@ async fn a_refusing_seam_stops_a_direct_dispatch_before_the_agent_is_called() {
     let allowed = post_as(&server, owner, "/api/orchestrator/a2a", &body).await;
     assert!(allowed.status().is_success(), "{}", allowed.status());
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+    server.cleanup().await;
+}
+
+/// A parked agent has no endpoint until it is woken, so dispatch must ask the seam before it
+/// resolves where the call goes: had it resolved first, this would be the resolver's failure.
+#[tokio::test]
+#[serial]
+async fn a_direct_dispatch_asks_the_seam_before_resolving_the_agent() {
+    let wake = ScriptedWake::refusing();
+    let server = common::TestServer::start_with_agent_wake(wake.clone()).await;
+    let owner = seed_owner(&server).await;
+    let agent = seed_agent_without_address(&server, owner).await;
+    let body = message("message/stream", json!({"agent_id": agent.to_string()}));
+
+    let refused = post_as(&server, owner, "/api/orchestrator/a2a", &body).await;
+
+    assert_eq!(refused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    let refused: Value = refused.json().await.expect("json-rpc error body");
+    assert_eq!(refused["error"]["message"], REFUSAL);
+    assert_eq!(wake.asked(), vec![agent]);
+
+    server.cleanup().await;
+}
+
+/// MAF steps and HITL nudges reach agents only through `ServerTargetResolver`, so it asks the seam
+/// before it resolves; a refusal there is a retryable 503 carrying the seam's message.
+#[tokio::test]
+#[serial]
+async fn the_target_resolver_asks_the_seam_before_resolving_the_agent() {
+    let wake = ScriptedWake::refusing();
+    let server = common::TestServer::start_with_agent_wake(wake.clone()).await;
+    let owner = seed_owner(&server).await;
+    let agent = seed_agent_without_address(&server, owner).await;
+    let resolver = ServerTargetResolver::new(server.state.clone());
+    let caller = ResolveCaller {
+        user_id: Some(owner),
+        flow_id: Some("wake-seam-flow".into()),
+    };
+
+    let refused = resolver.resolve(agent, &caller, None).await.unwrap_err();
+
+    assert_eq!(refused, ResolveFailure::new(503, REFUSAL));
+    assert!(!refused.is_permanent());
+    assert_eq!(wake.asked(), vec![agent]);
+
+    // Positive control: once the seam allows it, the call goes on to resolution, which has
+    // nowhere to send it.
+    wake.refuse.store(false, Ordering::SeqCst);
+    let unresolved = resolver.resolve(agent, &caller, None).await.unwrap_err();
+    assert_eq!(unresolved.status, ResolveFailure::NO_ENDPOINT);
+    assert_eq!(wake.asked(), vec![agent, agent]);
+
+    server.cleanup().await;
+}
+
+/// A routed leg's guard asks the seam itself, ahead of spending flow budget, so the resolver it
+/// hands the leg to must not ask again.
+#[tokio::test]
+#[serial]
+async fn the_target_resolver_for_a_guarded_leg_leaves_the_seam_to_the_guard() {
+    let wake = ScriptedWake::refusing();
+    let server = common::TestServer::start_with_agent_wake(wake.clone()).await;
+    let owner = seed_owner(&server).await;
+    let (url, _hits) = start_counting_agent().await;
+    let agent = seed_running_agent(&server, owner, &url).await;
+    let resolver = ServerTargetResolver::after_caller_wake(server.state.clone());
+
+    let resolved = resolver
+        .resolve(agent, &ResolveCaller::default(), None)
+        .await
+        .expect("resolved without asking the seam");
+
+    assert_eq!(resolved.url, url);
+    assert!(wake.asked().is_empty());
 
     server.cleanup().await;
 }

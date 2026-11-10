@@ -2,8 +2,8 @@
 //!
 //! A `ContainerRuntime` deploys a long-lived service per agent. A [`SandboxProvider`] hands out
 //! a sandbox that exists only while it is serving: acquired on demand, suspended when idle,
-//! resumed by the next request. Backends (Docker, bare pod, shared runtime pods) implement
-//! the trait; this module holds only the trait and its types.
+//! resumed by the next request. Backends (Docker, bare pod, shared runtime pods, per-user harness
+//! agents) implement the trait; this module holds only the trait and its types.
 
 use std::collections::HashMap;
 
@@ -22,6 +22,9 @@ pub enum SandboxProviderKind {
     Pod,
     /// Shared runtime pods: many sandboxes packed onto replicas of one StatefulSet.
     SharedPod,
+    /// Each user's own harness agent: every session of one user and harness is a process in
+    /// that agent's workload.
+    HarnessAgent,
     /// A test double. The composition root rejects a stored ref whose kind differs from the
     /// wired provider, so a `fake:` row cannot be acted on in production.
     Fake,
@@ -33,6 +36,7 @@ impl std::fmt::Display for SandboxProviderKind {
             Self::Docker => "docker",
             Self::Pod => "pod",
             Self::SharedPod => "shared-pod",
+            Self::HarnessAgent => "harness-agent",
             Self::Fake => "fake",
         })
     }
@@ -48,6 +52,7 @@ impl std::str::FromStr for SandboxProviderKind {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
             "shared-pod" => Ok(Self::SharedPod),
+            "harness-agent" => Ok(Self::HarnessAgent),
             "fake" => Ok(Self::Fake),
             other => Err(RuntimeError::Internal(format!(
                 "unknown sandbox provider: {other}"
@@ -71,10 +76,10 @@ pub enum SandboxKey {
     },
     /// One per (agent, A2A contextId) for agents that keep per-conversation state in memory.
     ///
-    /// Deliberately not user-scoped. SAFE ONLY IF the resolver authorises contextId ownership
-    /// before acquiring (the caller must own the `chat_sessions` row for that contextId). The
-    /// server's `agent_resolver::ensure_context_owner` does that, and only acquires this key
-    /// when the edition's `AgentScaling::per_context_sandbox()` says so (default: never).
+    /// Deliberately not user-scoped. SAFE ONLY IF the caller authorises contextId ownership before
+    /// acquiring (the caller must own the `chat_sessions` row for that contextId). The server no
+    /// longer acquires this key: it parks an agent by scaling its own workload, and only releases
+    /// sandboxes left under it from before.
     AgentContext {
         /// The agent.
         agent_id: Uuid,
@@ -99,6 +104,13 @@ impl SandboxKey {
             } => format!("ac-{agent_id}-{:016x}", fnv1a_64(context_id.as_bytes())),
         }
     }
+
+    /// Whether a sandbox under this key gets a scratch area at [`HARNESS_SCRATCH_DIR`]. A harness
+    /// session's does: its package installs and builds are what the area is for. A framework
+    /// agent's does not, so its sandbox reserves no local disk for one.
+    pub fn has_scratch(&self) -> bool {
+        matches!(self, Self::Session { .. })
+    }
 }
 
 /// FNV-1a 64-bit. Hand-rolled because `DefaultHasher` is not stable across runs, and a name
@@ -114,6 +126,16 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// Where a sandbox's persistent workspace is mounted, and the directory an ACP session starts
 /// in. One definition for every provider and for the turn path that opens the session there.
 pub const WORKSPACE_MOUNT: &str = "/workspace";
+
+/// Where a sandbox whose key [has scratch](SandboxKey::has_scratch) keeps what it can regenerate:
+/// package caches and build output, which a harness session's env points here, one directory per
+/// sandbox key (`<HARNESS_SCRATCH_DIR>/<key name>`) so sessions sharing a pod keep apart.
+///
+/// Node-local storage, never the durable workspace (which may be a network filesystem that
+/// small-file churn would saturate), so its contents go when the sandbox's pod or container
+/// does. Every provider mounts it, writable by the sandbox's user. One definition for the
+/// providers and for the server that builds the env.
+pub const HARNESS_SCRATCH_DIR: &str = "/scratch";
 
 /// Everything a provider needs to create a sandbox.
 ///
@@ -391,7 +413,8 @@ pub trait SandboxProvider: Send + Sync {
     /// Env is the one field a backend may take from the *resuming* spec: a backend that keeps
     /// the original object (Docker) keeps its env, one that recreates it from a snapshot that
     /// never stores values (bare pod) applies the new spec's env. Callers therefore pass the
-    /// full, stable env on every `acquire` and never rely on a resume to change it.
+    /// full, stable env on every `acquire`, and rely on a resume to change it only where
+    /// [`Self::resume_takes_new_env`] says so.
     ///
     /// The handle, including `backend_ref`, is stable for the life of the key: suspend/resume
     /// and repeated acquire return an equal handle. A backend that recreates its object must
@@ -417,6 +440,25 @@ pub trait SandboxProvider: Send + Sync {
     /// Destroy the sandbox and (for ephemeral specs) its state. Idempotent; Ok on Absent.
     async fn release(&self, handle: &SandboxHandle) -> Result<()>;
 
+    /// Whether the sandbox `handle` names, once `suspend`ed, comes back from the next `acquire`
+    /// of its key running on the env of that acquire (and of the attach that follows) rather
+    /// than on the env it was created with. True for a backend that starts a resumed sandbox
+    /// afresh from the resuming spec (the bare pod) or whose sandbox takes its settings from the
+    /// caller at attach (shared runtime pods, configured over the shim's handshake); false for
+    /// one that keeps the object it created (Docker keeps the container and its env), and for a
+    /// sandbox the next `acquire` of its key would not resume at all.
+    ///
+    /// A caller that must change a sandbox's env suspends it where this holds and releases it
+    /// only where it does not, because `release` may take the sandbox's files with it (shared
+    /// runtime pods purge the session's directory). An error means the provider could not tell
+    /// (a routing lookup failed); the caller then neither suspends nor releases on a guess.
+    ///
+    /// RUN-1: a decorator wrapping a provider MUST forward this method to whichever provider
+    /// holds `handle`, as it does `suspend` and `release`. It has no default on purpose: a
+    /// wrapper answering for itself would turn a suspend into a release, and every env change
+    /// into lost files.
+    async fn resume_takes_new_env(&self, handle: &SandboxHandle) -> Result<bool>;
+
     /// Current resource usage, for the idle reaper's CPU-quiescence check. Absent →
     /// `SandboxNotFound`; Suspended or Starting → `SandboxNotRunning`; Running → a reading.
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats>;
@@ -435,6 +477,7 @@ mod tests {
             SandboxProviderKind::Docker
             | SandboxProviderKind::Pod
             | SandboxProviderKind::SharedPod
+            | SandboxProviderKind::HarnessAgent
             | SandboxProviderKind::Fake => (),
         }
     }
@@ -501,10 +544,11 @@ mod tests {
         );
     }
 
-    const ALL_KINDS: [SandboxProviderKind; 4] = [
+    const ALL_KINDS: [SandboxProviderKind; 5] = [
         SandboxProviderKind::Docker,
         SandboxProviderKind::Pod,
         SandboxProviderKind::SharedPod,
+        SandboxProviderKind::HarnessAgent,
         SandboxProviderKind::Fake,
     ];
 
@@ -539,6 +583,13 @@ mod tests {
             && !s.is_empty()
             && s.chars()
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    }
+
+    #[test]
+    fn only_a_session_key_has_scratch() {
+        assert!(SandboxKey::Session { session_id: id() }.has_scratch());
+        assert!(!SandboxKey::Agent { agent_id: id() }.has_scratch());
+        assert!(!ctx_key("c1").has_scratch());
     }
 
     #[test]
@@ -660,6 +711,10 @@ mod tests {
             );
         }
         assert_eq!(SandboxProviderKind::SharedPod.to_string(), "shared-pod");
+        assert_eq!(
+            SandboxProviderKind::HarnessAgent.to_string(),
+            "harness-agent"
+        );
         assert!(matches!(
             "vmware".parse::<SandboxProviderKind>(),
             Err(RuntimeError::Internal(_))

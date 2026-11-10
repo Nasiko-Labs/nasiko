@@ -15,7 +15,8 @@ use crate::{
 };
 
 struct Entry {
-    /// The spec the sandbox was created with; a resume ignores any changed spec.
+    /// The spec the sandbox was created with; a resume ignores any changed spec, except for its
+    /// env when the fake is set to take the resuming env (`set_resume_takes_new_env`).
     spec: SandboxSpec,
     state: SandboxState,
     /// `None` models a backend that does not report a start time.
@@ -27,6 +28,7 @@ struct Entry {
 struct Inner {
     entries: HashMap<SandboxKey, Entry>,
     acquire_counts: HashMap<SandboxKey, usize>,
+    creations: HashMap<SandboxKey, usize>,
     fail_next_acquire: Option<RuntimeError>,
     fail_next_suspend: Option<RuntimeError>,
     transport_urls: HashMap<SandboxKey, String>,
@@ -37,6 +39,7 @@ struct Inner {
     fail_next_release: Option<RuntimeError>,
     fail_next_list: Option<RuntimeError>,
     unavailable: bool,
+    resume_takes_new_env: bool,
 }
 
 /// In-memory [`SandboxProvider`]. Test-only: the composition root rejects `fake:` refs.
@@ -81,6 +84,13 @@ impl FakeSandboxProvider {
         self.lock().acquire_counts.get(key).copied().unwrap_or(0)
     }
 
+    /// Test hook: how many times `acquire` created this key's sandbox afresh rather than resuming
+    /// it (an acquire after a `release` counts again), so a test can tell a sandbox that kept its
+    /// state from a rebuilt one.
+    pub fn creations(&self, key: &SandboxKey) -> usize {
+        self.lock().creations.get(key).copied().unwrap_or(0)
+    }
+
     /// Test-only: makes `attach` report `url` for this key's WebSocket or HTTP transport, so a
     /// test can point it at a real in-process server (a harness shim) instead of the default
     /// `fake-...` host nothing listens on. The override outlives `release`; without one the
@@ -117,6 +127,14 @@ impl FakeSandboxProvider {
         self.lock().fail_next_list = Some(error);
     }
 
+    /// Test hook: with `true`, a resumed sandbox runs on the resuming spec's env, as the bare pod
+    /// (recreated from the resuming spec) and shared runtime pods (configured at attach) do, and
+    /// `resume_takes_new_env` says so. The default, `false`, keeps the env the sandbox was created
+    /// with, as Docker does.
+    pub fn set_resume_takes_new_env(&self, takes: bool) {
+        self.lock().resume_takes_new_env = takes;
+    }
+
     /// Test hook: makes the next `acquire` wait this long before doing anything, once, so a test
     /// can act while a turn is mid-acquire (a slow provider).
     pub fn delay_next_acquire(&self, delay: std::time::Duration) {
@@ -135,8 +153,9 @@ impl FakeSandboxProvider {
         self.lock().last_acquire_specs.get(key).cloned()
     }
 
-    /// Test hook: the spec the sandbox was created with (a resume keeps it), so a test can check
-    /// what the platform put in the sandbox's env.
+    /// Test hook: the spec the sandbox was created with (a resume keeps it, and its env unless
+    /// [`Self::set_resume_takes_new_env`]), so a test can check what the platform put in the
+    /// sandbox's env.
     pub fn spec_of(&self, key: &SandboxKey) -> Option<SandboxSpec> {
         self.lock().entries.get(key).map(|e| e.spec.clone())
     }
@@ -183,6 +202,10 @@ impl SandboxProvider for FakeSandboxProvider {
         if let Some(error) = inner.fail_next_acquire.take() {
             return Err(error);
         }
+        let takes_new_env = inner.resume_takes_new_env;
+        if !inner.entries.contains_key(&spec.key) {
+            *inner.creations.entry(spec.key.clone()).or_default() += 1;
+        }
         inner
             .entries
             .entry(spec.key.clone())
@@ -190,6 +213,9 @@ impl SandboxProvider for FakeSandboxProvider {
                 if e.state != SandboxState::Running {
                     e.state = SandboxState::Running;
                     e.started_at = Some(Utc::now());
+                    if takes_new_env {
+                        e.spec.env = spec.env.clone();
+                    }
                 }
             })
             .or_insert_with(|| Entry {
@@ -256,6 +282,10 @@ impl SandboxProvider for FakeSandboxProvider {
         }
         self.lock().entries.remove(&handle.key);
         Ok(())
+    }
+
+    async fn resume_takes_new_env(&self, _handle: &SandboxHandle) -> Result<bool> {
+        Ok(self.lock().resume_takes_new_env)
     }
 
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats> {

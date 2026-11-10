@@ -14,8 +14,7 @@ use nasiko_runtime::{
 };
 use uuid::Uuid;
 
-use crate::agents::qualify_deploy_image;
-use crate::agents::sandbox_spec::exposed_ports;
+use crate::agents::{qualify_deploy_image, recorded_ports};
 use crate::state::AppState;
 
 /// How long the agent has to open its port once its sandbox is running.
@@ -85,7 +84,7 @@ async fn smoke_spec(state: &AppState, agent_id: Uuid, build_id: Uuid) -> Option<
             .flatten();
     let image = image.filter(|i| !i.is_empty())?;
     let mut env = HashMap::new();
-    let ports = exposed_ports(&state.db, agent_id, &mut env).await;
+    let ports = recorded_ports(&state.db, agent_id, &mut env).await;
     Some(SandboxSpec {
         // A throwaway key: the real agent sandbox, if any, is never touched.
         key: SandboxKey::Session {

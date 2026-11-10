@@ -202,7 +202,8 @@ pub struct CpCallGuard {
     pub user_id: Uuid,
     pub chat_session_id: String,
     pub agent_calls: Arc<dyn AgentCallMeter>,
-    /// The Free-plane agent sleep/wake seam; asked just before each call that passes the flow checks.
+    /// The agent wake seam; asked just before each call that passes the flow checks. The leg's
+    /// `targets` resolver must not ask it again (`ServerTargetResolver::after_caller_wake`).
     pub agent_wake: Arc<dyn AgentWake>,
     /// Finds (and, for a parked agent, wakes) where each admitted call is sent.
     pub targets: Arc<dyn AgentTargetResolver>,
@@ -332,7 +333,9 @@ impl CallGuard for CpCallGuard {
 
             // After the checks and before `record_invocation`: a refused call spends no fan-out
             // or depth budget. The candidate lookup above already resolved the target UUID.
-            self.agent_wake.before_forward(target_id).await?;
+            self.agent_wake
+                .before_forward(target_id, Some(&ctx.flow_id))
+                .await?;
 
             if let Err(rejection) = self.flow_guard.record_invocation(&ctx, &target_key).await {
                 return Err(rejection.to_string());

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::agent_scaling::{ParkingPolicy, save_parking_policy};
 use crate::catalog::models::Agent;
 use crate::seed_mirror::{self, MirrorSettings, RegistryCredential};
 use crate::seed_registry_ready;
@@ -91,6 +92,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         .fetch_optional(&state.db)
         .await
         .unwrap_or(None);
+        if let Some(agent) = &existing {
+            keep_resident(&state.db, agent.id, &agent_name).await;
+        }
 
         let Some((mirrored, repointed)) = resolve_seed_image(
             state,
@@ -171,10 +175,10 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
 
         let scaling = state.agent_scaling.begin_deploy(agent.id).await;
-        let replica_bounds = match scaling.bounds().await {
-            Ok(bounds) => bounds,
+        let plan = match scaling.plan().await {
+            Ok(plan) => plan,
             Err(e) => {
-                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's replica bounds");
+                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's deploy plan");
                 continue;
             }
         };
@@ -216,7 +220,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             vec![AGENT_PORT],
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan,
             // SEED_AGENTS has no --writable equivalent yet.
             false,
             None,
@@ -449,6 +453,9 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
     .fetch_optional(&state.db)
     .await
     .unwrap_or(None);
+    if let Some(agent) = &existing {
+        keep_resident(&state.db, agent.id, &agent_name).await;
+    }
 
     let needs_deploy = match &existing {
         None => true,
@@ -501,8 +508,8 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
         None => {
             let inserted = sqlx::query_as::<_, Agent>(
-                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, writable, writable_path, metadata)
-                   VALUES ($1, $2, $3, 'deploying', $4, true, $5, $6, '{"seed": true}')
+                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, writable, writable_path, parking_policy, metadata)
+                   VALUES ($1, $2, $3, 'deploying', $4, true, $5, $6, $7, '{"seed": true}')
                    RETURNING *"#,
             )
             .bind(&agent_name)
@@ -511,6 +518,7 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
             .bind(public)
             .bind(writable_path.is_some())
             .bind(&writable_path)
+            .bind(ParkingPolicy::Resident.as_str())
             .fetch_one(&state.db)
             .await;
             match inserted {
@@ -550,10 +558,10 @@ async fn deploy_internal_agent(
     force_pull: bool,
 ) -> Result<(), String> {
     let scaling = state.agent_scaling.begin_deploy(agent_id).await;
-    let replica_bounds = scaling
-        .bounds()
+    let plan = scaling
+        .plan()
         .await
-        .map_err(|e| format!("failed to read the replica bounds: {e}"))?;
+        .map_err(|e| format!("failed to read the deploy plan: {e}"))?;
     let mut env = state.agent_env(agent_id).await;
     env.insert("PORT".into(), AGENT_PORT.to_string());
     // Without the gateway credential, McpInjector still sets MCP_GATEWAY_URL but has
@@ -580,7 +588,7 @@ async fn deploy_internal_agent(
         vec![AGENT_PORT],
         env,
         &state.config.agent_default_memory,
-        replica_bounds,
+        plan,
         writable,
         writable_path,
         owner_id,
@@ -616,6 +624,15 @@ async fn deploy_internal_agent(
         agent_url,
     ));
     Ok(())
+}
+
+/// Keeps a platform agent (a seed or an internal agent) `resident`: it always runs. Written on
+/// every seed, so a row created while new agents defaulted to `auto` is resident too. A failed
+/// write is logged and the seed goes on; the agent's next seed tries again.
+async fn keep_resident(db: &sqlx::PgPool, agent_id: Uuid, agent_name: &str) {
+    if let Err(e) = save_parking_policy(db, agent_id, ParkingPolicy::Resident).await {
+        warn!(agent = %agent_name, error = %e, "could not keep the platform agent resident");
+    }
 }
 
 /// The `(writable, writable_path)` an agent's row records, as `build_agent_spec` takes them.
@@ -705,13 +722,14 @@ async fn register_agent(
     owner_id: Uuid,
 ) -> Result<Agent, sqlx::Error> {
     sqlx::query_as::<_, Agent>(
-        r#"INSERT INTO agents (name, owner_id, image, status, is_public, metadata)
-           VALUES ($1, $2, $3, 'deploying', true, '{"seed": true}')
+        r#"INSERT INTO agents (name, owner_id, image, status, is_public, parking_policy, metadata)
+           VALUES ($1, $2, $3, 'deploying', true, $4, '{"seed": true}')
            RETURNING *"#,
     )
     .bind(name)
     .bind(owner_id)
     .bind(image)
+    .bind(ParkingPolicy::Resident.as_str())
     .fetch_one(db)
     .await
 }
@@ -1093,9 +1111,10 @@ pub async fn seed_harness_agents_if_enabled(state: &AppState) {
         &state.sandbox.kind().to_string(),
     );
     if let Some((is_error, reason)) = blocked {
-        let advertised: Vec<String> = sqlx::query_scalar(
-            "SELECT name FROM agents WHERE workload_kind = 'harness' AND deleted_at IS NULL",
-        )
+        let advertised: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT name FROM agents WHERE {} AND deleted_at IS NULL",
+            crate::sessions::PLATFORM_HARNESS_AGENT
+        ))
         .fetch_all(&state.db)
         .await
         .unwrap_or_default();
@@ -1120,7 +1139,9 @@ pub async fn seed_harness_agents_if_enabled(state: &AppState) {
 /// A harness agent is a routable identity, not a deployment: `status = 'running'` with no
 /// container, because each session brings up its own sandbox. Idempotent. The upsert only
 /// ever updates a row that is already a harness, so an unrelated agent that happens to share
-/// the name is left alone and reported instead of being repurposed.
+/// the name is left alone and reported instead of being repurposed. It re-asserts `is_public`
+/// every time: a platform row is the catalog entry everyone starts sessions from, and the only
+/// public kind of harness agent (`nasiko_auth::sharing`).
 pub async fn seed_harness_agents(state: &AppState) {
     let owner_id: Uuid = match sqlx::query_scalar(
         "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
@@ -1167,7 +1188,7 @@ async fn upsert_harness_agent(
            VALUES ($1, $2, $3, $4, 'running', true, false, 'harness', $1)
            ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
                SET display_name = EXCLUDED.display_name, image = EXCLUDED.image,
-                   updated_at = now()
+                   is_public = true, updated_at = now()
                WHERE agents.workload_kind = 'harness'"#,
     )
     .bind(&harness.id)

@@ -360,6 +360,85 @@ async fn update_auto_bumps_patch_version() {
     server.cleanup().await;
 }
 
+/// PUT /api/agents/{id}/update as superuser with a source zip and a `parking_policy` field.
+async fn update_with_parking_policy(
+    server: &common::TestServer,
+    uid: &str,
+    agent_id: &str,
+    parking_policy: &str,
+) -> reqwest::Response {
+    let form = reqwest::multipart::Form::new()
+        .text("parking_policy", parking_policy.to_string())
+        .part(
+            "source",
+            reqwest::multipart::Part::bytes(common::make_zip(&[NO_DOCKERFILE]))
+                .file_name("agent.zip"),
+        );
+    common::as_superuser(
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        uid,
+        "admin",
+    )
+    .multipart(form)
+    .send()
+    .await
+    .unwrap()
+}
+
+async fn stored_parking_policy(server: &common::TestServer, agent_id: &str) -> String {
+    sqlx::query_scalar("SELECT parking_policy FROM agents WHERE id = $1")
+        .bind(agent_id.parse::<Uuid>().unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn update_stores_a_named_parking_policy_and_keeps_it_when_omitted() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent = create_agent(&server, uid, "parking-update-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let before = stored_parking_policy(&server, agent_id).await;
+    let other = if before == "auto" { "resident" } else { "auto" };
+
+    let res = update_with_parking_policy(&server, uid, agent_id, other).await;
+    assert_eq!(res.status(), 202);
+    assert_eq!(stored_parking_policy(&server, agent_id).await, other);
+
+    let zip = common::make_zip(&[NO_DOCKERFILE]);
+    let res = do_update(&server, uid, agent_id, Some("1.0.5"), Some(zip)).await;
+    assert_eq!(res.status(), 202);
+    assert_eq!(
+        stored_parking_policy(&server, agent_id).await,
+        other,
+        "an update that names no policy keeps the stored one"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn update_rejects_an_unknown_parking_policy() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent = create_agent(&server, uid, "parking-refused-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+    let before = stored_parking_policy(&server, agent_id).await;
+
+    let res = update_with_parking_policy(&server, uid, agent_id, "sometimes").await;
+
+    assert_eq!(res.status(), 400);
+    assert_eq!(stored_parking_policy(&server, agent_id).await, before);
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn update_minor_strategy_bumps_minor() {

@@ -165,6 +165,12 @@ impl SandboxProvider for LeakyProvider {
     async fn release(&self, h: &nasiko_runtime::SandboxHandle) -> nasiko_runtime::Result<()> {
         self.0.release(h).await
     }
+    async fn resume_takes_new_env(
+        &self,
+        h: &nasiko_runtime::SandboxHandle,
+    ) -> nasiko_runtime::Result<bool> {
+        self.0.resume_takes_new_env(h).await
+    }
     async fn stats(
         &self,
         h: &nasiko_runtime::SandboxHandle,

@@ -121,6 +121,8 @@ pub async fn seed(
             writable_path: None,
             owner_id,
             force_pull: false,
+            parkable: false,
+            overrides: Default::default(),
         };
         runtime
             .deploy(&spec)

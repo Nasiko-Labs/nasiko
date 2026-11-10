@@ -23,12 +23,14 @@ const UNCONFINED: Confinement = Confinement {
     syscalls: false,
 };
 
-/// A running supervisor and its workspace root.
+/// A running supervisor, its workspace root and its scratch root.
 struct Pod {
     addr: SocketAddr,
     /// The sessions' root, one level inside `outer`, so a path that escaped it would still land
     /// in this test's own directory.
     root: PathBuf,
+    /// The sessions' scratch root, beside `root`.
+    scratch: PathBuf,
     outer: tempfile::TempDir,
 }
 
@@ -51,6 +53,7 @@ fn config(
         token: TOKEN.into(),
         shim_binary,
         workspace_root,
+        scratch_root: None,
         max_sessions: max,
         confinement,
     }
@@ -59,13 +62,19 @@ fn config(
 async fn start_with(max: usize, shim_binary: PathBuf, confinement: Confinement) -> Pod {
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("root");
+    let scratch = outer.path().join("scratch");
     std::fs::create_dir(&root).unwrap();
-    let config = config(max, shim_binary, root.clone(), confinement);
+    std::fs::create_dir(&scratch).unwrap();
+    let config = SupervisorConfig {
+        scratch_root: Some(scratch.clone()),
+        ..config(max, shim_binary, root.clone(), confinement)
+    };
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(harness_shim::supervisor::run(config, Some(tx)));
     Pod {
         addr: rx.await.unwrap(),
         root,
+        scratch,
         outer,
     }
 }
@@ -214,15 +223,53 @@ async fn delete_stops_and_purge_removes_the_directory() {
 }
 
 #[tokio::test]
+async fn a_session_gets_its_own_scratch_directory_until_purged() {
+    let pod = start(8).await;
+    put(pod.addr, "s-a", 23401).await;
+    put(pod.addr, "s-b", 23402).await;
+    assert!(pod.scratch.join("s-a").is_dir());
+    assert!(pod.scratch.join("s-b").is_dir());
+    // Its TMPDIR, which must exist before anything writes a temporary file.
+    assert!(pod.scratch.join("s-a/tmp").is_dir());
+    std::fs::write(pod.scratch.join("s-a/cache"), "x").unwrap();
+
+    // A suspend keeps it; the purge takes it, and only its own.
+    assert_eq!(delete(pod.addr, "/sessions/s-a").await, 204);
+    assert!(pod.scratch.join("s-a/cache").is_file());
+    assert_eq!(delete(pod.addr, "/sessions/s-a?purge=true").await, 204);
+    assert!(!pod.scratch.join("s-a").exists());
+    assert!(pod.scratch.join("s-b").is_dir());
+}
+
+#[tokio::test]
+async fn a_scratch_root_that_is_not_a_directory_is_a_startup_error() {
+    let outer = tempfile::tempdir().unwrap();
+    let config = SupervisorConfig {
+        scratch_root: Some(outer.path().join("absent")),
+        ..config(8, real_shim(), outer.path().into(), UNCONFINED)
+    };
+    let err = harness_shim::supervisor::run(config, None)
+        .await
+        .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("HARNESS_SCRATCH_ROOT"),
+        "{err:#}"
+    );
+}
+
+#[tokio::test]
 async fn purging_an_unknown_session_removes_its_directory() {
     let pod = start(8).await;
     // Left behind by a supervisor that restarted and so forgot the session.
     let left = pod.root.join("s-old");
     std::fs::create_dir_all(left.join("home")).unwrap();
     std::fs::write(left.join("home/notes"), "x").unwrap();
+    let scratch = pod.scratch.join("s-old");
+    std::fs::create_dir_all(scratch.join("npm")).unwrap();
 
     assert_eq!(delete(pod.addr, "/sessions/s-old?purge=true").await, 204);
     assert!(!left.exists());
+    assert!(!scratch.exists());
 }
 
 #[tokio::test]
@@ -380,8 +427,10 @@ mod confined {
     /// shim keeps a child. `own`: create, read and run a file in its own directory; `tmp`:
     /// whether `mktemp` lands in its own directory or the pod's shared `/tmp`; `shared_tmp`:
     /// writing `/tmp` by name; `sibling`: reading `$SIBLING`, a file in another session's
-    /// directory.
+    /// directory; `scratch`: create a directory and a file in `$SCRATCH`, its own scratch
+    /// directory; `sibling_scratch`: reading `$SIBLING_SCRATCH`, a file in another session's.
     const PROBE: &str = r#"own=failed tmp=shared shared_tmp=denied sibling=denied
+scratch=failed sibling_scratch=denied
 dir=$(pwd)
 printf 'x\n' > own.txt && [ "$(cat own.txt)" = x ] \
   && printf '#!/bin/sh\necho ran\n' > run.sh && chmod +x run.sh && [ "$(./run.sh)" = ran ] \
@@ -389,7 +438,10 @@ printf 'x\n' > own.txt && [ "$(cat own.txt)" = x ] \
 t=$(mktemp) && echo y > "$t" && case "$t" in "$dir"/*) tmp=private;; esac
 if { echo z > "/tmp/probe-$$"; } 2>/dev/null; then shared_tmp=writable; rm -f "/tmp/probe-$$"; fi
 cat "$SIBLING" >/dev/null 2>&1 && sibling=read
-echo "own=$own tmp=$tmp shared_tmp=$shared_tmp sibling=$sibling"
+{ mkdir "$SCRATCH/npm" && echo w > "$SCRATCH/npm/f" && [ "$(cat "$SCRATCH/npm/f")" = w ]; } \
+  2>/dev/null && scratch=ok
+cat "$SIBLING_SCRATCH" >/dev/null 2>&1 && sibling_scratch=read
+echo "own=$own tmp=$tmp shared_tmp=$shared_tmp sibling=$sibling scratch=$scratch sibling_scratch=$sibling_scratch"
 exec cat
 "#;
 
@@ -404,14 +456,22 @@ exec cat
         abi >= 2
     }
 
-    /// Starts `s-a` under `confinement` with [`PROBE`] as its harness, beside a sibling session
-    /// directory `s-b` holding a sentinel, and returns the line the probe reports.
-    async fn probe(confinement: Confinement, port: u16) -> String {
-        let pod = start_with(8, real_shim(), confinement).await;
-        let sibling = pod.root.join("s-b");
+    /// Writes a sentinel into session `s-b`'s directory under `root` and returns its path.
+    fn sibling_sentinel(root: &Path) -> PathBuf {
+        let sibling = root.join("s-b");
         std::fs::create_dir_all(&sibling).unwrap();
         let sentinel = sibling.join("secret");
         std::fs::write(&sentinel, "s-b's own").unwrap();
+        sentinel
+    }
+
+    /// Starts `s-a` under `confinement` with [`PROBE`] as its harness, beside a sibling session
+    /// `s-b` holding a sentinel in its directory and in its scratch directory, and returns the
+    /// line the probe reports.
+    async fn probe(confinement: Confinement, port: u16) -> String {
+        let pod = start_with(8, real_shim(), confinement).await;
+        let sentinel = sibling_sentinel(&pod.root);
+        let scratch_sentinel = sibling_sentinel(&pod.scratch);
 
         let (code, placed) = put(pod.addr, "s-a", port).await;
         assert_eq!(code, 200, "{placed}");
@@ -420,6 +480,8 @@ exec cat
         let env = json!({
             "HARNESS_CMD": format!("sh {}", script.display()),
             "SIBLING": sentinel,
+            "SCRATCH": pod.scratch.join("s-a"),
+            "SIBLING_SCRATCH": scratch_sentinel,
         });
         let body = configure_body("t1", env, "h1");
         let (code, _) = http(shim(port), "POST", "/control/configure", None, &body).await;
@@ -438,7 +500,7 @@ exec cat
         let outcome = probe(Confinement::default(), 23381).await;
         assert_eq!(
             outcome,
-            "own=ok tmp=private shared_tmp=denied sibling=denied"
+            "own=ok tmp=private shared_tmp=denied sibling=denied scratch=ok sibling_scratch=denied"
         );
     }
 
@@ -471,7 +533,7 @@ exec cat
         let outcome = probe(fs_off, 23391).await;
         assert_eq!(
             outcome,
-            "own=ok tmp=shared shared_tmp=writable sibling=read"
+            "own=ok tmp=shared shared_tmp=writable sibling=read scratch=ok sibling_scratch=read"
         );
     }
 

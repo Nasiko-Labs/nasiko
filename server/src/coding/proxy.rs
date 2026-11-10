@@ -315,6 +315,8 @@ pub fn build_spec(agent_id: Uuid, target: &CodingAgentTarget) -> DeploymentSpec 
         writable_path: target.writable_path.clone(),
         owner_id: target.owner_id,
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     }
 }
 

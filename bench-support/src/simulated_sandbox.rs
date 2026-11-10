@@ -234,6 +234,12 @@ impl SandboxProvider for SimulatedSandboxProvider {
         Ok(())
     }
 
+    /// It keeps no env, so it answers as the in-tree fake does by default: a resume keeps the
+    /// sandbox as created.
+    async fn resume_takes_new_env(&self, _handle: &SandboxHandle) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats> {
         let inner = self.lock();
         let entry = inner

@@ -98,6 +98,9 @@ pub struct HitlPermissionDelegate {
     /// Fired when the task is cancelled (`tasks/cancel`): a wait in progress ends at once, answered
     /// `Cancelled`, and its `hitl_requests` row is closed as `canceled`.
     cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Where each question this turn asks is noted, so the turn's driver can close the ones still
+    /// open when the turn ends.
+    questions: Option<super::questions::TurnQuestions>,
 }
 
 impl HitlPermissionDelegate {
@@ -116,6 +119,7 @@ impl HitlPermissionDelegate {
             notice_tx,
             pending_sink: None,
             cancel: None,
+            questions: None,
         }
     }
 
@@ -128,6 +132,12 @@ impl HitlPermissionDelegate {
     /// Record each pending request through `sink` for the duration of its wait.
     pub fn with_pending_sink(mut self, sink: Arc<dyn PendingPermissionSink>) -> Self {
         self.pending_sink = Some(sink);
+        self
+    }
+
+    /// Note each question this delegate asks in `questions`, the turn's record of them.
+    pub fn with_questions(mut self, questions: super::questions::TurnQuestions) -> Self {
+        self.questions = Some(questions);
         self
     }
 
@@ -149,6 +159,9 @@ impl HitlPermissionDelegate {
             ))
             .await?;
         let id = row.id;
+        if let Some(questions) = &self.questions {
+            questions.record(id);
+        }
         tracing::info!(hitl_id = %id, agent_id = %self.agent_id, "coding HITL: awaiting human decision");
 
         // Surface the pending approval on the turn's SSE stream, carrying the

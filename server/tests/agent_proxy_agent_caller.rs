@@ -153,6 +153,7 @@ async fn an_agent_with_its_credential_and_flow_reaches_a_peer_by_either_url_form
 async fn an_agent_caller_wakes_a_parked_target() {
     let f = fixture().await;
     f.server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&f.server);
     let parked: Uuid = sqlx::query_scalar(
         "INSERT INTO agents (name, owner_id, image, status, url, parking_policy, state_mode) \
          VALUES ('parked-peer', $1, 'x:1.0.0', 'parked', '', 'auto', 'durable') RETURNING id",
@@ -161,8 +162,7 @@ async fn an_agent_caller_wakes_a_parked_target() {
     .fetch_one(&f.server.db)
     .await
     .unwrap();
-    let key = nasiko_runtime::SandboxKey::Agent { agent_id: parked };
-    f.server.sandbox.set_transport_url(&key, stub_agent().await);
+    wake.serve_at(parked, &stub_agent().await);
 
     let status = call(
         &f,
@@ -173,7 +173,7 @@ async fn an_agent_caller_wakes_a_parked_target() {
     .await;
 
     assert_eq!(status, 200);
-    assert_eq!(f.server.sandbox.acquire_count(&key), 1);
+    assert_eq!(wake.woken_count(parked), 1);
     f.server.cleanup().await;
 }
 

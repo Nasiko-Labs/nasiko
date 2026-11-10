@@ -207,6 +207,69 @@ async fn workspace_sandbox_runs_as_uid_65534_and_can_write_to_workspace() {
     .await;
 }
 
+/// A session sandbox running as uid 65534 can write its scratch area, again after a suspend,
+/// and `release` removes the area's volume.
+#[tokio::test]
+#[ignore = "needs a Docker daemon and DOCKER_SANDBOX_TESTS=1"]
+async fn a_session_sandbox_writes_its_scratch_and_release_removes_it() {
+    if !enabled() {
+        return;
+    }
+    let client = bollard::Docker::connect_with_local_defaults().unwrap();
+    let volume = format!("nasiko-sbx-test-{}", Uuid::new_v4());
+    let config = DockerRuntimeConfig {
+        agent_memory_volume: volume.clone(),
+        ..Default::default()
+    };
+    let provider = DockerSandboxProvider::new(client.clone(), config, None);
+    let owner = Uuid::new_v4();
+    let key = SandboxKey::Session {
+        session_id: Uuid::new_v4(),
+    };
+    let mut spec = spec(key.clone());
+    // The workspace makes the sandbox run as uid 65534, the harness images' user.
+    spec.workspace = Some(WorkspaceRef {
+        owner_id: owner,
+        container_id: ContainerId::from_uuid(owner),
+    });
+    // A failed write exits the shell, so a reachable server proves it succeeded. Both starts
+    // (the create and the resume) write.
+    spec.command = [
+        "sh",
+        "-c",
+        "mkdir -p /scratch/s/npm && echo x >> /scratch/s/npm/log && httpd -f -p 8000",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    let scratch_volume = format!("nasiko-sbx-{}-scratch", key.name());
+
+    let remove_volume = async {
+        let _ = client.remove_volume(&volume, None).await;
+    };
+    with_cleanup_then(
+        &provider,
+        &key,
+        async {
+            let handle = provider.acquire(&spec).await.unwrap();
+            provider.suspend(&handle).await.unwrap();
+            let resumed = provider.acquire(&spec).await.unwrap();
+            let url = http_url(provider.attach(&resumed).await.unwrap());
+            assert!(get_status_line(&url).contains("HTTP/1."), "{url}");
+            let labels = client.inspect_volume(&scratch_volume).await.unwrap().labels;
+            assert_eq!(labels["nasiko.com/sandbox-key"], key.name());
+            assert_eq!(labels["nasiko.com/sandbox-kind"], "session");
+
+            provider.release(&handle).await.unwrap();
+            assert!(
+                client.inspect_volume(&scratch_volume).await.is_err(),
+                "release leaves the scratch volume behind"
+            );
+        },
+        remove_volume,
+    )
+    .await;
+}
+
 #[tokio::test]
 #[ignore = "needs a Docker daemon and DOCKER_SANDBOX_TESTS=1"]
 async fn sandbox_ref_survives_the_container_being_recreated() {
@@ -263,7 +326,7 @@ async fn a_first_acquire_that_fails_to_start_leaves_no_container() {
         operation_timeout: std::time::Duration::from_secs(3),
         ..DockerRuntimeConfig::default()
     };
-    let provider = DockerSandboxProvider::new(client, config, None);
+    let provider = DockerSandboxProvider::new(client.clone(), config, None);
     // Exits at once, so the readiness wait fails (a host port proxy would accept TCP even for a
     // container that listens on nothing, so a never-listening process is not a reliable failure).
     let mut spec = spec(SandboxKey::Session {
@@ -277,6 +340,11 @@ async fn a_first_acquire_that_fails_to_start_leaves_no_container() {
             provider.status(&handle_by_name(&spec.key)).await.unwrap(),
             SandboxState::Absent,
             "the container this failed acquire created is removed"
+        );
+        let scratch_volume = format!("nasiko-sbx-{}-scratch", spec.key.name());
+        assert!(
+            client.inspect_volume(&scratch_volume).await.is_err(),
+            "and so is its scratch volume"
         );
     })
     .await;

@@ -724,7 +724,8 @@ impl AuthService for AuthServiceImpl {
         Ok(result.rows_affected())
     }
 
-    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all).
+    /// OSS access rule: owner ∪ public ∪ user-grant (superuser sees all), where no grant reaches a
+    /// harness agent ([`crate::sharing`]).
     /// Team/department grants are EE-only — `EeAuthService` overrides this with the
     /// fuller check. This is the single source of truth for per-agent access in OSS;
     /// handlers reach it via `state.auth.can_access_agent`, so the check is
@@ -740,7 +741,7 @@ impl AuthService for AuthServiceImpl {
             return false;
         };
 
-        sqlx::query_scalar::<_, bool>(
+        sqlx::query_scalar::<_, bool>(&format!(
             r#"SELECT EXISTS(
                 SELECT 1 FROM agents a
                 WHERE a.id = $2
@@ -748,17 +749,18 @@ impl AuthService for AuthServiceImpl {
                   AND (
                       a.owner_id = $1
                       OR a.is_public = TRUE
-                      OR EXISTS (
+                      OR ({grants_reach} AND EXISTS (
                           SELECT 1 FROM agent_grants ag
                           WHERE ag.agent_id = a.id
                             AND (
                                 (ag.grant_type = 'public' AND ag.grantee_id = '*')
                              OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
                             )
-                      )
+                      ))
                   )
             )"#,
-        )
+            grants_reach = crate::sharing::grants_reach_sql("a"),
+        ))
         .bind(user_uuid)
         .bind(agent_uuid)
         .fetch_one(&self.db)

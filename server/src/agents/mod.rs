@@ -1,16 +1,15 @@
 pub mod acl;
 pub mod build_worker;
+pub mod catalog_deploy;
 pub mod deploy_env;
 pub mod deployments;
 pub mod grants;
 pub mod hours_meter;
 pub mod llm_config;
 pub mod open_tasks;
-pub mod parking;
 pub mod reconcile;
-pub mod sandbox_credentials;
 pub mod sandbox_smoke;
-pub mod sandbox_spec;
+pub mod sharing;
 pub mod update;
 pub mod upload;
 pub(crate) mod utils;
@@ -26,7 +25,7 @@ use nasiko_runtime::{
 use nasiko_utils::image::strip_image_to_repo;
 use uuid::Uuid;
 
-use crate::agent_scaling::ReplicaBounds;
+use crate::agent_scaling::{DeployPlan, ReplicaBounds};
 use crate::state::AppState;
 
 pub use nasiko_utils::image::image_name_slug;
@@ -77,6 +76,21 @@ pub(crate) const DEFAULT_AGENT_PORT: u16 = 8000;
 ///
 /// Images are namespaced per owner: `u-{owner_uuid}/{slug}:{tag}`. The legacy
 /// `nasiko/` namespace is no longer written except by seeds (BuildService identity).
+/// What the generic lifecycle paths answer for an agent of kind `harness`: its workload is the
+/// platform's to build (a harness agent's carries a command and settings no agent row records), so
+/// a redeploy from the row, or an upload over it, would replace it with something that cannot run.
+pub(crate) const HARNESS_AGENT_MANAGED: &str = "a harness agent is managed by the platform: it cannot be redeployed, restarted or replaced by an upload";
+
+/// Whether the agent is a harness agent (`workload_kind = 'harness'`).
+pub(crate) async fn is_harness_agent(db: &sqlx::PgPool, agent_id: Uuid) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM agents WHERE id = $1 AND workload_kind = 'harness')",
+    )
+    .bind(agent_id)
+    .fetch_one(db)
+    .await
+}
+
 pub(crate) fn build_image_tag(registry: &str, owner_id: Uuid, name: &str, tag: &str) -> String {
     let slug = image_name_slug(name);
     let namespace = format!("u-{}", owner_id.as_simple());
@@ -371,6 +385,48 @@ pub(crate) fn set_port_env(env: &mut HashMap<String, String>, port: u16) {
         .or_insert_with(|| port.to_string());
 }
 
+/// The ports the agent listens on, as its last deployment recorded them (what a restart uses),
+/// else its `PORT` env, else the platform default. The first also becomes `PORT`, so the env and
+/// the exposed port cannot disagree.
+pub(crate) async fn recorded_ports(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    env: &mut HashMap<String, String>,
+) -> Vec<u16> {
+    let recorded: Option<Vec<i32>> = sqlx::query_scalar(
+        "SELECT spec_ports FROM agent_deployments \
+         WHERE agent_id = $1 AND spec_ports IS NOT NULL AND cardinality(spec_ports) > 0 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await
+    .ok()
+    .flatten();
+    let ports = choose_ports(recorded, env.get("PORT").map(String::as_str));
+    env.insert("PORT".to_owned(), ports[0].to_string());
+    ports
+}
+
+fn choose_ports(recorded: Option<Vec<i32>>, env_port: Option<&str>) -> Vec<u16> {
+    let recorded: Vec<u16> = recorded
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| u16::try_from(p).ok())
+        .filter(|p| *p != 0)
+        .collect();
+    if !recorded.is_empty() {
+        return recorded;
+    }
+    let from_env = env_port
+        .and_then(|p| p.parse::<u16>().ok())
+        .filter(|p| *p != 0);
+    vec![from_env.unwrap_or(DEFAULT_AGENT_PORT)]
+}
+
+/// The spec every framework-agent deploy path sends, `plan` (from
+/// [`AgentDeploy::plan`](crate::agent_scaling::AgentDeploy::plan)) deciding its replica bounds
+/// and whether it is parkable.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_agent_spec(
     agent_id: Uuid,
@@ -379,7 +435,7 @@ pub(crate) fn build_agent_spec(
     ports: Vec<u16>,
     mut env: HashMap<String, String>,
     default_memory: &str,
-    bounds: ReplicaBounds,
+    plan: DeployPlan,
     writable: bool,
     writable_path: Option<String>,
     owner_id: Uuid,
@@ -394,7 +450,7 @@ pub(crate) fn build_agent_spec(
     let bounds = if writable {
         ReplicaBounds::SINGLE
     } else {
-        bounds
+        plan.bounds
     };
     DeploymentSpec {
         container_id: ContainerId::from_uuid(agent_id),
@@ -423,6 +479,8 @@ pub(crate) fn build_agent_spec(
         writable_path,
         owner_id,
         force_pull: false,
+        parkable: plan.parkable,
+        overrides: Default::default(),
     }
 }
 
@@ -485,6 +543,26 @@ mod spec_tests {
     use super::*;
 
     #[test]
+    fn a_recorded_port_wins_then_the_env_port_then_the_default() {
+        assert_eq!(
+            choose_ports(Some(vec![3000, 4000]), Some("9000")),
+            [3000, 4000]
+        );
+        assert_eq!(choose_ports(None, Some("9000")), [9000]);
+        assert_eq!(choose_ports(Some(vec![]), None), [DEFAULT_AGENT_PORT]);
+        assert_eq!(choose_ports(None, Some("not-a-port")), [DEFAULT_AGENT_PORT]);
+        assert_eq!(
+            choose_ports(Some(vec![0, -1]), Some("0")),
+            [DEFAULT_AGENT_PORT]
+        );
+    }
+
+    const RESIDENT: DeployPlan = DeployPlan {
+        bounds: ReplicaBounds::SINGLE,
+        parkable: false,
+    };
+
+    #[test]
     fn always_keys_on_uuid_and_defaults_port() {
         let id = Uuid::new_v4();
         // Same agent_id → same ContainerId regardless of the display name, so every
@@ -496,7 +574,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -508,7 +586,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -535,7 +613,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -556,7 +634,7 @@ mod spec_tests {
             vec![9091],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -576,7 +654,7 @@ mod spec_tests {
             vec![],
             env,
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -594,7 +672,7 @@ mod spec_tests {
             vec![9091],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -612,7 +690,7 @@ mod spec_tests {
             vec![9091, 9092],
             HashMap::new(),
             "512Mi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),
@@ -635,7 +713,10 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            bounds,
+            DeployPlan {
+                bounds,
+                parkable: false,
+            },
             false,
             None,
             Uuid::nil(),
@@ -658,12 +739,40 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "512Mi",
-            bounds,
+            DeployPlan {
+                bounds,
+                parkable: false,
+            },
             true,
             None,
             Uuid::nil(),
         );
         assert_eq!((s.min_replicas, s.max_replicas), (1, 1));
+    }
+
+    #[test]
+    fn the_plan_decides_whether_the_spec_is_parkable() {
+        for parkable in [false, true] {
+            for writable in [false, true] {
+                let s = build_agent_spec(
+                    Uuid::new_v4(),
+                    "a",
+                    "img:1",
+                    vec![],
+                    HashMap::new(),
+                    "512Mi",
+                    DeployPlan {
+                        bounds: ReplicaBounds::SINGLE,
+                        parkable,
+                    },
+                    writable,
+                    None,
+                    Uuid::nil(),
+                );
+                assert_eq!(s.parkable, parkable, "writable={writable}");
+                assert_eq!(s.workload_kind, nasiko_runtime::WorkloadKind::Agent);
+            }
+        }
     }
 
     #[test]
@@ -676,7 +785,7 @@ mod spec_tests {
             vec![],
             HashMap::new(),
             "2Gi",
-            ReplicaBounds::SINGLE,
+            RESIDENT,
             false,
             None,
             Uuid::nil(),

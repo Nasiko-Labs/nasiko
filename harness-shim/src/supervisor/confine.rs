@@ -6,8 +6,8 @@
 //! everything they start inherit it. Two independent layers:
 //!
 //! - **Filesystem** (Landlock): the session's own directory read-write (its workspace, and its
-//!   `HOME` with a private `TMPDIR` inside), the image's system paths read-only, a few device
-//!   nodes, nothing else.
+//!   `HOME` with a private `TMPDIR` inside) and, when the pod has a scratch area, its own scratch
+//!   directory read-write, the image's system paths read-only, a few device nodes, nothing else.
 //! - **Syscalls** (seccomp-bpf): a short denylist tightened over the pod's `RuntimeDefault`
 //!   profile: the calls that reach into another process, and kernel facilities a coding harness
 //!   never needs that are common privilege-escalation entry points.
@@ -98,14 +98,27 @@ pub(super) fn startup_check(confinement: Confinement) -> Result<()> {
     platform::startup_check(confinement)
 }
 
-/// Makes `command` confine the process it starts to `session_dir` (see the module docs). The
-/// directory must exist. A layer that cannot be applied in the child fails the spawn.
+/// The directories one session may write: its own, and its scratch directory when the pod has a
+/// scratch area. Both must exist before the session is confined to them.
+#[derive(Debug, Clone, Copy)]
+// Only the Linux policy reads the fields; elsewhere confinement is refused before any path is
+// looked at, so they are dead there by design.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) struct SessionDirs<'a> {
+    /// The session's directory: its workspace, with its `HOME` inside.
+    pub(super) dir: &'a Path,
+    /// The session's scratch directory, if any.
+    pub(super) scratch: Option<&'a Path>,
+}
+
+/// Makes `command` confine the process it starts to `dirs` (see the module docs). A layer that
+/// cannot be applied in the child fails the spawn.
 pub(super) fn apply_to(
     command: &mut Command,
     confinement: Confinement,
-    session_dir: &Path,
+    dirs: SessionDirs<'_>,
 ) -> Result<()> {
-    platform::apply_to(command, confinement, session_dir)
+    platform::apply_to(command, confinement, dirs)
 }
 
 #[cfg(target_os = "linux")]
@@ -129,7 +142,7 @@ mod platform {
     use tokio::process::Command;
 
     use super::super::SESSION_HOME;
-    use super::{Confinement, FS_ENV, SYSCALLS_ENV};
+    use super::{Confinement, FS_ENV, SYSCALLS_ENV, SessionDirs};
 
     // ── Filesystem policy (Landlock) ──────────────────────────────────────────────────────
 
@@ -223,18 +236,28 @@ mod platform {
         Ok(ruleset)
     }
 
-    /// [`shared_ruleset`] plus everything on `session_dir`, and read and execute on `program`
-    /// (the shim, which a test build keeps outside the system paths). Both must exist: a
-    /// missing session directory is an error here, not a rule silently skipped.
-    fn session_ruleset(session_dir: &Path, program: &Path) -> Result<RulesetCreated> {
-        let session = PathFd::new(session_dir)
-            .with_context(|| format!("opening {}", session_dir.display()))?;
+    /// [`shared_ruleset`] plus everything on the session's directories, and read and execute on
+    /// `program` (the shim, which a test build keeps outside the system paths). All must exist:
+    /// a missing session directory is an error here, not a rule silently skipped.
+    fn session_ruleset(dirs: SessionDirs<'_>, program: &Path) -> Result<RulesetCreated> {
         let binary =
             PathFd::new(program).with_context(|| format!("opening {}", program.display()))?;
         let executable: BitFlags<AccessFs> = make_bitflags!(AccessFs::{ReadFile | Execute});
-        Ok(shared_ruleset()?
-            .add_rule(PathBeneath::new(session, AccessFs::from_all(FS_ABI)))?
-            .add_rule(PathBeneath::new(binary, executable))?)
+        let mut ruleset = shared_ruleset()?
+            .add_rule(PathBeneath::new(
+                open(dirs.dir)?,
+                AccessFs::from_all(FS_ABI),
+            ))?
+            .add_rule(PathBeneath::new(binary, executable))?;
+        if let Some(scratch) = dirs.scratch {
+            ruleset =
+                ruleset.add_rule(PathBeneath::new(open(scratch)?, AccessFs::from_all(FS_ABI)))?;
+        }
+        Ok(ruleset)
+    }
+
+    fn open(dir: &Path) -> Result<PathFd> {
+        PathFd::new(dir).with_context(|| format!("opening {}", dir.display()))
     }
 
     /// In the child: enforces `ruleset` on the process about to `exec`.
@@ -430,18 +453,18 @@ mod platform {
     pub(super) fn apply_to(
         command: &mut Command,
         confinement: Confinement,
-        session_dir: &Path,
+        dirs: SessionDirs<'_>,
     ) -> Result<()> {
         if !confinement.any() {
             return Ok(());
         }
         let mut ruleset = None;
         if confinement.fs {
-            let tmp = session_dir.join(SESSION_HOME).join(PRIVATE_TMP);
+            let tmp = dirs.dir.join(SESSION_HOME).join(PRIVATE_TMP);
             std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
             command.env("TMPDIR", &tmp);
             let program = Path::new(command.as_std().get_program()).to_owned();
-            ruleset = Some(session_ruleset(session_dir, &program)?);
+            ruleset = Some(session_ruleset(dirs, &program)?);
         }
         let filter = confinement.syscalls.then(syscall_filter).transpose()?;
         // SAFETY: the hook runs in the forked child, where only async-signal-safe work is sound.
@@ -561,8 +584,17 @@ mod platform {
         #[test]
         fn a_missing_session_directory_is_an_error_not_a_skipped_rule() {
             let root = tempfile::tempdir().unwrap();
-            let err = session_ruleset(&root.path().join("absent"), Path::new("/bin/sh"));
-            assert!(err.is_err());
+            let absent = root.path().join("absent");
+            let dirs = SessionDirs {
+                dir: &absent,
+                scratch: None,
+            };
+            assert!(session_ruleset(dirs, Path::new("/bin/sh")).is_err());
+            let missing_scratch = SessionDirs {
+                dir: root.path(),
+                scratch: Some(&absent),
+            };
+            assert!(session_ruleset(missing_scratch, Path::new("/bin/sh")).is_err());
         }
     }
 }
@@ -572,19 +604,21 @@ mod platform {
     //! Landlock and seccomp are Linux kernel features, and the supervisor ships only in Linux
     //! images. Elsewhere (a developer's machine) both switches must be off.
 
-    use std::path::Path;
-
     use anyhow::{Result, bail};
     use tokio::process::Command;
 
-    use super::{Confinement, FS_ENV, SYSCALLS_ENV};
+    use super::{Confinement, FS_ENV, SYSCALLS_ENV, SessionDirs};
 
     pub(super) fn startup_check(confinement: Confinement) -> Result<()> {
         refuse(confinement)
     }
 
     /// Unreachable past [`startup_check`], and still refuses rather than run unconfined.
-    pub(super) fn apply_to(_: &mut Command, confinement: Confinement, _: &Path) -> Result<()> {
+    pub(super) fn apply_to(
+        _: &mut Command,
+        confinement: Confinement,
+        _: SessionDirs<'_>,
+    ) -> Result<()> {
         refuse(confinement)
     }
 
@@ -652,6 +686,10 @@ mod tests {
         assert_eq!(partial.to_string(), "fs on, syscalls off");
     }
 
+    fn dirs(dir: &Path) -> SessionDirs<'_> {
+        SessionDirs { dir, scratch: None }
+    }
+
     #[test]
     fn both_layers_off_needs_nothing_from_the_kernel() {
         let off = Confinement {
@@ -660,7 +698,7 @@ mod tests {
         };
         startup_check(off).unwrap();
         let mut command = Command::new("true");
-        apply_to(&mut command, off, Path::new("/nonexistent")).unwrap();
+        apply_to(&mut command, off, dirs(Path::new("/nonexistent"))).unwrap();
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -679,7 +717,7 @@ mod tests {
             let err = startup_check(confinement).unwrap_err().to_string();
             assert!(err.contains(std::env::consts::OS), "{err}");
             let mut command = Command::new("true");
-            assert!(apply_to(&mut command, confinement, Path::new("/tmp")).is_err());
+            assert!(apply_to(&mut command, confinement, dirs(Path::new("/tmp"))).is_err());
         }
     }
 }

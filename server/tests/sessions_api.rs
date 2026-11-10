@@ -12,6 +12,7 @@ use nasiko_runtime::{
     SandboxStats, TransportKind,
 };
 use nasiko_server::coding::lifecycle::{TurnLease, heartbeat, release_turn};
+use nasiko_server::coding::questions::TurnQuestions;
 use nasiko_server::sessions::reaper::{
     ReaperMemory, SweepOutcome, SweepScope, reap_once, recover_orphans, recover_stuck, sweep,
 };
@@ -1046,6 +1047,110 @@ async fn a_model_call_inside_the_idle_ttl_blocks_the_suspend() {
     server.cleanup().await;
 }
 
+// ─── a question lives only as long as its turn ──────────────────────────────
+
+/// A question the session's harness asked `age` ago and nobody has answered: the
+/// `hitl_requests` row a turn's permission delegate records, here one a crashed turn left open.
+/// Asked before the session went idle (an hour ago, see [`idle_running_session`]) whenever `age`
+/// is longer than that.
+async fn insert_open_question(server: &common::TestServer, sid: &str, age: &str) -> Uuid {
+    sqlx::query_scalar(&format!(
+        "INSERT INTO hitl_requests (kind, origin, agent_id, owner_user_id, context_id, \
+         chat_session_id, tool_name, question, created_at) \
+         SELECT 'tool_approval', 'coding_agent', agent_id, user_id, session_id, session_id, \
+         'bash', '{{}}'::jsonb, now() - interval '{age}' \
+         FROM chat_sessions WHERE session_id = $1 RETURNING id"
+    ))
+    .bind(sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+async fn question_status(server: &common::TestServer, id: Uuid) -> String {
+    sqlx::query_scalar("SELECT status FROM hitl_requests WHERE id = $1")
+        .bind(id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn the_reapers_suspend_closes_the_questions_a_crashed_turn_left_open() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let question = insert_open_question(&server, &sid, "2 hours").await;
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    // The open question did not keep the idle session up, and the suspend closed it.
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    assert_eq!(question_status(&server, question).await, "expired");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_manual_suspend_closes_the_questions_a_crashed_turn_left_open() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _) = idle_running_session(&server, &admin).await;
+    let question = insert_open_question(&server, &sid, "2 hours").await;
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 204);
+    assert_eq!(question_status(&server, question).await, "expired");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_turn_closes_only_its_own_unanswered_questions_and_only_once() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _) = idle_running_session(&server, &admin).await;
+    let unanswered = insert_open_question(&server, &sid, "1 minute").await;
+    let answered = insert_open_question(&server, &sid, "2 minutes").await;
+    let not_this_turns = insert_open_question(&server, &sid, "3 minutes").await;
+    sqlx::query("UPDATE hitl_requests SET status = 'resolved' WHERE id = $1")
+        .bind(answered)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let turn = TurnQuestions::default();
+    turn.record(unanswered);
+    turn.record(answered);
+
+    assert_eq!(turn.close_open(&server.db).await.unwrap(), 1);
+    assert_eq!(turn.close_open(&server.db).await.unwrap(), 0, "idempotent");
+
+    assert_eq!(question_status(&server, unanswered).await, "expired");
+    assert_eq!(question_status(&server, answered).await, "resolved");
+    assert_eq!(question_status(&server, not_this_turns).await, "pending");
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn a_failed_suspend_restores_a_starting_session_to_starting() {
@@ -1182,6 +1287,54 @@ async fn a_session_idle_for_the_ttl_is_suspended_on_the_first_quiet_sweep() {
         server.sandbox.status(&handle).await.unwrap(),
         SandboxState::Suspended
     );
+    server.cleanup().await;
+}
+
+/// Agent parking and session suspension are separate switches: with `AGENT_PARK_IDLE_SECS=0` a
+/// sweep leaves an idle agent's workload up, and still suspends an idle session.
+#[tokio::test]
+#[serial]
+async fn with_agent_parking_off_a_sweep_parks_no_agent_but_still_suspends_idle_sessions() {
+    let server = common::TestServer::start_with(|c| {
+        c.coding_agent_idle_ttl_secs = 60;
+        c.session_idle_grace_secs = 0;
+        c.session_cpu_quiescent_millicores = 20;
+        c.agent_park_idle_secs = 0;
+    })
+    .await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let agent: Uuid = sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, status, workload_kind, parking_policy, \
+                             last_request_at, updated_at) \
+         VALUES ('idle-agent', $1, 'x:1.0.0', 'running', 'agent', 'auto', \
+                 now() - interval '2 hours', now() - interval '2 hours') RETURNING id",
+    )
+    .bind(Uuid::parse_str(&admin).unwrap())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+
+    sweep(
+        &server.state,
+        &mut ReaperMemory::default(),
+        SweepScope::Full,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    let agent_status: String = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
+        .bind(agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(agent_status, "running");
     server.cleanup().await;
 }
 

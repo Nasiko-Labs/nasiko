@@ -171,6 +171,8 @@ fn agent_spec(container_id: ContainerId) -> DeploymentSpec {
         writable_path: None,
         owner_id: Uuid::nil(),
         force_pull: false,
+        parkable: false,
+        overrides: Default::default(),
     }
 }
 

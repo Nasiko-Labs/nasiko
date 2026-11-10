@@ -14,10 +14,12 @@
 //! provider contract is that every acquire passes the full, stable env. So the *sandbox token*
 //! is minted once, kept encrypted on the session row (`sessions::token`), and every acquire
 //! decrypts it and rebuilds the whole env from it. It is replaced only when missing, unusable
-//! (secret rotated) or within 24 h of expiry, and then the sandbox is released first so the new
-//! env lands. The *turn token* is minted per turn and handed to the agent only as the ACP MCP
-//! header, and is revoked when the turn ends. A failed acquire revokes nothing: a container or
-//! pod that survived the failure still carries the token.
+//! (secret rotated) or within 24 h of expiry, and then the sandbox is stopped first so the new
+//! env lands: suspended where the provider resumes it on the new env, released only where it
+//! cannot (`sessions::token::stop_for_new_env`), so its files stay. The *turn token* is minted
+//! per turn and handed to the agent only as the ACP MCP header, and is revoked when the turn
+//! ends. A failed acquire revokes nothing: a container or pod that survived the failure still
+//! carries the token.
 //!
 //! # The profile
 //!
@@ -60,10 +62,12 @@ use super::live::{LiveRegistration, LiveTurn};
 use super::model::{SessionRow, SessionRuntimeState, SessionStore};
 use super::pending::{clear_pending, set_pending};
 use super::profile::{HarnessProfile, ModelChoice, ProfileInputs, model_choice_for_user};
+use super::scratch::add_scratch_env;
 use super::token::{TokenNeeds, ensure_sandbox_token};
 use crate::coding::lifecycle::{self, TurnLease};
 use crate::coding::permission::PendingPermissionSink;
 use crate::coding::proxy::{CodingAgentKind, HarnessTarget, codex_hitl_args};
+use crate::coding::questions::TurnQuestions;
 use crate::coding::revocation::{RevokedTokenId, revoke_session_token};
 use crate::coding::turn::{
     CodingTurnError, CodingTurnEvent, DriveTurn, HitlPolicyInput, ShimRestart, TelemetryKeys,
@@ -97,7 +101,8 @@ pub struct HarnessTurnRequest<'a> {
     pub task_id: &'a str,
 }
 
-/// Run the turn and return its events as A2A `message/stream` SSE.
+/// Run the turn and return its events as A2A `message/stream` SSE. Its callers have asked the
+/// session admission already (`super::admission`), before anything was written for the turn.
 ///
 /// The turn is registered as a live task (its id is the request's task id) before it starts, so
 /// `tasks/cancel` and `tasks/resubscribe` can reach it. Its frames are published to a broadcast;
@@ -231,6 +236,7 @@ async fn start_harness_turn(
         turn_id: &turn_id,
         live,
         lease_lost,
+        questions: TurnQuestions::default(),
     };
     let started = start_turn(&ctx, minted.token, &token_id).await;
     drop(setup_beat);
@@ -356,6 +362,9 @@ struct TurnCtx<'a, 'r> {
     live: Arc<LiveRegistration>,
     /// Raised by [`StartHeartbeat`] when the lease is lost.
     lease_lost: Arc<AtomicBool>,
+    /// The questions the turn asks a person: the delegate notes each one, and the driver closes
+    /// the ones still open when the turn ends.
+    questions: TurnQuestions,
 }
 
 impl TurnCtx<'_, '_> {
@@ -545,6 +554,7 @@ async fn begin_prompt(
         cancel: Some(ctx.live.cancel.clone()),
         keep_alive: Some(ctx.live.clone()),
         shim_restart: Some(shim_restart),
+        questions: ctx.questions.clone(),
     };
     tokio::spawn(driver.run());
     Ok(out_rx)
@@ -568,6 +578,7 @@ fn turn_policy(
                 lease: ctx.lease.clone(),
             })),
             cancel: Some(ctx.live.cancel.clone()),
+            questions: ctx.questions.clone(),
         },
         out_tx,
     )
@@ -677,8 +688,10 @@ async fn turn_profile(
 }
 
 /// The sandbox's full env, rebuilt on every acquire from the stored token: its credentials and
-/// gateway wiring, the shim's bearer, and the session's profile (the harness's model and
-/// permission settings, including any files the shim writes for it).
+/// gateway wiring, the shim's bearer, the session's profile (the harness's model and
+/// permission settings, including any files the shim writes for it), and the scratch folders
+/// its package caches and build output go to (`sessions::scratch`), each unless the profile
+/// already sets it.
 ///
 /// Deliberately not the agent's deploy-time env (`agents::deploy_env::build`): a harness agent
 /// is one shared row owned by the admin who seeded it, so its secrets and rotating agent-scoped
@@ -701,6 +714,7 @@ fn sandbox_env(
     );
     profile.apply_to(&mut env);
     env.extend(workspace);
+    add_scratch_env(&mut env, key);
     Ok(env)
 }
 

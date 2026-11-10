@@ -15,6 +15,32 @@ use nasiko_runtime::{ContainerId, DeploymentSpec};
 use crate::auth::Claims;
 use crate::state::AppState;
 
+/// Marks the agent's newest `agent_deployments` row `status`, and no other. The table is
+/// append-only history (every restart, update and upload stops the current row and inserts a new
+/// one), so bringing an agent up must touch only the newest row: resurrecting an old one as
+/// `running` gives a crash watcher that probes every `starting`/`running` row a phantom
+/// deployment to probe and mark crashed. Taking an agent down sweeps every row instead.
+pub(crate) async fn record_newest_deployment_status<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    agent_id: Uuid,
+    status: &str,
+) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE agent_deployments SET status = $2::deployment_status, updated_at = now()
+         WHERE id = (
+             SELECT id FROM agent_deployments
+             WHERE agent_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1
+         ) AND status != $2::deployment_status",
+    )
+    .bind(agent_id)
+    .bind(status)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -275,15 +301,13 @@ pub(crate) async fn restart_deployment(
         Err(e) => return e.into_response(),
     };
 
-    // Fetch deployment and agent info together, including stored spec columns. A deleted
-    // agent's deployment rows are history: restarting one would bring the agent back, and the
-    // owner check below lets a superuser through for it.
+    // Fetch deployment and agent info together, including stored spec columns.
     let info = match sqlx::query_as::<_, AgentDeployInfo>(
         "SELECT a.name, a.image, a.id as agent_id, a.writable, a.writable_path, a.owner_id,
                 d.build_id, d.status::text as status,
                 d.spec_ports, d.spec_image, d.k8s_deployment_name
          FROM agent_deployments d
-         JOIN agents a ON a.id = d.agent_id AND a.deleted_at IS NULL
+         JOIN agents a ON a.id = d.agent_id
          WHERE d.id = $1",
     )
     .bind(deployment_id)
@@ -304,39 +328,6 @@ pub(crate) async fn restart_deployment(
     // is a denial-of-service if granted too broadly.
     if !claims.is_superuser && info.owner_id != user_id {
         return StatusCode::FORBIDDEN.into_response();
-    }
-
-    // A parkable agent has no workload to restart: release what it has and let the next
-    // request wake it from its current image (never parked without one).
-    let parked_image = if info.image.is_empty() {
-        info.spec_image.clone().unwrap_or_default()
-    } else {
-        info.image.clone()
-    };
-    match crate::agents::parking::parks(&state, info.agent_id).await {
-        Ok(true) if parked_image.is_empty() => {
-            return (StatusCode::CONFLICT, "agent has no recorded image to park").into_response();
-        }
-        Ok(true) => {
-            if let Err(e) =
-                crate::agents::parking::park_agent(&state, info.agent_id, Some(&parked_image)).await
-            {
-                tracing::error!(%e, %deployment_id, "restart_deployment: could not park the agent");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-            return (
-                StatusCode::OK,
-                Json(serde_json::json!({
-                    "warnings": ["agent is parked; the next request starts it"],
-                })),
-            )
-                .into_response();
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::error!(%e, %deployment_id, "restart_deployment: could not read parking eligibility");
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
     }
 
     // Atomic mark-starting BEFORE touching the runtime: two concurrent restart
@@ -383,9 +374,9 @@ pub(crate) async fn restart_deployment(
     // Same image comes back, so a durable agent stays durable.
     // Read before the deploy env is built, as on every deploy path.
     let scaling = state.agent_scaling.begin_deploy(info.agent_id).await;
-    // Only the Docker branch applies bounds; a failed read is handled there, so the K8s
+    // Only the Docker branch applies the plan; a failed read is handled there, so the K8s
     // scale-to-1 path is not failed by it.
-    let bounds = scaling.bounds().await;
+    let plan = scaling.plan().await;
     let secrets = crate::agents::deploy_env::build(
         &state,
         info.agent_id,
@@ -428,10 +419,10 @@ pub(crate) async fn restart_deployment(
         // Post-fix containers use the agent UUID as ContainerId; pre-fix containers
         // used the agent name. Try UUID first; fall back to name to avoid leaving a
         // stale name-based container running alongside the new UUID-based one.
-        let bounds = match bounds {
-            Ok(bounds) => bounds,
+        let plan = match plan {
+            Ok(plan) => plan,
             Err(e) => {
-                tracing::error!(%e, %deployment_id, "restart_deployment: could not read replica bounds");
+                tracing::error!(%e, %deployment_id, "restart_deployment: could not read the deploy plan");
                 revert_starting_status(&state, deployment_id, &original_status).await;
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
@@ -448,9 +439,9 @@ pub(crate) async fn restart_deployment(
             image: image.clone(),
             ports: ports.clone(),
             env_vars: secrets,
-            min_replicas: bounds.min,
-            max_replicas: bounds.max,
-            replica_target: bounds.target,
+            min_replicas: plan.bounds.min,
+            max_replicas: plan.bounds.max,
+            replica_target: plan.bounds.target,
             // TODO: persist spec_resources in agent_deployments and restore here.
             // Currently the upload path also uses None, so both deploy and restart
             // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
@@ -467,6 +458,8 @@ pub(crate) async fn restart_deployment(
             writable_path: info.writable_path.clone(),
             owner_id: info.owner_id,
             force_pull: false,
+            parkable: plan.parkable,
+            overrides: Default::default(),
         };
 
         match scaling.deploy(&spec).await {

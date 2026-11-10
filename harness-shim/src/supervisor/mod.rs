@@ -1,11 +1,12 @@
 //! `harness-supervisor`: many sessions of one harness image inside one shared pod.
 //!
-//! Per session it creates the session's directory, starts one `harness-shim` in handshake mode
-//! with that directory as its workspace and `HOME`, reports the session's resource use, and stops
-//! the shim when the platform suspends or releases the session. The platform tells it which port
+//! Per session it creates the session's directory (and, when the pod has a scratch area, the
+//! session's scratch directory in it), starts one `harness-shim` in handshake mode with that
+//! directory as its workspace and `HOME`, reports the session's resource use, and stops the shim
+//! when the platform suspends or releases the session. The platform tells it which port
 //! each session listens on: its placement record owns a session's port for the life of the
 //! session, so a port picked here could disagree with the one the platform dials. Each session's
-//! process tree is confined to its own directory and a tightened syscall policy (`confine`).
+//! process tree is confined to its own directories and a tightened syscall policy (`confine`).
 
 mod confine;
 mod routes;
@@ -32,6 +33,7 @@ const LISTEN_ENV: &str = "HARNESS_SUPERVISOR_LISTEN";
 const TOKEN_ENV: &str = "HARNESS_SUPERVISOR_TOKEN";
 const SHIM_BINARY_ENV: &str = "HARNESS_SHIM_BINARY";
 const WORKSPACE_ROOT_ENV: &str = "HARNESS_WORKSPACE_ROOT";
+const SCRATCH_ROOT_ENV: &str = "HARNESS_SCRATCH_ROOT";
 const MAX_SESSIONS_ENV: &str = "HARNESS_SUPERVISOR_MAX_SESSIONS";
 
 const DEFAULT_LISTEN: &str = "0.0.0.0:7001";
@@ -54,6 +56,11 @@ pub struct SupervisorConfig {
     pub shim_binary: PathBuf,
     /// The directory holding one subdirectory per session (the pod's volume).
     pub workspace_root: PathBuf,
+    /// The directory holding one scratch directory per session, `<root>/<id>`: the pod's
+    /// node-local scratch volume, where the server's session env points package caches and build
+    /// output (`HARNESS_SCRATCH_ROOT`). `None` (unset) makes none, and a confined session then
+    /// reaches no scratch at all.
+    pub scratch_root: Option<PathBuf>,
     /// Running sessions allowed at once; a `PUT` past it is a `409`, which the platform reads as
     /// "place this session elsewhere".
     pub max_sessions: usize,
@@ -88,6 +95,14 @@ impl SupervisorConfig {
                 workspace_root.display()
             );
         }
+        // The server's env names absolute paths in it, so a relative root could never match.
+        let scratch_root = get(SCRATCH_ROOT_ENV).map(PathBuf::from);
+        if let Some(root) = scratch_root.as_ref().filter(|root| !root.is_absolute()) {
+            bail!(
+                "{SCRATCH_ROOT_ENV} must be an absolute path, got `{}`",
+                root.display()
+            );
+        }
         Ok(Self {
             listen,
             token,
@@ -95,6 +110,7 @@ impl SupervisorConfig {
                 .unwrap_or_else(|| DEFAULT_SHIM_BINARY.into())
                 .into(),
             workspace_root,
+            scratch_root,
             max_sessions: max_sessions(get(MAX_SESSIONS_ENV))?,
             confinement: Confinement::from_lookup(get)?,
         })
@@ -126,6 +142,10 @@ pub async fn run(
             "the shim binary `{}` does not exist",
             config.shim_binary.display()
         );
+    }
+    // Likewise a pod whose scratch volume is not mounted where it was said to be.
+    if let Some(root) = config.scratch_root.as_ref().filter(|root| !root.is_dir()) {
+        bail!("{SCRATCH_ROOT_ENV} `{}` is not a directory", root.display());
     }
     // Likewise a kernel that cannot confine the sessions as configured.
     confine::startup_check(config.confinement)?;
@@ -219,6 +239,12 @@ impl Supervisor {
         self.config.workspace_root.join(id)
     }
 
+    /// The session's scratch directory, `<scratch root>/<id>`, when the pod has a scratch area:
+    /// the same name the server's session env uses. The id must already have been checked.
+    fn scratch_dir(&self, id: &str) -> Option<PathBuf> {
+        self.config.scratch_root.as_ref().map(|root| root.join(id))
+    }
+
     /// `id`'s lifecycle lock, created on first use.
     fn lifecycle_lock(&self, id: &str) -> Arc<AsyncMutex<()>> {
         Arc::clone(self.lifecycle_locks().entry(id.to_owned()).or_default())
@@ -269,6 +295,7 @@ mod tests {
         assert_eq!(config.token, "t");
         assert_eq!(config.shim_binary, PathBuf::from(DEFAULT_SHIM_BINARY));
         assert_eq!(config.workspace_root, PathBuf::from(DEFAULT_WORKSPACE_ROOT));
+        assert_eq!(config.scratch_root, None);
         assert_eq!(config.max_sessions, DEFAULT_MAX_SESSIONS);
         assert_eq!(config.confinement, Confinement::default());
     }
@@ -280,6 +307,7 @@ mod tests {
             (LISTEN_ENV, "127.0.0.1:9"),
             (SHIM_BINARY_ENV, "/bin/shim"),
             (WORKSPACE_ROOT_ENV, "/data"),
+            (SCRATCH_ROOT_ENV, "/scratch"),
             (MAX_SESSIONS_ENV, "3"),
             (confine::FS_ENV, "0"),
             (confine::SYSCALLS_ENV, "off"),
@@ -288,6 +316,7 @@ mod tests {
         assert_eq!(config.listen.port(), 9);
         assert_eq!(config.shim_binary, PathBuf::from("/bin/shim"));
         assert_eq!(config.workspace_root, PathBuf::from("/data"));
+        assert_eq!(config.scratch_root, Some(PathBuf::from("/scratch")));
         assert_eq!(config.max_sessions, 3);
         let off = Confinement {
             fs: false,
@@ -307,6 +336,7 @@ mod tests {
         for (key, value) in [
             (LISTEN_ENV, "nope"),
             (WORKSPACE_ROOT_ENV, "relative"),
+            (SCRATCH_ROOT_ENV, "scratch"),
             (MAX_SESSIONS_ENV, "0"),
             (MAX_SESSIONS_ENV, "-1"),
             (MAX_SESSIONS_ENV, "many"),

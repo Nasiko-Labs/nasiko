@@ -8,15 +8,22 @@
 //! when it is a candidate at all; see the TODO on [`should_suspend`].) A harness mid-way through
 //! a long tool run or a background model call looks idle to
 //! the turn clock but not to those two signals, and suspending it would kill work the user is
-//! waiting on.
+//! waiting on. A question the harness asked a person never holds a session here: it lives only as
+//! long as its turn, and a live turn already keeps the session out of the candidates. Like every
+//! settled suspend, the reaper's closes any question a crashed turn left open (`super::suspend`).
 //!
 //! Suspending is claim, act, settle: `begin_suspend` moves the row to `stopping` under a
 //! deadline, taking the lease and fence from whatever turn held them; the provider is called;
 //! and the row is settled as parked under the claim's fence. [`recover_stuck`] re-drives
 //! `stopping` rows whose deadline has passed, so a crash mid-suspend never strands a session.
 //! It runs even when idle suspension is off, because a claim someone already made must finish.
+//!
+//! The same loop parks idle agents' workloads ([`workloads`]), under a switch of its own:
+//! `AGENT_PARK_IDLE_SECS` (`0` = off), independent of `CODING_AGENT_IDLE_TTL_SECS`, which governs
+//! session suspension only.
 
 pub mod agents;
+pub mod workloads;
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -50,8 +57,7 @@ pub struct ReaperPolicy {
 }
 
 impl ReaperPolicy {
-    /// The policy the reaper settings describe; one construction shared by the session and agent
-    /// passes.
+    /// The policy the reaper settings describe; one construction shared by the session passes.
     pub fn from_config(config: &nasiko_config::Config) -> Self {
         Self {
             cpu_quiescent_millicores: config.session_cpu_quiescent_millicores,
@@ -120,8 +126,6 @@ pub struct ReaperMemory {
     runs: HashMap<(String, i64), QuietRun>,
     /// Sessions whose unusable `sandbox_ref` has already been warned about.
     warned: HashSet<String>,
-    /// Each agent's current CPU run (agent sandboxes, see [`agents`]).
-    agent_runs: HashMap<uuid::Uuid, QuietRun>,
 }
 
 impl ReaperMemory {
@@ -186,32 +190,37 @@ pub enum SweepOutcome {
     Unsupported(String),
 }
 
-/// How much of a sweep to run.
+/// How much of a sweep's session work to run. Agent parking has its own switch
+/// (`AGENT_PARK_IDLE_SECS`), whichever this is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepScope {
-    /// Everything: recovery plus suspending idle sessions and parking idle agents.
+    /// Recovery plus suspending idle sessions.
     Full,
-    /// Only recovery and clean-up (stuck claims, orphaned sandboxes, agents whose row is gone or
-    /// that must stay resident): idle suspension is off, but work already begun, or a sandbox
-    /// nothing accounts for, must still be dealt with.
+    /// Only recovery and clean-up (stuck claims, orphaned sandboxes, leftover agent sandboxes):
+    /// idle session suspension is off, but work already begun, or a sandbox nothing accounts for,
+    /// must still be dealt with.
     RecoveryOnly,
 }
 
 /// Run the reaper for the life of the process. Each sweep is independent: a failure on one
 /// session or one sweep is logged and the loop carries on. With an idle TTL of 0 (never suspend
-/// by idleness) only recovery and clean-up run. A provider that cannot serve sessions is
-/// reported once and the loop then backs off to a tenth of the rate until a sweep succeeds.
+/// sessions by idleness) only session recovery and clean-up run; agent parking runs whenever
+/// `AGENT_PARK_IDLE_SECS` is not 0. A provider that cannot serve sessions is reported once and the
+/// loop then backs off to a tenth of the rate until a sweep succeeds.
 pub fn spawn_reaper(state: AppState) -> JoinHandle<()> {
     tokio::spawn(async move {
         let scope = if state.config.coding_agent_idle_ttl_secs > 0 {
             SweepScope::Full
         } else {
             tracing::info!(
-                "session reaper: idle suspension is off (CODING_AGENT_IDLE_TTL_SECS=0); \
-                 recovering stuck suspends and orphaned sandboxes and cleaning up agent sandboxes only"
+                "session reaper: idle session suspension is off (CODING_AGENT_IDLE_TTL_SECS=0); \
+                 recovering stuck suspends and orphaned sandboxes only"
             );
             SweepScope::RecoveryOnly
         };
+        if !state.config.parks_agents() {
+            tracing::info!("agent reaper: agent parking is off (AGENT_PARK_IDLE_SECS=0)");
+        }
         let interval = Duration::from_secs(state.config.session_reaper_interval_secs.max(1));
         let mut memory = ReaperMemory::default();
         let mut reported_unsupported = false;
@@ -233,16 +242,32 @@ pub fn spawn_reaper(state: AppState) -> JoinHandle<()> {
 }
 
 /// One tick of the reaper loop: finish stuck suspends, then (with the provider listed once) reap
-/// orphaned session sandboxes, suspend idle sessions if the scope is full, and park idle
-/// framework agents under the same TTL, grace, CPU and interval settings.
+/// orphaned session sandboxes, suspend idle sessions if the scope is full, and release leftover
+/// agent sandboxes; then, unless `AGENT_PARK_IDLE_SECS` is 0, park idle framework agents' own
+/// workloads, whatever the scope. The workload pass runs whatever the sandbox provider said, since
+/// it never asks it.
 pub async fn sweep(
     state: &AppState,
     memory: &mut ReaperMemory,
     scope: SweepScope,
 ) -> sqlx::Result<SweepOutcome> {
     agents::prune_open_tasks(state).await;
+    let sandboxes = sweep_sandboxes(state, memory, scope).await?;
+    if !state.config.parks_agents() {
+        return Ok(sandboxes);
+    }
+    let workloads = workloads::park_idle_workloads(state).await;
+    // The sandbox outcome second, so a provider that cannot serve still backs the loop off.
+    Ok(merge(workloads, sandboxes))
+}
+
+async fn sweep_sandboxes(
+    state: &AppState,
+    memory: &mut ReaperMemory,
+    scope: SweepScope,
+) -> sqlx::Result<SweepOutcome> {
     // A composite provider whose session side is down (a provider configuration error at boot) still
-    // serves agents: skip the session passes, which would report `Unsupported` and stop the
+    // lists agent sandboxes: skip the session passes, which would report `Unsupported` and stop the
     // agent pass and back the whole reaper off.
     let sessions_up = state.sandbox.is_available_for(&SandboxKey::Session {
         session_id: uuid::Uuid::nil(),
@@ -262,7 +287,9 @@ pub async fn sweep(
     }
     let infos = match state.sandbox.list().await {
         Ok(infos) => Some(infos),
-        Err(RuntimeError::Unsupported(msg)) => return Ok(SweepOutcome::Unsupported(msg)),
+        Err(RuntimeError::Unsupported(msg)) => {
+            return Ok(SweepOutcome::Unsupported(msg));
+        }
         Err(e) => {
             tracing::warn!(error = %e, "session reaper: listing sandboxes failed; skipping the orphan and agent passes");
             None
@@ -278,8 +305,10 @@ pub async fn sweep(
     if let Some(infos) = &infos
         && !matches!(outcome, SweepOutcome::Unsupported(_))
     {
-        let agents = agents::reap_agent_sandboxes(state, memory, scope, infos).await?;
-        outcome = merge(outcome, agents);
+        outcome = merge(
+            outcome,
+            agents::release_leftover_sandboxes(state, infos).await?,
+        );
     }
     Ok(outcome)
 }

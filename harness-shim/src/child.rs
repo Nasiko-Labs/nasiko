@@ -7,9 +7,11 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStdin, ChildStdout, Command};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
+
+use crate::reaper::OwnChild;
 
 /// How long a SIGTERMed child gets before SIGKILL.
 pub const TERMINATE_GRACE: Duration = Duration::from_secs(10);
@@ -20,7 +22,7 @@ pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
 /// A spawned harness with its stdio handles split out.
 pub struct SpawnedChild {
-    pub process: Child,
+    pub process: OwnChild,
     pub stdin: ChildStdin,
     pub stdout: ChildStdout,
 }
@@ -73,7 +75,8 @@ pub fn spawn(argv: &[String], env: &HashMap<String, String>) -> Result<SpawnedCh
     let Some((program, args)) = argv.split_first() else {
         bail!("empty harness command");
     };
-    let mut process = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         // The session's settings sit over the process env; the removals below still win.
         .envs(env)
@@ -89,12 +92,11 @@ pub fn spawn(argv: &[String], env: &HashMap<String, String>) -> Result<SpawnedCh
         .env_remove(crate::files::FILES_ENV)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .with_context(|| format!("spawning harness `{program}`"))?;
-    let stdin = process.stdin.take().context("child stdin not piped")?;
-    let stdout = process.stdout.take().context("child stdout not piped")?;
+        .stderr(Stdio::inherit());
+    let mut process =
+        OwnChild::spawn(&mut command).with_context(|| format!("spawning harness `{program}`"))?;
+    let stdin = process.take_stdin().context("child stdin not piped")?;
+    let stdout = process.take_stdout().context("child stdout not piped")?;
     Ok(SpawnedChild {
         process,
         stdin,
@@ -164,7 +166,7 @@ fn emit_line(line: &mut Vec<u8>, on_line: &mut impl FnMut(String)) {
 }
 
 /// Sends SIGTERM, waits up to `grace`, then SIGKILLs.
-pub async fn terminate(process: &mut Child, grace: Duration) {
+pub async fn terminate(process: &mut OwnChild, grace: Duration) {
     if let Some(pid) = process.id() {
         // SAFETY: plain signal delivery to a pid we own; no memory is touched.
         unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };

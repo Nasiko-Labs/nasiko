@@ -2,6 +2,7 @@ pub mod assertion;
 pub mod csrf;
 pub mod jwt;
 pub mod service;
+pub mod sharing;
 
 pub use service::AuthServiceImpl;
 

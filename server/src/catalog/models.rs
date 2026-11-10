@@ -178,9 +178,9 @@ pub struct UpdateAgent {
     /// Omitted = leave as-is, so an ordinary metadata edit never flips it.
     pub hitl_enabled: Option<bool>,
     /// `auto` (the platform may park the agent when idle) or `resident` (always running).
-    /// Omitted = leave as-is. Flipping a `parked` agent to `resident` leaves it `stopped` (no
-    /// rebuild; `start` then deploys a workload). Flipping a running `resident` agent to `auto`
-    /// changes nothing at once: it takes effect at the agent's next deploy or restart.
+    /// Omitted = leave as-is. A `parked` agent flipped to `resident` is woken by its next call and
+    /// then stays up. A running `resident` agent flipped to `auto` is parked once idle; its workload
+    /// becomes one that can be parked at its next deploy.
     pub parking_policy: Option<String>,
 }
 

@@ -15,6 +15,15 @@ while a turn is running, and is suspended when the session goes idle. The worksp
 `/workspace` persists across suspends, so files the harness wrote are still there on the next turn.
 Three harnesses ship in the catalog (`harness_catalog`): `opencode`, `claude-code` and `codex`.
 
+A harness agent belongs to one user and is never shared. Making one public, granting it to a user
+or a group, or giving it to another owner is refused with `409` and the code
+`agent_not_shareable`, and a grant that exists anyway gives nobody access: someone else's harness
+agent is not shown in agent listings, routing or the A2A registry. The platform's catalog agents,
+the ones sessions are started from, are public and stay so: making one private is refused the same
+way. A user's own harness agent is private, and making it private (again) is always allowed.
+`POST /api/agents/{id}/grants/agents` is not a share and is not refused: it lists the agents the
+harness agent may itself call.
+
 ## 2. Lifecycle
 
 A session's `runtime_state` moves through these states:
@@ -32,9 +41,54 @@ What survives a suspend depends on the provider. On the Docker provider, suspend
 not `pause`, so a suspended sandbox holds no RAM: chatting again starts the same container, and
 what survives is the files in `/workspace` and the ACP session id, which the next turn uses to
 restore the harness's conversation. Running processes and anything held in memory are lost. Every
-provider keeps files only: a backgrounded job or subagent does not survive a suspend. A provider
+provider keeps files only: a backgrounded job or subagent does not survive a suspend. Background
+processes count toward the session's CPU (so a dev server left running keeps the session from
+looking idle) and stop with the session, even one that detached from its shell or daemonized itself:
+the shim adopts them, and stops every process left in its tree when it exits. A provider
 that runs several sessions in one pod delivers each session's settings after the sandbox is
 attached (see section 8).
+
+### Where a session's files live
+
+A session's files live in two places: the durable workspace, and a scratch area on the local disk
+of the machine that runs the sandbox.
+
+| What | Where | Kept |
+|------|-------|------|
+| The repository, `HOME` (the harness's own configuration and conversation state), and everything else in the working tree, a project's own `node_modules`, `.venv` or `vendor` included | The workspace, `/workspace` | Across suspends |
+| Package caches and build output | The scratch area, `/scratch/<sandbox key>/` (`s-<uuid>`, one directory per session, so sessions sharing a pod never mix) | While the sandbox's container or pod exists; then gone, and rebuilt by the next install or build |
+
+The workspace can be a network filesystem, where every file operation is a round trip and the I/O
+capacity is shared by every sandbox in the cluster. Installs and builds create and read thousands of
+small files, so the server points those tools at the scratch area through the sandbox env, the same in
+both shim modes:
+
+| Variable | Folder under `/scratch/<sandbox key>/` |
+|----------|----------------------------------------|
+| `XDG_CACHE_HOME` | `cache`: the harness's own downloads (OpenCode's provider packages), and every tool that follows the XDG spec |
+| `npm_config_cache` | `npm` |
+| `YARN_CACHE_FOLDER` | `yarn` |
+| `PIP_CACHE_DIR` | `pip` |
+| `UV_CACHE_DIR` | `uv` |
+| `CARGO_TARGET_DIR` | `cargo-target`: a Rust build's output lands here, not in the repository's `target/`, so a built binary is `$CARGO_TARGET_DIR/debug/<bin>`, not `./target/debug/<bin>` |
+| `GOCACHE` | `go-build` |
+| `GOMODCACHE` | `go-mod` |
+
+`UV_LINK_MODE=copy` is set as well: uv hard-links packages from its cache into a project's `.venv`,
+which cannot cross from the scratch area to the workspace.
+
+A variable the session's profile sets keeps the profile's value. An `env`-mode sandbox created before
+the scratch area existed keeps the env it was created with, and so its caches in `HOME`, until it is
+created again.
+
+How long the scratch area lasts depends on the provider. On Docker it is a volume of the sandbox's
+own: a suspend keeps it, a release removes it, and Docker does not cap its size. A provider that
+deletes the sandbox's pod on suspend loses it on every suspend. On a shared runtime pod it lasts while
+the pod runs: a suspend keeps it, and a release removes the session's directory. On a user's own
+harness agent it lasts while the agent's pod runs, which is until the agent is parked. Providers that run
+sandboxes in pods give each session a configured size of scratch (a pod that holds several sessions
+gets it once per session they may hold, and they share the total), cap the pod's whole local disk use
+at that size, and evict a pod that goes over it.
 
 A turn that arrives while a suspend is in progress waits for it to settle, up to 15 seconds
 (`SUSPEND_WAIT`), and then resumes the sandbox. If the suspend is still running after that, the
@@ -63,6 +117,11 @@ small data part (identity and status, never the tool's raw input or output), and
 its text. Reply text arrives in further `working` updates, and the stream ends with a terminal
 `completed` update that carries the full reply. Permission prompts for tool use surface as
 human-in-the-loop approvals in the same way they do for other coding agents on the platform.
+An approval lives only as long as the turn that asked it. While the turn waits on it the turn is
+live, which keeps the session from being suspended, for at most `AGENT_CALL_TIMEOUT_SECS`. When the
+turn ends (it completes, reaches `AGENT_CALL_TIMEOUT_SECS`, is cancelled, or loses the session), the
+approvals it asked that nobody answered are closed. An answer given after that does not resume the
+work; send a new message.
 
 Only users drive harness sessions. An agent calling through the proxy cannot start a turn on one
 (the request is refused with a JSON-RPC invalid-request error).
@@ -124,6 +183,14 @@ failure.
 | `GET /api/sessions/{id}` | Read your session | `200` | `404` `session_not_found` |
 | `DELETE /api/sessions/{id}` | Release the sandbox, revoke its token, remove the session (owner or superuser) | `204` | `404` `session_not_found`, `409` `session_busy`, `500` |
 | `POST /api/sessions/{id}/suspend` | Suspend its sandbox | `204`, or `202` while another suspend is finishing | `404`, `409` `session_busy`, `502` `sandbox_error`, `500` |
+
+Creating a session, and starting each turn on one, first asks the server's session admission
+(`SessionAdmission`, `oss/server/src/sessions/admission.rs`), before anything is written for either.
+The open-source build admits every session; a distribution whose sessions can add an agent (one per
+user and harness) installs its own. Its refusal (for instance a `402` at an agent limit) answers
+`POST /api/sessions` as it stands, and a turn as a JSON-RPC error under the request's `id`: code
+`-32610`, the refusal's `error` as the message and its body as `data`, on a `200` over
+`/api/agents/{id}` and with the refusal's status over `/api/orchestrator/a2a`.
 
 The `repo` is cloned (`--depth 1`) into `/workspace` by the shim inside the sandbox on its first
 start, so source never passes through the control plane. A user who has connected GitHub clones
@@ -241,9 +308,16 @@ A background reaper suspends a session only when all of these hold:
    `SESSION_IDLE_GRACE_SECS` window, measured inside the idle TTL. A busy sample restarts the window.
 3. The sandbox made no model or MCP call for the session since the last turn.
 
+A permission approval never holds an idle session up: it lives only as long as its turn (section
+3), and a live turn already keeps the session out of the reaper's reach. The one approval that can
+outlive its turn is one asked by a turn whose server replica stopped mid-turn; nothing can answer
+it, and the session is suspended by the rules above like any other. Every suspend, whether the
+reaper's, `POST /api/sessions/{id}/suspend` or a recovery, closes the approvals the session left
+open, since the process that asked them is gone.
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `CODING_AGENT_IDLE_TTL_SECS` | `900` | Idle time before a session is a suspend candidate. `0` turns suspension off. |
+| `CODING_AGENT_IDLE_TTL_SECS` | `900` | Idle time before a session is a suspend candidate. `0` turns suspension off. Sessions only: framework agents are parked by `AGENT_PARK_IDLE_SECS` ([Parked agents](AGENT_LIFECYCLE.md#parked-agents)). |
 | `SESSION_IDLE_GRACE_SECS` | `120` | How long CPU must stay quiet. |
 | `SESSION_CPU_QUIESCENT_MILLICORES` | `20` | CPU at or below this counts as quiet. |
 | `SESSION_REAPER_INTERVAL_SECS` | `30` | How often the reaper scans. Clamped to 5-600. |
@@ -271,16 +345,19 @@ tool calls go to the MCP gateway, both as the session's user. Two tokens make th
 The per-sandbox token is placed in the sandbox environment (as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY` and `NASIKO_SESSION_TOKEN`, with `MCP_GATEWAY_URL` and
 `MCP_GATEWAY_CONNECT_URL` alongside). It lives 30 days, is stored encrypted at rest so the sandbox
-can be rebuilt, and is replaced when less than 24 hours remain. It is revoked when the session is
-deleted, when the sandbox is cleared, and when it is renewed. Treat it as readable by any process
-inside the sandbox, including the code the harness runs.
+can be rebuilt, and is replaced when less than 24 hours remain. A replaced token reaches the
+sandbox by stopping it before the turn starts it again: a provider whose resumed sandbox takes the
+new environment suspends it, and one that fixes the environment when it creates the sandbox
+(Docker) releases it, which keeps the workspace. It is revoked when the session is deleted, when the
+sandbox is cleared, and when it is renewed. Treat it as readable by any process inside the sandbox,
+including the code the harness runs.
 
 The per-turn token lives one hour and is handed to the harness only as the ACP MCP header. It is
 revoked when the turn ends.
 
 Both are signed with `AGENT_JWT_SECRET`. If it is unset, harness agents are not seeded and the
 server logs an error at startup. Rotating the secret invalidates every sandbox's token: the next
-turn on each sandbox notices, releases it and builds a new one. The shim's WebSocket endpoint
+turn on each sandbox notices and replaces it, as above. The shim's WebSocket endpoint
 (`/acp`) is authenticated with a per-sandbox bearer derived from the same secret.
 
 ### The profile
@@ -340,7 +417,22 @@ configured again. If the harness process exits, a handshake shim keeps serving
 
 On a shared-runtime provider many shims share one pod under a pod-level supervisor
 (`harness-supervisor`). Each session gets its own directory, which its shim serves as its workspace
-(`--workspace` / `HARNESS_WORKSPACE`), and the server runs the ACP session there.
+(`--workspace` / `HARNESS_WORKSPACE`), and the server runs the ACP session there. When the pod has a
+scratch area (`HARNESS_SCRATCH_ROOT`), each session also gets its own scratch directory in it,
+`<root>/<sandbox key>`, the directory the server's env points at, and its `TMPDIR` is that
+directory's `tmp/`, which the supervisor creates (node-local, and writable where the pod's root
+filesystem is not). The supervisor confines a session to those two directories when confinement is on,
+and a release removes both.
+
+A provider may instead give each user one harness agent per harness: an agent of kind `harness`
+owned by that user (named `harness-<harness id>`, never public and never shared), created by the
+platform from the harness image on the user's first session for it. Its pod runs the supervisor, and
+every session of that user and harness is a shim in it, with its directory in the agent's writable
+folder and its scratch directory on the pod's local disk. The agent is parked while none of its
+sessions runs and woken by the next turn; what was in the scratch area goes with the parked pod.
+Calling that agent directly starts a session on it, as for the platform's own harness agent. The
+platform deploys it: restarting or redeploying it through the agent lifecycle API, or uploading an
+agent under its name, is refused with `409`.
 
 ### The control API
 
@@ -353,7 +445,7 @@ for every control call.
 | `GET /healthz` | `200` `{"child": "waiting" \| "running" \| "exited", ...}`. In `env` mode a gone child is `503`; a handshake shim stays `200`. Never needs the bearer. |
 | `POST /control/configure` | Handshake mode only (`409` in `env` mode). Body: `{"token": "<bearer>", "env": {..}, "workspace": {"repo", "token", "timeout_secs"} \| null, "files": [{"path", "content", "mode"?}], "env_hash": "<hex>"}` (`files` may be omitted). `204` when accepted. `400` for a body that does not parse, an empty `token`, or no harness command (neither `HARNESS_CMD` in `env` nor a default). `401` when a bearer is already set and the call lacks it. |
 | `GET /control/status` | `200` with `mode` (`env` or `handshake`), `configured`, `env_hash` (the stored configuration), `running_env_hash` (what the live child was started with, `null` unless running), `child_generation` (spawn counter), `child` (`waiting`, `running` or `exited`), `evicting`, and `workspace` (the directory the shim serves; the server runs the ACP session there). |
-| `GET /control/stats` | `200` with `processes` (`null` when `/proc` cannot be read, never `0`), `cpu_millicores`, `memory_bytes`, `sampled_at` and `evicting`, taken from the sandbox's own `/proc` for the shim's process tree. Works in both modes. A process whose parent exited is re-parented outside that tree and escapes the count. |
+| `GET /control/stats` | `200` with `processes` (`null` when `/proc` cannot be read, never `0`), `cpu_millicores`, `memory_bytes`, `sampled_at` and `evicting`, taken from the sandbox's own `/proc` for the shim's process tree. Works in both modes. On Linux the shim is a child subreaper, so a process whose parent exited (a backgrounded job whose shell exited, a server that daemonized itself) is re-parented to the shim and still counted. |
 | `POST /control/restart` | Replaces the harness child, for a turn that ended while the child was blocked and may not answer the next prompt. `200` `{"child_generation": n}` once the new child is up; `409` while no child has been started yet; `500` `{"error": ...}` when the spawn failed (a handshake shim keeps serving); `503` while shutting down. |
 
 Once a bearer is set, every route except `/healthz` needs `Authorization: Bearer <token>`; a missing

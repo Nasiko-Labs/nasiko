@@ -5,10 +5,16 @@
 //! A claim moves the row to `stopping` under a deadline and takes the lease and fence from
 //! whatever turn held them (`SessionStore::begin_suspend` and its siblings); every later write
 //! carries the claim's fence, so a superseded claimant writes nothing.
+//!
+//! Every settled suspend, whichever path claimed it, ends the same way: the questions the session
+//! left open are closed ([`close_questions_left_open`]), since the harness that asked them has
+//! stopped. A turn closes its own when it ends, so these are the ones a crashed turn left behind;
+//! without this they would stay open, showing a person a question nothing can act on.
 
 use nasiko_runtime::{RuntimeError, SandboxHandle, SandboxState};
 
 use super::model::{SessionRow, SessionRuntimeState, SessionStore};
+use crate::coding::questions::SessionQuestions;
 use crate::state::AppState;
 
 /// What went wrong with one session.
@@ -114,7 +120,13 @@ impl<'a> Suspend<'a> {
             Err(e) => Err(e),
         };
         match acted {
-            Ok(true) => Ok(self.store.settle_suspended(id, claim_fence).await?),
+            Ok(true) => {
+                let settled = self.store.settle_suspended(id, claim_fence).await?;
+                if settled {
+                    close_questions_left_open(self.state, self.session).await;
+                }
+                Ok(settled)
+            }
             Ok(false) => settle_gone(self.state, self.store, self.session, claim_fence).await,
             Err(e) => {
                 release_claim(self.store, self.session, claim_fence).await;
@@ -138,7 +150,34 @@ pub(super) async fn settle_gone(
         release_claim(store, session, claim_fence).await;
         return Err(e.into());
     }
-    Ok(store.settle_cleared(id, claim_fence).await?)
+    let cleared = store.settle_cleared(id, claim_fence).await?;
+    if cleared {
+        close_questions_left_open(state, session).await;
+    }
+    Ok(cleared)
+}
+
+/// Close the questions `session` left open, asked up to when it went idle
+/// (`coding::questions`): the harness that asked them has stopped. A question asked later belongs
+/// to a turn that started after the suspend settled, and is left alone. Best effort: the suspend
+/// has happened, and an open row only shows a question nothing will act on.
+async fn close_questions_left_open(state: &AppState, session: &SessionRow) {
+    let Some(idle_since) = session.idle_since() else {
+        return;
+    };
+    let questions = SessionQuestions {
+        session_id: &session.session_id,
+        owner: session.user_id,
+    };
+    match questions.close_asked_until(&state.db, idle_since).await {
+        Ok(0) => {}
+        Ok(closed) => {
+            tracing::info!(session_id = %session.session_id, closed, "closed the questions a suspended session left open");
+        }
+        Err(e) => {
+            tracing::warn!(session_id = %session.session_id, error = %e, "could not close the questions a suspended session left open");
+        }
+    }
 }
 
 /// Hand a claim back after a failed suspend, to the state it was claimed from (a reclaimed

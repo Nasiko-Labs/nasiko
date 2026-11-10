@@ -14,7 +14,6 @@ use nasiko_orchestrator::DirectAddress;
 use nasiko_orchestrator::maf::llm::LlmClient;
 use nasiko_orchestrator::maf::types::{MafDefinition, MafStep, StepOutcome};
 use nasiko_orchestrator::maf::{LinearMafExecutor, MafExecutor, MafRunContext};
-use nasiko_runtime::SandboxKey;
 use nasiko_server::agent_resolver::ServerTargetResolver;
 use serde_json::{Value, json};
 use serial_test::serial;
@@ -203,10 +202,10 @@ impl MafRun {
 async fn a_maf_step_wakes_a_parked_agent_through_the_server_resolver() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let user = seed_user(&server).await;
     let agent = seed_parked_agent(&server, user, "maf-parked").await;
-    let key = SandboxKey::Agent { agent_id: agent };
-    server.sandbox.set_transport_url(&key, stub_agent().await);
+    wake.serve_at(agent, &stub_agent().await);
     let run = MafRun::new(&server, user, agent).await;
 
     let resolver = ServerTargetResolver::new(server.state.clone());
@@ -216,7 +215,7 @@ async fn a_maf_step_wakes_a_parked_agent_through_the_server_resolver() {
         Ok(StepOutcome::Completed(result)) => assert_eq!(result.output, "final answer"),
         other => panic!("expected a finished run: {:?}", other.err()),
     }
-    assert_eq!(server.sandbox.acquire_count(&key), 1);
+    assert_eq!(wake.woken_count(agent), 1);
     assert_eq!(agent_status(&server, agent).await, "running");
     server.cleanup().await;
 }
@@ -225,20 +224,17 @@ async fn a_maf_step_wakes_a_parked_agent_through_the_server_resolver() {
 #[serial]
 async fn without_the_seam_a_maf_step_refuses_a_parked_agent_with_the_reason() {
     let server = common::TestServer::start().await;
+    let wake = common::RowWake::install(&server);
     let user = seed_user(&server).await;
     let agent = seed_parked_agent(&server, user, "maf-parked-direct").await;
+    wake.serve_at(agent, "http://never.reached:8000");
     let run = MafRun::new(&server, user, agent).await;
 
     let direct = DirectAddress::new(server.db.clone());
     let err = run.run(&server, &direct).await.err().expect("a failed run");
 
     assert!(err.contains("parked"), "{err}");
-    assert_eq!(
-        server
-            .sandbox
-            .acquire_count(&SandboxKey::Agent { agent_id: agent }),
-        0
-    );
+    assert_eq!(wake.woken_count(agent), 0);
     server.cleanup().await;
 }
 
@@ -247,10 +243,10 @@ async fn without_the_seam_a_maf_step_refuses_a_parked_agent_with_the_reason() {
 async fn a_hitl_resume_nudge_wakes_a_parked_agent() {
     let server = common::TestServer::start().await;
     server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
     let owner = seed_user(&server).await;
     let agent = seed_parked_agent(&server, owner, "nudge-parked").await;
-    let key = SandboxKey::Agent { agent_id: agent };
-    server.sandbox.set_transport_url(&key, stub_agent().await);
+    wake.serve_at(agent, &stub_agent().await);
     let context_id = "ses_nudge_1";
     sqlx::query("INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 't')")
         .bind(context_id)
@@ -298,7 +294,7 @@ async fn a_hitl_resume_nudge_wakes_a_parked_agent() {
         .await
         .expect("the nudge is delivered");
 
-    assert_eq!(server.sandbox.acquire_count(&key), 1);
+    assert_eq!(wake.woken_count(agent), 1);
     assert_eq!(agent_status(&server, agent).await, "running");
     server.cleanup().await;
 }

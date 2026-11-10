@@ -850,13 +850,14 @@ fn admin_username_can_be_overridden() {
     unset_required_vars();
 }
 
-const SESSION_KEYS: [&str; 6] = [
+const SESSION_KEYS: [&str; 7] = [
     "SANDBOX_PROVIDER",
     "SESSION_IDLE_GRACE_SECS",
     "SESSION_CPU_QUIESCENT_MILLICORES",
     "SESSION_REAPER_INTERVAL_SECS",
     "HARNESS_IMAGE_PREFIX",
     "CODING_AGENT_IDLE_TTL_SECS",
+    "AGENT_PARK_IDLE_SECS",
 ];
 
 #[test]
@@ -890,7 +891,9 @@ fn sandbox_provider_is_read_from_env_and_unknown_fails_startup() {
 
     unsafe { std::env::set_var("SANDBOX_PROVIDER", "firecracker") };
     let err = Config::from_env().unwrap_err().to_string();
-    assert!(err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, shared-pod"));
+    assert!(
+        err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, shared-pod, harness-agent")
+    );
 
     unset_vars(&SESSION_KEYS);
     unset_required_vars();
@@ -960,6 +963,44 @@ fn lease_heartbeat_must_fit_twice_in_the_lease() {
         std::env::remove_var("CODING_AGENT_TURN_LEASE_SECS");
         std::env::remove_var("CODING_AGENT_LEASE_HEARTBEAT_SECS");
     }
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn the_agent_park_window_defaults_to_an_hour_is_off_at_zero_and_must_cover_one_call() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 3600);
+
+    // Unset, it rises with a long call timeout instead of failing startup: 3600 s of call, 60 s
+    // of stamp throttle and one 30 s reaper interval.
+    unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", "3600") };
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 3690);
+    unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
+
+    // 600 s of call + 60 s of throttle + 30 s of interval.
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "689") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(err.contains("AGENT_PARK_IDLE_SECS") && err.contains("AGENT_CALL_TIMEOUT_SECS"));
+
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "690") };
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 690);
+
+    // 0 is the one switch that turns agent parking off; the floor does not apply to it.
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "0") };
+    let off = Config::from_env().unwrap();
+    assert_eq!(off.agent_park_idle_secs, 0);
+    assert!(!off.parks_agents());
+    // Session suspension is a separate switch: off here, agent parking stays on.
+    unsafe {
+        std::env::remove_var("AGENT_PARK_IDLE_SECS");
+        std::env::set_var("CODING_AGENT_IDLE_TTL_SECS", "0");
+    }
+    assert!(Config::from_env().unwrap().parks_agents());
+
     unset_vars(&SESSION_KEYS);
     unset_required_vars();
 }

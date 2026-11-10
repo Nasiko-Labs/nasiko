@@ -370,6 +370,50 @@ pub struct DeploymentSpec {
     /// defaults this to `false` (unchanged behavior: reuse the local cache).
     /// `DockerRuntime` reads this; `KubeRuntime` does not use it yet.
     pub force_pull: bool,
+    /// The platform scales this workload to zero when idle and back on demand,
+    /// so it runs one replica. A backend may run it on a workload that suspends
+    /// in place rather than one built to scale out. Defaults to `false`, an
+    /// always-running workload. Ignored by `DockerRuntime`.
+    #[serde(default)]
+    pub parkable: bool,
+    /// How this workload departs from the way a backend runs an uploaded agent's image. Every
+    /// uploaded agent leaves it at its default.
+    #[serde(default)]
+    pub overrides: WorkloadOverrides,
+}
+
+/// Departures from how a backend runs an uploaded agent's image, for a workload the platform
+/// builds itself from an image whose entrypoint serves another purpose (a user's harness agent
+/// runs the harness image's supervisor rather than its single-session shim). Each takes effect
+/// when the backend (re)creates the workload.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WorkloadOverrides {
+    /// argv that replaces the image's entrypoint, dropping the image's `CMD` as well; empty runs
+    /// the image's own entrypoint and `CMD`.
+    pub command: Vec<String>,
+    /// Kubernetes `runtimeClassName` (e.g. `gvisor`) or Docker runtime (e.g. `runsc`) for this
+    /// workload alone; `None` runs it on the backend's default runtime.
+    pub runtime_class: Option<String>,
+    /// Bytes of node-local scratch mounted at [`crate::HARNESS_SCRATCH_DIR`], writable by the
+    /// workload's user; `None` mounts none. Kubernetes: an `emptyDir` of that size, which also
+    /// limits the pod's `ephemeral-storage`. Ignored by `DockerRuntime`.
+    pub scratch_bytes: Option<u64>,
+    /// How the backend stops an instance of the workload.
+    pub shutdown: Shutdown,
+}
+
+/// How a backend stops an instance of a workload.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Shutdown {
+    /// Keep serving through the backend's drain window before the stop signal, then allow its
+    /// full grace: an agent reached through the platform's proxy may have a request on its way.
+    #[default]
+    Drained,
+    /// The stop signal at once, with a short grace: for a workload whose work the platform has
+    /// already stopped before it stops the workload, where a drain only delays its next start.
+    /// Ignored by `DockerRuntime`, which never drains.
+    Prompt,
 }
 
 /// Validates a `--writable-path` mount target. Both backends consume the path
@@ -658,6 +702,21 @@ impl DeploymentSpec {
         }
         if let Some(ref r) = self.resources {
             r.validate()?;
+        }
+        if self
+            .overrides
+            .runtime_class
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return Err(RuntimeError::InvalidSpec(
+                "runtime_class must not be empty; leave it unset for the default".to_owned(),
+            ));
+        }
+        if self.overrides.scratch_bytes == Some(0) {
+            return Err(RuntimeError::InvalidSpec(
+                "scratch_bytes must be positive; leave it unset for no scratch".to_owned(),
+            ));
         }
         for (key, value) in &self.env_vars {
             if key.is_empty() || !key.chars().all(|c| c != '=' && c.is_ascii_graphic()) {

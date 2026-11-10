@@ -3,10 +3,12 @@
 //! The sandbox has no per-actor stats API, so the shim reports its descendants itself. The
 //! parsing and arithmetic are platform-independent; only the `/proc` walk is Linux-only.
 //!
-//! A process whose parent exits is re-parented to the init (tini), outside the shim's ancestor
-//! chain, so such orphans escape the count. CPU of exited descendants is kept through the
-//! `cutime`/`cstime` the shim and its live processes accumulate when they reap children, so a
-//! short-lived subprocess does not make the counter fall.
+//! A process whose parent exits is re-parented to its nearest subreaper. On Linux the shim is one
+//! (`reaper`), so a backgrounded job whose shell exited, or a server that daemonized itself, stays
+//! in the shim's tree and is counted; elsewhere it would go to the init (tini) and escape the
+//! count. CPU of exited descendants is kept through the `cutime`/`cstime` the shim and its live
+//! processes accumulate when they reap children, so a short-lived subprocess does not make the
+//! counter fall.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -16,14 +18,27 @@ use std::time::Instant;
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct StatLine {
     pub pid: u32,
+    /// The state letter: `R`, `S`, `Z` (a zombie, exited and not yet reaped), ...
+    pub state: char,
     pub ppid: u32,
     pub utime: u64,
     pub stime: u64,
     /// CPU of children this process has waited for.
     pub cutime: u64,
     pub cstime: u64,
+    /// When the process started, in ticks since boot: tells it apart from a later process that
+    /// reuses its pid.
+    pub start_time: u64,
     /// Resident set size in pages.
     pub rss_pages: u64,
+}
+
+/// A process as seen at one instant: its pid and its start time, which together name it even
+/// after the pid has gone to another process.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) struct ProcessId {
+    pub pid: u32,
+    pub start_time: u64,
 }
 
 /// Totals over the shim's descendants at one instant.
@@ -46,14 +61,16 @@ pub fn parse_stat_line(line: &str) -> Option<StatLine> {
     let pid = line.get(..open)?.trim().parse().ok()?;
     let tail: Vec<&str> = line.get(close + 1..)?.split_whitespace().collect();
     // After the comm: state is field 3, so ppid is tail[1], utime/stime/cutime/cstime are
-    // fields 14-17 and rss is field 24.
+    // fields 14-17, the start time is field 22 and rss is field 24.
     Some(StatLine {
         pid,
+        state: tail.first()?.chars().next()?,
         ppid: tail.get(1)?.parse().ok()?,
         utime: tail.get(11)?.parse().ok()?,
         stime: tail.get(12)?.parse().ok()?,
         cutime: tail.get(13)?.parse().ok()?,
         cstime: tail.get(14)?.parse().ok()?,
+        start_time: tail.get(19)?.parse().ok()?,
         rss_pages: tail.get(21)?.parse().ok()?,
     })
 }
@@ -89,6 +106,30 @@ pub fn descendants(entries: &[StatLine], root: u32) -> Vec<StatLine> {
         .filter(|e| reaches_root(e))
         .copied()
         .collect()
+}
+
+/// Every live process in `root`'s tree right now, `None` when `/proc` cannot be read.
+pub(crate) fn descendant_processes(root: u32) -> Option<Vec<ProcessId>> {
+    Some(live_descendants(&read_proc_table()?, root))
+}
+
+/// The entries of `root`'s tree in `entries` that still run: a zombie has exited already, and
+/// waits only to be reaped.
+pub(crate) fn live_descendants(entries: &[StatLine], root: u32) -> Vec<ProcessId> {
+    descendants(entries, root)
+        .iter()
+        .filter(|e| e.state != 'Z')
+        .map(|e| ProcessId {
+            pid: e.pid,
+            start_time: e.start_time,
+        })
+        .collect()
+}
+
+/// Whether `process` still runs under its pid: the pid names a process that started when it did.
+/// False once it has exited, or where `/proc` cannot be read.
+pub(crate) fn still_running(process: ProcessId) -> bool {
+    read_stat(process.pid).is_some_and(|now| now.start_time == process.start_time)
 }
 
 /// Ticks per second of the `utime`/`stime` counters.
@@ -168,26 +209,29 @@ impl Sampler {
 }
 
 #[cfg(target_os = "linux")]
-fn read_proc_table() -> Option<Vec<StatLine>> {
+pub(crate) fn read_proc_table() -> Option<Vec<StatLine>> {
     let dir = std::fs::read_dir("/proc").ok()?;
     let table = dir
         .filter_map(Result::ok)
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .bytes()
-                .all(|b| b.is_ascii_digit())
-        })
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
         // A process can exit between listing and reading; it is simply skipped.
-        .filter_map(|entry| std::fs::read_to_string(entry.path().join("stat")).ok())
-        .filter_map(|line| parse_stat_line(&line))
+        .filter_map(read_stat)
         .collect();
     Some(table)
 }
 
+#[cfg(target_os = "linux")]
+fn read_stat(pid: u32) -> Option<StatLine> {
+    parse_stat_line(&std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
+}
+
 #[cfg(not(target_os = "linux"))]
-fn read_proc_table() -> Option<Vec<StatLine>> {
+pub(crate) fn read_proc_table() -> Option<Vec<StatLine>> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_stat(_pid: u32) -> Option<StatLine> {
     None
 }
 
@@ -204,11 +248,13 @@ mod tests {
             parsed,
             StatLine {
                 pid: 4242,
+                state: 'S',
                 ppid: 1,
                 utime: 7,
                 stime: 3,
                 cutime: 5,
                 cstime: 2,
+                start_time: 5000,
                 rss_pages: 250
             }
         );
@@ -239,11 +285,13 @@ mod tests {
     fn entry(pid: u32, ppid: u32) -> StatLine {
         StatLine {
             pid,
+            state: 'S',
             ppid,
             utime: 0,
             stime: 0,
             cutime: 0,
             cstime: 0,
+            start_time: u64::from(pid) * 100,
             rss_pages: 0,
         }
     }
@@ -266,17 +314,55 @@ mod tests {
     fn cpu_keeps_time_of_reaped_children_and_ignores_the_roots_own() {
         let at = |pid, ppid, own, reaped| StatLine {
             pid,
+            state: 'S',
             ppid,
             utime: own,
             stime: 0,
             cutime: reaped,
             cstime: 0,
+            start_time: 0,
             rss_pages: 0,
         };
         let table = [at(10, 1, 100, 40), at(11, 10, 7, 3), at(12, 11, 5, 0)];
         let tree = descendants(&table, 10);
         // 11: 7+3, 12: 5, plus what the root reaped (40); the root's own 100 is excluded.
         assert_eq!(tree_cpu_ticks(&table, &tree, 10), 55);
+    }
+
+    /// A daemonized server's parent exited: with the shim as subreaper it is re-parented to the
+    /// shim, so it is in the shim's tree and counted, wherever its process group went.
+    #[test]
+    fn a_process_re_parented_to_the_shim_is_in_its_tree() {
+        let shim = 10;
+        // 11 is the harness; 12 was started by a shell that exited, so its parent is now the shim.
+        let table = [
+            entry(shim, 1),
+            entry(11, shim),
+            entry(12, shim),
+            entry(13, 12),
+        ];
+        let mut pids: Vec<u32> = descendants(&table, shim).iter().map(|e| e.pid).collect();
+        pids.sort_unstable();
+        assert_eq!(pids, vec![11, 12, 13]);
+    }
+
+    /// A zombie in the tree has exited: it is not signalled, and does not keep the tree from
+    /// reading as empty.
+    #[test]
+    fn a_zombie_is_not_a_live_descendant() {
+        let shim = 10;
+        let exited = StatLine {
+            state: 'Z',
+            ..entry(12, shim)
+        };
+        let table = [entry(shim, 1), entry(11, shim), exited];
+        assert_eq!(
+            live_descendants(&table, shim),
+            vec![ProcessId {
+                pid: 11,
+                start_time: 1100
+            }]
+        );
     }
 
     #[test]

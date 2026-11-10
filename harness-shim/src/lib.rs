@@ -8,6 +8,7 @@ mod control;
 pub mod files;
 pub mod handshake;
 mod procstats;
+pub mod reaper;
 pub mod server;
 pub mod supervisor;
 pub mod workspace;

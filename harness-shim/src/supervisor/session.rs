@@ -1,5 +1,6 @@
 //! One session's shim: start it on the port the platform chose, wait until it answers, stop it,
-//! purge its directory, and sample its process tree. A session's directory is `<root>/<id>`.
+//! purge its directories, and sample its process tree. A session's directory is `<root>/<id>`,
+//! and its scratch directory, when the pod has a scratch area, `<scratch root>/<id>`.
 //!
 //! Every lifecycle operation on one session (ensure, stop, purge) runs under that session's own
 //! lock, so a `PUT` racing a `DELETE` for the same session waits for it instead of spawning into
@@ -8,6 +9,7 @@
 use std::future::Future;
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -25,6 +27,7 @@ use tokio::time::Instant;
 use super::{Entry, SESSION_HOME, Supervisor, TOKEN_ENV, confine};
 use crate::child::TERMINATE_GRACE;
 use crate::procstats::{self, Sampler};
+use crate::reaper::TREE_STOP_GRACE;
 use crate::server::SHIM_TOKEN_ENV;
 
 /// How often a fresh shim's `/healthz` is polled, and for how long before the start has failed.
@@ -36,15 +39,23 @@ const HEALTHZ_REQUEST: &[u8] =
     b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
 const HTTP_200: &[u8; 12] = b"HTTP/1.1 200";
 /// How long a SIGINTed shim gets before its group is SIGKILLed. A shim shutting down SIGTERMs
-/// its harness, waits up to `TERMINATE_GRACE` for it, then takes up to 1 s to flush the client's
-/// Close; the margin lets that orderly shutdown finish before the supervisor's SIGKILL lands.
-const STOP_GRACE: Duration = TERMINATE_GRACE.saturating_add(Duration::from_secs(5));
+/// its harness, waits up to `TERMINATE_GRACE` for it, takes up to 1 s to flush the client's
+/// Close, then up to `TREE_STOP_GRACE` stopping what the session left in its tree; the margin
+/// lets that orderly shutdown finish before the supervisor's SIGKILL lands.
+const STOP_GRACE: Duration = TERMINATE_GRACE
+    .saturating_add(TREE_STOP_GRACE)
+    .saturating_add(Duration::from_secs(5));
 /// How long to wait for the reaper after a SIGKILL.
 const KILL_WAIT: Duration = Duration::from_secs(5);
 /// The lowest port a session may be told to use: below it binding needs privileges the pod lacks.
 const MIN_PORT: u16 = 1024;
 /// Longest file name the filesystem takes (`NAME_MAX`).
 const MAX_SEGMENT_BYTES: usize = 255;
+/// `u+rwx`: what a purge needs on a directory to empty it.
+const OWNER_ALL: u32 = 0o700;
+/// A session's temporary directory inside its scratch directory, its `TMPDIR`: node-local, and
+/// writable where the pod's root filesystem is not.
+const SCRATCH_TMP: &str = "tmp";
 
 /// The body of `PUT /sessions/{id}`.
 #[derive(Deserialize)]
@@ -100,10 +111,10 @@ pub(super) async fn stop(sup: &Arc<Supervisor>, id: &str) -> Result<(), SessionE
     .await
 }
 
-/// Stops the session, removes its directory, then forgets it. The directory goes first, so a
-/// failed removal leaves the session listed and the purge can be retried. An unknown session's
-/// directory is removed too: the supervisor forgets its sessions when it restarts, and the
-/// platform's release still has to clean up after them.
+/// Stops the session, removes its directory and its scratch directory, then forgets it. The
+/// directories go first, so a failed removal leaves the session listed and the purge can be
+/// retried. An unknown session's directories are removed too: the supervisor forgets its
+/// sessions when it restarts, and the platform's release still has to clean up after them.
 pub(super) async fn purge(sup: &Arc<Supervisor>, id: &str) -> Result<(), SessionError> {
     validate_id(id)?;
     let (sup, owned) = (Arc::clone(sup), id.to_owned());
@@ -251,6 +262,9 @@ async fn detached<T: Send + 'static>(
 async fn purge_serialized(sup: &Supervisor, id: &str) -> Result<(), SessionError> {
     halt_session(sup, id).await;
     remove_dir(&sup.session_dir(id)).await?;
+    if let Some(scratch) = sup.scratch_dir(id) {
+        remove_dir(&scratch).await?;
+    }
     sup.sessions().remove(id);
     Ok(())
 }
@@ -341,19 +355,31 @@ fn claim(sup: &Supervisor, id: &str, request: &EnsureRequest) -> Result<Claim, S
     Ok(claim)
 }
 
-/// Creates the session's directory and `home/`, and spawns its shim, confined to that directory
-/// as configured. A confinement that cannot be applied fails the spawn: never run unconfined.
+/// Creates the session's directory with `home/` and its scratch directory, and spawns its shim,
+/// confined to those directories as configured. A confinement that cannot be applied fails the
+/// spawn: never run unconfined. A session with a scratch directory takes its `TMPDIR` there
+/// (`<scratch>/tmp`, created here), over the private one filesystem confinement makes in `HOME`:
+/// node-local, and writable on a pod whose root filesystem is read-only.
 fn start_shim(sup: &Supervisor, id: &str, request: &EnsureRequest) -> Result<Entry, SessionError> {
     let dir = sup.session_dir(id);
-    let home = dir.join(SESSION_HOME);
-    std::fs::create_dir_all(&home)
-        .map_err(|err| SessionError::Failed(format!("creating {}: {err}", home.display())))?;
+    create_dir(&dir.join(SESSION_HOME))?;
+    let scratch = sup.scratch_dir(id);
+    if let Some(scratch) = &scratch {
+        create_dir(&scratch.join(SCRATCH_TMP))?;
+    }
     let binary = &sup.config.shim_binary;
     let confinement = sup.config.confinement;
     let mut command = shim_command(binary, &dir, request);
-    confine::apply_to(&mut command, confinement, &dir).map_err(|err| {
+    let dirs = confine::SessionDirs {
+        dir: &dir,
+        scratch: scratch.as_deref(),
+    };
+    confine::apply_to(&mut command, confinement, dirs).map_err(|err| {
         SessionError::Failed(format!("confining session {id} ({confinement}): {err:#}"))
     })?;
+    if let Some(scratch) = &scratch {
+        command.env("TMPDIR", scratch.join(SCRATCH_TMP));
+    }
     let child = command.spawn().map_err(|err| {
         SessionError::Failed(format!(
             "spawning {} (confinement: {confinement}): {err}",
@@ -481,7 +507,12 @@ async fn halt(id: &str, pid: u32, mut exited: watch::Receiver<bool>) {
     kill(id, pid, exited).await;
 }
 
+/// SIGKILLs the shim's whole tree, then its group: what the session left (re-parented to the
+/// shim, its subreaper, and possibly in another group or session) dies with it rather than
+/// outliving the shim under the pod's init.
 async fn kill(id: &str, pid: u32, mut exited: watch::Receiver<bool>) {
+    let left = procstats::descendant_processes(pid).unwrap_or_default();
+    crate::reaper::signal_all(&left, libc::SIGKILL);
     signal_group(pid, libc::SIGKILL);
     if !gone_within(&mut exited, KILL_WAIT).await {
         tracing::error!(session = %id, pid, "session shim survived SIGKILL");
@@ -506,14 +537,58 @@ fn signal_group(pgid: u32, signal: libc::c_int) {
     unsafe { libc::kill(-pgid, signal) };
 }
 
+fn create_dir(dir: &Path) -> Result<(), SessionError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|err| SessionError::Failed(format!("creating {}: {err}", dir.display())))
+}
+
+/// Removes `dir` and everything in it; a missing `dir` is fine.
 async fn remove_dir(dir: &Path) -> Result<(), SessionError> {
-    match tokio::fs::remove_dir_all(dir).await {
+    let owned = dir.to_owned();
+    let removed = tokio::task::spawn_blocking(move || remove_tree(&owned))
+        .await
+        .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+    match removed {
         Err(err) if err.kind() != ErrorKind::NotFound => Err(SessionError::Failed(format!(
             "removing {}: {err}",
             dir.display()
         ))),
         _ => Ok(()),
     }
+}
+
+/// `remove_dir_all`, retried once the directories under `dir` are writable when a read-only one
+/// refused it. Go makes every directory of its module cache read-only, and the supervisor runs as
+/// the sessions' own uid, which cannot unlink entries from a directory it may not write.
+fn remove_tree(dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_dir_all(dir) {
+        Err(err) if err.kind() == ErrorKind::PermissionDenied => {
+            make_writable(dir)?;
+            std::fs::remove_dir_all(dir)
+        }
+        outcome => outcome,
+    }
+}
+
+/// Gives the owner full access to `dir` and every directory below it. A symbolic link is never
+/// followed: only entries that are directories themselves are changed and descended into.
+///
+/// Known limitation: the walk goes by path, so a directory swapped for a link between the type
+/// check and the `chmod` would have the link's target changed. The session is stopped before a
+/// purge and runs as the same uid, so this gains it nothing it could not already do; a walk over
+/// directory descriptors would close the window, and is not worth it while shared runtime pods
+/// are being retired.
+fn make_writable(dir: &Path) -> std::io::Result<()> {
+    let mut permissions = std::fs::symlink_metadata(dir)?.permissions();
+    permissions.set_mode(permissions.mode() | OWNER_ALL);
+    std::fs::set_permissions(dir, permissions)?;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            make_writable(&entry.path())?;
+        }
+    }
+    Ok(())
 }
 
 /// Refuses an id that is not one plain path segment, a port a session cannot or must not use,
@@ -592,6 +667,44 @@ mod tests {
         }
         assert!(is_segment(&"x".repeat(MAX_SEGMENT_BYTES)));
         assert!(!is_segment(&"x".repeat(MAX_SEGMENT_BYTES + 1)));
+    }
+
+    fn read_only(dir: &Path) {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    }
+
+    /// The shape Go leaves its module cache in: read-only directories holding files.
+    #[tokio::test]
+    async fn a_purge_removes_read_only_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let scratch = root.path().join("s-a");
+        let module = scratch.join("go-mod/example.com/m@v1.0.0");
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(module.join("go.mod"), "module m\n").unwrap();
+        read_only(&module);
+        read_only(module.parent().unwrap());
+
+        remove_dir(&scratch).await.unwrap();
+        assert!(!scratch.exists());
+        remove_dir(&scratch).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn making_a_tree_writable_never_follows_a_link_out_of_it() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        read_only(&outside);
+        let scratch = root.path().join("s-a");
+        let locked = scratch.join("locked");
+        std::fs::create_dir_all(locked.join("inner")).unwrap();
+        std::os::unix::fs::symlink(&outside, scratch.join("link")).unwrap();
+        read_only(&locked);
+
+        remove_dir(&scratch).await.unwrap();
+        assert!(!scratch.exists());
+        let mode = std::fs::metadata(&outside).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o555, "the link's target was changed");
     }
 
     #[test]

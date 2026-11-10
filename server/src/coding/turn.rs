@@ -26,6 +26,7 @@ use tokio::sync::mpsc;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use super::lifecycle::{self, SessionRuntimeState, TurnLease};
+use super::questions::TurnQuestions;
 use crate::state::AppState;
 
 /// What [`run_turn`] needs to drive one turn.
@@ -216,10 +217,15 @@ async fn start_turn(
     // same stream the turn's updates flow through — it runs off the ACP loop and
     // has no `TurnEvent` of its own to carry the pause.
     let (out_tx, out_rx) = mpsc::unbounded_channel::<CodingTurnEvent>();
+    let questions = TurnQuestions::default();
     let conn = AcpConnection::connect(
         transport,
         AcpConnectConfig {
-            permission_policy: permission_policy(state, req, out_tx.clone()),
+            permission_policy: hitl_permission_policy(
+                state,
+                policy_input(req, questions.clone()),
+                out_tx.clone(),
+            ),
             ..Default::default()
         },
     )
@@ -275,6 +281,7 @@ async fn start_turn(
             cancel: None,
             keep_alive: None,
             shim_restart: None,
+            questions,
         }
         .run(),
     );
@@ -454,6 +461,8 @@ pub(crate) struct DriveTurn {
     /// How to ask the sandbox's shim to restart its harness, used when a cancelled turn had to be
     /// ended by force.
     pub shim_restart: Option<ShimRestart>,
+    /// The questions the turn asked a person; the ones still open are closed when it ends.
+    pub questions: TurnQuestions,
 }
 
 /// The shim's restart endpoint (`POST /control/restart`) and what it needs.
@@ -507,6 +516,7 @@ impl DriveTurn {
             cancel,
             keep_alive,
             shim_restart,
+            questions,
         } = self;
         let mut outcome = lifecycle::TurnOutcome::Failed;
         let mut cancelling = false;
@@ -685,6 +695,8 @@ impl DriveTurn {
         // exits on stdin EOF while the container stays up for other sessions. Then
         // release the lease (which stamps `last_turn_at` for idle tracking).
         drop(conn);
+        // A question lives no longer than its turn: nothing delivers an answer given after this.
+        close_open_questions(&db, &lease, &questions).await;
         // Outcome before release: release clears the live turn id, and `tasks/get` must always
         // find the task as one or the other.
         let _ = lifecycle::record_outcome(&db, &lease, &turn_id, outcome).await;
@@ -728,6 +740,20 @@ fn begin_cancel(
     }
     let _ = conn.cancel(session.clone());
     deadline.reset(tokio::time::Instant::now() + CANCEL_GRACE);
+}
+
+/// Close the questions the turn asked that nobody answered (`coding::questions`). Best effort: a
+/// failure leaves them open, and a later suspend of the session closes them.
+async fn close_open_questions(db: &sqlx::PgPool, lease: &TurnLease, questions: &TurnQuestions) {
+    match questions.close_open(db).await {
+        Ok(0) => {}
+        Ok(closed) => {
+            tracing::info!(session_id = %lease.session_id, closed, "coding HITL: closed the questions the turn left unanswered");
+        }
+        Err(e) => {
+            tracing::warn!(session_id = %lease.session_id, error = %e, "coding HITL: could not close the turn's unanswered questions");
+        }
+    }
 }
 
 /// A failed turn's terminal event, with the real reason when the turn's lease is gone.
@@ -843,31 +869,25 @@ fn safe_session_label(session_id: &str) -> String {
     }
 }
 
-/// Choose how the turn answers the agent's `session/request_permission` requests.
+/// What decides how this turn answers the agent's `session/request_permission` requests
+/// ([`hitl_permission_policy`]).
 ///
 /// Auto mode (the default) approves everything so a turn runs unattended. When
 /// the agent is `hitl_enabled`, route each request to the Nasiko HITL surface via
 /// a [`super::permission::HitlPermissionDelegate`] — but only when the turn's user
 /// and agent id are both known; if HITL is asked for and either is missing we
 /// fail closed (reject every request) rather than silently auto-approving an
-/// agent that was meant to be gated.
-fn permission_policy(
-    state: &AppState,
-    req: &CodingTurnRequest,
-    notice_tx: mpsc::UnboundedSender<CodingTurnEvent>,
-) -> PermissionPolicy {
-    hitl_permission_policy(
-        state,
-        HitlPolicyInput {
-            hitl_enabled: req.hitl_enabled,
-            agent_id: uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
-            user_id: req.user_id,
-            session_id: &req.session_id,
-            pending_sink: None,
-            cancel: None,
-        },
-        notice_tx,
-    )
+/// agent that was meant to be gated. Each question asked is noted in `questions`.
+fn policy_input(req: &CodingTurnRequest, questions: TurnQuestions) -> HitlPolicyInput<'_> {
+    HitlPolicyInput {
+        hitl_enabled: req.hitl_enabled,
+        agent_id: uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
+        user_id: req.user_id,
+        session_id: &req.session_id,
+        pending_sink: None,
+        cancel: None,
+        questions,
+    }
 }
 
 /// What decides how a turn answers permission requests.
@@ -880,9 +900,12 @@ pub(crate) struct HitlPolicyInput<'a> {
     pub pending_sink: Option<Arc<dyn super::permission::PendingPermissionSink>>,
     /// Fired when the task is cancelled, so a pending approval is closed instead of left waiting.
     pub cancel: Option<tokio_util::sync::CancellationToken>,
+    /// The turn's record of the questions it asks, which its driver closes when the turn ends.
+    pub questions: super::questions::TurnQuestions,
 }
 
-/// [`permission_policy`] over plain values, so the harness path shares the rule.
+/// The HITL permission rule over plain values, so the exec path ([`policy_input`]) and the harness
+/// path share it.
 pub(crate) fn hitl_permission_policy(
     state: &AppState,
     input: HitlPolicyInput<'_>,
@@ -906,6 +929,7 @@ pub(crate) fn hitl_permission_policy(
             if let Some(cancel) = input.cancel {
                 delegate = delegate.with_cancel(cancel);
             }
+            delegate = delegate.with_questions(input.questions);
             PermissionPolicy::Delegate(Arc::new(delegate))
         }
         _ => {

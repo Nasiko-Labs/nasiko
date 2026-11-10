@@ -123,6 +123,10 @@ impl SandboxProvider for RecordingProvider {
         self.inner.release(handle).await
     }
 
+    async fn resume_takes_new_env(&self, handle: &SandboxHandle) -> Result<bool> {
+        self.inner.resume_takes_new_env(handle).await
+    }
+
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats> {
         self.inner.stats(handle).await
     }

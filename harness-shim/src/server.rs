@@ -21,7 +21,6 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use serde_json::{Value, json};
 use tokio::net::TcpListener;
-use tokio::process::Child;
 use tokio::sync::{Notify, mpsc, oneshot};
 use tokio::task::JoinHandle;
 
@@ -30,6 +29,7 @@ use crate::child::{self, Shutdown, Signalled, SpawnedChild, StdoutEnd};
 use crate::control::{self, child_state};
 use crate::handshake::{Handshake, Launch, Mode, NO_COMMAND_MESSAGE};
 use crate::procstats::Sampler;
+use crate::reaper::OwnChild;
 
 const CLOSE_SERVICE_RESTART: u16 = 1012;
 const CLOSE_UNSUPPORTED_DATA: u16 = 1003;
@@ -659,7 +659,7 @@ enum Event {
 
 /// A running harness child and the task reading its stdout.
 struct Live {
-    process: Child,
+    process: OwnChild,
     reader: JoinHandle<StdoutEnd>,
     /// How many children the shim has started, this one included.
     generation: u64,
@@ -858,7 +858,8 @@ pub async fn run(config: Config, bound: Option<oneshot::Sender<SocketAddr>>) -> 
             let Some((started, wake)) =
                 start_when_configured(&relay, &mut shutdown, &mut restarts).await
             else {
-                return Ok(finish(&relay, None, Stop::Signalled(Signalled::Int)).await);
+                let code = finish(&relay, None, Stop::Signalled(Signalled::Int)).await;
+                return Ok(leave(code).await);
             };
             let settled = settle(&relay, mode, started)?;
             answer(wake.ack, &settled);
@@ -883,15 +884,22 @@ pub async fn run(config: Config, bound: Option<oneshot::Sender<SocketAddr>>) -> 
                 running.reader.abort();
                 let child_gone = matches!(stop, Stop::ChildExited(_) | Stop::StdoutClosed);
                 if mode == Mode::Env || !child_gone {
-                    return Ok(code);
+                    return Ok(leave(code).await);
                 }
             }
         }
     }
 }
 
+/// The last step before the shim exits with `code`: stops whatever the session left running in
+/// its tree (a backgrounded job, a daemonized server), so nothing outlives the session.
+async fn leave(code: i32) -> i32 {
+    crate::reaper::stop_tree(crate::reaper::TREE_STOP_GRACE).await;
+    code
+}
+
 /// Winds down for `stop`: tells the client why, and returns the exit code.
-async fn finish(relay: &Relay, process: Option<&mut Child>, stop: Stop) -> i32 {
+async fn finish(relay: &Relay, process: Option<&mut OwnChild>, stop: Stop) -> i32 {
     let (code, close, reason) = match stop {
         Stop::ChildExited(status) => {
             tracing::info!(%status, "harness exited");

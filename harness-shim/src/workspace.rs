@@ -159,15 +159,13 @@ async fn run_git_clone(
         .env_remove(REPO_TOKEN_ENV)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .stderr(Stdio::piped());
     if let Some(askpass) = askpass {
         command.env("GIT_ASKPASS", askpass.path());
     }
-    let mut child = command
-        .spawn()
+    let mut child = crate::reaper::OwnChild::spawn(&mut command)
         .map_err(|e| format!("could not run git: {e}"))?;
-    let stderr = child.stderr.take().ok_or("git stderr not piped")?;
+    let stderr = child.take_stderr().ok_or("git stderr not piped")?;
     let token = spec.token.clone();
     // Git's stderr goes to the shim log line by line; the tail is kept for the user's notice.
     let logger = tokio::spawn(async move {

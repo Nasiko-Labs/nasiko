@@ -112,20 +112,23 @@ struct SkillRow {
 /// No viewer: public agents only (`is_public`, or a public grant). A viewer:
 /// every agent the edition's `can_access_agent` lets them call, which for a
 /// superuser is all of them. Parked agents are included — the proxy wakes them
-/// on the next call.
+/// on the next call. A harness agent shows to someone other than its owner only
+/// when it is public, a platform catalog row: no grant reaches it
+/// (`nasiko_auth::sharing`), here or in `can_access_agent`.
 async fn discoverable_agents(
     state: &AppState,
     viewer: Option<&Claims>,
 ) -> Result<Vec<Value>, sqlx::Error> {
-    let rows = sqlx::query_as::<_, AgentRow>(
+    let rows = sqlx::query_as::<_, AgentRow>(&format!(
         "SELECT a.id, a.name, a.description FROM agents a \
          WHERE a.status IN ('running', 'parked') AND a.deleted_at IS NULL \
            AND NOT a.is_internal \
-           AND ($1 OR a.is_public OR EXISTS ( \
+           AND ($1 OR a.is_public OR ({grants_reach} AND EXISTS ( \
                 SELECT 1 FROM agent_grants g \
-                 WHERE g.agent_id = a.id AND g.grant_type = 'public' AND g.grantee_id = '*')) \
+                 WHERE g.agent_id = a.id AND g.grant_type = 'public' AND g.grantee_id = '*'))) \
          ORDER BY a.name",
-    )
+        grants_reach = nasiko_auth::sharing::grants_reach_sql("a"),
+    ))
     .bind(viewer.is_some())
     .fetch_all(&state.db)
     .await?;

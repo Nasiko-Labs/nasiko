@@ -15,6 +15,7 @@ pub mod entry;
 pub mod lifecycle;
 pub mod permission;
 pub mod proxy;
+pub mod questions;
 pub mod revocation;
 pub mod sse;
 pub mod turn;

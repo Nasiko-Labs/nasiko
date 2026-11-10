@@ -8,6 +8,7 @@
 //! [`turn`] runs one turn on the sandbox, reusing the `coding` module's lease, permission and
 //! streaming pieces; this module also builds the sandbox spec and owns suspension.
 
+pub mod admission;
 pub mod catalog;
 pub(crate) mod handshake;
 pub mod identity;
@@ -18,13 +19,14 @@ pub mod pending;
 pub mod profile;
 pub mod reaper;
 pub mod routes;
+pub mod scratch;
 mod suspend;
 pub mod tasks;
 pub mod teardown;
 pub mod token;
 pub mod turn;
 
-pub use catalog::{Harness, HarnessCatalog, spec_for_session};
+pub use catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT, spec_for_session};
 pub use model::{SessionRow, SessionRuntimeState, SessionStore};
 pub use reaper::spawn_reaper;
 pub use routes::router;

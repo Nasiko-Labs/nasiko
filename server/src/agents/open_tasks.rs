@@ -3,9 +3,9 @@
 //! The platform sees the task-shaped replies a framework agent returns on every path it forwards
 //! them (the agent proxy, direct `agent_id` dispatch, the HITL resume). A non-terminal one
 //! (`working`, `input-required`, ...) is recorded here; a terminal one clears it. The idle reaper
-//! treats an agent with a live row as busy, so it is not parked mid-task. Rows older than
-//! `max(AGENT_OPEN_TASK_MAX_AGE_SECS, effective park TTL + reaper interval)` are ignored and
-//! pruned: a task that never reports back must not pin an agent awake forever.
+//! does not park an agent with a row younger than two hours, so it is not parked mid-task. Rows
+//! older than `max(AGENT_OPEN_TASK_MAX_AGE_SECS, two hours)` are pruned: a task that never reports
+//! back must not pin an agent awake forever.
 
 use std::time::Duration;
 
@@ -88,19 +88,6 @@ pub async fn record(db: &PgPool, agent_id: Uuid, observed: &Observed) -> sqlx::R
         .await?;
     }
     Ok(())
-}
-
-/// How many tasks the agent still holds open that were reported within `max_age`.
-pub async fn count_open(db: &PgPool, agent_id: Uuid, max_age: Duration) -> sqlx::Result<u64> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM agent_open_tasks \
-         WHERE agent_id = $1 AND updated_at > now() - make_interval(secs => $2)",
-    )
-    .bind(agent_id)
-    .bind(max_age.as_secs_f64())
-    .fetch_one(db)
-    .await?;
-    Ok(u64::try_from(count).unwrap_or(0))
 }
 
 /// Delete rows older than `max_age`; returns how many.

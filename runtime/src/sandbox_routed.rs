@@ -87,6 +87,19 @@ impl SandboxProvider for KeyRoutedSandboxProvider {
         self.by_handle(handle).release(handle).await
     }
 
+    /// The owning side's answer, when it is also the side the next `acquire` of the key goes
+    /// to. A sandbox the other side owns (a pod-era session sandbox), or one neither side owns,
+    /// is never resumed: its key's next acquire creates a new sandbox on the key's side.
+    async fn resume_takes_new_env(&self, handle: &SandboxHandle) -> Result<bool> {
+        let owned =
+            self.sessions.kind() == handle.provider || self.agents.kind() == handle.provider;
+        let owner = self.by_handle(handle);
+        if !owned || !Arc::ptr_eq(owner, self.by_key(&handle.key)) {
+            return Ok(false);
+        }
+        owner.resume_takes_new_env(handle).await
+    }
+
     async fn stats(&self, handle: &SandboxHandle) -> Result<SandboxStats> {
         self.by_handle(handle).stats(handle).await
     }
@@ -236,6 +249,9 @@ mod tests {
         async fn release(&self, h: &SandboxHandle) -> Result<()> {
             self.1.release(h).await
         }
+        async fn resume_takes_new_env(&self, h: &SandboxHandle) -> Result<bool> {
+            self.1.resume_takes_new_env(h).await
+        }
         async fn stats(&self, h: &SandboxHandle) -> Result<SandboxStats> {
             self.1.stats(h).await
         }
@@ -319,6 +335,44 @@ mod tests {
             sessions.status(&handle).await.unwrap(),
             SandboxState::Absent
         );
+    }
+
+    #[tokio::test]
+    async fn resume_takes_new_env_is_the_answer_of_the_side_that_resumes_the_sandbox() {
+        let (sessions, agents, routed) = kinded_pair();
+        sessions.1.set_resume_takes_new_env(true);
+        let session = routed
+            .acquire(&spec_for(session_key(), TransportKind::WebSocket))
+            .await
+            .unwrap();
+        let agent = routed
+            .acquire(&spec_for(agent_key(), TransportKind::Http))
+            .await
+            .unwrap();
+        assert!(routed.resume_takes_new_env(&session).await.unwrap());
+        assert!(!routed.resume_takes_new_env(&agent).await.unwrap());
+
+        agents.1.set_resume_takes_new_env(true);
+        assert!(routed.resume_takes_new_env(&agent).await.unwrap());
+        // A pod-era session sandbox: the pod side owns it, but its key's next acquire goes to the
+        // session side, so nothing resumes it.
+        let pod_era = agents
+            .acquire(&spec_for(session_key(), TransportKind::WebSocket))
+            .await
+            .unwrap();
+        assert!(!routed.resume_takes_new_env(&pod_era).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_handle_neither_side_owns_is_never_resumed() {
+        let (sessions, _agents, routed) = kinded_pair();
+        sessions.1.set_resume_takes_new_env(true);
+        let mut foreign = routed
+            .acquire(&spec_for(session_key(), TransportKind::WebSocket))
+            .await
+            .unwrap();
+        foreign.provider = SandboxProviderKind::Docker;
+        assert!(!routed.resume_takes_new_env(&foreign).await.unwrap());
     }
 
     #[test]

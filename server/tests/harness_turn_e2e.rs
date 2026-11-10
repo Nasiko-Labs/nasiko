@@ -9,10 +9,12 @@
 mod common;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use harness_shim::server::{Config as ShimConfig, run};
 use nasiko_runtime::{SandboxKey, SandboxProvider as _};
+use nasiko_server::sessions::admission::{SESSION_REFUSED, SessionAdmission, SessionRefusal};
 use nasiko_server::sessions::identity::shim_token;
 use serde_json::{Value, json};
 use serial_test::serial;
@@ -823,6 +825,56 @@ async fn a_token_near_expiry_or_already_revoked_is_replaced_and_the_sandbox_rebu
             .unwrap();
     assert_ne!(live, stored_jti);
     assert_eq!(revoked_count(&server, &live).await, 0);
+    server.cleanup().await;
+}
+
+/// As above, on a provider whose resumed sandbox runs on the resuming env (the bare pod, shared
+/// runtime pods): the sandbox is suspended and resumed on the new token, never released, so it
+/// keeps its state and files.
+#[tokio::test]
+#[serial]
+async fn a_token_near_expiry_is_replaced_by_suspending_a_sandbox_that_resumes_on_the_new_env() {
+    let World {
+        server,
+        agent_id,
+        alice,
+        ..
+    } = world().await;
+    server.sandbox.set_resume_takes_new_env(true);
+    let (key, sid) = session_with_shim(&server).await;
+    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    settled_session(&server.db, &sid).await;
+
+    let near = nasiko_session_token::mint_session_token(
+        &nasiko_session_token::SessionTokenInput {
+            agent_id: agent_id.to_string(),
+            user_id: alice.to_string(),
+            session_id: sid.clone(),
+            flow_id: "f".into(),
+        },
+        SECRET,
+        3600,
+        nasiko_session_token::parse_algorithm("HS256"),
+    )
+    .unwrap();
+    store_raw_token(&server, &sid, agent_id, &near.token, &near.jti).await;
+    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    settled_session(&server.db, &sid).await;
+
+    let sent = server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
+    assert_ne!(sent, near.token, "the near-expiry token was replaced");
+    assert_eq!(revoked_count(&server, &near.jti).await, 1, "and revoked");
+    assert_eq!(server.sandbox.acquire_count(&key), 2);
+    assert_eq!(
+        server.sandbox.creations(&key),
+        1,
+        "the sandbox was suspended and resumed, never released and rebuilt"
+    );
+    assert_eq!(
+        server.sandbox.spec_of(&key).unwrap().env["NASIKO_SESSION_TOKEN"],
+        sent,
+        "the resumed sandbox runs on the new token"
+    );
     server.cleanup().await;
 }
 
@@ -1948,6 +2000,92 @@ async fn polling_a_task_opens_no_flow_and_records_no_participant() {
         counts(server.db.clone()).await,
         before,
         "a poll leaves no flow behind"
+    );
+    server.cleanup().await;
+}
+
+/// A session admission that refuses every turn, as a distribution at its agent limit does.
+struct AtTheCap;
+
+#[async_trait::async_trait]
+impl SessionAdmission for AtTheCap {
+    async fn refuse(&self, _user_id: Uuid, _harness_id: &str) -> Option<SessionRefusal> {
+        Some(SessionRefusal {
+            status: axum::http::StatusCode::PAYMENT_REQUIRED,
+            body: json!({ "error": "You've reached 2 cloud agents", "code": "plan_agent_limit_reached" }),
+        })
+    }
+}
+
+/// The session rows under `context_id`, and the flows `user` owns.
+async fn written_for(db: &PgPool, user: Uuid, context_id: &str) -> (i64, i64) {
+    let sessions = sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE session_id = $1")
+        .bind(context_id)
+        .fetch_one(db)
+        .await
+        .unwrap();
+    let flows = sqlx::query_scalar("SELECT count(*) FROM flows WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(db)
+        .await
+        .unwrap();
+    (sessions, flows)
+}
+
+fn assert_refused(body: &Value) {
+    assert_eq!(body["jsonrpc"], "2.0", "{body}");
+    assert_eq!(body["error"]["code"], SESSION_REFUSED, "{body}");
+    assert_eq!(body["error"]["message"], "You've reached 2 cloud agents");
+    assert_eq!(body["error"]["data"]["code"], "plan_agent_limit_reached");
+}
+
+/// A turn the session admission refuses is answered with a JSON-RPC error carrying the refusal,
+/// over the proxy (on a 200, like its other harness errors) and over dispatch (with the refusal's
+/// status), and writes nothing first: no session row for its contextId, no flow.
+#[tokio::test]
+#[serial]
+async fn a_refused_turn_writes_nothing_and_answers_a_json_rpc_error_over_both_front_doors() {
+    let World {
+        server,
+        agent_id,
+        alice,
+        ..
+    } = world().await;
+    server.state.session_admission.install(Arc::new(AtTheCap));
+
+    let context_id = Uuid::new_v4().to_string();
+    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &context_id).await;
+    assert_eq!(resp.status(), 200);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], "1");
+    assert_refused(&body);
+    assert_eq!(written_for(&server.db, alice, &context_id).await, (0, 0));
+
+    let context_id = Uuid::new_v4().to_string();
+    let mut dispatch = stream_body(&context_id, "say hello");
+    dispatch["params"]["message"]["role"] = json!("ROLE_USER");
+    dispatch["params"]["metadata"] = json!({ "agent_id": agent_id.to_string() });
+    let resp = common::as_member(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&dispatch),
+        &alice.to_string(),
+        "alice",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 402);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], "1");
+    assert_refused(&body);
+    assert_eq!(written_for(&server.db, alice, &context_id).await, (0, 0));
+    assert_eq!(
+        server.sandbox.acquire_count(&SandboxKey::Session {
+            session_id: context_id.parse().unwrap()
+        }),
+        0
     );
     server.cleanup().await;
 }

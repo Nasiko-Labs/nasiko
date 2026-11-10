@@ -136,3 +136,68 @@ async fn sigint_still_exits_a_handshake_shim() {
     binary.signal(libc::SIGINT);
     assert_eq!(binary.wait_exit().code(), Some(0));
 }
+
+/// A process the harness leaves behind (started in a subshell that exits at once, so its parent
+/// is gone) is re-parented to the shim, its subreaper, rather than to the init: it is in the
+/// shim's tree, so the session's stats count it, and it stops when the shim does.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_detached_process_stays_in_the_shims_tree_and_stops_with_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let harness = dir.path().join("harness.sh");
+    std::fs::write(&harness, "#!/bin/sh\n(sleep 300 &)\nexec cat\n").unwrap();
+    std::fs::set_permissions(&harness, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (mut binary, _addr) = spawn("env", &[("HARNESS_CMD", harness.to_str().unwrap())]).await;
+    let shim = binary.0.id();
+
+    let started = Instant::now();
+    let sleeper = loop {
+        if let Some(pid) = child_named(shim, "sleep") {
+            break pid;
+        }
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the detached sleep never reached the shim"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+
+    binary.sigterm();
+    assert_eq!(binary.wait_exit().code(), Some(0));
+    let started = Instant::now();
+    while is_alive(sleeper) {
+        assert!(
+            started.elapsed() < DEADLINE,
+            "the detached sleep outlived the shim"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The pid of a child of `parent` whose command name is `name`.
+#[cfg(target_os = "linux")]
+fn child_named(parent: u32, name: &str) -> Option<u32> {
+    std::fs::read_dir("/proc").ok()?.find_map(|entry| {
+        let pid: u32 = entry.ok()?.file_name().to_str()?.parse().ok()?;
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let comm = &stat[stat.find('(')? + 1..stat.rfind(')')?];
+        let ppid: u32 = stat[stat.rfind(')')? + 1..]
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()?;
+        (comm == name && ppid == parent).then_some(pid)
+    })
+}
+
+/// Whether `pid` still runs (a zombie, exited and not yet reaped, does not).
+#[cfg(target_os = "linux")]
+fn is_alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        stat.rfind(')')
+            .and_then(|close| stat[close + 1..].split_whitespace().next())
+            .is_some_and(|state| state != "Z" && state != "X")
+    })
+}

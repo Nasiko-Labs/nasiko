@@ -102,6 +102,10 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let cli = Cli::parse();
+    // Before anything is spawned: processes the harness leaves behind stay in the shim's tree.
+    if let Err(err) = harness_shim::reaper::adopt_orphans() {
+        tracing::warn!(%err, "processes the session leaves behind escape its stats and its stop");
+    }
     let mode = resolve_mode(std::env::var(MODE_ENV).ok().as_deref())?;
     let argv = match mode {
         Mode::Env => Some(resolve_command(cli.command)?),

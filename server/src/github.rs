@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use std::collections::HashMap;
 
+use crate::agent_scaling::{ParkingPolicy, save_parking_policy};
 use crate::agents::upload::BuildJobPayload;
 use crate::agents::utils::set_upload_status;
 use nasiko_secrets::SecretsCrypto;
@@ -695,6 +696,10 @@ struct CloneBody {
     /// (e.g. the UI's auto-suggested patch bump after a conflict).
     #[serde(default)]
     version_override: Option<String>,
+    /// `auto` (the platform parks the agent when idle) or `resident` (always running).
+    /// Omitted keeps an existing agent's stored policy; a new agent gets `auto`.
+    #[serde(default)]
+    parking_policy: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -756,6 +761,10 @@ async fn github_clone(
         )
             .into_response();
     }
+    let parking_policy = match ParkingPolicy::from_request_field(body.parking_policy.as_deref()) {
+        Ok(policy) => policy,
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
 
     // Determine agent name: explicit override → repo name.
     let agent_name = body.agent_name.clone().unwrap_or_else(|| {
@@ -826,21 +835,33 @@ async fn github_clone(
          ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
          DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                        status = 'deploying', updated_at = now() \
+         WHERE agents.workload_kind <> 'harness' \
          RETURNING id",
     )
     .bind(&agent_name)
     .bind(user_id)
     .bind(&version_tag)
     .bind(&image_tag)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     {
-        Ok(id) => id,
+        Ok(Some(id)) => id,
+        // The name is the caller's harness agent, which only the platform deploys.
+        Ok(None) => {
+            return (StatusCode::CONFLICT, crate::agents::HARNESS_AGENT_MANAGED).into_response();
+        }
         Err(e) => {
             tracing::error!(%e, agent_name = %agent_name, "github_clone: register agent db error");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
+    // Stored before the build is queued: the worker's deploy reads it from the row.
+    if let Some(policy) = parking_policy
+        && let Err(e) = save_parking_policy(&mut *tx, agent_id, policy).await
+    {
+        tracing::error!(%e, %agent_id, "github_clone: save parking policy db error");
+        return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+    }
 
     let build_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \

@@ -253,22 +253,23 @@ pub(crate) async fn register_coding_agent(
 /// closes the gap this comment used to describe. OSS returns an empty list, so
 /// the extra disjunct never matches there.
 ///
-/// A soft-deleted agent matches for nobody, the superuser included: `DELETE /api/agents/{id}`
-/// leaves the row in place for history, so a listing that relied on each call site to add its
-/// own `deleted_at IS NULL` (`search` and `by_skill` did not) kept offering a removed agent.
+/// Neither grant disjunct reaches a harness agent (`nasiko_auth::sharing`): a
+/// non-superuser sees one only as its owner, or when it is public (the platform's
+/// catalog rows).
 pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
+    let grants_reach = nasiko_auth::sharing::grants_reach_sql(table_ref);
     format!(
-        r#"({table_ref}.deleted_at IS NULL
-           AND ({user_bind}::uuid IS NULL
+        r#"({user_bind}::uuid IS NULL
              OR {table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
-             OR {table_ref}.id::text = ANY({org_bind})
-             OR EXISTS (
-                 SELECT 1 FROM agent_grants ag
-                 WHERE ag.agent_id = {table_ref}.id
-                   AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
-                     OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
-             )))"#
+             OR ({grants_reach} AND (
+                 {table_ref}.id::text = ANY({org_bind})
+                 OR EXISTS (
+                     SELECT 1 FROM agent_grants ag
+                     WHERE ag.agent_id = {table_ref}.id
+                       AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
+                         OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
+                 ))))"#
     )
 }
 
@@ -1224,8 +1225,7 @@ pub(crate) async fn update(
              skills = COALESCE($9, skills),
              tags = COALESCE($10, tags),
              metadata = COALESCE($11, metadata),
-             status = CASE WHEN $18::text = 'resident' AND status = 'parked' AND $12::text IS NULL
-                           THEN 'stopped' ELSE COALESCE($12, status) END,
+             status = COALESCE($12, status),
              image = COALESCE($13, image),
              minimal_code_enabled = COALESCE($14, minimal_code_enabled),
              compress_enabled = COALESCE($15, compress_enabled),
@@ -1335,13 +1335,8 @@ pub(crate) async fn delete(
     // still leaves the agent deleted, which is the pre-existing behavior: the
     // errors are reported in `runtime_errors` rather than rolling the delete
     // back.
-    //
-    // The status goes to `stopped` in the same statement. Left at `running` or `parked`, the
-    // row still read as live to every query that selects agents by status, so the orchestrator
-    // kept offering a deleted agent as a routing candidate (and, once its name was reused,
-    // dropped both agents as indistinguishable).
     let name: String = match sqlx::query_scalar(
-        "UPDATE agents SET deleted_at = NOW(), status = 'stopped' \
+        "UPDATE agents SET deleted_at = NOW() \
          WHERE id = $1 AND deleted_at IS NULL \
          RETURNING name",
     )
@@ -1375,13 +1370,6 @@ pub(crate) async fn delete(
     .await
     {
         tracing::warn!(%e, %id, "delete agent: state token revoke failed");
-    }
-
-    // A parkable agent may be resting in (or serving from) its own sandbox, which the container
-    // teardown below does not know about, with its credentials stored beside the row. Release the
-    // sandbox and forget the credentials. Best-effort, like the rest of the teardown.
-    if let Err(e) = crate::agents::parking::release_agent_sandbox(&state, id).await {
-        tracing::warn!(%e, %id, "delete agent: could not release the agent's sandbox");
     }
 
     // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
@@ -1978,26 +1966,28 @@ pub(crate) async fn registry_user_agents(
     let limit = q.limit.clamp(1, 100);
     let offset = q.offset.max(0);
 
-    // All users (including admins) see: owned + public + explicitly granted agents.
+    // All users (including admins) see: owned + public + explicitly granted agents. No grant
+    // reaches a harness agent (`nasiko_auth::sharing`).
     let pattern = q.q.as_deref().map(|s| format!("%{}%", s));
-    let agents = sqlx::query_as::<_, Agent>(
+    let agents = sqlx::query_as::<_, Agent>(&format!(
         r#"SELECT * FROM agents
            WHERE deleted_at IS NULL
              AND (
                owner_id = $1
                OR is_public = true
-               OR EXISTS (
+               OR ({grants_reach} AND EXISTS (
                    SELECT 1 FROM agent_grants ag
                    WHERE ag.agent_id = agents.id
                      AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
                        OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text))
-               )
+               ))
            )
              AND ($2::text IS NULL OR (name ILIKE $2 OR description ILIKE $2))
              AND ($3::text IS NULL OR status = $3)
            ORDER BY created_at DESC
            LIMIT $4 OFFSET $5"#,
-    )
+        grants_reach = nasiko_auth::sharing::grants_reach_sql("agents"),
+    ))
     .bind(user_id)
     .bind(&pattern)
     .bind(&q.status)

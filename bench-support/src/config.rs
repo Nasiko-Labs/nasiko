@@ -177,6 +177,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         session_cpu_quiescent_millicores: 20,
         session_reaper_interval_secs: 30,
         agent_open_task_max_age_secs: 3600,
+        agent_park_idle_secs: 3600,
         harness_image_prefix: "nasiko/harness-".to_string(),
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
@@ -206,6 +207,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         context_k_high: 20,
         embedding_model: "mock-embedding".into(),
         agent_call_timeout_secs: 600,
+        agent_startup_budget_secs: 120,
         github_callback_url: None,
         github_central_callback_url: None,
         docker_agent_network: None,
@@ -227,8 +229,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         admin_password: "bench-admin-password".into(),
         container_hours_poll_secs: 60,
         trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 180,
-        trace_usage_max_window_secs: 600,
-        trace_usage_batch_size: 8,
+        trace_usage_overlap_secs: 600,
+        trace_usage_batch_size: 50,
     }
 }

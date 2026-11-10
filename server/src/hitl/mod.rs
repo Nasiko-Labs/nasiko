@@ -406,12 +406,13 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
 
-    // Resolved by kind, so resuming a pause on a parked agent wakes it first. After the flow
-    // guard, so a resume it rejects never wakes anything.
-    //
-    // Wake a Free-plane agent slept for idleness before resuming; a scalability-parked agent is
-    // woken by the resolver below instead.
-    if let Err(msg) = state.agent_wake.before_forward(row.agent_id).await {
+    // Woken, then resolved by kind, so resuming a pause on a parked agent wakes it first. After
+    // the flow guard, so a resume it rejects never wakes anything.
+    if let Err(msg) = state
+        .agent_wake
+        .before_forward(row.agent_id, Some(&flow_ctx.flow_id))
+        .await
+    {
         fail_resume(
             &state,
             &row,
@@ -422,10 +423,9 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
     let caller = Caller {
-        user_id: Some(row.owner_user_id),
         flow_id: Some(flow_ctx.flow_id.clone()),
     };
-    let target = match resolve_target(&state, row.agent_id, &caller, Some(&context_id)).await {
+    let target = match resolve_target(&state, row.agent_id, &caller).await {
         Ok(resolved) => match resolved.into_forward_target() {
             Some(target) => target,
             None => {

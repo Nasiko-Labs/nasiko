@@ -49,16 +49,20 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// Asked before a harness session is opened and before each of its turns starts. OSS wires
+    /// `AdmitEverySession`; an edition whose sessions can add an agent installs its limit check
+    /// through this cell (`SwappableSessionAdmission::install`), once it has what that needs.
+    pub session_admission: Arc<crate::sessions::admission::SwappableSessionAdmission>,
     /// Where a downstream reader of hot `trace_usage` rows has read up to, so
     /// tiering never moves rows it has not seen. OSS wires `NoTieringHold` (no such
     /// reader); the EE composition root replaces it before `init`.
     pub tiering_hold: Arc<dyn nasiko_event_store::TieringHold>,
-    /// Called just before forwarding a request to an agent container. OSS default is a no-op
-    /// (`NoAgentWake`); the EE composition root installs the real implementation through this
-    /// cell (`SwappableAgentWake::install`, not a plain reassignment) for the same reason
-    /// `prompt_context` does - the HITL resume dispatcher forwards to agents too, and holds an
-    /// `AppState` clone taken before that root runs. See that field's doc comment and the
-    /// `agent_wake` module docs.
+    /// Called just before resolving and forwarding a request to an agent. The default
+    /// (`ParkedAgentWake`) scales a parked agent's workload back up; an edition that prepares
+    /// agents differently installs its own through this cell (`SwappableAgentWake::install`, not
+    /// a plain reassignment) for the same reason `prompt_context` does - the HITL resume
+    /// dispatcher forwards to agents too, and holds an `AppState` clone taken before that root
+    /// runs. See that field's doc comment and the `agent_wake` module docs.
     pub agent_wake: Arc<crate::agent_wake::SwappableAgentWake>,
     /// What the MAF worker runs each queued workflow through. OSS wires
     /// `LinearMafExecutor` (steps in array order); the EE composition root
@@ -286,11 +290,12 @@ impl AppState {
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
         let spend_gate: Arc<dyn crate::spend_gate::SpendGate> =
             Arc::new(crate::spend_gate::NoSpendGate);
+        let session_admission =
+            Arc::new(crate::sessions::admission::SwappableSessionAdmission::new(
+                Arc::new(crate::sessions::admission::AdmitEverySession),
+            ));
         let tiering_hold: Arc<dyn nasiko_event_store::TieringHold> =
             Arc::new(nasiko_event_store::NoTieringHold);
-        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
-            crate::agent_wake::NoAgentWake,
-        )));
         let maf_executor: Arc<dyn nasiko_orchestrator::maf::MafExecutor> =
             Arc::new(nasiko_orchestrator::maf::LinearMafExecutor);
         let maf_policy: Arc<dyn crate::maf_policy::MafWorkflowPolicy> =
@@ -318,6 +323,21 @@ impl AppState {
         };
         let flow_guard = FlowGuard::new(redis.clone(), flow_config);
         let flow_events = FlowEventBus::new();
+        // A parked agent with no workload gets one from a worker that holds the state, spawned
+        // below once the state exists.
+        let (workload_deployer, workload_deploys) = crate::agents::catalog_deploy::deployer();
+        let agent_wake = Arc::new(crate::agent_wake::SwappableAgentWake::new(Arc::new(
+            crate::agent_wake::parked::ParkedAgentWake::new(
+                crate::agent_wake::parked::WakeDeps {
+                    db: db.clone(),
+                    runtime: runtime.clone(),
+                    http: http_client.clone(),
+                    flow_events: flow_events.clone(),
+                    deployer: Arc::new(workload_deployer),
+                },
+                std::time::Duration::from_secs(config.agent_wake_budget_secs()),
+            ),
+        )));
         let genai_metrics = GenAiMetrics::new();
 
         // Tempo+Loki observability backend. Model pricing resolves through
@@ -417,6 +437,7 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
+            session_admission,
             tiering_hold,
             agent_wake,
             maf_executor,
@@ -438,6 +459,13 @@ impl AppState {
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
         tokio::spawn(crate::agents::build_worker::run(worker_state, build_rx));
+
+        // Deploys the missing workload of a parked agent the wake asks for: same shape as the
+        // build worker above.
+        tokio::spawn(crate::agents::catalog_deploy::run(
+            state.clone(),
+            workload_deploys,
+        ));
 
         // Spawn the HITL resume dispatcher — same shape as the build worker above.
         // Handles `direct_chat`/`agent_proxy`/`maf`/`orchestrator`-origin rows (real A2A task
@@ -542,7 +570,6 @@ impl AppState {
                 session_resolver,
                 std::time::Duration::from_secs(state.config.trace_usage_sync_secs),
                 std::time::Duration::from_secs(state.config.trace_usage_overlap_secs),
-                std::time::Duration::from_secs(state.config.trace_usage_max_window_secs),
                 state.config.trace_usage_batch_size,
             ));
         }
@@ -679,29 +706,13 @@ impl AppState {
         )
     }
 
-    /// Build the full environment for an agent container: the owner's secrets with the agent's own
-    /// on top (`agent_secrets::resolve_secret_env`), platform-level vars where neither sets one,
-    /// and feature flags from metadata.
+    /// Build the full environment for an agent container: platform-level vars + agent-specific secrets
+    /// + feature flags from metadata.
     pub async fn agent_env(
         &self,
         agent_id: uuid::Uuid,
     ) -> std::collections::HashMap<String, String> {
-        let owner_id: Option<uuid::Uuid> =
-            sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
-                .bind(agent_id)
-                .fetch_optional(&self.db)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::error!(%e, %agent_id, "agent_env: could not read the agent's owner");
-                    None
-                });
-        let mut env = match owner_id {
-            Some(owner_id) => {
-                crate::catalog::agent_secrets::resolve_secret_env(&self.db, owner_id, agent_id)
-                    .await
-            }
-            None => crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await,
-        };
+        let mut env = crate::catalog::agent_secrets::resolve_agent_env(&self.db, agent_id).await;
         for (key, value) in self.platform_fallback_env() {
             env.entry(key).or_insert(value);
         }

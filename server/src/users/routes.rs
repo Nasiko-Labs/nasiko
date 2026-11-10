@@ -1252,23 +1252,24 @@ pub(crate) struct AccessibleAgentsResponse {
 }
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
-    // OSS: owner, public, or a direct user grant.
-    // EE overrides this to also check team and department grants.
-    let rows = sqlx::query_as::<_, AccessibleAgent>(
+    // OSS: owner, public, or a direct user grant, which never reaches a harness agent
+    // (`nasiko_auth::sharing`). EE overrides this to also check team and department grants.
+    let rows = sqlx::query_as::<_, AccessibleAgent>(&format!(
         r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id, a.is_public
            FROM agents a
            WHERE a.deleted_at IS NULL
              AND (
                a.owner_id = $1
                OR a.is_public = true
-               OR EXISTS (
+               OR ({grants_reach} AND EXISTS (
                    SELECT 1 FROM agent_grants ag
                    WHERE ag.agent_id = a.id
                      AND ag.grant_type = 'user' AND ag.grantee_id = $1::text
-               )
+               ))
              )
            ORDER BY a.name"#,
-    )
+        grants_reach = nasiko_auth::sharing::grants_reach_sql("a"),
+    ))
     .bind(user_id)
     .fetch_all(db)
     .await;

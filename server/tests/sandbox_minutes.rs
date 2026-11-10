@@ -319,6 +319,9 @@ impl SandboxProvider for NoStartProvider {
     async fn release(&self, _: &SandboxHandle) -> nasiko_runtime::Result<()> {
         Ok(())
     }
+    async fn resume_takes_new_env(&self, _: &SandboxHandle) -> nasiko_runtime::Result<bool> {
+        Ok(false)
+    }
     async fn stats(&self, _: &SandboxHandle) -> nasiko_runtime::Result<SandboxStats> {
         Err(RuntimeError::Internal("stub".into()))
     }

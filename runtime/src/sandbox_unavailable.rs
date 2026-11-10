@@ -61,6 +61,10 @@ impl SandboxProvider for UnavailableSandboxProvider {
         self.unsupported()
     }
 
+    async fn resume_takes_new_env(&self, _handle: &SandboxHandle) -> Result<bool> {
+        self.unsupported()
+    }
+
     async fn stats(&self, _handle: &SandboxHandle) -> Result<SandboxStats> {
         self.unsupported()
     }
@@ -100,6 +104,10 @@ mod tests {
             Err(RuntimeError::Unsupported(_))
         ));
         assert!(matches!(p.list().await, Err(RuntimeError::Unsupported(_))));
+        assert!(matches!(
+            p.resume_takes_new_env(&handle()).await,
+            Err(RuntimeError::Unsupported(_))
+        ));
         assert!(matches!(
             p.attach(&handle()).await,
             Err(RuntimeError::Unsupported(_))
