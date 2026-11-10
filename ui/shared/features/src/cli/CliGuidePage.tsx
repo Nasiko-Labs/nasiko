@@ -18,6 +18,7 @@ import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { CLI_DOCS_URL, cliDocsUrl } from '@nasiko/app-core/links'
+import { serverUrl } from './commands'
 import { copy, TASKS } from './copy'
 
 const ICONS = {
@@ -29,14 +30,10 @@ const ICONS = {
   observe: ChartNoAxesColumn,
 } as const
 
-/** This server's address for `nasiko connect`, or a placeholder where the page isn't served over http(s). */
-const clusterUrl = () =>
-  /^https?:$/.test(window.location.protocol) ? window.location.origin : 'https://<your-cluster>'
-
 export function CliGuidePage() {
   const steps = [
     { label: copy.start.install, command: copy.install.unixCommand },
-    { label: copy.start.connect, command: `nasiko connect ${clusterUrl()}` },
+    { label: copy.start.connect, command: `nasiko connect ${serverUrl()}` },
     { label: copy.start.signIn, command: 'nasiko auth login' },
     { label: copy.start.deploy, command: 'nasiko upload' },
   ]

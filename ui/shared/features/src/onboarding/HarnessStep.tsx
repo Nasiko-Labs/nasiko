@@ -1,12 +1,15 @@
 /**
- * The guide's last step (user request 2026-11-05, in place of Spend less and Ready): the two CLI commands that bring a
- * developer's coding harnesses into Coding harnesses, install and sign in (user review 2026-11-05: the rest dropped). The installer is the CLI guide's own;
- * the sign-in asks for SSO only where this edition signs in through another method (the `loginMethods` slot).
+ * The guide's last step (user request 2026-11-05, in place of Spend less and Ready): the CLI commands that bring a
+ * developer's coding harnesses into Coding harnesses: install, connect to this server and sign in (user review
+ * 2026-11-05: the rest dropped). The installer is the CLI guide's own. The connect names this page's own origin, since a
+ * fresh CLI otherwise signs in to the control plane built into its release (NAS-1464). The sign-in asks for SSO only
+ * where this edition signs in through another method (the `loginMethods` slot).
  */
 import { Bot, MessageSquare, SquareTerminal } from 'lucide-react'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { Button } from '@nasiko/ui/primitives/button'
+import { connectWithoutLogin } from '@nasiko/features/cli/commands'
 import { copy as cliCopy } from '@nasiko/features/cli/copy'
 import { copy as guideCopy } from './copy'
 import { StepHeading } from './parts'
@@ -29,6 +32,7 @@ export function HarnessStep({
   const sso = !!useSlots().loginMethods
   const steps = [
     { label: copy.steps.install, command: cliCopy.install.unixCommand },
+    { label: copy.steps.connect, command: connectWithoutLogin() },
     sso
       ? { label: copy.steps.signInSso, command: 'nasiko auth login --sso' }
       : { label: copy.steps.signIn, command: 'nasiko auth login' },

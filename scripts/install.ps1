@@ -75,5 +75,6 @@ if (-not (($UserPath -split ';') -contains $Dir)) {
 }
 Write-Host "✓ installed $(& $Exe --version) to $Exe"
 Write-Host ""
-Write-Host "Next: sign in to Nasiko in your browser, then connect your coding agents:"
+Write-Host "Next: point it at your Nasiko server (skip this for the hosted one), sign in, then connect your coding agents:"
+Write-Host "    nasiko connect https://<your-server> --login=false"
 Write-Host "    nasiko auth login"

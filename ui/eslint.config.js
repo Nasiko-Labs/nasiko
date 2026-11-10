@@ -41,11 +41,10 @@ const PUBLIC = {
     // finds its chat past the rail's loaded pages.
     'recorded',
     'sessionLookup',
-    // Home's try-a-run card sends one real turn to the agent it offers.
-    'runOnce',
   ],
   // The onboarding guide's Coding harnesses step shows the CLI installer the CLI guide does.
-  cli: ['copy'],
+  // Every guide that hands out the CLI connects it to this server first (`commands`).
+  cli: ['copy', 'commands'],
   deploy: [
     'AgentBuildsTab',
     'components/DeployAgentButton',
