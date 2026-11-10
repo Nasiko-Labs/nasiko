@@ -208,7 +208,9 @@ pub struct GatewayConfig {
     /// models through OpenRouter. Each adapter places its own, since providers differ in where a
     /// marker may go. On OpenAI, which takes no markers, it sets `prompt_cache_key` to the agent
     /// id on models before GPT-5.6; on OpenRouter it sets `session_id` to it, which keeps the
-    /// agent on one upstream provider.
+    /// agent on one upstream provider. On Gemini it turns the agent's own markers into an
+    /// explicit `cachedContents` cache of the marked prefix (`providers/gemini_cache.rs`);
+    /// off, Gemini calls rely on its implicit caching alone.
     ///
     /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
     /// call costs, never what the model sees. Off, the router sends only the agent's own markers

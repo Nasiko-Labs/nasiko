@@ -92,6 +92,19 @@ pub struct RouteInputs<'a> {
     pub tier_seed: Option<u64>,
 }
 
+impl RouteInputs<'_> {
+    /// Whether the agent's config opts into per-request tier routing: it is configured and
+    /// names at least one tier model. A config with only a `model` is a single-model config
+    /// and runs that model; drawing a tier for it would fill the tier from the global registry
+    /// with a model the user never picked (NAS-1222).
+    fn routes_by_tier(&self) -> bool {
+        self.has_llm_config
+            && (self.tier1_model.is_some()
+                || self.tier2_model.is_some()
+                || self.tier3_model.is_some())
+    }
+}
+
 /// The outcome of routing: the model to call and how it was chosen.
 #[derive(Debug, Clone)]
 pub struct RouteDecision {
@@ -119,7 +132,11 @@ pub struct RouteDecision {
 ///    with a query present and a registry entry for `(provider, tier)`. Loads the provider's
 ///    learned cells, Thompson-samples a tier, and writes the decision (incl. request type)
 ///    through to the cache so the next turn short-circuits at Level 2.
-/// 4. **Config** — the agent's configured model (`has_llm_config`).
+///
+///    Levels 2–3 run only for a **tiered** config (one naming at least one tier model). A
+///    tier the config leaves unset is filled from the global registry.
+/// 4. **Config** — the agent's configured model (`has_llm_config`); always the answer for a
+///    single-model config.
 /// 5. **Default** — no `llm_config`: the resolver's `fallback_model`, which is the request's
 ///    own provider/model (passthrough) or the platform default as the last-resort safety net.
 ///
@@ -185,11 +202,12 @@ pub async fn route_model_with(
         "route_model: LEVEL 1 (Pinned) skipped — agent not pinned"
     );
 
-    // Levels 2 & 3 apply only within a conversation and only when the agent has an
-    // explicit llm_config (opt-in to routing). No `conv_id` or no llm_config ⇒ the
-    // router never fires and behaviour is identical to before this layer — straight to
-    // the configured/default model.
-    if inputs.has_llm_config
+    // Levels 2 & 3 apply only within a conversation and only when the agent's llm_config
+    // names tier models (the opt-in to routing). No `conv_id`, no llm_config or a
+    // single-model config ⇒ the router never fires — straight to the configured/default
+    // model. Skipping Level 2 too means a conversation cached before the config lost its
+    // tiers stops using that tier model at once.
+    if inputs.routes_by_tier()
         && let Some(conv_id) = inputs.signals.conv_id.as_deref()
     {
         // Level 2 — cache hit: the sticky decision for this conversation+agent.
@@ -226,7 +244,7 @@ pub async fn route_model_with(
         );
 
         // Levels 2.5 & 3 — classify, but only at a boundary where re-selecting is safe.
-        // (has_llm_config is already guarded by the outer block.)
+        // (A tiered llm_config is already guarded by the outer block.)
         if inputs.signals.is_fireable_boundary()
             && let Some(query) = inputs.query
         {
@@ -364,7 +382,8 @@ pub async fn route_model_with(
         tracing::debug!(
             target: "nasiko::llm_router::routing",
             agent_id = %inputs.agent_id,
-            "route_model: LEVELS 2 & 3 skipped — no conv_id (not an orchestrated conversation); behaviour identical to pre-router"
+            routes_by_tier = inputs.routes_by_tier(),
+            "route_model: LEVELS 2 & 3 skipped — no conv_id (not an orchestrated conversation) or a config without tier models; behaviour identical to pre-router"
         );
     }
 
@@ -451,7 +470,7 @@ fn query_preview(q: &str) -> String {
 }
 
 /// The model to answer a non-substantive turn with (Level 2.5). Level 2.5 is only reached
-/// inside the `has_llm_config` block, so the agent is always configured here: it gets its
+/// for a tiered config, so the agent is always configured here: it gets its
 /// cheapest available model — the per-config `tier3_model` override, else the global
 /// registry's Tier3 for the provider, else the configured model as a last resort. Never
 /// pins: the caller does not write the cache for this decision.
@@ -614,6 +633,11 @@ mod tests {
         }
     }
 
+    /// The tier-1 model of the tiered config [`inputs`] builds. Tiers 2 and 3 are left unset
+    /// so the registry still fills them.
+    const CFG_TIER1: &str = "cfg-tier1";
+
+    /// A tiered config (only tier 1 set) — the opt-in to Levels 2–3.
     fn inputs<'a>(
         provider: &'a str,
         signals: &'a BoundarySignals,
@@ -625,7 +649,7 @@ mod tests {
             fallback_model: "cfg-model",
             has_llm_config: true,
             pinned_model: pinned,
-            tier1_model: None,
+            tier1_model: Some(CFG_TIER1),
             tier2_model: None,
             tier3_model: None,
             signals,
@@ -686,7 +710,7 @@ mod tests {
         .await;
         assert_eq!(d.source, RouteSource::Classified);
         assert!(d.tier.is_some());
-        let expected_models = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"];
+        let expected_models = [CFG_TIER1, "claude-sonnet-4-6", "claude-haiku-4-5"];
         assert!(
             expected_models.contains(&d.model.as_str()),
             "unexpected model: {}",
@@ -842,8 +866,8 @@ mod tests {
 
     #[tokio::test]
     async fn level2_5_small_talk_serves_cheapest_config_model_and_does_not_cache() {
-        // Gate says non-substantive: a configured agent gets its cheapest model (registry
-        // Tier3 for anthropic = claude-haiku-4-5), tagged SmallTalk, and the cache is never
+        // Gate says non-substantive: a tiered agent with no tier-3 model gets its cheapest
+        // model (registry Tier3 for anthropic = claude-haiku-4-5), tagged SmallTalk, and the cache is never
         // written — so the session is not pinned on small talk.
         let cache = FakeCache::empty();
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
@@ -975,20 +999,95 @@ mod tests {
 
     #[tokio::test]
     async fn level3_registry_miss_falls_through_to_config() {
-        // gemini has no seeded tiers ⇒ classification can't resolve a model ⇒ Level 4.
-        let cache = FakeCache::empty();
+        // gemini has no seeded tiers ⇒ a draw of a tier the config leaves unset can't resolve
+        // a model ⇒ Level 4, nothing cached. A draw of tier 1 uses the config's own model.
         let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
-        let d = route_model(
-            &cache,
-            &test_support::StubRegistry,
-            &InMemoryCellStore::new(),
-            &AllowAllGate,
-            &inputs("gemini", &s, None),
-        )
-        .await;
-        assert_eq!(d.source, RouteSource::Config);
-        assert_eq!(d.model, "cfg-model");
-        assert!(cache.puts.lock().unwrap().is_empty());
+        let mut saw_miss = false;
+        for seed in 0..64 {
+            let cache = FakeCache::empty();
+            let mut i = inputs("gemini", &s, None);
+            i.tier_seed = Some(seed);
+            let d = route_model(
+                &cache,
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &i,
+            )
+            .await;
+            let puts = cache.puts.lock().unwrap().len();
+            match d.tier {
+                Some(Tier::Tier1) => {
+                    assert_eq!(
+                        (d.source, d.model.as_str(), puts),
+                        (RouteSource::Classified, CFG_TIER1, 1)
+                    );
+                }
+                _ => assert_eq!(
+                    (d.source, d.model.as_str(), puts),
+                    (RouteSource::Config, "cfg-model", 0)
+                ),
+            }
+            saw_miss |= d.source == RouteSource::Config;
+        }
+        assert!(saw_miss, "no draw missed the registry");
+    }
+
+    #[tokio::test]
+    async fn single_model_config_serves_its_model_and_never_routes_by_tier() {
+        // NAS-1222: a config with a model and no tier models runs that model. Even at a
+        // fireable boundary, with a stale cached tier decision and a registry that knows the
+        // provider, the router must not draw a tier and swap in a registry model.
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        for gate in [&AllowAllGate as &dyn SalienceGate, &DenyGate] {
+            for cache in [FakeCache::empty(), FakeCache::with_hit("stale-tier-model")] {
+                let mut i = inputs("openai", &s, None);
+                i.tier1_model = None;
+                let d = route_model(
+                    &cache,
+                    &test_support::StubRegistry,
+                    &InMemoryCellStore::new(),
+                    gate,
+                    &i,
+                )
+                .await;
+                assert_eq!(d.source, RouteSource::Config);
+                assert_eq!(d.model, "cfg-model");
+                assert_eq!(d.tier, None);
+                assert!(cache.puts.lock().unwrap().is_empty());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fully_tiered_config_only_serves_its_own_tier_models() {
+        // Every tier set ⇒ every draw resolves to one of the config's three models, never a
+        // registry model.
+        let s = signals(Some("c1"), Phase::Switch, Mode::FreeFlowing);
+        for seed in 0..64 {
+            let mut i = inputs("openai", &s, None);
+            i.tier2_model = Some("cfg-tier2");
+            i.tier3_model = Some("cfg-tier3");
+            i.tier_seed = Some(seed);
+            let d = route_model(
+                &FakeCache::empty(),
+                &test_support::StubRegistry,
+                &InMemoryCellStore::new(),
+                &AllowAllGate,
+                &i,
+            )
+            .await;
+            let expected = match d.tier {
+                Some(Tier::Tier1) => CFG_TIER1,
+                Some(Tier::Tier2) => "cfg-tier2",
+                Some(Tier::Tier3) => "cfg-tier3",
+                None => panic!("a tiered config at a boundary must classify"),
+            };
+            assert_eq!(
+                (d.source, d.model.as_str()),
+                (RouteSource::Classified, expected)
+            );
+        }
     }
 
     #[tokio::test]
