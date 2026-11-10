@@ -6,7 +6,8 @@
 //! parts. Gemini keys `functionResponse` by function **name**, not the OpenAI
 //! `tool_call_id`, so we track id→name across the history. `tools[].function` →
 //! `tools[0].functionDeclarations[]`. Brevity's directive ends the last user turn rather than
-//! joining `systemInstruction` ([`crate::brevity`]).
+//! joining `systemInstruction` ([`crate::brevity`]). The agent's `cache_control` markers
+//! become an explicit `cachedContents` cache of the marked prefix (`providers/gemini_cache.rs`).
 //!
 //! Response (C2): `candidates[0].content.parts[].functionCall` → OpenAI `tool_calls[]`
 //! (Gemini supplies no call id, so we synthesize one; arguments as a JSON string);
@@ -20,7 +21,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde_json::{Map, Value, json};
 
-use super::media::{self, DocumentKind, document_kind};
+use super::gemini_cache::{self, CachePlan};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError, delta_chunk, finish_chunk, now_unix, usage_chunk};
 use crate::ir::{
@@ -34,12 +35,95 @@ pub struct GeminiProvider {
     http: reqwest::Client,
     /// API base, e.g. `https://generativelanguage.googleapis.com/v1beta`.
     base: String,
+    /// Cache the agent's marked prefix as a `cachedContents` resource (`gemini_cache`).
+    explicit_cache: bool,
 }
 
 impl GeminiProvider {
     pub fn new(http: reqwest::Client, base: String) -> Self {
-        Self { http, base }
+        Self {
+            http,
+            base,
+            explicit_cache: false,
+        }
     }
+
+    /// Turn explicit caching of the agent's marked prefix on or off (`TOKEN_CACHE_MARKERS`).
+    pub fn with_explicit_cache(mut self, enabled: bool) -> Self {
+        self.explicit_cache = enabled;
+        self
+    }
+
+    /// POST the request to `models/{model}:{method}`, naming a cache of its marked prefix when
+    /// one applies. A cache Gemini will not take back is refused and the request resent whole,
+    /// so caching never fails a call.
+    async fn generate(
+        &self,
+        method: &str,
+        req: &ChatRequest,
+        cfg: &ResolvedConfig,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let request = translate(req, cfg)?;
+        let url = format!("{}/models/{}:{}", self.base, cfg.model, method);
+        if let Some(cached) = self.cached(&request, cfg).await {
+            let resp = self.post(&url, cfg, &cached.body).await?;
+            if !refuses_cached_content(resp.status()) {
+                return require_success(resp).await;
+            }
+            tracing::warn!(
+                target: "nasiko::llm_router::gemini",
+                model = %cfg.model, status = resp.status().as_u16(),
+                "gemini: request naming an explicit cache was refused; resending it uncached"
+            );
+            gemini_cache::refuse(&cached);
+        }
+        require_success(self.post(&url, cfg, &request.body).await?).await
+    }
+
+    async fn cached(
+        &self,
+        request: &GeminiRequest,
+        cfg: &ResolvedConfig,
+    ) -> Option<gemini_cache::CachedRequest> {
+        let plan = request
+            .cache_plan
+            .as_ref()
+            .filter(|_| self.explicit_cache)?;
+        gemini_cache::use_cached_prefix(&self.http, &self.base, cfg, &request.body, plan).await
+    }
+
+    async fn post(
+        &self,
+        url: &str,
+        cfg: &ResolvedConfig,
+        body: &Value,
+    ) -> Result<reqwest::Response, ProviderError> {
+        self.http
+            .post(url)
+            .header("x-goog-api-key", &cfg.api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ProviderError::Transport(e.to_string()))
+    }
+}
+
+/// The statuses Gemini answers a stale or foreign `cachedContent` with.
+fn refuses_cached_content(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 403 | 404)
+}
+
+async fn require_success(resp: reqwest::Response) -> Result<reqwest::Response, ProviderError> {
+    let status = resp.status();
+    if status.is_success() {
+        return Ok(resp);
+    }
+    let text = resp.text().await.unwrap_or_default();
+    Err(ProviderError::Status {
+        status: status.as_u16(),
+        message: text,
+        retryable: status.as_u16() == 429 || status.is_server_error(),
+    })
 }
 
 #[async_trait]
@@ -49,30 +133,7 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let body = to_gemini_request(req, cfg)?;
-
-        let resp = self
-            .http
-            .post(format!(
-                "{}/models/{}:generateContent",
-                self.base, cfg.model
-            ))
-            .header("x-goog-api-key", &cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                message: text,
-                retryable: status.as_u16() == 429 || status.is_server_error(),
-            });
-        }
-
+        let resp = self.generate("generateContent", req, cfg).await?;
         let value: Value = resp
             .json()
             .await
@@ -85,30 +146,9 @@ impl ProviderClient for GeminiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let body = to_gemini_request(req, cfg)?;
-
         let resp = self
-            .http
-            .post(format!(
-                "{}/models/{}:streamGenerateContent?alt=sse",
-                self.base, cfg.model
-            ))
-            .header("x-goog-api-key", &cfg.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                message: text,
-                retryable: status.as_u16() == 429 || status.is_server_error(),
-            });
-        }
-
+            .generate("streamGenerateContent?alt=sse", req, cfg)
+            .await?;
         let model = cfg.model.clone();
         let data = sse_data_stream(resp.bytes_stream());
         let stream = async_stream::stream! {
@@ -328,25 +368,6 @@ fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
     }
 }
 
-const GEMINI_IMAGE_TYPES: [&str; 5] = [
-    "image/png",
-    "image/jpeg",
-    "image/webp",
-    "image/heic",
-    "image/heif",
-];
-const GEMINI_INLINE_REQUEST_MAX_BYTES: usize = 20_000_000;
-
-fn inline_data_bytes(contents: &[Value]) -> usize {
-    contents
-        .iter()
-        .filter_map(|turn| turn["parts"].as_array())
-        .flatten()
-        .filter_map(|part| part["inlineData"]["data"].as_str())
-        .map(str::len)
-        .sum()
-}
-
 /// A part the hub carries but Gemini cannot, rendered onto this edge's error type.
 fn unsupported(err: UnsupportedPart) -> ProviderError {
     ProviderError::Rejected(format!(
@@ -374,32 +395,14 @@ fn gemini_part(part: &ContentPart) -> Result<Value, UnsupportedPart> {
     };
     match part {
         ContentPart::Text(text) => Ok(json!({ "text": text })),
-        ContentPart::Image { source, .. } => {
-            if let Some(media_type) = source.media_type()
-                && !GEMINI_IMAGE_TYPES.contains(&media_type)
-            {
-                return Err(UnsupportedPart::new(format!(
-                    "'{media_type}' images (it reads png, jpeg, webp, heic and heif)"
-                )));
-            }
-            inline(
-                source,
-                "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
-            )
-        }
-        ContentPart::File { source, filename } => match source.media_type().map(document_kind) {
-            Some(DocumentKind::TextLike) => Ok(json!({
-                "text": media::text_document(source, filename.as_deref())?
-            })),
-            Some(DocumentKind::Other) => Err(UnsupportedPart::new(format!(
-                "'{}' documents (it reads PDF and text documents)",
-                source.media_type().unwrap_or_default()
-            ))),
-            _ => inline(
-                source,
-                "unsupported file_data format (must be base64 data URL)",
-            ),
-        },
+        ContentPart::Image { source, .. } => inline(
+            source,
+            "unsupported content part type: 'image_url' with web URL (Gemini requires base64 data URL)",
+        ),
+        ContentPart::File { source, .. } => inline(
+            source,
+            "unsupported file_data format (must be base64 data URL)",
+        ),
         ContentPart::Audio { data, format } => Ok(json!({
             "inlineData": { "mimeType": format!("audio/{format}"), "data": data },
         })),
@@ -445,13 +448,37 @@ fn gemini_parts(parts: &[ContentPart]) -> Result<Vec<Value>, ProviderError> {
         .collect()
 }
 
+/// A translated `generateContent` body, and how much of it the agent marked for caching.
+struct GeminiRequest {
+    body: Value,
+    /// `None` when the request carries no cache marker.
+    cache_plan: Option<CachePlan>,
+}
+
+#[cfg(test)]
 fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, ProviderError> {
+    translate(req, cfg).map(|request| request.body)
+}
+
+fn translate(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<GeminiRequest, ProviderError> {
     let mut system_parts: Vec<String> = Vec::new();
     let mut contents: Vec<Value> = Vec::new();
     let mut id_to_name: HashMap<String, String> = HashMap::new();
     let mut pending_fn_responses: Vec<Value> = Vec::new();
+    // How many leading `contents` the agent's last marker covers. The system instruction and
+    // the tools are always part of a cached prefix, so a marker on them covers none.
+    let mut marked_turns: Option<usize> = req
+        .tools
+        .iter()
+        .flatten()
+        .any(|tool| tool.extra.contains_key(crate::ir::CACHE_CONTROL))
+        .then_some(0);
 
     for m in &req.messages {
+        if m.carries_cache_marker() {
+            let through = turns_through(m, contents.len(), !pending_fn_responses.is_empty());
+            marked_turns = Some(marked_turns.unwrap_or(0).max(through));
+        }
         match m.role.as_str() {
             "system" => {
                 // Brevity's directive goes after the conversation, so a turn that skips it still
@@ -506,11 +533,6 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, P
         }
     }
     flush_fn_responses(&mut pending_fn_responses, &mut contents);
-    if inline_data_bytes(&contents) > GEMINI_INLINE_REQUEST_MAX_BYTES {
-        return Err(unsupported(UnsupportedPart::new(
-            "more than 20 MB of inline data in one request",
-        )));
-    }
 
     let mut body = json!({ "contents": contents });
     if !system_parts.is_empty() {
@@ -548,7 +570,21 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value, P
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
     }
-    Ok(body)
+    Ok(GeminiRequest {
+        body,
+        cache_plan: marked_turns.map(|turns| CachePlan::new(turns, req.cache_markers())),
+    })
+}
+
+/// How many `contents` exist once `m` is translated: a system message joins
+/// `systemInstruction`, a tool result joins the pending turn of function responses, and a user
+/// or assistant message first flushes that turn, then adds its own.
+fn turns_through(m: &Message, emitted: usize, pending: bool) -> usize {
+    match m.role.as_str() {
+        "system" => emitted,
+        "tool" => emitted + 1,
+        _ => emitted + usize::from(pending) + 1,
+    }
 }
 
 fn flush_fn_responses(pending: &mut Vec<Value>, contents: &mut Vec<Value>) {
@@ -1354,82 +1390,6 @@ mod tests {
         assert_eq!(parts[0]["inlineData"]["data"], "JVBERi0xLjQKJeLjz9MK");
     }
 
-    fn with_parts(parts: Vec<Value>) -> ChatRequest {
-        let mut content = vec![json!({ "type": "text", "text": "what does it say?" })];
-        content.extend(parts);
-        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": content }] }))
-            .unwrap()
-    }
-
-    fn b64(bytes: &[u8]) -> String {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
-
-    fn gemini_rejection(req: &ChatRequest) -> String {
-        match to_gemini_request(req, &resolved()) {
-            Err(ProviderError::Rejected(message)) => message,
-            other => panic!("expected a by-name refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_image_type_gemini_cannot_read_is_refused_and_heic_is_sent() {
-        let gif = with_parts(vec![json!({ "type": "image_url", "image_url": {
-            "url": "data:image/gif;base64,R0lGOD"
-        }})]);
-        let message = gemini_rejection(&gif);
-        assert!(
-            message.starts_with("Gemini does not accept this input"),
-            "{message}"
-        );
-        assert!(message.contains("image/gif"), "{message}");
-
-        let heic = with_parts(vec![json!({ "type": "image_url", "image_url": {
-            "url": "data:image/heic;base64,AAAA"
-        }})]);
-        let body = to_gemini_request(&heic, &resolved()).unwrap();
-        assert_eq!(
-            body["contents"][0]["parts"][1]["inlineData"]["mimeType"],
-            "image/heic"
-        );
-    }
-
-    #[test]
-    fn a_text_document_reaches_gemini_as_text_and_others_are_refused() {
-        let csv = with_parts(vec![json!({ "type": "file", "file": {
-            "file_data": format!("data:text/csv;base64,{}", b64(b"region,q2\nEMEA,913")),
-            "filename": "data.csv"
-        }})]);
-        let body = to_gemini_request(&csv, &resolved()).unwrap();
-        assert_eq!(
-            body["contents"][0]["parts"][1]["text"],
-            "File: data.csv\n\nregion,q2\nEMEA,913"
-        );
-
-        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        let message = gemini_rejection(&with_parts(vec![json!({ "type": "file", "file": {
-            "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
-        }})]));
-        assert!(message.contains(docx), "{message}");
-    }
-
-    #[test]
-    fn more_than_20_mb_of_inline_data_is_refused_before_sending() {
-        let chunk = "A".repeat(10_000_000);
-        let image = |data: &str| {
-            json!({ "type": "image_url", "image_url": {
-                "url": format!("data:image/png;base64,{data}")
-            }})
-        };
-        let at_limit = with_parts(vec![image(&chunk), image(&chunk)]);
-        assert!(to_gemini_request(&at_limit, &resolved()).is_ok());
-
-        let over = with_parts(vec![image(&chunk), image(&chunk), image("AAAA")]);
-        let message = gemini_rejection(&over);
-        assert!(message.contains("20 MB"), "{message}");
-    }
-
     #[test]
     fn to_gemini_request_with_unsupported_parts_rejected() {
         // Public web URL not allowed in Gemini inlineData
@@ -1486,5 +1446,240 @@ mod tests {
             }
             _ => panic!("Expected ProviderError::Rejected"),
         }
+    }
+
+    // ── explicit caching (cache_control markers → cachedContents) ───────────────
+
+    const CACHED_MODEL: &str = "gemini-2.5-flash";
+
+    fn flash() -> ResolvedConfig {
+        ResolvedConfig {
+            model: CACHED_MODEL.into(),
+            ..resolved()
+        }
+    }
+
+    /// A conversation whose system prompt (large enough to cache) and first user turn are
+    /// marked; the last turn is not.
+    fn marked_request(system: &str) -> ChatRequest {
+        serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": [
+                    { "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }
+                ] },
+                { "role": "user", "content": [
+                    { "type": "text", "text": "first", "cache_control": { "type": "ephemeral" } }
+                ] },
+                { "role": "assistant", "content": "ok" },
+                { "role": "user", "content": "second" }
+            ]
+        }))
+        .unwrap()
+    }
+
+    fn large_system() -> String {
+        "You are a careful assistant. ".repeat(400)
+    }
+
+    fn generate_ok(cached_tokens: i64) -> String {
+        json!({
+            "candidates": [{ "content": { "role": "model", "parts": [{ "text": "done" }] }, "finishReason": "STOP" }],
+            "usageMetadata": {
+                "promptTokenCount": cached_tokens + 10,
+                "candidatesTokenCount": 1,
+                "totalTokenCount": cached_tokens + 11,
+                "cachedContentTokenCount": cached_tokens
+            }
+        })
+        .to_string()
+    }
+
+    fn generate_path() -> String {
+        format!("/models/{CACHED_MODEL}:generateContent")
+    }
+
+    #[test]
+    fn cache_plan_covers_through_the_last_marked_turn() {
+        let marked = json!({ "type": "ephemeral" });
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [
+                { "role": "system", "content": "sys" },
+                { "role": "user", "content": "run it" },
+                { "role": "assistant", "content": null, "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": { "name": "run", "arguments": "{}" }
+                }] },
+                { "role": "tool", "tool_call_id": "c1", "content": [
+                    { "type": "text", "text": "output", "cache_control": marked }
+                ] },
+                { "role": "user", "content": "and now?" }
+            ]
+        }))
+        .unwrap();
+        // user, model, the tool-result turn: three turns through the marker.
+        let plan = translate(&req, &flash()).unwrap().cache_plan.unwrap();
+        assert_eq!(plan.prefix_len, 3);
+
+        let unmarked: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+                .unwrap();
+        assert!(translate(&unmarked, &flash()).unwrap().cache_plan.is_none());
+
+        // A marker on a tool definition caches the system instruction and tools only.
+        let tool_marked: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{ "type": "function", "function": { "name": "run" }, "cache_control": marked }]
+        }))
+        .unwrap();
+        let plan = translate(&tool_marked, &flash())
+            .unwrap()
+            .cache_plan
+            .unwrap();
+        assert_eq!(plan.prefix_len, 0);
+    }
+
+    #[tokio::test]
+    async fn marked_prefix_is_cached_once_and_reused() {
+        let mut server = mockito::Server::new_async().await;
+        let create = server
+            .mock("POST", "/cachedContents")
+            .match_header("x-goog-api-key", "AIza-test")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "model": format!("models/{CACHED_MODEL}"),
+                "ttl": "300s",
+                "systemInstruction": { "parts": [{ "text": large_system() }] },
+                "contents": [{ "role": "user", "parts": [{ "text": "first" }] }]
+            })))
+            .with_status(200)
+            .with_body(json!({ "name": "cachedContents/abc" }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let generate = server
+            .mock("POST", generate_path().as_str())
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "cachedContent": "cachedContents/abc",
+                "contents": [
+                    { "role": "model", "parts": [{ "text": "ok" }] },
+                    { "role": "user", "parts": [{ "text": "second" }] }
+                ]
+            })))
+            .with_status(200)
+            .with_body(generate_ok(3000))
+            .expect(2)
+            .create_async()
+            .await;
+
+        let provider =
+            GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
+        let req = marked_request(&large_system());
+        for _ in 0..2 {
+            let resp = provider.chat(&req, &flash()).await.unwrap();
+            let usage = resp.usage.unwrap();
+            assert_eq!(usage.cache_read_input_tokens, Some(3000));
+            assert_eq!(usage.prompt_tokens, Some(10));
+        }
+        create.assert_async().await;
+        generate.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn small_or_disabled_prefixes_are_sent_whole() {
+        let large = large_system();
+        for (system, enabled) in [("short", true), (large.as_str(), false)] {
+            let mut server = mockito::Server::new_async().await;
+            let create = server
+                .mock("POST", "/cachedContents")
+                .expect(0)
+                .create_async()
+                .await;
+            let generate = server
+                .mock("POST", generate_path().as_str())
+                .match_body(mockito::Matcher::PartialJson(json!({
+                    "systemInstruction": { "parts": [{ "text": system }] }
+                })))
+                .with_status(200)
+                .with_body(generate_ok(0))
+                .create_async()
+                .await;
+            let provider = GeminiProvider::new(reqwest::Client::new(), server.url())
+                .with_explicit_cache(enabled);
+            provider
+                .chat(&marked_request(system), &flash())
+                .await
+                .unwrap();
+            create.assert_async().await;
+            generate.assert_async().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_prefix_gemini_will_not_cache_is_sent_whole_and_not_retried() {
+        let mut server = mockito::Server::new_async().await;
+        let create = server
+            .mock("POST", "/cachedContents")
+            .with_status(400)
+            .with_body(r#"{"error":{"message":"Cached content is too small"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let generate = server
+            .mock("POST", generate_path().as_str())
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "systemInstruction": { "parts": [{ "text": large_system() }] }
+            })))
+            .with_status(200)
+            .with_body(generate_ok(0))
+            .expect(2)
+            .create_async()
+            .await;
+        let provider =
+            GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
+        let req = marked_request(&large_system());
+        for _ in 0..2 {
+            provider.chat(&req, &flash()).await.unwrap();
+        }
+        create.assert_async().await;
+        generate.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_refused_cache_reference_is_resent_whole() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/cachedContents")
+            .with_status(200)
+            .with_body(json!({ "name": "cachedContents/gone" }).to_string())
+            .create_async()
+            .await;
+        let refused = server
+            .mock("POST", generate_path().as_str())
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "cachedContent": "cachedContents/gone" }),
+            ))
+            .with_status(404)
+            .with_body(r#"{"error":{"message":"CachedContent not found"}}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let whole = server
+            .mock("POST", generate_path().as_str())
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "systemInstruction": { "parts": [{ "text": large_system() }] }
+            })))
+            .with_status(200)
+            .with_body(generate_ok(0))
+            .expect(1)
+            .create_async()
+            .await;
+        let provider =
+            GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
+        let resp = provider
+            .chat(&marked_request(&large_system()), &flash())
+            .await
+            .unwrap();
+        assert_eq!(resp.choices[0].message.text().as_deref(), Some("done"));
+        refused.assert_async().await;
+        whole.assert_async().await;
     }
 }

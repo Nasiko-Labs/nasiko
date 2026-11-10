@@ -31,6 +31,14 @@ pub struct GatewayConfig {
     /// Platform-owned OpenRouter key, used for the `openrouter` provider.
     pub platform_openrouter_api_key: String,
 
+    /// Whether platform keys fall back to the generic provider env var (e.g.
+    /// `OPENAI_API_KEY`) when the `PLATFORM_*` name is unset. Default `true`
+    /// (today's behaviour: a single provider key works for both orchestrator
+    /// and agents). When `false`, platform keys come only from the `PLATFORM_*`
+    /// names, so a deployment can give the orchestrator `OPENAI_API_KEY` while
+    /// agents get no platform key.
+    pub generic_key_fallback: bool,
+
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
 
@@ -63,11 +71,6 @@ pub struct GatewayConfig {
     /// chunk — so fallbacks never multiply it. Default 300. Keep it below the calling
     /// agent's own LLM-client timeout, or the agent retries while the router still waits.
     pub provider_timeout_secs: u64,
-
-    pub max_body_bytes: usize,
-    pub max_inflight_body_bytes: usize,
-    pub attachment_cache_bytes: usize,
-    pub attachment_max_bytes: usize,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
@@ -123,8 +126,8 @@ pub struct GatewayConfig {
     /// retuned. Default 0.80.
     pub salience_high_threshold: f64,
 
-    /// Request classifier backend: `regex` (default; no network, behaviour unchanged),
-    /// `local` (in-process linear model, embedded weights, no network) or `hosted`
+    /// Request classifier backend: `local` (default; in-process linear model, embedded weights, no
+    /// network, regex as its fallback), `regex` (keyword rules only) or `hosted`
     /// (OpenAI-compatible endpoint, opt-in). Unknown values are treated as `regex`.
     pub classifier_backend: String,
     /// `local` only: weights JSON file to load instead of the embedded weights. Empty = embedded.
@@ -205,7 +208,9 @@ pub struct GatewayConfig {
     /// models through OpenRouter. Each adapter places its own, since providers differ in where a
     /// marker may go. On OpenAI, which takes no markers, it sets `prompt_cache_key` to the agent
     /// id on models before GPT-5.6; on OpenRouter it sets `session_id` to it, which keeps the
-    /// agent on one upstream provider.
+    /// agent on one upstream provider. On Gemini it turns the agent's own markers into an
+    /// explicit `cachedContents` cache of the marked prefix (`providers/gemini_cache.rs`);
+    /// off, Gemini calls rely on its implicit caching alone.
     ///
     /// Defaults **on** and needs no per-agent switch, unlike compression: a marker changes what a
     /// call costs, never what the model sees. Off, the router sends only the agent's own markers
@@ -235,15 +240,12 @@ impl Default for GatewayConfig {
             platform_anthropic_api_key: String::new(),
             platform_gemini_api_key: String::new(),
             platform_openrouter_api_key: String::new(),
+            generic_key_fallback: true,
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
             provider_timeout_secs: 300,
-            max_body_bytes: 48 * 1024 * 1024,
-            max_inflight_body_bytes: 256 * 1024 * 1024,
-            attachment_cache_bytes: 256 * 1024 * 1024,
-            attachment_max_bytes: 30 * 1024 * 1024,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -258,7 +260,7 @@ impl Default for GatewayConfig {
             salience_weights_path: String::new(),
             salience_low_threshold: 0.20,
             salience_high_threshold: 0.80,
-            classifier_backend: "regex".into(),
+            classifier_backend: "local".into(),
             classifier_model_path: String::new(),
             classifier_endpoint: String::new(),
             classifier_model: String::new(),
@@ -284,42 +286,67 @@ impl Default for GatewayConfig {
 }
 
 impl GatewayConfig {
-    pub fn llm_config_cache_ttl_secs_from_env() -> u64 {
-        std::env::var("LLM_CONFIG_CACHE_TTL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(Self::default().llm_config_cache_ttl_secs)
-    }
-
     /// Load configuration from the process environment, falling back to [`Default`]
     /// per key.
     pub fn from_env() -> Self {
         let d = Self::default();
+
+        // Parse the generic key fallback flag strictly.
+        let generic_key_fallback = match std::env::var("LLM_ROUTER_GENERIC_KEY_FALLBACK") {
+            Ok(val) => {
+                let lower = val.trim().to_lowercase();
+                match lower.as_str() {
+                    "true" | "1" => true,
+                    "false" | "0" => false,
+                    _ => panic!(
+                        "LLM_ROUTER_GENERIC_KEY_FALLBACK must be true, false, 1, or 0 (got {:?})",
+                        val
+                    ),
+                }
+            }
+            Err(_) => d.generic_key_fallback,
+        };
+
         Self {
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
             default_model: env_or("DEFAULT_MODEL", &d.default_model),
-            // Per-provider platform keys. Prefer the explicit `PLATFORM_*` name, then
-            // fall back to the generic provider key env var (which agents/orchestrator
-            // already set), so a single provider key "just works" without duplication.
-            platform_openai_api_key: env_first(
-                &["PLATFORM_OPENAI_API_KEY", "OPENAI_API_KEY"],
+            // Per-provider platform keys. When generic_key_fallback is true (default),
+            // prefer the explicit `PLATFORM_*` name, then fall back to the generic provider
+            // key env var (which agents/orchestrator already set), so a single provider key
+            // "just works" without duplication. When false, platform keys come only from the
+            // `PLATFORM_*` names, so a deployment can give the orchestrator OPENAI_API_KEY
+            // while agents get no platform key.
+            platform_openai_api_key: env_platform_key(
+                "PLATFORM_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+                generic_key_fallback,
                 &d.platform_openai_api_key,
             ),
-            platform_anthropic_api_key: env_first(
-                &["PLATFORM_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
+            platform_anthropic_api_key: env_platform_key(
+                "PLATFORM_ANTHROPIC_API_KEY",
+                "ANTHROPIC_API_KEY",
+                generic_key_fallback,
                 &d.platform_anthropic_api_key,
             ),
-            platform_gemini_api_key: env_first(
-                &["PLATFORM_GEMINI_API_KEY", "GEMINI_API_KEY"],
+            platform_gemini_api_key: env_platform_key(
+                "PLATFORM_GEMINI_API_KEY",
+                "GEMINI_API_KEY",
+                generic_key_fallback,
                 &d.platform_gemini_api_key,
             ),
-            platform_openrouter_api_key: env_first(
-                &["PLATFORM_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"],
+            platform_openrouter_api_key: env_platform_key(
+                "PLATFORM_OPENROUTER_API_KEY",
+                "OPENROUTER_API_KEY",
+                generic_key_fallback,
                 &d.platform_openrouter_api_key,
             ),
-            llm_config_cache_ttl_secs: Self::llm_config_cache_ttl_secs_from_env(),
+            generic_key_fallback,
+            llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.llm_config_cache_ttl_secs),
             redis_url: env_or("REDIS_URL", &d.redis_url),
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
                 .ok()
@@ -339,19 +366,6 @@ impl GatewayConfig {
                     Err(e) => Err(e.to_string()),
                 },
                 d.provider_timeout_secs,
-            ),
-            max_body_bytes: env_usize("LLM_ROUTER_MAX_BODY_BYTES", d.max_body_bytes),
-            max_inflight_body_bytes: env_usize(
-                "LLM_ROUTER_MAX_INFLIGHT_BODY_BYTES",
-                d.max_inflight_body_bytes,
-            ),
-            attachment_cache_bytes: env_usize(
-                "LLM_ROUTER_ATTACHMENT_CACHE_BYTES",
-                d.attachment_cache_bytes,
-            ),
-            attachment_max_bytes: env_usize(
-                "LLM_ROUTER_ATTACHMENT_MAX_BYTES",
-                d.attachment_max_bytes,
             ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()
@@ -521,17 +535,36 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
-/// First non-empty env var among `keys`, else `default`. Lets a `PLATFORM_*` key take
-/// precedence over the generic provider key env var while treating an empty value as unset.
-fn env_first(keys: &[&str], default: &str) -> String {
-    for key in keys {
-        if let Ok(val) = std::env::var(key)
-            && !val.is_empty()
-        {
-            return val;
-        }
+/// Select a platform key from explicit platform and generic keys. Empty strings
+/// count as unset. When `fallback` is true, prefer platform then fall back to
+/// generic; when false, use only the platform key.
+fn pick_platform_key(
+    platform: Option<String>,
+    generic: Option<String>,
+    fallback: bool,
+    default: &str,
+) -> String {
+    let platform = platform.filter(|s| !s.is_empty());
+    let generic = generic.filter(|s| !s.is_empty());
+
+    if fallback {
+        platform.or(generic).unwrap_or_else(|| default.to_string())
+    } else {
+        platform.unwrap_or_else(|| default.to_string())
     }
-    default.to_string()
+}
+
+/// Read a platform key from env: prefer the explicit `platform_name`, then
+/// conditionally fall back to `generic_name` when `fallback` is true.
+fn env_platform_key(
+    platform_name: &str,
+    generic_name: &str,
+    fallback: bool,
+    default: &str,
+) -> String {
+    let platform = std::env::var(platform_name).ok();
+    let generic = std::env::var(generic_name).ok();
+    pick_platform_key(platform, generic, fallback, default)
 }
 
 #[cfg(test)]
@@ -563,6 +596,80 @@ mod tests {
         assert_eq!(cfg.platform_key_for("my-gateway"), "");
         assert_eq!(cfg.platform_key_for("deepseek"), "");
         assert_eq!(cfg.platform_key_for(""), "");
+    }
+
+    #[test]
+    fn generic_key_fallback_enabled_by_default() {
+        let cfg = GatewayConfig::default();
+        assert!(
+            cfg.generic_key_fallback,
+            "generic_key_fallback should default to true"
+        );
+    }
+
+    #[test]
+    fn pick_platform_key_fallback_true_prefers_platform_then_generic() {
+        // Both set: platform wins
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), Some("sk-g".into()), true, "def"),
+            "sk-p"
+        );
+        // Only platform: use it
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), None, true, "def"),
+            "sk-p"
+        );
+        // Only generic: fall back to it
+        assert_eq!(
+            pick_platform_key(None, Some("sk-g".into()), true, "def"),
+            "sk-g"
+        );
+        // Neither: use default
+        assert_eq!(pick_platform_key(None, None, true, "def"), "def");
+        // Empty strings count as unset
+        assert_eq!(
+            pick_platform_key(Some("".into()), Some("sk-g".into()), true, "def"),
+            "sk-g"
+        );
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), Some("".into()), true, "def"),
+            "sk-p"
+        );
+        assert_eq!(
+            pick_platform_key(Some("".into()), Some("".into()), true, "def"),
+            "def"
+        );
+    }
+
+    #[test]
+    fn pick_platform_key_fallback_false_ignores_generic() {
+        // Both set: platform wins, generic ignored
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), Some("sk-g".into()), false, "def"),
+            "sk-p"
+        );
+        // Only platform: use it
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), None, false, "def"),
+            "sk-p"
+        );
+        // Only generic: default (generic ignored)
+        assert_eq!(
+            pick_platform_key(None, Some("sk-g".into()), false, "def"),
+            "def"
+        );
+        // Neither: use default
+        assert_eq!(pick_platform_key(None, None, false, "def"), "def");
+        // Empty platform with set generic: default (generic ignored)
+        assert_eq!(
+            pick_platform_key(Some("".into()), Some("sk-g".into()), false, "def"),
+            "def"
+        );
+        // Set platform with empty generic: use platform
+        assert_eq!(
+            pick_platform_key(Some("sk-p".into()), Some("".into()), false, "def"),
+            "sk-p"
+        );
     }
 
     #[test]

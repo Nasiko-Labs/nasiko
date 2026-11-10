@@ -40,18 +40,16 @@ pub fn provider_for(
         "openai" => Ok(Box::new(
             OpenAiProvider::new(http.clone(), cfg.openai_api_base.clone())
                 .with_max_tools(cfg.openai_max_tools)
-                .with_cache_key(cfg.cache_markers_enabled)
-                .with_document_urls_refused(true)
-                .with_strict_media(true),
+                .with_cache_key(cfg.cache_markers_enabled),
         )),
         "anthropic" => Ok(Box::new(
             AnthropicProvider::new(http.clone(), cfg.anthropic_api_base.clone())
                 .with_cache_markers(cfg.cache_markers_enabled),
         )),
-        "gemini" => Ok(Box::new(GeminiProvider::new(
-            http.clone(),
-            cfg.gemini_api_base.clone(),
-        ))),
+        "gemini" => Ok(Box::new(
+            GeminiProvider::new(http.clone(), cfg.gemini_api_base.clone())
+                .with_explicit_cache(cfg.cache_markers_enabled),
+        )),
         "openrouter" => Ok(Box::new(
             OpenRouterProvider::new(
                 http.clone(),
@@ -116,7 +114,7 @@ pub async fn execute_embeddings_once(
     )?;
     match provider.embeddings(req, resolved).await {
         Ok(resp) => {
-            tracing::debug!(
+            tracing::info!(
                 target: "nasiko::llm_router::provider",
                 op = "embeddings",
                 provider = %resolved.provider,
@@ -146,7 +144,7 @@ pub mod bedrock_converse;
 pub mod dialect;
 pub mod fallback;
 pub mod gemini;
-pub(crate) mod media;
+mod gemini_cache;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
@@ -249,43 +247,10 @@ impl ProviderError {
     }
 }
 
-pub(crate) fn param_rejection(detail: &str) -> Option<String> {
-    let lower = detail.to_ascii_lowercase();
-    if lower.contains("doesn't support the temperature field") {
-        return Some("temperature".to_string());
-    }
-    if ![
-        "deprecated",
-        "unsupported",
-        "not supported",
-        "does not support",
-    ]
-    .iter()
-    .any(|p| lower.contains(p))
-    {
-        return None;
-    }
-    let start = detail.find('`')? + 1;
-    let end = start + detail[start..].find('`')?;
-    let param = detail[start..end].trim();
-    (!param.is_empty()).then(|| param.to_string())
-}
-
-fn passes_through(status: u16) -> bool {
-    matches!(status, 400 | 404 | 409 | 413 | 415 | 422 | 429)
-}
-
 impl From<ProviderError> for GatewayError {
     fn from(e: ProviderError) -> Self {
         match e {
             ProviderError::Rejected(message) => GatewayError::BadRequest(message),
-            ProviderError::Status { status, .. } if passes_through(status) => {
-                GatewayError::Provider {
-                    status: axum::http::StatusCode::from_u16(status)
-                        .unwrap_or(axum::http::StatusCode::BAD_GATEWAY),
-                    message: format!("Upstream LLM error: {e}"),
-                }
-            }
             other => GatewayError::Upstream(other.to_string()),
         }
     }
@@ -372,40 +337,6 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
-    }
-
-    fn status_error(status: u16, message: &str) -> GatewayError {
-        ProviderError::Status {
-            status,
-            message: message.into(),
-            retryable: status == 429 || status >= 500,
-        }
-        .into()
-    }
-
-    #[test]
-    fn a_provider_status_the_caller_can_act_on_reaches_the_caller_unchanged() {
-        for status in [400u16, 404, 409, 413, 415, 422, 429] {
-            let g = status_error(status, r#"{"error":{"message":"bad image"}}"#);
-            assert_eq!(g.status().as_u16(), status, "provider status {status}");
-            assert_eq!(
-                g.to_string(),
-                format!(
-                    r#"Upstream LLM error: provider returned {status}: {{"error":{{"message":"bad image"}}}}"#
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn a_provider_credential_or_server_failure_stays_a_502() {
-        for status in [401u16, 403, 405, 500, 502, 503, 529] {
-            assert_eq!(
-                status_error(status, "x").status(),
-                axum::http::StatusCode::BAD_GATEWAY,
-                "provider status {status}"
-            );
-        }
     }
 
     #[test]

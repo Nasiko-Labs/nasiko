@@ -21,7 +21,8 @@ export const copy = {
     },
     {
       title: 'A model is picked',
-      detail: 'An override or a pin wins; otherwise a tier per request.',
+      detail:
+        'An override or a pin wins; then a tier per request if the config has tier models, else its model.',
     },
     { title: 'The provider is called', detail: 'With your saved key, or the platform key.' },
     { title: 'Fallbacks if it fails', detail: 'Each fallback model is tried in order.' },
