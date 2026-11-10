@@ -176,7 +176,7 @@ pub struct FinopsAttributionsParams {
     pub model: Option<String>,
     pub provider: Option<String>,
     pub view: Option<String>,
-    /// "cost" | "tokens" | "operations" | "avg_latency" | "container_hours" | "name"
+    /// "cost" | "tokens" | "operations" | "avg_latency" | "container_hours" | "sandbox_minutes" | "name"
     pub sort_by: Option<String>,
     /// "asc" | "desc" (default "desc")
     pub sort_dir: Option<String>,

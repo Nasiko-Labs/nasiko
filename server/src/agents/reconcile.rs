@@ -13,6 +13,7 @@
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::agents::parking::Unserved;
 use crate::state::AppState;
 use nasiko_runtime::{ContainerId, DeploymentStatus, RuntimeError, RuntimeState};
 
@@ -28,10 +29,12 @@ pub struct ReconcilableAgent {
     writable_path: Option<String>,
 }
 
+/// Only `running` agents: a `parked` one has no workload on purpose.
 pub async fn reconcilable_agents(db: &sqlx::PgPool) -> sqlx::Result<Vec<ReconcilableAgent>> {
     sqlx::query_as::<_, ReconcilableAgent>(
         "SELECT id, name, image, owner_id, writable, writable_path FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL AND NOT is_internal",
+         WHERE status = 'running' AND deleted_at IS NULL AND image IS NOT NULL AND NOT is_internal \
+         AND workload_kind <> 'harness'",
     )
     .fetch_all(db)
     .await
@@ -58,6 +61,28 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
         let container_id = ContainerId::from_uuid(agent.id);
         if !agent_needs_redeploy(state.runtime.status(&container_id).await) {
             continue;
+        }
+
+        // A parkable agent has no workload when it rests, and none when it is woken (it serves
+        // from a sandbox), so the missing workload says nothing: only an agent that is not
+        // serving is parked, and nothing is destroyed or released. A sandbox list that cannot
+        // be read skips the agent. TODO NAS-1105: a parked agent that is no longer parkable
+        // (its policy flipped to `resident`) is not revived here; `reconcilable_agents` skips it.
+        match crate::agents::parking::park_if_unserved(state, agent.id).await {
+            Ok(Unserved::Parked) => {
+                info!(
+                    agent_id = %agent.id,
+                    name = %agent.name,
+                    "agent reconciliation: no live workload for a parkable agent, parked it"
+                );
+                continue;
+            }
+            Ok(Unserved::Serving) => continue,
+            Ok(Unserved::NotParkable) => {}
+            Err(e) => {
+                warn!(agent_id = %agent.id, error = %e, "agent reconciliation: could not check the agent's parking state, skipping");
+                continue;
+            }
         }
 
         info!(

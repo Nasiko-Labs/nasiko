@@ -219,6 +219,11 @@ fn agent_calls() -> AgentCalls {
         client: reqwest::Client::new(),
         meter: Arc::new(Unmetered),
         outbound: Arc::new(nasiko_orchestrator::outbound::NoOutboundPrefix),
+        // Never asked: `CountingExecutor` never calls an agent, so the pool is never dialled.
+        targets: Arc::new(nasiko_orchestrator::DirectAddress::new(
+            sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
+                .expect("connect_lazy never actually connects"),
+        )),
     }
 }
 
@@ -234,7 +239,7 @@ fn start_with(
 ) -> Arc<CountingExecutor> {
     let executor = Arc::new(executor);
     let flow_guard = Arc::new(nasiko_flow::FlowGuard::new(
-        redis.clone(),
+        nasiko_redis::SharedRedis::new(redis.clone()),
         nasiko_flow::FlowConfig::default(),
     ));
     start_worker(

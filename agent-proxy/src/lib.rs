@@ -13,7 +13,7 @@ pub struct AgentEndpoint {
     pub port: u16,
 }
 
-/// A running agent resolved from the catalog.
+/// A routable agent (`running` or `parked`) resolved from the catalog.
 #[derive(Debug, Clone)]
 pub struct ResolvedAgent {
     pub name: String,
@@ -31,6 +31,10 @@ pub struct ResolvedAgent {
     pub transport_path: Option<String>,
     pub is_internal: bool,
     pub keeps_session_memory: bool,
+    /// The agent is parked: it has no workload, so `endpoint` is a stale snapshot at best.
+    /// Waking it is the server's resolver's job (`nasiko-server`'s `agent_resolver`); a caller
+    /// that forwards from this record alone cannot reach a parked agent.
+    pub parked: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -45,6 +49,10 @@ pub enum ResolveError {
 
 /// Resolve an agent ID to its catalog record (name + stored endpoint
 /// snapshot) from the database.
+///
+/// Routable means `status IN ('running', 'parked')`. This reads the catalog only: for a parked
+/// agent the stored endpoint is stale, and finding (waking) its live address happens in the
+/// server's resolver, which the `/api/agents/{id}` proxy and A2A dispatch go through.
 pub async fn resolve(db: &PgPool, agent_id: Uuid) -> Result<ResolvedAgent, ResolveError> {
     let agent = sqlx::query_as::<_, AgentRow>(
         "SELECT name, status, url, transport_path, is_internal, \
@@ -57,9 +65,10 @@ pub async fn resolve(db: &PgPool, agent_id: Uuid) -> Result<ResolvedAgent, Resol
     .await?
     .ok_or(ResolveError::NotFound)?;
 
-    if agent.status != "running" {
+    if !matches!(agent.status.as_str(), "running" | "parked") {
         return Err(ResolveError::NotRunning(agent.status));
     }
+    let parked = agent.status == "parked";
 
     let endpoint = match agent.url {
         Some(ref url) if !url.is_empty() => {
@@ -74,6 +83,7 @@ pub async fn resolve(db: &PgPool, agent_id: Uuid) -> Result<ResolvedAgent, Resol
         transport_path: agent.transport_path,
         is_internal: agent.is_internal,
         keeps_session_memory: agent.keeps_session_memory,
+        parked,
     })
 }
 

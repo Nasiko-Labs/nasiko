@@ -11,6 +11,7 @@ use futures::StreamExt;
 use serde::Serialize;
 use serde_json::json;
 use std::convert::Infallible;
+use std::sync::Arc;
 use std::time::Instant;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -24,11 +25,11 @@ use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse
 use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
-use nasiko_llm_router::attachments::{AttachmentRef, MARKER_TTL_SECS, MarkerClaims, MarkerSigner};
 
 use crate::acl::CpCallGuard;
+use crate::agent_resolver::{Caller, ResolvedTarget, resolve_loaded};
+use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::chat::turn_artifacts::Attachable;
 use crate::orchestrator_policy::TurnKind;
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
@@ -141,6 +142,14 @@ pub async fn a2a_dispatch_handler(
     // what we mint. Remove once the header audit is done.
     log_inbound_headers("a2a_dispatch (orchestrator)", &headers);
 
+    // A harness session's task methods carry a task id, not a message, so they are answered
+    // before the message parsing below.
+    if let Some(method) = crate::sessions::tasks::task_method(&req.method)
+        && let Some(reply) = harness_task_reply(&state, &claims, method, &req).await?
+    {
+        return Ok(reply);
+    }
+
     let params: nasiko_types::a2a::SendMessageRequest = serde_json::from_value(
         req.params
             .clone()
@@ -218,10 +227,7 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let InboundAttachments {
-        parts: file_parts,
-        files: attached_files,
-    } = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -258,12 +264,38 @@ pub async fn a2a_dispatch_handler(
     // rather than re-queried.
     let compress_history = target_agent.as_ref().is_none_or(|a| a.compress_enabled);
 
+    // Code-driving agents (ACP coding agents, harness sessions) have no HTTP endpoint. A harness
+    // session keeps its own conversation in its sandbox, so it is resolved here and skips the
+    // history fetch and packing below.
+    let code_target = match &target_agent {
+        Some(agent) if agent.may_drive_code() => {
+            crate::coding::proxy::load_agent_target(&state.db, agent.id)
+                .await
+                .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+        }
+        _ => None,
+    };
+    let code_target = match (code_target, &target_agent) {
+        (Some(crate::coding::proxy::AgentTarget::Harness(target)), Some(agent)) => {
+            let turn = CodingDispatch {
+                agent,
+                query: &text,
+                user_message: &text,
+                context_id: &context_id,
+                task_id: &task_id,
+                user_id,
+            };
+            return harness_agent_stream(&state, target, turn, session_id.is_some()).await;
+        }
+        (other, _) => other,
+    };
+
     // Prefer the explicit metadata.session_id (web UI), fall back to the
     // message contextId — the CLI reuses its CP session id as contextId, so
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    let history_store = state.history_vector_store();
+    let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
         user_id,
@@ -285,22 +317,16 @@ pub async fn a2a_dispatch_handler(
         // through to `agent_stream`, which would try to resolve a (nonexistent)
         // endpoint and 500 with "no endpoint found" (NAS-C1). This is what makes
         // the web UI (which always dispatches here) able to chat coding agents.
-        if let Some(coding_target) = crate::coding::proxy::load_target(&state.db, agent.id)
-            .await
-            .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
-        {
-            return coding_agent_stream(
-                &state,
-                &agent,
-                coding_target,
-                &query,
-                &text,
-                &context_id,
-                &task_id,
+        if let Some(crate::coding::proxy::AgentTarget::Coding(target)) = code_target {
+            let turn = CodingDispatch {
+                agent: &agent,
+                query: &query,
+                user_message: &text,
+                context_id: &context_id,
+                task_id: &task_id,
                 user_id,
-                session_id.is_some(),
-            )
-            .await;
+            };
+            return coding_agent_stream(&state, target, turn, session_id.is_some()).await;
         }
         // Supplemental per-agent context (L1A) is no longer injected here: it now rides the EE
         // injection proxy, which sits on every outbound forward `forwarding_endpoint()` resolves
@@ -325,7 +351,6 @@ pub async fn a2a_dispatch_handler(
             &context_id,
             user_id,
             &file_parts,
-            &attached_files,
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -344,7 +369,6 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts,
-                attached_files,
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -472,7 +496,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
-    pub(crate) attached_files: Vec<AttachedFile>,
     /// Whether this turn was started by the user or reports on work an earlier
     /// turn already did. The operator's policy may treat the two differently —
     /// see [`TurnKind`].
@@ -522,7 +545,6 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
-        attached_files,
         kind,
         context_report,
     } = turn;
@@ -578,22 +600,44 @@ pub(crate) async fn orchestrator_stream(
         accessible
     };
 
+    // The harness agents among the candidates: a routed turn cannot drive their sessions.
+    let candidate_ids: Vec<Uuid> = agent_summaries.iter().map(|s| s.id).collect();
+    let harness_ids: std::collections::HashSet<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM agents WHERE id = ANY($1) AND workload_kind = 'harness'",
+    )
+    .bind(&candidate_ids)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+    .into_iter()
+    .collect();
+
+    // What a call may reach, by the name the loop will use. Two candidates with one display name
+    // cannot be told apart by a call, so the model is not offered either.
+    let candidates = crate::acl::TurnCandidates::new(
+        agent_summaries
+            .iter()
+            .filter(|s| !harness_ids.contains(&s.id))
+            .map(|s| (s.name.as_str(), s.id)),
+    );
+
     let mut agents: Vec<AgentInfo> = Vec::new();
     for summary in &agent_summaries {
-        let target = match resolve_endpoint(state, &summary.id.to_string(), &summary.name).await {
-            Ok(target) => target,
-            Err(_) => continue,
-        };
+        if harness_ids.contains(&summary.id) || candidates.is_ambiguous(&summary.name) {
+            continue;
+        }
+        // Every candidate is listed with a placeholder address and no credential: nothing is
+        // resolved (so no parked agent is woken and the runtime is not polled per candidate).
+        // `CpCallGuard::before_call` resolves the one leg the model picks, by id, once it has
+        // cleared every gate, and the call goes to the address that returns
+        // (`AgentCallHandle::target`).
+        let placeholder = format!("{LEG_RESOLVED_ENDPOINT_PREFIX}{}", summary.id);
         agents.push(AgentInfo {
             id: summary.id.to_string(),
             name: summary.name.clone(),
             description: summary.description.clone(),
-            endpoint: target.url,
-            // A minted ReAct sub-leg's own outbound call (`A2aTool::call`, a lower-level crate
-            // with no path back to this function) must present the same credential this listing
-            // resolved for `endpoint` — carried on `AgentInfo` itself since that call happens in a
-            // different crate entirely, long after this listing is built.
-            auth_header: target.headers.into_iter().next(),
+            endpoint: placeholder,
+            auth_header: None,
             skills: summary
                 .skills
                 .iter()
@@ -632,10 +676,9 @@ pub(crate) async fn orchestrator_stream(
     // the edition's forwarding hop. The planner preamble can't move to that proxy because
     // it isn't an outbound forward at all; it's text folded into the LLM's own prompt before any
     // agent is chosen.
-    // From `agents` (the post-endpoint-resolution roster actually rendered below), not
-    // `agent_summaries` — looking up context for a candidate that gets dropped for having no
-    // endpoint would waste a domain lookup (and possibly an embedding call) on an id the
-    // preamble loop below can never reach anyway.
+    // From `agents` (the roster actually rendered below), not `agent_summaries` — a candidate
+    // dropped as a harness agent or an ambiguous name would waste a domain lookup (and possibly an
+    // embedding call) on an id the preamble loop below can never reach anyway.
     let agent_ids: Vec<Uuid> = agents
         .iter()
         .filter_map(|a| Uuid::parse_str(&a.id).ok())
@@ -691,7 +734,7 @@ pub(crate) async fn orchestrator_stream(
         }
     };
 
-    let mut config = OrchestratorConfig {
+    let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
         // default rather than re-reading the env var here with a placeholder
@@ -700,13 +743,14 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: std::env::var("OPENAI_API_KEY").ok(),
+        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+            .await
+            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
         preamble,
         outbound_prefix: org_context,
-        attachment_note: None,
         // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
         // deliberately inert — without this the compressor is compiled in but unreachable.
         context: nasiko_react_agent::ContextConfig {
@@ -756,7 +800,7 @@ pub(crate) async fn orchestrator_stream(
 
     // Selection ran in the caller, before any of this existed; `dispatch_span` is the span the
     // trace page looks for, so the report is attached here. `agent_id` stays unset — routing has
-    // not chosen one yet — and the read path resolves it through `session_traces`, which this turn
+    // not chosen one yet — and the read path resolves it through `flows`, which this turn
     // writes as soon as it dispatches.
     if let Some(report) = context_report {
         crate::telemetry::record_context_report(
@@ -797,26 +841,10 @@ pub(crate) async fn orchestrator_stream(
             root_agent_name: "orchestrator",
             title: Some(query),
             metadata: &flow_metadata,
-            session_id: None,
+            session_id: Some(context_id),
         },
     )
     .await?;
-    config.attachment_note =
-        attachment_note(state.marker_signer.as_deref(), &attached_files, &flow_id);
-
-    // `flow_id` doubles as the trace id (see comment below) — index it against
-    // the session so `nasiko history`'s Tempo-miss fallback
-    // (`PgSessionIdResolver::traces_for_session`) can find it, the same way
-    // `agent_proxy.rs` indexes every direct-agent call.
-    let _ = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, NULL, 'orchestrator') \
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(&flow_id)
-    .execute(&state.db)
-    .await;
 
     // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
     // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
@@ -841,6 +869,22 @@ pub(crate) async fn orchestrator_stream(
         user_id,
         context_id.to_string(),
         state.genai_metrics.agent_call_meter(),
+        state.agent_wake.clone(),
+        crate::acl::TurnLegs {
+            // Resolves each leg's target once the call has cleared every gate, waking a parked
+            // agent.
+            targets: Arc::new(crate::agent_resolver::ServerTargetResolver::new(
+                state.clone(),
+            )),
+            user_id,
+            // A resumed turn's own prompt tells the model not to call anyone again; the guard
+            // makes that binding, so a continuation cannot reach any agent.
+            candidates: if kind == TurnKind::Continuation {
+                crate::acl::TurnCandidates::default()
+            } else {
+                candidates.clone()
+            },
+        },
     );
 
     // `A2aClient`'s own default is deliberately short — it is shared with agent
@@ -908,7 +952,7 @@ pub(crate) async fn orchestrator_stream(
         let mut content_started = false;
         // Persist on Usage, before yielding a terminal event. Only attribution
         // waits for the next ToolCall; client disconnect cannot lose a pending row.
-        let mut pending_usage: Option<Uuid> = None;
+        let mut pending_usage: Option<crate::usage::TraceUsageKey> = None;
 
         loop {
             tokio::select! {
@@ -922,10 +966,11 @@ pub(crate) async fn orchestrator_stream(
                             yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                         }
                         OrchestratorEvent::ToolCall { agent, message, turn, policy_score } => {
-                            if let Some(usage_id) = pending_usage.take() {
+                            if let Some(key) = pending_usage.take() {
+                                // By the candidate's id, not a name lookup: a name is only unique per owner.
                                 let result = sqlx::query(
-                                    "UPDATE token_usage SET agent_id = (SELECT id FROM agents WHERE name = $2 AND status = 'running') WHERE id = $1 AND user_id = $3",
-                                ).bind(usage_id).bind(&agent).bind(user_id).execute(&db).await;
+                                    "UPDATE trace_usage SET agent_id = COALESCE(agent_id, $3) WHERE trace_id = $1 AND agent_name = $2 AND user_id = $4",
+                                ).bind(&key.trace_id).bind(&key.agent_name).bind(candidates.get(&agent)).bind(user_id).execute(&db).await;
                                 if let Err(error) = result {
                                     tracing::warn!(%error, "failed to attribute orchestrator usage");
                                 }
@@ -1374,10 +1419,17 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
     // exclusively through its own dedicated route, never here, or the
     // superuser-ACL-bypass would leak it into ordinary chat
     // history/usage tracking.
+    //
+    // Also reads the columns `agent_resolver` routes on, so the forward resolves from this row
+    // instead of reading it again. `keeps_session_memory` is only ever true for an internal
+    // agent, which this query excludes.
     sqlx::query_as::<_, AgentRow>(
-        "SELECT id, name, status, minimal_code_enabled, skills, compress_enabled \
+        "SELECT id, name, status, minimal_code_enabled, skills, compress_enabled, \
+                owner_id, workload_kind, image, url, transport_path, writable, deleted_at, \
+                is_internal, false AS keeps_session_memory \
          FROM agents \
-         WHERE (id::text = $1 OR name = $1) AND status = 'running' AND NOT is_internal",
+         WHERE (id::text = $1 OR name = $1) AND status IN ('running', 'parked') AND NOT is_internal \
+           AND deleted_at IS NULL",
     )
     .bind(target)
     .fetch_optional(&state.db)
@@ -1448,7 +1500,6 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
-    attached_files: &[AttachedFile],
     // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
     // address history by contextId alone. Threaded through purely so a HITL pause created on
     // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
@@ -1470,9 +1521,6 @@ async fn agent_stream(
     // report has to be attached to.
     context_report: Option<&nasiko_orchestrator::ContextReport>,
 ) -> Result<Response, A2aDispatchError> {
-    let target = resolve_endpoint(state, &agent.id.to_string(), &agent.name)
-        .await
-        .map_err(A2aDispatchError::Internal)?;
     let org_applied = org_context.is_some();
     // `org_applied` alone is a boolean — a block that grew toward `MAX_POLICY_CHARS` would
     // otherwise be invisible in observability.
@@ -1486,6 +1534,8 @@ async fn agent_stream(
         gen_ai.operation.name = "invoke_agent",
         gen_ai.agent.name = %agent.name,
         session.id = %context_id,
+        sandbox.provider = tracing::field::Empty,
+        sandbox.wake_ms = tracing::field::Empty,
         nasiko.prompt_context.org_applied = org_applied,
         nasiko.prompt_context.org_policy_chars = org_policy_chars,
         gen_ai.input.messages = tracing::field::Empty,
@@ -1506,6 +1556,29 @@ async fn agent_stream(
     // (including the telemetry below, which is keyed by this trace id); `open_flow` further down
     // is the race-free backstop.
     refuse_foreign_flow(state, &flow_id, user_id).await?;
+
+    // Resolved by kind once the flow is known, so a wake is announced on its event stream.
+    let caller = Caller {
+        user_id: Some(user_id),
+        flow_id: Some(flow_id.clone()),
+    };
+    let target = match resolve_loaded(state, &agent.route, &caller, Some(context_id)).await {
+        Ok(resolved) => {
+            if let ResolvedTarget::Sandbox {
+                wake_ms, provider, ..
+            } = &resolved
+            {
+                crate::telemetry::record_sandbox_on_span(&dispatch_span, *provider, *wake_ms);
+            }
+            resolved.into_forward_target().ok_or_else(|| {
+                A2aDispatchError::Internal(format!(
+                    "agent '{}' is a harness agent and has no endpoint to forward to",
+                    agent.name
+                ))
+            })?
+        }
+        Err(e) => return Err(A2aDispatchError::Resolve(e)),
+    };
 
     if let Some(report) = context_report {
         crate::telemetry::record_context_report(
@@ -1565,7 +1638,7 @@ async fn agent_stream(
             root_agent_name: &agent.name,
             title: Some(query),
             metadata: &flow_metadata,
-            session_id: None,
+            session_id: Some(context_id),
         },
     )
     .await?;
@@ -1573,30 +1646,11 @@ async fn agent_stream(
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
-    let attachment_note = attachment_note(state.marker_signer.as_deref(), attached_files, &flow_id);
-
-    // Index the session ↔ trace mapping, exactly as `orchestrator_stream` and
-    // `agent_proxy.rs` already do. Without it this branch — every "chat with
-    // this specific agent" request — had no DB record at all, so
-    // `/api/observability/session/{id}` could only resolve it through the
-    // Tempo `session.id` attribute and returned 404 the moment that lookup
-    // missed. `flow_id` doubles as the trace id (see the flow-origin note).
-    let _ = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name) \
-         VALUES ($1, $2, $3, $4) \
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(context_id)
-    .bind(&flow_id)
-    .bind(agent.id)
-    .bind(&agent.name)
-    .execute(&state.db)
-    .await;
 
     // Minimal-code ladder injection: only what's actually FORWARDED to the
     // agent gets the addendum appended — `query` itself stays untouched, so
     // everything above that already used it (the flow title, the span's
-    // captured input, session_traces) keeps showing the real conversation,
+    // captured input, flows) keeps showing the real conversation,
     // not an implementation detail. The agent needs zero code of its own to
     // support this: it just sees a longer task description, exactly as it
     // would if a human had pasted the same extra paragraph in by hand.
@@ -1648,7 +1702,6 @@ async fn agent_stream(
             file_parts,
         )
     };
-    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -1675,6 +1728,12 @@ async fn agent_stream(
         }
         req
     };
+
+    state
+        .agent_wake
+        .before_forward(agent.id)
+        .await
+        .map_err(A2aDispatchError::Unavailable)?;
 
     // In flight until the agent's reply is complete. Starts as `Error`, so the early returns
     // below count as failures.
@@ -1722,6 +1781,7 @@ async fn agent_stream(
     let hitl_store = state.hitl_store.clone();
     let agent_id_for_hitl = agent.id;
     let agent_start = Instant::now();
+    let call_timeout_secs = state.config.agent_call_timeout_secs;
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
@@ -1751,6 +1811,9 @@ async fn agent_stream(
             let mut agent_error: Option<String> = None;
             let mut final_disposition = a2a::StreamDisposition::Continue;
             let mut pause_payload: Option<String> = None;
+            // The task's last word, whichever way the stream ended: a pause or a dropped stream
+            // leaves it open, a terminal event closes it (the reaper must not park mid-task).
+            let mut last_task: Option<crate::agents::open_tasks::Observed> = None;
 
             loop {
                 if agent_done { break; }
@@ -1765,8 +1828,13 @@ async fn agent_stream(
                         };
                         let chunk = match chunk_result {
                             Ok(c) => c,
-                            Err(_) => {
+                            Err(e) => {
                                 request_guard.set_outcome(RequestOutcome::Error);
+                                // The reply was cut off, so the turn did not complete. Without a
+                                // reason here the tail below would report it "completed".
+                                if agent_error.is_none() {
+                                    agent_error = Some(stream_cut_reason(&e, call_timeout_secs));
+                                }
                                 agent_done = true;
                                 continue;
                             }
@@ -1786,6 +1854,12 @@ async fn agent_stream(
                                 }
                                 if agent_error.is_none() {
                                     agent_error = extract_failure_message(data);
+                                }
+                                if let Some(observed) = serde_json::from_str::<serde_json::Value>(data)
+                                    .ok()
+                                    .and_then(|event| crate::agents::open_tasks::observe(&event))
+                                {
+                                    last_task = Some(observed);
                                 }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
@@ -1810,6 +1884,10 @@ async fn agent_stream(
                         yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                     }
                 }
+            }
+
+            if let Some(observed) = &last_task {
+                crate::agents::open_tasks::note_observed(&db, agent_id_for_hitl, observed).await;
             }
 
             // The agent's part is over; what follows is bookkeeping, not in-flight agent load.
@@ -1872,20 +1950,22 @@ async fn agent_stream(
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                 }
 
-                if let Some(err) = agent_error {
-                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, &err))));
+                if let Some(err) = &agent_error {
+                    yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, err))));
                 } else {
                     yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
                 }
 
                 // Guarded on 'running' like the other completion sites: a terminal
-                // 'failed'/'paused' is never downgraded by a later completion.
+                // 'failed'/'paused' is never downgraded by a later completion. A turn that ended
+                // in an error is recorded as failed, with the reason the user was shown.
                 let _ = sqlx::query(
-                    r#"UPDATE flows SET status = 'completed',
+                    r#"UPDATE flows SET status = CASE WHEN $2::TEXT IS NULL THEN 'completed' ELSE 'failed' END,
+                       error_message = $2,
                        duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                        completed_at = now()
                        WHERE flow_id = $1 AND status = 'running'"#,
-                ).bind(&flow_id_cleanup).execute(&db).await;
+                ).bind(&flow_id_cleanup).bind(agent_error.as_deref()).execute(&db).await;
                 flow_events.remove(&flow_id_cleanup).await;
             }
         };
@@ -1909,7 +1989,6 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
-            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -1929,6 +2008,8 @@ async fn agent_stream(
         // flattened into `extract_text`'s ordinary-reply fallback and lost entirely.
         // A transport or parse failure above returned early with the guard still `Error`.
         request_guard.set_outcome(non_streaming_reply_outcome(reply_status_ok, &resp_body));
+
+        crate::agents::open_tasks::note_response(&db, agent_id_for_hitl, &resp_body).await;
 
         let raw_body = resp_body.to_string();
         if a2a::classify_stream_disposition(&raw_body) == a2a::StreamDisposition::Paused {
@@ -2235,7 +2316,6 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
-            attached_files: Vec::new(),
             kind: TurnKind::User,
             // This path mints a fresh context id, so no history was selected and there is nothing
             // to report. A zero row here would count as a request that optimized nothing.
@@ -2254,9 +2334,10 @@ const MAX_ATTACHED_FILES: usize = 10;
 /// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
 /// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
 /// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB). Over it, the turn is refused with a message
-/// the user can act on rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
+/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
+/// the storage limit would be. Over it, the turn is refused with a message the user can act on
+/// rather than quietly reaching the agent without the file it was about.
+const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
 
 /// What the caller attached to this turn, in the two forms this endpoint accepts.
 ///
@@ -2268,13 +2349,18 @@ const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
 ///   than that same 2 MiB limit can be sent at all.
 ///
 /// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage. Order follows the caller's list.
+/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
+/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
+///
+/// An id that resolves to nothing is skipped rather than failing the turn: the text still
+/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
+/// budget is the opposite — the turn is about the file, so it fails loudly.
 async fn inbound_file_parts(
     state: &AppState,
     params: &nasiko_types::a2a::SendMessageRequest,
     session_id: Option<&str>,
     user_id: Uuid,
-) -> Result<InboundAttachments, A2aDispatchError> {
+) -> Result<Vec<a2a::Part>, A2aDispatchError> {
     let mut parts: Vec<a2a::Part> = params
         .message
         .parts
@@ -2282,48 +2368,26 @@ async fn inbound_file_parts(
         .filter(|p| matches!(p.content, PartContent::Raw(_)))
         .cloned()
         .collect();
-    let inline_bytes: u64 = parts
-        .iter()
-        .map(|p| match &p.content {
-            PartContent::Raw(data) => data.len() as u64,
-            _ => 0,
-        })
-        .sum();
 
-    let mut ids: Vec<Uuid> = Vec::new();
-    let listed = params
+    let ids: Vec<Uuid> = params
         .metadata
         .as_ref()
         .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array());
-    for value in listed.into_iter().flatten() {
-        let raw = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        let id = Uuid::parse_str(&raw).map_err(|_| {
-            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
-        })?;
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    if ids.len() + parts.len() > MAX_ATTACHED_FILES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "at most {MAX_ATTACHED_FILES} attachments per message"
-        )));
-    }
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .take(MAX_ATTACHED_FILES)
+                .collect()
+        })
+        .unwrap_or_default();
     if ids.is_empty() {
-        check_attached_total(inline_bytes)?;
-        return Ok(InboundAttachments {
-            parts,
-            files: Vec::new(),
-        });
+        return Ok(parts);
     }
 
-    let rows = sqlx::query_as::<_, AttachedRow>(
-        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
-                cmf.storage_uri \
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
+        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
            FROM chat_message_files cmf \
            JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
           WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
@@ -2336,181 +2400,37 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let mut by_id: std::collections::HashMap<Uuid, AttachedRow> =
-        rows.into_iter().map(|row| (row.id, row)).collect();
-    let mut resolved = Vec::with_capacity(ids.len());
-    let mut stored_bytes = 0u64;
-    for id in &ids {
-        let Some(row) = by_id.remove(id) else {
-            return Err(A2aDispatchError::InvalidRequest(format!(
-                "attachment {id} was not found"
-            )));
-        };
-        let attached = if row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
-            Resolved::ChatUpload(row)
-        } else {
-            Resolved::Elsewhere(elsewhere_attachment(state, user_id, row).await?)
-        };
-        stored_bytes += attached.size_bytes();
-        resolved.push(attached);
-    }
-    check_attached_total(inline_bytes + stored_bytes)?;
-
-    let mut files = Vec::with_capacity(resolved.len());
-    for attached in resolved {
-        let row = match attached {
-            Resolved::ChatUpload(row) => row,
-            Resolved::Elsewhere(file) => {
-                files.push(file);
-                continue;
-            }
-        };
-        match state.oci_storage.get_blob(&row.storage_uri).await {
-            Ok(bytes) => parts.push(a2a::file_part(
-                bytes.to_vec(),
-                Some(row.filename.clone()),
-                Some(row.mime_type.clone()),
-            )),
-            Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
-                return Err(A2aDispatchError::InvalidRequest(format!(
-                    "attachment '{}' is no longer stored",
-                    row.filename
-                )));
-            }
-            Err(e) => {
-                tracing::warn!(id = %row.id, %e, "attachment bytes unreadable");
-                return Err(A2aDispatchError::Unavailable(format!(
-                    "attachment '{}' could not be read; try again",
-                    row.filename
-                )));
-            }
-        }
-        files.push(AttachedFile {
-            reference: AttachmentRef::ChatUpload {
-                session_id: row.session_id,
-                file_id: row.id,
-            },
-            filename: row.filename,
-            media_type: row.mime_type,
-            size_bytes: row.size_bytes.max(0) as u64,
-        });
-    }
-
-    Ok(InboundAttachments { parts, files })
-}
-
-enum Resolved {
-    ChatUpload(AttachedRow),
-    Elsewhere(AttachedFile),
-}
-
-impl Resolved {
-    fn size_bytes(&self) -> u64 {
-        match self {
-            Self::ChatUpload(row) => row.size_bytes.max(0) as u64,
-            Self::Elsewhere(file) => file.size_bytes,
-        }
-    }
-}
-
-async fn elsewhere_attachment(
-    state: &AppState,
-    user_id: Uuid,
-    row: AttachedRow,
-) -> Result<AttachedFile, A2aDispatchError> {
-    let source = state.turn_artifacts.get();
-    match source
-        .attachment(&state.db, user_id, &row.storage_uri)
-        .await
-    {
-        Attachable::File(file) => Ok(AttachedFile {
-            reference: file.reference,
-            filename: row.filename,
-            media_type: file.media_type,
-            size_bytes: file.size_bytes,
-        }),
-        Attachable::Refused => Err(A2aDispatchError::InvalidRequest(format!(
-            "'{}' can't be attached to a message",
-            row.filename
-        ))),
-        Attachable::Unavailable => {
-            tracing::warn!(id = %row.id, "attachment source unavailable");
-            Err(A2aDispatchError::Unavailable(format!(
-                "attachment '{}' could not be read; try again",
-                row.filename
-            )))
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct AttachedRow {
-    id: Uuid,
-    session_id: String,
-    filename: String,
-    mime_type: String,
-    size_bytes: i64,
-    storage_uri: String,
-}
-
-pub(crate) struct InboundAttachments {
-    pub(crate) parts: Vec<a2a::Part>,
-    pub(crate) files: Vec<AttachedFile>,
-}
-
-pub(crate) struct AttachedFile {
-    reference: AttachmentRef,
-    filename: String,
-    media_type: String,
-    size_bytes: u64,
-}
-
-fn attachment_note(
-    signer: Option<&MarkerSigner>,
-    files: &[AttachedFile],
-    flow_id: &str,
-) -> Option<String> {
-    let signer = signer?;
-    if files.is_empty() {
-        return None;
-    }
-    let expires_at = chrono::Utc::now().timestamp() + MARKER_TTL_SECS;
-    let lines: Vec<String> = files
-        .iter()
-        .map(|file| {
-            signer.marker_line(&MarkerClaims {
-                reference: file.reference.clone(),
-                filename: file.filename.clone(),
-                media_type: file.media_type.clone(),
-                size_bytes: file.size_bytes,
-                flow_id: flow_id.to_string(),
-                expires_at,
-            })
-        })
-        .collect();
-    Some(lines.join("\n"))
-}
-
-fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
-    let Some(note) = note else { return };
-    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
-    let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
-        return;
-    };
-    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
-}
-
-const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
-
-fn check_attached_total(total: u64) -> Result<(), A2aDispatchError> {
+    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
     if total > MAX_ATTACHED_BYTES {
         return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {:.1} MB, over the {} MB per-message limit",
-            total as f64 / (1024.0 * 1024.0),
-            MAX_ATTACHED_BYTES / (1024 * 1024)
+            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
         )));
     }
-    Ok(())
+
+    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
+        rows.iter().map(|r| (r.0, r)).collect();
+    for id in &ids {
+        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
+            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
+            continue;
+        };
+        if storage_uri.starts_with("workspace://") {
+            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
+            continue;
+        }
+        match state.oci_storage.get_blob(storage_uri).await {
+            Ok(bytes) => parts.push(a2a::file_part(
+                bytes.to_vec(),
+                Some(filename.clone()),
+                Some(mime_type.clone()),
+            )),
+            Err(e) => {
+                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
+            }
+        }
+    }
+
+    Ok(parts)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -2637,83 +2557,186 @@ async fn ensure_orchestrator_chat_session(
     .await;
 }
 
+/// Answer a task request addressed (by `params.metadata.agent_id`, a name or a UUID) to a harness
+/// agent. `None` when it is not addressed to one, so the request falls through to the message
+/// handling as before.
+async fn harness_task_reply(
+    state: &AppState,
+    claims: &Claims,
+    method: crate::sessions::tasks::TaskMethod,
+    req: &JsonRpcRequest,
+) -> Result<Option<Response>, A2aDispatchError> {
+    let rpc = serde_json::to_value(req).unwrap_or(serde_json::Value::Null);
+    let Some(target) = rpc
+        .pointer("/params/metadata/agent_id")
+        .and_then(|v| v.as_str())
+    else {
+        return Ok(None);
+    };
+    // "orchestrator" is the router, not an agent: a task method for it falls through as before.
+    if target == "orchestrator" {
+        return Ok(None);
+    }
+    let agent = resolve_agent(state, target).await?;
+    // The same answer as an unknown agent when the caller may not see this one.
+    if !crate::acl::can_access_agent(state, claims, agent.id).await {
+        return Err(A2aDispatchError::AgentNotFound(target.to_string()));
+    }
+    let is_harness = agent.may_drive_code()
+        && matches!(
+            crate::coding::proxy::load_agent_target(&state.db, agent.id)
+                .await
+                .map_err(|e| A2aDispatchError::Internal(e.to_string()))?,
+            Some(crate::coding::proxy::AgentTarget::Harness(_))
+        );
+    if !is_harness {
+        return Ok(None);
+    }
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return Ok(Some(e.into_response())),
+    };
+    Ok(Some(
+        crate::sessions::tasks::handle(state, agent.id, user_id, method, &rpc).await,
+    ))
+}
+
+/// What the dispatch path knows about one turn to a code-driving agent.
+struct CodingDispatch<'a> {
+    agent: &'a AgentRow,
+    /// History-packed text — recorded on the flow (`flows.title`) like `agent_stream`.
+    query: &'a str,
+    /// The raw user message — the turn's prompt and what's persisted to the transcript.
+    user_message: &'a str,
+    context_id: &'a str,
+    task_id: &'a str,
+    user_id: Uuid,
+}
+
 /// Run a coding-agent turn for the orchestrator-dispatch path and stream it back
 /// as A2A SSE. The dispatch path has no coding awareness of its own, so this does
 /// the minimal pre-turn bookkeeping the coding turn needs — a `chat_sessions` row
 /// (the lease keys on it), a `flows` row + participant (so the session token is
 /// authorizable), and the user message — then hands off to the shared
 /// `coding::entry::run_coding_turn_sse`, exactly as `agent_proxy` does (NAS-C1).
-#[allow(clippy::too_many_arguments)]
 async fn coding_agent_stream(
     state: &AppState,
-    agent: &AgentRow,
     target: crate::coding::proxy::CodingAgentTarget,
-    // History-packed text — recorded on the flow (`flows.title`) like `agent_stream`.
-    query: &str,
-    // The raw user message — the turn's prompt and what's persisted to the transcript.
-    user_message: &str,
-    context_id: &str,
-    task_id: &str,
-    user_id: Uuid,
+    turn: CodingDispatch<'_>,
     client_owns_transcript: bool,
 ) -> Result<Response, A2aDispatchError> {
     // Session row (the coding lease UPDATEs it) + user message. `agent_id` is set,
     // so the session is tied to this coding agent for runtime reconcile + the UI.
     ensure_coding_chat_session(
         state,
-        context_id,
-        user_id,
-        agent.id,
-        user_message,
+        turn.context_id,
+        turn.user_id,
+        turn.agent.id,
+        turn.user_message,
         client_owns_transcript,
     )
     .await;
+    let flow_id = open_coding_flow(state, &turn).await;
 
-    // Open the flow the session token binds to — same shape as `agent_stream`'s own
-    // flow setup, so the gateway/router authorize the agent's calls off the signed
-    // claims instead of a traceparent.
+    crate::coding::entry::run_coding_turn_sse(
+        state,
+        turn.agent.id,
+        &target,
+        Some(turn.user_id),
+        turn.context_id,
+        turn.user_message,
+        &flow_id,
+        turn.task_id,
+    )
+    .await
+    .map_err(|e| {
+        tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
+        A2aDispatchError::Internal(e.to_string())
+    })
+}
+
+/// Run a harness-session turn for the dispatch path. Resolving the session comes first and is
+/// the ownership check: a contextId owned by someone else is `SessionNotFound`, and nothing is
+/// written under it (no transcript row, no flow).
+async fn harness_agent_stream(
+    state: &AppState,
+    target: crate::coding::proxy::HarnessTarget,
+    turn: CodingDispatch<'_>,
+    client_owns_transcript: bool,
+) -> Result<Response, A2aDispatchError> {
+    let session = crate::sessions::SessionStore::new(state.db.clone())
+        .find_or_create_for_harness(turn.agent.id, turn.user_id, turn.context_id)
+        .await
+        .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+        .ok_or(A2aDispatchError::SessionNotFound)?;
+    ensure_coding_chat_session(
+        state,
+        turn.context_id,
+        turn.user_id,
+        turn.agent.id,
+        turn.user_message,
+        client_owns_transcript,
+    )
+    .await;
+    let flow_id = open_coding_flow(state, &turn).await;
+
+    crate::sessions::turn::run_harness_turn_sse(
+        state,
+        crate::sessions::turn::HarnessTurnRequest {
+            target: &target,
+            session,
+            user_id: turn.user_id,
+            prompt: turn.user_message,
+            flow_id: &flow_id,
+            task_id: turn.task_id,
+        },
+    )
+    .await
+    .map_err(|e| match e {
+        crate::coding::turn::CodingTurnError::Busy
+        | crate::coding::turn::CodingTurnError::Superseded => A2aDispatchError::SessionBusy,
+        e => {
+            tracing::error!(error = %e, agent_id = %turn.agent.id, "harness dispatch turn failed to start");
+            A2aDispatchError::Internal(e.to_string())
+        }
+    })
+}
+
+/// Open the flow a code-driving turn's session token binds to — same shape as `agent_stream`'s
+/// own flow setup, so the gateway/router authorize the agent's calls off the signed claims
+/// instead of a traceparent. Returns the flow id.
+async fn open_coding_flow(state: &AppState, turn: &CodingDispatch<'_>) -> String {
     let dispatch_span = tracing::info_span!(
         "a2a.dispatch",
         otel.kind = "server",
         gen_ai.operation.name = "invoke_agent",
-        gen_ai.agent.name = %agent.name,
-        session.id = %context_id,
+        gen_ai.agent.name = %turn.agent.name,
+        session.id = %turn.context_id,
     );
     let flow_ctx = crate::telemetry::flow_context_from_span(&dispatch_span)
         .unwrap_or_else(FlowContext::new_root);
     let flow_id = flow_ctx.flow_id.clone();
-    state.flow_guard.init_flow(&flow_ctx, &agent.name).await;
-    let flow_metadata = json!({ "context_id": context_id, "user_message": user_message });
+    state
+        .flow_guard
+        .init_flow(&flow_ctx, &turn.agent.name)
+        .await;
+    let flow_metadata = json!({ "context_id": turn.context_id, "user_message": turn.user_message });
     let _ = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata, session_id)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
            ON CONFLICT (flow_id) DO UPDATE SET status = 'running', completed_at = NULL"#,
     )
     .bind(&flow_id)
-    .bind(user_id)
-    .bind(agent.id)
-    .bind(&agent.name)
-    .bind(query)
+    .bind(turn.user_id)
+    .bind(turn.agent.id)
+    .bind(&turn.agent.name)
+    .bind(turn.query)
     .bind(&flow_metadata)
+    .bind(turn.context_id)
     .execute(&state.db)
     .await;
-    crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
-
-    crate::coding::entry::run_coding_turn_sse(
-        state,
-        agent.id,
-        &target,
-        Some(user_id),
-        context_id,
-        user_message,
-        &flow_id,
-        task_id,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(error = %e, agent_id = %agent.id, "coding-agent dispatch turn failed to start");
-        A2aDispatchError::Internal(e.to_string())
-    })
+    crate::flows::record_participant(&state.db, &flow_id, turn.agent.id).await;
+    flow_id
 }
 
 /// Upsert the `chat_sessions` row for a coding-agent dispatch turn (with `agent_id`
@@ -2771,89 +2794,9 @@ async fn ensure_coding_chat_session(
     .await;
 }
 
-pub(crate) async fn resolve_endpoint(
-    state: &AppState,
-    agent_id: &str,
-    agent_name: &str,
-) -> Result<nasiko_runtime::ForwardTarget, String> {
-    // Containers are UUID-keyed (see `build_agent_spec`), so the runtime lookup
-    // below needs `agent_id`, not `agent_name` — a name-keyed lookup always
-    // misses. `agent_name` is kept only for the DB fallback query and error
-    // messages, which are keyed by name for readability.
-    let agent_id: Uuid = agent_id
-        .parse()
-        .map_err(|e| format!("invalid agent id: {e}"))?;
-    let row: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT transport_path, url FROM agents WHERE id = $1 AND status = 'running'",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| format!("db lookup: {e}"))?;
-
-    let Some((transport_path, stored_url)) = row else {
-        return Err(format!("no running agent named '{agent_name}'"));
-    };
-
-    // The A2A spec fixes no path — it must come from the agent's card, never
-    // be assumed. The a2a-server-lf crate (used by the example agents) mounts
-    // its JSON-RPC handler at the container root, not `/jsonrpc` — a row with
-    // no captured transport_path must default to root, not guess a path the
-    // agent doesn't actually serve.
-    let path = match transport_path.as_deref() {
-        None | Some("/") | Some("") => "",
-        Some(p) => p,
-    };
-
-    // Prefer live runtime endpoint (Docker port mapping can change on restart).
-    // `forwarding_endpoint()`, not `endpoint()`: this resolves the address an actual outbound
-    // A2A call goes to (a no-op alias for `endpoint()` on OSS/no-memory EE; the EE injection
-    // proxy's address when memory is enabled) — never the deploy-time persisted snapshot, which
-    // `resolve_agent_url` computes separately via plain `endpoint()`.
-    let container_id = nasiko_runtime::ContainerId::from_uuid(agent_id);
-    match state.runtime.forwarding_endpoint(&container_id).await {
-        Ok(target) => {
-            let base = target.url.trim_end_matches('/');
-            return Ok(nasiko_runtime::ForwardTarget {
-                url: format!("{base}{path}"),
-                headers: target.headers,
-            });
-        }
-        Err(_) => {
-            // Container not reachable via runtime — check if it's actually stopped.
-            if let Ok(status) = state.runtime.status(&container_id).await
-                && status.state != nasiko_runtime::RuntimeState::Running
-            {
-                // Mark as stopped so future routing skips it.
-                let _ = sqlx::query(
-                    "UPDATE agents SET status = 'stopped' WHERE id = $1 AND status = 'running'",
-                )
-                .bind(agent_id)
-                .execute(&state.db)
-                .await;
-                return Err(format!("agent '{agent_name}' is not running"));
-            }
-        }
-    }
-
-    // Fall back to stored URL (e.g. external agents, K8s with stable DNS). Bypasses whatever
-    // `forwarding_endpoint()` would otherwise route through (the injection proxy, when memory is
-    // enabled), so this forward gets no L1A — worth a line in the logs, since a silent skip here
-    // looks identical to "L1A had nothing to say."
-    if let Some(ref url) = stored_url
-        && !url.is_empty()
-    {
-        tracing::warn!(
-            %agent_id, %agent_name,
-            "resolve_endpoint: live runtime lookup failed, falling back to stored agents.url \
-             (bypasses the injection proxy — this forward gets no L1A)"
-        );
-        let u = url.trim_end_matches('/');
-        return Ok(nasiko_runtime::ForwardTarget::from(format!("{u}{path}")));
-    }
-
-    Err(format!("no endpoint found for agent '{agent_name}'"))
-}
+/// Not a real address: the prefix of the endpoint a routed turn's candidate carries until its leg is
+/// resolved by id in `CpCallGuard::before_call`.
+const LEG_RESOLVED_ENDPOINT_PREFIX: &str = "nasiko-leg://";
 
 /// Normalize a Python a2a-sdk JSONRPC event to CP native StreamResponse format.
 /// Extract the error message if this SSE event represents a TASK_STATE_FAILED status update.
@@ -2865,6 +2808,17 @@ fn non_streaming_reply_outcome(status_ok: bool, body: &serde_json::Value) -> Req
     let task_failed =
         a2a::classify_stream_disposition(&body.to_string()) == a2a::StreamDisposition::Failed;
     RequestOutcome::from_success(status_ok && body.get("error").is_none() && !task_failed)
+}
+
+/// Why the agent's reply stream ended before its final event, in words for the user.
+fn stream_cut_reason(err: &reqwest::Error, call_timeout_secs: u64) -> String {
+    if err.is_timeout() {
+        format!(
+            "The agent did not finish within the {call_timeout_secs}-second limit, so its reply was cut off."
+        )
+    } else {
+        "The connection to the agent was lost before it finished replying.".to_string()
+    }
 }
 
 fn extract_failure_message(data: &str) -> Option<String> {
@@ -3013,7 +2967,7 @@ pub(crate) async fn persist_direct_chat_pause(
         // `.with_chat_session_id` on BOTH arms: the id is computed and FK-validated above for every
         // origin, and applying it to only one silently cost the proxy path two things (found in
         // review) — the row missed `list_for_chat_session`, so a proxy pause never appeared on
-        // session load, and `deliver`'s `session_traces` insert is guarded on this being `Some`,
+        // session load, and `deliver`'s flow registration is guarded on this being `Some`,
         // so every MCP tool-approval retry after the resume resolved to a fresh trace id and
         // re-asked the human to approve the same tool.
         nasiko_hitl::HitlOrigin::AgentProxy => nasiko_hitl::NewHitlRequest::agent_proxy(
@@ -3211,6 +3165,20 @@ struct AgentRow {
     skills: sqlx::types::Json<Vec<crate::catalog::models::Skill>>,
     /// Decides whether the history sent to this agent is compressed (IP-4).
     compress_enabled: bool,
+    /// The same row as `agent_resolver` reads it, so the forward resolves without a second read.
+    #[sqlx(flatten)]
+    route: crate::agent_resolver::AgentRow,
+}
+
+impl AgentRow {
+    /// Whether `coding::proxy::load_agent_target` can find a target for this agent; an ordinary
+    /// agent skips that query.
+    fn may_drive_code(&self) -> bool {
+        matches!(
+            self.route.workload_kind.as_str(),
+            "acp_coding_agent" | "harness"
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -3219,6 +3187,14 @@ pub enum A2aDispatchError {
     NoAgents,
     AgentNotFound(String),
     Internal(String),
+    /// The agent cannot take the call right now. The message comes from the
+    /// [`crate::agent_wake::AgentWake`] seam and is already caller-safe.
+    Unavailable(String),
+    /// The contextId names a harness session that is not the caller's (or does not exist);
+    /// the two are indistinguishable on purpose.
+    SessionNotFound,
+    /// The harness session already has a turn running.
+    SessionBusy,
     /// A `reconnect_after_hitl_id` reconnect was for a HITL row that exists but isn't the
     /// caller's — same rule `authorize_hitl_action` enforces for every other `/api/hitl/*` route.
     Forbidden(String),
@@ -3230,7 +3206,8 @@ pub enum A2aDispatchError {
         status: StatusCode,
         message: String,
     },
-    Unavailable(String),
+    /// The target agent could not be resolved to somewhere to send the request.
+    Resolve(crate::agent_resolver::ResolveError),
 }
 
 impl IntoResponse for A2aDispatchError {
@@ -3260,6 +3237,20 @@ impl IntoResponse for A2aDispatchError {
                 };
                 (status, -32606, message)
             }
+            Self::Resolve(e) => {
+                tracing::warn!(error = %e, "a2a dispatch: target resolution failed");
+                (e.http_status(), -32609, e.client_message())
+            }
+            Self::SessionNotFound => (
+                StatusCode::NOT_FOUND,
+                -32607,
+                "session_not_found".to_string(),
+            ),
+            Self::SessionBusy => (
+                StatusCode::CONFLICT,
+                -32608,
+                "another turn is already running for this session".to_string(),
+            ),
             Self::Internal(e) => {
                 // `e` may carry raw DB/IO/upstream error text (see call sites) — log
                 // it server-side and never echo it back to the client (SRV raw-error
@@ -3534,5 +3525,50 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod stream_cut_tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    /// HD-04: an agent that is still working when the agent-call budget runs out. The relay's
+    /// stream read fails with a timeout, and the user must be told so, not shown "completed".
+    #[tokio::test]
+    async fn a_reply_cut_off_by_the_time_limit_is_reported_as_such() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await;
+            // Headers and the first event, then silence: the agent is still working.
+            let _ = socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\ndata: {}\n\n",
+                )
+                .await;
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        });
+
+        let client = reqwest::Client::new();
+        let response = client
+            .get(format!("http://{addr}/"))
+            .timeout(std::time::Duration::from_millis(300))
+            .send()
+            .await
+            .unwrap();
+        let mut stream = response.bytes_stream();
+        let err = loop {
+            match stream.next().await {
+                Some(Ok(_)) => continue,
+                Some(Err(e)) => break e,
+                None => panic!("the stream ended without the timeout error"),
+            }
+        };
+
+        let reason = stream_cut_reason(&err, 180);
+        assert!(reason.contains("180-second limit"), "{reason}");
     }
 }

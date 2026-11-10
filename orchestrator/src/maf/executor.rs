@@ -1,4 +1,5 @@
 use crate::outbound::OutboundPrefix;
+use crate::target::{AgentTargetResolver, ForwardTarget, ResolveCaller, ResolveFailure};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -364,6 +365,7 @@ pub async fn run_maf(
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
     agent_calls: &Arc<dyn AgentCallMeter>,
+    targets: &dyn AgentTargetResolver,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
@@ -396,6 +398,7 @@ pub async fn run_maf(
         db,
         flow_guard,
         agent_calls,
+        targets,
         execution_id,
         user_id,
         maf_def,
@@ -413,6 +416,7 @@ async fn run_maf_inner(
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
     agent_calls: &Arc<dyn AgentCallMeter>,
+    targets: &dyn AgentTargetResolver,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
@@ -516,6 +520,7 @@ async fn run_maf_inner(
             db,
             flow_guard,
             agent_calls,
+            targets,
             execution_id,
             user_id,
             step,
@@ -610,6 +615,7 @@ pub async fn run_maf_from(
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
     agent_calls: &Arc<dyn AgentCallMeter>,
+    targets: &dyn AgentTargetResolver,
     execution_id: Uuid,
     user_id: Uuid,
     maf_def: &MafDefinition,
@@ -679,6 +685,7 @@ pub async fn run_maf_from(
         db,
         flow_guard,
         agent_calls,
+        targets,
         execution_id,
         user_id,
         &maf_def.steps[resume_index],
@@ -707,6 +714,7 @@ pub async fn run_maf_from(
             db,
             flow_guard,
             agent_calls,
+            targets,
             execution_id,
             user_id,
             &maf_def.steps[i],
@@ -744,6 +752,35 @@ pub async fn run_maf_from(
     .await
 }
 
+/// Where `step`'s agent call goes, asked of the resolver (which wakes a parked agent) rather than
+/// read from `step.agent_endpoint`, a snapshot from when the workflow was saved and stale as soon
+/// as the container is recreated. The snapshot is used only when the agent is routable but has no
+/// endpoint of its own to give (an empty stored URL), the one way an externally registered agent
+/// still works.
+async fn step_endpoint(
+    targets: &dyn AgentTargetResolver,
+    step: &MafStep,
+    user_id: Uuid,
+    flow_id: &str,
+    execution_id: Uuid,
+) -> Result<ForwardTarget, ResolveFailure> {
+    let caller = ResolveCaller {
+        user_id: Some(user_id),
+        flow_id: Some(flow_id.to_string()),
+    };
+    // The contextId a step's agent sees is the execution id (see `call_agent`'s caller).
+    match targets
+        .resolve(step.agent_id, &caller, Some(&execution_id.to_string()))
+        .await
+    {
+        Ok(target) => Ok(target),
+        Err(failure) if failure.status == ResolveFailure::NO_ENDPOINT => {
+            Ok(ForwardTarget::from(step.agent_endpoint.clone()))
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
 /// Runs one step fresh: prompt generation (LLM call 2) → agent call → extraction (LLM call 3),
 /// persisting progress at every transition exactly as the original inline loop body did. Shared by
 /// `run_maf` and, for every step after the resumed one, `run_maf_from`.
@@ -753,6 +790,7 @@ pub async fn execute_step(
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
     agent_calls: &Arc<dyn AgentCallMeter>,
+    targets: &dyn AgentTargetResolver,
     execution_id: Uuid,
     user_id: Uuid,
     step: &MafStep,
@@ -880,42 +918,22 @@ pub async fn execute_step(
         );
     }
 
-    // Resolve the agent's endpoint NOW rather than trusting the one frozen
-    // into `maf_json` when the workflow was saved.
+    // The agent's address is not taken from the one frozen into `maf_json` when the workflow was
+    // saved (`step.agent_endpoint`): that snapshot goes stale as soon as the container is
+    // recreated (Docker hands out a fresh host port each time) or the agent is parked. It is
+    // resolved below, after the cascade limits, through the platform's resolver; the snapshot is
+    // only the fallback for an agent that is routable but has no address of its own.
     //
-    // `step.agent_endpoint` is a snapshot from creation time, and Docker
-    // hands out a fresh random host port every time a container is
-    // recreated. So a saved workflow kept pointing at a port that had
-    // since moved, and every run failed with a connection error to a dead
-    // address — permanently, for the life of the workflow. This is the
-    // same staleness `agent_proxy.rs` documents and resolves for its own
-    // path; MAF simply never did the lookup.
-    //
-    // A missing snapshot on the agent row (`endpoint: None`, e.g. a k8s
-    // deploy that returned before the pod was Ready) falls back to the
-    // stored value rather than failing outright — matching the proxy's
-    // handling, and the only route by which an externally-registered
-    // agent still works.
-    let (endpoint, a2a_path) = match nasiko_agent_proxy::resolve(db, step.agent_id).await {
-        Ok(resolved) => (
-            resolved
-                .endpoint
-                .map(|e| format!("http://{}:{}", e.host, e.port))
-                .unwrap_or_else(|| step.agent_endpoint.clone()),
-            resolved.transport_path,
-        ),
-        Err(e) => {
-            let err = format!(
-                "step {} (agent '{}'): {e}",
-                step.step_index, step.agent_name
-            );
-            step_results[i].status = "failed".to_string();
-            step_results[i].prompt = actual_prompt;
-            step_results[i].error = Some(err.clone());
-            persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-            return StepLoopOutcome::Failed(err);
-        }
-    };
+    // The A2A mount from the agent's card (`agents.transport_path`) is read here: it does not
+    // depend on where the agent runs, and an agent mounted off root is called nowhere else.
+    let a2a_path: Option<String> =
+        sqlx::query_scalar("SELECT transport_path FROM agents WHERE id = $1")
+            .bind(step.agent_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
 
     // Cascade limits, enforced before the call goes out.
     //
@@ -973,6 +991,24 @@ pub async fn execute_step(
         persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
         return StepLoopOutcome::Failed(err);
     }
+
+    // Resolved only now, past the cascade limits, so a step they refuse never wakes a parked agent.
+    let endpoint = match step_endpoint(targets, step, user_id, &trace_id, execution_id).await {
+        Ok(endpoint) => endpoint,
+        Err(failure) => {
+            // The invocation recorded above would otherwise never be unwound.
+            flow_guard.record_return(&flow_ctx).await;
+            let err = format!(
+                "step {} (agent '{}'): {failure}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].prompt = actual_prompt;
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
+            return StepLoopOutcome::Failed(err);
+        }
+    };
 
     // Org policy is appended as its own part inside `call_agent`, never composed back into
     // `actual_prompt`: that value is persisted to `step_results[i].prompt` below and read back
@@ -1100,6 +1136,7 @@ pub async fn continue_paused_step(
     db: &PgPool,
     flow_guard: &Arc<FlowGuard>,
     agent_calls: &Arc<dyn AgentCallMeter>,
+    targets: &dyn AgentTargetResolver,
     execution_id: Uuid,
     user_id: Uuid,
     step: &MafStep,
@@ -1145,12 +1182,28 @@ pub async fn continue_paused_step(
     .execute(db)
     .await;
 
+    // Resolved now, not read from the saved definition: the human may have taken long enough
+    // that the agent was parked meanwhile, and the snapshot is stale either way.
+    let endpoint = match step_endpoint(targets, step, user_id, &trace_id, execution_id).await {
+        Ok(endpoint) => endpoint,
+        Err(failure) => {
+            let err = format!(
+                "step {} (agent '{}') resume failed: {failure}",
+                step.step_index, step.agent_name
+            );
+            step_results[i].status = "failed".to_string();
+            step_results[i].error = Some(err.clone());
+            persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
+            return StepLoopOutcome::Failed(err);
+        }
+    };
+
     let call_result = metered(
         agent_calls,
         step.agent_id,
         call_agent_continuation(
             client,
-            &step.agent_endpoint,
+            &endpoint,
             context_id,
             task_id,
             &user_id.to_string(),
@@ -2155,7 +2208,7 @@ fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
 #[allow(clippy::too_many_arguments)]
 async fn call_agent(
     client: &reqwest::Client,
-    endpoint: &str,
+    endpoint: &ForwardTarget,
     // The agent's A2A mount from its card (`agents.transport_path`); see `post_a2a_request`.
     a2a_path: Option<&str>,
     context_id: &str,
@@ -2209,7 +2262,7 @@ async fn call_agent(
 #[allow(clippy::too_many_arguments)]
 async fn call_agent_continuation(
     client: &reqwest::Client,
-    endpoint: &str,
+    endpoint: &ForwardTarget,
     context_id: &str,
     task_id: &str,
     user_id: &str,
@@ -2234,9 +2287,21 @@ fn mounted_a2a_url(base: &str, a2a_path: Option<&str>) -> Option<String> {
 /// Shared HTTP mechanics for both a fresh `call_agent` call and `call_agent_continuation`'s
 /// resume: the `/jsonrpc`-then-`/` endpoint fallback and the top-level JSON-RPC `error` check —
 /// everything both callers previously duplicated.
+/// Attaches whatever the resolver asked to have sent with every call to this target (the EE
+/// injection proxy's own credential when memory is enabled; empty otherwise).
+fn with_target_headers(
+    mut request: reqwest::RequestBuilder,
+    target: &ForwardTarget,
+) -> reqwest::RequestBuilder {
+    for (name, value) in &target.headers {
+        request = request.header(name, value);
+    }
+    request
+}
+
 async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     client: &reqwest::Client,
-    endpoint: &str,
+    endpoint: &ForwardTarget,
     a2a_path: Option<&str>,
     user_id: &str,
     traceparent: &str,
@@ -2245,10 +2310,12 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     // An agent whose card names a non-root A2A mount (OpenCode serves only `/a2a/jsonrpc`) is
     // called there and nowhere else, exactly as direct chat calls it. Otherwise: some agents
     // expose A2A at /jsonrpc, others at root /, so try /jsonrpc first and fall back to / on 404.
-    let base = endpoint.trim_end_matches('/');
+    let base = endpoint.url.trim_end_matches('/');
     let mounted = mounted_a2a_url(base, a2a_path);
     let url_jsonrpc = mounted.clone().unwrap_or_else(|| format!("{base}/jsonrpc"));
-    let url_root = format!("{base}/");
+    // No trailing slash: the request line is `/` either way, and a bare `/` appended to the
+    // injection proxy's address matches none of its routes.
+    let url_root = base.to_string();
 
     // No per-request MCP credential: the agent authenticates to `/api/mcp`
     // with its own deploy-time MCP_GATEWAY_TOKEN, and the user binding rides
@@ -2257,8 +2324,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     // No per-request timeout: `client` is the worker's agent client, built with the
     // platform's agent-call budget because agent A2A calls are all it makes.
     let resp = {
-        let r = client
-            .post(&url_jsonrpc)
+        let r = with_target_headers(client.post(&url_jsonrpc), endpoint)
             .header("X-User-Id", user_id)
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
             .header("traceparent", traceparent)
@@ -2267,8 +2333,7 @@ async fn post_a2a_request<T: serde::Serialize + ?Sized>(
             .await
             .map_err(|e| e.to_string())?;
         if r.status() == reqwest::StatusCode::NOT_FOUND && mounted.is_none() {
-            client
-                .post(&url_root)
+            with_target_headers(client.post(&url_root), endpoint)
                 .header("X-User-Id", user_id)
                 .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
                 .header("traceparent", traceparent)
@@ -2580,7 +2645,9 @@ mod resume_tests {
         let db = PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("connect_lazy never actually connects");
         let flow_guard = Arc::new(FlowGuard::new(
-            redis::Client::open("redis://127.0.0.1:1").expect("lazy client, never dialled"),
+            nasiko_redis::SharedRedis::new(
+                redis::Client::open("redis://127.0.0.1:1").expect("lazy client, never dialled"),
+            ),
             nasiko_flow::FlowConfig::default(),
         ));
         let llm = LlmClient::new(reqwest::Client::new(), String::new(), None, String::new());
@@ -2591,6 +2658,7 @@ mod resume_tests {
             &db,
             &flow_guard,
             &agent_calls,
+            &crate::target::DirectAddress::new(db.clone()),
             Uuid::new_v4(),
             Uuid::new_v4(),
             &maf_def,
@@ -2800,7 +2868,7 @@ mod resume_tests {
         let client = reqwest::Client::new();
         let result = call_agent(
             &client,
-            &server.url(),
+            &ForwardTarget::from(server.url()),
             None,
             "ctx-1",
             "user-1",
@@ -2835,7 +2903,7 @@ mod resume_tests {
         let client = reqwest::Client::new();
         let result = call_agent(
             &client,
-            &server.url(),
+            &ForwardTarget::from(server.url()),
             Some("/a2a/jsonrpc"),
             "ctx-1",
             "user-1",
@@ -2870,7 +2938,7 @@ mod resume_tests {
         let client = reqwest::Client::new();
         let result = call_agent(
             &client,
-            &server.url(),
+            &ForwardTarget::from(server.url()),
             None,
             "ctx-1",
             "user-1",
@@ -2907,5 +2975,88 @@ mod resume_tests {
             "result": {"kind": "message", "parts": [{"kind": "text", "text": "ok"}]}
         })
         .to_string()
+    }
+
+    /// One recorded ask: agent, user, flow, contextId.
+    type Asked = (Uuid, Option<Uuid>, Option<String>, Option<String>);
+
+    /// A fake resolver answering with a fixed result and recording who it was asked about.
+    struct FakeTargets {
+        answer: Result<String, ResolveFailure>,
+        asked: std::sync::Mutex<Vec<Asked>>,
+    }
+
+    impl FakeTargets {
+        fn answering(answer: Result<String, ResolveFailure>) -> Self {
+            Self {
+                answer,
+                asked: Default::default(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AgentTargetResolver for FakeTargets {
+        async fn resolve(
+            &self,
+            agent_id: Uuid,
+            caller: &ResolveCaller,
+            context_id: Option<&str>,
+        ) -> Result<crate::target::ForwardTarget, ResolveFailure> {
+            self.asked.lock().unwrap().push((
+                agent_id,
+                caller.user_id,
+                caller.flow_id.clone(),
+                context_id.map(str::to_owned),
+            ));
+            self.answer.clone().map(crate::target::ForwardTarget::from)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_step_is_sent_to_the_url_the_resolver_returns() {
+        let targets = FakeTargets::answering(Ok("http://woken.sandbox:8000".into()));
+        let step = step(0);
+        let (user, execution) = (Uuid::new_v4(), Uuid::new_v4());
+
+        let url = step_endpoint(&targets, &step, user, "flow-1", execution)
+            .await
+            .unwrap();
+
+        assert_eq!(url.url, "http://woken.sandbox:8000");
+        assert_eq!(
+            targets.asked.lock().unwrap().as_slice(),
+            [(
+                step.agent_id,
+                Some(user),
+                Some("flow-1".to_string()),
+                Some(execution.to_string())
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_saved_snapshot_is_used_only_when_the_agent_has_no_endpoint_of_its_own() {
+        let step = step(0);
+        let none = FakeTargets::answering(Err(ResolveFailure::new(
+            ResolveFailure::NO_ENDPOINT,
+            "no stored endpoint",
+        )));
+        assert_eq!(
+            step_endpoint(&none, &step, Uuid::new_v4(), "f", Uuid::new_v4())
+                .await
+                .unwrap()
+                .url,
+            step.agent_endpoint
+        );
+
+        let harness = FakeTargets::answering(Err(ResolveFailure::new(
+            ResolveFailure::HARNESS,
+            "MAF cannot drive a harness session yet",
+        )));
+        let err = step_endpoint(&harness, &step, Uuid::new_v4(), "f", Uuid::new_v4())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 501);
     }
 }

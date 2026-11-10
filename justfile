@@ -86,12 +86,41 @@ test-unit:
       -p nasiko-runtime \
       -p nasiko-observability \
       -p nasiko-github \
-      -p nasiko-llm-router
+      -p nasiko-llm-router \
+      -p nasiko-harness-shim \
+      -p nasiko-acp-client
     # `--lib` because these three keep their DB-backed suites in `tests/` (Phase II,
     # `test-crates` below) — only their hermetic lib tests belong in Phase I, which is why they
     # can't just join the list above. `nasiko-react-agent` has no `tests/` dir at all, so `--lib`
     # is everything it has.
     cargo test --lib -p nasiko-hitl -p nasiko-mcp-gateway -p nasiko-react-agent
+
+# Build the harness shim (static musl) and the three platform harness images. The harness and ACP
+# adapter versions are pinned in each image's Dockerfile (`ARG`s); the recipe passes the same pins.
+# Needs the x86_64-unknown-linux-musl target and Docker. Usage: just build-harness-images [TAG] [REPO]
+# (REPO is the registry namespace the images are tagged under, e.g. a Docker Hub user or org).
+build-harness-images TAG="0.1.0" REPO="nasiko":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release -p nasiko-harness-shim --target x86_64-unknown-linux-musl
+    trap 'rm -f agents/harnesses/*/harness-shim agents/harnesses/*/harness-supervisor' EXIT
+    ws=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
+    declare -A args=(
+      [opencode]="--build-arg OPENCODE_VERSION=1.19.5"
+      [claude-code]="--build-arg CLAUDE_CODE_VERSION=2.1.312 --build-arg CLAUDE_CODE_ACP_VERSION=0.16.2"
+      [codex]="--build-arg CODEX_VERSION=0.165.0 --build-arg CODEX_ACP_VERSION=0.16.0"
+    )
+    for h in opencode claude-code codex; do
+      ctx=agents/harnesses/$h
+      # Both binaries go everywhere so the loop stays uniform; only the opencode and codex images
+      # COPY the supervisor (claude-code does not carry it yet).
+      for bin in harness-shim harness-supervisor; do
+        cp "$ws/x86_64-unknown-linux-musl/release/$bin" "$ctx/$bin"
+      done
+      # The shim is a linux/amd64 binary and the sandbox workers are amd64, so the image is too,
+      # whatever the build host.
+      {{docker}} build --platform linux/amd64 ${args[$h]} -t {{REPO}}/harness-$h:{{TAG}} "$ctx"
+    done
 
 # Phase II — library-crate integration tests that need Postgres (run `just infra` first).
 # Serial for the same reason `test-server` is: they share one database, and `nasiko-hitl`'s own

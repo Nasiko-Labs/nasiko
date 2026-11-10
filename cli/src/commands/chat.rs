@@ -145,6 +145,7 @@ pub fn chat(
     new_session: bool,
     target_label: &str,
     agent_kind: Option<&str>,
+    resume_flag: &str,
 ) -> Result<()> {
     use std::io::IsTerminal;
 
@@ -197,7 +198,7 @@ pub fn chat(
         remember_session(&endpoint, is_cp, session.as_deref());
         println!();
         if !interactive {
-            print_resume_hint(is_cp, session.as_deref(), target_label);
+            print_resume_hint(is_cp, session.as_deref(), target_label, resume_flag);
             return Ok(());
         }
         println!();
@@ -231,7 +232,7 @@ pub fn chat(
             Err(e) => eprintln!("  \x1b[31merror:\x1b[0m {e}\n"),
         }
     }
-    print_resume_hint(is_cp, session.as_deref(), target_label);
+    print_resume_hint(is_cp, session.as_deref(), target_label, resume_flag);
     Ok(())
 }
 
@@ -247,7 +248,7 @@ fn remember_session(endpoint: &str, is_cp: bool, session: Option<&str>) {
 /// Tell the user which session this chat belongs to and how to pick it back
 /// up. Goes to stderr so piped/scripted stdout stays clean. Only meaningful
 /// for CP endpoints — the server is what stores and resumes sessions.
-fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str) {
+fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str, resume_flag: &str) {
     let Some(sid) = session.filter(|_| is_cp) else {
         return;
     };
@@ -257,7 +258,7 @@ fn print_resume_hint(is_cp: bool, session: Option<&str>, target_label: &str) {
         format!("{target_label} ")
     };
     eprintln!(
-        "\x1b[2msession: {sid} — continue with: nasiko chat {target}--session-id {sid}\x1b[0m"
+        "\x1b[2msession: {sid} — continue with: nasiko chat {target}{resume_flag} {sid}\x1b[0m"
     );
 }
 

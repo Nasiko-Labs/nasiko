@@ -427,7 +427,7 @@ async fn update_composio(
     }
     if key_after != state.mcp.providers.composio.api_key() {
         state.mcp.set_composio_key(key_after.clone());
-        nasiko_mcp_gateway::session::clear_session_cache(&state.mcp.redis).await;
+        nasiko_mcp_gateway::session::clear_session_cache(state.mcp.redis.client()).await;
     }
     let key_changed = key_after.is_some() && key_after != key_before;
 

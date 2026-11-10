@@ -25,6 +25,8 @@ pub struct MafRunContext<'a> {
     pub client: &'a reqwest::Client,
     /// Counts each step's agent call as in flight to its agent.
     pub agent_calls: &'a Arc<dyn AgentCallMeter>,
+    /// Where each step's agent call is sent; wakes a parked agent when the server wires it.
+    pub targets: &'a dyn crate::target::AgentTargetResolver,
     /// The organization policy prefix for each step's message and the final answer.
     pub outbound: &'a dyn OutboundPrefix,
     pub db: &'a PgPool,
@@ -88,6 +90,7 @@ impl MafExecutor for LinearMafExecutor {
             ctx.db,
             ctx.flow_guard,
             ctx.agent_calls,
+            ctx.targets,
             ctx.execution_id,
             ctx.user_id,
             maf_def,
@@ -109,6 +112,7 @@ impl MafExecutor for LinearMafExecutor {
             ctx.db,
             ctx.flow_guard,
             ctx.agent_calls,
+            ctx.targets,
             ctx.execution_id,
             ctx.user_id,
             maf_def,

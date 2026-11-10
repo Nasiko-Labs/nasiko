@@ -25,7 +25,19 @@ pub enum RuntimeError {
     #[error("operation timed out: {0}")]
     Timeout(String),
 
-    /// The caller provided a `DeploymentSpec` that is invalid (e.g. empty ports, empty image).
+    /// No sandbox exists for this handle (see `SandboxProvider`). Sandboxes are keyed by
+    /// `SandboxKey`, not `ContainerId`, so they cannot reuse `ContainerNotFound`. Carries
+    /// `handle.sandbox_ref()`.
+    #[error("sandbox not found: {0}")]
+    SandboxNotFound(String),
+
+    /// The sandbox exists but is Starting or Suspended, so it cannot be attached to. Callers
+    /// `acquire` first. Carries `handle.sandbox_ref()`.
+    #[error("sandbox not running: {0}")]
+    SandboxNotRunning(String),
+
+    /// The caller provided a `DeploymentSpec` or `SandboxSpec` that is invalid (e.g. empty ports,
+    /// empty image).
     #[error("invalid deployment spec: {0}")]
     InvalidSpec(String),
 

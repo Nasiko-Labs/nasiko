@@ -1,8 +1,7 @@
 //! The one concrete [`crate::dispatcher::ResumeNotifier`] this milestone
 //! ships: pushes a resolved decision into the paused agent by resolving its
-//! live address via `ContainerRuntime::endpoint()` (the same primitive
-//! `oss/server/src/agent_proxy.rs` and `a2a_dispatch.rs::resolve_endpoint`
-//! already use) and making a fresh outbound A2A `SendMessage` call carrying
+//! address through an [`AgentTargetResolver`] (the server injects the one that wakes parked
+//! agents; [`RuntimeAddress`] is the default) and making a fresh outbound A2A `SendMessage` call carrying
 //! the row's `context_id`.
 //!
 //! There is no reusable event bus and no A2A push-notification support
@@ -14,12 +13,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use nasiko_runtime::{ContainerId, ContainerRuntime, ForwardTarget};
+use nasiko_runtime::ContainerRuntime;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::dispatcher::{NotifyError, ResumeNotifier};
+use crate::target::{AgentTargetResolver, ForwardTarget, ResolveCaller, RuntimeAddress};
 use crate::types::{DECISION_APPROVE, HitlKind, HitlRequest};
 
 /// `flows.title` for the row `traceparent_for_context` registers — named here instead of inline
@@ -39,7 +39,7 @@ pub const RESUME_REQUEST_TIMEOUT_SECS: u64 = 300;
 
 pub struct RuntimeResumeNotifier {
     db: PgPool,
-    runtime: Arc<dyn ContainerRuntime>,
+    resolver: Arc<dyn AgentTargetResolver>,
     http_client: reqwest::Client,
     /// Mirrors the platform's `NASIKO_FLOW_TIMEOUT_SECS`. Received, not re-read from the env, so
     /// this agrees with the exact bound `gateway.rs`'s `flow_user` enforces on the agent's retry.
@@ -54,75 +54,39 @@ impl RuntimeResumeNotifier {
         flow_timeout_secs: i64,
     ) -> Self {
         Self {
+            resolver: Arc::new(RuntimeAddress::new(db.clone(), runtime)),
             db,
-            runtime,
             http_client,
             flow_timeout_secs,
         }
     }
 
-    /// Resolve the agent's currently-reachable A2A endpoint. Mirrors
-    /// `a2a_dispatch.rs::resolve_endpoint`'s live-runtime-first, stored-URL-
-    /// fallback shape, simplified: this notifier only ever needs to *reach*
-    /// the agent, not also flip `agents.status` — that bookkeeping belongs to
-    /// the request-serving code path, not a background dispatcher.
-    async fn resolve_agent_endpoint(&self, agent_id: Uuid) -> Result<ForwardTarget, NotifyError> {
-        let row: Option<(Option<String>, Option<String>)> =
-            sqlx::query_as("SELECT transport_path, url FROM agents WHERE id = $1")
-                .bind(agent_id)
-                .fetch_optional(&self.db)
-                .await
-                .map_err(|e| NotifyError::EndpointResolution {
-                    agent_id,
-                    reason: format!("db lookup failed: {e}"),
-                    permanent: false,
-                })?;
+    /// Resolve the agent through `resolver` instead of the runtime's address alone. The server
+    /// injects its own, which can wake a parked agent.
+    pub fn with_resolver(mut self, resolver: Arc<dyn AgentTargetResolver>) -> Self {
+        self.resolver = resolver;
+        self
+    }
 
-        let Some((transport_path, stored_url)) = row else {
-            return Err(NotifyError::EndpointResolution {
+    /// Where the nudge goes, from the injected resolver (which wakes a parked agent).
+    async fn resolve_agent_endpoint(
+        &self,
+        agent_id: Uuid,
+        owner_user_id: Uuid,
+        context_id: &str,
+    ) -> Result<ForwardTarget, NotifyError> {
+        let caller = ResolveCaller {
+            user_id: Some(owner_user_id),
+            flow_id: None,
+        };
+        self.resolver
+            .resolve(agent_id, &caller, Some(context_id))
+            .await
+            .map_err(|failure| NotifyError::EndpointResolution {
                 agent_id,
-                reason: "no such agent".to_string(),
-                permanent: true,
-            });
-        };
-
-        // The A2A spec fixes no path — it must come from the agent's card,
-        // never be assumed. See resolve_endpoint's identical reasoning.
-        let path = match transport_path.as_deref() {
-            None | Some("/") | Some("") => "",
-            Some(p) => p,
-        };
-
-        // `forwarding_endpoint()`, not `endpoint()` — this resolves where the resumed forward
-        // actually goes (the EE injection proxy when memory is enabled), matching
-        // `resolve_endpoint` in `router/a2a_dispatch.rs`.
-        let container_id = ContainerId::from_uuid(agent_id);
-        if let Ok(target) = self.runtime.forwarding_endpoint(&container_id).await {
-            return Ok(ForwardTarget {
-                url: format!("{}{path}", target.url.trim_end_matches('/')),
-                headers: target.headers,
-            });
-        }
-
-        if let Some(url) = stored_url.filter(|u| !u.is_empty()) {
-            // Bypasses whatever `forwarding_endpoint()` would otherwise route through (the
-            // injection proxy, when memory is enabled), so this resume nudge gets no L1A.
-            tracing::warn!(
-                %agent_id,
-                "hitl notifier: live runtime lookup failed, falling back to stored agents.url \
-                 (bypasses the injection proxy — this forward gets no L1A)"
-            );
-            return Ok(ForwardTarget::from(format!(
-                "{}{path}",
-                url.trim_end_matches('/')
-            )));
-        }
-
-        Err(NotifyError::EndpointResolution {
-            agent_id,
-            reason: "no live or stored endpoint".to_string(),
-            permanent: false,
-        })
+                permanent: failure.is_permanent(),
+                reason: failure.message,
+            })
     }
 
     /// Build a `traceparent` for the resume nudge whose trace_id resolves back to `context_id`
@@ -294,7 +258,9 @@ impl ResumeNotifier for RuntimeResumeNotifier {
             .as_deref()
             .ok_or(NotifyError::MissingContextId(request.id))?;
 
-        let target = self.resolve_agent_endpoint(request.agent_id).await?;
+        let target = self
+            .resolve_agent_endpoint(request.agent_id, request.owner_user_id, context_id)
+            .await?;
         let message = build_resume_message(request);
         let body = nasiko_types::a2a::build_send_request(&message, Some(context_id));
         let traceparent = self

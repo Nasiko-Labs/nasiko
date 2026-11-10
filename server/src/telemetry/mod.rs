@@ -8,7 +8,8 @@ mod tool_result_savings;
 
 pub use context_report::{ContextRecord, record as record_context_report};
 pub use flow_span::{
-    flow_context_from_span, genai_text_message, remote_context_from_traceparent, traceparent_for,
+    flow_context_from_span, genai_text_message, record_sandbox_on_span,
+    remote_context_from_traceparent, traceparent_for,
 };
 pub use genai::{GenAiMetrics, GenAiSpan};
 pub use setup::{TelemetryConfig, init_telemetry};

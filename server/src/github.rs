@@ -96,7 +96,10 @@ const OAUTH_STATE_TTL_SECS: i64 = 600;
 ///
 /// Returns `Ok(true)` on first use (proceed), `Ok(false)` if already consumed
 /// (reject as a replay).
-async fn consume_oauth_state(redis: &redis::Client, raw_state: &str) -> redis::RedisResult<bool> {
+async fn consume_oauth_state(
+    redis: &nasiko_redis::SharedRedis,
+    raw_state: &str,
+) -> redis::RedisResult<bool> {
     let mut hasher = Sha256::new();
     hasher.update(raw_state.as_bytes());
     let key = format!(
@@ -104,7 +107,7 @@ async fn consume_oauth_state(redis: &redis::Client, raw_state: &str) -> redis::R
         URL_SAFE_NO_PAD.encode(hasher.finalize())
     );
 
-    let mut conn = redis.get_multiplexed_async_connection().await?;
+    let mut conn = redis.connection().await?;
     let set: Option<String> = redis::cmd("SET")
         .arg(&key)
         .arg("1")
@@ -866,7 +869,7 @@ async fn github_clone(
         repo_full_name: body.repository_full_name.clone(),
         branch: branch.to_string(),
         image_tag,
-        ports: vec![8000u16],
+        ports: vec![crate::agents::DEFAULT_AGENT_PORT],
         env: HashMap::new(),
         version_override: body.version_override.clone(),
         prior_version,
@@ -946,7 +949,8 @@ mod tests {
     async fn oauth_state_is_single_use() {
         let redis_url =
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-        let client = redis::Client::open(redis_url).expect("redis client");
+        let client =
+            nasiko_redis::SharedRedis::new(redis::Client::open(redis_url).expect("redis client"));
         let state_value = format!("test-replay-{}", Uuid::new_v4());
 
         let first = consume_oauth_state(&client, &state_value)

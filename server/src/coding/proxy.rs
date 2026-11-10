@@ -28,6 +28,38 @@ pub struct CodingAgentTarget {
     pub hitl_enabled: bool,
 }
 
+/// The facts a harness-session turn needs about its platform agent. The agent row is a routable
+/// identity, not a deployment: the sandbox's image and argv come from the harness catalog.
+#[derive(Debug, Clone)]
+pub struct HarnessTarget {
+    pub agent_id: Uuid,
+    pub name: String,
+    pub owner_id: Uuid,
+    /// The `harness_catalog` id this agent fronts (`opencode`, `codex`, ...).
+    pub harness_id: String,
+    /// Whether tool use is gated behind human approval.
+    pub hitl_enabled: bool,
+}
+
+/// What an A2A request to a code-driving agent resolves to.
+#[derive(Debug, Clone)]
+pub enum AgentTarget {
+    /// The exec-based ACP agent (`workload_kind = 'acp_coding_agent'`).
+    Coding(CodingAgentTarget),
+    /// A sandbox-per-session harness (`workload_kind = 'harness'`).
+    Harness(HarnessTarget),
+}
+
+impl AgentTarget {
+    /// The agent's display name, for the synthetic card a non-chat request gets.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Coding(t) => &t.name,
+            Self::Harness(t) => &t.name,
+        }
+    }
+}
+
 /// The coding-agent kinds Nasiko knows how to drive over ACP.
 ///
 /// Each exposes ACP through a different entry point and selects its model a
@@ -44,6 +76,25 @@ pub enum CodingAgentKind {
     ClaudeCode,
     /// Driven with `codex-acp`; routes via its baked config, asks only when forced.
     Codex,
+}
+
+/// A harness catalog id that names no kind Nasiko can drive.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("harness {0:?} is not a known ACP kind")]
+pub struct UnknownHarness(pub String);
+
+impl CodingAgentKind {
+    /// The kind a harness catalog id names (`opencode`, `claude-code`, `codex`). The catalog id
+    /// is data the operator controls; unlike the image name it survives a mirrored or retagged
+    /// image.
+    pub fn from_harness_id(id: &str) -> Result<Self, UnknownHarness> {
+        match id {
+            "opencode" => Ok(Self::OpenCode),
+            "claude-code" => Ok(Self::ClaudeCode),
+            "codex" => Ok(Self::Codex),
+            other => Err(UnknownHarness(other.to_owned())),
+        }
+    }
 }
 
 /// Classify a coding agent's container image into a [`CodingAgentKind`], or
@@ -87,18 +138,32 @@ pub fn derive_acp_command(image: &str, hitl_enabled: bool) -> Option<Vec<String>
         CodingAgentKind::Codex => {
             let mut cmd = vec!["codex-acp".to_owned()];
             if hitl_enabled {
-                cmd.extend([
-                    "-c".to_owned(),
-                    "approval_policy=\"untrusted\"".to_owned(),
-                    "-c".to_owned(),
-                    "sandbox_mode=\"workspace-write\"".to_owned(),
-                ]);
+                cmd.extend(codex_hitl_args());
             }
             cmd
         }
         CodingAgentKind::OpenCode => vec!["opencode".to_owned(), "acp".to_owned()],
     };
     Some(command)
+}
+
+/// The command-line overrides that make Codex ask before acting (see [`derive_acp_command`]).
+/// Appended to whatever argv launches it, so a catalog-defined argv keeps its own arguments.
+pub fn codex_hitl_args() -> Vec<String> {
+    vec![
+        "-c".to_owned(),
+        "approval_policy=\"untrusted\"".to_owned(),
+        "-c".to_owned(),
+        "sandbox_mode=\"workspace-write\"".to_owned(),
+    ]
+}
+
+/// The env that flips OpenCode's permissions from `allow` to `ask` (see [`routed_model_env`]).
+pub fn opencode_hitl_env() -> std::collections::HashMap<String, String> {
+    let config = serde_json::json!({
+        "permission": { "edit": "ask", "bash": "ask", "webfetch": "ask" }
+    });
+    std::collections::HashMap::from([("OPENCODE_CONFIG_CONTENT".to_owned(), config.to_string())])
 }
 
 /// Per-turn env a coding agent needs beyond the base routing wiring.
@@ -121,17 +186,14 @@ pub fn routed_model_env(
     image: &str,
     hitl_enabled: bool,
 ) -> std::collections::HashMap<String, String> {
-    let mut env = std::collections::HashMap::new();
     if hitl_enabled && classify_image(image) == Some(CodingAgentKind::OpenCode) {
-        let config = serde_json::json!({
-            "permission": { "edit": "ask", "bash": "ask", "webfetch": "ask" }
-        });
-        env.insert("OPENCODE_CONFIG_CONTENT".to_owned(), config.to_string());
+        opencode_hitl_env()
+    } else {
+        std::collections::HashMap::new()
     }
-    env
 }
 
-/// Why [`load_target`] could not produce a drivable coding-agent target.
+/// Why [`load_agent_target`] could not produce a drivable coding-agent target.
 #[derive(Debug, thiserror::Error)]
 pub enum LoadTargetError {
     #[error(transparent)]
@@ -144,53 +206,86 @@ pub enum LoadTargetError {
          (the image name must contain 'opencode', 'claude', or 'codex')"
     )]
     UnrecognizedImage { image: String },
+    /// A harness-kind agent with no `harness_id`: the seeding left it half-made.
+    #[error("harness agent {agent_id} has no harness_id")]
+    HarnessUnset { agent_id: Uuid },
 }
 
-/// The `agents` columns a coding-agent turn needs: `(name, image, owner_id,
-/// writable_path, hitl_enabled)`.
-type TargetRow = (String, Option<String>, Uuid, Option<String>, bool);
+/// The `agents` columns [`load_agent_target`] reads: `(name, image, owner_id, writable_path,
+/// hitl_enabled, workload_kind, harness_id)`.
+type AnyTargetRow = (
+    String,
+    Option<String>,
+    Uuid,
+    Option<String>,
+    bool,
+    String,
+    Option<String>,
+);
 
-/// Return the coding-agent target for `agent_id`, or `None` when the agent is not
-/// an ACP coding agent (the proxy then takes its ordinary HTTP path).
+/// Resolve `agent_id` to the code-driving target it names, or `None` for an ordinary agent
+/// (the proxy then takes its HTTP path). One query serves both kinds, so a plain agent costs
+/// the request a single lookup.
 ///
-/// A coding agent with no `image` is a misconfiguration we can't deploy, so it
-/// is treated as "not a coding agent" here rather than failing every request —
-/// the row simply never matches. An agent that *is* a coding agent but whose
-/// image matches no known kind is a different kind of misconfiguration: there is
-/// no adapter to drive it, so it fails loudly with [`LoadTargetError::UnrecognizedImage`]
-/// rather than being driven with the wrong command.
-pub async fn load_target(
+/// A coding agent with no `image` is a misconfiguration we can't deploy, so it is treated as
+/// "not a coding agent" rather than failing every request; one whose image matches no known
+/// kind fails loudly with [`LoadTargetError::UnrecognizedImage`] rather than being driven with
+/// the wrong command. A harness-kind row without a
+/// `harness_id` is a seeding fault and is reported as [`LoadTargetError::HarnessUnset`].
+pub async fn load_agent_target(
     db: &PgPool,
     agent_id: Uuid,
-) -> Result<Option<CodingAgentTarget>, LoadTargetError> {
-    let row: Option<TargetRow> = sqlx::query_as(
-        "SELECT name, image, owner_id, writable_path, hitl_enabled \
+) -> Result<Option<AgentTarget>, LoadTargetError> {
+    let row: Option<AnyTargetRow> = sqlx::query_as(
+        "SELECT name, image, owner_id, writable_path, hitl_enabled, workload_kind, harness_id \
          FROM agents \
-         WHERE id = $1 AND workload_kind = 'acp_coding_agent' \
-           AND image IS NOT NULL AND deleted_at IS NULL",
+         WHERE id = $1 AND workload_kind IN ('acp_coding_agent', 'harness') \
+           AND deleted_at IS NULL",
     )
     .bind(agent_id)
     .fetch_optional(db)
     .await?;
-
-    let Some((name, image, owner_id, writable_path, hitl_enabled)) = row else {
+    let Some((name, image, owner_id, writable_path, hitl_enabled, kind, harness_id)) = row else {
         return Ok(None);
     };
-    // `image IS NOT NULL` in the query guarantees this unwrap.
-    let image = image.unwrap_or_default();
+    if kind == "harness" {
+        let harness_id = harness_id.ok_or(LoadTargetError::HarnessUnset { agent_id })?;
+        return Ok(Some(AgentTarget::Harness(HarnessTarget {
+            agent_id,
+            name,
+            owner_id,
+            harness_id,
+            hitl_enabled,
+        })));
+    }
+    let Some(image) = image else {
+        return Ok(None);
+    };
+    coding_target(name, image, owner_id, writable_path, hitl_enabled)
+        .map(|t| Some(AgentTarget::Coding(t)))
+}
+
+/// Build the exec-path target, rejecting an image no adapter can drive.
+fn coding_target(
+    name: String,
+    image: String,
+    owner_id: Uuid,
+    writable_path: Option<String>,
+    hitl_enabled: bool,
+) -> Result<CodingAgentTarget, LoadTargetError> {
     let acp_command = derive_acp_command(&image, hitl_enabled).ok_or_else(|| {
         LoadTargetError::UnrecognizedImage {
             image: image.clone(),
         }
     })?;
-    Ok(Some(CodingAgentTarget {
+    Ok(CodingAgentTarget {
         name,
         image,
         owner_id,
         writable_path,
         acp_command,
         hitl_enabled,
-    }))
+    })
 }
 
 /// Build the container spec for a coding agent.
@@ -226,6 +321,26 @@ pub fn build_spec(agent_id: Uuid, target: &CodingAgentTarget) -> DeploymentSpec 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn harness_ids_map_to_kinds_and_unknown_ids_are_an_error() {
+        assert_eq!(
+            CodingAgentKind::from_harness_id("codex"),
+            Ok(CodingAgentKind::Codex)
+        );
+        assert_eq!(
+            CodingAgentKind::from_harness_id("claude-code"),
+            Ok(CodingAgentKind::ClaudeCode)
+        );
+        assert_eq!(
+            CodingAgentKind::from_harness_id("opencode"),
+            Ok(CodingAgentKind::OpenCode)
+        );
+        assert_eq!(
+            CodingAgentKind::from_harness_id("mystery"),
+            Err(UnknownHarness("mystery".into()))
+        );
+    }
 
     #[test]
     fn classify_image_recognizes_known_kinds_and_rejects_others() {

@@ -4,6 +4,7 @@ pub mod notifier;
 pub mod observer;
 pub mod repo;
 pub mod store;
+pub mod target;
 pub mod types;
 
 // This crate's two independently-built HITL implementations (merged from separate PRs) used to
@@ -19,6 +20,9 @@ pub use repo::{NewAuthRequired, NewSessionGrant, NewToolApproval, ResolveDecisio
 pub use store::{
     FailureKind, HitlError, HitlStore, PgHitlStore, ResolveOutcome, is_valid_mcp_mirror_link,
     resolve_display_row,
+};
+pub use target::{
+    AgentTargetResolver, ForwardTarget, ResolveCaller, ResolveFailure, RuntimeAddress,
 };
 pub use types::{
     AUTH_ACTION_CONFIRM, AUTH_ACTION_START, AUTH_OUTCOME_CONFIRMED, AUTH_OUTCOME_DENIED,

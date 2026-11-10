@@ -41,6 +41,13 @@ async fn seed(server: &TestServer) -> (Uuid, Uuid) {
     .fetch_one(&server.db)
     .await
     .expect("seed agent");
+    // The approval row references its chat session.
+    sqlx::query("INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 't')")
+        .bind(SESSION_ID)
+        .bind(user)
+        .execute(&server.db)
+        .await
+        .expect("seed chat session");
     (user, agent)
 }
 
@@ -121,7 +128,7 @@ async fn approve_resolves_to_the_allow_once_option() {
 
 #[tokio::test]
 #[serial]
-async fn reject_resolves_to_cancelled() {
+async fn reject_resolves_to_the_reject_option() {
     let server = TestServer::start().await;
     let (user, agent) = seed(&server).await;
     let store: Arc<dyn nasiko_hitl::HitlStore> = Arc::new(PgHitlStore::new(server.db.clone()));
@@ -146,11 +153,18 @@ async fn reject_resolves_to_cancelled() {
         .await
         .expect("delegate answers within 10s")
         .expect("decide task");
-    assert!(
-        matches!(resp.outcome, RequestPermissionOutcome::Cancelled),
-        "reject → cancelled, got {:?}",
-        resp.outcome
-    );
+    // A rejection selects the agent's reject option (refusing one tool must not abort the
+    // turn); `Cancelled` is only the fallback when none is offered.
+    match resp.outcome {
+        RequestPermissionOutcome::Selected(selected) => {
+            assert_eq!(
+                selected.option_id.to_string(),
+                "reject",
+                "reject → reject option"
+            );
+        }
+        other => panic!("expected the reject option, got {other:?}"),
+    }
 
     server.cleanup().await;
 }

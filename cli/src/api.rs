@@ -456,14 +456,28 @@ impl Client {
 
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
+        self.post_void_or_status(path, &[]).map(|_| ())
+    }
+
+    /// [`Self::post_void`] that answers `Ok(Err(status))` when the status is one of `expected`,
+    /// for callers that give a particular failure (say a 404) its own message.
+    pub fn post_void_or_status(
+        &self,
+        path: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<(), u16>> {
         let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
             .send(&[] as &[u8])
             .context("cannot reach control plane")?;
+        let status = resp.status().as_u16();
+        if expected.contains(&status) {
+            return Ok(Err(status));
+        }
         check_status(&mut resp, &url)?;
-        Ok(())
+        Ok(Ok(()))
     }
 
     /// POST a JSON body and ignore the response body (for endpoints that return 200/204 with no JSON).
@@ -512,6 +526,28 @@ impl Client {
         let mut resp = req.call().context("cannot reach control plane")?;
         check_status(&mut resp, &url)?;
         Ok(())
+    }
+
+    /// DELETE that answers `Ok(Err(status))` instead of failing when the response status is one
+    /// of `expected`; every other failure still fails.
+    pub fn delete_or_status(
+        &self,
+        path: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<(), u16>> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.call().context("cannot reach control plane")?;
+        let status = resp.status().as_u16();
+        if expected.contains(&status) {
+            return Ok(Err(status));
+        }
+        check_status(&mut resp, &url)?;
+        Ok(Ok(()))
     }
 
     /// DELETE and parse the JSON response body (for endpoints that return
@@ -1643,6 +1679,21 @@ mod tests {
                 .get_json_or_status::<serde_json::Value>("/agents/broken", &[403, 404])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn post_void_or_status_answers_expected_statuses_and_fails_on_others() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/ok").with_status(204).create();
+        srv.mock("POST", "/api/gone").with_status(404).create();
+        srv.mock("POST", "/api/broken").with_status(500).create();
+        let client = Client::for_test(&srv.url(), None);
+        assert!(client.post_void_or_status("/ok", &[404]).unwrap().is_ok());
+        assert_eq!(
+            client.post_void_or_status("/gone", &[404]).unwrap(),
+            Err(404)
+        );
+        assert!(client.post_void_or_status("/broken", &[404]).is_err());
     }
 
     #[test]

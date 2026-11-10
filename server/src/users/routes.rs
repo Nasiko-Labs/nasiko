@@ -700,6 +700,12 @@ pub(crate) async fn delete_user(
             .into_response();
     }
 
+    // The user's rows cascade away, which would strand their harness sandboxes and credentials
+    // where nothing can reach them: release and revoke first (best effort).
+    match crate::sessions::teardown::sessions_of_user_with_sandbox(&state, id).await {
+        Ok(sessions) => crate::sessions::teardown::release_and_revoke(&state, &sessions).await,
+        Err(e) => tracing::warn!(%e, %id, "delete_user: could not list the user's sandboxes"),
+    }
     // GDPR: record the erasure and drop hot rows while `user_id` still matches
     // (`trace_usage.user_id` is ON DELETE SET NULL). Cold rows go after.
     let store: nasiko_event_store::EventStore = crate::state::event_store(&state.config, &state.db);

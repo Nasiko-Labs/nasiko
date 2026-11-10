@@ -1,3 +1,4 @@
+pub mod sandbox;
 mod stats;
 pub use stats::DockerStatsProvider;
 
@@ -460,6 +461,21 @@ fn run_as_user(spec: &DeploymentSpec) -> Option<String> {
     spec.harden.then(|| "65534:65534".to_owned())
 }
 
+/// A named-volume mount of `volume`'s `subpath` at `target` (Docker's `volume-subpath`).
+/// Shared with the sandbox provider so both lay the workspace mount out identically.
+fn volume_subpath_mount(target: &str, volume: &str, subpath: &str) -> Mount {
+    Mount {
+        target: Some(target.to_owned()),
+        source: Some(volume.to_owned()),
+        typ: Some(MountTypeEnum::VOLUME),
+        volume_options: Some(MountVolumeOptions {
+            subpath: Some(subpath.to_owned()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
 /// Builds the `HostConfig` for a container. `spec.harden` or `spec.writable`
 /// both get **filesystem** hardening — read-only rootfs plus a `/tmp` tmpfs;
 /// only full `spec.harden` additionally drops capabilities and sets
@@ -487,16 +503,11 @@ fn build_host_config(
     // subdirectory itself is pre-created by `ensure_agent_memory_subdir` before
     // this container is created; Docker (unlike Kubernetes) does not create it.
     let mounts = spec.writable.then(|| {
-        vec![Mount {
-            target: Some(spec.writable_mount_path().to_owned()),
-            source: Some(agent_memory_volume.to_owned()),
-            typ: Some(MountTypeEnum::VOLUME),
-            volume_options: Some(MountVolumeOptions {
-                subpath: Some(agent_memory_subpath(spec)),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }]
+        vec![volume_subpath_mount(
+            spec.writable_mount_path(),
+            agent_memory_volume,
+            &agent_memory_subpath(spec),
+        )]
     });
     let base = HostConfig {
         port_bindings: Some(port_bindings),
@@ -596,6 +607,16 @@ fn parse_memory_bytes(s: &str) -> i64 {
     }
 }
 
+/// The container's non-empty IP address on the named network, if it is attached to it.
+/// Shared with the sandbox provider's `attach`.
+fn network_ip<'a>(ns: &'a bollard::models::NetworkSettings, network: &str) -> Option<&'a str> {
+    ns.networks
+        .as_ref()
+        .and_then(|nets| nets.get(network))
+        .and_then(|n| n.ip_address.as_deref())
+        .filter(|ip| !ip.is_empty())
+}
+
 /// Resolve the endpoint URL for a running container.
 ///
 /// When `network` is `Some(name)`, looks up the container's IP on that network
@@ -613,12 +634,7 @@ fn extract_endpoint(
 
     // Try the named network first: use container IP + lowest container port
     if let Some(net_name) = network {
-        let ip = ns
-            .networks
-            .as_ref()
-            .and_then(|nets| nets.get(net_name))
-            .and_then(|n| n.ip_address.as_deref())
-            .filter(|ip| !ip.is_empty());
+        let ip = network_ip(ns, net_name);
 
         if let Some(ip) = ip {
             // Pick the lowest container port from exposed bindings

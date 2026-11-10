@@ -95,6 +95,18 @@ impl RateLimiter {
     }
 }
 
+/// A 429 that says how long until the caller's window resets.
+pub(crate) fn too_many_requests_after(retry_after: Duration) -> Response {
+    let mut response = too_many_requests();
+    let seconds = retry_after.as_secs().max(1).to_string();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&seconds) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
+}
+
 pub(crate) fn too_many_requests() -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,

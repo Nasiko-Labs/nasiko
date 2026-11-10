@@ -142,7 +142,7 @@ pub async fn exchange_assertion(
     };
 
     // Single use: the first exchange wins; a replay within the TTL is refused.
-    let mut conn = match state.redis.get_multiplexed_async_connection().await {
+    let mut conn = match state.redis.connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::error!(error = %e, "assertion exchange: redis unavailable (fail closed)");

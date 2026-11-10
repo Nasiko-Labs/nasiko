@@ -36,7 +36,7 @@ async fn seed_user(server: &common::TestServer, user_id: Uuid) {
 }
 
 /// A `status = 'running'` agent with a (never actually dialed, for the flow-guard test) URL —
-/// `resolve_endpoint` requires `status = 'running'` to find the row at all, and `FakeRuntime`'s
+/// `agent_resolver::resolve_target` requires `status IN ('running', 'parked')` to find the row at all, and `FakeRuntime`'s
 /// `endpoint()` errors for a container that was never `deploy()`-ed, so this always falls back
 /// to the stored `url` (mirrors how `agent_proxy.rs`'s own doc comment describes the fallback).
 async fn seed_running_agent(server: &common::TestServer, owner_id: Uuid, url: &str) -> Uuid {

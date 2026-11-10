@@ -16,7 +16,7 @@ pub use provider::{
     NoSessionIdResolver, ObservabilityProvider, SessionIdResolver, SpendBucket, TempoLokiProvider,
     TimeBucket, chunk_tempo_range, clamp_tempo_range, find_root_span, span_provider,
 };
-pub use runtime_ext::InstrumentedRuntime;
+pub use runtime_ext::{InstrumentedRuntime, InstrumentedSandbox, sandbox_env_additions};
 pub use tempo::TempoClient;
 pub use trace_context::{
     join_remote_trace, remote_context_from_traceparent, span_ids, traceparent_of,

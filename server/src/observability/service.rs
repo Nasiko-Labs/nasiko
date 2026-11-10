@@ -21,6 +21,7 @@ use sqlx::PgPool;
 use utoipa::ToSchema;
 
 use crate::agents::hours_meter;
+use crate::agents::hours_meter::sandbox as sandbox_meter;
 
 // ─── Session listing tuning ───────────────────────────────────────────────────
 
@@ -187,6 +188,7 @@ fn sort_agent_rows(rows: &mut [AgentFinopsRow], sort_by: Option<&str>, desc: boo
                 .total_cmp(&b.avg_latency_ms.unwrap_or(0.0))
         }),
         "container_hours" => rows.sort_by(|a, b| a.container_hours.total_cmp(&b.container_hours)),
+        "sandbox_minutes" => rows.sort_by(|a, b| a.sandbox_minutes.total_cmp(&b.sandbox_minutes)),
         "name" => rows.sort_by(|a, b| a.agent_name.cmp(&b.agent_name)),
         _ => rows.sort_by(|a, b| a.total_cost.total_cmp(&b.total_cost)),
     }
@@ -844,6 +846,11 @@ pub struct FinopsSummary {
     /// Replica-hours consumed in the dashboard window — includes agents that
     /// have since been deleted (their sessions survive deletion).
     pub total_container_hours: f64,
+    /// Sandbox-minutes (Running time) consumed in the dashboard window, deleted agents
+    /// included. Container-hours carry no price here, so sandbox time is reported in minutes
+    /// only and is not part of `total_cost`. `finops/insights` does not carry it: that endpoint
+    /// only relays client-supplied figures to the model.
+    pub total_sandbox_minutes: f64,
     /// Calls in the window that consumed tokens but carry no cost (no price row
     /// for the model — e.g. a custom provider with no price book). `SUM(cost_usd)`
     /// silently skips these, so `total_cost` under-reports; this surfaces the gap
@@ -881,6 +888,8 @@ pub struct AgentFinopsRow {
     pub version: Option<String>,
     /// Replica-hours this agent consumed in the dashboard window.
     pub container_hours: f64,
+    /// Sandbox-minutes this agent consumed in the dashboard window.
+    pub sandbox_minutes: f64,
     /// This agent's figures for the preceding window of the same length, present
     /// only with `compare=previous`.
     ///
@@ -2384,12 +2393,32 @@ impl ObservabilityService {
         if !dropped_internal.is_empty() {
             hours_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
         }
+        let mut minutes_rows = sandbox_meter::windowed_sandbox_minutes(&self.db, start, now)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "sandbox minutes aggregation failed");
+                vec![]
+            });
+        if let Some(accessible) = &accessible {
+            minutes_rows.retain(|row| accessible.contains(&row.agent_id));
+        }
+        if !dropped_internal.is_empty() {
+            minutes_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
+        }
+        let total_sandbox_minutes = round6(minutes_rows.iter().map(|r| r.minutes).sum());
+        let minutes_by_agent: HashMap<uuid::Uuid, f64> = minutes_rows
+            .iter()
+            .map(|r| (r.agent_id, r.minutes))
+            .collect();
         let total_container_hours = round6(hours_rows.iter().map(|r| r.hours).sum());
         let hours_by_agent: HashMap<uuid::Uuid, f64> =
             hours_rows.iter().map(|r| (r.agent_id, r.hours)).collect();
 
         if agents.is_empty() {
-            return Ok(empty_finops_response(total_container_hours));
+            return Ok(empty_finops_response(
+                total_container_hours,
+                total_sandbox_minutes,
+            ));
         }
 
         // ── Postgres-backed aggregation from trace_usage ─────────────────────
@@ -2680,6 +2709,7 @@ impl ObservabilityService {
                 tool_call_count: tool_calls,
                 version: Some(version.clone()),
                 container_hours: round6(hours_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
+                sandbox_minutes: round6(minutes_by_agent.get(agent_uuid).copied().unwrap_or(0.0)),
                 previous: compare_previous.then(|| AgentFinopsPrevious {
                     total_cost: prev.map(|p| round6(p.total_cost)).unwrap_or(0.0),
                     operations: prev.map(|p| p.operations as usize).unwrap_or(0),
@@ -2849,6 +2879,7 @@ impl ObservabilityService {
                     active_agents: active,
                     total_agents,
                     total_container_hours,
+                    total_sandbox_minutes,
                     unpriced_calls: unpriced_calls.max(0) as usize,
                     estimated_cost: current_rows.iter().map(|row| row.estimated_cost).sum(),
                     unknown_confidence_calls: current_rows
@@ -3836,7 +3867,10 @@ fn empty_agent_hours_response(
 
 /// `total_container_hours` is threaded in rather than zeroed: a deployment
 /// whose agents were all hard-deleted still has billable session history.
-fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse {
+fn empty_finops_response(
+    total_container_hours: f64,
+    total_sandbox_minutes: f64,
+) -> FinopsDashboardResponse {
     FinopsDashboardResponse {
         data: FinopsDashboardData {
             summary: FinopsSummary {
@@ -3847,6 +3881,7 @@ fn empty_finops_response(total_container_hours: f64) -> FinopsDashboardResponse 
                 active_agents: 0,
                 total_agents: 0,
                 total_container_hours,
+                total_sandbox_minutes,
                 unpriced_calls: 0,
                 estimated_cost: 0.0,
                 unknown_confidence_calls: 0,
@@ -4146,6 +4181,7 @@ mod tests {
             tool_call_count: 0,
             version: None,
             container_hours: 0.0,
+            sandbox_minutes: 0.0,
             previous: None,
         }
     }

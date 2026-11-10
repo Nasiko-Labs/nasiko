@@ -662,6 +662,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
     };
 
     mark_job(&state.db, job.id, status, err.as_deref()).await;
+    if let (Some(agent_id), "done") = (job.agent_id, status) {
+        super::sandbox_smoke::smoke_after_build(&state, agent_id, build_id).await;
+    }
     // If the agent was deleted mid-build, the cascade will have deleted this build_jobs row —
     // the UPDATE above is a no-op (0 rows affected) and that's fine.
 }

@@ -555,8 +555,8 @@ pub(super) async fn delete(
 /// wait on each other; a hash collision only makes two entries share one, which costs a little
 /// serialisation and breaks nothing.
 ///
-/// The transaction is READ COMMITTED, said explicitly because a database or role default can say
-/// otherwise. Taking turns only helps if each statement sees what the writer before committed:
+/// The transaction is READ COMMITTED, said explicitly (in its own `BEGIN`, which saves a round
+/// trip) because a database or role default can say otherwise. Taking turns only helps if each statement sees what the writer before committed:
 /// under REPEATABLE READ or SERIALIZABLE the snapshot is fixed when the lock statement starts,
 /// before the wait, so a writer that waited would read the version from before it and then fail
 /// to serialize on write.
@@ -569,9 +569,8 @@ async fn begin_locked(
         store,
         name,
     } = entry;
-    let mut tx = db.begin().await?;
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL READ COMMITTED")
-        .execute(&mut *tx)
+    let mut tx = db
+        .begin_with("BEGIN ISOLATION LEVEL READ COMMITTED")
         .await?;
     sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
         .bind(ENTRY_LOCK_CLASS)

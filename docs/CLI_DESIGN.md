@@ -63,6 +63,7 @@ Test:
   create-session    Create a new session on the active cluster
   history           Show message history for a session
   delete-session    Delete a session
+  session           Harness sessions: new, show, ls, suspend, rm (see HARNESS_SESSIONS.md)
 
 Operate:
   push       Build + push image to the cluster OCI registry (no deploy)

@@ -9,6 +9,24 @@ use crate::a2a::{A2aClient, A2aClientError, AgentStreamEvent, PauseInfo, SendOut
 use crate::events::OrchestratorEvent;
 use crate::policy::DelegationPolicy;
 use crate::registry::AgentInfo;
+use nasiko_types::agent_call::CallTarget;
+
+tokio::task_local! {
+    /// The address the platform resolved for the call in flight (see
+    /// `AgentCallHandle::target`); the tool reads it in place of its listed endpoint.
+    static CALL_TARGET: CallTarget;
+}
+
+/// Runs `call` with `target` (when present) as the address `A2aTool` sends to.
+pub async fn with_call_target<F: std::future::Future>(
+    target: Option<CallTarget>,
+    call: F,
+) -> F::Output {
+    match target {
+        Some(target) => CALL_TARGET.scope(target, call).await,
+        None => call.await,
+    }
+}
 
 /// Wraps a remote A2A agent as a Rig `Tool` so the orchestrator LLM can invoke it.
 #[derive(Clone)]
@@ -29,7 +47,6 @@ pub struct A2aTool {
     /// message. `None` sends the LLM's own wording unchanged. See
     /// `OrchestratorConfig::outbound_prefix`.
     outbound_prefix: Option<String>,
-    attachment_note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -79,7 +96,6 @@ impl A2aTool {
             file_parts: vec![],
             policy: None,
             outbound_prefix: None,
-            attachment_note: None,
         }
     }
 
@@ -100,11 +116,6 @@ impl A2aTool {
     /// the unconfigured case is one call site fewer to get wrong.
     pub fn with_outbound_prefix(mut self, prefix: Option<String>) -> Self {
         self.outbound_prefix = prefix;
-        self
-    }
-
-    pub fn with_attachment_note(mut self, note: Option<String>) -> Self {
-        self.attachment_note = note;
         self
     }
 
@@ -237,12 +248,7 @@ impl Tool for A2aTool {
         // this platform's real `a2a-lf` agents (proto dialect) reject an unexpected `"kind"`
         // field outright — confirmed live against a real deployed agent. `build_message_body`
         // re-tags this text per attempt, exactly like the primary message part already is.
-        let extra_text_parts: Vec<String> = self
-            .attachment_note
-            .iter()
-            .chain(self.outbound_prefix.iter())
-            .cloned()
-            .collect();
+        let extra_text_parts: Vec<String> = self.outbound_prefix.iter().cloned().collect();
 
         // No per-call user credential: the invoked agent authenticates to
         // /api/mcp with its own deploy-time MCP_GATEWAY_TOKEN; the user binding
@@ -253,8 +259,14 @@ impl Tool for A2aTool {
         // injection proxy's own credential, when `endpoint` is the proxy's address rather than
         // the agent's real one. Not a caller credential: this is consumed by the hop `endpoint`
         // points at, same as `agent_proxy.rs`'s and `a2a_dispatch.rs`'s own outbound calls.
-        let per_call_headers: Vec<(String, String)> =
-            self.agent.auth_header.iter().cloned().collect();
+        let resolved = CALL_TARGET.try_with(Clone::clone).ok();
+        let endpoint: &str = resolved
+            .as_ref()
+            .map_or(self.agent.endpoint.as_str(), |t| t.url.as_str());
+        let per_call_headers: Vec<(String, String)> = match &resolved {
+            Some(target) => target.headers.clone(),
+            None => self.agent.auth_header.iter().cloned().collect(),
+        };
 
         // Streaming first when a progress channel is attached; the match below
         // decides per error whether falling back to non-streaming is safe.
@@ -262,6 +274,7 @@ impl Tool for A2aTool {
             Some(ref orch_tx) => {
                 match self
                     .call_streaming(
+                        endpoint,
                         &args,
                         orch_tx.clone(),
                         &per_call_headers,
@@ -303,7 +316,7 @@ impl Tool for A2aTool {
                 let (sent_context_id, response) = self
                     .client
                     .send_message_with_headers(
-                        &self.agent.endpoint,
+                        endpoint,
                         &args.message,
                         args.context_id.as_deref(),
                         &per_call_headers,
@@ -389,6 +402,7 @@ impl A2aTool {
     /// orchestrator stream as `SubStatus`/`SubContent`/`SubData`.
     async fn call_streaming(
         &self,
+        endpoint: &str,
         args: &A2aToolArgs,
         orch_tx: tokio::sync::mpsc::Sender<OrchestratorEvent>,
         per_call_headers: &[(String, String)],
@@ -432,7 +446,7 @@ impl A2aTool {
         let result = self
             .client
             .send_message_streaming(
-                &self.agent.endpoint,
+                endpoint,
                 &args.message,
                 args.context_id.as_deref(),
                 Some(tx),
@@ -471,6 +485,36 @@ mod tests {
             "result": {"kind": "message", "parts": [{"kind": "text", "text": "ok"}]},
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_resolved_call_target_replaces_the_listed_placeholder_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_header("x-hop-credential", "secret")
+            .with_status(200)
+            .with_body(a2a_response_body())
+            .create_async()
+            .await;
+
+        // Listed at an address nothing serves; the platform resolved the real one at admission.
+        let tool = A2aTool::new(test_agent("parked://agent-1"), Arc::new(A2aClient::new()));
+        let target = CallTarget {
+            url: server.url(),
+            headers: vec![("x-hop-credential".into(), "secret".into())],
+        };
+        let result = with_call_target(
+            Some(target),
+            tool.call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: None,
+            }),
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert!(result.is_ok(), "{result:?}");
     }
 
     /// The invoked agent must receive NO per-call credential header — the
@@ -565,44 +609,6 @@ mod tests {
             .with_outbound_prefix(Some("POLICY".into()))
             .with_file_parts(vec![
                 serde_json::json!({"kind": "file", "file": {"name": "report.csv"}}),
-            ]);
-        let result = tool
-            .call(A2aToolArgs {
-                message: "hi".into(),
-                context_id: None,
-            })
-            .await;
-
-        mock.assert_async().await;
-        assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn an_attachment_note_goes_out_as_its_own_part_before_the_policy() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "params": {"message": {"parts": [
-                    {"text": "hi"},
-                    {"kind": "file", "file": {"name": "fact.png"}},
-                    {"kind": "text", "text": "[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]"},
-                    {"kind": "text", "text": "POLICY"}
-                ]}}
-            })))
-            .match_request(|request| forwarded_part_count(request) == 4)
-            .with_status(200)
-            .with_body(a2a_response_body())
-            .create_async()
-            .await;
-
-        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
-            .with_outbound_prefix(Some("POLICY".into()))
-            .with_attachment_note(Some(
-                "[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]".into(),
-            ))
-            .with_file_parts(vec![
-                serde_json::json!({"kind": "file", "file": {"name": "fact.png"}}),
             ]);
         let result = tool
             .call(A2aToolArgs {

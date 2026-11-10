@@ -119,11 +119,11 @@ impl AgentSelector {
         Ok((selection, result, false))
     }
 
-    /// Fetch running agents directly from DB — used by the orchestrator path.
+    /// Fetch routable (running or parked) agents directly from DB — used by the orchestrator path.
     pub async fn fetch_active_agents(db: &PgPool) -> Result<Vec<AgentCardSummary>, sqlx::Error> {
         let rows = sqlx::query_as::<_, AgentCardRow>(
             "SELECT id, name, description, skills, tags FROM agents \
-             WHERE status = 'running' AND NOT is_internal \
+             WHERE status IN ('running', 'parked') AND NOT is_internal \
              ORDER BY name",
         )
         .fetch_all(db)

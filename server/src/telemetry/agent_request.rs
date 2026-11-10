@@ -38,9 +38,12 @@ const OUTCOME: &str = "outcome";
 /// Histogram buckets (seconds) for agent turns: a fast reply is about half a second, a long
 /// multi-tool turn runs to the call timeout (five minutes by default). The SDK defaults are tuned
 /// for milliseconds and would lump every real turn into a couple of buckets.
-const REQUEST_DURATION_BUCKETS_SECS: [f64; 12] = [
-    0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0, 60.0, 90.0, 120.0, 180.0, 300.0,
-];
+///
+/// Every bucket is a Prometheus series per agent, in-flight band and outcome, so the list is kept
+/// short: fine below 10 s, where typical turns and the capacity estimate's medians land, and an
+/// edge at 60 s, the default p95 ceiling the autoscaler and its alert compare against, so that
+/// comparison counts requests exactly rather than interpolating inside a bucket.
+const REQUEST_DURATION_BUCKETS_SECS: [f64; 8] = [0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 300.0];
 
 /// How a proxied request ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

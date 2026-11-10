@@ -19,8 +19,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nasiko_acp_client::{
-    PermissionDelegate, RequestPermissionRequest, RequestPermissionResponse, select_allow_option,
-    select_reject_option,
+    PermissionDelegate, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, select_allow_option, select_reject_option,
 };
 use nasiko_hitl::{HitlError, HitlStatus, HitlStore, NewHitlRequest};
 use tokio::sync::mpsc;
@@ -30,9 +30,56 @@ use super::turn::CodingTurnEvent;
 
 /// How often a pending permission row is re-checked.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
-/// The longest one request waits before it is auto-denied — tracks the per-turn
-/// session token's TTL (`CODING_SESSION_TOKEN_TTL_SECS`, an hour).
+/// The longest one request waits before it is auto-denied — the per-turn session token's TTL
+/// (`sessions::identity::SESSION_TOKEN_TTL_SECS`, an hour). In practice the turn's own deadline
+/// (`AGENT_CALL_TIMEOUT_SECS`, 600 s by default) ends the turn, and the wait with it, long before
+/// this: a human has at most that long to answer. The cap bounds only a deadline set above it.
 const MAX_WAIT: Duration = Duration::from_secs(3600);
+
+/// Where a turn records that it is blocked on a human, so a restart or a resume can see the
+/// wait (`chat_sessions.pending_permission`). Implemented by the session layer, so this module
+/// stays ignorant of the table.
+///
+/// Only one pending request is tracked per session: an agent asks for one permission at a time,
+/// and the record is a pointer (`{hitl_id, tool_call_id}`) to the `hitl_requests` row, not a
+/// copy of it. The delegate clears it when the wait ends for any reason, including its future
+/// being dropped because the connection was lost; the clear is keyed on `hitl_id`, so it never
+/// wipes a newer wait's pointer.
+#[async_trait]
+pub trait PendingPermissionSink: Send + Sync {
+    /// The turn is now waiting on `hitl_id`.
+    async fn set_pending(&self, hitl_id: Uuid, tool_call_id: &str);
+    /// The wait on `hitl_id` ended.
+    async fn clear_pending(&self, hitl_id: Uuid);
+}
+
+/// Clears the pending record when the wait ends, even if the waiting future is dropped
+/// mid-await (the ACP connection closing drops it): `Drop` cannot await, so it hands the clear
+/// to the runtime. [`finish`](Self::finish) is the normal path and awaits the clear in place.
+struct PendingGuard {
+    sink: Arc<dyn PendingPermissionSink>,
+    hitl_id: Uuid,
+    cleared: bool,
+}
+
+impl PendingGuard {
+    async fn finish(mut self) {
+        self.sink.clear_pending(self.hitl_id).await;
+        self.cleared = true;
+    }
+}
+
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        if self.cleared {
+            return;
+        }
+        let (sink, hitl_id) = (self.sink.clone(), self.hitl_id);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move { sink.clear_pending(hitl_id).await });
+        }
+    }
+}
 
 /// Routes each ACP permission request to the Nasiko HITL surface for a human
 /// decision. One per turn — it carries that turn's agent/user/session identity so
@@ -46,6 +93,11 @@ pub struct HitlPermissionDelegate {
     /// can surface it as `TASK_STATE_INPUT_REQUIRED`. `None` when the turn isn't
     /// streaming to a client (e.g. hermetic tests).
     notice_tx: Option<mpsc::UnboundedSender<CodingTurnEvent>>,
+    /// Persists the pending request across the wait; `None` for the exec-based coding path.
+    pending_sink: Option<Arc<dyn PendingPermissionSink>>,
+    /// Fired when the task is cancelled (`tasks/cancel`): a wait in progress ends at once, answered
+    /// `Cancelled`, and its `hitl_requests` row is closed as `canceled`.
+    cancel: Option<tokio_util::sync::CancellationToken>,
 }
 
 impl HitlPermissionDelegate {
@@ -62,7 +114,21 @@ impl HitlPermissionDelegate {
             owner_user_id,
             session_id,
             notice_tx,
+            pending_sink: None,
+            cancel: None,
         }
+    }
+
+    /// End a wait in progress when `cancel` fires (the turn's task was cancelled).
+    pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// Record each pending request through `sink` for the duration of its wait.
+    pub fn with_pending_sink(mut self, sink: Arc<dyn PendingPermissionSink>) -> Self {
+        self.pending_sink = Some(sink);
+        self
     }
 
     /// The decision, or a `HitlError` if the request can't be recorded or read —
@@ -92,12 +158,35 @@ impl HitlPermissionDelegate {
         if let Some(tx) = &self.notice_tx {
             let _ = tx.send(CodingTurnEvent::AwaitingApproval {
                 hitl_id: id,
-                question,
+                question: question.clone(),
             });
         }
 
-        // Poll until the row leaves `pending`, or the cap elapses. The turn's
-        // lease heartbeat runs on its own task, so this wait never jeopardizes it.
+        // Armed before the write is awaited: if that await is cut short the pointer is cleared
+        // anyway.
+        let guard = self.pending_sink.as_ref().map(|sink| PendingGuard {
+            sink: sink.clone(),
+            hitl_id: id,
+            cleared: false,
+        });
+        if let Some(sink) = &self.pending_sink {
+            sink.set_pending(id, &request.tool_call.tool_call_id.0)
+                .await;
+        }
+        let decision = self.wait_for_decision(id, request).await;
+        if let Some(guard) = guard {
+            guard.finish().await;
+        }
+        decision
+    }
+
+    /// Poll until the row leaves `pending`, or the cap elapses. The turn's lease heartbeat
+    /// runs on its own task, so this wait never jeopardizes it.
+    async fn wait_for_decision(
+        &self,
+        id: Uuid,
+        request: &RequestPermissionRequest,
+    ) -> Result<RequestPermissionResponse, HitlError> {
         let deadline = tokio::time::Instant::now() + MAX_WAIT;
         loop {
             match self.store.get(id).await?.map(|r| r.status) {
@@ -112,7 +201,24 @@ impl HitlPermissionDelegate {
             if tokio::time::Instant::now() >= deadline {
                 return Ok(deny(request));
             }
-            tokio::time::sleep(POLL_INTERVAL).await;
+            let cancelled = async {
+                match &self.cancel {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                () = tokio::time::sleep(POLL_INTERVAL) => {}
+                () = cancelled => {
+                    // The task was cancelled while a human was being asked: close the request so
+                    // nobody is left approving something that no longer runs, and tell the agent
+                    // the turn is over.
+                    if let Err(e) = self.store.cancel(id, self.owner_user_id).await {
+                        tracing::warn!(error = %e, hitl_id = %id, "coding HITL: could not cancel the request");
+                    }
+                    return Ok(RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled));
+                }
+            }
         }
     }
 }
@@ -386,5 +492,53 @@ mod tests {
         let action = permission_action(&tc);
         assert_eq!(action["type"], "raw");
         assert_eq!(action["value"]["foo"], "bar");
+    }
+
+    #[derive(Default)]
+    struct RecordingSink(std::sync::Mutex<Vec<(&'static str, Uuid)>>);
+
+    #[async_trait]
+    impl PendingPermissionSink for RecordingSink {
+        async fn set_pending(&self, hitl_id: Uuid, _tool_call_id: &str) {
+            self.0.lock().unwrap().push(("set", hitl_id));
+        }
+        async fn clear_pending(&self, hitl_id: Uuid) {
+            self.0.lock().unwrap().push(("clear", hitl_id));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_pending_record_is_cleared_when_the_wait_is_abandoned() {
+        let sink = Arc::new(RecordingSink::default());
+        let id = Uuid::from_u128(7);
+        let guard = PendingGuard {
+            sink: sink.clone(),
+            hitl_id: id,
+            cleared: false,
+        };
+        // The waiting future is dropped mid-await, as when the ACP connection closes.
+        let waiting = tokio::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        waiting.abort();
+        let _ = waiting.await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(*sink.0.lock().unwrap(), vec![("clear", id)]);
+    }
+
+    #[tokio::test]
+    async fn a_finished_wait_clears_the_record_once() {
+        let sink = Arc::new(RecordingSink::default());
+        let id = Uuid::from_u128(8);
+        PendingGuard {
+            sink: sink.clone(),
+            hitl_id: id,
+            cleared: false,
+        }
+        .finish()
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(*sink.0.lock().unwrap(), vec![("clear", id)]);
     }
 }

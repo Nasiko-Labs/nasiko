@@ -211,10 +211,12 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         .and_then(|v| v.to_str().ok());
 
     // Two doors onto the same tail:
-    //   - a coding-agent *session token* (NAS-839) carries {agent, user, flow}
-    //     in signed claims, so it needs neither the ngt_ lookup nor a
-    //     traceparent — the signature is the proof of the binding, so the
-    //     claims' flow id is the verified flow for everything downstream;
+    //   - a coding-agent *session token* (NAS-839) carries {agent, user, session,
+    //     flow} in signed claims, so it needs neither the ngt_ lookup nor a
+    //     traceparent — the signature proves the user and agent, and the flow is
+    //     the claim or a later turn's flow that `attributed_flow` verified (owned
+    //     by that user, the agent a participant), so it is the verified flow for
+    //     everything downstream;
     //   - otherwise the deploy-time ngt_ gateway token names the agent and the
     //     user is resolved from the request's traceparent + flow (the A2A path,
     //     docs/MCP_GATEWAY_AGENT_AUTH.md §2.4), with rule 3b for CLI-bound
@@ -222,7 +224,8 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     //
     // `verified_flow_id` travels alongside `user_id` (rather than being
     // re-derived from `traceparent` further down) because it's the one thing
-    // this function actually proved — by signature on the session path, or
+    // this function actually proved — by signature plus the ownership and
+    // participant check on the session path, or
     // against `flows`/`flow_participants` on the A2A path. The raw
     // `traceparent` a caller sends is not proof of anything on its own. On the
     // owner-fallback branch below, `user_id` did NOT come from a verified flow,
@@ -237,7 +240,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         Uuid,
         Option<String>,
         Option<String>,
-    ) = match try_session_identity(state, token).await {
+    ) = match try_session_identity(state, token, header_traceparent).await {
         SessionResolution::Session {
             agent_id,
             user_id,
@@ -536,11 +539,16 @@ enum SessionResolution {
 
 /// Try to authenticate the credential as a coding-agent session token.
 ///
-/// The signature is the proof of `{agent_id, user_id, flow_id}`, so — unlike the
-/// A2A path — this needs no live-flow freshness window (a long turn is never
-/// rejected for age) and no `flow_participants` lookup. The one DB touch is the
-/// `jti` revocation check, so a token can still be killed before its `exp`.
-async fn try_session_identity(state: &AppState, token: &str) -> SessionResolution {
+/// The signature proves `{agent_id, user_id}`, so — unlike the A2A path — this needs no
+/// live-flow freshness window (a long turn is never rejected for age). The DB touches are the
+/// `jti` revocation check, so a token can still be killed before its `exp`, and the flow
+/// attribution: a later turn's flow (the traceparent's, else the session's newest) is used only
+/// when that user owns it and the agent is a recorded participant, else the claim.
+async fn try_session_identity(
+    state: &AppState,
+    token: &str,
+    traceparent: Option<&str>,
+) -> SessionResolution {
     let secret = &state.config.agent_jwt_secret;
     // Unconfigured secret ⇒ this deployment doesn't issue session tokens; leave
     // the legacy path untouched.
@@ -581,11 +589,22 @@ async fn try_session_identity(state: &AppState, token: &str) -> SessionResolutio
     };
 
     match is_session_token_revoked(&state.db, &claims.jti).await {
-        Ok(false) => SessionResolution::Session {
-            agent_id,
-            user_id,
-            flow_id: claims.flow_id,
-        },
+        Ok(false) => {
+            let trace_flow = traceparent
+                .and_then(nasiko_flow::FlowContext::from_traceparent)
+                .map(|ctx| ctx.flow_id);
+            let attributed = nasiko_session_token::attribution::attributed_flow(
+                &state.db,
+                trace_flow.as_deref(),
+                &claims,
+            )
+            .await;
+            SessionResolution::Session {
+                agent_id,
+                user_id,
+                flow_id: attributed.flow_id,
+            }
+        }
         Ok(true) => SessionResolution::Deny(deny("session token revoked".into())),
         Err(e) => {
             // Rule 5: fail closed on identity-store failure.

@@ -26,12 +26,13 @@ use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::agent_resolver::{Caller, ResolveError, resolve_target};
 use crate::agent_wake::AgentWake;
 use crate::hitl::continuation::ContinuationGuard;
 use crate::hitl::lost_task::is_task_not_found;
 use crate::router::a2a_dispatch::{
     OrchestratorTurn, build_hitl_stream_data, build_pause_question, normalize_agent_event,
-    orchestrator_stream, pause_kind, resolve_endpoint,
+    orchestrator_stream, pause_kind,
 };
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
@@ -364,24 +365,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     };
 
-    let target = match resolve_endpoint(&state, &row.agent_id.to_string(), &agent_name).await {
-        Ok(e) => e,
-        Err(e) => {
-            fail_resume(&state, &row, &e, RETRYABLE).await;
-            return;
-        }
-    };
-    if let Err(msg) = state.agent_wake.before_forward(row.agent_id).await {
-        fail_resume(
-            &state,
-            &row,
-            &format!("agent '{agent_name}' cannot be reached: {msg}"),
-            RETRYABLE,
-        )
-        .await;
-        return;
-    }
-
     // Reuse the original flow if it was stashed in `resume_state` at pause time — the
     // agent's OTel auto-instrumentation already carries this trace_id on every outbound
     // call, so reopening the same flow means the agent's MCP and LLM-router calls pass
@@ -422,6 +405,50 @@ async fn deliver(state: AppState, row: HitlRequest) {
         .await;
         return;
     }
+
+    // Resolved by kind, so resuming a pause on a parked agent wakes it first. After the flow
+    // guard, so a resume it rejects never wakes anything.
+    //
+    // Wake a Free-plane agent slept for idleness before resuming; a scalability-parked agent is
+    // woken by the resolver below instead.
+    if let Err(msg) = state.agent_wake.before_forward(row.agent_id).await {
+        fail_resume(
+            &state,
+            &row,
+            &format!("agent '{agent_name}' cannot be reached: {msg}"),
+            RETRYABLE,
+        )
+        .await;
+        return;
+    }
+    let caller = Caller {
+        user_id: Some(row.owner_user_id),
+        flow_id: Some(flow_ctx.flow_id.clone()),
+    };
+    let target = match resolve_target(&state, row.agent_id, &caller, Some(&context_id)).await {
+        Ok(resolved) => match resolved.into_forward_target() {
+            Some(target) => target,
+            None => {
+                fail_resume(
+                    &state,
+                    &row,
+                    "a harness agent has no endpoint to resume against",
+                    FailureKind::Permanent,
+                )
+                .await;
+                return;
+            }
+        },
+        // The agent is gone: no retry brings it back.
+        Err(e @ ResolveError::NotFound) => {
+            fail_resume(&state, &row, &e.client_message(), FailureKind::Permanent).await;
+            return;
+        }
+        Err(e) => {
+            fail_resume(&state, &row, &e.client_message(), RETRYABLE).await;
+            return;
+        }
+    };
 
     // Register this resume as a live flow in the MCP-gateway sense (Postgres `flows` +
     // `flow_participants`) — a completely separate bookkeeping system from the FlowGuard
@@ -570,6 +597,8 @@ async fn deliver(state: AppState, row: HitlRequest) {
             return;
         }
         ResumeAttempt::TaskNotFound => {
+            // The agent no longer knows the task, so it is not open work for the reaper either.
+            crate::agents::open_tasks::clear(&state.db, row.agent_id, &task_id).await;
             return finish_agent_lost_task(&state, &row, &flow_ctx, &agent_name, posts).await;
         }
         ResumeAttempt::Unclassified(reason) => {
@@ -592,6 +621,15 @@ async fn deliver(state: AppState, row: HitlRequest) {
             return;
         }
     };
+
+    // The resumed task's last state: a finished one clears its open-task row, a follow-up pause
+    // keeps the agent from being parked while it waits.
+    if let Some(event) = last_data
+        .as_deref()
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+    {
+        crate::agents::open_tasks::note_response(&state.db, row.agent_id, &event).await;
+    }
 
     // Delivery succeeded — a response was received and classified — regardless of the agent's
     // own business outcome (§3.2: "peer confirmed receipt").
@@ -857,7 +895,7 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     let answer = answer_text(&row);
 
-    let mut conn = match state.redis.get_multiplexed_async_connection().await {
+    let mut conn = match state.redis.connection().await {
         Ok(c) => c,
         Err(e) => {
             fail_resume(

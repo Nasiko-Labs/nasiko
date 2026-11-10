@@ -278,3 +278,137 @@ async fn sweep_purges_only_expired_revocations() {
 
     server.cleanup().await;
 }
+
+/// A stub OpenAI upstream, so the routed path needs no real key. Keep the guard alive.
+async fn stub_upstream() -> mockito::ServerGuard {
+    let mut upstream = mockito::Server::new_async().await;
+    upstream
+        .mock("POST", "/chat/completions")
+        .with_status(200)
+        .with_header("content-type", "application/json")
+        .with_body(
+            r#"{"id":"chatcmpl-1","object":"chat.completion","created":1,
+                "model":"gpt-4o-mini",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"hi"},
+                            "finish_reason":"stop"}],
+                "usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+        )
+        .expect_at_least(0)
+        .create_async()
+        .await;
+    // SAFETY: serialized by #[serial]; set before the app reads its config.
+    unsafe {
+        std::env::set_var("OPENAI_API_BASE", upstream.url());
+        std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
+        std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
+    }
+    upstream
+}
+
+async fn seed_flow(
+    server: &TestServer,
+    flow_id: &str,
+    user: Uuid,
+    session: &str,
+    participant: Uuid,
+) {
+    sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ($1, $2, $3)")
+        .bind(flow_id)
+        .bind(user)
+        .bind(session)
+        .execute(&server.db)
+        .await
+        .expect("seed flow");
+    sqlx::query("INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)")
+        .bind(flow_id)
+        .bind(participant)
+        .execute(&server.db)
+        .await
+        .expect("seed participant");
+}
+
+/// Send one chat call with the session token (no `traceparent`, as a harness CLI does) and
+/// return the `session_id` and attribution source the usage row was written under.
+async fn usage_session_for(
+    server: &TestServer,
+    agent: Uuid,
+    token: &str,
+) -> (Option<String>, String) {
+    let res = server
+        .client
+        .post(server.url("/v1/chat/completions"))
+        .bearer_auth(token)
+        .json(&chat_body())
+        .send()
+        .await
+        .expect("llm request");
+    assert_eq!(res.status(), 200, "a session-authenticated call is served");
+    let session = wait_for_usage_row(server, agent)
+        .await
+        .expect("usage row")
+        .1;
+    let source: Option<String> = sqlx::query_scalar(
+        "SELECT metadata->>'attribution' FROM token_usage \
+          WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(agent)
+    .fetch_one(&server.db)
+    .await
+    .expect("usage attribution");
+    (session, source.unwrap_or_default())
+}
+
+/// A later turn: the token still claims the first turn's flow A, but the session has a newer
+/// flow B with the agent as participant, so usage lands on B without any `traceparent`.
+#[tokio::test]
+#[serial]
+async fn later_turn_usage_follows_the_sessions_newest_flow() {
+    let _upstream = stub_upstream().await;
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "coding-turn2-user").await;
+    let agent = seed_agent(&server, user, "coding-turn2-agent").await;
+
+    let flow_a = format!("flow-a-{}", Uuid::new_v4().simple());
+    let flow_b = format!("flow-b-{}", Uuid::new_v4().simple());
+    seed_flow(&server, &flow_a, user, "ses-turns", agent).await;
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    seed_flow(&server, &flow_b, user, "ses-turns", agent).await;
+    let token = session_token(agent, user, "ses-turns", &flow_a);
+
+    let (session, source) = usage_session_for(&server, agent, &token).await;
+    assert_eq!(session.as_deref(), Some(flow_b.as_str()));
+    assert_eq!(source, "session");
+
+    server.cleanup().await;
+}
+
+/// A flow in a different session is never adopted: the claim stands.
+#[tokio::test]
+#[serial]
+async fn another_sessions_flow_is_not_adopted() {
+    let _upstream = stub_upstream().await;
+    let server = TestServer::start().await;
+    let user = seed_user(&server, "coding-foreign-user").await;
+    let agent = seed_agent(&server, user, "coding-foreign-agent").await;
+
+    let flow_a = format!("flow-a-{}", Uuid::new_v4().simple());
+    let foreign = format!("flow-x-{}", Uuid::new_v4().simple());
+    seed_flow(&server, &flow_a, user, "ses-mine", agent).await;
+    seed_flow(&server, &foreign, user, "ses-other", agent).await;
+    let token = session_token(agent, user, "ses-mine", &flow_a);
+    // Flip the order so the foreign session's flow is the newest row overall.
+    sqlx::query("UPDATE flows SET created_at = now() + interval '1 second' WHERE flow_id = $1")
+        .bind(&foreign)
+        .execute(&server.db)
+        .await
+        .expect("reorder");
+
+    let (session, source) = usage_session_for(&server, agent, &token).await;
+    assert_eq!(session.as_deref(), Some(flow_a.as_str()));
+    assert_eq!(
+        source, "session",
+        "the claim flow is itself the session's newest flow"
+    );
+
+    server.cleanup().await;
+}

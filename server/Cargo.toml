@@ -22,6 +22,9 @@ name = "seed-fleet-demo"
 path = "src/bin/seed_fleet_demo.rs"
 
 [dependencies]
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
 dotenvy.workspace = true
 nasiko-coding-policy.workspace = true
 nasiko-agent-proxy.workspace = true
@@ -65,6 +68,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
+nasiko-redis = { workspace = true }
 rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
@@ -89,6 +93,7 @@ nasiko-spa = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 hex = { workspace = true }
+hmac = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
@@ -101,18 +106,22 @@ tracing-opentelemetry = "0.29"
 tonic = "0.12"
 
 [dev-dependencies]
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 serial_test = { workspace = true }
 reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 mockito = { workspace = true }
 criterion = { workspace = true }
 nasiko-bench-support = { workspace = true }
+# The harness turn e2e runs the real shim in-process.
+nasiko-harness-shim = { workspace = true }
 
 [[bench]]
 name = "control_plane"

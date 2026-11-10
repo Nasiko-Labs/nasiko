@@ -218,13 +218,54 @@ pub struct Config {
     pub hitl_resume_retry_delay_secs: u64,
     /// Coding-agent (ACP) session lifecycle tunables.
     ///
-    /// `coding_agent_idle_ttl_secs` is how long a coding-agent container may sit
-    /// idle (no turn running) before it is torn down. **Default `0`** = stop
-    /// after every turn (no warm window) — the safe default until the cluster's
-    /// storage class and the agent's session-resume support are confirmed; a
-    /// positive value keeps the container warm for that many seconds so the next
-    /// turn skips cold start.
+    /// `coding_agent_idle_ttl_secs` is the idle threshold, measured from a session's
+    /// `last_turn_at`, after which the session reaper *considers* suspending it (the
+    /// reaper still requires the turn to have ended, the sandbox to be CPU-quiescent
+    /// for `session_idle_grace_secs`, and no outbound LLM/MCP call in flight).
+    /// **Default `900`** (15 minutes): long enough that a user pausing to read or
+    /// think resumes into a warm sandbox, short enough that an abandoned session
+    /// does not hold a sandbox for hours. **`0` disables suspension entirely**, so a
+    /// sandbox lives until its session is closed. A non-zero value must be at least
+    /// `session_idle_grace_secs`: the grace window is measured *inside* the idle
+    /// TTL (a session already idle for the whole TTL and found quiet is suspended at
+    /// once; a busy sample restarts the window), so a smaller TTL could never be
+    /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
+    /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
+    /// (default), `pod`, `substrate` or `shared-pod`. Docker is the OSS default and needs no
+    /// cluster; `pod`, `substrate` and `shared-pod` are implemented by enterprise crates and
+    /// selected at cluster create. An unknown value fails startup rather than
+    /// silently falling back, because running sessions on the wrong substrate
+    /// changes isolation and cost.
+    pub sandbox_provider: SandboxProviderSetting,
+    /// Whether a successful agent build is followed by one smoke run of the image under gVisor,
+    /// from `BUILD_SANDBOX_SMOKE`: `off` (default) or `runsc`. The outcome sets
+    /// `agents.sandbox_compatible`; it never fails the build. Docker runtime only.
+    pub build_sandbox_smoke: BuildSandboxSmoke,
+    /// How long a session must stay CPU-quiescent after its last turn before the
+    /// reaper suspends it, from `SESSION_IDLE_GRACE_SECS`, default `120`. It
+    /// guards against suspending a sandbox that is still finishing background work
+    /// (a build, a test run) the moment a turn ends. Lives inside
+    /// `coding_agent_idle_ttl_secs`, which must be at least this when non-zero.
+    pub session_idle_grace_secs: u64,
+    /// CPU usage, in millicores, at or below which a sandbox counts as idle, from
+    /// `SESSION_CPU_QUIESCENT_MILLICORES`, default `20` (2% of one core): above
+    /// an idle shell and agent runtime, below any real work.
+    pub session_cpu_quiescent_millicores: u32,
+    /// How often the session reaper scans for idle sessions, from
+    /// `SESSION_REAPER_INTERVAL_SECS`, default `30`. Clamped to 5..=600: below 5s
+    /// the scan is churn, above 10 minutes it adds more latency to suspension than
+    /// the idle TTL itself.
+    pub session_reaper_interval_secs: u64,
+    /// How long a non-terminal A2A task an agent returned keeps that agent from being parked,
+    /// from `AGENT_OPEN_TASK_MAX_AGE_SECS`, default `3600`, clamped to 60..=86400. The reaper
+    /// raises it to the effective park TTL plus one reaper interval (never lowers it): a bound
+    /// below that would expire the task before the agent can even be considered idle.
+    pub agent_open_task_max_age_secs: u64,
+    /// Registry prefix the platform-built harness images are published under, from
+    /// `HARNESS_IMAGE_PREFIX`, default `nasiko/harness-`. The catalog's image
+    /// names are `<prefix><harness>:<tag>`; override it to pull from a mirror.
+    pub harness_image_prefix: String,
     /// How long one turn's lock on a session is held before it lapses. A turn
     /// that runs longer must renew it (heartbeat); this only bounds how long a
     /// *dead* turn-owner can block the next turn.
@@ -254,6 +295,10 @@ pub struct Config {
     /// each server process, like the other limiters (`rate_limit.rs`), so the ceiling across
     /// several processes is this value times their number.
     pub agent_state_rate_limit_per_minute: u32,
+    /// Requests per minute one agent may make to its peers through `/api/agents/{id}/*`, counted
+    /// per calling agent. AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE, default 300, clamped 1-10000.
+    /// Over it gets a 429 with `Retry-After`. Counted in memory by each server process.
+    pub agent_peer_call_rate_limit_per_minute: u32,
     /// Most body bytes one agent state listing page carries. AGENT_STATE_LIST_BYTES_BUDGET,
     /// default 8 MiB, floored at 1. A page stops before the next row would pass it and hands back
     /// a cursor, so a short page is normal; a single row larger than it still lists, alone.
@@ -339,7 +384,9 @@ pub struct Config {
     /// calls, multi-step orchestration), so this is deliberately far above the
     /// shared `http_client` default, which stays short for embeddings, registry
     /// probes and OAuth. Read from `AGENT_CALL_TIMEOUT_SECS`, falling back to
-    /// the former `ROUTER_AGENT_TIMEOUT_SECS`.
+    /// the former `ROUTER_AGENT_TIMEOUT_SECS`. It also caps how long a coding turn
+    /// waits for a human approval (HITL), and must not exceed the session token's
+    /// one-hour lifetime, which would expire mid-wait (checked at startup).
     pub agent_call_timeout_secs: u64,
     pub github_callback_url: Option<String>,
     /// Central OAuth callback relay URL (multi-tenant deployments): used as the
@@ -463,6 +510,12 @@ pub struct Config {
     /// through `AgentScaling` (OSS: one replica; EE: its per-agent autoscaling). Kept so a
     /// server and an install of different versions still agree on the key during an upgrade.
     pub agent_max_replicas: u32,
+    /// Connections in the server's Postgres pool, shared by every request and background
+    /// worker. DATABASE_MAX_CONNECTIONS, default 50, clamped to 1..=500. A turn costs about 20
+    /// round trips on the proxy hop and about 50 with the agent's own LLM, MCP and state calls,
+    /// so at 50 turns a second the pool carries about 2,500 a second. Keep it under Postgres's
+    /// own `max_connections` (100 by default), less what other clients use.
+    pub database_max_connections: u32,
     /// Number of agent/connector image builds the build worker runs
     /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
     /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
@@ -627,7 +680,7 @@ impl Config {
             .unwrap_or(24 * 3600);
         let cold_path_set = std::env::var("NASIKO_COLD_PATH").ok();
         validate_tiering(tiering_enabled, cold_path_set.as_deref()).map_err(anyhow::Error::msg)?;
-        Ok(Self {
+        let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
             delegation_audience: delegation_audience_from_env(),
@@ -754,7 +807,18 @@ impl Config {
             hitl_resume_lease_minutes: env_parse("HITL_RESUME_LEASE_MINUTES", 16),
             hitl_resume_max_attempts: env_parse("HITL_RESUME_MAX_ATTEMPTS", 3),
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
-            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 0),
+            coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 900),
+            sandbox_provider: sandbox_provider_from_env()?,
+            build_sandbox_smoke: env_or("BUILD_SANDBOX_SMOKE", "off")
+                .parse()
+                .map_err(anyhow::Error::msg)?,
+            session_idle_grace_secs: env_parse("SESSION_IDLE_GRACE_SECS", 120),
+            session_cpu_quiescent_millicores: env_parse("SESSION_CPU_QUIESCENT_MILLICORES", 20),
+            session_reaper_interval_secs: env_parse("SESSION_REAPER_INTERVAL_SECS", 30)
+                .clamp(5, 600),
+            agent_open_task_max_age_secs: env_parse("AGENT_OPEN_TASK_MAX_AGE_SECS", 3600)
+                .clamp(60, 86400),
+            harness_image_prefix: env_or("HARNESS_IMAGE_PREFIX", "nasiko/harness-"),
             coding_agent_turn_lease_secs: env_parse("CODING_AGENT_TURN_LEASE_SECS", 60),
             coding_agent_lease_heartbeat_secs: env_parse("CODING_AGENT_LEASE_HEARTBEAT_SECS", 20),
             hitl_lost_task_retries: env_parse("HITL_LOST_TASK_RETRIES", 3),
@@ -762,6 +826,11 @@ impl Config {
             agent_state_max_body_bytes: env_parse("AGENT_STATE_MAX_BODY_BYTES", 1_048_576).max(1),
             agent_state_rate_limit_per_minute: env_parse("AGENT_STATE_RATE_LIMIT_PER_MINUTE", 1200)
                 .max(1),
+            agent_peer_call_rate_limit_per_minute: env_parse(
+                "AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE",
+                300,
+            )
+            .clamp(1, 10_000),
             agent_state_list_bytes_budget: env_parse(
                 "AGENT_STATE_LIST_BYTES_BUDGET",
                 8 * 1024 * 1024,
@@ -888,6 +957,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
+            database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
             build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
             maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
             maf_heartbeat_secs: env_parse("MAF_HEARTBEAT_SECS", 20).clamp(5, 120),
@@ -907,7 +977,28 @@ impl Config {
             mcp_tool_search_meta_limit: env_parse("MCP_TOOL_SEARCH_META_LIMIT", 10),
             mcp_gateway_instructions: env_or("MCP_GATEWAY_INSTRUCTIONS", ""),
             mcp_identity_signing_key: mcp_identity_signing_key(),
-        })
+        };
+        config
+            .validate_session_lifecycle()
+            .map_err(anyhow::Error::msg)?;
+        Ok(config)
+    }
+
+    /// Fail fast if the idle TTL cannot contain the idle grace window. The reaper
+    /// measures `session_idle_grace_secs` of CPU quiescence *inside*
+    /// `coding_agent_idle_ttl_secs`, so a non-zero TTL below the grace could never
+    /// be satisfied and would silently disable suspension. `0` (suspension off) is
+    /// always valid.
+    pub fn validate_session_lifecycle(&self) -> Result<(), String> {
+        validate_idle_ttl_covers_grace(
+            self.coding_agent_idle_ttl_secs,
+            self.session_idle_grace_secs,
+        )?;
+        validate_heartbeat_within_lease(
+            self.coding_agent_turn_lease_secs,
+            self.coding_agent_lease_heartbeat_secs,
+        )?;
+        validate_call_timeout_within_session_token(self.agent_call_timeout_secs)
     }
 
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
@@ -936,6 +1027,99 @@ impl Config {
 pub fn openai_base_url_without_v1(base_url: &str) -> &str {
     let trimmed = base_url.trim_end_matches('/');
     trimmed.strip_suffix("/v1").unwrap_or(trimmed)
+}
+
+/// Which substrate runs coding-agent sandboxes. See [`Config::sandbox_provider`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxProviderSetting {
+    Docker,
+    Pod,
+    Substrate,
+    SharedPod,
+}
+
+impl std::str::FromStr for SandboxProviderSetting {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "docker" => Ok(Self::Docker),
+            "pod" => Ok(Self::Pod),
+            "substrate" => Ok(Self::Substrate),
+            "shared-pod" => Ok(Self::SharedPod),
+            _ => Err(format!(
+                "SANDBOX_PROVIDER must be one of docker, pod, substrate, shared-pod, got {raw:?}"
+            )),
+        }
+    }
+}
+
+/// Whether builds smoke-run their image under gVisor. See [`Config::build_sandbox_smoke`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuildSandboxSmoke {
+    Off,
+    Runsc,
+}
+
+impl std::str::FromStr for BuildSandboxSmoke {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "off" => Ok(Self::Off),
+            "runsc" => Ok(Self::Runsc),
+            _ => Err(format!(
+                "BUILD_SANDBOX_SMOKE must be one of off, runsc, got {raw:?}"
+            )),
+        }
+    }
+}
+
+fn sandbox_provider_from_env() -> anyhow::Result<SandboxProviderSetting> {
+    env_or("SANDBOX_PROVIDER", "docker")
+        .parse()
+        .map_err(anyhow::Error::msg)
+}
+
+fn validate_idle_ttl_covers_grace(idle_ttl_secs: i64, grace_secs: u64) -> Result<(), String> {
+    if idle_ttl_secs != 0 && idle_ttl_secs < i64::try_from(grace_secs).unwrap_or(i64::MAX) {
+        return Err(format!(
+            "CODING_AGENT_IDLE_TTL_SECS ({idle_ttl_secs}) must be 0 (suspension off) or at least \
+             SESSION_IDLE_GRACE_SECS ({grace_secs}): the grace window is measured inside the idle TTL"
+        ));
+    }
+    Ok(())
+}
+
+/// A turn renews its lease every `heartbeat_secs`; at least two renewals must fit in one lease
+/// so a single late or lost heartbeat does not let a live turn's lock lapse mid-turn.
+fn validate_heartbeat_within_lease(lease_secs: i64, heartbeat_secs: u64) -> Result<(), String> {
+    let heartbeat = i64::try_from(heartbeat_secs).unwrap_or(i64::MAX);
+    if lease_secs <= 0 || heartbeat == 0 || heartbeat.saturating_mul(2) > lease_secs {
+        return Err(format!(
+            "CODING_AGENT_LEASE_HEARTBEAT_SECS ({heartbeat_secs}) must be positive and at most \
+             half of CODING_AGENT_TURN_LEASE_SECS ({lease_secs}), which must be positive: a live \
+             turn must renew its lease at least twice per lease"
+        ));
+    }
+    Ok(())
+}
+
+/// The lifetime of the session token a coding turn carries (`sessions::identity::
+/// SESSION_TOKEN_TTL_SECS`, kept equal by hand: this crate sits below the server).
+pub const SESSION_TOKEN_TTL_SECS: u64 = 3600;
+
+/// A turn waiting on a human approval waits up to `AGENT_CALL_TIMEOUT_SECS`, holding the session
+/// token it was started with; a longer wait would outlive the token.
+fn validate_call_timeout_within_session_token(call_timeout_secs: u64) -> Result<(), String> {
+    if call_timeout_secs > SESSION_TOKEN_TTL_SECS {
+        return Err(format!(
+            "AGENT_CALL_TIMEOUT_SECS ({call_timeout_secs}) must not exceed the session token \
+             lifetime ({SESSION_TOKEN_TTL_SECS}s, SESSION_TOKEN_TTL_SECS): a turn waiting on an \
+             approval would outlive its token"
+        ));
+    }
+    Ok(())
 }
 
 /// Tiering deletes rows from Postgres once they are in the cold store, so the
@@ -988,6 +1172,47 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn sandbox_provider_parses_each_value_case_insensitively() {
+        for (raw, want) in [
+            ("docker", SandboxProviderSetting::Docker),
+            ("Pod", SandboxProviderSetting::Pod),
+            (" SUBSTRATE ", SandboxProviderSetting::Substrate),
+            (" Shared-Pod ", SandboxProviderSetting::SharedPod),
+        ] {
+            assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
+        }
+    }
+
+    #[test]
+    fn unknown_sandbox_provider_names_key_and_allowed_values() {
+        let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
+        assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
+        assert!(err.contains("docker, pod, substrate, shared-pod"), "{err}");
+    }
+
+    #[test]
+    fn build_sandbox_smoke_parses_off_and_runsc_and_rejects_the_rest() {
+        assert_eq!("off".parse(), Ok(BuildSandboxSmoke::Off));
+        assert_eq!(" RunSC ".parse(), Ok(BuildSandboxSmoke::Runsc));
+        let err = "gvisor".parse::<BuildSandboxSmoke>().unwrap_err();
+        assert!(err.contains("BUILD_SANDBOX_SMOKE"), "{err}");
+        assert!(err.contains("off, runsc"), "{err}");
+    }
+
+    #[test]
+    fn idle_ttl_below_grace_fails_with_explanation() {
+        let err = validate_idle_ttl_covers_grace(60, 120).unwrap_err();
+        assert!(err.contains("inside the idle TTL"), "{err}");
+    }
+
+    #[test]
+    fn idle_ttl_zero_or_at_least_grace_passes() {
+        assert!(validate_idle_ttl_covers_grace(0, 120).is_ok());
+        assert!(validate_idle_ttl_covers_grace(120, 120).is_ok());
+        assert!(validate_idle_ttl_covers_grace(900, 120).is_ok());
+    }
 
     #[test]
     fn valid_32_byte_base64_key_passes() {

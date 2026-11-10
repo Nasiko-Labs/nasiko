@@ -14,6 +14,20 @@ use uuid::Uuid;
 pub trait AgentCallHandle: Send {
     /// Record whether the agent produced a result. A request for human input is a result.
     fn set_succeeded(&mut self, succeeded: bool);
+
+    /// Where this call must be sent, when the platform resolved that at admission (it woke a
+    /// parked agent, say) and the address the caller listed is only a placeholder. `None` keeps
+    /// the address the caller already has.
+    fn target(&self) -> Option<CallTarget> {
+        None
+    }
+}
+
+/// An address resolved for one call, with the headers its first hop requires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallTarget {
+    pub url: String,
+    pub headers: Vec<(String, String)>,
 }
 
 /// Opens one [`AgentCallHandle`] per request to an agent.

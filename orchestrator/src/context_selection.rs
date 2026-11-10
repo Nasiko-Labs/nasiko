@@ -427,6 +427,29 @@ pub async fn selection_enabled_checked(pool: &PgPool, user_id: Uuid) -> Result<b
     )
 }
 
+/// All three preferences in one read of the user's row, for the per-request path: issued
+/// separately they were three queries holding three pool connections at once on every turn. A
+/// missing row or a failed read falls back to each column's default, as the single lookups do.
+async fn preferences_for_user(
+    pool: &PgPool,
+    user_id: Uuid,
+) -> (PacmsBudgetLevel, ContextSelectionStrategy, bool) {
+    sqlx::query_as(
+        "SELECT pacms_budget_level, context_selection_strategy, context_selection_enabled \
+           FROM users WHERE id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or((
+        PacmsBudgetLevel::default(),
+        ContextSelectionStrategy::default(),
+        true,
+    ))
+}
+
 // ── The one entry point ───────────────────────────────────────────────────────
 
 /// Whether one agent has opted into compression. A missing or soft-deleted agent, or a failed
@@ -450,8 +473,8 @@ pub async fn agent_compression_enabled(pool: &PgPool, agent_id: Uuid) -> bool {
 /// strategy and budget tier, resolve the tier against this deployment's [`ContextTiers`], and
 /// dispatch into the matching `SessionHistory::fetch_*`.
 ///
-/// The preference lookups are cheap indexed row reads, issued concurrently. None can fail the
-/// request — each falls back to its column default (see `for_user` on each).
+/// The preferences are one indexed read of the user's row. It cannot fail the request — each
+/// value falls back to its column default (see `for_user` on each).
 ///
 /// # `compress_history` — whose switch gates IP-4
 ///
@@ -478,11 +501,7 @@ pub async fn fetch_for_user(
     tiers: &ContextTiers,
     compress_history: bool,
 ) -> SessionHistory {
-    let (level, strategy, enabled) = tokio::join!(
-        PacmsBudgetLevel::for_user(pool, user_id),
-        ContextSelectionStrategy::for_user(pool, user_id),
-        selection_enabled(pool, user_id),
-    );
+    let (level, strategy, enabled) = preferences_for_user(pool, user_id).await;
     // IP-4 is gated by the deployment flag AND the reader's switch, so the UI toggle stops it
     // as part of one layer rather than leaving history compressed after the rest is off.
     let mut cfg = tiers.resolve(level);

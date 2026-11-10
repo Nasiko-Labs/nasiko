@@ -159,6 +159,39 @@ impl Default for ResourceLimits {
 }
 
 impl ResourceLimits {
+    // TODO: converge `validate()` and the Docker and Pod memory parsers on this one; they still
+    // carry private copies.
+    /// The memory limit in bytes. Accepts `Ki`/`Mi`/`Gi` (binary), `K`/`M`/`G` (decimal) and a
+    /// bare number of bytes; anything else, or an overflow, is `InvalidSpec`.
+    pub fn memory_bytes(&self) -> Result<u64> {
+        let invalid = || {
+            RuntimeError::InvalidSpec(format!(
+                "memory {:?} is not a recognized quantity",
+                self.memory
+            ))
+        };
+        let split = self
+            .memory
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(self.memory.len());
+        let (digits, suffix) = self.memory.split_at(split);
+        let multiplier: u64 = match suffix {
+            "" => 1,
+            "Ki" => 1 << 10,
+            "Mi" => 1 << 20,
+            "Gi" => 1 << 30,
+            "K" => 1_000,
+            "M" => 1_000_000,
+            "G" => 1_000_000_000,
+            _ => return Err(invalid()),
+        };
+        digits
+            .parse::<u64>()
+            .ok()
+            .and_then(|n| n.checked_mul(multiplier))
+            .ok_or_else(invalid)
+    }
+
     /// Validate that memory uses a recognized suffix and cpu_milli is non-zero.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.cpu_milli == 0 {

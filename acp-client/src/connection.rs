@@ -46,6 +46,31 @@ const STREAM_CHANNEL_CAPACITY: usize = 256;
 /// only guards against a pathological caller.
 const CONTROL_CHANNEL_CAPACITY: usize = 64;
 
+/// TLS material for a `wss://` endpoint, all PEM text.
+#[derive(Clone)]
+pub struct TlsConfig {
+    /// The CA certificate(s) that sign the endpoint, trusted besides the public roots. Empty
+    /// means the public roots alone (the endpoint wants only a client identity).
+    pub ca_pem: String,
+    /// The client certificate chain the endpoint requires, when it requires one.
+    pub client_cert_pem: Option<String>,
+    /// The private key of `client_cert_pem`.
+    pub client_key_pem: Option<String>,
+}
+
+impl std::fmt::Debug for TlsConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsConfig")
+            .field("ca_pem", &self.ca_pem)
+            .field("client_cert_pem", &self.client_cert_pem)
+            .field(
+                "client_key_pem",
+                &self.client_key_pem.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
+}
+
 /// Configuration for opening a connection.
 #[derive(Debug, Clone)]
 pub struct AcpConnectConfig {
@@ -61,6 +86,9 @@ pub struct AcpConnectConfig {
     /// Budget for a single post-handshake request (`session/new`, `session/load`).
     /// A turn's own wall-clock is governed separately by the caller.
     pub request_timeout: Duration,
+    /// TLS material for a `wss://` endpoint: the CA that signs it and, when it requires one,
+    /// the client identity. WebSocket transport only.
+    pub tls: Option<TlsConfig>,
 }
 
 impl Default for AcpConnectConfig {
@@ -70,6 +98,7 @@ impl Default for AcpConnectConfig {
             permission_policy: PermissionPolicy::default(),
             handshake_timeout: Duration::from_secs(30),
             request_timeout: Duration::from_secs(60),
+            tls: None,
         }
     }
 }
@@ -89,6 +118,11 @@ pub struct AcpConnection {
     turn_active: Arc<AtomicBool>,
     capabilities: NegotiatedCapabilities,
     task: tokio::task::JoinHandle<()>,
+    /// The transport's inbound pump (the WebSocket reader), aborted on drop as a
+    /// backstop. Its outbound twin is deliberately not held: aborting `task` drops
+    /// the transport's write half, the twin sees EOF and drains itself, sending
+    /// the WebSocket Close on its way out.
+    reader_guard: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// Commands the handle sends to the background task.
@@ -220,11 +254,18 @@ impl AcpConnection {
                 turn_active,
                 capabilities,
                 task,
+                reader_guard: None,
             }),
             Ok(Err(e)) => Err(e),
             // The task ended before signaling readiness (spawn/attach failure).
             Err(_) => Err(AcpError::ConnectionClosed),
         }
+    }
+
+    /// Tie a transport's inbound pump task to this connection's lifetime.
+    pub(crate) fn with_reader_guard(mut self, reader: tokio::task::JoinHandle<()>) -> Self {
+        self.reader_guard = Some(reader);
+        self
     }
 
     /// The capabilities the agent advertised at `initialize`.
@@ -319,6 +360,9 @@ impl AcpConnection {
     /// Abort the background task without waiting (used on drop as a backstop).
     fn abort(&self) {
         self.task.abort();
+        if let Some(reader) = &self.reader_guard {
+            reader.abort();
+        }
     }
 }
 

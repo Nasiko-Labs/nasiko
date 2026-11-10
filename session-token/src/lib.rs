@@ -9,16 +9,17 @@
 //! across the `bash -c` → tool subprocess tree that drops HTTP headers, and a long
 //! turn is never rejected by a short flow-freshness window.
 //!
-//! This crate is the crypto half only: [`mint_session_token`] and
-//! [`verify_session_token`]. The DB-side checks that complete authentication —
-//! the `jti` revocation lookup and the flow-participant membership check — stay
-//! in the callers (gateway, router), which already own those tables. Keeping them
-//! out means this crate needs no database or config dependency and is pure enough
-//! to unit-test in full.
+//! The crypto half ([`mint_session_token`], [`verify_session_token`]) is pure: it needs no
+//! database or config and is unit-tested in full. The DB-side checks that complete
+//! authentication, the `jti` revocation lookup, stay in the callers (gateway, router), which
+//! already own that table. The one database touch here is [`attribution`], the per-turn flow
+//! lookup both callers share, so the rule is written once.
 //!
 //! The token is an HMAC JWT signed with the platform's `AGENT_JWT_SECRET` — the
 //! same key and algorithm the existing agent-identity token uses — so a single
 //! secret configures the whole coding-agent auth path.
+
+pub mod attribution;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,7 +41,7 @@ pub const SESSION_TOKEN_AUDIENCE: &str = "nasiko-coding-session";
 /// check itself rather than by a separate freshness window.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionClaims {
-    /// The coding-agent integration id (e.g. `"opencode"`) — which agent.
+    /// The agent's UUID (the harness agent row the session runs as) — which agent.
     pub agent_id: String,
     /// The user the session belongs to — for whom.
     pub user_id: String,
@@ -146,7 +147,7 @@ pub fn mint_session_token(
 
 /// Verify a token value (with or without a `Bearer ` prefix) and return its
 /// claims. Checks the signature and expiry; the caller still performs the `jti`
-/// revocation and flow-participant checks against its own tables.
+/// revocation check against its own table.
 ///
 /// Fails closed if `secret` is empty.
 pub fn verify_session_token(

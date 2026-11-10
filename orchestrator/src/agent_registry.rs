@@ -35,7 +35,7 @@ pub async fn get_agents_for_user(
            LEFT JOIN agent_grants g
                ON g.agent_id = a.id
                AND g.grant_type::text = 'user'
-           WHERE a.status = 'running'
+           WHERE a.status IN ('running', 'parked')
              AND a.deleted_at IS NULL
              AND NOT a.is_internal
              AND (a.owner_id = $1

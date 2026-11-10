@@ -1,0 +1,40 @@
+[package]
+name = "nasiko-harness-shim"
+version = "0.1.0"
+edition = "2024"
+description = "In-sandbox shim: runs a harness's ACP command and exposes its stdio over WebSocket"
+license = "Apache-2.0"
+
+[lib]
+name = "harness_shim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "harness-shim"
+path = "src/main.rs"
+
+[[bin]]
+name = "harness-supervisor"
+path = "src/bin/harness-supervisor.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# The supervisor's per-session confinement is Linux kernel machinery; other targets build without it.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }
+seccompiler = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
+tempfile = { workspace = true }
+tokio-tungstenite = { workspace = true }

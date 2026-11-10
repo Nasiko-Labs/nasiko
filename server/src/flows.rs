@@ -129,6 +129,31 @@ pub async fn record_participant(db: &sqlx::PgPool, flow_id: &str, agent_id: Uuid
     }
 }
 
+/// Withdraw a turn the session refused (busy, superseded, or failed to start): drop the agent's
+/// participant row so the flow no longer counts as one of the session's turns, and fail the flow
+/// when it is still running with no other participant. Best effort: a failed write only leaves
+/// the flow as it was.
+pub async fn abandon_rejected(db: &sqlx::PgPool, flow_id: &str, agent_id: Uuid) {
+    let dropped = sqlx::query("DELETE FROM flow_participants WHERE flow_id = $1 AND agent_id = $2")
+        .bind(flow_id)
+        .bind(agent_id)
+        .execute(db)
+        .await;
+    let failed = sqlx::query(
+        "UPDATE flows SET status = 'failed', error_message = 'turn rejected', completed_at = now()
+          WHERE flow_id = $1 AND status = 'running'
+            AND NOT EXISTS (SELECT 1 FROM flow_participants WHERE flow_id = $1)",
+    )
+    .bind(flow_id)
+    .execute(db)
+    .await;
+    for result in [dropped, failed] {
+        if let Err(e) = result {
+            tracing::warn!(error = %e, %flow_id, "abandoning a rejected turn's flow failed");
+        }
+    }
+}
+
 // ─── Models ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, FromRow)]

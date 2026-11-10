@@ -599,7 +599,11 @@ pub(crate) async fn upload_and_deploy(
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
-    let ports = if ports.is_empty() { vec![8000] } else { ports };
+    let ports = if ports.is_empty() {
+        vec![crate::agents::DEFAULT_AGENT_PORT]
+    } else {
+        ports
+    };
 
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
@@ -1021,7 +1025,8 @@ pub async fn execute_upload_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
-    let result: Result<DeploymentStatus, String> = async {
+    // `None`: the agent was parked instead of deployed (see `parking`).
+    let result: Result<Option<DeploymentStatus>, String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
         let td = tmp_dir.clone();
@@ -1062,6 +1067,25 @@ pub async fn execute_upload_and_deploy(
         )
         .await;
 
+        // Decided before the deploy env is built, which resets the agent's state mode.
+        // A caller's own env or ports cannot reach a woken sandbox yet, so they keep a workload.
+        if !super::parking::names_a_workload(&job_env, &ports)
+            && super::parking::park_if_eligible(state, agent_id, Some(&image_tag))
+                .await
+                .map_err(|e| format!("park: {e}"))?
+        {
+            set_upload_status(
+                db,
+                &upload_id,
+                &name,
+                owner_id,
+                "orchestration_processing",
+                None,
+                None,
+            )
+            .await;
+            return Ok(None);
+        }
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
         let replica_bounds = scaling
@@ -1129,7 +1153,7 @@ pub async fn execute_upload_and_deploy(
         )
         .await;
 
-        Ok(deploy_status)
+        Ok(Some(deploy_status))
     }
     .await;
 
@@ -1157,6 +1181,10 @@ pub async fn execute_upload_and_deploy(
             // archives whatever was previously running for (mirroring `update.rs`'s
             // redeploy path). A genuinely first upload has nothing to archive yet.
             record_uploaded_version(db, agent_id, build_id, &image_tag).await;
+            let Some(deploy_status) = deploy_status else {
+                tracing::info!(build_id = %build_id, agent_id = %agent_id, "upload-and-deploy parked the agent");
+                return;
+            };
             let agent_url = crate::agents::resolve_agent_url(
                 runtime,
                 &deploy_status,
@@ -1175,6 +1203,7 @@ pub async fn execute_upload_and_deploy(
             tokio::spawn(super::utils::fetch_agent_card_with_retry(
                 db.clone(),
                 state.http_client.clone(),
+                state.runtime.clone(),
                 agent_id,
                 agent_url.clone(),
             ));
@@ -1295,7 +1324,8 @@ pub async fn execute_clone_and_deploy(
     // variant.
     let mut claimed_version: Option<String> = None;
 
-    let result: Result<(DeploymentStatus, String), String> = async {
+    // `None` in place of the status: the agent was parked instead of deployed (see `parking`).
+    let result: Result<(Option<DeploymentStatus>, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
         let tp = tar_gz_path.clone();
         let td = tmp_dir.clone();
@@ -1421,6 +1451,25 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
+        // Decided before the deploy env is built, which resets the agent's state mode.
+        // A caller's own env or ports cannot reach a woken sandbox yet, so they keep a workload.
+        if !super::parking::names_a_workload(&job_env, &ports)
+            && super::parking::park_if_eligible(state, agent_id, Some(&image_tag))
+            .await
+            .map_err(|e| format!("BUILD_FAILED:park: {e}"))?
+        {
+            set_upload_status(
+                db,
+                &upload_id,
+                &name,
+                owner_id,
+                "orchestration_processing",
+                None,
+                None,
+            )
+            .await;
+            return Ok((None, image_tag));
+        }
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
         let replica_bounds = scaling
@@ -1479,7 +1528,7 @@ pub async fn execute_clone_and_deploy(
         )
         .await;
 
-        Ok((deploy_status, image_tag))
+        Ok((Some(deploy_status), image_tag))
     }
     .await;
 
@@ -1510,6 +1559,10 @@ pub async fn execute_clone_and_deploy(
             if let Some(ver) = &claimed_version {
                 super::versions::finalize_reserved_version_with_retry(db, agent_id, ver).await;
             }
+            let Some(deploy_status) = deploy_status else {
+                tracing::info!(build_id = %build_id, agent_id = %agent_id, "clone-and-deploy parked the agent");
+                return;
+            };
             let agent_url = crate::agents::resolve_agent_url(
                 runtime,
                 &deploy_status,
@@ -1526,6 +1579,7 @@ pub async fn execute_clone_and_deploy(
             tokio::spawn(super::utils::fetch_agent_card_with_retry(
                 db.clone(),
                 state.http_client.clone(),
+                state.runtime.clone(),
                 agent_id,
                 agent_url.clone(),
             ));
@@ -2200,6 +2254,7 @@ pub(crate) struct UploadAgentsListResponse {
 fn agent_display_status(agent_status: Option<&str>) -> &'static str {
     match agent_status {
         Some("running") => "Active",
+        Some("parked") => "Parked",
         Some("deploying") | Some("pending") | Some("building") => "Deploying",
         Some("failed") => "Failed",
         Some("stopped") | Some("registered") => "Stopped",
@@ -2216,6 +2271,7 @@ fn agent_status_message(display_status: &str, version: Option<&str>) -> Option<S
         "Deploying" => Some("Agent is being deployed...".to_string()),
         "Failed" => Some("Deployment failed".to_string()),
         "Stopped" => Some("Agent is stopped".to_string()),
+        "Parked" => Some("Agent is parked; the first request starts it".to_string()),
         _ => None,
     }
 }

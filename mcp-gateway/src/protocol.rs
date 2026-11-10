@@ -2111,7 +2111,9 @@ mod tests {
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
-        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
+        let redis = nasiko_redis::SharedRedis::new(
+            redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
+        );
         McpState {
             db,
             redis,

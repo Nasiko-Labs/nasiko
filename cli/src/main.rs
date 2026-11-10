@@ -47,6 +47,8 @@ const HELP_TEXT: &str = "\
   create-session  Create a new session on the active cluster
   history    Show message history for a session
   delete-session  Delete a session
+  harnesses  List coding-agent harnesses
+  session    Harness sessions (new/show/suspend); chat with `chat --session <id>`
   context-strategy  How your chat history is selected (pacms/topk/lastk)
   budget     How much chat history a request carries (low/medium/high)
 
@@ -693,6 +695,55 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn parses_session_and_harness_commands() {
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "session",
+            "new",
+            "--harness",
+            "opencode",
+            "--repo",
+            "https://x/y.git",
+        ])
+        .unwrap();
+        let Commands::Ops(AgentOpsCommands::Session {
+            command:
+                nasiko::SessionCommands::New {
+                    harness,
+                    repo,
+                    json,
+                },
+        }) = cli.command
+        else {
+            panic!("expected session new");
+        };
+        assert_eq!(harness, "opencode");
+        assert_eq!(repo.as_deref(), Some("https://x/y.git"));
+        assert!(!json);
+
+        assert!(Cli::try_parse_from(["nasiko", "session", "new"]).is_err());
+        assert!(
+            Cli::try_parse_from(["nasiko", "session", "ls", "--all", "--state", "running"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["nasiko", "session", "rm", "s1", "--yes"]).is_ok());
+        assert!(Cli::try_parse_from(["nasiko", "session", "rm"]).is_err());
+        assert!(Cli::try_parse_from(["nasiko", "harnesses"]).is_ok());
+    }
+
+    #[test]
+    fn chat_session_conflicts_with_explicit_routing() {
+        assert!(Cli::try_parse_from(["nasiko", "chat", "--session", "s1", "hi"]).is_ok());
+        for flag in [["--agent", "a"], ["--session-id", "x"]] {
+            let args = ["nasiko", "chat", "--session", "s1", flag[0], flag[1]];
+            assert!(Cli::try_parse_from(args).is_err(), "{flag:?}");
+        }
+        for flag in ["--new", "--coding-agent", "--tui"] {
+            let args = ["nasiko", "chat", "--session", "s1", flag];
+            assert!(Cli::try_parse_from(args).is_err(), "{flag}");
+        }
     }
 
     #[test]

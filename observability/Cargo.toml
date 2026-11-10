@@ -28,6 +28,8 @@ nasiko-pricing = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+# `simulated` provides the fake sandbox provider the decorator tests record against.
+nasiko-runtime = { workspace = true, features = ["simulated"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 uuid = { workspace = true }
 mockito = { workspace = true }

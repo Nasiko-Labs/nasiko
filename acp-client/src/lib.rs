@@ -36,15 +36,17 @@ mod connection;
 mod error;
 mod permission;
 mod telemetry;
+mod transport;
 mod turn;
 
 pub use capability::{NegotiatedCapabilities, RequiredCapabilities};
-pub use connection::{AcpConnectConfig, AcpConnection, connect_local};
-pub use error::AcpError;
+pub use connection::{AcpConnectConfig, AcpConnection, TlsConfig, connect_local};
+pub use error::{AcpError, ConnectFailure};
 pub use permission::{
     PermissionDelegate, PermissionPolicy, select_allow_option, select_reject_option,
 };
 pub use telemetry::{TelemetryError, TurnTelemetry};
+pub use transport::connect_ws;
 pub use turn::{NewSessionParams, TurnEvent, TurnStream};
 
 // Re-exported so callers can set the capture policy and consume the built event

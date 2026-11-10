@@ -33,7 +33,7 @@ async fn seed_user(server: &common::TestServer, user_id: Uuid) {
 /// Insert a `running` agent row pointing at a mock A2A endpoint (a mockito server standing in
 /// for `oss/agents/github-hitl-agent`) so the orchestrator can both discover it
 /// (`AgentSelector::fetch_active_agents`, which filters on `status = 'running'`) and reach it
-/// over real HTTP (`resolve_endpoint`'s fallback to `agents.url`, since `FakeRuntime` reports no
+/// over real HTTP (`agent_resolver`'s fallback to `agents.url`, since `FakeRuntime` reports no
 /// live container for it).
 async fn seed_running_agent(
     server: &common::TestServer,
@@ -68,15 +68,10 @@ async fn seed_running_agent(
 fn streaming_tool_call_chunk(tool_name: &str, message: &str) -> String {
     let arguments = json!({ "message": message }).to_string();
     let chunk = json!({
-        "id": "chatcmpl-hitl",
-        "model": "gpt-4o",
         "choices": [{
-            "index": 0,
             "delta": {
                 "tool_calls": [{
                     "index": 0,
-                    "id": "call-hitl",
-                    "type": "function",
                     "function": { "name": tool_name, "arguments": arguments }
                 }]
             }
@@ -404,11 +399,7 @@ fn sub_agent_completed_body(reply_text: &str) -> String {
 /// what turn 0 of the *resumed* orchestrator turn should produce once the sub-agent's reply gives
 /// it enough to answer directly.
 fn streaming_text_chunk(text: &str) -> String {
-    let chunk = json!({
-        "id": "chatcmpl-hitl",
-        "model": "gpt-4o",
-        "choices": [{ "index": 0, "delta": { "content": text } }]
-    });
+    let chunk = json!({ "choices": [{ "delta": { "content": text } }] });
     format!("data: {chunk}\n\n")
 }
 

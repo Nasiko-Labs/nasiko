@@ -584,6 +584,7 @@ async fn process_job(
     let ctx = MafRunContext {
         client: &agent_calls.client,
         agent_calls: &agent_calls.meter,
+        targets: agent_calls.targets.as_ref(),
         outbound: agent_calls.outbound.as_ref(),
         db,
         flow_guard,

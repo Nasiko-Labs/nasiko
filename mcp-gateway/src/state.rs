@@ -2,7 +2,7 @@
 //!
 //! Constructed once from the server's `AppState` primitives (see
 //! `oss/server/src/mcp/`) and threaded through the pure gateway logic. It holds
-//! only cheaply-cloneable handles — the same `PgPool`, `redis::Client`, and
+//! only cheaply-cloneable handles — the same `PgPool`, `SharedRedis`, and
 //! pooled `reqwest::Client` the rest of the server already shares — so there is
 //! no duplicated infrastructure.
 
@@ -20,7 +20,7 @@ use crate::search::ToolSearchIndex;
 #[derive(Clone)]
 pub struct McpState {
     pub db: PgPool,
-    pub redis: redis::Client,
+    pub redis: nasiko_redis::SharedRedis,
     pub http_client: reqwest::Client,
     /// SSRF/DNS-rebinding-guarded client for outbound calls to user-controlled
     /// URLs (OAuth discovery/exchange/refresh against dynamically-discovered
@@ -65,7 +65,7 @@ impl McpState {
     /// Build gateway state from the server's shared handles and platform config.
     pub fn new(
         db: PgPool,
-        redis: redis::Client,
+        redis: nasiko_redis::SharedRedis,
         http_client: reqwest::Client,
         config: &Config,
     ) -> Self {

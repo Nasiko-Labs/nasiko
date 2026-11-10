@@ -74,6 +74,42 @@ pub async fn build(
     env
 }
 
+/// Only the platform's own keys (credentials and LLM router wiring), as [`apply_platform_env`]
+/// would set them on an empty env, minted through `db`. For callers that store the minted values
+/// rather than re-mint them on every start (a parked agent's sandbox), and that mint inside a
+/// transaction of their own so a pool of one connection still serves them.
+pub async fn platform_env(
+    state: &AppState,
+    db: &mut sqlx::PgConnection,
+    agent_id: Uuid,
+    owner_id: Uuid,
+) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    crate::mcp::wiring::inject_agent_gateway_token(&mut *db, &mut env, agent_id).await;
+    inject_agent_state(state, &mut *db, &mut env, agent_id, StateModeOnDeploy::Keep).await;
+    crate::llm_router::wiring::inject_agent_llm_env(&mut *db, &mut env, agent_id, Some(owner_id))
+        .await;
+    env
+}
+
+/// [`build`] with the platform's keys supplied instead of minted: the agent's secrets and
+/// defaults, then `caller_env`, then `platform_env` on top, the reserved keys stripped from
+/// the first two exactly as `build` strips them. Mints nothing.
+pub async fn build_with_platform_env(
+    state: &AppState,
+    agent_id: Uuid,
+    caller_env: HashMap<String, String>,
+    platform_env: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut env = state.agent_env(agent_id).await;
+    env.extend(caller_env);
+    for key in RESERVED_KEYS {
+        env.remove(key);
+    }
+    env.extend(platform_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+    env
+}
+
 /// Sets all of the platform's keys on `env`: the credentials (`apply_credentials`) and the LLM
 /// router wiring (`apply_llm_wiring`).
 ///
@@ -107,7 +143,16 @@ pub async fn apply_credentials(
         env.remove(key);
     }
     crate::mcp::wiring::inject_agent_gateway_token(&state.db, env, agent_id).await;
-    inject_agent_state(state, env, agent_id, state_mode).await;
+    inject_agent_state(state, &state.db, env, agent_id, state_mode).await;
+    // Minting above superseded the credentials a parked agent's sandbox was created with, so
+    // what is stored for it is stale: the next wake mints its own. Cleared after minting, so a
+    // wake that raced this deploy cannot store credentials this mint had already superseded.
+    if let Err(e) =
+        crate::agents::sandbox_credentials::clear_agent_sandbox_credentials(&state.db, agent_id)
+            .await
+    {
+        tracing::warn!(%agent_id, error = %e, "could not clear stored sandbox credentials");
+    }
 }
 
 /// Points the agent's LLM SDK at the LLM router, when one is configured.
@@ -117,14 +162,7 @@ pub async fn apply_llm_wiring(
     agent_id: Uuid,
     owner_id: Uuid,
 ) {
-    crate::llm_router::wiring::inject_agent_llm_env(
-        &state.db,
-        env,
-        agent_id,
-        Some(owner_id),
-        state.config.openai_api_key.clone(),
-    )
-    .await;
+    crate::llm_router::wiring::inject_agent_llm_env(&state.db, env, agent_id, Some(owner_id)).await;
 }
 
 /// Gives the agent its state API address and credential, and, for a deploy that
@@ -135,6 +173,7 @@ pub async fn apply_llm_wiring(
 /// early errs toward `memory`, the conservative reading, if the deploy then fails.
 async fn inject_agent_state(
     state: &AppState,
+    mint_db: impl sqlx::PgExecutor<'_>,
     env: &mut HashMap<String, String>,
     agent_id: Uuid,
     state_mode: StateModeOnDeploy,
@@ -153,7 +192,7 @@ async fn inject_agent_state(
     {
         tracing::error!(%agent_id, error = %e, "failed to reset agent state mode on deploy");
     }
-    match crate::agent_state::mint_state_token(&state.db, agent_id).await {
+    match crate::agent_state::mint_state_token(mint_db, agent_id).await {
         Ok(token) => {
             env.insert(STATE_URL_VAR.into(), url);
             env.insert(STATE_TOKEN_VAR.into(), token);

@@ -11,6 +11,7 @@ pub mod admission;
 pub mod agent_client;
 pub mod agent_lifecycle;
 pub mod agent_proxy;
+pub mod agent_resolver;
 pub mod agent_scaling;
 pub mod agent_state;
 pub mod agent_wake;
@@ -54,11 +55,14 @@ pub mod rate_limit;
 pub mod registry_a2a;
 pub mod router;
 pub mod runtime;
+pub mod sandbox_wiring;
 pub mod secrets;
 pub mod seed;
 pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
+pub mod serve;
+pub mod sessions;
 pub mod settings;
 /// The SPA serving shared by every binary that embeds a UI bundle.
 pub use nasiko_spa as spa;
@@ -204,7 +208,9 @@ where
             .expect("failed to build MAF agent client");
         nasiko_orchestrator::maf::start_worker(
             state.db.clone(),
-            state.redis.clone(),
+            // Its own connections: the worker blocks on stream reads, which would stall the
+            // shared one.
+            state.redis.client().clone(),
             maf_client,
             // Step calls bypass the proxy, so they report their load through this seam.
             nasiko_orchestrator::maf::AgentCalls {
@@ -214,6 +220,10 @@ where
                 // than a value captured now - see `PromptContextOutbound`.
                 outbound: std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
                     state.prompt_context.clone(),
+                )),
+                // Wakes a parked agent before its step is sent, like the proxy and dispatch do.
+                targets: std::sync::Arc::new(crate::agent_resolver::ServerTargetResolver::new(
+                    state.clone(),
                 )),
             },
             // The same guard the A2A dispatch and agent-proxy paths use, so a
@@ -354,6 +364,7 @@ where
         .merge(assessment::router(assessment_limiter))
         .merge(overview::router())
         .merge(coding_agent_onboarding::router())
+        .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
@@ -443,9 +454,18 @@ where
     let proxy_routes = Router::new()
         .route("/agents/{id}/{*rest}", any(agent_proxy::agent_proxy))
         .route("/agents/{id}", post(agent_proxy::agent_proxy))
+        // The trailing-slash form of the bare id: the wildcard above needs a non-empty tail.
+        .route("/agents/{id}/", post(agent_proxy::agent_proxy))
+        // A user's session, or an agent calling a peer with its own gateway credential.
         .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
+            auth::AgentCallerAuth {
+                app: state.clone(),
+                limiter: RateLimiter::new(
+                    state.config.agent_peer_call_rate_limit_per_minute,
+                    Duration::from_secs(60),
+                ),
+            },
+            auth::require_user_or_agent,
         ));
 
     // LLM router: OpenAI-compatible egress proxy for deployed agents. Mounted at the

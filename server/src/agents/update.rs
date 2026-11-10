@@ -473,7 +473,8 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
+    // `None` in place of the status: the agent was parked instead of deployed (see `parking`).
+    let result: Result<(Option<DeploymentStatus>, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
             let tmp = tmp_dir.clone();
@@ -538,6 +539,27 @@ pub async fn execute_agent_update(
         )
         .await;
 
+        // Decided before the deploy env is built, which resets the agent's state mode.
+        if super::parking::park_if_eligible(&state, agent_id, Some(&image_tag))
+            .await
+            .map_err(|e| format!("park: {e}"))?
+        {
+            set_upload_status(
+                db,
+                &upload_id,
+                &name,
+                owner_id,
+                "orchestration_processing",
+                None,
+                None,
+            )
+            .await;
+            return Ok((None, Vec::new()));
+        }
+        // A workload deploy of a new image leaves no old sandbox behind to wake instead of it.
+        super::parking::release_agent_sandbox(&state, agent_id)
+            .await
+            .map_err(|e| format!("release sandbox: {e}"))?;
         // Read before the deploy env is built: a failed read must not rotate the running
         // agent's credentials or reset its state mode for a deploy that never happens.
         let replica_bounds = scaling
@@ -598,7 +620,7 @@ pub async fn execute_agent_update(
             None,
         )
         .await;
-        Ok((deploy_status, spec_ports))
+        Ok((Some(deploy_status), spec_ports))
     }
     .await;
 
@@ -619,48 +641,52 @@ pub async fn execute_agent_update(
             })
             .await;
 
-            let agent_url = crate::agents::resolve_agent_url(
-                &state.runtime,
-                &deploy_status,
-                &nasiko_runtime::ContainerId::from_uuid(agent_id),
-            )
-            .await;
-            let _ = sqlx::query(
-                "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
-            )
-            .bind(agent_id)
-            .bind(&agent_url)
-            .execute(db)
-            .await;
-            // Refresh card-derived fields (skills, description, transport_path)
-            // for the newly deployed version.
-            tokio::spawn(super::utils::fetch_agent_card_with_retry(
-                state.db.clone(),
-                state.http_client.clone(),
-                agent_id,
-                agent_url.clone(),
-            ));
+            // A parked agent has no workload: no address to record, no card to fetch.
+            if let Some(deploy_status) = deploy_status {
+                let agent_url = crate::agents::resolve_agent_url(
+                    &state.runtime,
+                    &deploy_status,
+                    &nasiko_runtime::ContainerId::from_uuid(agent_id),
+                )
+                .await;
+                let _ = sqlx::query(
+                    "UPDATE agents SET status = 'running', url = $2, updated_at = now() WHERE id = $1",
+                )
+                .bind(agent_id)
+                .bind(&agent_url)
+                .execute(db)
+                .await;
+                // Refresh card-derived fields (skills, description, transport_path)
+                // for the newly deployed version.
+                tokio::spawn(super::utils::fetch_agent_card_with_retry(
+                    state.db.clone(),
+                    state.http_client.clone(),
+                    state.runtime.clone(),
+                    agent_id,
+                    agent_url.clone(),
+                ));
 
-            // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
-            // so the crash guardian and restart can find/rebuild this workload after an
-            // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
-            // to a hardcoded port 8000 guess instead of the port this deploy actually used.
-            // owner_id here must be the agent's real owner (agent_owner_id), not the
-            // caller who triggered this update — restart_deployment reads this exact
-            // column and re-injects LLM wiring from it, so a wrong value here would
-            // corrupt every future restart's wiring too, not just this one.
-            let _ = sqlx::query(
-                "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
-                 VALUES ($1, $2, 'running', $3, $4, $5, $6)",
-            )
-            .bind(agent_id)
-            .bind(build_id)
-            .bind(agent_owner_id)
-            .bind(agent_id.to_string())
-            .bind(&image_tag)
-            .bind(&spec_ports)
-            .execute(db)
-            .await;
+                // Persist k8s_deployment_name (= agent UUID string) + spec_image + spec_ports
+                // so the crash guardian and restart can find/rebuild this workload after an
+                // update (RUN-3/RUN-3b); without spec_ports, restart_deployment falls back
+                // to a hardcoded port 8000 guess instead of the port this deploy actually used.
+                // owner_id here must be the agent's real owner (agent_owner_id), not the
+                // caller who triggered this update — restart_deployment reads this exact
+                // column and re-injects LLM wiring from it, so a wrong value here would
+                // corrupt every future restart's wiring too, not just this one.
+                let _ = sqlx::query(
+                    "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id, k8s_deployment_name, spec_image, spec_ports) \
+                     VALUES ($1, $2, 'running', $3, $4, $5, $6)",
+                )
+                .bind(agent_id)
+                .bind(build_id)
+                .bind(agent_owner_id)
+                .bind(agent_id.to_string())
+                .bind(&image_tag)
+                .bind(&spec_ports)
+                .execute(db)
+                .await;
+            }
 
             set_build_status(db, build_id, BuildStatus::Success).await;
             set_upload_status(
@@ -939,6 +965,48 @@ pub async fn execute_agent_rollback(
         .execute(db)
         .await;
 
+    // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
+    // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
+    // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
+    // outside the `nasiko/` convention, e.g. upload/reupload's already-qualified tags).
+    let image =
+        crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
+    // Decided before the deploy env is built, which resets the agent's state mode.
+    match super::parking::park_if_eligible(&state, agent_id, Some(&image)).await {
+        Ok(true) => {
+            activate_rollback_target(db, agent_id, &target.version).await;
+            let _ = sqlx::query("UPDATE agents SET version = $2, updated_at = now() WHERE id = $1")
+                .bind(agent_id)
+                .bind(&target.version)
+                .execute(db)
+                .await;
+            set_build_status(db, rollback_build_id, BuildStatus::Success).await;
+            tracing::info!(build_id = %rollback_build_id, %agent_id, version = %target.version, "agent rollback parked the agent");
+            return;
+        }
+        Ok(false) => {
+            if let Err(e) = super::parking::release_agent_sandbox(&state, agent_id).await {
+                fail_rollback(
+                    db,
+                    rollback_build_id,
+                    agent_id,
+                    &format!("release sandbox: {e}"),
+                )
+                .await;
+                return;
+            }
+        }
+        Err(e) => {
+            fail_rollback(
+                db,
+                rollback_build_id,
+                agent_id,
+                &format!("read parking eligibility: {e}"),
+            )
+            .await;
+            return;
+        }
+    }
     // Read before the deploy env is built: a failed read must not rotate the running
     // agent's credentials or reset its state mode for a deploy that never happens.
     let replica_bounds = match scaling.bounds().await {
@@ -968,12 +1036,6 @@ pub async fn execute_agent_rollback(
         crate::agents::deploy_env::StateModeOnDeploy::Reset,
     )
     .await;
-    // `agent_versions.image_tag` for OCI-push deploys stores the registry-relative
-    // `nasiko/{name}:{tag}` as-is, which pulls from docker.io if applied unqualified
-    // — qualify exactly as the ad-hoc deploy and restart paths do (no-op for refs
-    // outside the `nasiko/` convention, e.g. upload/reupload's already-qualified tags).
-    let image =
-        crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &target.image_tag);
     // UUID-keyed (see build_agent_spec) so rollback re-targets the live workload.
     let mut spec = crate::agents::build_agent_spec(
         agent_id,
@@ -1000,23 +1062,7 @@ pub async fn execute_agent_rollback(
 
     match scaling.deploy(&spec).await {
         Ok(deploy_status) => {
-            // Deactivate current version, activate rollback target.
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = false, status = 'archived' \
-                 WHERE agent_id = $1 AND is_active = true",
-            )
-            .bind(agent_id)
-            .execute(db)
-            .await;
-
-            let _ = sqlx::query(
-                "UPDATE agent_versions SET is_active = true, status = 'active' \
-                 WHERE agent_id = $1 AND version = $2",
-            )
-            .bind(agent_id)
-            .bind(&target.version)
-            .execute(db)
-            .await;
+            activate_rollback_target(db, agent_id, &target.version).await;
 
             let agent_url = crate::agents::resolve_agent_url(
                 &state.runtime,
@@ -1039,6 +1085,7 @@ pub async fn execute_agent_rollback(
             tokio::spawn(super::utils::fetch_agent_card_with_retry(
                 state.db.clone(),
                 state.http_client.clone(),
+                state.runtime.clone(),
                 agent_id,
                 agent_url.clone(),
             ));
@@ -1064,6 +1111,26 @@ pub async fn execute_agent_rollback(
         }
         Err(e) => fail_rollback(db, rollback_build_id, agent_id, &e.to_string()).await,
     }
+}
+
+/// Deactivates the current version and activates the rollback target.
+async fn activate_rollback_target(db: &sqlx::PgPool, agent_id: Uuid, version: &str) {
+    let _ = sqlx::query(
+        "UPDATE agent_versions SET is_active = false, status = 'archived' \
+         WHERE agent_id = $1 AND is_active = true",
+    )
+    .bind(agent_id)
+    .execute(db)
+    .await;
+
+    let _ = sqlx::query(
+        "UPDATE agent_versions SET is_active = true, status = 'active' \
+         WHERE agent_id = $1 AND version = $2",
+    )
+    .bind(agent_id)
+    .bind(version)
+    .execute(db)
+    .await;
 }
 
 /// Marks a rollback that could not deploy, and its agent, failed.

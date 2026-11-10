@@ -87,9 +87,9 @@ async fn setup() -> Harness {
 /// need to look "active". Marking them `'running'` would leak them into
 /// `AgentSelector::fetch_active_agents` (used by orchestrator dispatch to
 /// build its tool list), and since they were never `runtime.deploy()`ed into
-/// `SimulatedRuntime`, each would fail its live-endpoint lookup and get
-/// flipped to `'stopped'` by `resolve_endpoint`'s fallback — silently
-/// polluting the orchestrator benchmark with hundreds of failed lookups.
+/// `SimulatedRuntime`, each would fail its live-endpoint lookup (the
+/// resolver falls back to the stored URL and logs a warning per agent) — silently polluting the
+/// orchestrator benchmark with hundreds of failed lookups.
 async fn create_delete_pool(pool: &sqlx::PgPool, owner_id: Uuid, n: usize) -> Vec<Uuid> {
     let names: Vec<String> = (0..n).map(|i| format!("bench-delete-target-{i}")).collect();
     sqlx::query_scalar(

@@ -7,12 +7,14 @@ edition.workspace = true
 # control plane mints at session open carrying {agent_id, user_id, session_id,
 # flow_id, jti}, verified identically by the MCP gateway and the LLM router.
 #
-# This crate is the crypto half only — mint, verify signature + expiry, extract
-# claims. The DB-side checks (jti revocation, flow-participant membership) stay
-# in the callers, so this crate has no database or config dependency.
+# The crypto half (mint, verify signature + expiry, extract claims) is pure. The
+# DB-side checks (jti revocation) stay in the callers; the one DB touch here is
+# the per-turn flow attribution lookup both callers share (`attribution`).
 
 [dependencies]
 jsonwebtoken = { workspace = true }
+sqlx = { workspace = true }
+tracing = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }

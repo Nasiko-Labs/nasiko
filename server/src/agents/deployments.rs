@@ -304,6 +304,39 @@ pub(crate) async fn restart_deployment(
         return StatusCode::FORBIDDEN.into_response();
     }
 
+    // A parkable agent has no workload to restart: release what it has and let the next
+    // request wake it from its current image (never parked without one).
+    let parked_image = if info.image.is_empty() {
+        info.spec_image.clone().unwrap_or_default()
+    } else {
+        info.image.clone()
+    };
+    match crate::agents::parking::parks(&state, info.agent_id).await {
+        Ok(true) if parked_image.is_empty() => {
+            return (StatusCode::CONFLICT, "agent has no recorded image to park").into_response();
+        }
+        Ok(true) => {
+            if let Err(e) =
+                crate::agents::parking::park_agent(&state, info.agent_id, Some(&parked_image)).await
+            {
+                tracing::error!(%e, %deployment_id, "restart_deployment: could not park the agent");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "warnings": ["agent is parked; the next request starts it"],
+                })),
+            )
+                .into_response();
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::error!(%e, %deployment_id, "restart_deployment: could not read parking eligibility");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    }
+
     // Atomic mark-starting BEFORE touching the runtime: two concurrent restart
     // calls for the same deployment could both pass a plain read-then-check
     // (both see status='stopped' at fetch time) and then both race to
@@ -330,13 +363,13 @@ pub(crate) async fn restart_deployment(
         return (StatusCode::CONFLICT, "agent is already running or starting").into_response();
     }
 
-    // Resolve stored ports; fall back to port 8000 for pre-migration agents.
+    // Resolve stored ports; fall back to the default port for pre-migration agents.
     let ports: Vec<u16> = if let Some(stored) = info.spec_ports.filter(|v| !v.is_empty()) {
         tracing::info!(agent_id = %info.agent_id, ports = ?stored, "restart: using stored spec ports");
         stored.into_iter().map(|p| p as u16).collect()
     } else {
-        tracing::warn!(agent_id = %info.agent_id, "restart: spec_ports not stored, falling back to port 8000");
-        vec![8000]
+        tracing::warn!(agent_id = %info.agent_id, "restart: spec_ports not stored, falling back to the default port");
+        vec![crate::agents::DEFAULT_AGENT_PORT]
     };
 
     // Resolve stored image; fall back to agents.image for pre-migration agents.

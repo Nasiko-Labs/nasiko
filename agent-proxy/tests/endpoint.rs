@@ -55,6 +55,7 @@ fn resolved_agent_name_field() {
         name: "my-agent".to_string(),
         is_internal: false,
         keeps_session_memory: false,
+        parked: false,
         transport_path: None,
         endpoint: None,
     };
@@ -69,6 +70,7 @@ fn resolved_agent_endpoint_may_be_absent() {
         name: "my-agent".to_string(),
         is_internal: false,
         keeps_session_memory: false,
+        parked: false,
         transport_path: None,
         endpoint: None,
     };
@@ -81,6 +83,7 @@ fn resolved_agent_endpoint_when_present() {
         name: "my-agent".to_string(),
         is_internal: false,
         keeps_session_memory: false,
+        parked: false,
         transport_path: None,
         endpoint: Some(AgentEndpoint {
             host: "10.0.0.5".to_string(),
@@ -126,6 +129,7 @@ fn resolved_agent_debug_contains_name() {
         name: "agent-x".to_string(),
         is_internal: false,
         keeps_session_memory: false,
+        parked: false,
         transport_path: None,
         endpoint: None,
     };
@@ -156,6 +160,7 @@ fn resolved_agent_clone_copies_all_fields() {
         name: "n".to_string(),
         is_internal: false,
         keeps_session_memory: false,
+        parked: false,
         transport_path: None,
         endpoint: Some(AgentEndpoint {
             host: "h".to_string(),

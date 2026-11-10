@@ -264,14 +264,16 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 )
                 .await;
 
-                // Wait for container to become healthy, then fetch agent card
-                crate::agents::utils::fetch_agent_card_with_retry(
+                // Fetch the agent card once the container is healthy. In the background: the
+                // wait can be long (see `fetch_agent_card_with_retry`), and the next seed agent
+                // must not queue behind it.
+                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
                     state.db.clone(),
                     state.http_client.clone(),
+                    state.runtime.clone(),
                     agent.id,
                     agent_url.clone(),
-                )
-                .await;
+                ));
             }
             Err(e) => {
                 warn!(agent = %agent_name, error = %e, "failed to deploy seed agent");
@@ -609,6 +611,7 @@ async fn deploy_internal_agent(
     tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
         state.db.clone(),
         state.http_client.clone(),
+        state.runtime.clone(),
         agent_id,
         agent_url,
     ));
@@ -1048,5 +1051,150 @@ mod extract_name_tests {
             extract_name("myregistry.example.com:5000/team/project/agent:v3"),
             "agent"
         );
+    }
+}
+
+/// Why harness agents must not be seeded, if they must not: sessions could not run anyway.
+///
+/// A harness sandbox's credentials are signed with `AGENT_JWT_SECRET`, so without it every turn
+/// fails; and a server whose sandbox provider is not available (a backend that is not built in or
+/// not reachable) cannot start one. Seeding the agents would only advertise harnesses that cannot
+/// work. The reason is `(level_is_error, message)`.
+fn harness_seeding_blocked(
+    jwt_secret_set: bool,
+    provider_available: bool,
+    provider_kind: &str,
+) -> Option<(bool, String)> {
+    if !jwt_secret_set {
+        return Some((
+            true,
+            "harness sessions disabled: AGENT_JWT_SECRET unset".into(),
+        ));
+    }
+    if !provider_available {
+        return Some((
+            false,
+            format!("harness sessions disabled: sandbox provider {provider_kind} unavailable"),
+        ));
+    }
+    None
+}
+
+/// Boot-time harness seeding: [`seed_harness_agents`], unless [`harness_seeding_blocked`]. When
+/// blocked, logs the reason once (error for a missing secret, warn for an unavailable provider)
+/// with the harness agents already seeded, which stay listed but cannot run.
+pub async fn seed_harness_agents_if_enabled(state: &AppState) {
+    let session_key = nasiko_runtime::SandboxKey::Session {
+        session_id: uuid::Uuid::nil(),
+    };
+    let blocked = harness_seeding_blocked(
+        !state.config.agent_jwt_secret.is_empty(),
+        state.sandbox.is_available_for(&session_key),
+        &state.sandbox.kind().to_string(),
+    );
+    if let Some((is_error, reason)) = blocked {
+        let advertised: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM agents WHERE workload_kind = 'harness' AND deleted_at IS NULL",
+        )
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+        if is_error {
+            tracing::error!(
+                ?advertised,
+                "{reason} (agents already seeded stay listed but cannot run)"
+            );
+        } else {
+            tracing::warn!(
+                ?advertised,
+                "{reason} (agents already seeded stay listed but cannot run)"
+            );
+        }
+        return;
+    }
+    seed_harness_agents(state).await;
+}
+
+/// Ensure every enabled harness has the `agents` row sessions attach to.
+///
+/// A harness agent is a routable identity, not a deployment: `status = 'running'` with no
+/// container, because each session brings up its own sandbox. Idempotent. The upsert only
+/// ever updates a row that is already a harness, so an unrelated agent that happens to share
+/// the name is left alone and reported instead of being repurposed.
+pub async fn seed_harness_agents(state: &AppState) {
+    let owner_id: Uuid = match sqlx::query_scalar(
+        "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(id)) => id,
+        _ => {
+            warn!("no admin user found, cannot seed harness agents (run bootstrap first)");
+            return;
+        }
+    };
+    let harnesses = match crate::sessions::HarnessCatalog::new(state.db.clone())
+        .list_enabled()
+        .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(error = %e, "harness catalog unreadable, skipping harness agent seeding");
+            return;
+        }
+    };
+    for harness in harnesses {
+        match upsert_harness_agent(&state.db, owner_id, &harness).await {
+            Ok(1) => info!(harness = %harness.id, "harness agent ready"),
+            Ok(_) => warn!(
+                harness = %harness.id,
+                "an agent named '{}' already exists and is not a harness; not seeding it", harness.id
+            ),
+            Err(e) => warn!(harness = %harness.id, error = %e, "failed to seed harness agent"),
+        }
+    }
+}
+
+async fn upsert_harness_agent(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    harness: &crate::sessions::Harness,
+) -> sqlx::Result<u64> {
+    sqlx::query(
+        r#"INSERT INTO agents (name, display_name, owner_id, image, status, is_public, is_internal,
+                               workload_kind, harness_id)
+           VALUES ($1, $2, $3, $4, 'running', true, false, 'harness', $1)
+           ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
+               SET display_name = EXCLUDED.display_name, image = EXCLUDED.image,
+                   updated_at = now()
+               WHERE agents.workload_kind = 'harness'"#,
+    )
+    .bind(&harness.id)
+    .bind(&harness.name)
+    .bind(owner_id)
+    .bind(&harness.image)
+    .execute(db)
+    .await
+    .map(|done| done.rows_affected())
+}
+
+#[cfg(test)]
+mod harness_seeding_tests {
+    use super::harness_seeding_blocked;
+
+    #[test]
+    fn seeding_needs_a_secret_and_a_live_provider() {
+        assert_eq!(harness_seeding_blocked(true, true, "docker"), None);
+        let (error, msg) = harness_seeding_blocked(false, true, "docker").unwrap();
+        assert!(error && msg.contains("AGENT_JWT_SECRET unset"), "{msg}");
+        let (error, msg) = harness_seeding_blocked(true, false, "pod").unwrap();
+        assert!(!error, "an unavailable provider is a warning");
+        assert_eq!(
+            msg,
+            "harness sessions disabled: sandbox provider pod unavailable"
+        );
+        // The secret is reported first when both are missing.
+        assert!(harness_seeding_blocked(false, false, "pod").unwrap().0);
     }
 }

@@ -18,10 +18,6 @@ use super::proxy::CodingAgentTarget;
 use super::turn::{CodingTurnError, CodingTurnRequest};
 use crate::state::AppState;
 
-/// The session-bound token's TTL (NAS-839): one hour, which also bounds how long
-/// a HITL approval can be awaited (see `coding::permission`).
-pub const CODING_SESSION_TOKEN_TTL_SECS: u64 = 3600;
-
 /// Mint the per-turn session token, wire the agent's model/MCP env, run the ACP
 /// turn, and return its events as A2A SSE.
 ///
@@ -47,18 +43,12 @@ pub async fn run_coding_turn_sse(
     if !state.config.agent_jwt_secret.is_empty()
         && let Some(uid) = user_id
     {
-        let algorithm = nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
-        let input = nasiko_session_token::SessionTokenInput {
-            agent_id: agent_id.to_string(),
-            user_id: uid.to_string(),
-            session_id: context_id.to_string(),
-            flow_id: flow_id.to_string(),
-        };
-        match nasiko_session_token::mint_session_token(
-            &input,
-            &state.config.agent_jwt_secret,
-            CODING_SESSION_TOKEN_TTL_SECS,
-            algorithm,
+        match crate::sessions::identity::mint_session_token(
+            &state.config,
+            agent_id,
+            uid,
+            context_id,
+            flow_id,
         ) {
             Ok(minted) => {
                 // The agent's model calls read their router credential from env;
@@ -67,11 +57,7 @@ pub async fn run_coding_turn_sse(
                 env.insert("OPENAI_API_KEY".to_string(), minted.token.clone());
                 env.insert("ANTHROPIC_API_KEY".to_string(), minted.token.clone());
                 env.insert("NASIKO_SESSION_TOKEN".to_string(), minted.token.clone());
-                session_token_id = Some(super::revocation::RevokedTokenId {
-                    jti: minted.jti.clone(),
-                    expires_at: chrono::DateTime::from_timestamp(minted.expires_at as i64, 0)
-                        .unwrap_or_else(chrono::Utc::now),
-                });
+                session_token_id = Some(super::revocation::RevokedTokenId::from_minted(&minted));
                 session_token = Some(minted.token);
 
                 // Point the agent's model SDK at the LLM router (authenticated by

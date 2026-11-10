@@ -337,14 +337,31 @@ are indistinguishable from talking to any other A2A agent.
 
 ### What the proxy does on every call (steps 5-8):
 
-1. **Authenticates the caller** — the proxy identifies the calling agent before forwarding
-2. **Checks agent-to-agent ACL** — `check_agent_acl(caller_agent_id, target_agent_id)` against the `agent_acl` table.
+1. **Authenticates the caller** — a user's session, or an agent calling a peer. An agent sends its
+   own deploy-time `MCP_GATEWAY_TOKEN` as `Authorization: Bearer`, which proves *which agent* is
+   calling. *Which user* it works for is never taken from the request: it is resolved from the
+   `traceparent` against `flows.user_id`, and the agent must be a recorded participant of that
+   live flow (the same rule the MCP gateway and LLM router apply). No `traceparent`, or a flow the
+   agent is not part of, is a 403. The call then runs as that user, so every user-level ACL
+   applies too. Both `/api/agents/{id}` and `/api/agents/{id}/` reach the agent's A2A mount.
+2. **Checks agent-to-agent ACL** — `check_agent_acl(caller_agent_id, target_agent_id)` against the `agent_acl` table,
+   before the flow guard spends any budget and before a parked target is woken.
    Allowlist semantics: no rows for caller = unrestricted; any rows = only listed targets allowed.
-   Enforced inside `CpCallGuard.before_call()` in `server/src/acl.rs`.
+   Enforced in the proxy (`server/src/agent_proxy.rs`) and inside `CpCallGuard.before_call()` (`server/src/acl.rs`).
    Distinct from user-to-agent access (`agent_grants` / `is_public`), which gates API-level access.
 3. **Logs the interaction** — caller, target, timestamp, latency, status (audit trail)
-4. **Rate limits** — prevent a rogue agent from flooding another
-5. **Forwards request** — to target agent's actual private IP:port
+4. **Rate limits** — an agent caller is limited per calling agent (keyed by its id) in the same fixed-window
+   budget `AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE` (default 300), so a rogue agent cannot flood its peers (429 with `Retry-After`)
+   Agents cannot drive a harness or a legacy coding agent through the proxy: such a call (including its
+   `tasks/*` methods) is refused with JSON-RPC `-32600` before anything is written. An external agent
+   calling a discovered URL must present a user JWT or an agent credential (`MCP_GATEWAY_TOKEN`, with a
+   `traceparent` naming a flow it participates in); the in-tree assistant-agent sends its own token.
+5. **Forwards request** — to the target resolved by kind (`server/src/agent_resolver.rs`): a
+   resident agent's live container address, or, for a **parked** agent (no workload while idle),
+   its sandbox, woken by this very request. A harness agent has no address at all; its turns run
+   in a session sandbox. The registry therefore returns the proxy URL
+   (`{base}/api/agents/{id}`) for **every** agent, never a container address, and calling a
+   parked or harness agent at a direct URL is unsupported.
 6. **Returns response** — strips internal headers, returns to caller
 
 ## Registry Data Model

@@ -47,6 +47,21 @@ pub fn instrument<R: ContainerRuntime>(
     )
 }
 
+/// The Docker settings every Docker-backed component shares (the deployment runtime and the
+/// sandbox provider), so one config decides how both reach the daemon and its registries.
+pub fn docker_runtime_config(config: &Config) -> DockerRuntimeConfig {
+    DockerRuntimeConfig {
+        network: config.docker_agent_network.clone(),
+        registry_host: config.oci_registry_host.clone(),
+        registry_username: config.agent_registry_username.clone(),
+        registry_password: config.agent_registry_password.clone(),
+        registry_credentials_host: config.agent_registry_host.clone(),
+        agent_memory_volume: config.agent_memory_volume.clone(),
+        agent_memory_init_image: config.agent_memory_init_image.clone(),
+        ..DockerRuntimeConfig::default()
+    }
+}
+
 /// Build a `DockerRuntime` wrapped with the standard instrumentation stack (see
 /// [`instrument`]). The returned runtime implements `ContainerRuntime`
 /// transparently — callers never import bollard, observability, or mcp-gateway.
@@ -71,18 +86,9 @@ pub async fn build_docker_runtime(
         config.agent_image_registry.clone(),
     ));
 
-    let docker = DockerRuntime::new(DockerRuntimeConfig {
-        network: config.docker_agent_network.clone(),
-        registry_host: config.oci_registry_host.clone(),
-        registry_username: config.agent_registry_username.clone(),
-        registry_password: config.agent_registry_password.clone(),
-        registry_credentials_host: config.agent_registry_host.clone(),
-        agent_memory_volume: config.agent_memory_volume.clone(),
-        agent_memory_init_image: config.agent_memory_init_image.clone(),
-        ..DockerRuntimeConfig::default()
-    })
-    .await?
-    .with_image_source(image_source);
+    let docker = DockerRuntime::new(docker_runtime_config(config))
+        .await?
+        .with_image_source(image_source);
     // Created once here, never per-deploy, to avoid a create/create race between
     // concurrent MCP-server-upload builds. Isolates uploaded MCP servers from
     // Postgres/Redis/agents — see docs/MCP_UPLOAD_PLAN_OSS.md §4.3.

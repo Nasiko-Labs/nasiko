@@ -1,15 +1,30 @@
+#[cfg(feature = "testing")]
+pub mod conformance;
 mod error;
+mod sandbox;
+mod sandbox_routed;
+mod sandbox_unavailable;
 mod stats;
 mod stdio;
 mod types;
 
 #[cfg(feature = "docker")]
 mod docker;
+#[cfg(feature = "docker")]
+mod docker_sandbox_connect;
 
+#[cfg(feature = "simulated")]
+pub mod sandbox_fake;
 #[cfg(feature = "simulated")]
 mod simulated;
 
 pub use error::{Result, RuntimeError};
+pub use sandbox::{
+    SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider, SandboxProviderKind, SandboxSpec,
+    SandboxState, SandboxStats, SandboxTransport, TransportKind, TransportTls, WORKSPACE_MOUNT,
+};
+pub use sandbox_routed::KeyRoutedSandboxProvider;
+pub use sandbox_unavailable::UnavailableSandboxProvider;
 pub use stats::{
     AgentNameResolver, CachedStatsProvider, ContainerStats, DiskSource, HostStats, PlatformStats,
     ResourceStatsProvider, StatsGroup, UnsupportedStatsProvider,
@@ -53,7 +68,12 @@ pub struct NodeInfo {
 }
 
 #[cfg(feature = "docker")]
-pub use docker::{DockerRuntime, DockerRuntimeConfig, DockerStatsProvider};
+pub use docker::{
+    DockerRuntime, DockerRuntimeConfig, DockerStatsProvider, sandbox::DockerSandboxProvider,
+};
+
+#[cfg(feature = "docker")]
+pub use docker_sandbox_connect::connect_docker_sandbox_provider;
 
 #[cfg(feature = "simulated")]
 pub use simulated::SimulatedRuntime;
@@ -381,6 +401,41 @@ pub trait ContainerRuntime: Send + Sync {
             }
         }
         Ok(instances)
+    }
+
+    /// The agents whose instances look crashed or failed right now (a container
+    /// in back-off, an image that cannot be pulled), for a periodic sweep that
+    /// should not call [`status`](ContainerRuntime::status) on every agent: the
+    /// caller checks only these with `status()`, which stays the authority.
+    ///
+    /// Default: `None`, meaning the backend cannot tell cheaply and the caller
+    /// checks every agent. Decorators MUST forward it, or every sweep silently
+    /// falls back to checking every agent.
+    async fn troubled(&self) -> Result<Option<Vec<ContainerId>>> {
+        Ok(None)
+    }
+
+    /// Wait until the agent can be reached, then return its [`endpoint`](ContainerRuntime::endpoint).
+    /// For a caller that needs the agent itself right after a deploy, which may take a long
+    /// time when the backend queues it behind many others. Gives up with the last error after
+    /// `timeout`.
+    ///
+    /// Default: asks [`endpoint`](ContainerRuntime::endpoint) every 3 seconds. A backend that
+    /// learns of readiness from events should answer from them instead, without polling.
+    /// Decorators MUST forward it, or every waiter falls back to polling.
+    async fn wait_routable(
+        &self,
+        container_id: &ContainerId,
+        timeout: std::time::Duration,
+    ) -> Result<String> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.endpoint(container_id).await {
+                Ok(endpoint) => return Ok(endpoint),
+                Err(e) if tokio::time::Instant::now() >= deadline => return Err(e),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(3)).await,
+            }
+        }
     }
 }
 

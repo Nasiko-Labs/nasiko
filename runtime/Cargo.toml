@@ -28,7 +28,9 @@ serde_json = { workspace = true, optional = true }
 default = ["docker"]
 docker = ["dep:bollard", "dep:serde_json"]
 simulated = []
+testing = []
 
 [dev-dependencies]
+nasiko-runtime = { workspace = true, features = ["simulated", "testing"] }
 serde_json = { workspace = true }
 uuid = { workspace = true }

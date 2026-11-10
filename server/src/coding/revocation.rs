@@ -26,6 +26,17 @@ pub struct RevokedTokenId {
     pub expires_at: DateTime<Utc>,
 }
 
+impl RevokedTokenId {
+    /// The coordinates of a freshly minted token.
+    pub fn from_minted(minted: &nasiko_session_token::MintedToken) -> Self {
+        Self {
+            jti: minted.jti.clone(),
+            expires_at: DateTime::from_timestamp(minted.expires_at as i64, 0)
+                .unwrap_or_else(Utc::now),
+        }
+    }
+}
+
 /// How often [`sweep_loop`] purges revocation rows that can no longer verify.
 /// Session tokens are short-lived (an hour by default), so an hourly sweep keeps
 /// the table trimmed without churn.

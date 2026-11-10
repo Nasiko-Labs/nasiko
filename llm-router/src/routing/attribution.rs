@@ -33,18 +33,36 @@ use uuid::Uuid;
 use super::Mode;
 use crate::resolver::RegistryStore;
 
-/// How the flow was found — recorded in the usage row's metadata. Under strict
-/// enforcement `Traceparent` is the only way a served call can be attributed.
+/// How the flow was found — recorded in the usage row's metadata. Agent calls are attributed by
+/// `Traceparent` only (strict enforcement); `Session` and `Claim` mark session-token calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttributionSource {
     /// The agent forwarded `traceparent`; the trace id named the flow directly.
     Traceparent,
+    /// A session-token call attributed to its session's newest flow.
+    Session,
+    /// A session-token call attributed to the token's signed `flow_id`.
+    Claim,
 }
 
 impl AttributionSource {
     pub fn as_label(self) -> &'static str {
         match self {
-            Self::Traceparent => "traceparent",
+            Self::Traceparent => nasiko_session_token::attribution::FlowSource::Traceparent,
+            Self::Session => nasiko_session_token::attribution::FlowSource::Session,
+            Self::Claim => nasiko_session_token::attribution::FlowSource::Claim,
+        }
+        .as_label()
+    }
+}
+
+impl From<nasiko_session_token::attribution::FlowSource> for AttributionSource {
+    fn from(source: nasiko_session_token::attribution::FlowSource) -> Self {
+        use nasiko_session_token::attribution::FlowSource;
+        match source {
+            FlowSource::Traceparent => Self::Traceparent,
+            FlowSource::Session => Self::Session,
+            FlowSource::Claim => Self::Claim,
         }
     }
 }

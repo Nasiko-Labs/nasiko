@@ -18,9 +18,15 @@
 //! `delete` benchmark does, since a live Goose run has no fixed iteration count to
 //! size a pool against up front.
 //!
+//! A fifth scenario, `harness_sessions`, is not a Goose run: it is in-process and self-seeding
+//! (see `harness_sessions.rs` and `oss/bench/README.md`) and is selected by naming it first:
+//! `nasiko-bench harness_sessions --sessions 10000`.
+//!
 //! Manifest path is read from `BENCH_MANIFEST` (default `bench-manifest.json`).
 //! All other load parameters (users, run-time, host) are goose's own CLI
 //! flags — see `--help`.
+mod harness_sessions;
+
 use std::sync::Arc;
 
 use goose::prelude::*;
@@ -191,7 +197,11 @@ async fn orchestrator_a2a(user: &mut GooseUser) -> TransactionResult {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), GooseError> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("harness_sessions") {
+        return Ok(harness_sessions::main(args).await?);
+    }
     GooseAttack::initialize()?
         .register_scenario(
             scenario!("ControlPlaneBench")

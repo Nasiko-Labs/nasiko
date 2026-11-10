@@ -134,7 +134,9 @@ impl TestDb {
 
         let state = McpState {
             db,
-            redis: redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
+            redis: nasiko_redis::SharedRedis::new(
+                redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
+            ),
             http_client: reqwest::Client::new(),
             guarded_http_client: reqwest::Client::new(),
             config: McpConfig {

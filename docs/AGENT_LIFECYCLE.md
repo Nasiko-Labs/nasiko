@@ -220,6 +220,55 @@ Secrets are encrypted env vars injected into agent containers at runtime. There 
 Every agent runs one replica; `nasiko scale <agent> <n>` sets a fixed count. Per-agent autoscaling
 is an enterprise feature.
 
+### Parked agents
+
+A parked agent has no running workload. Its image and registry entry stay in place, its status
+reads `parked`, and a sandbox is created for it when the next request arrives; the agent then
+serves from that sandbox, with status `running`, until the idle reaper parks it again.
+Deploying one builds or mirrors the image as usual and skips starting a container.
+
+An agent is parked when the sandbox provider is available and the agent qualifies: it is an
+ordinary agent (not a connector or harness), its parking policy is `auto` (the default),
+it does not use `--writable`, and it keeps its tasks in the platform's durable state store
+(see [Durable state](#durable-state)). A deploy that carries its own env or ports other than
+the default also keeps a running workload for now. Every other agent, and every agent when no
+sandbox provider is available, deploys as a running workload exactly as before.
+
+To keep a parkable agent always running, set its policy to `resident` with the `parking_policy`
+field (`auto` or `resident`) of the agent metadata update, `PUT /api/agents/{id}`. Flipping a
+`parked` agent to `resident` leaves it `stopped` without a rebuild, and `nasiko start` then
+deploys a workload from its stored image. Flipping a running `resident` agent to `auto` changes
+nothing at once: it takes effect at the agent's next deploy or restart. The multipart update
+(`PUT /api/agents/{id}/update`) ignores the field. The CLI has no flag for it yet.
+
+`agents.sandbox_compatible` records whether the agent's image is known to start under gVisor
+(`runsc`): `true` it did, `false` it did not, empty it was never checked. Nothing reads it to
+refuse a deploy; it is information for operators. To fill it in, set `BUILD_SANDBOX_SMOKE=runsc`
+(default `off`) on a Docker-runtime server with gVisor installed: after each successful build the
+worker runs the image once under `--runtime=runsc`, waits up to 60 seconds for its port to accept
+connections, and stops it. A host without gVisor leaves the column empty (logged once), any other
+failure sets `false` with the reason in the build log, and the build itself never fails because of
+the smoke run. On Kubernetes the check is skipped; the pod provider applies the runtime class when
+the agent wakes.
+
+A parked deploy does not rebuild the agent's platform env, so the agent's `state_mode` stays as
+it was; a running redeploy resets it until the new image registers its task store again.
+
+The lifecycle commands behave differently for a parked agent:
+
+- `nasiko stop` suspends its sandbox, if it has one, removes any leftover workload, and leaves
+  it `parked`.
+- `nasiko start` has nothing to start: the agent stays `parked` and the next request wakes it.
+  An agent that is already woken and serving stays `running`. A `stopped` agent whose policy is
+  `resident` gets a workload deployed.
+- `nasiko restart` releases its sandbox, so the next request starts a fresh one from the
+  current image.
+- `nasiko scale` is refused with `409` and code `agent_parked`: a parkable agent scales per
+  request. Set the policy to `resident` to run a fixed workload.
+
+`nasiko ps` reads the agent list, so a parked agent appears in it with state `parked`; only
+`GET /api/containers` lists workloads.
+
 ### Cluster health
 
     nasiko status                   # control plane health + metrics

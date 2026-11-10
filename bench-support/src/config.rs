@@ -19,7 +19,7 @@ pub fn redis_url() -> String {
     std::env::var("BENCH_REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".into())
 }
 
-fn s3_endpoint() -> String {
+pub fn s3_endpoint() -> String {
     std::env::var("BENCH_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
@@ -97,6 +97,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_max_replicas: 1,
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
+        database_max_connections: 10,
         build_concurrency: 1,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
         maf_worker_concurrency: 1,
@@ -170,10 +171,18 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         coding_agent_idle_ttl_secs: 0,
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
+        sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
+        build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
+        session_idle_grace_secs: 120,
+        session_cpu_quiescent_millicores: 20,
+        session_reaper_interval_secs: 30,
+        agent_open_task_max_age_secs: 3600,
+        harness_image_prefix: "nasiko/harness-".to_string(),
         hitl_lost_task_retries: 3,
         agent_state_ttl_days: 7,
         agent_state_max_body_bytes: 1_048_576,
         agent_state_rate_limit_per_minute: 600,
+        agent_peer_call_rate_limit_per_minute: 300,
         agent_state_list_bytes_budget: 8 * 1024 * 1024,
         github_client_id: None,
         github_client_secret: None,

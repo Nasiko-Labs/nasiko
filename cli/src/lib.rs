@@ -350,6 +350,17 @@ pub enum AgentOpsCommands {
         /// A guardrail only; the server still drives the turn by the agent's kind.
         #[arg(long)]
         coding_agent: bool,
+        /// Chat in a harness session made by `nasiko session new`; the session picks the agent.
+        /// It also becomes the current conversation for that agent.
+        #[arg(long, conflicts_with_all = ["agent", "session_id", "new", "tui", "resume", "coding_agent"])]
+        session: Option<String>,
+    },
+    /// List the coding-agent harnesses a session can run on
+    Harnesses,
+    /// Harness sessions: a sandboxed coding agent you chat with across turns
+    Session {
+        #[command(subcommand)]
+        command: SessionCommands,
     },
     /// List chat sessions
     Sessions {
@@ -891,6 +902,61 @@ pub enum AgentsCommands {
 }
 
 #[derive(Subcommand)]
+pub enum SessionCommands {
+    /// Open a session on a harness
+    #[command(after_help = "Examples:\n  nasiko session new --harness opencode\n  \
+        nasiko session new --harness opencode --repo https://github.com/acme/app.git")]
+    New {
+        /// Harness id (see `nasiko harnesses`)
+        #[arg(long)]
+        harness: String,
+        /// Git URL to clone into the session workspace
+        #[arg(long)]
+        repo: Option<String>,
+        /// Print the raw session object as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a session's state, sandbox, last turn, suspension and repo
+    Show {
+        /// Session id
+        id: String,
+        /// Print the raw session object as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Suspend a session's sandbox (chatting again resumes it)
+    Suspend {
+        /// Session id
+        id: String,
+    },
+    /// List your sessions, newest activity first
+    #[command(alias = "list")]
+    Ls {
+        /// Only sessions on this harness
+        #[arg(long)]
+        harness: Option<String>,
+        /// Only sessions in this state (parked, starting, running, stopping)
+        #[arg(long)]
+        state: Option<String>,
+        /// Fetch every page, not just the first 50
+        #[arg(long)]
+        all: bool,
+        /// Print the raw session objects as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a session: release its sandbox and remove it
+    Rm {
+        /// Session id
+        id: String,
+        /// Skip the confirmation prompt
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum DeploymentsCommands {
     /// List all deployments (crash reason, restart count, etc.)
     #[command(alias = "list")]
@@ -1298,7 +1364,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             session_id,
             new,
             coding_agent,
+            session,
         } => {
+            if let Some(session) = session {
+                return commands::session::chat(session.as_str(), url, message);
+            }
             // `nasiko chat "some message"` — a lone positional *containing
             // whitespace* is a natural-language message for the orchestrator,
             // not a resolvable target. Targets (a URL, an agent UUID/name,
@@ -1366,9 +1436,32 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     new,
                     &target_label,
                     kind.as_deref(),
+                    "--session-id",
                 )
             }
         }
+        AgentOpsCommands::Harnesses => commands::harnesses::list(),
+        AgentOpsCommands::Session { command } => match command {
+            SessionCommands::New {
+                harness,
+                repo,
+                json,
+            } => commands::session::new(&harness, repo.as_deref(), json),
+            SessionCommands::Show { id, json } => commands::session::show(&id, json),
+            SessionCommands::Suspend { id } => commands::session::suspend(&id),
+            SessionCommands::Ls {
+                harness,
+                state,
+                all,
+                json,
+            } => commands::session::ls(&commands::session::ListQuery {
+                harness: harness.as_deref(),
+                state: state.as_deref(),
+                all,
+                json,
+            }),
+            SessionCommands::Rm { id, yes } => commands::session::rm(&id, yes),
+        },
         AgentOpsCommands::Sessions {
             endpoint,
             cursor,

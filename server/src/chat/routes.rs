@@ -144,12 +144,17 @@ fn surface_predicate(surface: Option<&str>, bind: usize) -> String {
 /// its own `WHERE`/`ORDER BY`/`LIMIT`. No user input is interpolated — the
 /// variants differ only in fixed predicates and bind-parameter numbering.
 ///
+/// Columns are listed, never `cs.*`: `chat_sessions` carries the sandbox token's ciphertext and
+/// its `jti`, which a list of sessions has no business reading (and `ChatSessionView` does not
+/// have them). Add a column here only if the view needs it.
+///
 /// The second `LATERAL` is what keeps the sessions page off the trace store:
 /// message/trace counts, billed tokens and p50 latency all come from
 /// `chat_messages` columns (migration 041), covered by
 /// `idx_messages_session(session_id, timestamp)`.
 const SESSION_LIST_SELECT: &str = r#"
-    SELECT cs.*,
+    SELECT cs.session_id, cs.user_id, cs.agent_id, cs.agent_url, cs.title, cs.session_type,
+           cs.created_at, cs.updated_at,
            CASE
              WHEN a.coding_agent_integration_id IS NOT NULL
                   AND u.username IS NOT NULL
@@ -686,16 +691,30 @@ async fn delete_session(
         }
     }
 
+    // A harness session's sandbox is released once the row is gone, so it is looked up now: the
+    // row is not readable afterwards, and an unauthorized caller's delete below matches nothing.
+    let store = crate::sessions::SessionStore::new(state.db.clone());
+    let doomed =
+        store.get(&session_id).await.ok().flatten().filter(|row| {
+            row.sandbox_ref.is_some() && (claims.is_superuser || row.user_id == user_id)
+        });
+    // The sandbox itself is released and its token revoked only after the delete matched, from
+    // what was read above and what `RETURNING` hands back. RETURNING gives the deleted row's
+    // sandbox-token jti, so the credential of a harness
+    // session's sandbox dies with the session. Revoking from the deleted row (not before) means
+    // a caller who may not delete the session cannot revoke its token either.
+    //
     // The session row and the request to erase its tiered (cold) messages commit
     // together, so a delete never leaves cold copies behind unrecorded. Only a
     // session that may have cold rows gets one: it was tiered (`cold_since`), or a
     // chat batch is mid-write and may hold some of its messages. Every other
     // delete stays a plain Postgres delete, with no cold-store work.
-    let result: Result<Option<bool>, anyhow::Error> = async {
+    let result: Result<Option<(Option<String>, bool)>, anyhow::Error> = async {
         let mut tx = state.db.begin().await?;
-        let deleted: Option<bool> = sqlx::query_scalar(
+        let deleted: Option<(Option<String>, bool)> = sqlx::query_as(
             "DELETE FROM chat_sessions WHERE session_id = $1 AND (user_id = $2 OR $3::bool)
-             RETURNING cold_since IS NOT NULL
+             RETURNING sandbox_token_jti,
+                 cold_since IS NOT NULL
                  OR EXISTS (SELECT 1 FROM tier_batches
                              WHERE table_name = 'chat_messages' AND state = 'writing')",
         )
@@ -704,7 +723,7 @@ async fn delete_session(
         .bind(claims.is_superuser)
         .fetch_optional(&mut *tx)
         .await?;
-        if deleted == Some(true) {
+        if matches!(deleted, Some((_, true))) {
             nasiko_event_store::EventStore::record_session_erasure(&mut tx, &session_id).await?;
         }
         tx.commit().await?;
@@ -713,7 +732,15 @@ async fn delete_session(
     .await;
 
     match result {
-        Ok(Some(may_be_cold)) => {
+        Ok(Some((jti, may_be_cold))) => {
+            // The turn running on it, if any, notices on its next heartbeat and ends with
+            // "session was deleted".
+            if let Some(row) = doomed {
+                crate::sessions::teardown::release_row_sandbox(&state, &row).await;
+            }
+            if let Some(jti) = jti {
+                crate::sessions::teardown::revoke_deleted(&state, &session_id, &jti).await;
+            }
             if may_be_cold {
                 spawn_cold_session_erasure(
                     crate::state::event_store(&state.config, &state.db),

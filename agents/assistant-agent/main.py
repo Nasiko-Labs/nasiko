@@ -203,9 +203,15 @@ If no agent fits, respond with []. Do NOT delegate to yourself (Assistant)."""},
                     # Platform agents speak A2A 1.0: method SendMessage, the
                     # A2A-Version header, ROLE_USER, and bare {"text": ...}
                     # parts (0.3's message/send gets -32601 Method not found).
+                    # Discovered URLs are the platform proxy's, which authenticates an
+                    # agent caller by its own MCP_GATEWAY_TOKEN; the instrumented httpx
+                    # forwards `traceparent`, which names the flow (and user) it acts for.
                     resp = await client.post(
                         f"{url}/",
-                        headers={"A2A-Version": "1.0"},
+                        headers={
+                            "A2A-Version": "1.0",
+                            "Authorization": f"Bearer {os.environ.get('MCP_GATEWAY_TOKEN', '')}",
+                        },
                         json={
                             "jsonrpc": "2.0",
                             "id": str(uuid.uuid4()),

@@ -130,7 +130,10 @@ fn flow_rejection_guard_unavailable_display() {
 fn unreachable_guard() -> FlowGuard {
     let client =
         redis::Client::open("redis://127.0.0.1:1/").expect("client creation always succeeds");
-    FlowGuard::new(client, FlowConfig::default())
+    FlowGuard::new(
+        nasiko_redis::SharedRedis::new(client),
+        FlowConfig::default(),
+    )
 }
 
 #[tokio::test]
@@ -191,7 +194,7 @@ fn guard_config_accessor() {
         ..FlowConfig::default()
     };
     let client = redis::Client::open("redis://127.0.0.1:1/").unwrap();
-    let guard = FlowGuard::new(client, cfg);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), cfg);
     assert_eq!(guard.config().max_depth, 3);
 }
 
@@ -209,7 +212,7 @@ async fn guard_enforces_depth_limit() {
         max_depth: 2,
         ..FlowConfig::default()
     };
-    let guard = FlowGuard::new(client, config);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), config);
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "agent-root").await;
@@ -237,7 +240,7 @@ async fn guard_enforces_fan_out_limit() {
         max_depth: 100,
         ..FlowConfig::default()
     };
-    let guard = FlowGuard::new(client, config);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), config);
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "root").await;
@@ -262,7 +265,7 @@ async fn guard_allows_within_limits() {
         max_fan_out: 10,
         ..FlowConfig::default()
     };
-    let guard = FlowGuard::new(client, config);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), config);
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "root").await;
@@ -277,7 +280,10 @@ async fn guard_allows_within_limits() {
 async fn guard_cycle_detected_via_check() {
     let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
     let client = redis::Client::open(url).unwrap();
-    let guard = FlowGuard::new(client, FlowConfig::default());
+    let guard = FlowGuard::new(
+        nasiko_redis::SharedRedis::new(client),
+        FlowConfig::default(),
+    );
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "agent-a").await;
@@ -304,7 +310,7 @@ async fn guard_token_budget_exhausted() {
         max_flow_tokens: 100,
         ..FlowConfig::default()
     };
-    let guard = FlowGuard::new(client, config);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), config);
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "root").await;
@@ -329,7 +335,7 @@ async fn guard_record_return_decrements_depth() {
         max_depth: 2,
         ..FlowConfig::default()
     };
-    let guard = FlowGuard::new(client, config);
+    let guard = FlowGuard::new(nasiko_redis::SharedRedis::new(client), config);
 
     let ctx = FlowContext::new_root();
     guard.init_flow(&ctx, "root").await;

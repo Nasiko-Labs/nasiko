@@ -5,7 +5,7 @@ use nasiko_auth::AuthService;
 use nasiko_github::{GitHubConfig, GitHubService};
 use nasiko_observability::ObservabilityProvider;
 use nasiko_orchestrator::{RoutingEngine, TextEmbeddingCache, VectorStore};
-use nasiko_runtime::ContainerRuntime;
+use nasiko_runtime::{ContainerRuntime, SandboxProvider};
 use sqlx::PgPool;
 use tokio::sync::mpsc;
 
@@ -21,8 +21,10 @@ use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<dyn ContainerRuntime>,
+    /// Session-shaped sandboxes (harness sessions), beside the deployment-shaped `runtime`.
+    pub sandbox: Arc<dyn SandboxProvider>,
     pub db: PgPool,
-    pub redis: redis::Client,
+    pub redis: nasiko_redis::SharedRedis,
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
@@ -197,12 +199,16 @@ impl AppState {
         oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
         db: PgPool,
     ) -> Self {
-        let agent_scaling = Arc::new(SingleReplica::new(runtime.clone()));
+        let agent_scaling = Arc::new(SingleReplica::new(runtime.clone(), db.clone()));
         Self::from_config_with_scaling(config, auth, runtime, oci_storage, db, agent_scaling).await
     }
 
     /// [`from_config_with_db`](Self::from_config_with_db) with the edition's replica policy
     /// instead of the single-replica default.
+    ///
+    /// Without a sandbox provider the state gets one that refuses every call, naming the
+    /// configured backend; a binary that runs harness sessions uses
+    /// [`from_config_with_sandbox`](Self::from_config_with_sandbox).
     pub async fn from_config_with_scaling(
         config: Config,
         auth: Arc<dyn AuthService>,
@@ -211,7 +217,35 @@ impl AppState {
         db: PgPool,
         agent_scaling: Arc<dyn AgentScaling>,
     ) -> Self {
-        let redis = redis::Client::open(config.redis_url.as_str()).expect("invalid redis url");
+        let sandbox = crate::sandbox_wiring::build_sandbox_provider(&config, None);
+        Self::from_config_with_sandbox(
+            config,
+            auth,
+            runtime,
+            oci_storage,
+            db,
+            agent_scaling,
+            sandbox,
+        )
+        .await
+    }
+
+    /// [`from_config_with_scaling`](Self::from_config_with_scaling) with the edition's
+    /// sandbox provider. Received, not constructed, like `runtime`: the backend is an
+    /// edition decision.
+    pub async fn from_config_with_sandbox(
+        config: Config,
+        auth: Arc<dyn AuthService>,
+        runtime: Arc<dyn ContainerRuntime>,
+        oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
+        db: PgPool,
+        agent_scaling: Arc<dyn AgentScaling>,
+        sandbox: Arc<dyn SandboxProvider>,
+    ) -> Self {
+        // One shared connection for every Redis call; see nasiko_redis.
+        let redis = nasiko_redis::SharedRedis::new(
+            redis::Client::open(config.redis_url.as_str()).expect("invalid redis url"),
+        );
 
         // Fail fast, exactly as the Postgres connect above does. This was
         // `.ok()` — which discarded the error without even logging it, so a
@@ -363,6 +397,7 @@ impl AppState {
         let state = Self {
             pricing,
             runtime,
+            sandbox,
             db,
             redis,
             oci_storage,
@@ -430,15 +465,20 @@ impl AppState {
         // tool call has no `task_id` to resume; `RuntimeResumeNotifier` sends a standalone nudge
         // message instead). Its own `claim_for_resume` is scoped to `origin = 'mcp_tool'`, so it
         // can run alongside the dispatcher above without racing it for the same rows.
-        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> =
-            Arc::new(nasiko_hitl::RuntimeResumeNotifier::new(
+        let resume_notifier: Arc<dyn nasiko_hitl::ResumeNotifier> = Arc::new(
+            nasiko_hitl::RuntimeResumeNotifier::new(
                 state.db.clone(),
                 state.runtime.clone(),
                 state.agent_client.clone(),
                 // Same bound `gateway.rs`'s `flow_user` enforces on the agent's retry, so the
                 // nudge never registers a window the gateway will reject.
                 i64::from(state.config.flow_timeout_secs),
-            ));
+            )
+            // The nudge may be for an agent that parked while its human decided.
+            .with_resolver(Arc::new(crate::agent_resolver::ServerTargetResolver::new(
+                state.clone(),
+            ))),
+        );
         tokio::spawn(nasiko_hitl::dispatcher::run(
             state.db.clone(),
             resume_notifier,
@@ -480,6 +520,7 @@ impl AppState {
             tokio::spawn(crate::agents::hours_meter::run(
                 state.db.clone(),
                 state.runtime.clone(),
+                state.sandbox.clone(),
                 state.config.agent_runtime.clone(),
                 std::time::Duration::from_secs(state.config.container_hours_poll_secs),
             ));
@@ -558,6 +599,7 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
+            crate::seed::seed_harness_agents_if_enabled(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
         });
 

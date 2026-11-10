@@ -128,11 +128,11 @@ impl std::fmt::Display for FlowRejection {
 #[derive(Clone)]
 pub struct FlowGuard {
     config: FlowConfig,
-    redis: redis::Client,
+    redis: nasiko_redis::SharedRedis,
 }
 
 impl FlowGuard {
-    pub fn new(redis: redis::Client, config: FlowConfig) -> Self {
+    pub fn new(redis: nasiko_redis::SharedRedis, config: FlowConfig) -> Self {
         Self { config, redis }
     }
 
@@ -142,7 +142,7 @@ impl FlowGuard {
 
     pub async fn init_flow(&self, ctx: &FlowContext, root_agent: &str) {
         let key = ctx.redis_key();
-        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
+        let Some(mut conn) = self.redis.connection().await.ok() else {
             return;
         };
 
@@ -177,7 +177,7 @@ impl FlowGuard {
         target_agent_id: &str,
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
+        let Some(mut conn) = self.redis.connection().await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -243,7 +243,7 @@ impl FlowGuard {
         target_agent_id: &str,
     ) -> Result<(), FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
+        let Some(mut conn) = self.redis.connection().await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -302,7 +302,7 @@ impl FlowGuard {
         tokens_used: u64,
     ) -> Result<u64, FlowRejection> {
         let key = ctx.redis_key();
-        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
+        let Some(mut conn) = self.redis.connection().await.ok() else {
             return Err(FlowRejection::GuardUnavailable);
         };
 
@@ -326,7 +326,7 @@ impl FlowGuard {
 
     pub async fn record_return(&self, ctx: &FlowContext) {
         let key = ctx.redis_key();
-        let Some(mut conn) = nasiko_redis_conn::connection(&self.redis).await.ok() else {
+        let Some(mut conn) = self.redis.connection().await.ok() else {
             return;
         };
 

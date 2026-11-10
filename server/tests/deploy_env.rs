@@ -5,7 +5,7 @@
 //! address and credential. Not driven here, because each needs a real network or Docker daemon:
 //! the GitHub clone worker arm (a live GitHub tarball download; it calls the same
 //! `deploy_env::build` as the legacy clone arm tested below) and the registry import
-//! (`docker pull`).
+//! (a live registry's manifest).
 //!
 //! Requires infra (Postgres, Redis, S3 - see TEST_PG_URL / TEST_REDIS_URL / TEST_S3_ENDPOINT):
 //!   cargo test -p nasiko-server --test deploy_env -- --test-threads=1
@@ -33,21 +33,20 @@ struct Fixture {
     admin_id: Uuid,
 }
 
-async fn start_with(
-    gateway_url: Option<&'static str>,
-    platform_openai_key: Option<&'static str>,
-) -> Fixture {
+async fn start_with(gateway_url: Option<&'static str>) -> Fixture {
     // SAFETY: tests run serially (#[serial]), so no concurrent env mutation.
     unsafe {
         std::env::set_var("AGENT_JWT_SECRET", "deploy-env-test-secret-0123456789");
         std::env::set_var("LLM_GATEWAY_BASE_URL", LLM_BASE);
     }
-    let server = common::TestServer::start_with(move |config| {
+    start_configured(move |config| {
         config.mcp_gateway_public_url = gateway_url.map(str::to_owned);
-        config.openai_api_key = platform_openai_key.map(str::to_owned);
-        config.openai_base_url = platform_openai_key.map(|_| "https://api.openai.test/v1".into());
     })
-    .await;
+    .await
+}
+
+async fn start_configured(configure: impl FnOnce(&mut nasiko_config::Config)) -> Fixture {
+    let server = common::TestServer::start_with(configure).await;
     let admin: Value = server
         .client
         .post(server.url("/api/auth/initialize-admin"))
@@ -63,7 +62,33 @@ async fn start_with(
 }
 
 async fn start() -> Fixture {
-    start_with(Some(GATEWAY_URL), None).await
+    start_with(Some(GATEWAY_URL)).await
+}
+
+const PLATFORM_KEY: &str = "platform-openai-key";
+
+/// A server that holds the platform's OpenAI key and has no LLM gateway configured: the gateway
+/// would overwrite `OPENAI_API_KEY` on every deploy and hide whether the platform key was handed
+/// out at all.
+async fn start_with_platform_key(fallback: bool) -> Fixture {
+    // SAFETY: tests run serially (#[serial]), so no concurrent env mutation.
+    unsafe {
+        std::env::remove_var("LLM_GATEWAY_BASE_URL");
+    }
+    start_configured(move |config| {
+        config.agent_platform_key_fallback = fallback;
+        config.openai_api_key = Some(PLATFORM_KEY.to_owned());
+    })
+    .await
+}
+
+/// The platform key is in the deploy env exactly when the fallback is on.
+fn assert_platform_key(spec: &DeploymentSpec, fallback: bool) {
+    assert_eq!(
+        spec.env_vars.get("OPENAI_API_KEY").map(String::as_str),
+        fallback.then_some(PLATFORM_KEY),
+        "AGENT_PLATFORM_KEY_FALLBACK={fallback}"
+    );
 }
 
 impl Fixture {
@@ -73,8 +98,10 @@ impl Fixture {
 
     async fn agent_row(&self, name: &str, image: Option<&str>, status: &str) -> Uuid {
         sqlx::query_scalar(
-            "INSERT INTO agents (name, owner_id, image, status, version) \
-             VALUES ($1, $2, $3, $4, '1.0.0') RETURNING id",
+            // Resident: these tests are about the env a deployed workload gets, and a parkable
+            // agent has none.
+            "INSERT INTO agents (name, owner_id, image, status, version, parking_policy) \
+             VALUES ($1, $2, $3, $4, '1.0.0', 'resident') RETURNING id",
         )
         .bind(name)
         .bind(self.admin_id)
@@ -414,50 +441,6 @@ async fn deployment_restart_carries_the_platform_env() {
     f.server.cleanup().await;
 }
 
-const REAL_PLATFORM_KEY: &str = "sk-real-platform-key-never-in-a-container";
-
-#[tokio::test]
-#[serial]
-async fn a_non_openai_agent_never_receives_the_platforms_real_openai_key() {
-    let f = start_with(Some(GATEWAY_URL), Some(REAL_PLATFORM_KEY)).await;
-    for (format, key_var, base_var) in [
-        ("anthropic", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
-        ("gemini", "GEMINI_API_KEY", "GOOGLE_GEMINI_BASE_URL"),
-        ("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL"),
-    ] {
-        let agent_id = f
-            .agent_row(
-                &format!("{format}-agent"),
-                Some("nasiko/restart:1"),
-                "running",
-            )
-            .await;
-        sqlx::query("UPDATE agents SET inbound_format = $2 WHERE id = $1")
-            .bind(agent_id)
-            .bind(format)
-            .execute(&f.server.db)
-            .await
-            .unwrap();
-        let deployment_id = stopped_deployment(&f, agent_id).await;
-
-        restart_deployment(&f, deployment_id).await;
-
-        let env = f.first_spec(agent_id).await.env_vars;
-        assert!(
-            env.values().all(|v| v != REAL_PLATFORM_KEY),
-            "{format} agent got the real platform key"
-        );
-        assert_eq!(env["OPENAI_API_KEY"].matches('.').count(), 2, "{format}");
-        assert_eq!(
-            env["OPENAI_BASE_URL"], "http://llm.test:8080/v1",
-            "{format}"
-        );
-        assert_eq!(env[key_var].matches('.').count(), 2, "{format}");
-        assert!(env[base_var].starts_with(LLM_BASE), "{format}");
-    }
-    f.server.cleanup().await;
-}
-
 async fn upload_zip(f: &Fixture, name: &str, extra: Vec<(&'static str, String)>) -> Uuid {
     let mut form = reqwest::multipart::Form::new()
         .text("name", name.to_owned())
@@ -650,6 +633,59 @@ async fn clone_job_deploy_carries_the_platform_env() {
     f.server.cleanup().await;
 }
 
+// ─── The platform key fallback ──────────────────────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn zip_upload_deploy_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = upload_zip(&f, "uploaded-agent", vec![]).await;
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn clone_job_deploy_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = f.agent_row("cloned-agent", None, "deploying").await;
+        queue_clone_job(&f, agent_id, "cloned-agent").await;
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn admin_restart_hands_out_the_platform_key_only_while_the_fallback_is_on() {
+    for fallback in [false, true] {
+        let f = start_with_platform_key(fallback).await;
+        let agent_id = f
+            .agent_row("restarted-agent", Some("nasiko/restart:1"), "running")
+            .await;
+
+        let res = common::as_superuser(
+            f.server
+                .client
+                .post(f.server.url("/api/containers/restarted-agent/restart")),
+            &f.uid(),
+            "admin",
+        )
+        .send()
+        .await
+        .unwrap();
+        assert!(res.status().is_success(), "restart: {}", res.status());
+
+        assert_platform_key(&f.first_spec(agent_id).await, fallback);
+        f.server.cleanup().await;
+    }
+}
+
 // ─── The state credential ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -691,11 +727,13 @@ async fn a_redeploy_resets_the_state_mode_to_memory() {
     .execute(&f.server.db)
     .await
     .unwrap();
-    sqlx::query("UPDATE agents SET state_mode = 'durable' WHERE id = $1")
-        .bind(agent_id)
-        .execute(&f.server.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE agents SET state_mode = 'durable', parking_policy = 'resident' WHERE id = $1",
+    )
+    .bind(agent_id)
+    .execute(&f.server.db)
+    .await
+    .unwrap();
 
     let res = common::as_superuser(
         f.server
@@ -715,11 +753,13 @@ async fn a_redeploy_resets_the_state_mode_to_memory() {
 }
 
 async fn mark_durable(f: &Fixture, agent_id: Uuid) {
-    sqlx::query("UPDATE agents SET state_mode = 'durable' WHERE id = $1")
-        .bind(agent_id)
-        .execute(&f.server.db)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE agents SET state_mode = 'durable', parking_policy = 'resident' WHERE id = $1",
+    )
+    .bind(agent_id)
+    .execute(&f.server.db)
+    .await
+    .unwrap();
 }
 
 /// A restart brings the same image back, so a durable agent must still be durable afterwards.
@@ -992,7 +1032,7 @@ async fn platform_keys_win_over_user_supplied_env_of_the_same_name() {
 async fn user_env_cannot_stand_in_for_a_credential_the_platform_could_not_mint() {
     // No MCP_GATEWAY_PUBLIC_URL: the state API has no address to hand out, so no state credential
     // is minted. The user's lookalikes must not slip through in its place.
-    let f = start_with(None, None).await;
+    let f = start_with(None).await;
     let spec = deploy_ad_hoc_with(&f, "hostile-unconfigured-agent").await;
 
     assert!(!spec.env_vars.contains_key("NASIKO_AGENT_TOKEN"));

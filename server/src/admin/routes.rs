@@ -9,6 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::agent_scaling::{AgentDeploy, ReplicaBounds};
+use crate::agents::parking;
 use crate::auth::Claims;
 use crate::catalog::agent_secrets;
 use crate::state::AppState;
@@ -100,6 +101,41 @@ async fn deploy(
         Some(agent_id) => Some(state.agent_scaling.begin_deploy(agent_id).await),
         None => None,
     };
+
+    // A registered agent that may park deploys no workload. Decided before the deploy env is
+    // built, which resets `state_mode`. A request that asks for a volume or a non-agent kind
+    // names a workload, so it keeps one.
+    let names_a_workload = req.writable
+        || req.writable_path.is_some()
+        || req
+            .workload_kind
+            .as_deref()
+            .is_some_and(|kind| kind != "agent")
+        || parking::names_a_workload(&env, &req.ports);
+    if let Some(agent_id) = resolved_agent_id
+        && !names_a_workload
+    {
+        let image =
+            crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &req.image);
+        match parking::park_if_eligible(&state, agent_id, Some(&image)).await {
+            Ok(true) => {
+                return (
+                    StatusCode::CREATED,
+                    Json(parked_status(
+                        agent_id,
+                        "agent is parked; the first request starts it",
+                    )),
+                )
+                    .into_response();
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::error!(%e, name = %req.name, "deploy: could not decide whether to park the agent");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+                    .into_response();
+            }
+        }
+    }
 
     // Resolve vault + agent secrets (vault = base, agent = override, request = highest)
     if let Some(agent_id) = resolved_agent_id {
@@ -297,6 +333,7 @@ async fn deploy(
                 tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
                     state.db.clone(),
                     state.http_client.clone(),
+                    state.runtime.clone(),
                     agent_id,
                     endpoint.clone(),
                 ));
@@ -423,6 +460,13 @@ async fn status(
     match state.runtime.status(&id).await {
         Ok(s) => Json(s).into_response(),
         Err(e) => {
+            // A parkable agent has no workload to report: answer from its row and sandbox, as
+            // `deploy` and `start` do.
+            if let Ok(agent_id) = Uuid::parse_str(id.as_str())
+                && let Some(body) = sandbox_status(&state, agent_id).await
+            {
+                return Json(body).into_response();
+            }
             tracing::error!(%e, %name, "status: runtime error");
             (StatusCode::NOT_FOUND, "container not found").into_response()
         }
@@ -461,15 +505,94 @@ async fn destroy(
     }
 }
 
+/// The `ContainerRuntime::deploy`-shaped body a parked agent answers with, so a client that
+/// reads `state` sees `parked` where a running agent shows `running`.
+fn parked_status(agent_id: Uuid, message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "container_id": agent_id,
+        "state": "parked",
+        "replicas_live": 0,
+        "endpoint": null,
+        "message": message,
+        "restart_count": 0,
+    })
+}
+
+/// The status of an agent that has no workload but is parked or serving from its sandbox.
+async fn sandbox_status(state: &AppState, agent_id: Uuid) -> Option<serde_json::Value> {
+    let status: String = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_optional(&state.db)
+        .await
+        .ok()
+        .flatten()?;
+    match status.as_str() {
+        "parked" => Some(parked_status(
+            agent_id,
+            "agent is parked; the first request starts it",
+        )),
+        "running" => match parking::sandbox_state(state, agent_id).await {
+            Ok(Some(nasiko_runtime::SandboxState::Running)) => Some(serde_json::json!({
+                "container_id": agent_id,
+                "state": "running",
+                "replicas_live": 1,
+                "endpoint": null,
+                "message": "serving from its sandbox",
+                "restart_count": 0,
+            })),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Whether the agent runs without a workload, answering 500 when that cannot be read.
+#[allow(clippy::result_large_err)]
+async fn parks(
+    state: &AppState,
+    agent_id: Uuid,
+    name: &str,
+) -> Result<bool, axum::response::Response> {
+    parking::parks(state, agent_id).await.map_err(|e| {
+        tracing::error!(%e, %name, "could not read the agent's parking eligibility");
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+    })
+}
+
+/// Destroys a parkable agent's stale workload (a policy flip or an earlier deploy left one)
+/// and then records it at rest. The workload goes first and a failure is a 500, so the row
+/// never claims `parked` while a workload is still there.
+async fn rest_parked(state: &AppState, agent_id: Uuid, name: &str, op: &str) -> Result<(), ()> {
+    if let Err(e) = parking::destroy_workload(state, agent_id).await {
+        tracing::error!(%e, %name, "{op}: could not destroy the previous workload");
+        return Err(());
+    }
+    parking::mark_parked(&state.db, agent_id, None)
+        .await
+        .map_err(|e| tracing::error!(%e, %name, "{op}: could not record the parked status"))
+}
+
 async fn stop(
     State(state): State<AppState>,
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_authorized_container(&state, &claims, &name).await {
-        Ok(id) => id,
+    let agent_id = match resolve_authorized_agent(&state, &claims, &name).await {
+        Ok(agent_id) => agent_id,
         Err(resp) => return resp,
     };
+    match parks(&state, agent_id, &name).await {
+        Ok(true) => {
+            parking::suspend_sandbox(&state, agent_id).await;
+            return match rest_parked(&state, agent_id, &name, "stop").await {
+                Ok(()) => StatusCode::OK.into_response(),
+                Err(()) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+            };
+        }
+        Ok(false) => {}
+        Err(resp) => return resp,
+    }
+    let id = ContainerId::from_uuid(agent_id);
     match state.runtime.scale(&id, 0).await {
         Ok(()) => {
             record_lifecycle_status(&state, &name, "stopped").await;
@@ -487,10 +610,65 @@ async fn start(
     claims: Claims,
     Path(name): Path<String>,
 ) -> impl IntoResponse {
-    let id = match resolve_authorized_container(&state, &claims, &name).await {
-        Ok(id) => id,
+    let agent_id = match resolve_authorized_agent(&state, &claims, &name).await {
+        Ok(agent_id) => agent_id,
         Err(resp) => return resp,
     };
+    let status: Option<String> = match sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_optional(&state.db)
+        .await
+    {
+        Ok(status) => status,
+        Err(e) => {
+            tracing::error!(%e, %name, "start: could not read the agent's status");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    match parks(&state, agent_id, &name).await {
+        // Nothing to start: the first request acquires the sandbox. An agent that is already
+        // woken and serving stays `running` until the reaper parks it.
+        Ok(true) => {
+            if status.as_deref() == Some("running") {
+                return Json(serde_json::json!({
+                    "container_id": agent_id,
+                    "state": "running",
+                    "message": "agent is already serving; the reaper parks it when idle",
+                }))
+                .into_response();
+            }
+            return match rest_parked(&state, agent_id, &name, "start").await {
+                Ok(()) => Json(parked_status(
+                    agent_id,
+                    "agent is parked; the first request starts it",
+                ))
+                .into_response(),
+                Err(()) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response(),
+            };
+        }
+        Ok(false) => {}
+        Err(resp) => return resp,
+    }
+    // A resident agent that was stopped with no workload left (its policy flipped while it was
+    // parked, and the reaper released its sandbox) has nothing to scale up: deploy one, from the
+    // stored image and env, as a restart does.
+    if status.as_deref() == Some("stopped")
+        && state
+            .runtime
+            .status(&ContainerId::from_uuid(agent_id))
+            .await
+            .is_err()
+    {
+        return restart(
+            State(state),
+            claims,
+            Path(name),
+            Query(RestartQuery::default()),
+        )
+        .await
+        .into_response();
+    }
+    let id = ContainerId::from_uuid(agent_id);
     match state.runtime.scale(&id, 1).await {
         Ok(()) => {
             record_lifecycle_status(&state, &name, "running").await;
@@ -618,6 +796,27 @@ async fn restart(
     // path does (no-op for refs outside the `nasiko/` convention).
     let image = crate::agents::qualify_deploy_image(&state.config.agent_image_registry, &image);
 
+    // A parkable agent has no workload to restart: drop its sandbox and workload, and the
+    // next request wakes it from its current image (resolved above, so never parked without one).
+    match parking::parks(&state, agent_id).await {
+        Ok(true) => {
+            if let Err(e) = parking::park_agent(&state, agent_id, Some(&image)).await {
+                tracing::error!(%e, %name, "restart: could not park the agent");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+            return Json(parked_status(
+                agent_id,
+                "agent is parked; the next request starts it",
+            ))
+            .into_response();
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::error!(%e, %name, "restart: could not read parking eligibility");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    }
+
     let uuid_id = ContainerId::from_uuid(agent_id);
     // A running agent is restarted where it is, so it stays available and keeps its
     // autoscaling. Destroy and recreate stays for what it alone can do: starting an agent that
@@ -693,6 +892,7 @@ async fn restart(
             tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
                 state.db.clone(),
                 state.http_client.clone(),
+                state.runtime.clone(),
                 agent_id,
                 agent_url,
             ));
@@ -776,6 +976,20 @@ async fn scale(
         Ok(agent_id) => agent_id,
         Err(resp) => return resp,
     };
+    match parks(&state, agent_id, &name).await {
+        Ok(true) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "parkable agents scale per request; set parking_policy=resident (the parking_policy field of the agent update request) to run a fixed workload",
+                    "code": "agent_parked",
+                })),
+            )
+                .into_response();
+        }
+        Ok(false) => {}
+        Err(resp) => return resp,
+    }
     // An autoscaled agent's count belongs to the autoscaler, which would undo a manual
     // one. Scaling to 0 still stops it: the runtime pauses the autoscaler first.
     if req.replicas > 0 {

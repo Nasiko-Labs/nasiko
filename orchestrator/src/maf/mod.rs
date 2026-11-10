@@ -52,6 +52,9 @@ pub struct AgentCalls {
     pub meter: Arc<dyn AgentCallMeter>,
     /// Prefixes each step's outbound message to the agent.
     pub outbound: Arc<dyn crate::outbound::OutboundPrefix>,
+    /// Where each step's agent call is sent. The server wires the resolver that wakes parked
+    /// agents; [`crate::target::DirectAddress`] reads the catalog's stored address only.
+    pub targets: Arc<dyn crate::target::AgentTargetResolver>,
 }
 
 /// Spawn the MAF background worker as a detached tokio task.

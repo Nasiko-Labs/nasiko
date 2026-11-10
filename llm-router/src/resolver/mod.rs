@@ -283,6 +283,16 @@ pub trait RegistryStore: Send + Sync {
     /// and an ownership transfer must take effect at once.
     async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error>;
 
+    /// [`fetch_llm_config`](Self::fetch_llm_config) without the config: the agent-level pin and
+    /// flags only, for a caller whose config came from the cache. What it returns in `config` is
+    /// unspecified. The default reads everything, so stores that do not care need not implement it.
+    async fn fetch_agent_flags(
+        &self,
+        agent_id: Uuid,
+    ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+        self.fetch_llm_config(agent_id).await
+    }
+
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -301,6 +311,20 @@ pub trait RegistryStore: Send + Sync {
         agent_id: Uuid,
         window_secs: i64,
     ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error>;
+
+    /// The flow a session-token call is attributed to (the traceparent's flow, else the
+    /// session's newest flow, else the claim). Infallible: a lookup failure keeps the claim.
+    /// The default keeps the claim, so mocks that do not care need not implement it.
+    async fn attribute_session_flow(
+        &self,
+        _trace_flow: Option<&str>,
+        session: &nasiko_session_token::SessionClaims,
+    ) -> nasiko_session_token::attribution::AttributedFlow {
+        nasiko_session_token::attribution::AttributedFlow {
+            flow_id: session.flow_id.clone(),
+            source: nasiko_session_token::attribution::FlowSource::Claim,
+        }
+    }
 
     /// The active custom provider registered under `label`, or `None`. Decryption
     /// of the stored api key happens in the impl, so mocks can supply a plaintext
@@ -375,7 +399,23 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
     }
 }
 
+/// `agents` columns the resolver reads: attached config id, owner, pin, coding-agent flag,
+/// compression flag.
+type AgentColumns = (Option<Uuid>, Uuid, Option<String>, bool, bool);
+
 impl PgRegistry {
+    async fn load_agent(&self, agent_id: Uuid) -> Result<Option<AgentColumns>, sqlx::Error> {
+        sqlx::query_as(
+            "SELECT llm_config_id, owner_id, pinned_model, \
+                    coding_agent_integration_id IS NOT NULL, \
+                    compress_enabled \
+             FROM agents WHERE id = $1",
+        )
+        .bind(agent_id)
+        .fetch_optional(&self.db)
+        .await
+    }
+
     async fn load_config_by_id(&self, id: Uuid) -> Result<Option<LLMConfig>, sqlx::Error> {
         let row: Option<ConfigRow> = sqlx::query_as(&format!(
             "SELECT {CONFIG_COLS} FROM llm_configs WHERE id = $1 AND deleted_at IS NULL"
@@ -407,17 +447,8 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        let agent: Option<(Option<Uuid>, Uuid, Option<String>, bool, bool)> = sqlx::query_as(
-            "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL, \
-                    compress_enabled \
-             FROM agents WHERE id = $1",
-        )
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await?;
         let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
-            agent
+            self.load_agent(agent_id).await?
         else {
             return Ok(None);
         };
@@ -446,6 +477,20 @@ impl RegistryStore for PgRegistry {
             .await
     }
 
+    async fn fetch_agent_flags(
+        &self,
+        agent_id: Uuid,
+    ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+        Ok(self.load_agent(agent_id).await?.map(
+            |(_, _, agent_pinned_model, is_coding_agent, compress_enabled)| AgentConfigResult {
+                config: None,
+                agent_pinned_model,
+                is_coding_agent,
+                compress_enabled,
+            },
+        ))
+    }
+
     async fn fetch_user_secret(
         &self,
         owner_id: Uuid,
@@ -459,6 +504,14 @@ impl RegistryStore for PgRegistry {
         .fetch_optional(&self.db)
         .await?;
         Ok(row.map(|(v,)| v))
+    }
+
+    async fn attribute_session_flow(
+        &self,
+        trace_flow: Option<&str>,
+        session: &nasiko_session_token::SessionClaims,
+    ) -> nasiko_session_token::attribution::AttributedFlow {
+        nasiko_session_token::attribution::attributed_flow(&self.db, trace_flow, session).await
     }
 
     async fn fetch_live_flow(
@@ -925,7 +978,7 @@ async fn load_llm_config(
         );
         // Config is cached, but we still need the agent-level pin and coding-agent flag
         // from the store. Re-fetch just the agent row; fall back to safe defaults on error.
-        let agent_row = store.fetch_llm_config(agent_uuid).await.ok().flatten();
+        let agent_row = store.fetch_agent_flags(agent_uuid).await.ok().flatten();
         let agent_pin = agent_row
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());

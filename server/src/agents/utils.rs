@@ -221,14 +221,37 @@ pub(crate) async fn ensure_deployment_tracked(
     .await;
 }
 
+/// How long a card fetch waits for a freshly deployed agent to become reachable. A bulk
+/// deploy queues an agent's pod behind thousands of others on Kubernetes: at 15,000 agents
+/// the last pods started over an hour after their deploy was accepted.
+const CARD_ROUTABLE_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
 /// Retry wrapper around [`fetch_and_apply_agent_card`] for freshly deployed
-/// containers that need a few seconds to become healthy.
+/// containers that need a few seconds to become healthy. With no `agent_url` (an agent
+/// with no address until it runs, such as a Kubernetes agent reached at its pod's IP), it
+/// first waits for the runtime to report one.
 pub(crate) async fn fetch_agent_card_with_retry(
     db: sqlx::PgPool,
     http: reqwest::Client,
+    runtime: Arc<dyn nasiko_runtime::ContainerRuntime>,
     agent_id: Uuid,
     agent_url: String,
 ) {
+    let agent_url = if agent_url.is_empty() {
+        let container_id = nasiko_runtime::ContainerId::from_uuid(agent_id);
+        match runtime
+            .wait_routable(&container_id, CARD_ROUTABLE_WAIT)
+            .await
+        {
+            Ok(url) => url,
+            Err(e) => {
+                tracing::warn!(%agent_id, %e, "agent card fetch: the agent never became reachable");
+                return;
+            }
+        }
+    } else {
+        agent_url
+    };
     for attempt in 1..=30u32 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         if fetch_and_apply_agent_card(&db, &http, agent_id, &agent_url).await {
@@ -277,6 +300,11 @@ pub(crate) async fn delete_agent_or_mark_failed(
                 .execute(db)
                 .await;
     } else {
+        // Deleting the agent nulls `agent_id` on its sessions, which hides them from everything
+        // that would later clean up after them. Their sandbox credentials are revoked now; a
+        // sandbox itself is released only where a provider is at hand (the user and session
+        // delete paths), and an agent that failed its build has none.
+        crate::sessions::teardown::revoke_tokens_of_agent(db, agent_id).await;
         let deleted = sqlx::query("DELETE FROM agents WHERE id = $1")
             .bind(agent_id)
             .execute(db)

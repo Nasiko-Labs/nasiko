@@ -13,6 +13,7 @@ members = [
     "runtime",
     "react-agent",
     "acp-client",
+    "harness-shim",
     "session-token",
     "orchestrator",
     "types",
@@ -22,6 +23,7 @@ members = [
     "coding-policy",
     "oci",
     "flow",
+    "redis",
     "hitl",
     "agent-proxy",
     "llm-router",
@@ -46,6 +48,7 @@ nasiko-pricing = { path = "pricing" }
 nasiko-event-store = { path = "event-store" }
 nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
+nasiko-redis = { path = "redis" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
@@ -55,6 +58,7 @@ nasiko-observability = { path = "observability" }
 nasiko-runtime = { path = "runtime", default-features = false }
 nasiko-react-agent = { path = "react-agent" }
 nasiko-acp-client = { path = "acp-client" }
+nasiko-harness-shim = { path = "harness-shim" }
 nasiko-session-token = { path = "session-token" }
 nasiko-orchestrator = { path = "orchestrator" }
 nasiko-types = { path = "types" }
@@ -72,8 +76,11 @@ serial_test = "3"
 
 # ─── Async runtime & web ────────────────────────────────────────────────────
 tokio = { version = "1", features = ["full"] }
-axum = { version = "0.8", features = ["json", "query", "multipart"] }
+axum = { version = "0.8", features = ["json", "query", "multipart", "ws"] }
 tower = "0.5"
+# Already in the tree through axum; named for the server's own accept loop (`nasiko_server::serve`).
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1", "http2"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "decompression-zstd"] }
 
 # ─── OpenAPI docs ───────────────────────────────────────────────────────────
@@ -90,7 +97,7 @@ regex = "1"
 
 # ─── Database & state ───────────────────────────────────────────────────────
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json", "tls-rustls"] }
-redis = { version = "0.27", features = ["tokio-comp", "aio", "tokio-rustls-comp", "tls-rustls-webpki-roots"] }
+redis = { version = "0.27", features = ["tokio-comp", "aio", "tokio-rustls-comp", "tls-rustls-webpki-roots", "connection-manager"] }
 rust_decimal = { version = "1.36", features = ["serde", "db-postgres"] }
 
 # ─── Auth ───────────────────────────────────────────────────────────────────
@@ -100,6 +107,12 @@ bcrypt = "0.15"
 # ─── HTTP client ────────────────────────────────────────────────────────────
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rustls = { version = "0.23", features = ["ring"] }
+# The ACP WebSocket client builds its own rustls config to add a private CA to the public roots.
+rustls-pki-types = "1"
+webpki-roots = "1"
+# Test-only: a throwaway TLS server for the private-CA WebSocket test.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 # ─── LLM orchestration ──────────────────────────────────────────────────────
 # Exact-pinned, not a "0.11" caret range: the orchestrator's HITL pause detection
@@ -190,11 +203,19 @@ async-stream = "0.3"
 # exposes) to the futures-io traits the ACP SDK's `ByteStreams` transport wants,
 # so a coding-agent container attach can drive an `AcpConnection`.
 tokio-util = { version = "0.7", features = ["compat"] }
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 
 # ─── Agent Client Protocol (coding-agent transport) ─────────────────────────
 # Official Rust SDK for ACP (Agent Client Protocol). Pinned to the v1 schema;
 # `unstable_*` features are deliberately left off (see oss/acp-client).
 agent-client-protocol = "2.2.0"
+
+# ─── Process confinement (Linux) ────────────────────────────────────────────
+# `harness-supervisor` confines each session's process tree in a shared pod: the filesystem view
+# with Landlock, the syscall surface with a seccomp-bpf filter (the harness-shim crate's
+# `src/supervisor/confine.rs`). Linux-only dependencies of that crate.
+landlock = "0.4.7"
+seccompiler = "0.5.0"
 
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }

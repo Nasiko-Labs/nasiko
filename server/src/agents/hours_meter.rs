@@ -1,4 +1,8 @@
-//! Container-hours metering for billing.
+//! Container-hours and sandbox-minutes metering for billing.
+//!
+//! Sandboxes (`SandboxProvider`) are metered by the [`sandbox`] submodule into the same table
+//! with `kind = 'sandbox'`; this module's queries are scoped to `kind = 'container'`, so the two
+//! units never mix.
 //!
 //! A background reconciler polls the runtime every `CONTAINER_HOURS_POLL_SECS`
 //! (default 60 s) and records one row per container/pod run in
@@ -30,10 +34,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use nasiko_runtime::{ContainerRuntime, InstanceInfo};
+use nasiko_runtime::{ContainerRuntime, InstanceInfo, SandboxProvider};
 use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
+
+pub mod sandbox;
 
 /// Background loop: reconcile once per `poll` interval, forever.
 ///
@@ -42,6 +48,7 @@ use uuid::Uuid;
 pub async fn run(
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
+    sandbox: Arc<dyn SandboxProvider>,
     agent_runtime: String,
     poll: Duration,
 ) {
@@ -51,10 +58,14 @@ pub async fn run(
     tracing::info!(
         poll_secs = poll.as_secs(),
         runtime = kind,
-        "container-hours meter started"
+        "hours meter started (container-hours and sandbox-minutes)"
     );
+    let mut sandbox_failing = false;
     loop {
         interval.tick().await;
+        if sandbox.is_available() {
+            reconcile_sandboxes_logged(&db, sandbox.as_ref(), &mut sandbox_failing).await;
+        }
         match reconcile_once(&db, runtime.as_ref(), kind).await {
             Ok(stats) => tracing::debug!(
                 observed = stats.observed,
@@ -64,6 +75,30 @@ pub async fn run(
             ),
             Err(e) => tracing::warn!(error = %e, "hours meter tick skipped"),
         }
+    }
+}
+
+/// One sandbox pass; a failure is logged once per streak, and the tick carries on.
+async fn reconcile_sandboxes_logged(
+    db: &PgPool,
+    sandbox: &dyn SandboxProvider,
+    failing: &mut bool,
+) {
+    match sandbox::reconcile(db, sandbox).await {
+        Ok(stats) => {
+            *failing = false;
+            tracing::debug!(
+                observed = stats.observed,
+                upserted = stats.upserted,
+                closed = stats.closed,
+                "sandbox meter tick"
+            );
+        }
+        Err(e) if !*failing => {
+            *failing = true;
+            tracing::warn!(error = %e, "sandbox meter tick skipped");
+        }
+        Err(_) => {}
     }
 }
 
@@ -78,11 +113,11 @@ fn runtime_kind(agent_runtime: &str) -> &'static str {
 /// Per-tick counters, for logs and tests.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct ReconcileStats {
-    /// Ready instances observed this tick (after dedupe).
+    /// Ready instances (containers) or Running sandboxes observed this tick (after dedupe).
     pub observed: usize,
     /// Sessions opened or bumped.
     pub upserted: usize,
-    /// Open sessions closed because their instance disappeared.
+    /// Open sessions closed because their instance or sandbox disappeared.
     pub closed: u64,
 }
 
@@ -188,10 +223,23 @@ pub async fn reconcile_once(
 
     // Close every open session not observed this tick. An empty observation
     // set is valid (nothing running) and closes all open sessions.
+    stats.closed = close_unobserved(db, "container", &observed_keys, &observed_starts).await?;
+
+    Ok(stats)
+}
+
+/// Close every open `kind` session whose `(instance_key, started_at)` is not among the observed
+/// pairs (a NULL observed start matches any start). Sets `ended_at = last_seen_at`.
+async fn close_unobserved(
+    db: &PgPool,
+    kind: &str,
+    keys: &[String],
+    starts: &[Option<DateTime<Utc>>],
+) -> anyhow::Result<u64> {
     let res = sqlx::query(
         r#"UPDATE agent_instance_sessions s
            SET ended_at = s.last_seen_at
-           WHERE s.ended_at IS NULL
+           WHERE s.kind = $3 AND s.ended_at IS NULL
              AND NOT EXISTS (
                  SELECT 1
                  FROM UNNEST($1::text[], $2::timestamptz[]) AS o(instance_key, started_at)
@@ -199,13 +247,12 @@ pub async fn reconcile_once(
                    AND (o.started_at = s.started_at OR o.started_at IS NULL)
              )"#,
     )
-    .bind(&observed_keys)
-    .bind(&observed_starts)
+    .bind(keys)
+    .bind(starts)
+    .bind(kind)
     .execute(db)
     .await?;
-    stats.closed = res.rows_affected();
-
-    Ok(stats)
+    Ok(res.rows_affected())
 }
 
 /// Bump the open session for an instance with no backend-reported start time,
@@ -221,7 +268,7 @@ async fn upsert_fallback_session(
     let updated = sqlx::query(
         r#"UPDATE agent_instance_sessions
            SET last_seen_at = $2, ended_at = NULL
-           WHERE instance_key = $1 AND ended_at IS NULL"#,
+           WHERE instance_key = $1 AND kind = 'container' AND ended_at IS NULL"#,
     )
     .bind(instance_key)
     .bind(now)
@@ -363,7 +410,8 @@ pub async fn windowed_agent_hours(
                (a.id IS NULL OR a.deleted_at IS NOT NULL) AS deleted
            FROM agent_instance_sessions s
            LEFT JOIN agents a ON a.id = s.agent_id
-           WHERE s.started_at < $2
+           WHERE s.kind = 'container'
+             AND s.started_at < $2
              AND COALESCE(s.ended_at, s.last_seen_at) > $1
              AND ($3::uuid IS NULL OR s.agent_id = $3)
            GROUP BY s.agent_id, a.id, a.display_name, a.name, a.deleted_at
@@ -444,7 +492,8 @@ pub async fn windowed_hours_series(
            FROM generate_series($1, $2 - interval '1 microsecond', ($3::text)::interval)
                 AS b(bucket_start)
            LEFT JOIN agent_instance_sessions s
-                  ON s.started_at < LEAST(b.bucket_start + ($3::text)::interval, $2)
+                  ON s.kind = 'container'
+                 AND s.started_at < LEAST(b.bucket_start + ($3::text)::interval, $2)
                  AND COALESCE(s.ended_at, s.last_seen_at) > b.bucket_start
                  AND ($4::uuid IS NULL OR s.agent_id = $4)
            GROUP BY b.bucket_start
@@ -495,7 +544,8 @@ pub async fn windowed_hours_series_by_agent(
            FROM generate_series($1, $2 - interval '1 microsecond', ($3::text)::interval)
                 AS b(bucket_start)
            JOIN agent_instance_sessions s
-                  ON s.started_at < LEAST(b.bucket_start + ($3::text)::interval, $2)
+                  ON s.kind = 'container'
+                 AND s.started_at < LEAST(b.bucket_start + ($3::text)::interval, $2)
                  AND COALESCE(s.ended_at, s.last_seen_at) > b.bucket_start
                  AND ($4::uuid IS NULL OR s.agent_id = $4)
            LEFT JOIN agents a ON a.id = s.agent_id

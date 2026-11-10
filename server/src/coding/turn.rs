@@ -86,6 +86,8 @@ pub enum CodingTurnEvent {
         hitl_id: uuid::Uuid,
         question: serde_json::Value,
     },
+    /// The turn ended because the caller cancelled the task (`tasks/cancel`). Terminal.
+    Canceled,
 }
 
 /// Why a turn could not be started.
@@ -94,6 +96,10 @@ pub enum CodingTurnError {
     /// Another turn already holds this session's lock (one turn at a time).
     #[error("another turn is already running for this session")]
     Busy,
+    /// A suspend claim took this turn's lease and fence while it was starting; the turn stops
+    /// before touching the sandbox and the client may retry once the suspend settles.
+    #[error("the session is being suspended")]
+    Superseded,
     /// The agent container never reached a serving state in time.
     #[error("agent container did not become ready in time")]
     NotReady,
@@ -103,6 +109,10 @@ pub enum CodingTurnError {
     /// silently ignore, leaving it toolless with no clear cause.
     #[error("agent does not support HTTP MCP, required to attach the Nasiko gateway")]
     McpGatewayUnsupported,
+    /// The turn could not be set up for a reason that is neither the runtime nor ACP: no session
+    /// credential, an unusable catalog entry, a sandbox that offers the wrong transport.
+    #[error("harness turn setup failed: {0}")]
+    Setup(String),
     #[error(transparent)]
     Runtime(#[from] nasiko_runtime::RuntimeError),
     #[error(transparent)]
@@ -227,38 +237,7 @@ async fn start_turn(
     // Only attach the gateway over a transport the agent advertised — otherwise
     // fail loud instead of leaving the agent silently toolless.
     let params = session_params(state, &req.session_token, cwd, conn.capabilities().mcp_http)?;
-    let prior = lifecycle::acp_session_id(&state.db, &req.session_id).await?;
-    let acp_session = match prior {
-        Some(prior_id) if conn.capabilities().load_session => {
-            let session = SessionId::new(prior_id);
-            // A saved id can become unloadable — e.g. the container was recreated
-            // and the agent no longer holds that session. Letting `session/load`
-            // fail here would wedge the conversation at a permanent 502, because
-            // the (unchanged) id is retried on every turn. Fall back to a fresh
-            // session instead: the `/workspace` files survive, so only the agent's
-            // in-memory chat history is lost, and we re-record the new id so later
-            // turns stop retrying the dead one.
-            match conn.load_session(session.clone(), params.clone()).await {
-                Ok(()) => session,
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        session_id = %req.session_id,
-                        acp_session_id = %session.0,
-                        "coding-agent: session/load failed; starting a fresh agent session"
-                    );
-                    let session = conn.new_session(params).await?;
-                    lifecycle::record_acp_session(&state.db, &req.session_id, &session.0).await?;
-                    session
-                }
-            }
-        }
-        _ => {
-            let session = conn.new_session(params).await?;
-            lifecycle::record_acp_session(&state.db, &req.session_id, &session.0).await?;
-            session
-        }
-    };
+    let acp_session = open_acp_session(&state.db, &conn, lease, params).await?;
 
     // Accumulate a telemetry event from the turn's updates (NAS-841), attributed
     // to the user the proxy resolved. Metadata-only: the proxy already wrote the
@@ -279,25 +258,75 @@ async fn start_turn(
     let lease = lease.clone();
     let lease_secs = state.config.coding_agent_turn_lease_secs;
     let heartbeat_secs = state.config.coding_agent_lease_heartbeat_secs.max(1);
-    tokio::spawn(drive_turn(
-        conn,
-        turn,
-        out_tx,
-        db,
-        lease,
-        lease_secs,
-        heartbeat_secs,
-        telemetry,
-        req.session_token_id.clone(),
-        cancel_session,
-        turn_timeout,
-    ));
+    tokio::spawn(
+        DriveTurn {
+            conn,
+            turn,
+            out_tx,
+            db,
+            lease,
+            lease_secs,
+            heartbeat_secs,
+            telemetry,
+            session_token_id: req.session_token_id.clone(),
+            cancel_session,
+            turn_timeout,
+            turn_id: turn_id.to_owned(),
+            cancel: None,
+            keep_alive: None,
+            shim_restart: None,
+        }
+        .run(),
+    );
 
     Ok(out_rx)
 }
 
+/// Open the agent-side session on `conn`: restore the saved one when the agent can, else start
+/// a fresh one, and record whichever id is now current.
+///
+/// Cold-path restore: if this session already has an agent-side id from an earlier turn *and*
+/// the agent advertised `session/load`, load it so the agent resumes its conversation state
+/// instead of starting fresh. A saved id can become unloadable (the sandbox was recreated and
+/// the agent no longer holds it); letting that fail would wedge the conversation at a permanent
+/// error, because the unchanged id is retried every turn. So a failed load falls back to a
+/// fresh session — the `/workspace` files survive, only the agent's in-memory history is lost —
+/// and the new id is re-recorded so later turns stop retrying the dead one.
+///
+/// Shared by the exec path and the harness path (`sessions::turn`).
+pub(crate) async fn open_acp_session(
+    db: &sqlx::PgPool,
+    conn: &AcpConnection,
+    lease: &TurnLease,
+    params: NewSessionParams,
+) -> Result<SessionId, CodingTurnError> {
+    let session_id = lease.session_id.as_str();
+    let prior = lifecycle::acp_session_id(db, session_id).await?;
+    if let Some(prior_id) = prior
+        && conn.capabilities().load_session
+    {
+        let session = SessionId::new(prior_id);
+        match conn.load_session(session.clone(), params.clone()).await {
+            Ok(()) => return Ok(session),
+            Err(e) => tracing::warn!(
+                error = %e,
+                %session_id,
+                acp_session_id = %session.0,
+                "coding-agent: session/load failed; starting a fresh agent session"
+            ),
+        }
+    }
+    let session = conn.new_session(params).await?;
+    // Recorded under the turn's fence: a suspend claim that took the lease since must not have its
+    // session row written, and the turn stops rather than prompt on a session it no longer owns.
+    if !lifecycle::record_acp_session_fenced(db, lease, &session.0).await? {
+        return Err(CodingTurnError::Superseded);
+    }
+    Ok(session)
+}
+
 /// Per-turn telemetry accumulator plus the keys needed to persist it.
-struct TurnTelemetryCtx {
+pub(crate) struct TurnTelemetryCtx {
     telemetry: TurnTelemetry,
     user_id: uuid::Uuid,
     agent_id: uuid::Uuid,
@@ -313,14 +342,38 @@ fn build_turn_telemetry(
     agent_name: &str,
     acp_session_id: &str,
 ) -> Option<TurnTelemetryCtx> {
-    let user_id = req.user_id?;
-    let agent_id = uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok()?;
+    new_turn_telemetry(TelemetryKeys {
+        user_id: req.user_id,
+        agent_id: uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
+        session_id: &req.session_id,
+        turn_id,
+        agent_name,
+        acp_session_id,
+        prompt: &req.prompt,
+    })
+}
+
+/// What identifies one turn for telemetry.
+pub(crate) struct TelemetryKeys<'a> {
+    pub user_id: Option<uuid::Uuid>,
+    pub agent_id: Option<uuid::Uuid>,
+    pub session_id: &'a str,
+    pub turn_id: &'a str,
+    pub agent_name: &'a str,
+    pub acp_session_id: &'a str,
+    pub prompt: &'a str,
+}
+
+/// The accumulator for `keys`, or `None` when the user or agent is unknown.
+pub(crate) fn new_turn_telemetry(keys: TelemetryKeys<'_>) -> Option<TurnTelemetryCtx> {
+    let user_id = keys.user_id?;
+    let agent_id = keys.agent_id?;
     let telemetry = TurnTelemetry::new(
         agent_id.to_string(),
-        agent_name.to_owned(),
-        acp_session_id.to_owned(),
-        turn_id.to_owned(),
-        req.prompt.clone(),
+        keys.agent_name.to_owned(),
+        keys.acp_session_id.to_owned(),
+        keys.turn_id.to_owned(),
+        keys.prompt.to_owned(),
         CapturePolicy::MetadataOnly,
         Utc::now(),
     );
@@ -328,144 +381,370 @@ fn build_turn_telemetry(
         telemetry,
         user_id,
         agent_id,
-        session_id: req.session_id.clone(),
+        session_id: keys.session_id.to_owned(),
     })
 }
 
-/// The background driver for one running turn.
-#[allow(clippy::too_many_arguments)]
-async fn drive_turn(
-    conn: AcpConnection,
-    mut turn: TurnStream,
-    out_tx: mpsc::UnboundedSender<CodingTurnEvent>,
-    db: sqlx::PgPool,
-    lease: TurnLease,
-    lease_secs: i64,
-    heartbeat_secs: u64,
-    mut telemetry: Option<TurnTelemetryCtx>,
-    session_token_id: Option<super::revocation::RevokedTokenId>,
-    cancel_session: SessionId,
-    turn_timeout: Duration,
-) {
-    let mut beat = tokio::time::interval(Duration::from_secs(heartbeat_secs));
-    beat.tick().await; // the first tick fires immediately; skip it
+/// Why a turn that can no longer renew its lease was ended, read from the session row: deleted,
+/// being (or just) suspended, or reset by a reconciler or takeover. `turn_started` tells a
+/// suspension that happened during this turn from an old one.
+pub(crate) async fn lease_lost_message(
+    db: &sqlx::PgPool,
+    session_id: &str,
+    turn_started: chrono::DateTime<Utc>,
+) -> &'static str {
+    type LostRow = (String, bool, Option<chrono::DateTime<Utc>>);
+    let row: sqlx::Result<Option<LostRow>> = sqlx::query_as(
+        "SELECT runtime_state, deleted_at IS NOT NULL, suspended_at FROM chat_sessions \
+         WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(db)
+    .await;
+    match row {
+        Ok(None) => lost_reason(None, turn_started),
+        Ok(Some((state, deleted, suspended_at))) => {
+            lost_reason(Some((&state, deleted, suspended_at)), turn_started)
+        }
+        Err(_) => lost_reason(Some(("", false, None)), turn_started),
+    }
+}
 
-    // Hard ceiling on the turn's wall-clock. The lease heartbeat keeps the *lock*
-    // alive for as long as the turn runs, so nothing else bounds a runaway turn —
-    // this does, by dispatching `session/cancel` and ending the turn (TRD §3.4).
-    let deadline = tokio::time::sleep(turn_timeout);
-    tokio::pin!(deadline);
+/// The wording for a lost lease from what the row says (`None`: the row is gone).
+fn lost_reason(
+    row: Option<(&str, bool, Option<chrono::DateTime<Utc>>)>,
+    turn_started: chrono::DateTime<Utc>,
+) -> &'static str {
+    match row {
+        None | Some((_, true, _)) => "session was deleted",
+        Some((state, false, _)) if state == SessionRuntimeState::Stopping.as_str() => {
+            "session was suspended"
+        }
+        // A suspend that has already settled while this turn was running.
+        Some((state, false, Some(at)))
+            if state == SessionRuntimeState::Parked.as_str() && at >= turn_started =>
+        {
+            "session was suspended"
+        }
+        Some(_) => "session was reset; the turn lost its lease",
+    }
+}
 
-    // Accumulate the agent's visible reply text across streamed chunks, so it can
-    // be persisted to `chat_messages` when the turn ends (NAS-C2). Without this the
-    // reply only ever lives in the SSE stream and the UI shows "No reply saved" on
-    // reload.
-    let mut reply = String::new();
+/// Everything the background driver of one running turn owns.
+pub(crate) struct DriveTurn {
+    pub conn: AcpConnection,
+    pub turn: TurnStream,
+    pub out_tx: mpsc::UnboundedSender<CodingTurnEvent>,
+    pub db: sqlx::PgPool,
+    pub lease: TurnLease,
+    pub lease_secs: i64,
+    pub heartbeat_secs: u64,
+    pub telemetry: Option<TurnTelemetryCtx>,
+    pub session_token_id: Option<super::revocation::RevokedTokenId>,
+    pub cancel_session: SessionId,
+    pub turn_timeout: Duration,
+    /// The turn's id (its A2A task id), recorded with its outcome.
+    pub turn_id: String,
+    /// Fired by `tasks/cancel` on the replica running the turn. A cancel that lands on another
+    /// replica reaches the turn through the row flag instead, on the next heartbeat.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
+    /// Keeps the turn registered as a live task until the driver has finished and released the
+    /// session's lease; dropped last. See `sessions::live`.
+    pub keep_alive: Option<Arc<crate::sessions::live::LiveRegistration>>,
+    /// How to ask the sandbox's shim to restart its harness, used when a cancelled turn had to be
+    /// ended by force.
+    pub shim_restart: Option<ShimRestart>,
+}
 
-    loop {
-        tokio::select! {
-            event = turn.recv() => match event {
-                Some(ev) => {
-                    // Fold streamed updates into the telemetry event and the reply
-                    // accumulator before forwarding them on.
-                    if let TurnEvent::Update(update) = &ev {
-                        if let Some(ctx) = telemetry.as_mut() {
-                            ctx.telemetry.observe(update, Utc::now());
+/// The shim's restart endpoint (`POST /control/restart`) and what it needs.
+#[derive(Clone)]
+pub struct ShimRestart {
+    pub client: reqwest::Client,
+    /// The WebSocket URL the sandbox attached us to; the control URL derives from it.
+    pub ws_url: String,
+    pub bearer: String,
+    /// The sandbox's routing headers, sent on the control call as on the attach.
+    pub headers: Vec<(String, String)>,
+}
+
+impl ShimRestart {
+    /// Ask the shim to replace its harness child. Best-effort: the turn is over either way.
+    async fn request(&self) {
+        let control = crate::sessions::handshake::ControlClient {
+            http: &self.client,
+            base_ws_url: &self.ws_url,
+            routing: &self.headers,
+            bearer: &self.bearer,
+        };
+        if let Err(e) = control.restart().await {
+            tracing::warn!(error = %e, "shim restart failed");
+        }
+    }
+}
+
+/// How long a cancelled turn is given to wind down (the agent answering its `session/cancel`)
+/// before it is ended anyway.
+const CANCEL_GRACE: Duration = Duration::from_secs(10);
+
+impl DriveTurn {
+    /// Forward the turn's events, renew its lease, end it at its deadline, then persist what it
+    /// produced and release the lease.
+    pub(crate) async fn run(self) {
+        let started_at = Utc::now();
+        let DriveTurn {
+            conn,
+            mut turn,
+            out_tx,
+            db,
+            lease,
+            lease_secs,
+            heartbeat_secs,
+            mut telemetry,
+            session_token_id,
+            cancel_session,
+            turn_timeout,
+            turn_id,
+            cancel,
+            keep_alive,
+            shim_restart,
+        } = self;
+        let mut outcome = lifecycle::TurnOutcome::Failed;
+        let mut cancelling = false;
+        // Set when a cancelled turn had to be ended without the agent answering.
+        let mut forced_end = false;
+        let mut beat = tokio::time::interval(Duration::from_secs(heartbeat_secs));
+        beat.tick().await; // the first tick fires immediately; skip it
+
+        // Hard ceiling on the turn's wall-clock. The lease heartbeat keeps the *lock*
+        // alive for as long as the turn runs, so nothing else bounds a runaway turn —
+        // this does, by dispatching `session/cancel` and ending the turn (TRD §3.4).
+        let deadline = tokio::time::sleep(turn_timeout);
+        tokio::pin!(deadline);
+
+        // Accumulate the agent's visible reply text across streamed chunks, so it can
+        // be persisted to `chat_messages` when the turn ends (NAS-C2). Without this the
+        // reply only ever lives in the SSE stream and the UI shows "No reply saved" on
+        // reload.
+        let mut reply = String::new();
+
+        loop {
+            tokio::select! {
+                event = turn.recv() => match event {
+                    Some(ev) => {
+                        // Fold streamed updates into the telemetry event and the reply
+                        // accumulator before forwarding them on.
+                        if let TurnEvent::Update(update) = &ev {
+                            if let Some(ctx) = telemetry.as_mut() {
+                                ctx.telemetry.observe(update, Utc::now());
+                            }
+                            if let Some(text) = super::sse::agent_text(update) {
+                                reply.push_str(&text);
+                            }
                         }
-                        if let Some(text) = super::sse::agent_text(update) {
-                            reply.push_str(&text);
+                        // A transport failure can be the first sign the session was deleted or
+                        // suspended (the provider closed the connection before the next heartbeat):
+                        // if the lease is in fact gone, say that instead.
+                        let ev = match ev {
+                            TurnEvent::Failed(err) if !matches!(err, AcpError::Cancelled(_)) => {
+                                explain_failure(err, &db, &lease, lease_secs, heartbeat_secs, started_at)
+                                    .await
+                            }
+                            other => other,
+                        };
+                        let terminal = ev.is_terminal();
+                        let out = if terminal && cancelling {
+                            outcome = lifecycle::TurnOutcome::Canceled;
+                            CodingTurnEvent::Canceled
+                        } else {
+                            if let TurnEvent::Finished(stop) = &ev {
+                                outcome = if matches!(stop, nasiko_acp_client::StopReason::Cancelled) {
+                                    lifecycle::TurnOutcome::Canceled
+                                } else {
+                                    lifecycle::TurnOutcome::Completed
+                                };
+                            }
+                            CodingTurnEvent::Turn(ev)
+                        };
+                        // Stop if the caller hung up or the turn reached its end.
+                        if out_tx.send(out).is_err() || terminal {
+                            break;
                         }
                     }
-                    let terminal = ev.is_terminal();
-                    // Stop if the caller hung up or the turn reached its end.
-                    if out_tx.send(CodingTurnEvent::Turn(ev)).is_err() || terminal {
+                    None => {
+                        // The event stream ended without a terminal event. During a cancel that
+                        // is the agent going away in answer to it: still a cancelled turn.
+                        if cancelling {
+                            outcome = lifecycle::TurnOutcome::Canceled;
+                            let _ = out_tx.send(CodingTurnEvent::Canceled);
+                        }
                         break;
                     }
+                },
+                () = async {
+                    match &cancel {
+                        Some(token) => token.cancelled().await,
+                        None => std::future::pending().await,
+                    }
+                }, if !cancelling => {
+                    begin_cancel(&conn, &cancel_session, &mut cancelling, deadline.as_mut(), cancel.as_ref());
                 }
-                None => break,
-            },
-            _ = beat.tick() => {
-                // Renew the lease. If we've been fenced out (another owner took
-                // over) or the DB errored, stop driving — we no longer own this
-                // session and must not keep writing to its agent.
-                if !matches!(lifecycle::heartbeat(&db, &lease, lease_secs).await, Ok(true)) {
+                _ = beat.tick() => {
+                    // Renew the lease, retrying a database error within the tick. Only a lease the
+                    // database says is gone ends the turn — we no longer own the session and must
+                    // not keep writing to its agent. An unreachable database is not that: the next
+                    // tick tries again, and a takeover meanwhile shows up as a lost lease. The same
+                    // statement says whether a `tasks/cancel` (possibly served by another replica)
+                    // asked for this turn to stop.
+                    let budget = Duration::from_secs(heartbeat_secs);
+                    let (beat_result, cancel_requested) =
+                        lifecycle::heartbeat_retrying_flag(&db, &lease, lease_secs, budget).await;
+                    if beat_result == lifecycle::Beat::Lost {
+                        // Stop the agent and say why, instead of the generic "ended without
+                        // completing".
+                        let _ = conn.cancel(cancel_session.clone());
+                        let message = lease_lost_message(&db, &lease.session_id, started_at).await;
+                        let _ = out_tx.send(CodingTurnEvent::Turn(TurnEvent::Failed(
+                            AcpError::Cancelled(message.to_owned()),
+                        )));
+                        break;
+                    }
+                    if cancel_requested && !cancelling {
+                        begin_cancel(&conn, &cancel_session, &mut cancelling, deadline.as_mut(), cancel.as_ref());
+                    }
+                }
+                _ = &mut deadline => {
+                    // Over budget: tell the agent to stop, then end the turn. Dropping
+                    // `conn` below closes the pipe as a backstop if cancel is ignored.
+                    let _ = conn.cancel(cancel_session.clone());
+                    if cancelling {
+                        outcome = lifecycle::TurnOutcome::Canceled;
+                        forced_end = true;
+                        let _ = out_tx.send(CodingTurnEvent::Canceled);
+                    } else {
+                        let _ = out_tx.send(CodingTurnEvent::Turn(TurnEvent::Failed(
+                            AcpError::Cancelled(format!(
+                                "turn exceeded its {}s budget",
+                                turn_timeout.as_secs()
+                            )),
+                        )));
+                    }
                     break;
                 }
             }
-            _ = &mut deadline => {
-                // Over budget: tell the agent to stop, then end the turn. Dropping
-                // `conn` below closes the pipe as a backstop if cancel is ignored.
-                let _ = conn.cancel(cancel_session.clone());
-                let _ = out_tx.send(CodingTurnEvent::Turn(TurnEvent::Failed(AcpError::Cancelled(
-                    format!("turn exceeded its {}s budget", turn_timeout.as_secs()),
-                ))));
-                break;
-            }
         }
-    }
 
-    // Persist the turn's telemetry event (best-effort — a telemetry failure must
-    // never surface as a turn failure). A turn cut short still emits a partial.
-    if let Some(ctx) = telemetry {
-        let TurnTelemetryCtx {
-            telemetry,
-            user_id,
-            agent_id,
-            session_id,
-        } = ctx;
-        match telemetry.finish(Utc::now()) {
-            Ok(event) => {
-                if let Err(e) = crate::coding_agent_telemetry::persist_coding_turn_telemetry(
-                    &db,
-                    user_id,
-                    agent_id,
-                    &session_id,
-                    &event,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry persist failed");
+        // Persist the turn's telemetry event (best-effort — a telemetry failure must
+        // never surface as a turn failure). A turn cut short still emits a partial.
+        if let Some(ctx) = telemetry {
+            let TurnTelemetryCtx {
+                telemetry,
+                user_id,
+                agent_id,
+                session_id,
+            } = ctx;
+            match telemetry.finish(Utc::now()) {
+                Ok(event) => {
+                    if let Err(e) = crate::coding_agent_telemetry::persist_coding_turn_telemetry(
+                        &db,
+                        user_id,
+                        agent_id,
+                        &session_id,
+                        &event,
+                    )
+                    .await
+                    {
+                        tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry persist failed");
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry event invalid")
                 }
             }
-            Err(e) => {
-                tracing::warn!(error = %e, %agent_id, "coding-agent: telemetry event invalid")
-            }
         }
-    }
 
-    // Persist the agent's reply so it survives a reload: the chat UI loads the
-    // transcript from `chat_messages`, but a coding turn only ever streamed its
-    // answer over SSE. Role `assistant` matches the normal agent path; the dedup
-    // guard mirrors the other transcript writers in case the client saved it too.
-    // Best-effort — a persistence failure never fails the turn.
-    if !reply.trim().is_empty() {
-        let _ = sqlx::query(
-            "INSERT INTO chat_messages (session_id, role, content) \
+        // Persist the agent's reply so it survives a reload: the chat UI loads the
+        // transcript from `chat_messages`, but a coding turn only ever streamed its
+        // answer over SSE. Role `assistant` matches the normal agent path; the dedup
+        // guard mirrors the other transcript writers in case the client saved it too.
+        // Best-effort — a persistence failure never fails the turn.
+        if !reply.trim().is_empty() {
+            let _ = sqlx::query(
+                "INSERT INTO chat_messages (session_id, role, content) \
              SELECT $1, 'assistant', $2 WHERE NOT EXISTS ( \
                  SELECT 1 FROM chat_messages \
                  WHERE session_id = $1 AND role = 'assistant' AND content = $2 \
                    AND timestamp > now() - INTERVAL '10 seconds')",
-        )
-        .bind(&lease.session_id)
-        .bind(&reply)
-        .execute(&db)
-        .await;
-    }
+            )
+            .bind(&lease.session_id)
+            .bind(&reply)
+            .execute(&db)
+            .await;
+        }
 
-    // Dropping the connection closes the pipe; the per-session agent process
-    // exits on stdin EOF while the container stays up for other sessions. Then
-    // release the lease (which stamps `last_turn_at` for idle tracking).
-    drop(conn);
-    let _ = lifecycle::release_turn(&db, &lease).await;
+        // Dropping the connection closes the pipe; the per-session agent process
+        // exits on stdin EOF while the container stays up for other sessions. Then
+        // release the lease (which stamps `last_turn_at` for idle tracking).
+        drop(conn);
+        // Outcome before release: release clears the live turn id, and `tasks/get` must always
+        // find the task as one or the other.
+        let _ = lifecycle::record_outcome(&db, &lease, &turn_id, outcome).await;
+        let _ = lifecycle::release_turn(&db, &lease).await;
+        // Revoke this turn's session token: the turn is over, so the credential has
+        // no more legitimate use, and revoking it caps a leaked copy's lifetime to
+        // the turn rather than the token's full TTL.
+        if let Some(id) = session_token_id
+            && let Err(e) =
+                super::revocation::revoke_session_token(&db, &id.jti, id.expires_at).await
+        {
+            tracing::warn!(error = %e, jti = %id.jti, "coding-agent: session-token revoke failed");
+        }
+        // The agent never answered the cancel, so it may still be blocked on something (an
+        // unanswered permission request): have the shim start the next turn on a fresh harness
+        // rather than attach to this one. After the revoke: a restart can take
+        // the shim's terminate grace, and the credential must not outlive the turn by that long.
+        if forced_end && let Some(restart) = &shim_restart {
+            restart.request().await;
+        }
 
-    // Revoke this turn's session token: the turn is over, so the credential has
-    // no more legitimate use, and revoking it caps a leaked copy's lifetime to
-    // the turn rather than the token's full TTL.
-    if let Some(id) = session_token_id
-        && let Err(e) = super::revocation::revoke_session_token(&db, &id.jti, id.expires_at).await
-    {
-        tracing::warn!(error = %e, jti = %id.jti, "coding-agent: session-token revoke failed");
+        // The turn is over and its lease released: only now stop being a live task.
+        drop(keep_alive);
     }
+}
+
+/// Ask the agent to stop and give it [`CANCEL_GRACE`] to wind down: the turn then ends as
+/// canceled whether the agent answered or not.
+fn begin_cancel(
+    conn: &AcpConnection,
+    session: &SessionId,
+    cancelling: &mut bool,
+    deadline: std::pin::Pin<&mut tokio::time::Sleep>,
+    token: Option<&tokio_util::sync::CancellationToken>,
+) {
+    *cancelling = true;
+    // Fired here as well as by the request, so a cancel that arrived through the row flag also
+    // reaches a pending permission wait.
+    if let Some(token) = token {
+        token.cancel();
+    }
+    let _ = conn.cancel(session.clone());
+    deadline.reset(tokio::time::Instant::now() + CANCEL_GRACE);
+}
+
+/// A failed turn's terminal event, with the real reason when the turn's lease is gone.
+async fn explain_failure(
+    err: AcpError,
+    db: &sqlx::PgPool,
+    lease: &TurnLease,
+    lease_secs: i64,
+    heartbeat_secs: u64,
+    started_at: chrono::DateTime<Utc>,
+) -> TurnEvent {
+    let budget = Duration::from_secs(heartbeat_secs);
+    if lifecycle::heartbeat_retrying(db, lease, lease_secs, budget).await == lifecycle::Beat::Lost {
+        let message = lease_lost_message(db, &lease.session_id, started_at).await;
+        return TurnEvent::Failed(AcpError::Cancelled(message.to_owned()));
+    }
+    TurnEvent::Failed(err)
 }
 
 /// Poll the runtime until the container is `Running`, or fail if it crashes or
@@ -496,7 +775,7 @@ async fn wait_for_running(state: &AppState, id: &ContainerId) -> Result<(), Codi
 /// (`agent_supports_http_mcp`), we return [`CodingTurnError::McpGatewayUnsupported`]
 /// rather than hand it a server it will ignore (the agent would then run with no
 /// tools and no clear reason why). SSE fallback is future work (NAS-838).
-fn session_params(
+pub(crate) fn session_params(
     state: &AppState,
     session_token: &Option<String>,
     cwd: std::path::PathBuf,
@@ -577,25 +856,61 @@ fn permission_policy(
     req: &CodingTurnRequest,
     notice_tx: mpsc::UnboundedSender<CodingTurnEvent>,
 ) -> PermissionPolicy {
-    if !req.hitl_enabled {
+    hitl_permission_policy(
+        state,
+        HitlPolicyInput {
+            hitl_enabled: req.hitl_enabled,
+            agent_id: uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
+            user_id: req.user_id,
+            session_id: &req.session_id,
+            pending_sink: None,
+            cancel: None,
+        },
+        notice_tx,
+    )
+}
+
+/// What decides how a turn answers permission requests.
+pub(crate) struct HitlPolicyInput<'a> {
+    pub hitl_enabled: bool,
+    pub agent_id: Option<uuid::Uuid>,
+    pub user_id: Option<uuid::Uuid>,
+    pub session_id: &'a str,
+    /// Persists a pending approval across a suspend (harness sessions only).
+    pub pending_sink: Option<Arc<dyn super::permission::PendingPermissionSink>>,
+    /// Fired when the task is cancelled, so a pending approval is closed instead of left waiting.
+    pub cancel: Option<tokio_util::sync::CancellationToken>,
+}
+
+/// [`permission_policy`] over plain values, so the harness path shares the rule.
+pub(crate) fn hitl_permission_policy(
+    state: &AppState,
+    input: HitlPolicyInput<'_>,
+    notice_tx: mpsc::UnboundedSender<CodingTurnEvent>,
+) -> PermissionPolicy {
+    if !input.hitl_enabled {
         return PermissionPolicy::ApproveAll;
     }
-    match (
-        uuid::Uuid::parse_str(req.spec.container_id.as_str()).ok(),
-        req.user_id,
-    ) {
+    match (input.agent_id, input.user_id) {
         (Some(agent_id), Some(user_id)) => {
-            PermissionPolicy::Delegate(Arc::new(super::permission::HitlPermissionDelegate::new(
+            let mut delegate = super::permission::HitlPermissionDelegate::new(
                 state.hitl_store.clone(),
                 agent_id,
                 user_id,
-                req.session_id.clone(),
+                input.session_id.to_owned(),
                 Some(notice_tx),
-            )))
+            );
+            if let Some(sink) = input.pending_sink {
+                delegate = delegate.with_pending_sink(sink);
+            }
+            if let Some(cancel) = input.cancel {
+                delegate = delegate.with_cancel(cancel);
+            }
+            PermissionPolicy::Delegate(Arc::new(delegate))
         }
         _ => {
             tracing::warn!(
-                session_id = %req.session_id,
+                session_id = %input.session_id,
                 "coding HITL enabled but the turn's user or agent id is unknown; denying all tool use"
             );
             PermissionPolicy::RejectAll
@@ -605,7 +920,7 @@ fn permission_policy(
 
 /// This control-plane replica's stable identity, used as the lease owner so a
 /// replica recognizes (and can renew) its own lease across turns.
-fn replica_id() -> &'static str {
+pub(crate) fn replica_id() -> &'static str {
     static ID: OnceLock<String> = OnceLock::new();
     ID.get_or_init(|| {
         std::env::var("HOSTNAME")
@@ -617,7 +932,39 @@ fn replica_id() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodingTurnError, gateway_mcp_servers, safe_session_label};
+    use super::{CodingTurnError, Utc, gateway_mcp_servers, lost_reason, safe_session_label};
+
+    #[test]
+    fn a_lost_lease_is_worded_by_what_the_row_says() {
+        use chrono::Duration as D;
+        let started = Utc::now();
+        // Gone, or deleted: deleted.
+        assert_eq!(lost_reason(None, started), "session was deleted");
+        assert_eq!(
+            lost_reason(Some(("running", true, None)), started),
+            "session was deleted"
+        );
+        // Mid-suspend, or a suspend that settled during this turn: suspended.
+        assert_eq!(
+            lost_reason(Some(("stopping", false, None)), started),
+            "session was suspended"
+        );
+        let during = Some(started + D::seconds(1));
+        assert_eq!(
+            lost_reason(Some(("parked", false, during)), started),
+            "session was suspended"
+        );
+        // A suspension from before this turn started is not why it ended.
+        let before = Some(started - D::seconds(60));
+        assert_eq!(
+            lost_reason(Some(("parked", false, before)), started),
+            "session was reset; the turn lost its lease"
+        );
+        assert_eq!(
+            lost_reason(Some(("running", false, None)), started),
+            "session was reset; the turn lost its lease"
+        );
+    }
 
     #[test]
     fn gateway_attached_only_when_token_and_url_present() {

@@ -1106,6 +1106,20 @@ pub(crate) async fn update(
         }
     };
 
+    let parking_policy = match body.parking_policy.as_deref() {
+        None => None,
+        Some(raw) => match raw.parse::<crate::agent_scaling::ParkingPolicy>() {
+            Ok(policy) => Some(policy.as_str()),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    "parking_policy must be one of: auto, resident",
+                )
+                    .into_response();
+            }
+        },
+    };
+
     let mut tx = match state.db.begin().await {
         Ok(t) => t,
         Err(e) => {
@@ -1205,12 +1219,14 @@ pub(crate) async fn update(
              skills = COALESCE($9, skills),
              tags = COALESCE($10, tags),
              metadata = COALESCE($11, metadata),
-             status = COALESCE($12, status),
+             status = CASE WHEN $18::text = 'resident' AND status = 'parked' AND $12::text IS NULL
+                           THEN 'stopped' ELSE COALESCE($12, status) END,
              image = COALESCE($13, image),
              minimal_code_enabled = COALESCE($14, minimal_code_enabled),
              compress_enabled = COALESCE($15, compress_enabled),
              workload_kind = COALESCE($16, workload_kind),
              hitl_enabled = COALESCE($17, hitl_enabled),
+             parking_policy = COALESCE($18, parking_policy),
              updated_at = now()
            WHERE id = $1
            RETURNING *"#,
@@ -1236,6 +1252,7 @@ pub(crate) async fn update(
     .bind(body.compress_enabled)
     .bind(workload_kind)
     .bind(body.hitl_enabled)
+    .bind(parking_policy)
     .fetch_optional(&mut *tx)
     .await;
 
@@ -1348,6 +1365,13 @@ pub(crate) async fn delete(
     .await
     {
         tracing::warn!(%e, %id, "delete agent: state token revoke failed");
+    }
+
+    // A parkable agent may be resting in (or serving from) its own sandbox, which the container
+    // teardown below does not know about, with its credentials stored beside the row. Release the
+    // sandbox and forget the credentials. Best-effort, like the rest of the teardown.
+    if let Err(e) = crate::agents::parking::release_agent_sandbox(&state, id).await {
+        tracing::warn!(%e, %id, "delete agent: could not release the agent's sandbox");
     }
 
     // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no

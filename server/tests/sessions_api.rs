@@ -1,0 +1,1661 @@
+//! Integration tests for harness sessions: `GET /api/harnesses`, `POST /api/sessions`,
+//! `GET /api/sessions/{id}` and `POST /api/sessions/{id}/suspend`, against the fake
+//! sandbox provider.
+//!
+//! Requires infra (Postgres :5432, Redis, S3); skips when Postgres is unreachable:
+//!   cargo test -p nasiko-server --test sessions_api -- --test-threads=1
+
+mod common;
+
+use nasiko_runtime::{
+    RuntimeError, SandboxHandle, SandboxKey, SandboxProvider, SandboxSpec, SandboxState,
+    SandboxStats, TransportKind,
+};
+use nasiko_server::coding::lifecycle::{TurnLease, heartbeat, release_turn};
+use nasiko_server::sessions::reaper::{
+    ReaperMemory, SweepOutcome, SweepScope, reap_once, recover_orphans, recover_stuck, sweep,
+};
+use nasiko_server::sessions::{SessionRuntimeState, SessionStore};
+use serde_json::{Value, json};
+use serial_test::serial;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+async fn init_admin(server: &common::TestServer) -> String {
+    let body: Value = server
+        .client
+        .post(server.url("/api/auth/initialize-admin"))
+        .json(&json!({"username": "admin", "email": "admin@test.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["user_id"].as_str().unwrap().to_owned()
+}
+
+async fn create_member(server: &common::TestServer, admin_id: &str) -> String {
+    let body: Value = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": "bob", "email": "bob@test.local"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    body["id"].as_str().unwrap().to_owned()
+}
+
+async fn create_session(server: &common::TestServer, admin_id: &str, harness: &str) -> Value {
+    let resp = common::as_superuser(
+        server.client.post(server.url("/api/sessions")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({ "harness": harness }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    resp.json::<Value>().await.unwrap()["data"].clone()
+}
+
+#[tokio::test]
+#[serial]
+async fn harnesses_lists_the_three_seeds() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+
+    let body: Value = common::as_superuser(
+        server.client.get(server.url("/api/harnesses")),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+
+    let ids: Vec<&str> = body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| h["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["claude-code", "codex", "opencode"]);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn session_is_created_parked_and_visible_only_to_its_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let bob = create_member(&server, &admin).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+
+    let created = create_session(&server, &admin, "opencode").await;
+    assert_eq!(created["runtime_state"], "parked");
+    assert_eq!(created["harness"], "opencode");
+    assert!(created["sandbox_ref"].is_null());
+    let sid = created["session_id"].as_str().unwrap();
+
+    let own = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/sessions/{sid}"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(own.status(), 200);
+
+    let other = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/sessions/{sid}"))),
+        &bob,
+        "bob",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(other.status(), 404);
+    assert_eq!(
+        other.json::<Value>().await.unwrap()["code"],
+        "session_not_found"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn unknown_harness_is_a_400() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let resp = common::as_superuser(
+        server.client.post(server.url("/api/sessions")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({ "harness": "nope" }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 400);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["code"],
+        "unknown_harness"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn suspend_calls_the_provider_and_parks_the_session() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let created = create_session(&server, &admin, "codex").await;
+    let sid = created["session_id"].as_str().unwrap();
+
+    // Give the session a live fake sandbox and a running row, as the turn path would.
+    let key = SandboxKey::Session {
+        session_id: Uuid::parse_str(sid).unwrap(),
+    };
+    let handle = acquire_fake(&server, key).await;
+    sqlx::query("UPDATE chat_sessions SET sandbox_ref = $2, runtime_state = 'running' WHERE session_id = $1")
+        .bind(sid)
+        .bind(handle.sandbox_ref())
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    let (state, suspended): (String, bool) = sqlx::query_as(
+        "SELECT runtime_state, suspended_at IS NOT NULL FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!((state.as_str(), suspended), ("parked", true));
+    server.cleanup().await;
+}
+
+async fn acquire_fake(server: &common::TestServer, key: SandboxKey) -> SandboxHandle {
+    server
+        .sandbox
+        .acquire(&SandboxSpec {
+            key,
+            image: "nasiko/harness-codex:0.1.0".into(),
+            command: vec![],
+            env: HashMap::new(),
+            resources: None,
+            workspace: None,
+            runtime_class: None,
+            ports: vec![7000],
+            transport: TransportKind::WebSocket,
+            image_pull_secret: None,
+        })
+        .await
+        .unwrap()
+}
+
+// ─── repo, ownership of ids, harness-only visibility ─────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn repo_is_validated_persisted_and_echoed() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let post = |repo: &str| {
+        common::as_superuser(
+            server.client.post(server.url("/api/sessions")),
+            &admin,
+            "admin",
+        )
+        .json(&json!({ "harness": "opencode", "repo": repo }))
+        .send()
+    };
+
+    let bad = post("https://evil.example/o/r").await.unwrap();
+    assert_eq!(bad.status(), 400);
+    assert_eq!(bad.json::<Value>().await.unwrap()["code"], "invalid_repo");
+    assert_eq!(post("http://github.com/o/r").await.unwrap().status(), 400);
+
+    let ok = post("https://github.com/o/r.git").await.unwrap();
+    assert_eq!(ok.status(), 201);
+    let data = ok.json::<Value>().await.unwrap()["data"].clone();
+    assert_eq!(data["workspace_repo"], "https://github.com/o/r.git");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT workspace_repo FROM chat_sessions WHERE session_id = $1")
+            .bind(data["session_id"].as_str().unwrap())
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some("https://github.com/o/r.git"));
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn find_or_create_refuses_a_foreign_context_id() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let bob = create_member(&server, &admin).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let agent = harness_agent_id(&server).await;
+    let store = SessionStore::new(server.db.clone());
+    let (admin, bob) = (
+        Uuid::parse_str(&admin).unwrap(),
+        Uuid::parse_str(&bob).unwrap(),
+    );
+
+    let mine = store
+        .find_or_create_for_harness(agent, admin, "ctx-1")
+        .await
+        .unwrap();
+    assert_eq!(mine.unwrap().runtime_state, "parked");
+    assert!(
+        store
+            .find_or_create_for_harness(agent, bob, "ctx-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_plain_chat_session_is_not_a_harness_session() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let plain: Value = common::as_superuser(
+        server.client.post(server.url("/api/chat/sessions")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({"title": "plain"}))
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let sid = plain["data"]["session_id"].as_str().unwrap();
+    for (method, path) in [
+        ("GET", format!("/api/sessions/{sid}")),
+        ("POST", format!("/api/sessions/{sid}/suspend")),
+    ] {
+        let rb = if method == "GET" {
+            server.client.get(server.url(&path))
+        } else {
+            server.client.post(server.url(&path))
+        };
+        let resp = common::as_superuser(rb, &admin, "admin")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 404, "{method} {path}");
+    }
+    server.cleanup().await;
+}
+
+// ─── fenced suspend and the reaper ───────────────────────────────────────────
+
+fn reaper_server() -> impl std::future::Future<Output = common::TestServer> {
+    common::TestServer::start_with(|c| {
+        c.coding_agent_idle_ttl_secs = 60;
+        c.session_idle_grace_secs = 0;
+        c.session_cpu_quiescent_millicores = 20;
+    })
+}
+
+async fn harness_agent_id(server: &common::TestServer) -> Uuid {
+    sqlx::query_scalar("SELECT id FROM agents WHERE workload_kind = 'harness' LIMIT 1")
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+/// A session whose sandbox is live in the fake and which has been idle for an hour.
+async fn idle_running_session(server: &common::TestServer, admin: &str) -> (String, SandboxHandle) {
+    let created = create_session(server, admin, "opencode").await;
+    let sid = created["session_id"].as_str().unwrap().to_owned();
+    let key = SandboxKey::Session {
+        session_id: Uuid::parse_str(&sid).unwrap(),
+    };
+    let handle = acquire_fake(server, key).await;
+    sqlx::query(
+        "UPDATE chat_sessions SET sandbox_ref = $2, runtime_state = 'running', \
+         last_turn_at = now() - interval '1 hour' WHERE session_id = $1",
+    )
+    .bind(&sid)
+    .bind(handle.sandbox_ref())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    (sid, handle)
+}
+
+async fn row_state(server: &common::TestServer, sid: &str) -> (String, Option<String>) {
+    sqlx::query_as("SELECT runtime_state, sandbox_ref FROM chat_sessions WHERE session_id = $1")
+        .bind(sid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+fn cpu(millicores: u32) -> SandboxStats {
+    SandboxStats {
+        cpu_millicores: millicores,
+        memory_bytes: 0,
+        sampled_at: chrono::Utc::now(),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn a_turn_starting_after_the_list_wins_the_race_and_the_sandbox_survives() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+
+    let listed = store.list_idle(60).await.unwrap();
+    assert_eq!(listed.len(), 1);
+    // A turn acquires the lease between the list and the suspend.
+    sqlx::query("UPDATE chat_sessions SET turn_owner = 'r1', turn_fence = turn_fence + 1 WHERE session_id = $1")
+        .bind(&sid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    assert!(
+        store
+            .begin_suspend(&sid, listed[0].turn_fence)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn reaper_suspends_a_quiet_idle_sandbox_and_leaves_a_busy_one() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    server.sandbox.set_stats(&handle, cpu(500));
+    let mut quiet = ReaperMemory::default();
+    reap_once(&server.state, &mut quiet).await.unwrap();
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+
+    server.sandbox.set_stats(&handle, cpu(5));
+    reap_once(&server.state, &mut quiet).await.unwrap();
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    let (state, sandbox_ref) = row_state(&server, &sid).await;
+    assert_eq!(state, "parked");
+    assert!(sandbox_ref.is_some(), "suspend keeps the sandbox ref");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn reaper_forgets_a_sandbox_the_provider_no_longer_has() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    server.sandbox.release(&handle).await.unwrap();
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await, ("parked".to_owned(), None));
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn reaper_records_a_sandbox_suspended_out_of_band() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    server.sandbox.suspend(&handle).await.unwrap();
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    let (state, sandbox_ref) = row_state(&server, &sid).await;
+    assert_eq!(state, "parked");
+    assert!(sandbox_ref.is_some());
+    let suspended: bool = sqlx::query_scalar(
+        "SELECT suspended_at IS NOT NULL FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(&sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(suspended);
+    server.cleanup().await;
+}
+
+// ─── recovery, rollback, crashed turns, the manual route's fence ─────────────
+
+/// Make the fake report this sandbox as an hour old, past the orphan pass's minimum age.
+fn age(server: &common::TestServer, handle: &SandboxHandle) {
+    server.sandbox.set_started_at(
+        handle,
+        Some(chrono::Utc::now() - chrono::Duration::hours(1)),
+    );
+}
+
+async fn set_row(server: &common::TestServer, sid: &str, assignments: &str) {
+    sqlx::query(&format!(
+        "UPDATE chat_sessions SET {assignments} WHERE session_id = $1"
+    ))
+    .bind(sid)
+    .execute(&server.db)
+    .await
+    .unwrap();
+}
+
+async fn lease_is_clear(server: &common::TestServer, sid: &str) -> bool {
+    sqlx::query_scalar(
+        "SELECT turn_owner IS NULL AND lease_expires_at IS NULL FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_fence_bump_alone_defeats_the_claim() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+    let listed = store.list_idle(60).await.unwrap();
+
+    // A turn came and went between the list and the claim: no owner, but the fence moved.
+    set_row(&server, &sid, "turn_fence = turn_fence + 1").await;
+
+    assert!(
+        store
+            .begin_suspend(&sid, listed[0].turn_fence)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_failed_suspend_rolls_the_claim_back_to_running() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    server
+        .sandbox
+        .fail_next_suspend(RuntimeError::Internal("boom".into()));
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    assert!(lease_is_clear(&server, &sid).await);
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_stuck_stopping_row_is_recovered_once_its_deadline_passes() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    // A claimant died mid-suspend. Inside the deadline the row is left alone.
+    set_row(
+        &server,
+        &sid,
+        "runtime_state = 'stopping', lease_expires_at = now() + interval '1 minute'",
+    )
+    .await;
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+    assert_eq!(row_state(&server, &sid).await.0, "stopping");
+
+    set_row(
+        &server,
+        &sid,
+        "lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+    let outcome = reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        outcome,
+        SweepOutcome::Swept {
+            suspended: 1,
+            skipped: 0
+        }
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    assert!(lease_is_clear(&server, &sid).await);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_sandbox_that_is_not_running_is_suspended_not_assumed_stopped() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    server.sandbox.set_state(&handle, SandboxState::Starting);
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    // The fake's `suspend` is what moves Starting to Suspended, so this proves it was called.
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_crashed_turn_with_a_lapsed_lease_is_reaped() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'dead-replica', lease_expires_at = now() - interval '5 minutes'",
+    )
+    .await;
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    assert!(lease_is_clear(&server, &sid).await);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_manual_suspend_is_refused_while_a_turn_holds_the_lease() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'r1', lease_expires_at = now() + interval '1 minute'",
+    )
+    .await;
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 409);
+    assert_eq!(resp.json::<Value>().await.unwrap()["code"], "session_busy");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    server.cleanup().await;
+}
+
+// ─── the claim takes the lease and the fence ─────────────────────────────────
+
+async fn row_lease(server: &common::TestServer, sid: &str) -> (Option<String>, i64, bool) {
+    sqlx::query_as(
+        "SELECT turn_owner, turn_fence, lease_expires_at > now() FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(sid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_claim_strips_the_owner_and_bumps_the_fence_so_the_old_turn_misses() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'dead', turn_fence = 5, lease_expires_at = now() - interval '5 minutes'",
+    )
+    .await;
+    let store = SessionStore::new(server.db.clone());
+
+    let claim = store.begin_suspend(&sid, 5).await.unwrap();
+
+    assert_eq!(claim, Some(6));
+    let (owner, fence, deadline_holds) = row_lease(&server, &sid).await;
+    assert_eq!(
+        (owner, fence, deadline_holds),
+        (None, 6, true),
+        "begin_suspend stamps the deadline itself"
+    );
+    // The dead turn wakes up: neither its heartbeat nor its release can disturb the claim.
+    let old = TurnLease {
+        session_id: sid.clone(),
+        owner: "dead".into(),
+        fence: 5,
+    };
+    assert!(!heartbeat(&server.db, &old, 60).await.unwrap());
+    release_turn(&server.db, &old).await.unwrap();
+    assert_eq!(row_state(&server, &sid).await.0, "stopping");
+    assert!(
+        row_lease(&server, &sid).await.2,
+        "the deadline survived the late release"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_superseded_claimant_cannot_release_or_settle() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+
+    let first = store.begin_suspend(&sid, 0).await.unwrap().unwrap();
+    set_row(
+        &server,
+        &sid,
+        "lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+    let second = store.reclaim_suspend(&sid, first).await.unwrap().unwrap();
+    assert!(second > first);
+
+    assert!(
+        !store
+            .release_suspend(&sid, first, SessionRuntimeState::Running)
+            .await
+            .unwrap()
+    );
+    assert!(!store.settle_suspended(&sid, first).await.unwrap());
+    assert_eq!(row_state(&server, &sid).await.0, "stopping");
+    assert!(
+        store
+            .release_suspend(&sid, second, SessionRuntimeState::Running)
+            .await
+            .unwrap()
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_crashed_turns_own_model_calls_do_not_keep_it_alive() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'dead', lease_expires_at = now() - interval '5 minutes'",
+    )
+    .await;
+    // A router call made after the last finished turn but before the lease lapsed: the dead
+    // turn's own.
+    sqlx::query(
+        "INSERT INTO trace_usage (trace_id, agent_name, user_id, agent_id, provider, model, \
+         started_at, materialized_at) \
+         SELECT gen_random_uuid()::text, 'agent', user_id, agent_id, 'p', 'm', \
+         now() - interval '30 minutes', now() - interval '30 minutes' \
+         FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(&sid)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stuck_claims_are_recovered_without_the_idle_sweep() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (stuck, stuck_handle) = idle_running_session(&server, &admin).await;
+    let (idle, idle_handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+    store.begin_suspend(&stuck, 0).await.unwrap().unwrap();
+    set_row(
+        &server,
+        &stuck,
+        "lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+
+    // The function `spawn_reaper` calls on every tick, with idle suspension off (TTL 0).
+    sweep(
+        &server.state,
+        &mut ReaperMemory::default(),
+        SweepScope::RecoveryOnly,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(row_state(&server, &stuck).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&stuck_handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    assert_eq!(
+        row_state(&server, &idle).await.0,
+        "running",
+        "the idle sweep did not run"
+    );
+    assert_eq!(
+        server.sandbox.status(&idle_handle).await.unwrap(),
+        SandboxState::Running
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_manual_suspend_reports_a_live_claim_and_finishes_a_lapsed_one() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+    store.begin_suspend(&sid, 0).await.unwrap().unwrap();
+    let suspend = || {
+        common::as_superuser(
+            server
+                .client
+                .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+            &admin,
+            "admin",
+        )
+        .send()
+    };
+
+    let live = suspend().await.unwrap();
+    assert_eq!(live.status(), 202);
+    assert_eq!(
+        live.json::<Value>().await.unwrap()["data"]["status"],
+        "suspending"
+    );
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+
+    set_row(
+        &server,
+        &sid,
+        "lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+    assert_eq!(suspend().await.unwrap().status(), 204);
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_vanished_sandbox_clears_the_ref_on_a_stuck_claim() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+    store.begin_suspend(&sid, 0).await.unwrap().unwrap();
+    set_row(
+        &server,
+        &sid,
+        "lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+    server.sandbox.release(&handle).await.unwrap();
+
+    recover_stuck(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await, ("parked".to_owned(), None));
+    server.cleanup().await;
+}
+
+// ─── bounded model-call lookback, claim restore, fenced turn writes ──────────
+
+/// A model call attributed to one of `sid`'s own flows, `age` ago: a `flows` row naming the
+/// session, and the `trace_usage` row the router would write for that flow.
+async fn insert_usage_for(server: &common::TestServer, sid: &str, age: &str) {
+    let flow_id = format!("flow-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO flows (flow_id, user_id, root_agent_id, status, session_id) \
+         SELECT $2, user_id, agent_id, 'completed', session_id \
+         FROM chat_sessions WHERE session_id = $1",
+    )
+    .bind(sid)
+    .bind(&flow_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    sqlx::query(&format!(
+        "INSERT INTO trace_usage (trace_id, agent_name, user_id, agent_id, provider, model, \
+         started_at, materialized_at) \
+         SELECT $2, 'agent', user_id, agent_id, 'p', 'm', now() - interval '{age}', \
+         now() - interval '{age}' \
+         FROM chat_sessions WHERE session_id = $1"
+    ))
+    .bind(sid)
+    .bind(&flow_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn a_crashed_turn_whose_first_suspend_failed_is_reaped_on_a_later_sweep() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'dead', lease_expires_at = now() - interval '5 minutes'",
+    )
+    .await;
+    insert_usage_for(&server, &sid, "30 minutes").await;
+    let mut memory = ReaperMemory::default();
+
+    server
+        .sandbox
+        .fail_next_suspend(RuntimeError::Internal("transient".into()));
+    reap_once(&server.state, &mut memory).await.unwrap();
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+
+    // The claim cleared the dead owner; the dead turn's old call must not pin the session now.
+    reap_once(&server.state, &mut memory).await.unwrap();
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn an_active_sibling_session_does_not_pin_an_idle_one() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (a, a_handle) = idle_running_session(&server, &admin).await;
+    let (b, _) = idle_running_session(&server, &admin).await;
+    insert_usage_for(&server, &b, "10 seconds").await;
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &a).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&a_handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_model_call_inside_the_idle_ttl_blocks_the_suspend() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    insert_usage_for(&server, &sid, "10 seconds").await;
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_failed_suspend_restores_a_starting_session_to_starting() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _handle) = idle_running_session(&server, &admin).await;
+    set_row(&server, &sid, "runtime_state = 'starting'").await;
+
+    server
+        .sandbox
+        .fail_next_suspend(RuntimeError::Internal("boom".into()));
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "starting");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn turn_writes_fenced_on_the_old_lease_miss_after_a_claim() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _handle) = idle_running_session(&server, &admin).await;
+    let store = SessionStore::new(server.db.clone());
+    store.begin_suspend(&sid, 0).await.unwrap().unwrap();
+    let old = TurnLease {
+        session_id: sid.clone(),
+        owner: "r1".into(),
+        fence: 0,
+    };
+
+    assert!(
+        !store
+            .set_runtime_state_fenced(&old, SessionRuntimeState::Running)
+            .await
+            .unwrap()
+    );
+    assert!(!store.set_sandbox_ref_fenced(&old, "fake:x").await.unwrap());
+    assert!(
+        !nasiko_server::coding::lifecycle::record_acp_session_fenced(&server.db, &old, "acp-1")
+            .await
+            .unwrap()
+    );
+    let acp: Option<String> =
+        sqlx::query_scalar("SELECT acp_session_id FROM chat_sessions WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(acp, None);
+    assert_eq!(row_state(&server, &sid).await.0, "stopping");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_stuck_claim_with_an_unusable_ref_is_cleared() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, _handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "runtime_state = 'stopping', sandbox_ref = 'pod:gone', \
+         lease_expires_at = now() - interval '1 second'",
+    )
+    .await;
+
+    recover_stuck(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await, ("parked".to_owned(), None));
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_manual_suspend_on_a_starting_session_without_a_sandbox_is_busy() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let created = create_session(&server, &admin, "opencode").await;
+    let sid = created["session_id"].as_str().unwrap();
+    set_row(
+        &server,
+        sid,
+        "runtime_state = 'starting', turn_owner = 'r1', \
+         lease_expires_at = now() + interval '1 minute'",
+    )
+    .await;
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 409);
+    server.cleanup().await;
+}
+
+// ─── grace inside the TTL, orphans, revoke before settle ─────────────────────
+
+#[tokio::test]
+#[serial]
+async fn a_session_idle_for_the_ttl_is_suspended_on_the_first_quiet_sweep() {
+    let server = common::TestServer::start_with(|c| {
+        c.coding_agent_idle_ttl_secs = 60;
+        c.session_idle_grace_secs = 2;
+        c.session_cpu_quiescent_millicores = 20;
+    })
+    .await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_busy_sample_restarts_the_grace_window() {
+    let server = common::TestServer::start_with(|c| {
+        c.coding_agent_idle_ttl_secs = 60;
+        c.session_idle_grace_secs = 2;
+        c.session_cpu_quiescent_millicores = 20;
+    })
+    .await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    let mut memory = ReaperMemory::default();
+
+    server.sandbox.set_stats(&handle, cpu(500));
+    reap_once(&server.state, &mut memory).await.unwrap();
+    server.sandbox.set_stats(&handle, cpu(1));
+    reap_once(&server.state, &mut memory).await.unwrap();
+
+    // Quiet again, but only just: the run restarted, so the 2 s grace has not elapsed.
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_sandbox_of_a_deleted_session_is_released() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    age(&server, &handle);
+    set_row(&server, &sid, "deleted_at = now()").await;
+
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Absent
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_sandbox_with_no_session_row_is_released() {
+    let server = reaper_server().await;
+    let key = SandboxKey::Session {
+        session_id: Uuid::new_v4(),
+    };
+    let handle = acquire_fake(&server, key).await;
+    age(&server, &handle);
+
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Absent
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_live_sandbox_under_a_parked_row_is_suspended_and_recorded() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    // Parked, no sandbox_ref (a failed start that left the sandbox up), sandbox Running.
+    let created = create_session(&server, &admin, "opencode").await;
+    let sid = created["session_id"].as_str().unwrap().to_owned();
+    let handle = acquire_fake(
+        &server,
+        SandboxKey::Session {
+            session_id: Uuid::parse_str(&sid).unwrap(),
+        },
+    )
+    .await;
+
+    age(&server, &handle);
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    let (state, sandbox_ref) = row_state(&server, &sid).await;
+    assert_eq!(state, "parked");
+    assert_eq!(sandbox_ref.as_deref(), Some(handle.sandbox_ref().as_str()));
+    assert!(lease_is_clear(&server, &sid).await);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_live_sandbox_under_a_leased_row_is_left_alone() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    age(&server, &handle);
+    set_row(
+        &server,
+        &sid,
+        "runtime_state = 'parked', turn_owner = 'r1', lease_expires_at = now() + interval '1 minute'",
+    )
+    .await;
+
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_manual_suspend_of_a_parked_row_with_a_running_sandbox_suspends_it() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(&server, &sid, "runtime_state = 'parked'").await;
+
+    let resp = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Suspended
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_vanished_sandbox_has_its_token_revoked_before_the_row_is_cleared() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(&server, &sid, "sandbox_token_jti = 'jti-vanished'").await;
+    server.sandbox.release(&handle).await.unwrap();
+
+    reap_once(&server.state, &mut ReaperMemory::default())
+        .await
+        .unwrap();
+
+    assert_eq!(row_state(&server, &sid).await, ("parked".to_owned(), None));
+    let revoked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM revoked_session_tokens WHERE jti = 'jti-vanished')",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(revoked);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_first_turns_sandbox_of_a_free_text_session_survives_the_orphan_pass() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let created = create_session(&server, &admin, "opencode").await;
+    let uuid_sid = created["session_id"].as_str().unwrap().to_owned();
+    // A client-minted contextId: its sandbox key is a hash, not the id.
+    let sid = "ses_free_text_1";
+    set_row(&server, &uuid_sid, &format!("session_id = '{sid}'")).await;
+    let key = SandboxKey::Session {
+        session_id: SessionStore::new(server.db.clone())
+            .get(sid)
+            .await
+            .unwrap()
+            .unwrap()
+            .sandbox_uuid(),
+    };
+    let handle = acquire_fake(&server, key.clone()).await;
+    server.sandbox.set_state(&handle, SandboxState::Starting);
+    server.sandbox.set_started_at(&handle, None);
+    // The turn holds the lease and has recorded only the key, not the ref yet.
+    set_row(
+        &server,
+        sid,
+        &format!(
+            "runtime_state = 'starting', turn_owner = 'r1', sandbox_key = '{}', \
+             lease_expires_at = now() + interval '1 minute'",
+            key.name()
+        ),
+    )
+    .await;
+
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Starting
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_young_sandbox_with_no_row_survives_and_an_old_one_is_released() {
+    let server = reaper_server().await;
+    let young = acquire_fake(
+        &server,
+        SandboxKey::Session {
+            session_id: Uuid::new_v4(),
+        },
+    )
+    .await;
+    let old = acquire_fake(
+        &server,
+        SandboxKey::Session {
+            session_id: Uuid::new_v4(),
+        },
+    )
+    .await;
+    age(&server, &old);
+
+    recover_orphans(&server.state).await.unwrap();
+
+    assert_eq!(
+        server.sandbox.status(&young).await.unwrap(),
+        SandboxState::Running
+    );
+    assert_eq!(
+        server.sandbox.status(&old).await.unwrap(),
+        SandboxState::Absent
+    );
+    server.cleanup().await;
+}
+
+// ─── list and delete ─────────────────────────────────────────────────────────
+
+async fn list_as_admin(server: &common::TestServer, admin: &str, query: &str) -> Value {
+    let resp = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/sessions{query}"))),
+        admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 200, "{query}");
+    resp.json().await.unwrap()
+}
+
+fn session_ids(page: &Value) -> Vec<String> {
+    page["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["session_id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn delete_as_admin(server: &common::TestServer, admin: &str, sid: &str) -> reqwest::Response {
+    common::as_superuser(
+        server
+            .client
+            .delete(server.url(&format!("/api/sessions/{sid}"))),
+        admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn list_shows_only_the_callers_sessions_filtered_and_paged() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let bob = create_member(&server, &admin).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+
+    let oldest = create_session(&server, &admin, "opencode").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let middle = create_session(&server, &admin, "codex").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let newest = create_session(&server, &admin, "opencode").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    set_row(
+        &server,
+        &oldest,
+        "last_turn_at = now() - interval '3 hours'",
+    )
+    .await;
+    set_row(
+        &server,
+        &middle,
+        "last_turn_at = now() - interval '2 hours'",
+    )
+    .await;
+    set_row(&server, &newest, "runtime_state = 'running'").await;
+    let bobs = common::as_member(server.client.post(server.url("/api/sessions")), &bob, "bob")
+        .json(&json!({ "harness": "opencode" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bobs.status(), 201);
+
+    let all = list_as_admin(&server, &admin, "").await;
+    assert_eq!(
+        session_ids(&all),
+        [newest.clone(), middle.clone(), oldest.clone()]
+    );
+    assert_eq!(all["has_more"], false);
+    assert!(all["next_cursor"].is_null());
+    assert_eq!(all["data"][0]["harness"], "opencode");
+
+    let by_harness = list_as_admin(&server, &admin, "?harness=codex").await;
+    assert_eq!(session_ids(&by_harness), std::slice::from_ref(&middle));
+    let by_state = list_as_admin(&server, &admin, "?state=running").await;
+    assert_eq!(session_ids(&by_state), std::slice::from_ref(&newest));
+
+    let first = list_as_admin(&server, &admin, "?limit=2").await;
+    assert_eq!(session_ids(&first), [newest.clone(), middle.clone()]);
+    assert_eq!(first["has_more"], true);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let second = list_as_admin(&server, &admin, &format!("?limit=2&cursor={cursor}")).await;
+    assert_eq!(session_ids(&second), [oldest]);
+    assert_eq!(second["has_more"], false);
+
+    let bad = common::as_superuser(
+        server.client.get(server.url("/api/sessions?limit=0")),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(bad.status(), 400);
+
+    let foreign = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/sessions?user_id={admin}"))),
+        &bob,
+        "bob",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(foreign.status(), 403);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_a_parked_session_releases_its_sandbox_revokes_its_token_and_removes_the_row() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let created = create_session(&server, &admin, "codex").await;
+    let sid = created["session_id"].as_str().unwrap();
+    let key = SandboxKey::Session {
+        session_id: Uuid::parse_str(sid).unwrap(),
+    };
+    let handle = acquire_fake(&server, key).await;
+    set_row(
+        &server,
+        sid,
+        &format!(
+            "sandbox_ref = '{}', sandbox_token_jti = 'jti-rm'",
+            handle.sandbox_ref()
+        ),
+    )
+    .await;
+
+    let resp = delete_as_admin(&server, &admin, sid).await;
+    assert_eq!(resp.status(), 204);
+
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Absent
+    );
+    let revoked: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM revoked_session_tokens WHERE jti = 'jti-rm')",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(revoked);
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE session_id = $1")
+        .bind(sid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0);
+    assert_eq!(delete_as_admin(&server, &admin, sid).await.status(), 404);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_during_a_live_lease_is_busy_and_changes_nothing() {
+    let server = reaper_server().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let (sid, handle) = idle_running_session(&server, &admin).await;
+    set_row(
+        &server,
+        &sid,
+        "turn_owner = 'r1', lease_expires_at = now() + interval '1 minute'",
+    )
+    .await;
+
+    let resp = delete_as_admin(&server, &admin, &sid).await;
+
+    assert_eq!(resp.status(), 409);
+    assert_eq!(resp.json::<Value>().await.unwrap()["code"], "session_busy");
+    assert_eq!(
+        server.sandbox.status(&handle).await.unwrap(),
+        SandboxState::Running
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "running");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn deleting_a_foreign_session_is_a_404_and_leaves_it_alone() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let bob = create_member(&server, &admin).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let sid = create_session(&server, &admin, "codex").await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let resp = common::as_member(
+        server
+            .client
+            .delete(server.url(&format!("/api/sessions/{sid}"))),
+        &bob,
+        "bob",
+    )
+    .send()
+    .await
+    .unwrap();
+
+    assert_eq!(resp.status(), 404);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["code"],
+        "session_not_found"
+    );
+    assert_eq!(row_state(&server, &sid).await.0, "parked");
+    server.cleanup().await;
+}

@@ -1,5 +1,19 @@
 //! Error type for the ACP client.
 
+/// Why a network connect to an agent failed, so a caller can decide whether a
+/// retry could help without parsing the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectFailure {
+    /// Nothing answered (refused, unreachable, reset, DNS). Retrying may help.
+    Unreachable,
+    /// The TLS handshake failed.
+    Tls,
+    /// The peer answered the upgrade with an HTTP error status.
+    Rejected { status: u16 },
+    /// The URL or headers were malformed; retrying cannot help.
+    InvalidRequest,
+}
+
 /// Everything that can go wrong driving an ACP agent.
 #[derive(Debug, thiserror::Error)]
 pub enum AcpError {
@@ -21,6 +35,13 @@ pub enum AcpError {
     /// fast with a clear cause instead of a late, opaque agent-side error.
     #[error("acp invalid parameters: {0}")]
     InvalidParams(String),
+
+    /// Opening a network connection to the agent failed; `kind` says why.
+    #[error("acp connect failed ({kind:?}): {message}")]
+    ConnectFailed {
+        kind: ConnectFailure,
+        message: String,
+    },
 
     /// The transport (spawn/attach) failed to establish or dropped.
     #[error("acp transport error: {0}")]
@@ -55,6 +76,17 @@ impl AcpError {
     /// the signal to degrade to the hook path instead of erroring out.
     pub fn is_incompatible(&self) -> bool {
         matches!(self, AcpError::Incompatible(_))
+    }
+
+    /// True when a fresh connect attempt could succeed: only an unreachable peer.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            AcpError::ConnectFailed {
+                kind: ConnectFailure::Unreachable,
+                ..
+            }
+        )
     }
 
     /// True when the agent answered with JSON-RPC `auth_required` (-32000) — it

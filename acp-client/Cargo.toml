@@ -17,6 +17,13 @@ tokio = { workspace = true }
 futures = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tokio-tungstenite = { workspace = true }
+# A private CA is added to the public roots for the WebSocket TLS handshake.
+rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
+webpki-roots = { workspace = true }
+# Bridge tokio's AsyncRead/AsyncWrite to the futures-io the SDK's ByteStreams wants.
+tokio-util = { workspace = true }
 
 # Telemetry: build the shared CodingAgentEventV1 from the ACP update stream.
 nasiko-types = { workspace = true }
@@ -24,6 +31,5 @@ chrono = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# Bridge tokio's AsyncRead/AsyncWrite to the futures-io the SDK's ByteStreams
-# transport wants, so hermetic tests can drive the client over an in-memory pipe.
-tokio-util = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }

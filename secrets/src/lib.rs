@@ -78,6 +78,10 @@ const BACKUP_CANARY_SCOPE: &[u8] = b"nasiko-backup-canary-v1";
 /// can never be carried from one domain into the other. Must not change, or stored
 /// state becomes undecryptable.
 const AGENT_STATE_SCOPE_PREFIX: &[u8] = b"agent-state-v1";
+/// HKDF `info` prefix of the sandbox-token key scope. Like its siblings it must never change:
+/// every `chat_sessions.sandbox_token_enc` is sealed under it, and a new value would leave them
+/// unreadable (each session's sandbox would be rebuilt with a new token).
+const SANDBOX_TOKEN_SCOPE_PREFIX: &[u8] = b"sandbox-token-v1";
 
 pub struct SecretsCrypto {
     cipher: Aes256Gcm,
@@ -100,6 +104,15 @@ impl SecretsCrypto {
     /// [`encrypt_with_aad`](Self::encrypt_with_aad) to bind each ciphertext to its row.
     pub fn try_for_agent_state(agent_id: Uuid) -> Result<Self, SecretsError> {
         Self::try_derive(&agent_state_info(agent_id))
+    }
+
+    /// Derive the key for the session-token a harness sandbox carries
+    /// (`chat_sessions.sandbox_token_enc`). Distinct from the agent's secrets key and its state
+    /// key: HKDF `info` is [`SANDBOX_TOKEN_SCOPE_PREFIX`] followed by the agent's UUID bytes, so
+    /// a ciphertext of one scope never opens under another. Pair it with
+    /// [`encrypt_with_aad`](Self::encrypt_with_aad) to bind the token to its session.
+    pub fn try_for_sandbox_token(agent_id: Uuid) -> Result<Self, SecretsError> {
+        Self::try_derive(&sandbox_token_info(agent_id))
     }
 
     /// Derive a user-scoped key from the master key. Use for every read/write to
@@ -291,6 +304,13 @@ impl SecretsCrypto {
     }
 
     /// Same as [`for_user_with_master`](Self::for_user_with_master), for the
+    /// sandbox token scope.
+    #[cfg(test)]
+    fn for_sandbox_token_with_master(agent_id: Uuid, master: &[u8]) -> Self {
+        Self::derive_with_master(&sandbox_token_info(agent_id), master)
+    }
+
+    /// Same as [`for_user_with_master`](Self::for_user_with_master), for the
     /// tenant scope.
     #[cfg(test)]
     fn for_tenant_with_master(tenant_id: Uuid, master: &[u8]) -> Self {
@@ -300,6 +320,10 @@ impl SecretsCrypto {
 
 fn agent_state_info(agent_id: Uuid) -> Vec<u8> {
     [AGENT_STATE_SCOPE_PREFIX, agent_id.as_bytes().as_slice()].concat()
+}
+
+fn sandbox_token_info(agent_id: Uuid) -> Vec<u8> {
+    [SANDBOX_TOKEN_SCOPE_PREFIX, agent_id.as_bytes().as_slice()].concat()
 }
 
 fn try_load_master_key() -> Result<Vec<u8>, SecretsError> {
@@ -385,6 +409,28 @@ mod tests {
         );
         let ct = crypto.encrypt_with_aad("x", &[]);
         assert_eq!(crypto.decrypt(&ct).unwrap(), "x");
+    }
+
+    #[test]
+    fn a_sandbox_token_key_is_its_own_scope() {
+        let agent = Uuid::parse_str(VECTOR_UUID).unwrap();
+        let ct = SecretsCrypto::for_sandbox_token_with_master(agent, &MASTER).encrypt("x");
+        assert!(
+            SecretsCrypto::for_agent_state_with_master(agent, &MASTER)
+                .decrypt(&ct)
+                .is_err()
+        );
+        assert!(
+            SecretsCrypto::for_user_with_master(agent, &MASTER)
+                .decrypt(&ct)
+                .is_err()
+        );
+        assert_eq!(
+            SecretsCrypto::for_sandbox_token_with_master(agent, &MASTER)
+                .decrypt(&ct)
+                .unwrap(),
+            "x"
+        );
     }
 
     #[test]

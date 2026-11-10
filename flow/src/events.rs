@@ -25,6 +25,8 @@ pub enum FlowEvent {
         server: String,
         tool: String,
     },
+    /// A parked agent was woken to serve this flow's request.
+    AgentWaking { agent_id: String, wake_ms: u64 },
 }
 
 /// In-memory broadcast bus for flow events, keyed by flow_id.

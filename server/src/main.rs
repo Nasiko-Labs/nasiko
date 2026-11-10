@@ -25,14 +25,14 @@ struct OssAssets;
 /// "temporary failure in name resolution" rather than a connection refusal.
 /// Retrying here absorbs that instead of crashing the whole server on a
 /// transient blip.
-async fn connect_to_postgres_with_retry(database_url: &str) -> sqlx::PgPool {
+async fn connect_to_postgres_with_retry(database_url: &str, max_connections: u32) -> sqlx::PgPool {
     const MAX_ATTEMPTS: u32 = 10;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
 
     let mut last_err = None;
     for attempt in 1..=MAX_ATTEMPTS {
         match sqlx::postgres::PgPoolOptions::new()
-            .max_connections(50)
+            .max_connections(max_connections)
             .connect(database_url)
             .await
         {
@@ -67,11 +67,6 @@ async fn main() {
     // builds its rediss:// config through the process-default provider.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // First, so a panic anywhere in startup is reported too. Held until `main` returns.
-    let _error_reporting = nasiko_server::error_reporting::init(
-        nasiko_server::error_reporting::ErrorReportingConfig::from_env(),
-        "oss",
-    );
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 
@@ -85,7 +80,8 @@ async fn main() {
     // default of 10 — load testing showed 10 saturates under a few hundred concurrent
     // requests (server CPU stays idle while sqlx's own acquire-timeout logs show
     // requests queuing tens of seconds for a connection).
-    let db = connect_to_postgres_with_retry(&config.database_url).await;
+    let db =
+        connect_to_postgres_with_retry(&config.database_url, config.database_max_connections).await;
 
     let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
     let auth: Arc<dyn nasiko_auth::AuthService> =
@@ -121,14 +117,36 @@ async fn main() {
         ),
     };
 
+    let image_source: Arc<dyn nasiko_runtime::ImageSource> = Arc::new(nasiko_oci::OciState::new(
+        db.clone(),
+        oci_storage.clone(),
+        config.agent_image_registry.clone(),
+    ));
+    let docker_sandbox =
+        nasiko_server::sandbox_wiring::connect_docker_sandbox(&config, Some(image_source)).await;
+    let sandbox = nasiko_server::sandbox_wiring::build_sandbox_provider(&config, docker_sandbox);
+
     nasiko_server::state::AppState::run_migrations(&db).await;
-    let state =
-        nasiko_server::state::AppState::from_config_with_db(config, auth, runtime, oci_storage, db)
-            .await;
+    let agent_scaling = Arc::new(nasiko_server::agent_scaling::SingleReplica::new(
+        runtime.clone(),
+        db.clone(),
+    ));
+    let state = nasiko_server::state::AppState::from_config_with_sandbox(
+        config,
+        auth,
+        runtime,
+        oci_storage,
+        db,
+        agent_scaling,
+        sandbox,
+    )
+    .await;
     state.init().await;
     // Clear stale coding-agent session leases left by a prior crash, then keep
     // reconciling session rows against live containers in the background.
     nasiko_server::coding::spawn_reconciler(state.clone());
+    // Suspend harness sandboxes that have gone quiet.
+    nasiko_server::sessions::spawn_reaper(state.clone());
     // Purge expired session-token revocations so the table only holds tokens that
     // could still verify (the turn path records them; they self-expire anyway).
     tokio::spawn(nasiko_server::coding::revocation::sweep_loop(
@@ -138,9 +156,8 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
-    // Peer addresses let per-address limits (the agent state API's) key on the real source.
-    let service = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    axum::serve(listener, service).await.unwrap();
+    // Peer addresses (for per-address limits) and an idle-connection limit: see `serve`.
+    nasiko_server::serve::serve(listener, app).await;
 }
 
 /// The OSS shell loads the Reo analytics snippet, which injects a `<script>`

@@ -177,6 +177,11 @@ pub struct UpdateAgent {
     /// Toggle human-in-the-loop approval for this coding agent (NAS-842).
     /// Omitted = leave as-is, so an ordinary metadata edit never flips it.
     pub hitl_enabled: Option<bool>,
+    /// `auto` (the platform may park the agent when idle) or `resident` (always running).
+    /// Omitted = leave as-is. Flipping a `parked` agent to `resident` leaves it `stopped` (no
+    /// rebuild; `start` then deploys a workload). Flipping a running `resident` agent to `auto`
+    /// changes nothing at once: it takes effect at the agent's next deploy or restart.
+    pub parking_policy: Option<String>,
 }
 
 fn default_activate_version() -> bool {

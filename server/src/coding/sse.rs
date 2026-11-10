@@ -13,8 +13,8 @@ use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use nasiko_acp_client::TurnEvent;
 use nasiko_types::a2a::{
-    AwaitingHumanKind, agent_message, awaiting_human, completed, data_part, failed, status_event,
-    text_part, to_sse_data, working_with_message,
+    AwaitingHumanKind, Part, agent_message, awaiting_human, completed, data_part, failed,
+    status_event, text_part, to_sse_data, working_with_message,
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -22,18 +22,35 @@ use uuid::Uuid;
 use super::turn::CodingTurnEvent;
 
 /// Stream a running turn's events back as A2A `message/stream` SSE.
-///
-/// Each chunk of the agent's reply becomes a `working` status-update carrying the
-/// text; the turn's end becomes a terminal `completed` (or `failed`) status
-/// update — which is how an A2A stream signals it's done (there is no separate
-/// "final" flag on the event). The client can't tell this apart from an ordinary
-/// agent's stream.
 pub fn turn_to_sse(
-    mut events: mpsc::UnboundedReceiver<CodingTurnEvent>,
+    events: mpsc::UnboundedReceiver<CodingTurnEvent>,
     task_id: String,
     context_id: String,
 ) -> Response {
+    let frames = frames(events, task_id, context_id);
     let stream = async_stream::stream! {
+        for await frame in frames {
+            yield Ok::<Event, Infallible>(Event::default().data(frame));
+        }
+    };
+    Sse::new(stream).into_response()
+}
+
+/// Translate a turn's events into the frames of an A2A stream: the `data` of each SSE event, in
+/// order, ending with one terminal frame.
+///
+/// Each chunk of the agent's reply becomes a `working` status-update carrying the
+/// text; the turn's end becomes a terminal `completed` (or `failed`, or `canceled`) status
+/// update — which is how an A2A stream signals it's done (there is no separate
+/// "final" flag on the event). The client can't tell this apart from an ordinary
+/// agent's stream. Separate from [`turn_to_sse`] so a harness turn can publish the same frames
+/// to every subscriber (`message/stream` and `tasks/resubscribe`).
+pub fn frames(
+    mut events: mpsc::UnboundedReceiver<CodingTurnEvent>,
+    task_id: String,
+    context_id: String,
+) -> impl futures::Stream<Item = String> + Send {
+    async_stream::stream! {
         let mut saw_terminal = false;
         // Accumulate the reply so the terminal COMPLETED can carry the full text.
         // The streamed chunks ride `working` status-updates, which a consuming UI
@@ -47,17 +64,25 @@ pub fn turn_to_sse(
                 CodingTurnEvent::Turn(TurnEvent::Update(update)) => {
                     if let Some(text) = agent_text(&update) {
                         reply.push_str(&text);
-                        yield Ok::<Event, Infallible>(working_sse(&task_id, &context_id, &text));
+                        yield working_sse(&task_id, &context_id, &text);
+                    } else if let Some(activity) = activity_of(&update) {
+                        yield activity_sse(&task_id, &context_id, activity);
                     }
                 }
                 CodingTurnEvent::Turn(TurnEvent::Finished(_)) => {
                     saw_terminal = true;
-                    yield Ok(completed_sse(&task_id, &context_id, &reply));
+                    yield completed_sse(&task_id, &context_id, &reply);
                     break;
                 }
                 CodingTurnEvent::Turn(TurnEvent::Failed(err)) => {
                     saw_terminal = true;
-                    yield Ok(failed_sse(&task_id, &context_id, &err.to_string()));
+                    yield failed_sse(&task_id, &context_id, &err.to_string());
+                    break;
+                }
+                // The caller cancelled the task (`tasks/cancel`).
+                CodingTurnEvent::Canceled => {
+                    saw_terminal = true;
+                    yield canceled_sse(&task_id, &context_id);
                     break;
                 }
                 // Non-terminal: a tool call is paused for human approval. Emit the
@@ -65,7 +90,7 @@ pub fn turn_to_sse(
                 // card live, then keep streaming — the turn resumes on its own once
                 // the delegate is answered.
                 CodingTurnEvent::AwaitingApproval { hitl_id, question } => {
-                    yield Ok(hitl_frame_sse(&task_id, &context_id, hitl_id, &question));
+                    yield hitl_frame_sse(&task_id, &context_id, hitl_id, &question);
                 }
             }
         }
@@ -73,14 +98,20 @@ pub fn turn_to_sse(
         // connection was lost mid-flight). Close with a `failed` so the client
         // isn't left waiting on a stream that will never complete.
         if !saw_terminal {
-            yield Ok(failed_sse(
+            yield failed_sse(
                 &task_id,
                 &context_id,
                 "coding-agent turn ended without completing",
-            ));
+            );
         }
-    };
-    Sse::new(stream).into_response()
+    }
+}
+
+/// A terminal `canceled` status-update.
+fn canceled_sse(task_id: &str, context_id: &str) -> String {
+    to_sse_data(&status_event(nasiko_types::a2a::canceled(
+        task_id, context_id,
+    )))
 }
 
 /// The visible reply text in an agent message chunk, if this update carries one.
@@ -98,30 +129,112 @@ pub(crate) fn agent_text(update: &SessionUpdate) -> Option<String> {
     }
 }
 
+/// What the agent is doing besides answering: a tool call, a thought, a plan.
+///
+/// Streamed as `working` updates tagged `metadata.kind` so a client can show progress without
+/// mistaking it for the reply (the reply is only the terminal `completed` text).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Activity {
+    pub kind: ActivityKind,
+    pub part: Part,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivityKind {
+    ToolCall,
+    Thought,
+    Plan,
+}
+
+impl ActivityKind {
+    /// The `metadata.kind` value on the wire.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ToolCall => "tool_call",
+            Self::Thought => "thought",
+            Self::Plan => "plan",
+        }
+    }
+}
+
+/// The activity an update reports, if it is one. Thoughts carry their text; tool calls and
+/// plans carry a small data object (identity and status, never the tool's raw input or
+/// output, which can be large and sensitive).
+pub(crate) fn activity_of(update: &SessionUpdate) -> Option<Activity> {
+    let (kind, part) = match update {
+        SessionUpdate::AgentThoughtChunk(chunk) => match &chunk.content {
+            ContentBlock::Text(t) if !t.text.is_empty() => {
+                (ActivityKind::Thought, text_part(t.text.clone()))
+            }
+            _ => return None,
+        },
+        SessionUpdate::ToolCall(call) => (
+            ActivityKind::ToolCall,
+            data_part(serde_json::json!({
+                "id": call.tool_call_id.0,
+                "title": call.title,
+                "tool_kind": call.kind,
+                "status": call.status,
+            })),
+        ),
+        SessionUpdate::ToolCallUpdate(update) => (
+            ActivityKind::ToolCall,
+            data_part(serde_json::json!({
+                "id": update.tool_call_id.0,
+                "title": update.fields.title,
+                "tool_kind": update.fields.kind,
+                "status": update.fields.status,
+            })),
+        ),
+        SessionUpdate::Plan(plan) => (
+            ActivityKind::Plan,
+            data_part(serde_json::json!({
+                "entries": plan.entries.iter().map(|e| serde_json::json!({
+                    "content": e.content,
+                    "priority": e.priority,
+                    "status": e.status,
+                })).collect::<Vec<_>>(),
+            })),
+        ),
+        _ => return None,
+    };
+    Some(Activity { kind, part })
+}
+
+/// A `working` status-update announcing one [`Activity`].
+fn activity_sse(task_id: &str, context_id: &str, activity: Activity) -> String {
+    let message = agent_message(context_id, task_id, activity.part);
+    let mut event = working_with_message(task_id, context_id, message);
+    event.metadata = Some(std::collections::HashMap::from_iter([(
+        "kind".to_owned(),
+        serde_json::Value::from(activity.kind.as_str()),
+    )]));
+    to_sse_data(&status_event(event))
+}
+
 /// A `working` status-update carrying a chunk of the agent's reply.
-fn working_sse(task_id: &str, context_id: &str, text: &str) -> Event {
+fn working_sse(task_id: &str, context_id: &str, text: &str) -> String {
     let message = agent_message(context_id, task_id, text_part(text));
     let event = status_event(working_with_message(task_id, context_id, message));
-    Event::default().data(to_sse_data(&event))
+    to_sse_data(&event)
 }
 
 /// The terminal `completed` status-update that ends the stream, carrying the full
 /// reply text. A consumer reads this text as the turn's reply (its streamed
 /// `working` chunks are treated as activity only), so without it the turn settles
 /// as "no reply." Empty when the agent produced no visible text.
-fn completed_sse(task_id: &str, context_id: &str, reply: &str) -> Event {
+fn completed_sse(task_id: &str, context_id: &str, reply: &str) -> String {
     let mut event = completed(task_id, context_id);
     if !reply.trim().is_empty() {
         event.status.message = Some(agent_message(context_id, task_id, text_part(reply)));
     }
-    Event::default().data(to_sse_data(&status_event(event)))
+    to_sse_data(&status_event(event))
 }
 
 /// A terminal `failed` status-update carrying the error text.
-fn failed_sse(task_id: &str, context_id: &str, error: &str) -> Event {
-    Event::default().data(to_sse_data(&status_event(failed(
-        task_id, context_id, error,
-    ))))
+fn failed_sse(task_id: &str, context_id: &str, error: &str) -> String {
+    // (see `canceled_sse` for the user-cancel counterpart)
+    to_sse_data(&status_event(failed(task_id, context_id, error)))
 }
 
 /// A non-terminal `input-required` status carrying the `hitl` data frame for a
@@ -135,7 +248,7 @@ fn hitl_frame_sse(
     context_id: &str,
     hitl_id: Uuid,
     question: &serde_json::Value,
-) -> Event {
+) -> String {
     let payload = serde_json::json!({
         "type": "hitl",
         "id": hitl_id.to_string(),
@@ -145,12 +258,12 @@ fn hitl_frame_sse(
         "question": question,
     });
     let message = agent_message(context_id, task_id, data_part(payload));
-    Event::default().data(to_sse_data(&status_event(awaiting_human(
+    to_sse_data(&status_event(awaiting_human(
         task_id,
         context_id,
         AwaitingHumanKind::InputRequired,
         message,
-    ))))
+    )))
 }
 
 #[cfg(test)]
@@ -158,6 +271,63 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::ContentChunk;
     use nasiko_types::a2a::{completed, failed, status_event, to_sse_data};
+
+    #[test]
+    fn thought_tool_call_and_plan_are_activities_tagged_by_kind() {
+        use agent_client_protocol::schema::v1::{
+            Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, ToolCall, ToolCallStatus,
+        };
+        let thought = SessionUpdate::AgentThoughtChunk(ContentChunk::new("hmm".into()));
+        let a = activity_of(&thought).expect("thought");
+        assert_eq!(a.kind.as_str(), "thought");
+        assert_eq!(a.part, text_part("hmm"));
+
+        let call = SessionUpdate::ToolCall(
+            ToolCall::new("t1", "read file").status(ToolCallStatus::InProgress),
+        );
+        let a = activity_of(&call).expect("tool call");
+        assert_eq!(a.kind.as_str(), "tool_call");
+        let json = serde_json::to_string(&a.part).unwrap();
+        assert!(json.contains("t1") && json.contains("read file"), "{json}");
+
+        let plan = SessionUpdate::Plan(Plan::new(vec![PlanEntry::new(
+            "write tests",
+            PlanEntryPriority::High,
+            PlanEntryStatus::Pending,
+        )]));
+        let a = activity_of(&plan).expect("plan");
+        assert_eq!(a.kind.as_str(), "plan");
+        assert!(
+            serde_json::to_string(&a.part)
+                .unwrap()
+                .contains("write tests")
+        );
+    }
+
+    #[test]
+    fn reply_text_is_not_an_activity_and_activity_is_not_reply() {
+        let reply = SessionUpdate::AgentMessageChunk(ContentChunk::new("hi".into()));
+        assert_eq!(activity_of(&reply), None);
+        let thought = SessionUpdate::AgentThoughtChunk(ContentChunk::new("hmm".into()));
+        assert_eq!(agent_text(&thought), None);
+    }
+
+    #[test]
+    fn activity_frame_is_a_working_update_with_metadata_kind() {
+        let a = activity_of(&SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+            "hmm".into(),
+        )))
+        .unwrap();
+        let message = agent_message("c1", "t1", a.part);
+        let mut event = working_with_message("t1", "c1", message);
+        event.metadata = Some(std::collections::HashMap::from_iter([(
+            "kind".to_owned(),
+            serde_json::Value::from("thought"),
+        )]));
+        let data = to_sse_data(&status_event(event));
+        assert!(data.contains("TASK_STATE_WORKING"), "{data}");
+        assert!(data.contains("\"kind\":\"thought\""), "{data}");
+    }
 
     #[test]
     fn agent_message_text_is_extracted() {

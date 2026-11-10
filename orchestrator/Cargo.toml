@@ -37,6 +37,7 @@ nasiko-pricing.workspace = true
 utoipa = { workspace = true }
 
 [dev-dependencies]
+nasiko-redis = { workspace = true }
 mockito.workspace = true
 # Test-only, and deliberately not a real dependency: the MAF tests assert against the ONE
 # implementation of the prefix join (`nasiko_react_agent::prefixed`) rather than a local copy of

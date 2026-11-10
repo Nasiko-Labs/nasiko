@@ -43,8 +43,6 @@ pub trait DecisionCache: Send + Sync {
 
     /// Store a decision. Best-effort — failures are swallowed.
     async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision);
-
-    async fn forget(&self, conv_id: &str, agent_id: &str);
 }
 
 /// A cache that stores nothing — every read misses. The fail-open stand-in whenever no
@@ -57,7 +55,6 @@ impl DecisionCache for NoopCache {
         None
     }
     async fn put(&self, _conv_id: &str, _agent_id: &str, _decision: &CachedDecision) {}
-    async fn forget(&self, _conv_id: &str, _agent_id: &str) {}
 }
 
 /// On-the-wire form of a [`CachedDecision`] — `tier` stored as its SMALLINT level so the
@@ -78,12 +75,12 @@ struct WireDecision {
 /// dropped, per the "latency, not correctness" contract. A Redis outage therefore makes
 /// the router re-classify or fall through, never error.
 pub struct RedisCache {
-    client: redis::Client,
+    client: nasiko_redis::SharedRedis,
     ttl_secs: u64,
 }
 
 impl RedisCache {
-    pub fn new(client: redis::Client, ttl_secs: u64) -> Self {
+    pub fn new(client: nasiko_redis::SharedRedis, ttl_secs: u64) -> Self {
         Self { client, ttl_secs }
     }
 
@@ -96,7 +93,7 @@ impl RedisCache {
 impl DecisionCache for RedisCache {
     async fn get(&self, conv_id: &str, agent_id: &str) -> Option<CachedDecision> {
         let key = Self::key(conv_id, agent_id);
-        let mut conn = match self.client.get_multiplexed_async_connection().await {
+        let mut conn = match self.client.connection().await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
@@ -146,7 +143,7 @@ impl DecisionCache for RedisCache {
 
     async fn put(&self, conv_id: &str, agent_id: &str, decision: &CachedDecision) {
         let key = Self::key(conv_id, agent_id);
-        let Ok(mut conn) = self.client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.client.connection().await else {
             tracing::warn!(
                 target: "nasiko::llm_router::decision_cache",
                 %key, "redis decision cache PUT — connection failed; decision not cached (fail-open)"
@@ -174,53 +171,6 @@ impl DecisionCache for RedisCache {
                 error = %e, %key,
                 "redis decision cache PUT — write failed; decision not cached (fail-open)"
             ),
-        }
-    }
-
-    async fn forget(&self, conv_id: &str, agent_id: &str) {
-        let key = Self::key(conv_id, agent_id);
-        let Ok(mut conn) = self.client.get_multiplexed_async_connection().await else {
-            tracing::warn!(
-                target: "nasiko::llm_router::decision_cache",
-                %key, "redis decision cache DEL — connection failed; sticky decision kept until it expires"
-            );
-            return;
-        };
-        let res: Result<(), _> = conn.del(&key).await;
-        match res {
-            Ok(()) => tracing::info!(
-                target: "nasiko::llm_router::decision_cache",
-                %key, "redis decision cache DEL — dropped the sticky decision of a model that did not answer"
-            ),
-            Err(e) => tracing::warn!(
-                target: "nasiko::llm_router::decision_cache",
-                error = %e, %key,
-                "redis decision cache DEL — failed; sticky decision kept until it expires"
-            ),
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-
-    #[derive(Default)]
-    pub struct ForgetLog {
-        pub forgotten: std::sync::Mutex<Vec<(String, String)>>,
-    }
-
-    #[async_trait]
-    impl DecisionCache for ForgetLog {
-        async fn get(&self, _: &str, _: &str) -> Option<CachedDecision> {
-            None
-        }
-        async fn put(&self, _: &str, _: &str, _: &CachedDecision) {}
-        async fn forget(&self, conv_id: &str, agent_id: &str) {
-            self.forgotten
-                .lock()
-                .unwrap()
-                .push((conv_id.to_string(), agent_id.to_string()));
         }
     }
 }
@@ -284,7 +234,8 @@ mod tests {
     #[tokio::test]
     async fn redis_cache_fails_open_when_unreachable() {
         // Port 1 refuses immediately — get degrades to a miss, put is a no-op, neither panics.
-        let client = redis::Client::open("redis://127.0.0.1:1/").unwrap();
+        let client =
+            nasiko_redis::SharedRedis::new(redis::Client::open("redis://127.0.0.1:1/").unwrap());
         let c = RedisCache::new(client, 60);
         c.put(
             "conv",

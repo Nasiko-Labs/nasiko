@@ -35,7 +35,12 @@ user ──► /api/orchestrator/a2a ──► agent_proxy writes flows row (use
 
 ## Attribution resolution (`llm-router/src/routing/attribution.rs`)
 
-There is exactly one path — **`traceparent`, resolved, or rejected**:
+Calls that authenticate with a session token (interactive coding-agent sessions, whose CLIs
+forward no `traceparent`) bill the token's user and take their flow from the session: the
+`traceparent`'s flow when it belongs to the token's session, that user owns it and the token's agent
+is a participant, else the session's newest such flow, else the flow the token was minted with.
+
+For agent calls there is exactly one path — **`traceparent`, resolved, or rejected**:
 
 1. The header's trace_id is looked up in `flows`. Billing:
    `token_usage.user_id` = the flow's **caller** (`flows.user_id`), never the
@@ -46,9 +51,8 @@ There is exactly one path — **`traceparent`, resolved, or rejected**:
 3. Anything else — header absent, malformed, trace_id with no live `flows` row, or a
    flow the calling agent is not part of — is rejected with `403` (see below).
 
-`token_usage.metadata.attribution` records `"traceparent"` on every row; since
-rejection replaced the old best-effort fallback, no other value can occur and no
-unattributed usage rows exist.
+`token_usage.metadata.attribution` records `"traceparent"`, `"session"` or `"claim"` (the last two
+only for session-token calls). No unattributed usage rows exist.
 
 Direct-chat flows used to stay `running` forever; `agent_proxy` marks them completed
 when the response finishes (`complete_flow` + the SSE tap), so a flow row's liveness

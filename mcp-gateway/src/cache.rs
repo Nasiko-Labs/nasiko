@@ -1,6 +1,6 @@
 //! Redis cache helpers.
 //!
-//! Thin JSON get/set/delete over the shared `redis::Client` (the same client
+//! Thin JSON get/set/delete over the shared `nasiko_redis::SharedRedis` (the same client
 //! `AppState` already holds). All operations **degrade gracefully**: a Redis
 //! outage is treated as a cache miss (get returns `None`) or a no-op (set/delete
 //! log and continue) rather than failing the request — the gateway stays up if
@@ -17,8 +17,11 @@ use serde::de::DeserializeOwned;
 
 /// Fetch and deserialize a JSON value. Returns `None` on miss, deserialize
 /// failure, or any Redis error (logged) — callers treat all three as "recompute".
-pub async fn get_json<T: DeserializeOwned>(client: &redis::Client, key: &str) -> Option<T> {
-    let mut conn = match client.get_multiplexed_async_connection().await {
+pub async fn get_json<T: DeserializeOwned>(
+    client: &nasiko_redis::SharedRedis,
+    key: &str,
+) -> Option<T> {
+    let mut conn = match client.connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache get) — treating as miss");
@@ -44,7 +47,7 @@ pub async fn get_json<T: DeserializeOwned>(client: &redis::Client, key: &str) ->
 /// Serialize and store a JSON value with a TTL (seconds). Errors are logged and
 /// swallowed — a failed cache write must never fail the request.
 pub async fn set_json_ex<T: Serialize>(
-    client: &redis::Client,
+    client: &nasiko_redis::SharedRedis,
     key: &str,
     value: &T,
     ttl_secs: u64,
@@ -56,7 +59,7 @@ pub async fn set_json_ex<T: Serialize>(
             return;
         }
     };
-    let mut conn = match client.get_multiplexed_async_connection().await {
+    let mut conn = match client.connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache set) — skipping write");
@@ -69,8 +72,8 @@ pub async fn set_json_ex<T: Serialize>(
 }
 
 /// Delete a key. Errors are logged and swallowed.
-pub async fn delete(client: &redis::Client, key: &str) {
-    let mut conn = match client.get_multiplexed_async_connection().await {
+pub async fn delete(client: &nasiko_redis::SharedRedis, key: &str) {
+    let mut conn = match client.connection().await {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, key, "redis unavailable (cache delete) — skipping");

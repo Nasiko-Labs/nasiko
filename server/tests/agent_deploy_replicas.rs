@@ -28,11 +28,12 @@ async fn init_admin(server: &common::TestServer) -> (String, Uuid) {
     (id.clone(), Uuid::parse_str(&id).unwrap())
 }
 
-/// An agent with a semver version and a recorded image, as a restart needs.
+/// An agent with a semver version and a recorded image, as a restart needs. Resident: these
+/// tests are about the replica bounds of a running workload, which a parked agent has none of.
 async fn seed_versioned_agent(server: &common::TestServer, owner_id: Uuid) -> Uuid {
     sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO agents (name, owner_id, version, image, status, url, is_public) \
-         VALUES ($1, $2, '1.0.0', 'x:1.0.0', 'running', 'http://127.0.0.1:9', false) RETURNING id",
+        "INSERT INTO agents (name, owner_id, version, image, status, url, is_public, parking_policy) \
+         VALUES ($1, $2, '1.0.0', 'x:1.0.0', 'running', 'http://127.0.0.1:9', false, 'resident') RETURNING id",
     )
     .bind(format!("replica-agent-{}", Uuid::new_v4()))
     .bind(owner_id)

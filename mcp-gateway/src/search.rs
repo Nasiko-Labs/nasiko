@@ -344,13 +344,13 @@ pub struct SemanticSearchIndex {
     rebuild_lock: tokio::sync::Mutex<()>,
     bm25: Bm25SearchIndex,
     client: EmbeddingClient,
-    redis: redis::Client,
+    redis: nasiko_redis::SharedRedis,
 }
 
 impl SemanticSearchIndex {
     pub fn new(
         http: reqwest::Client,
-        redis: redis::Client,
+        redis: nasiko_redis::SharedRedis,
         api_key: String,
         model: String,
     ) -> Self {
@@ -383,7 +383,7 @@ impl SemanticSearchIndex {
         let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
 
         // Check Redis cache.
-        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await
+        if let Ok(mut conn) = self.redis.connection().await
             && let Ok(bytes) = redis::AsyncCommands::get::<_, Vec<u8>>(&mut conn, &cache_key).await
             && !bytes.is_empty()
         {
@@ -393,7 +393,7 @@ impl SemanticSearchIndex {
         let embedding = self.client.embed_one(query).await?;
 
         // Cache for 10 minutes (covers a full multi-turn conversation).
-        if let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await {
+        if let Ok(mut conn) = self.redis.connection().await {
             let _: std::result::Result<(), _> = redis::AsyncCommands::set_ex(
                 &mut conn,
                 &cache_key,
@@ -911,7 +911,7 @@ mod tests {
         // both fail at once without leaving the machine.
         let mut index = SemanticSearchIndex::new(
             reqwest::Client::new(),
-            redis::Client::open("redis://127.0.0.1:1").unwrap(),
+            nasiko_redis::SharedRedis::new(redis::Client::open("redis://127.0.0.1:1").unwrap()),
             "test-key".to_string(),
             "test-model".to_string(),
         );

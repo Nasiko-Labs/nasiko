@@ -577,7 +577,7 @@ struct ReadinessCheck {
 async fn readiness(State(state): State<AppState>) -> impl IntoResponse {
     let pg_ok = sqlx::query("SELECT 1").execute(&state.db).await.is_ok();
 
-    let redis_ok = match state.redis.get_multiplexed_async_connection().await {
+    let redis_ok = match state.redis.connection().await {
         Ok(mut conn) => redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await

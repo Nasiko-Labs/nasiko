@@ -16,7 +16,8 @@ use async_trait::async_trait;
 use axum::{Json, Router, extract::Request, response::IntoResponse, routing::post};
 use nasiko_flow::FlowContext;
 use nasiko_react_agent::CallGuard;
-use nasiko_server::acl::CpCallGuard;
+use nasiko_server::acl::{CpCallGuard, TurnCandidates, TurnLegs};
+use nasiko_server::agent_resolver::ServerTargetResolver;
 use nasiko_server::agent_wake::AgentWake;
 use serde_json::{Value, json};
 use serial_test::serial;
@@ -330,6 +331,11 @@ async fn a_refused_routed_call_is_refused_without_spending_flow_budget() {
         "wake-seam-session".to_string(),
         server.state.genai_metrics.agent_call_meter(),
         wake.clone(),
+        TurnLegs {
+            targets: Arc::new(ServerTargetResolver::new(server.state.clone())),
+            user_id: owner,
+            candidates: TurnCandidates::new(std::iter::once((name, agent))),
+        },
     );
 
     let refused = guard.before_call(name).await.err();
@@ -343,9 +349,10 @@ async fn a_refused_routed_call_is_refused_without_spending_flow_budget() {
     assert!(admitted.is_ok(), "{:?}", admitted.err());
     assert_eq!(wake.asked(), vec![agent, agent]);
 
-    // A name that resolves to no agent has no UUID to ask about, and is admitted as before.
+    // A name that is not one of this turn's candidates is refused before the wake seam, so it is
+    // never asked about (the candidate lookup now gates the leg, replacing the old name->DB resolve).
     let unresolved = guard.before_call("wake-seam-nobody").await;
-    assert!(unresolved.is_ok(), "{:?}", unresolved.err());
+    assert!(unresolved.is_err());
     assert_eq!(wake.asked(), vec![agent, agent]);
 
     server.cleanup().await;
