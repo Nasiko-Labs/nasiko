@@ -257,10 +257,11 @@ pub struct Config {
     /// the scan is churn, above 10 minutes it adds more latency to suspension than
     /// the idle TTL itself.
     pub session_reaper_interval_secs: u64,
-    /// How long a non-terminal A2A task an agent returned keeps that agent from being parked,
-    /// from `AGENT_OPEN_TASK_MAX_AGE_SECS`, default `3600`, clamped to 60..=86400. The reaper
-    /// raises it to the effective park TTL plus one reaper interval (never lowers it): a bound
-    /// below that would expire the task before the agent can even be considered idle.
+    /// How long the reaper keeps an open-task row (a non-terminal A2A task an agent returned)
+    /// before pruning it, from `AGENT_OPEN_TASK_MAX_AGE_SECS`, default `3600`, clamped to
+    /// 60..=86400. A row is never pruned younger than two hours, the longest an open pause holds
+    /// a workload park, so a lower value prunes at two hours. It does not change how long an open
+    /// task keeps its agent from being parked: that is the two hours alone.
     pub agent_open_task_max_age_secs: u64,
     /// How long a running framework agent whose parking policy is `auto` may go without a request
     /// before the reaper scales its workload to zero (parks it), from `AGENT_PARK_IDLE_SECS`, the
