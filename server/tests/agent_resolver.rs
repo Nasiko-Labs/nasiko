@@ -160,7 +160,7 @@ async fn a_parked_agent_the_wake_leaves_parked_is_refused_with_a_retry_after() {
 
 #[tokio::test]
 #[serial]
-async fn a_resident_agent_takes_the_container_path_untouched() {
+async fn a_resident_agent_is_served_without_a_wake() {
     let server = common::TestServer::start().await;
     let wake = common::RowWake::install(&server);
     let owner = init_admin(&server).await;
@@ -190,9 +190,11 @@ async fn a_resident_agent_takes_the_container_path_untouched() {
 
     assert_eq!(res.status(), 200);
     assert_eq!(wake.woken_count(agent), 0);
+    // Every served request restarts the agent's idle clock, a resident one's too (where `resident`
+    // is not honoured, the Free plane parks it by that clock).
     assert_eq!(
         status_and_last_request(&server, agent).await,
-        ("running".to_owned(), false)
+        ("running".to_owned(), true)
     );
     server.cleanup().await;
 }
@@ -528,9 +530,15 @@ async fn wait_for_open_tasks(server: &common::TestServer, agent: Uuid, want: i64
 }
 
 /// Sweep as if the agent's last request and its last deploy were older than the park window. A
-/// task row the agent's reply left open stays young, as an open pause does.
+/// task row the agent's reply left open stays young, as an open pause does. The table's trigger
+/// stamps `updated_at` on every UPDATE, so it is held off for the write that ages the row.
 async fn sweep_idle_agent(server: &common::TestServer, agent: Uuid) {
     let age = (server.state.config.agent_park_idle_secs + 60) as f64;
+    let mut tx = server.db.begin().await.unwrap();
+    sqlx::query("ALTER TABLE agents DISABLE TRIGGER trg_agents_updated_at")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     sqlx::query(
         "UPDATE agents SET last_request_at = now() - make_interval(secs => $2), \
                 updated_at = now() - make_interval(secs => $2) \
@@ -538,9 +546,14 @@ async fn sweep_idle_agent(server: &common::TestServer, agent: Uuid) {
     )
     .bind(agent)
     .bind(age)
-    .execute(&server.db)
+    .execute(&mut *tx)
     .await
     .unwrap();
+    sqlx::query("ALTER TABLE agents ENABLE TRIGGER trg_agents_updated_at")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
     nasiko_server::sessions::reaper::sweep(
         &server.state,
         &mut nasiko_server::sessions::reaper::ReaperMemory::default(),

@@ -302,7 +302,7 @@ async fn restart_of_unregistered_container_is_404() {
 #[tokio::test]
 #[serial]
 async fn scale_rejects_non_owner_allows_owner() {
-    let (s, _agent_id) = Scenario::setup("scale-authz-agent").await;
+    let (s, agent_id) = Scenario::setup("scale-authz-agent").await;
     let path = s.server.url("/api/containers/scale-authz-agent/scale");
 
     let res = s
@@ -313,6 +313,12 @@ async fn scale_rejects_non_owner_allows_owner() {
         .unwrap();
     assert_eq!(res.status(), 403);
 
+    // A parkable agent is held to one replica (409 above it); this test is about who may scale.
+    sqlx::query("UPDATE agents SET parking_policy = 'resident' WHERE id = $1")
+        .bind(agent_id)
+        .execute(&s.server.db)
+        .await
+        .unwrap();
     let res = s
         .as_owner(s.server.client.post(&path))
         .json(&json!({"replicas": 2}))
