@@ -59,6 +59,7 @@ fn record(
         brevity_metadata: None,
         compress_bytes,
         request_bytes,
+        failure: None,
     }
 }
 
