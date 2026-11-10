@@ -184,10 +184,10 @@ export const copy = {
   chatHistory: {
     hostedTitle: 'Only usage is synced',
     hostedBody:
-      "Nasiko syncs your coding agents' tokens, cost, models and timings — never their chat history. Prompts, responses and tool output stay on your computer.",
+      "Nasiko syncs your coding agents' usage — tokens, cost, latency, models, tools and subagents — never their chat history. Prompts, responses and tool output stay on your computer.",
     localTitle: 'Chat history can sync to this Nasiko',
     localBody:
-      "This Nasiko runs on your computer, so `nasiko connect` asks whether to sync your coding agents' chat history — prompts, responses and tool output — too. Say no to sync only tokens, cost and timings.",
+      "This Nasiko keeps chat history, so `nasiko connect` asks whether to sync your coding agents' prompts, responses and tool output too. Say no to sync usage only — tokens, cost, latency, models, tools and subagents.",
   },
   // Monitor's note while the desktop app imports coding agents (components/ImportNotice.tsx).
   importNotice: {

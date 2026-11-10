@@ -48,18 +48,19 @@ pub struct ConnectOptions {
     /// Don't give the agent your MCP connectors through the Nasiko gateway
     #[arg(long, conflicts_with = "no_routing", help_heading = HELP_HEADING)]
     pub no_mcp: bool,
-    /// Report sessions to Nasiko observability — tokens, latency and cost; add --content for
-    /// prompt and response text (asked on a terminal, off otherwise)
+    /// Report sessions to Nasiko observability: usage (tokens, cost, latency, models, tools and
+    /// subagents) always; chat history only to a cluster that keeps it, when asked or with --content
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
     pub reporting: bool,
     /// Don't report sessions
     #[arg(long, help_heading = HELP_HEADING)]
     pub no_reporting: bool,
-    /// Report sessions including chat history — prompt and response text — to a Nasiko on this
-    /// machine (localhost) only; a hosted cluster gets tokens, latency and cost (implies --reporting)
+    /// Also sync chat history (prompts, responses, tool output), where the cluster keeps it; a
+    /// cluster that doesn't gets usage only (implies --reporting)
     #[arg(long, conflicts_with_all = ["no_reporting", "no_content"], help_heading = HELP_HEADING)]
     pub content: bool,
-    /// Report tokens, latency and cost only — no prompt or response text (implies --reporting)
+    /// Sync usage only (tokens, cost, latency, models, tools and subagents), never chat history
+    /// (implies --reporting)
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
     pub no_content: bool,
     /// Reconnect even when the coding agent is still running
@@ -1294,28 +1295,30 @@ fn build_plan(
     })
 }
 
-/// Whether newly installed reporting syncs chat history (prompt and response text, tool output) as
-/// well as tokens, latency and cost. Only ever to a control plane on this machine: there,
-/// `--content`/`--no-content` decide, else a terminal is asked (default no) and a script gets no.
-/// A hosted control plane never gets it, whatever the flags — it is told so instead.
+/// Whether reporting installed (or moved) to `destination` syncs chat history — prompts,
+/// responses, tool output — as well as usage. Only to a control plane that keeps it (its own
+/// answer, [`ReportingDestination::accepts_chat_history`]): there `--content`/`--no-content`
+/// decide, else a terminal is asked (default no) and a script gets usage only. One that doesn't
+/// never gets it, whatever the flags, and is said so instead.
 fn chat_history_choice(
     options: &ConnectOptions,
     destination: Option<&ReportingDestination>,
     prompter: &dyn Prompter,
 ) -> Result<bool> {
-    if !destination.is_some_and(|here| integration::is_local_cluster(&here.cluster_url)) {
+    let cluster = destination.map_or("this cluster", |here| here.cluster_name.as_str());
+    if !destination.is_some_and(|here| here.accepts_chat_history) {
         if options.content {
-            term::print_warning(integration::CONTENT_REFUSED);
+            term::print_warning(&integration::content_refused(cluster));
         } else {
-            term::print_info(integration::HOSTED_NOTICE);
+            term::print_info(&integration::usage_only_notice(cluster));
         }
         return Ok(false);
     }
     match options.content_choice() {
         Some(choice) => Ok(choice),
         None if prompter.interactive() => {
-            term::print_warning(integration::CHAT_HISTORY_WARNING);
-            prompter.confirm(integration::CHAT_HISTORY_QUESTION, false)
+            term::print_warning(&integration::chat_history_warning(cluster));
+            prompter.confirm(&integration::chat_history_question(cluster), false)
         }
         None => Ok(false),
     }
@@ -1338,8 +1341,7 @@ fn existing_reporting_step(
     if options.no_reporting {
         return Ok(ReportingStep::Keep);
     }
-    let here_is_local =
-        destination.is_some_and(|here| integration::is_local_cluster(&here.cluster_url));
+    let here_keeps_chat_history = destination.is_some_and(|here| here.accepts_chat_history);
     let asked = |question: String| -> Result<bool> {
         Ok(options.mentions_reporting()
             || (prompter.interactive() && prompter.confirm(&question, true)?))
@@ -1352,16 +1354,18 @@ fn existing_reporting_step(
         if !asked(question)? {
             return Ok(ReportingStep::Keep);
         }
+        // Asked like new reporting: an earlier yes was given for another cluster.
         return Ok(ReportingStep::Install {
-            capture_content: moved_chat_history(local, options, destination, prompter)?,
+            capture_content: chat_history_choice(options, destination, prompter)?,
             moving_from: Some(from),
         });
     }
-    if options.content && !here_is_local {
-        term::print_warning(integration::CONTENT_REFUSED);
+    if options.content && !here_keeps_chat_history {
+        let cluster = destination.map_or("this cluster", |here| here.cluster_name.as_str());
+        term::print_warning(&integration::content_refused(cluster));
     }
     let capture_content =
-        here_is_local && options.content_choice().unwrap_or(local.capture_content);
+        here_keeps_chat_history && options.content_choice().unwrap_or(local.capture_content);
     let install = |moving_from: Option<String>| ReportingStep::Install {
         capture_content,
         moving_from,
@@ -1396,28 +1400,6 @@ fn existing_reporting_step(
     } else {
         ReportingStep::Keep
     })
-}
-
-/// Whether reporting moved to `destination` syncs chat history. A yes saved for a control plane on
-/// this machine still counts (the move is between local clusters); one saved anywhere else — a
-/// hosted cluster, where it never applied, or an install with no cluster recorded — does not, so
-/// the move is asked about like new reporting (default no).
-fn moved_chat_history(
-    local: &LocalAgent,
-    options: &ConnectOptions,
-    destination: Option<&ReportingDestination>,
-    prompter: &dyn Prompter,
-) -> Result<bool> {
-    let here_is_local =
-        destination.is_some_and(|here| integration::is_local_cluster(&here.cluster_url));
-    let saved_for_local = local
-        .reporting_destination
-        .as_ref()
-        .is_some_and(|from| integration::is_local_cluster(&from.cluster_url));
-    if here_is_local && saved_for_local && options.content_choice().is_none() {
-        return Ok(local.capture_content);
-    }
-    chat_history_choice(options, destination, prompter)
 }
 
 /// Where installed reporting delivers when that isn't the active cluster and account, as
@@ -1736,13 +1718,7 @@ fn print_routing_line(agent: &AgentPlan, plan: &Plan) {
 fn reporting_line(agent: &AgentPlan, plan: &Plan) -> String {
     let local = &agent.view.local;
     let destination = plan.destination.as_ref();
-    let content = |capture: bool| {
-        if capture {
-            "with prompt and response text"
-        } else {
-            "tokens, latency and cost only"
-        }
-    };
+    let content = integration::synced;
     let turn_on = format!(
         "{} connect {} --no-routing --reporting",
         cli_name(),
@@ -2363,14 +2339,10 @@ pub fn status(target: Option<&str>) -> Result<()> {
     }
 }
 
-/// Whether `local`'s reporting actually syncs chat history: saved with it, and delivering to a
-/// control plane on this machine (a hosted one never gets it, whatever was saved).
+/// Whether `local`'s reporting syncs chat history: agreed to with this CLI, which only offers it
+/// for a control plane that keeps it (`capture_content` is that consent, `integration::local_agents`).
 fn syncs_chat_history(local: &LocalAgent) -> bool {
     local.capture_content
-        && local
-            .reporting_destination
-            .as_ref()
-            .is_some_and(|here| integration::is_local_cluster(&here.cluster_url))
 }
 
 /// Where an installed reporting hook lives and where it delivers — what `agents discover`
@@ -2385,11 +2357,7 @@ fn print_reporting_details(local: &LocalAgent) {
             "Reporting to:      {} ({}), {}",
             destination.cluster_name,
             destination.cluster_url,
-            if syncs_chat_history(local) {
-                "with chat history"
-            } else {
-                "tokens, latency and cost only"
-            }
+            integration::synced(syncs_chat_history(local))
         ),
         None => println!(
             "Reporting to:      no cluster recorded; reinstall with: {} connect {} --no-routing --reporting",
@@ -2447,11 +2415,10 @@ fn agent_row(view: &AgentView) -> AgentRow {
         ),
     };
     let reporting = if view.local.reporting_active {
-        if syncs_chat_history(&view.local) {
-            "on (with chat history)".to_string()
-        } else {
-            "on (no content)".to_string()
-        }
+        format!(
+            "on ({})",
+            integration::synced(syncs_chat_history(&view.local))
+        )
     } else if view.local.reporting_installed {
         view.local.reporting_status.clone()
     } else {
@@ -2594,6 +2561,8 @@ mod tests {
             cluster_name: "prod".into(),
             cluster_url: "http://localhost:8080".into(),
             principal_id: "me".into(),
+            // A server that keeps chat history (an open-source one): the other fixtures differ.
+            accepts_chat_history: true,
         }
     }
 
@@ -2821,6 +2790,7 @@ mod tests {
     fn hosted() -> ReportingDestination {
         ReportingDestination {
             cluster_url: "https://nasiko.example".into(),
+            accepts_chat_history: false,
             ..here()
         }
     }
@@ -2840,6 +2810,35 @@ mod tests {
         capture_content: false,
         moving_from: None,
     };
+
+    #[test]
+    fn an_enterprise_cluster_that_keeps_chat_history_asks_like_a_local_one() {
+        // Not localhost, but its server says it keeps chat history (an admin turned it on).
+        let enterprise = ReportingDestination {
+            cluster_url: "https://nasiko.acme.example".into(),
+            accepts_chat_history: true,
+            ..here()
+        };
+        // Report? yes · sync chat history? yes.
+        let plan = build_plan(
+            vec![view("claude", false, false)],
+            &ConnectOptions {
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            Some(&enterprise),
+            &Scripted::new(&[true, true], &[]),
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.agents[0].reporting,
+            ReportingStep::Install {
+                capture_content: true,
+                moving_from: None
+            }
+        );
+    }
 
     #[test]
     fn a_hosted_cluster_is_never_offered_chat_history() {
@@ -2987,7 +2986,8 @@ mod tests {
         assert_eq!(
             moved.agents[0].reporting,
             ReportingStep::Install {
-                capture_content: true,
+                // A script moving reporting gets usage only: chat history isn't asked for.
+                capture_content: false,
                 moving_from: Some("staging".into())
             }
         );
@@ -3005,14 +3005,14 @@ mod tests {
         .unwrap();
         assert_eq!(kept.agents[0].reporting, ReportingStep::Keep);
 
-        // On a terminal, it asks.
+        // On a terminal, it asks: move? yes · chat history? no.
         let asked = plan_for(
             vec![reporting_to("claude", Some(elsewhere()))],
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[true, false], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3847,15 +3847,17 @@ mod tests {
     }
 
     #[test]
-    fn after_logging_in_picked_agents_move_here_keeping_their_content_setting() {
-        let mut no_text = reporting_to("codex", Some(elsewhere()));
-        no_text.local.capture_content = false;
-        let targets = vec![reporting_to("claude", Some(elsewhere())), no_text];
+    fn after_logging_in_picked_agents_move_here_and_are_asked_about_chat_history() {
+        // Both saved with chat history elsewhere; moving here asks each again (yes, then no).
+        let targets = vec![
+            reporting_to("claude", Some(elsewhere())),
+            reporting_to("codex", Some(elsewhere())),
+        ];
 
         let (offer, declined) = login_offer(
             targets,
             Some(&here()),
-            &Scripted::new(&[], &[]).picking(&[0, 1], &[false, false]),
+            &Scripted::new(&[true, false], &[]).picking(&[0, 1], &[false, false]),
             &no_configs_expected,
         )
         .unwrap();

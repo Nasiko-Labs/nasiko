@@ -805,7 +805,7 @@ pub enum AgentsCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// Report tokens, latency and cost, but omit conversation content
+        /// Sync usage only (tokens, cost, latency, models, tools and subagents), never chat history
         #[arg(long)]
         no_content: bool,
     },
@@ -1827,7 +1827,7 @@ pub enum IntegrationSubCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// Report tokens, latency and cost, but omit conversation text from spans
+        /// Sync usage only (tokens, cost, latency, models, tools and subagents), never chat history
         #[arg(long)]
         no_content: bool,
     },

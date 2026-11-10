@@ -38,7 +38,8 @@ use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
 
 pub use locality::{
-    CHAT_HISTORY_QUESTION, CHAT_HISTORY_WARNING, CONTENT_REFUSED, HOSTED_NOTICE, is_local_cluster,
+    USAGE, chat_history_question, chat_history_warning, content_refused, is_local_cluster, synced,
+    usage_only_notice,
 };
 pub use setup::SetupOptions;
 
@@ -80,13 +81,20 @@ pub struct ReportingDestination {
     pub cluster_name: String,
     pub cluster_url: String,
     pub principal_id: String,
+    /// Whether this control plane keeps coding agents' chat history. For the active cluster
+    /// ([`Self::current`]) the server's own answer; for a recorded binding, whether it runs on
+    /// this machine (the fallback, not used to decide anything).
+    pub accepts_chat_history: bool,
 }
 
 impl ReportingDestination {
     /// Where reporting would be bound if installed now: the active cluster and its login.
     pub fn current() -> Result<Self> {
         let binding = control_plane::installation_binding()?;
-        Ok(Self::from(&binding))
+        Ok(Self {
+            accepts_chat_history: locality::server_accepts_chat_history(&binding.cluster_url),
+            ..Self::from(&binding)
+        })
     }
 
     pub fn same_as(&self, other: &Self) -> bool {
@@ -114,6 +122,7 @@ impl From<&InstallationBinding> for ReportingDestination {
             cluster_name: binding.cluster_name.clone(),
             cluster_url: binding.cluster_url.clone(),
             principal_id: binding.principal_id.to_string(),
+            accepts_chat_history: is_local_cluster(&binding.cluster_url),
         }
     }
 }
@@ -138,7 +147,10 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
-                capture_content: state.is_none_or(|state| state.capture_content),
+                // Chat history only with the consent this CLI records (`chat_history`): a yes
+                // saved by an older one, under its default, doesn't count.
+                capture_content: state
+                    .is_some_and(|state| state.capture_content && state.chat_history),
                 hook_location: tildify(&agent.config_path()),
                 reporting_destination: state
                     .and_then(|state| state.binding.as_ref())
@@ -277,8 +289,7 @@ pub(super) fn auto_install_detected() -> Result<()> {
     }
 
     let here = ReportingDestination::current()?;
-    let here_is_local = is_local_cluster(&here.cluster_url);
-    let chat_history = chat_history_for_setup(here_is_local)?;
+    let chat_history = chat_history_for_setup(&here)?;
     println!("\nConfiguring detected coding agents for this account...");
     let mut installed = 0usize;
     for agent in agents {
@@ -298,16 +309,13 @@ pub(super) fn auto_install_detected() -> Result<()> {
                 continue;
             }
             SetupStep::Install => chat_history,
-            SetupStep::Move {
-                from,
-                capture_content,
-            } => {
+            SetupStep::Move { from } => {
                 println!(
                     "{} reports sessions to {from}; moving it to {}.",
                     spec.display_name, here.cluster_name
                 );
-                // Chat history moves only to a control plane on this machine.
-                capture_content && here_is_local
+                // Asked for here, like a new install: an earlier yes was for another cluster.
+                chat_history
             }
         };
         match install(InstallOptions {
@@ -327,22 +335,23 @@ pub(super) fn auto_install_detected() -> Result<()> {
     Ok(())
 }
 
-/// Whether `nasiko agents setup` syncs chat history for the agents it newly connects. A hosted
-/// control plane never gets it (and is told so); one on this machine is asked once, on a terminal,
-/// defaulting to no. Without a terminal (the desktop app, a script), tokens only.
-fn chat_history_for_setup(here_is_local: bool) -> Result<bool> {
+/// Whether `nasiko agents setup` syncs chat history for the agents it connects or moves here. A
+/// control plane that doesn't keep it never gets it (and is said so); one that does is asked
+/// once, on a terminal, defaulting to no. Without a terminal (the desktop app, a script), usage
+/// only.
+fn chat_history_for_setup(here: &ReportingDestination) -> Result<bool> {
     use std::io::IsTerminal;
-    if !here_is_local {
-        term::print_info(HOSTED_NOTICE);
+    if !here.accepts_chat_history {
+        term::print_info(&usage_only_notice(&here.cluster_name));
         return Ok(false);
     }
     if !std::io::stdin().is_terminal() {
         return Ok(false);
     }
-    term::print_warning(CHAT_HISTORY_WARNING);
+    term::print_warning(&chat_history_warning(&here.cluster_name));
     Ok(
         dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt(CHAT_HISTORY_QUESTION)
+            .with_prompt(chat_history_question(&here.cluster_name))
             .default(false)
             .interact()?,
     )
@@ -351,13 +360,13 @@ fn chat_history_for_setup(here_is_local: bool) -> Result<bool> {
 /// What `nasiko agents setup` does with one detected agent's reporting.
 #[derive(Debug, PartialEq, Eq)]
 enum SetupStep {
-    /// Nothing installed yet: install it here, with prompt and response text.
+    /// Nothing installed yet: install it here.
     Install,
     /// Already reporting to this cluster and account.
     Keep,
     /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
-    /// here, keeping its content setting.
-    Move { from: String, capture_content: bool },
+    /// here, with this run's chat-history answer.
+    Move { from: String },
 }
 
 /// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
@@ -373,10 +382,7 @@ fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupS
         Some(binding) => binding.cluster_name.clone(),
         None => "an older install with no cluster recorded".to_string(),
     };
-    SetupStep::Move {
-        from,
-        capture_content: state.capture_content,
-    }
+    SetupStep::Move { from }
 }
 
 /// `nasiko agents sync` — see [`setup::sync`].
@@ -515,7 +521,15 @@ fn refresh_hook(agent: Agent, state: &AgentState, binding: &InstallationBinding)
     let artifacts = agent.install()?;
     persist_installed_artifacts(
         artifacts,
-        || save_agent_state(agent, &state.agent_name, state.capture_content, binding),
+        // A yes saved without this CLI's recorded consent is dropped here, not carried on.
+        || {
+            save_agent_state(
+                agent,
+                &state.agent_name,
+                state.capture_content && state.chat_history,
+                binding,
+            )
+        },
         || agent.uninstall(),
     )?;
     Ok(())
@@ -697,6 +711,8 @@ fn save_agent_state(
         AgentState {
             agent_name: agent_name.to_string(),
             capture_content,
+            // Saved only by a run that asked (or read --content) for a cluster that keeps it.
+            chat_history: capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
             binding: Some(binding.clone()),
         },
@@ -820,6 +836,7 @@ mod tests {
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: expected.saturating_sub(1),
             binding: None,
         };
@@ -830,6 +847,7 @@ mod tests {
         AgentState {
             agent_name: "user-opencode".into(),
             capture_content: true,
+            chat_history: true,
             hook_version,
             binding: Some(InstallationBinding {
                 cluster_name: "cp".into(),
@@ -844,6 +862,7 @@ mod tests {
             cluster_name: cluster_name.into(),
             cluster_url: cluster_url.into(),
             principal_id: uuid::Uuid::nil().to_string(),
+            accepts_chat_history: false,
         }
     }
 
@@ -861,10 +880,7 @@ mod tests {
         );
         assert_eq!(
             setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move {
-                from: "cp".into(),
-                capture_content: true
-            }
+            SetupStep::Move { from: "cp".into() }
         );
     }
 
@@ -878,7 +894,6 @@ mod tests {
             setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
             SetupStep::Move {
                 from: "an older install with no cluster recorded".into(),
-                capture_content: false
             }
         );
     }

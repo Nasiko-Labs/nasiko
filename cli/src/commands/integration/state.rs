@@ -31,8 +31,12 @@ pub struct InstallationBinding {
 pub struct AgentState {
     /// Name this agent is registered under in the control plane.
     pub agent_name: String,
-    /// Whether prompt text may be attached to spans.
+    /// Whether chat history (prompts, responses, tool output) is captured.
     pub capture_content: bool,
+    /// Whether that was agreed to with this CLI, for a control plane that keeps chat history: a
+    /// `capture_content` saved by an older CLI, under its default yes, doesn't count without it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_history: bool,
     /// Version of the installed hook script.
     pub hook_version: u32,
     /// Immutable delivery destination selected by the explicit installation.

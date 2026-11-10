@@ -1,23 +1,72 @@
-//! Whether a control plane runs on this machine. A coding agent's chat history (prompts,
-//! responses, tool output) is only ever offered to a control plane on localhost: anything else is
-//! a hosted server, which gets what prices a turn — tokens, model, cost, timings — and nothing
-//! more.
+//! Whether a control plane keeps a coding agent's chat history (prompts, responses, tool output),
+//! and the words every command uses to say so. The server decides
+//! (`GET /api/me/coding-agents/privacy`): a hosted Nasiko never keeps it, an open-source one on a
+//! developer's machine does, and an enterprise install does when its admin turns it on. Where the
+//! server keeps it, the user is still asked first; everything else — usage — is always synced.
 
-/// Shown before asking whether to sync chat history to a control plane on this machine.
-pub const CHAT_HISTORY_WARNING: &str = "Warning: syncing chat history sends your coding sessions' \
-     prompts, responses and tool output to the Nasiko running on this machine.";
+use serde::Deserialize;
+
+/// What is synced either way, named in full wherever reporting is described.
+pub const USAGE: &str = "tokens, cost, latency, models, tools and subagents";
+
+/// Shown before asking whether to sync chat history to `cluster`.
+pub fn chat_history_warning(cluster: &str) -> String {
+    format!(
+        "Warning: syncing chat history sends your coding sessions' prompts, responses and tool \
+         output to {cluster}."
+    )
+}
+
 /// The question itself; the default answer is no.
-pub const CHAT_HISTORY_QUESTION: &str =
-    "Sync chat history too? (No sends only tokens, latency and cost)";
-/// Said instead, for a control plane anywhere else.
-pub const HOSTED_NOTICE: &str = "Only tokens, latency and cost are synced to this cluster — \
-     prompt and response text never leaves this machine.";
-/// Said when `--content` asks for chat history on a hosted control plane.
-pub const CONTENT_REFUSED: &str = "--content ignored: chat history is only synced to a Nasiko \
-     running on this machine (localhost); this cluster gets tokens, latency and cost only.";
+pub fn chat_history_question(cluster: &str) -> String {
+    format!("Sync chat history to {cluster} too? (No syncs usage only: {USAGE})")
+}
+
+/// Said instead, for a control plane that doesn't keep chat history.
+pub fn usage_only_notice(cluster: &str) -> String {
+    format!(
+        "{cluster} syncs usage only — {USAGE}. Chat history (prompts, responses, tool output) \
+         never leaves this machine."
+    )
+}
+
+/// Said when `--content` asks for chat history from a control plane that doesn't keep it.
+pub fn content_refused(cluster: &str) -> String {
+    format!(
+        "--content ignored: {cluster} doesn't keep chat history, so it gets usage only ({USAGE})."
+    )
+}
+
+/// What an agent's reporting syncs, for plans and status lines.
+pub fn synced(chat_history: bool) -> String {
+    if chat_history {
+        "usage and chat history".to_string()
+    } else {
+        "usage only".to_string()
+    }
+}
+
+#[derive(Deserialize)]
+struct Privacy {
+    chat_history: bool,
+}
+
+/// Whether the active cluster (at `cluster_url`) keeps chat history, by its own answer. A server
+/// too old to say (a 404) is taken to keep it only when it runs on this machine; one that can't be
+/// asked at all keeps none.
+pub fn server_accepts_chat_history(cluster_url: &str) -> bool {
+    let answer = crate::api::Client::from_active_cluster()
+        .and_then(|client| client.get_json_optional::<Privacy>("/me/coding-agents/privacy"));
+    match answer {
+        Ok(Some(privacy)) => privacy.chat_history,
+        Ok(None) => is_local_cluster(cluster_url),
+        Err(_) => false,
+    }
+}
 
 /// Whether `cluster_url` names this machine: `localhost` (or a `*.localhost` name), an IPv4
-/// loopback address (`127.0.0.0/8`) or `::1`, on any port and with any scheme.
+/// loopback address (`127.0.0.0/8`) or `::1`, on any port and with any scheme. Only the fallback
+/// for a server too old to state its own policy.
 pub fn is_local_cluster(cluster_url: &str) -> bool {
     let host = host_of(cluster_url).to_ascii_lowercase();
     host == "localhost"
@@ -61,7 +110,7 @@ mod tests {
     }
 
     #[test]
-    fn anything_else_is_hosted() {
+    fn anything_else_is_not_local() {
         for url in [
             "https://internal.nasiko.dev",
             "https://nasiko.dev:443",
@@ -72,7 +121,19 @@ mod tests {
             "http://127.0.0.1.evil.example",
             "",
         ] {
-            assert!(!is_local_cluster(url), "{url} is hosted");
+            assert!(!is_local_cluster(url), "{url} is not this machine");
         }
+    }
+
+    #[test]
+    fn every_line_names_everything_usage_covers() {
+        for line in [
+            chat_history_question("prod"),
+            usage_only_notice("prod"),
+            content_refused("prod"),
+        ] {
+            assert!(line.contains(USAGE), "{line}");
+        }
+        assert!(usage_only_notice("prod").starts_with("prod "));
     }
 }

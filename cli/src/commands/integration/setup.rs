@@ -57,7 +57,10 @@ pub fn setup(options: SetupOptions) -> Result<()> {
         return started;
     }
     tracker.phase(Phase::Importing, super::agent_rows());
-    println!("\nImporting past sessions, newest first...");
+    println!(
+        "\nImporting the past sessions of {}, newest first...",
+        connected_agents().join(", ")
+    );
     let imported = import_here(|run| tracker.import(run));
     // An import already running elsewhere reports for itself.
     if !matches!(imported, Ok(None)) {
@@ -222,13 +225,21 @@ pub(super) fn start_background_import() -> Result<()> {
     Ok(())
 }
 
-/// The display names of the connected coding agents.
-fn connected_agents() -> Vec<&'static str> {
+/// The connected coding agents, each with what its sessions sync — "Claude Code (usage only)" —
+/// in the words every command uses (`super::synced`).
+fn connected_agents() -> Vec<String> {
     let settings = IntegrationState::load().unwrap_or_default();
     Agent::ALL
         .iter()
-        .filter(|agent| settings.get(agent.spec().id).is_some())
-        .map(|agent| agent.spec().display_name)
+        .filter_map(|agent| {
+            let state = settings.get(agent.spec().id)?;
+            let chat_history = state.capture_content && state.chat_history;
+            Some(format!(
+                "{} ({})",
+                agent.spec().display_name,
+                super::synced(chat_history)
+            ))
+        })
         .collect()
 }
 

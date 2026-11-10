@@ -152,21 +152,23 @@ fn capture_locked(
         pending: pending.len(),
         ..Captured::default()
     };
-    // Chat history only ever goes to a control plane on this machine, whatever was saved: a
-    // hosted one gets what prices the turn.
-    let capture_content =
-        agent_state.capture_content && super::is_local_cluster(&destination.cluster_url);
+    // Chat history only with the consent this CLI records, given for a cluster that keeps it; a
+    // yes an older CLI saved under its default doesn't count. Everything else is usage.
+    let capture_content = agent_state.capture_content && agent_state.chat_history;
     for turn in &pending {
-        let record = QueueRecord::new(
-            destination.clone(),
-            sanitized(canonical_event(
-                agent_id,
-                &agent_state.agent_name,
-                snapshot,
-                turn,
-                capture_content,
-            )),
-        );
+        let record = QueueRecord {
+            chat_history: capture_content,
+            ..QueueRecord::new(
+                destination.clone(),
+                sanitized(canonical_event(
+                    agent_id,
+                    &agent_state.agent_name,
+                    snapshot,
+                    turn,
+                    capture_content,
+                )),
+            )
+        };
         if let Err(error) = record.event.validate() {
             queue::reject_invalid(&record, &error)?;
             lock.mark_captured(
@@ -420,19 +422,20 @@ mod tests {
 
     /// Captures one turn (with NUL characters in its prompt and title) for an agent saved with chat
     /// history on, bound to `cluster_url`; returns what was queued.
-    fn capture_with_content_on(cluster_url: &str) -> Vec<CodingAgentEventV1> {
+    fn capture_with_content_on(consented: bool) -> Vec<CodingAgentEventV1> {
         let dir = tempfile::tempdir().unwrap();
         let lock =
             SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: consented,
             hook_version: 3,
             binding: None,
         };
         let destination = QueueDestination {
             cluster_name: "cluster".into(),
-            cluster_url: cluster_url.into(),
+            cluster_url: "https://cluster.example".into(),
             principal_id: uuid::Uuid::new_v4(),
         };
         let mut dirty = turn("a", true);
@@ -467,14 +470,14 @@ mod tests {
 
     #[test]
     fn a_turn_with_nul_characters_is_queued_clean_instead_of_quarantined() {
-        let event = &capture_with_content_on("http://localhost:8080")[0];
+        let event = &capture_with_content_on(true)[0];
         assert_eq!(event.turn.prompt.as_deref(), Some("readthis"));
         assert_eq!(event.session.title.as_deref(), Some("t"));
     }
 
     #[test]
-    fn a_hosted_cluster_never_gets_chat_history_even_when_it_was_turned_on() {
-        let event = &capture_with_content_on("https://cluster.example")[0];
+    fn a_yes_saved_by_an_older_cli_captures_usage_only() {
+        let event = &capture_with_content_on(false)[0];
         assert_eq!(event.capture_policy, CapturePolicy::MetadataOnly);
         assert_eq!((&event.turn.prompt, &event.turn.response), (&None, &None));
         assert_eq!(event.session.title, None);
@@ -492,6 +495,7 @@ mod tests {
         let state = AgentState {
             agent_name: "codex".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 2,
             binding: None,
         };
@@ -558,6 +562,7 @@ mod tests {
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 4,
             binding: None,
         };
@@ -636,6 +641,7 @@ mod tests {
         let state = super::super::state::AgentState {
             agent_name: "alice-claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 1,
             binding: Some(super::super::state::InstallationBinding {
                 cluster_name: "cluster-a".into(),
@@ -655,6 +661,7 @@ mod tests {
         let state = super::super::state::AgentState {
             agent_name: "alice-claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 1,
             binding: None,
         };
