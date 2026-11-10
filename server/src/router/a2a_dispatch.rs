@@ -1467,7 +1467,8 @@ async fn opted_out_agent_tools(
 ) -> Result<std::collections::HashSet<String>, sqlx::Error> {
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM agents \
-         WHERE status = 'running' AND NOT is_internal AND NOT compress_enabled",
+         WHERE status = 'running' AND deleted_at IS NULL AND NOT is_internal \
+           AND NOT compress_enabled",
     )
     .fetch_all(db)
     .await?;

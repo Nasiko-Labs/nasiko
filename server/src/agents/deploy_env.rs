@@ -103,11 +103,22 @@ pub async fn build_with_platform_env(
 ) -> HashMap<String, String> {
     let mut env = state.agent_env(agent_id).await;
     env.extend(caller_env);
+    layer_platform_env(&mut env, platform_env);
+    env
+}
+
+/// Puts `platform_env` on top of `env`, after taking the reserved keys out of `env`, so a
+/// reserved key the platform did not supply is absent rather than the caller's value.
+fn layer_platform_env(env: &mut HashMap<String, String>, platform_env: &HashMap<String, String>) {
+    strip_reserved_keys(env);
+    env.extend(platform_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+}
+
+/// Removes every key only the platform may set.
+fn strip_reserved_keys(env: &mut HashMap<String, String>) {
     for key in RESERVED_KEYS {
         env.remove(key);
     }
-    env.extend(platform_env.iter().map(|(k, v)| (k.clone(), v.clone())));
-    env
 }
 
 /// Sets all of the platform's keys on `env`: the credentials (`apply_credentials`) and the LLM
@@ -139,9 +150,7 @@ pub async fn apply_credentials(
     agent_id: Uuid,
     state_mode: StateModeOnDeploy,
 ) {
-    for key in RESERVED_KEYS {
-        env.remove(key);
-    }
+    strip_reserved_keys(env);
     crate::mcp::wiring::inject_agent_gateway_token(&state.db, env, agent_id).await;
     inject_agent_state(state, &state.db, env, agent_id, state_mode).await;
     // Minting above superseded the credentials a parked agent's sandbox was created with, so
@@ -227,6 +236,58 @@ mod tests {
             agent_state_url("https://cp.example.com/api/mcp/").as_deref(),
             Some("https://cp.example.com/api/agent-state")
         );
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect()
+    }
+
+    /// What a caller (an agent secret or an upload's `env`) might put under the platform's names.
+    fn hostile_caller_env() -> HashMap<String, String> {
+        env_of(&[
+            (GATEWAY_TOKEN_VAR, "ngt_forged"),
+            (STATE_URL_VAR, "http://attacker.test/api/agent-state"),
+            (STATE_TOKEN_VAR, "nst_forged"),
+            ("OPENAI_MODEL", "gpt-4.1"),
+            ("MY_SECRET", "kept"),
+        ])
+    }
+
+    #[test]
+    fn the_platforms_keys_win_over_the_callers() {
+        let mut env = hostile_caller_env();
+        let platform = env_of(&[
+            (GATEWAY_TOKEN_VAR, "ngt_real"),
+            (STATE_URL_VAR, "http://cp.test/api/agent-state"),
+            (STATE_TOKEN_VAR, "nst_real"),
+        ]);
+        layer_platform_env(&mut env, &platform);
+        assert_eq!(env[GATEWAY_TOKEN_VAR], "ngt_real");
+        assert_eq!(env[STATE_URL_VAR], "http://cp.test/api/agent-state");
+        assert_eq!(env[STATE_TOKEN_VAR], "nst_real");
+    }
+
+    #[test]
+    fn a_reserved_key_the_platform_could_not_supply_is_absent_not_the_callers() {
+        let mut env = hostile_caller_env();
+        layer_platform_env(&mut env, &HashMap::new());
+        for key in RESERVED_KEYS {
+            assert!(
+                !env.contains_key(key),
+                "{key} must not come from the caller"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_the_platform_does_not_reserve_stay_the_callers() {
+        let mut env = hostile_caller_env();
+        layer_platform_env(&mut env, &env_of(&[(GATEWAY_TOKEN_VAR, "ngt_real")]));
+        assert_eq!(env["OPENAI_MODEL"], "gpt-4.1");
+        assert_eq!(env["MY_SECRET"], "kept");
     }
 
     #[test]

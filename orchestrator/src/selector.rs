@@ -120,10 +120,13 @@ impl AgentSelector {
     }
 
     /// Fetch routable (running or parked) agents directly from DB — used by the orchestrator path.
+    ///
+    /// A soft-deleted agent is never routable, whatever its row's status says: rows deleted
+    /// before the delete route also stopped them still read `running`.
     pub async fn fetch_active_agents(db: &PgPool) -> Result<Vec<AgentCardSummary>, sqlx::Error> {
         let rows = sqlx::query_as::<_, AgentCardRow>(
             "SELECT id, name, description, skills, tags FROM agents \
-             WHERE status IN ('running', 'parked') AND NOT is_internal \
+             WHERE status IN ('running', 'parked') AND deleted_at IS NULL AND NOT is_internal \
              ORDER BY name",
         )
         .fetch_all(db)
