@@ -542,6 +542,7 @@ impl AppState {
                 session_resolver,
                 std::time::Duration::from_secs(state.config.trace_usage_sync_secs),
                 std::time::Duration::from_secs(state.config.trace_usage_overlap_secs),
+                std::time::Duration::from_secs(state.config.trace_usage_max_window_secs),
                 state.config.trace_usage_batch_size,
             ));
         }

@@ -448,6 +448,10 @@ pub struct Config {
     /// Overlap window in seconds: the materializer re-queries this far before
     /// the high-water mark to catch late-arriving spans and pricing corrections.
     pub trace_usage_overlap_secs: u64,
+    /// Longest window one materializer pass searches. Must exceed the overlap
+    /// (see [`validate_trace_usage_window`]): the excess is how far the cursor
+    /// moves per pass.
+    pub trace_usage_max_window_secs: u64,
     /// Max traces to fetch from Tempo per concurrent batch.
     pub trace_usage_batch_size: usize,
 
@@ -884,8 +888,9 @@ impl Config {
                 .filter(|s| !s.is_empty()),
             container_hours_poll_secs: env_parse("CONTAINER_HOURS_POLL_SECS", 60),
             trace_usage_sync_secs: env_parse("TRACE_USAGE_SYNC_SECS", 120),
-            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 600),
-            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 50),
+            trace_usage_overlap_secs: env_parse("TRACE_USAGE_OVERLAP_SECS", 180),
+            trace_usage_max_window_secs: env_parse("TRACE_USAGE_MAX_WINDOW_SECS", 600),
+            trace_usage_batch_size: env_parse("TRACE_USAGE_BATCH_SIZE", 8),
             git_clone_allowed_hosts: std::env::var("GIT_CLONE_ALLOWED_HOSTS")
                 .unwrap_or_else(|_| "github.com,gitlab.com,bitbucket.org".to_owned())
                 .split(',')
@@ -981,6 +986,11 @@ impl Config {
         config
             .validate_session_lifecycle()
             .map_err(anyhow::Error::msg)?;
+        validate_trace_usage_window(
+            config.trace_usage_overlap_secs,
+            config.trace_usage_max_window_secs,
+        )
+        .map_err(anyhow::Error::msg)?;
         Ok(config)
     }
 
@@ -1120,6 +1130,19 @@ fn validate_call_timeout_within_session_token(call_timeout_secs: u64) -> Result<
     Ok(())
 }
 
+/// Each materializer pass searches `[cursor − overlap, cursor − overlap + window]`
+/// and moves the cursor to the window's end, so a window no longer than the
+/// overlap never moves the cursor past where it was.
+fn validate_trace_usage_window(overlap_secs: u64, max_window_secs: u64) -> Result<(), String> {
+    if max_window_secs <= overlap_secs {
+        return Err(format!(
+            "TRACE_USAGE_MAX_WINDOW_SECS ({max_window_secs}) must exceed TRACE_USAGE_OVERLAP_SECS \
+             ({overlap_secs}): the excess is how far the materializer advances per pass"
+        ));
+    }
+    Ok(())
+}
+
 /// Tiering deletes rows from Postgres once they are in the cold store, so the
 /// cold store must be a location the operator chose. The `./data/cold` default
 /// is fine for reads and manual runs, but with the daily job on it would put the
@@ -1157,6 +1180,14 @@ mod tests {
         assert!(super::validate_tiering(true, Some("s3://b/cold")).is_ok());
         assert!(super::validate_tiering(true, Some("gs://b/cold")).is_ok());
         assert!(super::validate_tiering(false, None).is_ok());
+    }
+
+    #[test]
+    fn trace_usage_window_must_exceed_the_overlap() {
+        assert!(super::validate_trace_usage_window(180, 600).is_ok());
+        let err = super::validate_trace_usage_window(600, 600).unwrap_err();
+        assert!(err.contains("TRACE_USAGE_MAX_WINDOW_SECS"), "{err}");
+        assert!(super::validate_trace_usage_window(600, 300).is_err());
     }
 
     #[test]

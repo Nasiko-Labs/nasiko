@@ -872,8 +872,9 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         oci_registry_host: None,
         container_hours_poll_secs: 0, // disabled so the background loop never races tests driving reconcile_once directly
         trace_usage_sync_secs: 0,
-        trace_usage_overlap_secs: 600,
-        trace_usage_batch_size: 50,
+        trace_usage_overlap_secs: 180,
+        trace_usage_max_window_secs: 600,
+        trace_usage_batch_size: 8,
         git_clone_allowed_hosts: vec![
             "github.com".to_owned(),
             "gitlab.com".to_owned(),
