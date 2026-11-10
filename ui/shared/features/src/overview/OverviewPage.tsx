@@ -303,13 +303,10 @@ function Overview({
   const days = RANGE_DAYS[range]
   const qc = useQueryClient()
   const returnTick = useReturnTick(RETURN_REFRESH_MS)
-  // A try-a-run finished: Home moves on and refreshes as on a return, so the run's spend and tokens show at once.
-  const [ranTick, setRanTick] = useState(0)
-  const refreshTick = returnTick + ranTick
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => new Date(), [refreshTick])
+  const now = useMemo(() => new Date(), [returnTick])
   useEffect(() => {
-    if (!refreshTick) return
+    if (!returnTick) return
     // Window-keyed queries (finops, sessions) move with `now`; these keys don't, so refresh them.
     void qc.invalidateQueries({ queryKey: ['agents'], exact: true })
     void qc.invalidateQueries({ queryKey: ['agents', 'deployment'] })
@@ -319,12 +316,7 @@ function Overview({
     // The month calendar is keyed by month, not window: refresh it too, as TokenOps does (/ship review).
     void qc.invalidateQueries({ queryKey: ['tokenops', 'calendar'] })
     void qc.invalidateQueries({ queryKey: ['overview', 'estate'] })
-  }, [refreshTick, qc])
-  // A try-a-run just finished: its spend, tokens and run are already metered, but the range-keyed cards (`7d`, `30d`)
-  // keep their query keys when `now` moves, so refetch everything Home shows rather than wait for them to go stale.
-  useEffect(() => {
-    if (ranTick) void qc.invalidateQueries({ type: 'active' })
-  }, [ranTick, qc])
+  }, [returnTick, qc])
 
   const fleet = useFleetHealth(now)
   // A failed agent list must not freeze the other cards: they load, and Needs you says agent health failed (/ship review).
@@ -586,13 +578,7 @@ function Overview({
       )}
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
         {/* Right after setup, before anything has run: the call to run the agent they picked, first in line. */}
-        {tryRun ? (
-          <TryAgentRun
-            userId={me.sub}
-            className={PLACE.tryRun}
-            onRan={() => setRanTick((n) => n + 1)}
-          />
-        ) : null}
+        {tryRun ? <TryAgentRun userId={me.sub} className={PLACE.tryRun} /> : null}
         <NeedsYou
           data={needsYou}
           now={now.getTime()}

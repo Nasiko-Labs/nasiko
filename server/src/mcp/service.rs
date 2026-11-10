@@ -317,9 +317,6 @@ pub mod permissions {
     pub async fn list_connectors(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
         permissions::list_connectors_view(&s.mcp, user, agent).await
     }
-    pub async fn list_caller_connections(s: &AppState, user: Uuid, agent: Uuid) -> R<Value> {
-        permissions::list_caller_connections_view(&s.mcp, user, agent).await
-    }
     pub async fn set_connector_access(
         s: &AppState,
         user: Uuid,

@@ -9,13 +9,6 @@
 //! per-user, so the resolved config's owner always matches the agent owner whose secret store
 //! the API key is read from.
 //!
-//! **A shared agent runs on the caller's config, not the owner's.** When the user a call is
-//! attributed to (`flows.user_id`) is not the agent's owner — the agent was shared with them —
-//! the call resolves against *that user's* default config and secret store
-//! ([`ConfigSubject::SharedUser`]); the agent's attached config and the owner's keys are never
-//! read. A shared user with no default config is refused
-//! ([`GatewayError::NoSharedUserConfig`]), never silently put on the owner's key.
-//!
 //! **When the agent resolves to a config it is authoritative** — the incoming request's
 //! `model`/provider are ignored (a configured agent is routed where its config says).
 //! **When the agent has no `llm_config`** we honor what the request itself asked for — the
@@ -300,16 +293,6 @@ pub trait RegistryStore: Send + Sync {
         self.fetch_llm_config(agent_id).await
     }
 
-    /// The user's own default config (`llm_configs.is_default`, created by them), or `None` when
-    /// they have none — what a shared agent runs on when this user chats with it. The default
-    /// answers `None`, so a store that does not implement it refuses shared callers.
-    async fn fetch_user_default_config(
-        &self,
-        _user_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        Ok(None)
-    }
-
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -508,13 +491,6 @@ impl RegistryStore for PgRegistry {
         ))
     }
 
-    async fn fetch_user_default_config(
-        &self,
-        user_id: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
-        self.load_owner_default(user_id).await
-    }
-
     async fn fetch_user_secret(
         &self,
         owner_id: Uuid,
@@ -644,41 +620,7 @@ impl RegistryStore for PgRegistry {
     }
 }
 
-/// Whose LLM config and provider keys an agent's call runs on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigSubject<'a> {
-    /// The agent's owner, as the agent token names them (empty for a token minted without an
-    /// owner, which takes the platform-key path): the agent's attached config, else the owner's
-    /// default, with the owner's keys.
-    Owner(&'a str),
-    /// A user the agent is shared with: that user's own default config and keys. The agent's
-    /// attached config and its owner's keys are never read for them.
-    SharedUser(Uuid),
-}
-
-impl<'a> ConfigSubject<'a> {
-    /// Pure: who pays for a call by an agent owned by `owner_id`, made on behalf of
-    /// `acting_user` (the attributed flow's user, when there is one). Anyone other than the owner
-    /// is a shared user. A token without an owner claim stays on the owner path — it pays with
-    /// the platform key, never an owner's.
-    pub fn for_call(owner_id: &'a str, acting_user: Option<Uuid>) -> Self {
-        let owner = Uuid::parse_str(owner_id).ok();
-        match (owner, acting_user) {
-            (Some(owner), Some(user)) if owner != user => Self::SharedUser(user),
-            _ => Self::Owner(owner_id),
-        }
-    }
-
-    /// The user whose `user_secrets` hold the config's named key (empty = none).
-    fn key_holder(&self) -> String {
-        match self {
-            Self::Owner(owner_id) => (*owner_id).to_string(),
-            Self::SharedUser(user) => user.to_string(),
-        }
-    }
-}
-
-/// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`] on the owner's config and keys.
+/// Resolve `(agent_id, owner_id)` into a [`ResolvedConfig`].
 pub async fn resolve(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -687,26 +629,11 @@ pub async fn resolve(
     owner_id: &str,
     hint: RequestHint<'_>,
 ) -> Result<ResolvedConfig, GatewayError> {
-    let subject = ConfigSubject::Owner(owner_id);
-    resolve_for(store, cache, cfg, agent_id, subject, hint).await
-}
-
-/// Resolve an agent's call into a [`ResolvedConfig`] on `subject`'s config and keys.
-pub async fn resolve_for(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    cfg: &GatewayConfig,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-    hint: RequestHint<'_>,
-) -> Result<ResolvedConfig, GatewayError> {
     // A non-UUID agent_id can't match any row → treat as "no registry entry".
     let agent_uuid = Uuid::parse_str(agent_id)
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
-    let agent_result = load_subject_config(store, cache, agent_uuid, agent_id, subject).await?;
-    let key_holder = subject.key_holder();
-    let owner_id = key_holder.as_str();
+    let agent_result = load_llm_config(store, cache, agent_uuid, agent_id).await?;
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
@@ -784,7 +711,6 @@ pub async fn resolve_for(
         target: "nasiko::llm_router::resolver",
         %agent_id,
         has_llm_config,
-        shared_user = matches!(subject, ConfigSubject::SharedUser(_)),
         provider = %resolved.provider,
         model = %resolved.model,
         litellm_model = %resolved.litellm_model,
@@ -836,27 +762,11 @@ pub async fn resolve_embeddings(
     owner_id: &str,
     request_model: Option<&str>,
 ) -> Result<ResolvedEmbeddingConfig, GatewayError> {
-    let subject = ConfigSubject::Owner(owner_id);
-    resolve_embeddings_for(store, cache, cfg, agent_id, subject, request_model).await
-}
-
-/// [`resolve_embeddings`] on `subject`'s config and keys — a shared user's own default config
-/// stands in for the agent's at levels 1 and 3.
-pub async fn resolve_embeddings_for(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    cfg: &GatewayConfig,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-    request_model: Option<&str>,
-) -> Result<ResolvedEmbeddingConfig, GatewayError> {
     let agent_uuid = Uuid::parse_str(agent_id)
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
-    let llm_config = load_subject_config(store, cache, agent_uuid, agent_id, subject)
+    let llm_config = load_llm_config(store, cache, agent_uuid, agent_id)
         .await?
         .config;
-    let key_holder = subject.key_holder();
-    let owner_id = key_holder.as_str();
 
     let (source, pick) = match pick_embedding(llm_config.as_ref(), request_model) {
         Some(picked) => picked,
@@ -1042,56 +952,6 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
     llm_config
         .as_ref()
         .and_then(|c| c.api_key_secret_name.clone())
-}
-
-/// The agent's flags plus the config `subject` runs on: the owner's through
-/// [`load_llm_config`], a shared user's own default otherwise.
-async fn load_subject_config(
-    store: &dyn RegistryStore,
-    cache: &ConfigCache,
-    agent_uuid: Uuid,
-    agent_id: &str,
-    subject: ConfigSubject<'_>,
-) -> Result<AgentConfigResult, GatewayError> {
-    match subject {
-        ConfigSubject::Owner(_) => load_llm_config(store, cache, agent_uuid, agent_id).await,
-        ConfigSubject::SharedUser(user) => {
-            load_shared_user_config(store, agent_uuid, agent_id, user).await
-        }
-    }
-}
-
-/// A shared user's own default config, with the agent's flags. Not cached: the agent-keyed
-/// cache holds the owner's config, and this read is one indexed row.
-///
-/// The owner's agent-level model pin is dropped along with the owner's config: it names a
-/// model on the owner's provider, which the shared user's config may not reach.
-async fn load_shared_user_config(
-    store: &dyn RegistryStore,
-    agent_uuid: Uuid,
-    agent_id: &str,
-    user: Uuid,
-) -> Result<AgentConfigResult, GatewayError> {
-    let flags = store
-        .fetch_agent_flags(agent_uuid)
-        .await
-        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
-        .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
-    let config = store
-        .fetch_user_default_config(user)
-        .await
-        .map_err(|e| GatewayError::Internal(format!("shared user config read failed: {e}")))?
-        .ok_or(GatewayError::NoSharedUserConfig)?;
-    tracing::info!(
-        target: "nasiko::llm_router::resolver",
-        %agent_id, %user, provider = %config.provider,
-        "resolver: shared agent — running on the calling user's own default config"
-    );
-    Ok(AgentConfigResult {
-        config: Some(config),
-        agent_pinned_model: None,
-        ..flags
-    })
 }
 
 /// Load `llm_config` via the cache (for the config part), falling back to the store.
@@ -2264,229 +2124,5 @@ mod tests {
         assert_eq!(EmbeddingSource::Request.label(), "request");
         assert_eq!(EmbeddingSource::Config.label(), "config");
         assert_eq!(EmbeddingSource::OrgDefault.label(), "org-default");
-    }
-}
-
-/// A shared agent runs on its caller's own config and keys (NAS-1459).
-#[cfg(test)]
-mod shared_user_tests {
-    use super::*;
-    use std::sync::Mutex;
-    use std::time::Duration;
-
-    const AGENT: &str = "11111111-1111-1111-1111-111111111111";
-    const OWNER: &str = "22222222-2222-2222-2222-222222222222";
-    const SHARED_USER: &str = "33333333-3333-3333-3333-333333333333";
-
-    /// The agent's owner has a config naming their key; the shared user may have their own.
-    struct SharedAgentStore {
-        user_default: Option<LLMConfig>,
-        /// Every `user_secrets` owner read — the owner's must never appear for a shared caller.
-        secret_reads: Mutex<Vec<Uuid>>,
-    }
-
-    impl SharedAgentStore {
-        fn new(user_default: Option<LLMConfig>) -> Self {
-            Self {
-                user_default,
-                secret_reads: Mutex::new(Vec::new()),
-            }
-        }
-        fn read_owners_secret(&self) -> bool {
-            let owner = Uuid::parse_str(OWNER).unwrap();
-            self.secret_reads.lock().unwrap().contains(&owner)
-        }
-    }
-
-    fn config(provider: &str, model: &str, secret_name: Option<&str>) -> LLMConfig {
-        LLMConfig {
-            provider: provider.into(),
-            model: Some(model.into()),
-            fallback_models: vec![],
-            temperature: None,
-            max_tokens: None,
-            api_key_secret_name: secret_name.map(str::to_string),
-            pinned: false,
-            pinned_model: None,
-            tier1_model: None,
-            tier2_model: None,
-            tier3_model: None,
-            embedding_provider: None,
-            embedding_model: None,
-            embedding_api_key_secret_name: None,
-            embedding_model_override: false,
-        }
-    }
-
-    #[async_trait]
-    impl RegistryStore for SharedAgentStore {
-        async fn fetch_llm_config(
-            &self,
-            _: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            Ok(Some(AgentConfigResult {
-                config: Some(config("anthropic", "owner-model", Some("OWNER_KEY"))),
-                agent_pinned_model: Some("owner-pin".into()),
-                is_coding_agent: false,
-                compress_enabled: true,
-            }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
-        }
-        async fn fetch_user_default_config(
-            &self,
-            user_id: Uuid,
-        ) -> Result<Option<LLMConfig>, sqlx::Error> {
-            assert_eq!(
-                user_id.to_string(),
-                SHARED_USER,
-                "only the caller's own config"
-            );
-            Ok(self.user_default.clone())
-        }
-        async fn fetch_user_secret(
-            &self,
-            owner_id: Uuid,
-            _: &str,
-        ) -> Result<Option<String>, sqlx::Error> {
-            self.secret_reads.lock().unwrap().push(owner_id);
-            let plaintext = format!("key-of-{owner_id}");
-            Ok(Some(SecretsCrypto::for_user(owner_id).encrypt(&plaintext)))
-        }
-        async fn fetch_live_flow(
-            &self,
-            _: &str,
-            _: Uuid,
-            _: i64,
-        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
-            unreachable!("resolution never attributes flows")
-        }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
-            Ok(None)
-        }
-    }
-
-    fn install_master_key() {
-        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-        // SAFETY: serialized via #[serial]; no other test reads the env concurrently.
-        unsafe {
-            std::env::set_var("SECRETS_ENCRYPTION_KEY", BASE64.encode([7u8; 32]));
-        }
-    }
-
-    fn gateway() -> GatewayConfig {
-        GatewayConfig {
-            default_provider: "openai".into(),
-            default_model: "gpt-4o-mini".into(),
-            platform_openai_api_key: "sk-platform".into(),
-            ..Default::default()
-        }
-    }
-
-    async fn resolve_as(
-        store: &SharedAgentStore,
-        subject: ConfigSubject<'_>,
-    ) -> Result<ResolvedConfig, GatewayError> {
-        let cache = ConfigCache::new(Duration::from_secs(30));
-        let hint = RequestHint::default();
-        resolve_for(store, &cache, &gateway(), AGENT, subject, hint).await
-    }
-
-    fn shared_user() -> Uuid {
-        Uuid::parse_str(SHARED_USER).unwrap()
-    }
-
-    #[test]
-    fn a_caller_other_than_the_owner_is_a_shared_user() {
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, Some(shared_user())),
-            ConfigSubject::SharedUser(shared_user())
-        );
-    }
-
-    #[test]
-    fn the_owner_on_their_own_agent_and_an_unattributed_call_stay_on_the_owner() {
-        let owner = Uuid::parse_str(OWNER).unwrap();
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, Some(owner)),
-            ConfigSubject::Owner(OWNER)
-        );
-        assert_eq!(
-            ConfigSubject::for_call(OWNER, None),
-            ConfigSubject::Owner(OWNER)
-        );
-        // A token without an owner claim already pays with the platform key, never an owner's.
-        assert_eq!(
-            ConfigSubject::for_call("", Some(shared_user())),
-            ConfigSubject::Owner("")
-        );
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_user_runs_on_their_own_default_config_and_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(Some(config("openai", "user-model", Some("MY_KEY"))));
-        let r = resolve_as(&store, ConfigSubject::SharedUser(shared_user()))
-            .await
-            .unwrap();
-        assert_eq!(r.provider, "openai");
-        assert_eq!(r.model, "user-model");
-        assert_eq!(r.api_key, format!("key-of-{SHARED_USER}"));
-        assert!(!r.platform_paid);
-        assert!(!store.read_owners_secret(), "the owner's key is never read");
-        // The owner's agent-level pin names a model on the owner's provider: not carried over.
-        assert_eq!(r.pinned_model, None);
-        // Agent flags still apply.
-        assert!(r.compress_enabled);
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_user_without_a_config_is_refused_never_put_on_the_owners_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let err = resolve_as(&store, ConfigSubject::SharedUser(shared_user()))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::NoSharedUserConfig));
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.to_string().starts_with("Connect a model in LLM router"));
-        assert!(!store.read_owners_secret());
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_users_embeddings_without_a_config_are_refused_too() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let cache = ConfigCache::new(Duration::from_secs(30));
-        let subject = ConfigSubject::SharedUser(shared_user());
-        let err = resolve_embeddings_for(&store, &cache, &gateway(), AGENT, subject, Some("m"))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::NoSharedUserConfig));
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn the_owner_still_runs_on_the_agents_config_and_their_key() {
-        install_master_key();
-        let store = SharedAgentStore::new(None);
-        let r = resolve_as(&store, ConfigSubject::Owner(OWNER))
-            .await
-            .unwrap();
-        assert_eq!(r.model, "owner-model");
-        assert_eq!(r.api_key, format!("key-of-{OWNER}"));
-        assert_eq!(r.pinned_model.as_deref(), Some("owner-pin"));
     }
 }

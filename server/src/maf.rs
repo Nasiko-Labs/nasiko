@@ -11,7 +11,6 @@ use chrono::{DateTime, Utc};
 use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     decomposer::DecomposerClient,
-    executor,
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
     types::{MafDefinition, MafStep, StepResult},
@@ -2399,13 +2398,10 @@ async fn generate_maf(
     }
 
     // The caller's saved key, else the server's; one of them is required.
-    let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
-    let key_source = if saved_key.is_some() {
-        "user"
-    } else {
-        "platform"
-    };
-    let api_key = match saved_key.or_else(|| state.config.openai_api_key.clone()) {
+    let api_key = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+        .await
+        .or_else(|| state.config.openai_api_key.clone())
+    {
         Some(k) => k,
         None => {
             return err_json(
@@ -2442,11 +2438,7 @@ async fn generate_maf(
         })
         .collect();
 
-    let (plan, usage) = planner::plan_maf(&req.description, &planner_agents, &llm).await;
-    if let Some(usage) = usage {
-        record_planner_usage(&state.db, user_id, &llm, key_source, &usage).await;
-    }
-    match plan {
+    match planner::plan_maf(&req.description, &planner_agents, &llm).await {
         Ok(plan) => {
             // Enrich steps with agent names for the response
             let steps: Vec<GeneratedStep> = plan
@@ -2481,40 +2473,6 @@ async fn generate_maf(
             StatusCode::UNPROCESSABLE_ENTITY,
             &format!("planning failed: {e}"),
         ),
-    }
-}
-
-/// Add the planner's model call to `trace_usage`, so TokenOps and the budgets ledger see it.
-///
-/// The planner calls its provider directly rather than through the LLM router, so no one else
-/// records this spend. It is written under the same `maf` row name the run-level MAF phases use
-/// (`executor::maf_agent_name`), with no session: a generated plan belongs to no execution yet.
-/// A failed write is logged and swallowed, like every other usage write — metering must never
-/// fail the request it meters.
-async fn record_planner_usage(
-    db: &sqlx::PgPool,
-    user_id: Uuid,
-    llm: &LlmClient,
-    key_source: &str,
-    usage: &nasiko_orchestrator::maf::llm::LlmUsage,
-) {
-    let metadata = serde_json::json!({
-        "key_source": key_source,
-        "component": "maf",
-        "phase": "generate_plan",
-    });
-    let result = executor::insert_trace_usage(
-        db,
-        user_id,
-        None,
-        &executor::maf_agent_name(None),
-        llm.provider(),
-        usage,
-        metadata,
-    )
-    .await;
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "maf generate: trace_usage write failed (non-fatal)");
     }
 }
 

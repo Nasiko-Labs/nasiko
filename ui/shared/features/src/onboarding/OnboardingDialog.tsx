@@ -1,9 +1,7 @@
 /**
  * The onboarding guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §3): the prototype's dialog, a
- * left rail of three steps beside the step itself, with Back / Continue below. Lazy (index.ts). Finish lands on the
- * homepage (user request 2026-11-09).
+ * left rail of four steps beside the step itself, with Back / Continue below. Lazy (index.ts).
  */
-import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
   ArrowLeft,
@@ -20,32 +18,29 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { agentKeys, useAgentsDirectory } from '@nasiko/features/agents/api'
+import { useEffect, useRef, useState } from 'react'
+// Paused with the role's landing page (see `onContinue`): every role finishes on the Overview.
+// import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
 import { DotBackground } from '@nasiko/ui/composites/dot-background'
 import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
 import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 import { TextGenerateEffect } from '@nasiko/ui/composites/text-generate-effect'
+import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Dialog, DialogContent } from '@nasiko/ui/primitives/dialog'
 import { Progress } from '@nasiko/ui/primitives/progress'
+import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
+import { Spinner } from '@nasiko/ui/primitives/spinner'
 import type { DeployStarted } from '@nasiko/features/deploy/UploadTab'
 import { cn } from '@nasiko/ui/lib/utils'
+import { useGuide, useSavePersona } from './api'
 import { AgentStep } from './AgentStep'
 import { copy } from './copy'
 import { HarnessStep } from './HarnessStep'
-import {
-  type AgentTab,
-  CONTINUE_HOLD_SECONDS,
-  MANDATORY,
-  minutesLeft,
-  STEPS,
-  type StepId,
-  toDeploy,
-} from './logic'
+import { CONTINUE_HOLD_SECONDS, minutesLeft, STEPS, type StepId } from './logic'
 import { ModelStep } from './ModelStep'
-import { deploySeeded } from './seededDeploy'
 import { StepHeading } from './parts'
+import { PERSONAS, type Persona } from './types'
 
 /** The Welcome rows' icons: the nav's own for Agents, Monitor, Optimize and Coding harnesses. */
 const ROW_ICONS = [Bot, DollarSign, Gauge, SquareTerminal]
@@ -53,33 +48,25 @@ const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck]
 /** When each stage lights in the beam's 4 s pass (index.css `--animate-beam` / `--animate-stage`): negative, so the
  *  loop is already running when the step opens. */
 const STAGE_DELAYS = ['-3.8s', '-2.73s', '-1.67s', '-0.6s']
+// const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
 
 export function OnboardingDialog({
   initialStep,
-  onClose: close,
+  onClose,
 }: {
   initialStep: StepId
   /** Skip guide, the close button, Escape, Finish and leaving through a link all end here. */
   onClose: () => void
 }) {
   const navigate = useNavigate()
-  const qc = useQueryClient()
-  // Every way out refreshes the agents list: an import the guide started registers its agent in seconds but finishes
-  // in minutes, so without this the homepage still reads an empty fleet and offers to deploy a first agent.
-  const onClose = () => {
-    void qc.invalidateQueries({ queryKey: agentKeys.directory, exact: true })
-    close()
-  }
-  const directory = useAgentsDirectory()
-  const existing = useMemo(() => new Set(directory.byName.keys()), [directory.byName])
-  // An opening at a step that no longer exists (a stale link) starts at the beginning.
-  const [index, setIndex] = useState(Math.max(0, STEPS.indexOf(initialStep)))
+  const guide = useGuide()
+  const save = useSavePersona()
+  const [index, setIndex] = useState(STEPS.indexOf(initialStep))
   const [reached, setReached] = useState(index)
+  const [persona, setPersona] = useState<Persona | null>(guide.persona)
   const [model, setModel] = useState<string | null>(null)
   const [agent, setAgent] = useState<DeployStarted | null>(null)
   const [seeded, setSeeded] = useState<string[] | null>(null)
-  const [tab, setTab] = useState<AgentTab>('seeded')
-  const [picks, setPicks] = useState<string[]>([MANDATORY])
   const step = STEPS[index] ?? 'welcome'
   const primary = useRef<HTMLButtonElement>(null)
   const go = (i: number) => {
@@ -98,10 +85,7 @@ export function OnboardingDialog({
   }, [held, index])
   const waiting = held > 0
   const last = index === STEPS.length - 1
-  // What Continue deploys on the Agent and key step (user request 2026-11-09): the picks, or the mandatory agent from
-  // any other tab. Nothing until the agents list has loaded, so an agent that exists is never deployed again.
-  const deploying =
-    step === 'start' && !seeded && directory.isSuccess ? toDeploy(tab, picks, existing) : []
+  // const opens = persona ? opensFor(persona) : '/'
   /** Out of the guide to a page: closing first, so the guide never stays open over it. */
   const leave = (to: Parameters<typeof navigate>[0]) => {
     onClose()
@@ -109,13 +93,15 @@ export function OnboardingDialog({
   }
 
   const onContinue = () => {
-    // Finish takes everyone to the homepage (user request 2026-11-09).
-    if (last) return leave({ to: '/' })
-    if (deploying.length) {
-      deploySeeded(qc, deploying)
-      setSeeded(deploying.map((a) => a.title))
-    }
-    next()
+    // Every role finishes on the Overview, where the guide runs (user request 2026-11-06). Paused, not removed: the
+    // role's own page (`logic.ts` `opensFor`, and the Role step's "Opens …" line) comes back by restoring these.
+    // if (last) return leave({ to: opens })
+    if (last) return onClose()
+    if (step !== 'role') return next()
+    if (!persona) return
+    // Already saved (back on this step): nothing to send.
+    if (persona === guide.persona) return next()
+    save.mutate(persona, { onSuccess: next })
   }
 
   return (
@@ -148,7 +134,9 @@ export function OnboardingDialog({
                 i !== index &&
                 (id === 'welcome'
                   ? reached > 0
-                  : id === 'start' && (!!model || !!agent || !!seeded))
+                  : id === 'role'
+                    ? !!persona && persona === guide.persona
+                    : id === 'start' && (!!model || !!agent || !!seeded))
               return (
                 <Button
                   key={id}
@@ -222,6 +210,16 @@ export function OnboardingDialog({
                 <Welcome />
               </>
             ) : null}
+            {step === 'role' ? (
+              <Role
+                persona={persona}
+                onPick={(p) => {
+                  setPersona(p)
+                  save.reset()
+                }}
+                failed={save.isError}
+              />
+            ) : null}
             {/* The agent first, then the key (user request 2026-11-05). Continue needs only the hold: a user with no key
                 yet may go on (user request 2026-11-06). */}
             {step === 'start' ? (
@@ -231,11 +229,7 @@ export function OnboardingDialog({
                   started={agent}
                   onStarted={setAgent}
                   seeded={seeded}
-                  tab={tab}
-                  onTab={setTab}
-                  picks={picks}
-                  onPicks={setPicks}
-                  existing={existing}
+                  onSeeded={setSeeded}
                   onLeave={onClose}
                 />
                 <ModelStep connected={model} onConnected={setModel} />
@@ -255,21 +249,20 @@ export function OnboardingDialog({
             <Button
               ref={primary}
               type="button"
-              // Focusable while off, so focus never drops to the page while it holds.
+              // Focusable while off, so focus never drops to the page while it holds or waits for a role.
               focusableWhenDisabled
               className="data-disabled:pointer-events-none data-disabled:opacity-50"
-              disabled={waiting}
+              disabled={waiting || (step === 'role' && !persona) || save.isPending}
               onClick={onContinue}
             >
+              {save.isPending ? <Spinner aria-hidden /> : null}
               {step === 'welcome'
                 ? copy.guide.getStarted
                 : last
                   ? copy.guide.finish
                   : held > 0
                     ? copy.guide.continueIn(held)
-                    : deploying.length
-                      ? copy.agent.deployAndContinue(deploying.length)
-                      : copy.guide.continue}
+                    : copy.guide.continue}
               <ArrowRight aria-hidden />
             </Button>
           </div>
@@ -409,3 +402,48 @@ function Welcome() {
 /** A Welcome row's part arriving on its turn (tw-animate-css, with the turn as an inline `animation-delay`): hidden
  *  until then, still under reduced motion. */
 const SWITCH_ON = 'animate-in fade-in fill-mode-both duration-300 motion-reduce:animate-none'
+
+function Role({
+  persona,
+  onPick,
+  failed,
+}: {
+  persona: Persona | null
+  onPick: (p: Persona) => void
+  failed: boolean
+}) {
+  return (
+    <div className="flex flex-col gap-6">
+      <StepHeading title={copy.role.title} intro={copy.role.intro} />
+      {failed ? (
+        <Alert variant="destructive">
+          <AlertDescription>{copy.role.saveFailed}</AlertDescription>
+        </Alert>
+      ) : null}
+      <RadioGroup
+        aria-label={copy.role.label}
+        value={persona ?? ''}
+        onValueChange={(v) => onPick(v as Persona)}
+        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
+      >
+        {PERSONAS.map((p) => (
+          <label
+            key={p}
+            htmlFor={`persona-${p}`}
+            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
+          >
+            <RadioGroupItem id={`persona-${p}`} value={p} className="mt-0.5" />
+            <span className="flex min-w-0 flex-col gap-1">
+              <span className="text-sm font-medium">{copy.role.personas[p].title}</span>
+              <span className="text-xs text-muted-foreground">{copy.role.personas[p].line}</span>
+              {/* Paused with the role's landing page (see `onContinue`).
+              <span className="text-xs text-muted-foreground">
+                {copy.role.opens(pageLabel(opensFor(p)))}
+              </span> */}
+            </span>
+          </label>
+        ))}
+      </RadioGroup>
+    </div>
+  )
+}

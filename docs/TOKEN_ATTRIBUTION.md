@@ -51,14 +51,6 @@ For agent calls there is exactly one path — **`traceparent`, resolved, or reje
 3. Anything else — header absent, malformed, trace_id with no live `flows` row, or a
    flow the calling agent is not part of — is rejected with `403` (see below).
 
-The caller also decides **whose config and keys** the call runs on. The owner on their own agent
-keeps the agent's attached config, else their default. Anyone else — a user the agent is shared
-with — runs on *their own* default config and `user_secrets` (`resolver::ConfigSubject::SharedUser`);
-the agent's attached config, its model pin and the owner's keys are never read for them. A shared
-caller with no default config is refused with `400` "Connect a model in LLM router to chat with
-this agent…" (`GatewayError::NoSharedUserConfig`), never put on the owner's key. Session-token
-(coding-agent) calls and coding-agent integrations are unchanged: they resolve on the agent owner.
-
 `token_usage.metadata.attribution` records `"traceparent"`, `"session"` or `"claim"` (the last two
 only for session-token calls). No unattributed usage rows exist.
 

@@ -1,33 +1,34 @@
 /**
  * The try-a-run card's rules (components/TryAgentRun.tsx): a call to run the agent the viewer picked during setup, then
- * the same task with Token optimization on. Each run is real (tryRunApi.ts): sent to the agent, metered by the LLM
- * router, and read back from the stream as tokens and cost. Which runs finished, and what each cost, is kept per viewer
- * in this tab (sessionStorage), so the optimized run can be compared with the first and the card outlives a refresh,
- * while a new tab or browser starts over.
+ * the same task with Token optimization on. Simulated for now: a run is a timed walk through
+ * starting → running → completed, then the button resets. Which runs finished is kept per viewer in this tab
+ * (sessionStorage), so the card outlives the refresh it asks for (after the first run the optimized one is still
+ * offered, and once both have run it shows only while the workspace has no agent activity), while a new tab or browser
+ * starts the demo over from no runs, as the `try-run` mock workspace (mocks/tryRun.ts) then starts from no spend.
  */
 import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
-import { MANDATORY } from '@nasiko/features/onboarding/logic'
+import { mandatoryAgent, SEEDED_AGENTS } from '@nasiko/features/onboarding/logic'
+import { TRY_RUN_COMPLETED_MS, TRY_RUN_RUNNING_MS, TRY_RUN_STARTING_MS } from './tuning'
 
-/** The agent the viewer picked during setup: the guide's always-included prebuilt one, which its Continue deploys. */
-export const TRY_RUN_AGENT = MANDATORY
+/** The agent the viewer picked during setup: the guide's always-included prebuilt one (a seed agent, so the mock records
+ *  the runs against it). */
+export const TRY_RUN_AGENT = mandatoryAgent(SEEDED_AGENTS).name
 
 export type TryRunKind = 'baseline' | 'optimized'
-/** Starting until the agent picks the task up, running until its reply ends, then completed for a moment. */
 export type TryRunPhase = 'idle' | 'starting' | 'running' | 'completed'
 
-/** What a finished run cost (null where the stream carried no usage). */
-export interface TryRunFigures {
-  tokens: number | null
-  costUsd: number | null
-}
-
-/** How much less the optimized run cost than the first, as a whole percent; null when either cost is unknown or zero,
- *  or when it didn't cost less. */
-export function savedPercent(baseline?: TryRunFigures, optimized?: TryRunFigures): number | null {
-  const before = baseline?.costUsd
-  const after = optimized?.costUsd
-  if (before == null || after == null || before <= 0 || after >= before) return null
-  return Math.round(((before - after) / before) * 100)
+/** The phase after `phase` and how long `phase` lasts; idle has no next. */
+export function nextPhase(phase: TryRunPhase): { next: TryRunPhase; afterMs: number } | null {
+  switch (phase) {
+    case 'starting':
+      return { next: 'running', afterMs: TRY_RUN_STARTING_MS }
+    case 'running':
+      return { next: 'completed', afterMs: TRY_RUN_RUNNING_MS }
+    case 'completed':
+      return { next: 'idle', afterMs: TRY_RUN_COMPLETED_MS }
+    case 'idle':
+      return null
+  }
 }
 
 /** Per tab, keyed by viewer: a refresh keeps the runs, a new tab starts over. */
@@ -48,32 +49,6 @@ export function writeDone(sub: string, kind: TryRunKind) {
     globalThis.sessionStorage?.setItem(doneKey(sub), kind)
   } catch {
     // Blocked storage: the card forgets the run on refresh.
-  }
-}
-
-const figuresKey = (sub: string) => `${DRAFT_PREFIX}${sub}:meta:tryRunFigures`
-
-/** What each finished run cost, for the optimized run's comparison; blocked or malformed storage reads as none. */
-export function readFigures(sub: string): Partial<Record<TryRunKind, TryRunFigures>> {
-  try {
-    const raw = globalThis.sessionStorage?.getItem(figuresKey(sub))
-    const parsed: unknown = raw ? JSON.parse(raw) : null
-    return parsed && typeof parsed === 'object'
-      ? (parsed as Partial<Record<TryRunKind, TryRunFigures>>)
-      : {}
-  } catch {
-    return {}
-  }
-}
-
-export function writeFigures(sub: string, kind: TryRunKind, figures: TryRunFigures) {
-  try {
-    globalThis.sessionStorage?.setItem(
-      figuresKey(sub),
-      JSON.stringify({ ...readFigures(sub), [kind]: figures }),
-    )
-  } catch {
-    // Blocked storage: the optimized run is shown without the comparison.
   }
 }
 

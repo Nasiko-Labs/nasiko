@@ -506,19 +506,16 @@ struct Metrics {
 }
 
 async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
-    // A deleted agent's row stays for history; it is not an agent any more.
-    let agents_total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE deleted_at IS NULL")
+    let agents_total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agents")
+        .fetch_one(&state.db)
+        .await
+        .unwrap_or(0);
+
+    let agents_running: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agents WHERE status = 'running'")
             .fetch_one(&state.db)
             .await
             .unwrap_or(0);
-
-    let agents_running: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM agents WHERE status = 'running' AND deleted_at IS NULL",
-    )
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
 
     let containers_total = state
         .runtime

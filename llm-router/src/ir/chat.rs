@@ -53,28 +53,26 @@ impl ChatRequest {
 
     /// How many cache markers the request carries, on content parts, tool calls and tools.
     pub fn cache_marker_count(&self) -> usize {
-        self.cache_markers().count()
-    }
-
-    /// Every cache marker the request carries, on content parts, tool calls and tools.
-    pub fn cache_markers(&self) -> impl Iterator<Item = &Value> {
         let parts = self
             .messages
             .iter()
             .filter_map(|m| m.content.as_ref()?.as_array())
             .flatten()
-            .filter_map(|part| part.get(CACHE_CONTROL));
+            .filter(|part| part.get(CACHE_CONTROL).is_some())
+            .count();
         let calls = self
             .messages
             .iter()
             .flat_map(|m| m.tool_calls.iter().flatten())
-            .filter_map(|call| call.extra.get(CACHE_CONTROL));
+            .filter(|call| call.extra.contains_key(CACHE_CONTROL))
+            .count();
         let tools = self
             .tools
             .iter()
             .flatten()
-            .filter_map(|tool| tool.extra.get(CACHE_CONTROL));
-        parts.chain(calls).chain(tools)
+            .filter(|tool| tool.extra.contains_key(CACHE_CONTROL))
+            .count();
+        parts + calls + tools
     }
 
     /// Remove every cache marker, for a provider whose API has no such field.
@@ -154,16 +152,6 @@ impl Message {
             return None;
         };
         parts.iter().rev().find_map(|p| p.get(CACHE_CONTROL))
-    }
-
-    /// Whether the message carries a cache marker, on a content part or a tool call.
-    pub fn carries_cache_marker(&self) -> bool {
-        self.last_cache_marker().is_some()
-            || self
-                .tool_calls
-                .iter()
-                .flatten()
-                .any(|call| call.extra.contains_key(CACHE_CONTROL))
     }
 }
 

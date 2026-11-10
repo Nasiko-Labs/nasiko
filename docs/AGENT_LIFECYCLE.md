@@ -177,32 +177,19 @@ manifests anonymously.
 
 Secrets are encrypted env vars injected into agent containers at runtime. There are two scopes:
 
-**Vault secrets** (the UI's Settings → Secrets) — yours, applied to every agent you own:
+**Vault secrets** — applied to all your agents:
 
     nasiko secrets set OPENAI_API_KEY sk-xxx
     nasiko secrets ls
     nasiko secrets rm OPENAI_API_KEY
 
-**Agent-specific secrets** (the agent's Settings tab → Secrets) — override vault, applied to one agent only:
+**Agent-specific secrets** — override vault, applied to one agent only:
 
     nasiko secrets set DB_URL postgres://... --agent my-agent
     nasiko secrets ls --agent my-agent
     nasiko secrets rm DB_URL --agent my-agent
 
-**Precedence** (highest wins): inline deploy `-e` > agent secrets > vault secrets. An agent gets its
-**owner's** vault secrets, whoever deploys it. Every deploy path (upload, update, rollback, restart,
-startup recovery, a parked agent's wake) builds the env the same way: vault, then agent secrets on
-top (`resolve_secret_env` in `server/src/catalog/agent_secrets.rs`); platform defaults fill only
-names neither sets, and the platform's own keys (see [Platform environment](#platform-environment))
-win over all of them.
-
-The agent's Secrets section lists the vault names it inherits (names only, never values), marked
-**Overridden here** where an agent secret of the same name wins
-(`GET /api/agents/{id}/secrets/inherited`).
-
-A secret is read when the agent starts, so a change to either scope reaches a running agent only
-after `nasiko restart` (or Restart in the UI) or a redeploy; a parked agent picks it up on its next
-wake.
+**Precedence** (highest wins): inline deploy `-e` > agent secrets > vault secrets.
 
 ---
 

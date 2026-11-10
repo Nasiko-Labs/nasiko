@@ -42,7 +42,6 @@ import { seriesAt } from '@nasiko/ui/lib/chart'
 import { fmtInt, fmtMoney, fmtPct } from '@nasiko/ui/lib/format'
 import { useCopy } from '@nasiko/ui/lib/useCopy'
 import { cn } from '@nasiko/ui/lib/utils'
-import { connectWithoutLogin } from '@nasiko/features/cli/commands'
 import { copy as cliCopy } from '@nasiko/features/cli/copy'
 import { HARNESSES } from '@nasiko/features/harnesses/constants'
 import { copy } from '../copy'
@@ -468,7 +467,6 @@ function Ending() {
   const sso = !!useSlots().loginMethods
   const commands = [
     cliCopy.install.unixCommand,
-    connectWithoutLogin(),
     sso ? 'nasiko auth login --sso' : 'nasiko auth login',
   ].join('\n')
   const [state, run] = useCopy(commands)

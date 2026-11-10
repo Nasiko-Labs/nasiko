@@ -1860,10 +1860,10 @@ mod tests {
         ctx.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
         let store = Store {
             compress_enabled: false,
-            // A tiered config (tier routing is opt-in by tier models) whose model is NOT one
-            // of the tier models — if the classifier never fires, the resolved model will be
-            // exactly this. If it does fire, it will be the config's tier-1 model or one of
-            // openai's seeded registry models (gpt-5.4 / gpt-4o-mini) for the unset tiers.
+            // A configured model that is NOT one of openai's seeded tier models
+            // (gpt-5.5 / gpt-5.4 / gpt-4o-mini) — if the classifier never fires, the
+            // resolved model will be exactly this. If it does fire, it will be one of the
+            // seeded tier models instead.
             config: Some(LLMConfig {
                 provider: "openai".into(),
                 model: Some("static-configured-model".into()),
@@ -1873,7 +1873,7 @@ mod tests {
                 api_key_secret_name: None,
                 pinned: false,
                 pinned_model: None,
-                tier1_model: Some("gpt-5.5".into()),
+                tier1_model: None,
                 tier2_model: None,
                 tier3_model: None,
                 embedding_provider: None,

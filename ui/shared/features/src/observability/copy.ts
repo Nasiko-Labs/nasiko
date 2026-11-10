@@ -75,9 +75,9 @@ export const copy = {
   sparseLive:
     'Sessions come from chat traffic: run `nasiko chat <agent>` against a deployed agent, or use mock data with `npm run dev`.',
   noTraceData:
-    'No trace data found for these sessions: their agents may not export traces yet, or the sessions were moved here from another workspace, which brings their history but not their trace spans.',
+    'No trace data found for these sessions: the agents may not export traces yet, or nasiko-server has no trace store configured.',
   noTraceDataFix:
-    'Each session still opens on its own page. On a self-hosted server, also check that TEMPO_URL and LOKI_URL are set on nasiko-server (README › Live data).',
+    'Set TEMPO_URL and LOKI_URL on nasiko-server (README › Live data), then reload. Each session still opens on its own page.',
   noTraceDataLongWindow:
     'Trace details are missing for this window, most likely because the server searches Tempo across all of it and Tempo refuses searches of 7 days or more.',
   noTraceDataLongWindowFix:
@@ -85,8 +85,6 @@ export const copy = {
   notConfigured: "Observability isn't configured on this server.",
   notConfiguredFix:
     'Set TEMPO_URL and LOKI_URL on nasiko-server (README › Live data) and restart it.',
-  /** A 503 that is not the missing trace store (StateCard.tsx `ErrorState`). */
-  unavailable: "This isn't available right now.",
   traceStoreError: 'The trace store returned an error.',
   notFound: 'Not found, or not visible to you.',
   noAccess: "You don't have access to this.",

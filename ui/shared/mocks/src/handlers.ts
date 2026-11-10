@@ -1230,17 +1230,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const a = managed(String(prm.id))
       return a instanceof Response ? a : HttpResponse.json(a.secrets)
     }),
-    // agent_secrets.rs list_inherited_secrets: the owner's user-secret names, marked where the agent has its own.
-    http.get('/api/agents/:id/secrets/inherited', ({ params: prm }) => {
-      const a = managed(String(prm.id))
-      if (a instanceof Response) return a
-      return HttpResponse.json(
-        listSecrets(getRouter(), a.owner_id).map((s) => ({
-          name: s.name,
-          overridden: a.secrets.some((x) => x.name === s.name),
-        })),
-      )
-    }),
     http.post('/api/agents/:id/secrets', async ({ params: prm, request }) => {
       const a = managed(String(prm.id))
       if (a instanceof Response) return a

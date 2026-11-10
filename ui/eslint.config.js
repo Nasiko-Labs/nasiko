@@ -76,7 +76,7 @@ const PUBLIC = {
   // The home's last change links a marker on the hub inside the hub's default window (PR2b).
   hub: ['components/HubTimeline', 'events', 'search'],
   // The agent hub's Tools card counts connectors and blocked tools (plans/feat-agent-centric.md PR1c).
-  mcp: ['components/AgentMcpTab', 'components/SharedMcpTab', 'api'],
+  mcp: ['components/AgentMcpTab', 'api'],
   narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
   onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
   // The product tour (shared/features/src/tour): the shell's `_app` route mounts its host.

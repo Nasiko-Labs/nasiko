@@ -338,92 +338,6 @@ pub async fn list_connectors_view(
     Ok(json!({ "connectors": data }))
 }
 
-/// Where the caller stands with one connector an agent uses: whether its tools can run for
-/// them, and if not, what they have to do. Every tool call runs on the calling user's own
-/// connection — never the agent owner's — so this is per viewer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CallerConnection {
-    /// Needs no credential (`auth_type = "none"`).
-    Ready,
-    /// The caller has connected their own account.
-    Connected,
-    /// The caller can reach the connector but has not connected their own account.
-    NeedsConnection,
-    /// The connector is not shared with the caller, so they cannot connect it yet.
-    NotShared,
-}
-
-impl CallerConnection {
-    /// Pure: the caller's standing from what is known about them and the connector. The
-    /// connector owner's static headers deliberately do not count (see
-    /// `credentials::static_headers_usable_by`): a caller without their own connection needs one.
-    pub fn of(needs_credential: bool, reachable: bool, connected: bool) -> Self {
-        match (reachable, needs_credential, connected) {
-            (false, _, _) => Self::NotShared,
-            (true, false, _) => Self::Ready,
-            (true, true, true) => Self::Connected,
-            (true, true, false) => Self::NeedsConnection,
-        }
-    }
-}
-
-/// Whether running `c`'s tools takes a connection of the caller's own: every Composio toolkit
-/// does, and every custom server except an `auth_type = "none"` one.
-fn needs_own_credential(c: &repo::McpConnector) -> bool {
-    c.is_composio() || c.auth_type.as_deref().is_some_and(|a| a != "none")
-}
-
-/// `GET /agents/{id}/my-connections` view: the connectors enabled on this agent, each with the
-/// caller's own [`CallerConnection`] — for someone the agent is shared with, which of its tools
-/// need them to connect their own account. Names nothing about anyone else's connections.
-pub async fn list_caller_connections_view(
-    state: &McpState,
-    user_id: Uuid,
-    agent_id: Uuid,
-) -> Result<Value> {
-    let enabled: Vec<Uuid> = repo::get_agent_connector_access(&state.db, agent_id)
-        .await?
-        .into_iter()
-        .filter(|row| row.enabled)
-        .map(|row| row.connector_id)
-        .collect();
-    let connected: HashSet<Uuid> = repo::list_user_connections(&state.db, user_id, Some("ACTIVE"))
-        .await?
-        .into_iter()
-        .map(|c| c.connector_id)
-        .collect();
-
-    let mut data = Vec::with_capacity(enabled.len());
-    for connector_id in enabled {
-        let Some(c) = repo::get_connector_by_id(&state.db, connector_id).await? else {
-            continue;
-        };
-        if !c.active() {
-            continue;
-        }
-        let reachable = state
-            .authorizer
-            .can_access_connector(&state.db, user_id, c.id)
-            .await?;
-        let standing = CallerConnection::of(
-            needs_own_credential(&c),
-            reachable,
-            connected.contains(&c.id),
-        );
-        data.push(json!({
-            "connector_id": c.id,
-            "provider_type": c.provider_type,
-            "name": c.name,
-            "display_name": c.display_name.unwrap_or_else(|| crate::catalog::capitalize(&c.name)),
-            "logo_url": c.logo_url,
-            "auth_type": c.auth_type,
-            "status": standing,
-        }));
-    }
-    Ok(json!({ "connectors": data }))
-}
-
 /// `PUT /agents/{id}/connectors/{connector_id}` — toggle a connector, preserving
 /// any existing tool rules. Requires the connector be reachable (Layer 1).
 pub async fn set_connector_access_view(
@@ -915,32 +829,6 @@ pub async fn reset(state: &McpState, agent_id: Uuid) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_connector_not_shared_with_the_caller_is_not_shared_whatever_the_owner_connected() {
-        for (needs, connected) in [(true, false), (true, true), (false, false)] {
-            assert_eq!(
-                CallerConnection::of(needs, false, connected),
-                CallerConnection::NotShared
-            );
-        }
-    }
-
-    #[test]
-    fn a_caller_without_their_own_connection_needs_one() {
-        assert_eq!(
-            CallerConnection::of(true, true, false),
-            CallerConnection::NeedsConnection
-        );
-        assert_eq!(
-            CallerConnection::of(true, true, true),
-            CallerConnection::Connected
-        );
-        assert_eq!(
-            CallerConnection::of(false, true, false),
-            CallerConnection::Ready
-        );
-    }
 
     fn ctx(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
         // The old test convention passes "disabled" IDs. With the new allowlist

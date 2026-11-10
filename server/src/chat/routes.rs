@@ -371,22 +371,16 @@ async fn create_session(
     let (agent_id, agent_url): (Option<Uuid>, Option<String>) = match &body.agent_id {
         None => (None, None),
         Some(id_or_name) => {
-            // Live agents only: a deleted agent's name can belong to a new agent, and the
-            // lookup by name must find that one, not whichever row Postgres returns first.
             let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM agents WHERE id = $1 AND deleted_at IS NULL",
-                )
-                .bind(uuid)
-                .fetch_optional(&state.db)
-                .await
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE id = $1")
+                    .bind(uuid)
+                    .fetch_optional(&state.db)
+                    .await
             } else {
-                sqlx::query_scalar::<_, Uuid>(
-                    "SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL",
-                )
-                .bind(id_or_name)
-                .fetch_optional(&state.db)
-                .await
+                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
+                    .bind(id_or_name)
+                    .fetch_optional(&state.db)
+                    .await
             };
 
             match row {

@@ -122,6 +122,5 @@ case ":${PATH}:" in
     ;;
 esac
 echo
-echo "Next: point it at your Nasiko server (skip this for the hosted one), sign in, then connect your coding agents:"
-echo "    nasiko connect https://<your-server> --login=false"
+echo "Next: sign in to Nasiko in your browser, then connect your coding agents:"
 echo "    nasiko auth login"

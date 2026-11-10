@@ -897,6 +897,11 @@ function FirstRun() {
           action={
             <div className="flex w-full flex-col gap-3 rounded-md border bg-muted/40 p-4 text-left text-sm text-muted-foreground">
               <ol className="flex list-decimal flex-col gap-1.5 pl-5">
+                <li>
+                  Set <code className="font-mono text-foreground">TEMPO_URL</code> and{' '}
+                  <code className="font-mono text-foreground">LOKI_URL</code> on nasiko-server and
+                  run the OTel collector.
+                </li>
                 <li>Deploy an agent and send it a few requests.</li>
                 <li>
                   Spend appears within a couple of minutes (the trace materializer runs every 120
@@ -904,17 +909,14 @@ function FirstRun() {
                 </li>
               </ol>
               <p className="border-t pt-3 text-xs text-pretty">
-                Self-hosting? Set <code className="font-mono">TEMPO_URL</code> and{' '}
-                <code className="font-mono">LOKI_URL</code> on nasiko-server and run the OTel
-                collector. Developing locally? Run{' '}
-                <code className="font-mono">npm run seed:live</code> against your OSS stack, or use
-                mock mode.
+                Developing locally? Run <code className="font-mono">npm run seed:live</code> against
+                your OSS stack, or use mock mode.
               </p>
             </div>
           }
         >
-          TokenOps reads spend from agent traces. Nothing has arrived in the last two months: no
-          agent has served a request here yet, or the telemetry pipeline isn't connected.
+          TokenOps reads spend from agent traces. Nothing has arrived in the last two months, which
+          usually means the telemetry pipeline isn't connected yet.
         </EmptyState>
       </ImportingOr>
     </div>

@@ -3,18 +3,14 @@
  * always included; meeting 2026-11-06, in place of chatting with a running one), then the Deploy page's own Registry,
  * GitHub and Upload tabs (that order, user request 2026-11-05). A started deploy stays in the guide (`onStarted`); the
  * background follower toasts when its build finishes (plans/feat-deploy.md eng R8).
- *
- * The guide's Continue deploys, not a button on the tab (user request 2026-11-09): the Prebuilt picks, or the mandatory
- * agent from any other tab, so the guide owns the open tab and the picks. An agent that already exists is shown as
- * deployed and never deployed again.
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, CircleCheck, ExternalLink } from 'lucide-react'
+import { Bot, ChevronRight, CircleCheck, Rocket } from 'lucide-react'
 import { useId, useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
+import { Button, asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
@@ -25,8 +21,10 @@ import type { DeploySearch } from '@nasiko/features/deploy/search'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
 import { copy } from './copy'
-import { type AgentTab, MANDATORY, MAX_SEEDED, SEEDED_AGENTS, togglePick } from './logic'
+import { mandatoryAgent, MAX_SEEDED, SEEDED_AGENTS, togglePick } from './logic'
 import { SectionHeading } from './parts'
+
+const MANDATORY = mandatoryAgent(SEEDED_AGENTS).name
 /** The mandatory agent leads the list it's always part of. */
 const OFFERED = [
   ...SEEDED_AGENTS.filter((a) => a.name === MANDATORY),
@@ -37,25 +35,14 @@ export function AgentStep({
   started,
   onStarted,
   seeded,
-  tab,
-  onTab,
-  picks,
-  onPicks,
-  existing,
+  onSeeded,
   onLeave,
 }: {
   started: DeployStarted | null
   onStarted: (to: DeployStarted) => void
   /** The prebuilt agents deployed from this guide, null until then (kept by the guide across steps). */
   seeded: readonly string[] | null
-  /** The open tab: on Prebuilt, the guide's Continue deploys `picks`. */
-  tab: AgentTab
-  onTab: (tab: AgentTab) => void
-  /** The Prebuilt picks not yet deployed, the mandatory agent always among them. */
-  picks: readonly string[]
-  onPicks: (picks: string[]) => void
-  /** Agent names that already exist: shown as deployed, never picked. */
-  existing: ReadonlySet<string>
+  onSeeded: (names: string[]) => void
   /** Following a link out of the guide closes it first. */
   onLeave: () => void
 }) {
@@ -93,7 +80,8 @@ export function AgentStep({
       ) : !me ? (
         <Skeleton className="h-48 w-full" />
       ) : (
-        <Tabs value={tab} onValueChange={(v) => onTab(v as AgentTab)} className="gap-4">
+        // Prebuilt agents first: deploying them is the quickest start.
+        <Tabs defaultValue="seeded" className="gap-4">
           {/* Sticks to the top of the guide's scrolling body (px-6 py-8 md:px-10, so -top-8), as on the Deploy page. */}
           <div className="sticky -top-8 z-20 -mx-6 bg-background px-6 py-2 md:-mx-10 md:px-10">
             <TabsList>
@@ -119,11 +107,10 @@ export function AgentStep({
                 </AlertDescription>
               </Alert>
             ) : (
-              <Seeded picks={picks} onPicks={onPicks} existing={existing} />
+              <Seeded onDeploy={onSeeded} />
             )}
           </TabsContent>
-          <TabsContent value="registry" className="flex flex-col gap-4">
-            <RegistryHow />
+          <TabsContent value="registry">
             <RegistryTab userId={me.sub} onStarted={onStarted} />
           </TabsContent>
           <TabsContent value="github">
@@ -147,51 +134,10 @@ export function AgentStep({
   )
 }
 
-/** Where a registry reference comes from: the public registry's Install section (user request 2026-11-09). */
-function RegistryHow() {
-  const how = copy.agent.registryHow
-  return (
-    <section
-      aria-label={how.label}
-      className="flex flex-col gap-2 rounded-xl border bg-muted/40 px-4 py-3 text-sm"
-    >
-      <p className="font-medium">{how.title}</p>
-      <ol className="flex list-decimal flex-col gap-1 pl-5 text-muted-foreground">
-        <li>
-          {how.open}{' '}
-          <a
-            href={how.siteUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1 font-medium text-foreground underline underline-offset-4"
-          >
-            {how.site}
-            <ExternalLink aria-hidden className="size-3" />
-          </a>{' '}
-          {how.openRest}
-        </li>
-        <li>
-          {how.copyStep} <code className="font-mono text-xs text-foreground">{how.pull}</code>
-          {', like '}
-          <code className="font-mono text-xs break-all text-foreground">{how.example}</code>.
-        </li>
-        <li>{how.paste}</li>
-      </ol>
-    </section>
-  )
-}
-
-/** The prebuilt agents as checkboxes, the mandatory one checked and locked; the guide's Continue deploys them. */
-function Seeded({
-  picks,
-  onPicks,
-  existing,
-}: {
-  picks: readonly string[]
-  onPicks: (picks: string[]) => void
-  existing: ReadonlySet<string>
-}) {
+/** The prebuilt agents as checkboxes, the mandatory one checked and locked, then Deploy. */
+function Seeded({ onDeploy }: { onDeploy: (names: string[]) => void }) {
   const id = useId()
+  const [picks, setPicks] = useState<string[]>([MANDATORY])
   const full = picks.length >= MAX_SEEDED
   return (
     <fieldset className="flex flex-col gap-3">
@@ -207,10 +153,8 @@ function Seeded({
         {OFFERED.map((a, i) => {
           const cid = `${id}-seeded-${i}`
           const mandatory = a.name === MANDATORY
-          const deployed = existing.has(a.name)
           const on = picks.includes(a.name)
-          // Deployed already: nothing to pick. Full: a new pick swaps out the latest one.
-          const locked = !mandatory && !on && deployed
+          const locked = !mandatory && !on && full
           return (
             <li key={a.name}>
               {/* The Role step's card, a checkbox in place of its radio. */}
@@ -231,18 +175,15 @@ function Seeded({
                   disabled={mandatory || locked}
                   // Locked on, not greyed out: every pick deploys it.
                   className={cn('mt-0.5', mandatory && 'disabled:opacity-100')}
-                  onCheckedChange={() => onPicks(togglePick(picks, a.name, MANDATORY))}
+                  onCheckedChange={() => setPicks((p) => togglePick(p, a.name, MANDATORY))}
                 />
                 <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
                   <Bot aria-hidden className="size-4" />
                 </span>
                 <span className={cn('flex min-w-0 flex-col gap-1', locked && 'opacity-60')}>
                   <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium">
-                    {a.title}
+                    {a.name}
                     {mandatory ? <Badge variant="info">{copy.agent.included}</Badge> : null}
-                    {deployed ? (
-                      <Badge variant="secondary">{copy.agent.alreadyDeployed}</Badge>
-                    ) : null}
                   </span>
                   <span className="text-xs text-muted-foreground">{a.line}</span>
                   <span className="text-xs text-muted-foreground tabular-nums">
@@ -254,6 +195,12 @@ function Seeded({
           )
         })}
       </ul>
+      <div>
+        <Button type="button" onClick={() => onDeploy(picks)}>
+          <Rocket aria-hidden />
+          {copy.agent.deploy(picks.length)}
+        </Button>
+      </div>
     </fieldset>
   )
 }
