@@ -734,6 +734,9 @@ pub(crate) async fn orchestrator_stream(
         }
     };
 
+    // Whose key pays for this turn's model calls, recorded on each usage row it writes.
+    let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
+    let key_source = super::usage_meta::KeySource::for_saved_key(saved_key.is_some());
     let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -743,9 +746,7 @@ pub(crate) async fn orchestrator_stream(
         // is unset.
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
-            .await
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+        api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -1089,7 +1090,7 @@ pub(crate) async fn orchestrator_stream(
                             let priced = super::usage_meta::PricedTurn::price(&pricing, usage).await;
                             turn_usage.add(&priced);
 
-                            pending_usage = match priced.persist(&usage_tracker, user_id, &flow_id_cleanup, None).await {
+                            pending_usage = match priced.persist(&usage_tracker, user_id, &flow_id_cleanup, None, key_source).await {
                                 Ok(id) => Some(id),
                                 Err(error) => {
                                     tracing::warn!(%error, "failed to persist orchestrator usage");
@@ -1466,8 +1467,7 @@ async fn opted_out_agent_tools(
 ) -> Result<std::collections::HashSet<String>, sqlx::Error> {
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT name FROM agents \
-         WHERE status = 'running' AND deleted_at IS NULL AND NOT is_internal \
-           AND NOT compress_enabled",
+         WHERE status = 'running' AND NOT is_internal AND NOT compress_enabled",
     )
     .fetch_all(db)
     .await?;
