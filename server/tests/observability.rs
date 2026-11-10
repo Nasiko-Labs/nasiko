@@ -397,14 +397,18 @@ async fn session_and_trace_detail_fall_back_to_receipts_when_tempo_has_nothing()
     assert_eq!(session.status(), 200);
     let body: Value = session.json().await.unwrap();
     assert_eq!(body["data"]["session"]["title"], "From receipts");
-    assert_eq!(body["data"]["session"]["traces"], json!([]));
+    // The turn never crossed the proxy (no `flows` row); its usage row lists it.
+    let traces = body["data"]["session"]["traces"].as_array().unwrap();
+    assert_eq!(traces.len(), 1, "{body}");
+    assert_eq!(traces[0]["trace_id"], "0af7651916cd43dd8448eb211c80319c");
 
     let trace_path = "/api/observability/trace/0af7651916cd43dd8448eb211c80319c";
     let trace = get(trace_path, owner, "receipt-owner").await.unwrap();
     assert_eq!(trace.status(), 200);
     let body: Value = trace.json().await.unwrap();
     assert_eq!(body["data"]["trace"]["project_session_id"], "rcpt-session");
-    assert_eq!(body["data"]["trace"]["num_spans"], 0);
+    // Rebuilt like a tiered turn: the turn's root plus one span for the agent's usage.
+    assert_eq!(body["data"]["trace"]["num_spans"], 2);
     assert_eq!(body["data"]["trace"]["cost_summary"]["total"]["cost"], 0.5);
 
     // The fallback is authorized like the real thing.

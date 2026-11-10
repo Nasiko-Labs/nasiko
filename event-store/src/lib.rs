@@ -771,6 +771,23 @@ impl EventStore {
         Ok(trace_usage::merge(hot, cold_rows))
     }
 
+    /// One trace's `trace_usage` rows, hot Postgres merged with cold Lance.
+    pub async fn load_trace_usage_for_trace(&self, trace_id: &str) -> Result<Vec<TraceUsageRow>> {
+        let hot: Vec<TraceUsageRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM trace_usage WHERE trace_id = $1",
+            trace_usage::COLUMNS
+        ))
+        .bind(trace_id)
+        .fetch_all(&self.db)
+        .await?;
+        let filter = format!("trace_id = {}", cold::lit(trace_id));
+        let mut cold_rows = Vec::new();
+        for b in cold::scan(&self.uri(trace_usage::TABLE), &filter).await? {
+            cold_rows.extend(trace_usage::from_record_batch(&b)?);
+        }
+        Ok(trace_usage::merge(hot, cold_rows))
+    }
+
     /// Settles one `writing` `tool_calls` batch left by a crash.
     async fn recover_tool_calls_batch(&self, batch_id: Uuid) -> Result<()> {
         let uri = self.uri(tool_calls::TABLE);

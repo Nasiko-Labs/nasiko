@@ -75,6 +75,60 @@ pub fn trace_from_rows(f: &FlowRow, usage: &[TraceUsageRow]) -> (TraceDetails, C
     (trace, cost)
 }
 
+/// The turn a trace the server wrote no `flows` row for, described from its `trace_usage`
+/// rows. Coding-agent turns, a subagent's among them, never cross the proxy, so this is
+/// the only record of them outside Tempo. `None` when no row names a session, since the
+/// trace could not then be authorized.
+pub fn flow_from_usage(trace_id: &str, usage: &[TraceUsageRow]) -> Option<FlowRow> {
+    let rows: Vec<&TraceUsageRow> = usage.iter().filter(|u| u.trace_id == trace_id).collect();
+    let first = rows.iter().min_by_key(|u| (u.started_at, &u.agent_name))?;
+    let session_id = rows.iter().find_map(|u| u.session_id.clone())?;
+    let latency_ms = rows.iter().filter_map(|u| u.latency_ms).max();
+    let failed = rows.iter().any(|u| u.error_count.unwrap_or(0) > 0);
+    Some(FlowRow {
+        id: uuid::Uuid::nil(),
+        flow_id: trace_id.to_string(),
+        user_id: rows.iter().find_map(|u| u.user_id).unwrap_or_default(),
+        session_id,
+        parent_flow_id: None,
+        root_agent_id: first.agent_id,
+        root_agent_name: Some(first.agent_name.clone()),
+        title: None,
+        status: if failed { "failed" } else { "completed" }.into(),
+        max_depth_reached: 0,
+        total_invocations: i32::try_from(rows.len()).unwrap_or(i32::MAX),
+        total_tokens_used: rows
+            .iter()
+            .map(|u| {
+                u.input_tokens
+                    .saturating_add(u.output_tokens)
+                    .saturating_add(u.cache_read_tokens)
+                    .saturating_add(u.cache_creation_tokens)
+            })
+            .fold(0i64, i64::saturating_add),
+        total_cost_usd: Some(rows.iter().map(|u| u.cost_usd).sum()),
+        duration_ms: latency_ms,
+        error_message: None,
+        metadata: "{}".into(),
+        created_at: first.started_at,
+        completed_at: latency_ms.map(|l| first.started_at + chrono::Duration::milliseconds(l)),
+    })
+}
+
+/// `flows` plus a turn per trace of `usage` they do not cover (see [`flow_from_usage`]),
+/// so a session whose turns never crossed the proxy still lists them.
+pub fn flows_with_usage_turns(flows: &[FlowRow], usage: &[TraceUsageRow]) -> Vec<FlowRow> {
+    let mut all = flows.to_vec();
+    let mut seen: std::collections::HashSet<&str> =
+        flows.iter().map(|f| f.flow_id.as_str()).collect();
+    for u in usage {
+        if seen.insert(u.trace_id.as_str()) {
+            all.extend(flow_from_usage(&u.trace_id, usage));
+        }
+    }
+    all
+}
+
 /// Adds one child span of the root per stored tool call of this trace, so a trace rebuilt
 /// without Tempo still lists its tool calls. Calls of other traces are ignored.
 pub fn add_tool_call_spans(trace: &mut TraceDetails, calls: &[ToolCallRow]) {
@@ -410,6 +464,48 @@ mod tests {
         let (t, cost) = trace_from_rows(&flow("c", 1, "completed"), &u);
         assert_eq!(t.spans.len(), 1);
         assert!((cost.total_usd - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_trace_without_a_flow_is_a_turn_of_its_usage_rows() {
+        let mut slow = usage("t", "x", 10, 1.0);
+        slow.latency_ms = Some(400);
+        slow.error_count = Some(1);
+        let mut later = usage("t", "y", 5, 0.5);
+        later.started_at = Utc.timestamp_opt(5, 0).unwrap();
+        let f = flow_from_usage("t", &[later, slow, usage("other", "x", 1, 9.0)]).unwrap();
+        assert_eq!((f.flow_id.as_str(), f.session_id.as_str()), ("t", "s"));
+        assert_eq!(f.root_agent_name.as_deref(), Some("x"), "the earliest row");
+        assert_eq!(f.created_at, Utc.timestamp_opt(0, 0).unwrap());
+        assert_eq!(f.duration_ms, Some(400));
+        assert_eq!(f.status, "failed");
+        assert!((f.total_cost_usd.unwrap() - 1.5).abs() < 1e-9);
+        assert_eq!(f.total_tokens_used, 13 + 8);
+    }
+
+    #[test]
+    fn usage_without_a_session_is_no_turn() {
+        let mut orphan = usage("t", "x", 1, 0.1);
+        orphan.session_id = None;
+        assert_eq!(flow_from_usage("t", &[orphan]), None);
+        assert_eq!(flow_from_usage("missing", &[usage("t", "x", 1, 0.1)]), None);
+    }
+
+    #[test]
+    fn a_session_with_no_flows_lists_one_turn_per_usage_trace() {
+        let flows = [flow("a", 1, "completed")];
+        let u = [
+            usage("a", "x", 10, 1.0),
+            usage("b", "x", 3, 0.1),
+            usage("b", "y", 2, 0.2),
+        ];
+        let turns = flows_with_usage_turns(&flows, &u);
+        let ids: Vec<_> = turns.iter().map(|f| f.flow_id.as_str()).collect();
+        assert_eq!(ids, ["a", "b"], "a flow is never duplicated");
+        assert_eq!(turns[0], flows[0]);
+        let d = session_from_rows("s", &flows_with_usage_turns(&[], &u), &u);
+        assert_eq!(d.trace_count, 2);
+        assert_eq!(d.input_tokens, 15);
     }
 
     #[test]

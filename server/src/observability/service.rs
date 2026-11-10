@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Datelike, Duration, SecondsFormat, TimeZone, Utc};
 use nasiko_config::Config;
+use nasiko_event_store::flows::FlowRow;
+use nasiko_event_store::trace_usage::TraceUsageRow;
 use nasiko_observability::{
     CostBreakdown, ObservabilityError, ObservabilityProvider, TimeBucket, extract_token_attrs,
     extract_usage_attrs,
@@ -1758,7 +1760,9 @@ impl ObservabilityService {
             .load_trace_usage_for_session(session_id, &flow_ids)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-        let mut details = super::session_store::session_from_rows(session_id, &flows, &usage);
+        // A coding-agent session (a subagent's included) has no flows: its turns are its usage rows.
+        let turns = super::session_store::flows_with_usage_turns(&flows, &usage);
+        let mut details = super::session_store::session_from_rows(session_id, &turns, &usage);
         match self.provider.get_session(session_id, start, end).await {
             Ok(live) if flows.is_empty() => details = live,
             Ok(live) => super::session_store::enrich_from_tempo(&mut details, &live),
@@ -1884,6 +1888,30 @@ impl ObservabilityService {
         })
     }
 
+    /// What the server recorded of one turn, for a trace Tempo cannot serve: its
+    /// `flows` row, else (a coding-agent turn, which never crosses the proxy) a
+    /// turn rebuilt from its `trace_usage` rows. `None` when it recorded neither.
+    async fn recorded_turn(
+        &self,
+        trace_id: &str,
+    ) -> Result<Option<(FlowRow, Vec<TraceUsageRow>)>, ObservabilityError> {
+        let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
+        if let Some(flow) = self.store.load_flow(trace_id).await.map_err(internal)? {
+            let usage = self
+                .store
+                .load_trace_usage_for_session(&flow.session_id, std::slice::from_ref(&flow.flow_id))
+                .await
+                .map_err(internal)?;
+            return Ok(Some((flow, usage)));
+        }
+        let usage = self
+            .store
+            .load_trace_usage_for_trace(trace_id)
+            .await
+            .map_err(internal)?;
+        Ok(super::session_store::flow_from_usage(trace_id, &usage).map(|flow| (flow, usage)))
+    }
+
     // ── 3. trace/{trace_id} ──────────────────────────────────────────────────
 
     pub async fn get_trace_details(
@@ -1898,23 +1926,13 @@ impl ObservabilityService {
         let mut trace = match self.provider.get_trace(trace_id).await {
             Ok(t) if !t.spans.is_empty() => t,
             // Any Tempo miss or failure (retention, non-hex seeded ids, outage) falls
-            // back to SQL; a trace with no flow row is still a 404.
+            // back to SQL; a trace the server recorded nothing for is still a 404.
             Ok(_) | Err(_) => {
                 let internal = |e: anyhow::Error| ObservabilityError::Internal(e.to_string());
-                let flow = self
-                    .store
-                    .load_flow(trace_id)
-                    .await
-                    .map_err(internal)?
+                let (flow, usage) = self
+                    .recorded_turn(trace_id)
+                    .await?
                     .ok_or_else(|| ObservabilityError::NotFound("trace not found".into()))?;
-                let usage = self
-                    .store
-                    .load_trace_usage_for_session(
-                        &flow.session_id,
-                        std::slice::from_ref(&flow.flow_id),
-                    )
-                    .await
-                    .map_err(internal)?;
                 let (mut t, c) = super::session_store::trace_from_rows(&flow, &usage);
                 let calls = self
                     .store
@@ -2024,20 +2042,7 @@ impl ObservabilityService {
         let (trace, from_sql) = match self.provider.get_trace(trace_id).await {
             Ok(t) if !t.spans.is_empty() => (t, false),
             Ok(_) | Err(_) => {
-                let flow = self
-                    .store
-                    .load_flow(trace_id)
-                    .await
-                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?
-                    .ok_or_else(span_nf)?;
-                let usage = self
-                    .store
-                    .load_trace_usage_for_session(
-                        &flow.session_id,
-                        std::slice::from_ref(&flow.flow_id),
-                    )
-                    .await
-                    .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+                let (flow, usage) = self.recorded_turn(trace_id).await?.ok_or_else(span_nf)?;
                 (super::session_store::trace_from_rows(&flow, &usage).0, true)
             }
         };
@@ -2061,13 +2066,26 @@ impl ObservabilityService {
                 .ok_or_else(span_nf)?;
             super::session_store::span_details_from_sql(span)
         } else {
-            self.provider
-                .get_span(trace_id, span_id)
-                .await
-                .map_err(|e| match e {
-                    ObservabilityError::NotFound(_) => span_nf(),
-                    other => other,
-                })?
+            match self.provider.get_span(trace_id, span_id).await {
+                Ok(details) => details,
+                Err(ObservabilityError::NotFound(_)) => return Err(span_nf()),
+                // The trace was just read, so this is the trace store failing the
+                // second read (an overloaded Tempo answers 429). Serve the span from
+                // that read, without the prompt and completion text, rather than a 500.
+                Err(e) => {
+                    tracing::warn!(
+                        %trace_id, %span_id, error = %e,
+                        "span read failed; serving the span from its trace"
+                    );
+                    let span = trace
+                        .spans
+                        .iter()
+                        .find(|s| s.span_id == span_id)
+                        .cloned()
+                        .ok_or_else(span_nf)?;
+                    super::session_store::span_details_from_sql(span)
+                }
+            }
         };
         let span = &details.span;
 
