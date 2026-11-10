@@ -536,9 +536,7 @@ pub async fn write_usage_row(
                    prompt_cost_usd = GREATEST(EXCLUDED.prompt_cost_usd, trace_usage.router_prompt_cost_usd),
                    completion_cost_usd = GREATEST(EXCLUDED.completion_cost_usd, trace_usage.router_completion_cost_usd),
                    latency_ms = EXCLUDED.latency_ms,
-                   -- A failed call the router booked live (0095) stays counted even when
-                   -- Tempo saw no error span for it, or attributed it elsewhere.
-                   error_count = GREATEST(EXCLUDED.error_count, trace_usage.router_error_count)"#,
+                   error_count = EXCLUDED.error_count"#,
         )
         .bind(&row.trace_id)
         .bind(&row.agent_name)
@@ -561,16 +559,12 @@ pub async fn write_usage_row(
         .bind(source.as_str())
         .execute(&mut *conn)
         .await?;
-    // A failed call whose prompt the router could only estimate keeps the row's cost flagged.
-    sqlx::query(
-        "UPDATE trace_usage SET cost_estimated = ($3 OR router_estimated_input_tokens > 0) \
-         WHERE trace_id=$1 AND agent_name=$2",
-    )
-    .bind(&row.trace_id)
-    .bind(&row.agent_name)
-    .bind(row.cost_estimated)
-    .execute(&mut *conn)
-    .await?;
+    sqlx::query("UPDATE trace_usage SET cost_estimated=$3 WHERE trace_id=$1 AND agent_name=$2")
+        .bind(&row.trace_id)
+        .bind(&row.agent_name)
+        .bind(row.cost_estimated)
+        .execute(&mut *conn)
+        .await?;
     // A new row was stamped by its insert; an existing one only if it changed.
     if let Some(before) = before {
         sqlx::query(&format!(
