@@ -1340,30 +1340,32 @@ fn existing_reporting_step(
     }
     let here_is_local =
         destination.is_some_and(|here| integration::is_local_cluster(&here.cluster_url));
-    if options.content && !here_is_local {
-        term::print_warning(integration::CONTENT_REFUSED);
-    }
-    let capture_content =
-        here_is_local && options.content_choice().unwrap_or(local.capture_content);
     let asked = |question: String| -> Result<bool> {
         Ok(options.mentions_reporting()
             || (prompter.interactive() && prompter.confirm(&question, true)?))
-    };
-    let install = |moving_from: Option<String>| ReportingStep::Install {
-        capture_content,
-        moving_from,
     };
     if let Some((from, to)) = reporting_elsewhere(local, destination) {
         let question = format!(
             "{} reports sessions to {from}. Move reporting to {to}?",
             local.display_name
         );
-        return Ok(if asked(question)? {
-            install(Some(from))
-        } else {
-            ReportingStep::Keep
+        if !asked(question)? {
+            return Ok(ReportingStep::Keep);
+        }
+        return Ok(ReportingStep::Install {
+            capture_content: moved_chat_history(local, options, destination, prompter)?,
+            moving_from: Some(from),
         });
     }
+    if options.content && !here_is_local {
+        term::print_warning(integration::CONTENT_REFUSED);
+    }
+    let capture_content =
+        here_is_local && options.content_choice().unwrap_or(local.capture_content);
+    let install = |moving_from: Option<String>| ReportingStep::Install {
+        capture_content,
+        moving_from,
+    };
     if !local.reporting_active {
         let question = format!(
             "{}'s session reporting hook {}. Reinstall it?",
@@ -1394,6 +1396,28 @@ fn existing_reporting_step(
     } else {
         ReportingStep::Keep
     })
+}
+
+/// Whether reporting moved to `destination` syncs chat history. A yes saved for a control plane on
+/// this machine still counts (the move is between local clusters); one saved anywhere else — a
+/// hosted cluster, where it never applied, or an install with no cluster recorded — does not, so
+/// the move is asked about like new reporting (default no).
+fn moved_chat_history(
+    local: &LocalAgent,
+    options: &ConnectOptions,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<bool> {
+    let here_is_local =
+        destination.is_some_and(|here| integration::is_local_cluster(&here.cluster_url));
+    let saved_for_local = local
+        .reporting_destination
+        .as_ref()
+        .is_some_and(|from| integration::is_local_cluster(&from.cluster_url));
+    if here_is_local && saved_for_local && options.content_choice().is_none() {
+        return Ok(local.capture_content);
+    }
+    chat_history_choice(options, destination, prompter)
 }
 
 /// Where installed reporting delivers when that isn't the active cluster and account, as
@@ -2856,6 +2880,53 @@ mod tests {
             &Unattended,
         );
         assert_eq!(plan.agents[0].reporting, TOKENS_ONLY);
+    }
+
+    #[test]
+    fn moving_reporting_from_a_hosted_cluster_to_localhost_asks_about_chat_history_again() {
+        // Saved with chat history while reporting to a hosted cluster (the old default), where it
+        // never applied: that yes doesn't carry over to localhost.
+        let mut from_hosted = view("claude", false, true);
+        from_hosted.local.capture_content = true;
+        from_hosted.local.reporting_destination = Some(hosted());
+
+        // Yes to the move, no to chat history.
+        let asked = plan_for(
+            vec![from_hosted.clone()],
+            &ConnectOptions {
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            &Scripted::new(&[true, false], &[]),
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert!(matches!(
+            asked.agents[0].reporting,
+            ReportingStep::Install {
+                capture_content: false,
+                moving_from: Some(_)
+            }
+        ));
+
+        let script = plan_for(
+            vec![from_hosted],
+            &ConnectOptions {
+                reporting: true,
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert!(matches!(
+            script.agents[0].reporting,
+            ReportingStep::Install {
+                capture_content: false,
+                moving_from: Some(_)
+            }
+        ));
     }
 
     #[test]
