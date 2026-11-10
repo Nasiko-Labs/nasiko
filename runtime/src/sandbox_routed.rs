@@ -246,7 +246,7 @@ mod tests {
 
     fn kinded_pair() -> (Arc<Kinded>, Arc<Kinded>, KeyRoutedSandboxProvider) {
         let sessions = Arc::new(Kinded(
-            SandboxProviderKind::Substrate,
+            SandboxProviderKind::SharedPod,
             FakeSandboxProvider::default(),
         ));
         let agents = Arc::new(Kinded(
@@ -325,11 +325,11 @@ mod tests {
     fn kind_is_the_session_side() {
         let routed = KeyRoutedSandboxProvider::new(
             Arc::new(UnavailableSandboxProvider::new(
-                SandboxProviderKind::Substrate,
+                SandboxProviderKind::SharedPod,
             )),
             Arc::new(FakeSandboxProvider::default()),
         );
-        assert_eq!(routed.kind(), SandboxProviderKind::Substrate);
+        assert_eq!(routed.kind(), SandboxProviderKind::SharedPod);
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod tests {
         let agents = Arc::new(FakeSandboxProvider::default());
         let routed = KeyRoutedSandboxProvider::new(
             Arc::new(UnavailableSandboxProvider::new(
-                SandboxProviderKind::Substrate,
+                SandboxProviderKind::SharedPod,
             )),
             agents.clone(),
         );

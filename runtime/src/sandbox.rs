@@ -2,8 +2,8 @@
 //!
 //! A `ContainerRuntime` deploys a long-lived service per agent. A [`SandboxProvider`] hands out
 //! a sandbox that exists only while it is serving: acquired on demand, suspended when idle,
-//! resumed by the next request. Backends (Docker, bare pod, Agent Substrate, shared runtime
-//! pods) implement the trait; this module holds only the trait and its types.
+//! resumed by the next request. Backends (Docker, bare pod, shared runtime pods) implement
+//! the trait; this module holds only the trait and its types.
 
 use std::collections::HashMap;
 
@@ -20,8 +20,6 @@ pub enum SandboxProviderKind {
     Docker,
     /// The bare Kubernetes pod backend.
     Pod,
-    /// The Agent Substrate backend.
-    Substrate,
     /// Shared runtime pods: many sandboxes packed onto replicas of one StatefulSet.
     SharedPod,
     /// A test double. The composition root rejects a stored ref whose kind differs from the
@@ -34,7 +32,6 @@ impl std::fmt::Display for SandboxProviderKind {
         f.write_str(match self {
             Self::Docker => "docker",
             Self::Pod => "pod",
-            Self::Substrate => "substrate",
             Self::SharedPod => "shared-pod",
             Self::Fake => "fake",
         })
@@ -50,7 +47,6 @@ impl std::str::FromStr for SandboxProviderKind {
         match s {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
-            "substrate" => Ok(Self::Substrate),
             "shared-pod" => Ok(Self::SharedPod),
             "fake" => Ok(Self::Fake),
             other => Err(RuntimeError::Internal(format!(
@@ -221,7 +217,7 @@ pub struct SandboxHandle {
     pub key: SandboxKey,
     /// Which backend owns it.
     pub provider: SandboxProviderKind,
-    /// The backend's own identifier (container id, pod name, substrate id).
+    /// The backend's own identifier (container id, pod name).
     pub backend_ref: String,
 }
 
@@ -438,7 +434,6 @@ mod tests {
         match k {
             SandboxProviderKind::Docker
             | SandboxProviderKind::Pod
-            | SandboxProviderKind::Substrate
             | SandboxProviderKind::SharedPod
             | SandboxProviderKind::Fake => (),
         }
@@ -506,10 +501,9 @@ mod tests {
         );
     }
 
-    const ALL_KINDS: [SandboxProviderKind; 5] = [
+    const ALL_KINDS: [SandboxProviderKind; 4] = [
         SandboxProviderKind::Docker,
         SandboxProviderKind::Pod,
-        SandboxProviderKind::Substrate,
         SandboxProviderKind::SharedPod,
         SandboxProviderKind::Fake,
     ];
@@ -665,7 +659,7 @@ mod tests {
                 kind
             );
         }
-        assert_eq!(SandboxProviderKind::Substrate.to_string(), "substrate");
+        assert_eq!(SandboxProviderKind::SharedPod.to_string(), "shared-pod");
         assert!(matches!(
             "vmware".parse::<SandboxProviderKind>(),
             Err(RuntimeError::Internal(_))

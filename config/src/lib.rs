@@ -232,10 +232,10 @@ pub struct Config {
     /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
     /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod`, `substrate` or `shared-pod`. Docker is the OSS default and needs no
-    /// cluster; `pod`, `substrate` and `shared-pod` are implemented by enterprise crates and
+    /// (default), `pod` or `shared-pod`. Docker is the OSS default and needs no
+    /// cluster; `pod` and `shared-pod` are implemented by enterprise crates and
     /// selected at cluster create. An unknown value fails startup rather than
-    /// silently falling back, because running sessions on the wrong substrate
+    /// silently falling back, because running sessions on the wrong provider
     /// changes isolation and cost.
     pub sandbox_provider: SandboxProviderSetting,
     /// Whether a successful agent build is followed by one smoke run of the image under gVisor,
@@ -1029,12 +1029,11 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
     trimmed.strip_suffix("/v1").unwrap_or(trimmed)
 }
 
-/// Which substrate runs coding-agent sandboxes. See [`Config::sandbox_provider`].
+/// Which provider runs coding-agent sandboxes. See [`Config::sandbox_provider`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SandboxProviderSetting {
     Docker,
     Pod,
-    Substrate,
     SharedPod,
 }
 
@@ -1045,10 +1044,9 @@ impl std::str::FromStr for SandboxProviderSetting {
         match raw.trim().to_ascii_lowercase().as_str() {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
-            "substrate" => Ok(Self::Substrate),
             "shared-pod" => Ok(Self::SharedPod),
             _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, substrate, shared-pod, got {raw:?}"
+                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, got {raw:?}"
             )),
         }
     }
@@ -1178,7 +1176,6 @@ mod tests {
         for (raw, want) in [
             ("docker", SandboxProviderSetting::Docker),
             ("Pod", SandboxProviderSetting::Pod),
-            (" SUBSTRATE ", SandboxProviderSetting::Substrate),
             (" Shared-Pod ", SandboxProviderSetting::SharedPod),
         ] {
             assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
@@ -1189,7 +1186,7 @@ mod tests {
     fn unknown_sandbox_provider_names_key_and_allowed_values() {
         let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
         assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(err.contains("docker, pod, substrate, shared-pod"), "{err}");
+        assert!(err.contains("docker, pod, shared-pod"), "{err}");
     }
 
     #[test]

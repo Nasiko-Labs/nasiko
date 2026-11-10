@@ -79,7 +79,7 @@ pub fn should_suspend(
 ) -> bool {
     // TODO(eviction-sweep): this only helps a sandbox that is already a candidate, i.e.
     // idle past `coding_agent_idle_ttl_secs` (`sweep_idle` lists only those). A recently active
-    // session on an evicting worker is not sampled; the plan's follow-up adds that sweep.
+    // session on an evicting worker is not sampled; a separate sweep would cover it.
     // An evicting sandbox is suspended whenever it is sampled, busy or not.
     if stats.evicting {
         return true;

@@ -20,7 +20,6 @@ pub fn kind_of(setting: SandboxProviderSetting) -> SandboxProviderKind {
     match setting {
         SandboxProviderSetting::Docker => SandboxProviderKind::Docker,
         SandboxProviderSetting::Pod => SandboxProviderKind::Pod,
-        SandboxProviderSetting::Substrate => SandboxProviderKind::Substrate,
         SandboxProviderSetting::SharedPod => SandboxProviderKind::SharedPod,
     }
 }
@@ -50,8 +49,8 @@ pub async fn connect_docker_sandbox(
 }
 
 /// The provider for `config`: the connected Docker one when configured and supplied, else
-/// [`UnavailableSandboxProvider`] for the configured kind (`pod`, `substrate` and `shared-pod`
-/// are linked by the enterprise binary, not this edition).
+/// [`UnavailableSandboxProvider`] for the configured kind (`pod` and `shared-pod` are linked by
+/// the enterprise binary, not this edition).
 pub fn build_sandbox_provider(
     config: &Config,
     docker: Option<DockerSandboxProvider>,

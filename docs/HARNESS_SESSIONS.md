@@ -31,10 +31,10 @@ The normal cycle is `parked → starting → running → stopping → parked`.
 What survives a suspend depends on the provider. On the Docker provider, suspend is `docker stop`,
 not `pause`, so a suspended sandbox holds no RAM: chatting again starts the same container, and
 what survives is the files in `/workspace` and the ACP session id, which the next turn uses to
-restore the harness's conversation. Running processes and anything held in memory are lost. A
-snapshotting provider keeps RAM and processes as well, so a backgrounded job or subagent is still
-running after a resume; container providers keep files only. A provider that snapshots can also
-deliver the session's settings after the sandbox is attached (see section 8).
+restore the harness's conversation. Running processes and anything held in memory are lost. Every
+provider keeps files only: a backgrounded job or subagent does not survive a suspend. A provider
+that runs several sessions in one pod delivers each session's settings after the sandbox is
+attached (see section 8).
 
 A turn that arrives while a suspend is in progress waits for it to settle, up to 15 seconds
 (`SUSPEND_WAIT`), and then resumes the sandbox. If the suspend is still running after that, the
@@ -332,10 +332,10 @@ wants.
 | Mode | Settings arrive | Used by |
 |------|-----------------|---------|
 | `env` (default) | In the shim's process environment, set when the sandbox is created. The harness starts at once and the shim exits when it does. | Providers whose sandbox environment is chosen per sandbox, such as Docker |
-| `handshake` | By `POST /control/configure`, after the sandbox is attached. The shim binds its port and answers `/healthz` first, and starts nothing until it is configured. | Providers that freeze a sandbox's environment into a template or a memory snapshot |
+| `handshake` | By `POST /control/configure`, after the sandbox is attached. The shim binds its port and answers `/healthz` first, and starts nothing until it is configured. | Shared-runtime providers, whose pod is created before any of its sessions is known |
 
-In handshake mode the configuration is held in memory only, so a memory snapshot keeps it and a
-resume needs no new configure. If the harness process exits, a handshake shim keeps serving
+In handshake mode the configuration is held in memory only, so a resumed shim, a new process, is
+configured again. If the harness process exits, a handshake shim keeps serving
 (`child` reads `exited`) and starts it again on the next configure or restart.
 
 On a shared-runtime provider many shims share one pod under a pod-level supervisor
@@ -405,11 +405,11 @@ files, then starts the harness.
 
 ### Eviction
 
-If the provider drains the node under a sandbox, it signals the shim's process with `SIGTERM`. In
+If the provider drains the node under a sandbox, it may signal the shim's process with `SIGTERM`. In
 handshake mode the shim does not exit: it sets `evicting` (shown on `status` and `stats`) and keeps
-relaying, because such a provider requires the sandbox's main process to stay alive until it has taken
-its snapshot. The server's idle reaper suspends an `evicting` session at once, busy or not, unless a
-turn holds it. In `env` mode `SIGTERM` ends the shim as before.
+relaying. A provider can also report `evicting` itself, as a shared-runtime provider does for a pod
+that is being deleted. The server's idle reaper suspends an `evicting` session at once, busy or not,
+unless a turn holds it. In `env` mode `SIGTERM` ends the shim as before.
 
 ## 9. Limitations
 
