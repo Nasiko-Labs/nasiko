@@ -1477,8 +1477,11 @@ mod tests {
         .unwrap()
     }
 
-    fn large_system() -> String {
-        "You are a careful assistant. ".repeat(400)
+    /// A prompt large enough to cache, distinct per `test`: what the process knows about a
+    /// prefix is global, and mockito reuses server addresses across tests running in parallel,
+    /// so tests sharing one prompt could find each other's cached or refused entry.
+    fn large_system(test: &str) -> String {
+        format!("{test}: {}", "You are a careful assistant. ".repeat(400))
     }
 
     fn generate_ok(cached_tokens: i64) -> String {
@@ -1547,7 +1550,7 @@ mod tests {
             .match_body(mockito::Matcher::PartialJson(json!({
                 "model": format!("models/{CACHED_MODEL}"),
                 "ttl": "300s",
-                "systemInstruction": { "parts": [{ "text": large_system() }] },
+                "systemInstruction": { "parts": [{ "text": large_system("reused") }] },
                 "contents": [{ "role": "user", "parts": [{ "text": "first" }] }]
             })))
             .with_status(200)
@@ -1572,7 +1575,7 @@ mod tests {
 
         let provider =
             GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
-        let req = marked_request(&large_system());
+        let req = marked_request(&large_system("reused"));
         for _ in 0..2 {
             let resp = provider.chat(&req, &flash()).await.unwrap();
             let usage = resp.usage.unwrap();
@@ -1585,7 +1588,7 @@ mod tests {
 
     #[tokio::test]
     async fn small_or_disabled_prefixes_are_sent_whole() {
-        let large = large_system();
+        let large = large_system("disabled");
         for (system, enabled) in [("short", true), (large.as_str(), false)] {
             let mut server = mockito::Server::new_async().await;
             let create = server
@@ -1626,7 +1629,7 @@ mod tests {
         let generate = server
             .mock("POST", generate_path().as_str())
             .match_body(mockito::Matcher::PartialJson(json!({
-                "systemInstruction": { "parts": [{ "text": large_system() }] }
+                "systemInstruction": { "parts": [{ "text": large_system("too-small") }] }
             })))
             .with_status(200)
             .with_body(generate_ok(0))
@@ -1635,7 +1638,7 @@ mod tests {
             .await;
         let provider =
             GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
-        let req = marked_request(&large_system());
+        let req = marked_request(&large_system("too-small"));
         for _ in 0..2 {
             provider.chat(&req, &flash()).await.unwrap();
         }
@@ -1665,7 +1668,7 @@ mod tests {
         let whole = server
             .mock("POST", generate_path().as_str())
             .match_body(mockito::Matcher::PartialJson(json!({
-                "systemInstruction": { "parts": [{ "text": large_system() }] }
+                "systemInstruction": { "parts": [{ "text": large_system("refused-ref") }] }
             })))
             .with_status(200)
             .with_body(generate_ok(0))
@@ -1675,7 +1678,7 @@ mod tests {
         let provider =
             GeminiProvider::new(reqwest::Client::new(), server.url()).with_explicit_cache(true);
         let resp = provider
-            .chat(&marked_request(&large_system()), &flash())
+            .chat(&marked_request(&large_system("refused-ref")), &flash())
             .await
             .unwrap();
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("done"));
