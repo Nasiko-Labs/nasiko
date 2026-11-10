@@ -649,11 +649,10 @@ async fn start(
         Ok(false) => {}
         Err(resp) => return resp,
     }
-    // A resident agent with no workload left has nothing to scale up: deploy one, from the
-    // stored image and env, as a restart does. That is a stopped agent whose policy flipped while
-    // it was parked (the reaper released its sandbox), and any agent whose row was moved to this
-    // server without its workload — stopped, parked or failed where it came from.
-    if status.as_deref() != Some("running")
+    // A resident agent that was stopped with no workload left (its policy flipped while it was
+    // parked, and the reaper released its sandbox) has nothing to scale up: deploy one, from the
+    // stored image and env, as a restart does.
+    if status.as_deref() == Some("stopped")
         && state
             .runtime
             .status(&ContainerId::from_uuid(agent_id))
@@ -731,9 +730,14 @@ async fn restart(
         writable_path: Option<String>,
     }
 
+    //
+    // Only a live agent: a superuser passes `can_manage_agent` for a deleted one too, and a
+    // restart would bring its container back. A deleted agent's name may also belong to a new
+    // agent by now, which is the one `nasiko restart <name>` means.
     let agent: Option<RestartAgentRow> = if let Ok(id) = name.parse::<Uuid>() {
         sqlx::query_as(
-            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE id = $1",
+            "SELECT id, owner_id, image, writable, writable_path FROM agents \
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(id)
         .fetch_optional(&state.db)
@@ -742,7 +746,8 @@ async fn restart(
         .flatten()
     } else {
         sqlx::query_as(
-            "SELECT id, owner_id, image, writable, writable_path FROM agents WHERE name = $1",
+            "SELECT id, owner_id, image, writable, writable_path FROM agents \
+             WHERE name = $1 AND deleted_at IS NULL",
         )
         .bind(&name)
         .fetch_optional(&state.db)
@@ -933,19 +938,7 @@ async fn restart_in_place(
     owner_id: Uuid,
     name: &str,
 ) -> axum::response::Response {
-    let mut env = resolve_full_env(state, owner_id, agent_id).await;
-    crate::agents::deploy_env::apply_platform_env(
-        state,
-        &mut env,
-        agent_id,
-        owner_id,
-        crate::agents::deploy_env::StateModeOnDeploy::Keep,
-    )
-    .await;
-    // The runtime applies this as the agent's whole env, so it carries the port as a deploy does.
-    crate::agents::set_port_env(&mut env, crate::agents::DEFAULT_AGENT_PORT);
-
-    if let Err(e) = state.runtime.refresh_secrets(id, name, env).await {
+    if let Err(e) = refresh_runtime_env(state, id, agent_id, owner_id, name).await {
         tracing::error!(%e, %name, "restart: could not apply the agent's env");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
@@ -960,6 +953,56 @@ async fn restart_in_place(
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
         }
     }
+}
+
+/// Rebuilds the agent's env, with the platform credentials rotated, and hands it to the runtime,
+/// so every instance it starts from now on runs with the agent's current secrets. Instances
+/// already running keep the env they started with until they are rolled.
+async fn refresh_runtime_env(
+    state: &AppState,
+    id: &ContainerId,
+    agent_id: Uuid,
+    owner_id: Uuid,
+    name: &str,
+) -> Result<(), nasiko_runtime::RuntimeError> {
+    let mut env = resolve_full_env(state, owner_id, agent_id).await;
+    crate::agents::deploy_env::apply_platform_env(
+        state,
+        &mut env,
+        agent_id,
+        owner_id,
+        crate::agents::deploy_env::StateModeOnDeploy::Keep,
+    )
+    .await;
+    // The runtime applies this as the agent's whole env, so it carries the port as a deploy does.
+    crate::agents::set_port_env(&mut env, crate::agents::DEFAULT_AGENT_PORT);
+    state.runtime.refresh_secrets(id, name, env).await
+}
+
+/// Scales an agent up on a runtime that restarts in place (Kubernetes), where new instances
+/// read the env the runtime holds: that env is rebuilt first, so a secret changed since the last
+/// deploy reaches the new instances. Rebuilding it rotates the platform credentials, which the
+/// instances already running hold only until `ROTATION_GRACE_SECS` passes, so a running agent is
+/// rolled afterwards and every instance ends up on the same, current env.
+async fn scale_up_with_fresh_env(
+    state: &AppState,
+    id: &ContainerId,
+    agent_id: Uuid,
+    name: &str,
+    replicas: u32,
+) -> Result<(), nasiko_runtime::RuntimeError> {
+    let owner_id: Uuid = sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_one(&state.db)
+        .await
+        .map_err(|e| nasiko_runtime::RuntimeError::Internal(format!("read owner: {e}")))?;
+    let was_running = can_restart_in_place(state, id).await;
+    refresh_runtime_env(state, id, agent_id, owner_id, name).await?;
+    state.runtime.scale(id, replicas).await?;
+    if was_running {
+        state.runtime.restart(id).await?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -1013,7 +1056,14 @@ async fn scale(
         }
     }
     let id = ContainerId::from_uuid(agent_id);
-    match state.runtime.scale(&id, req.replicas).await {
+    // Docker keeps the env a container was created with and runs one replica, so a scale there
+    // starts no instance a fresh env could reach; its `restart` recreates the container instead.
+    let scaled = if req.replicas > 0 && state.runtime.restarts_in_place().await {
+        scale_up_with_fresh_env(&state, &id, agent_id, &name, req.replicas).await
+    } else {
+        state.runtime.scale(&id, req.replicas).await
+    };
+    match scaled {
         Ok(()) => {
             // Scaling to zero is what `stop` does, so it must leave the same
             // status behind — otherwise `scale 0` parks a container that the

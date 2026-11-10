@@ -275,13 +275,15 @@ pub(crate) async fn restart_deployment(
         Err(e) => return e.into_response(),
     };
 
-    // Fetch deployment and agent info together, including stored spec columns.
+    // Fetch deployment and agent info together, including stored spec columns. A deleted
+    // agent's deployment rows are history: restarting one would bring the agent back, and the
+    // owner check below lets a superuser through for it.
     let info = match sqlx::query_as::<_, AgentDeployInfo>(
         "SELECT a.name, a.image, a.id as agent_id, a.writable, a.writable_path, a.owner_id,
                 d.build_id, d.status::text as status,
                 d.spec_ports, d.spec_image, d.k8s_deployment_name
          FROM agent_deployments d
-         JOIN agents a ON a.id = d.agent_id
+         JOIN agents a ON a.id = d.agent_id AND a.deleted_at IS NULL
          WHERE d.id = $1",
     )
     .bind(deployment_id)

@@ -252,9 +252,14 @@ pub(crate) async fn register_coding_agent(
 /// resolves them per edition and hands back plain ids instead, which is what
 /// closes the gap this comment used to describe. OSS returns an empty list, so
 /// the extra disjunct never matches there.
+///
+/// A soft-deleted agent matches for nobody, the superuser included: `DELETE /api/agents/{id}`
+/// leaves the row in place for history, so a listing that relied on each call site to add its
+/// own `deleted_at IS NULL` (`search` and `by_skill` did not) kept offering a removed agent.
 pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref: &str) -> String {
     format!(
-        r#"({user_bind}::uuid IS NULL
+        r#"({table_ref}.deleted_at IS NULL
+           AND ({user_bind}::uuid IS NULL
              OR {table_ref}.owner_id = {user_bind}
              OR {table_ref}.is_public = TRUE
              OR {table_ref}.id::text = ANY({org_bind})
@@ -263,7 +268,7 @@ pub(crate) fn agent_access_predicate(user_bind: &str, org_bind: &str, table_ref:
                  WHERE ag.agent_id = {table_ref}.id
                    AND ((ag.grant_type = 'public' AND ag.grantee_id = '*')
                      OR (ag.grant_type = 'user'   AND ag.grantee_id = {user_bind}::text))
-             ))"#
+             )))"#
     )
 }
 
@@ -1330,8 +1335,13 @@ pub(crate) async fn delete(
     // still leaves the agent deleted, which is the pre-existing behavior: the
     // errors are reported in `runtime_errors` rather than rolling the delete
     // back.
+    //
+    // The status goes to `stopped` in the same statement. Left at `running` or `parked`, the
+    // row still read as live to every query that selects agents by status, so the orchestrator
+    // kept offering a deleted agent as a routing candidate (and, once its name was reused,
+    // dropped both agents as indistinguishable).
     let name: String = match sqlx::query_scalar(
-        "UPDATE agents SET deleted_at = NOW() \
+        "UPDATE agents SET deleted_at = NOW(), status = 'stopped' \
          WHERE id = $1 AND deleted_at IS NULL \
          RETURNING name",
     )

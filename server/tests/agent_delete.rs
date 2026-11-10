@@ -412,3 +412,246 @@ async fn delete_report_has_no_spurious_runtime_errors_for_docker_agent() {
 
     server.cleanup().await;
 }
+
+// ─── nothing live is left behind ─────────────────────────────────────────────
+//
+// A soft delete keeps the row, so every read that selects agents must still treat it as gone.
+// These cover the reads that did not: the orchestrator's candidate list (by status), the
+// search and by-skill listings, the restart routes (a superuser passes the ownership check
+// for a deleted agent too) and the lookup by a name a new agent has since taken.
+
+/// A live agent named `name`, `running` with an image, as a deploy leaves it.
+async fn running_agent(server: &common::TestServer, uid: &str, name: &str) -> Uuid {
+    let agent = create_agent(server, uid, name).await;
+    let agent_id: Uuid = agent["id"].as_str().unwrap().parse().unwrap();
+    sqlx::query(
+        "UPDATE agents SET status = 'running', image = 'nasiko/echo:1.0.0', \
+         parking_policy = 'resident' WHERE id = $1",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    agent_id
+}
+
+async fn get_as_superuser(server: &common::TestServer, uid: &str, path: &str) -> Value {
+    common::as_superuser(server.client.get(server.url(path)), uid, "admin")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap()
+}
+
+async fn post_as_superuser(server: &common::TestServer, uid: &str, path: &str) -> u16 {
+    common::as_superuser(server.client.post(server.url(path)), uid, "admin")
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_stops_the_row_and_the_orchestrator_stops_offering_it() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = running_agent(&server, uid, "routed-then-deleted").await;
+
+    let res = delete_as_superuser(&server, uid, &agent_id.to_string()).await;
+    assert_eq!(res.status(), 200);
+
+    let status: String = sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "stopped",
+        "a deleted agent must not read as running"
+    );
+
+    let candidates = nasiko_orchestrator::selector::AgentSelector::fetch_active_agents(&server.db)
+        .await
+        .unwrap();
+    assert!(
+        !candidates.iter().any(|c| c.id == agent_id),
+        "a deleted agent must not be a routing candidate"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_row_deleted_while_running_is_never_a_routing_candidate() {
+    // Rows deleted before the delete route stopped them still read `running`.
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = running_agent(&server, uid, "legacy-deleted").await;
+    sqlx::query("UPDATE agents SET deleted_at = now() WHERE id = $1")
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+
+    let candidates = nasiko_orchestrator::selector::AgentSelector::fetch_active_agents(&server.db)
+        .await
+        .unwrap();
+    assert!(!candidates.iter().any(|c| c.id == agent_id));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn search_and_by_skill_never_list_a_deleted_agent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = running_agent(&server, uid, "findable-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_skills (agent_id, skill_key, name, description, tags) \
+         VALUES ($1, 'find', 'Find', 'finds things', ARRAY['findable'])",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let ids = |body: &Value| -> Vec<String> {
+        body.as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["id"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let search = |body: Value| -> Vec<String> { ids(&body["agents"]) };
+
+    // Sanity: both listings find the live agent.
+    let found = search(get_as_superuser(&server, uid, "/api/search/agents?q=findable").await);
+    assert!(found.contains(&agent_id.to_string()), "search: {found:?}");
+    let by_skill = get_as_superuser(&server, uid, "/api/agents/by-skill?tag=findable").await;
+    assert!(ids(&by_skill).contains(&agent_id.to_string()));
+
+    assert_eq!(
+        delete_as_superuser(&server, uid, &agent_id.to_string())
+            .await
+            .status(),
+        200
+    );
+
+    let found = search(get_as_superuser(&server, uid, "/api/search/agents?q=findable").await);
+    assert!(!found.contains(&agent_id.to_string()), "search: {found:?}");
+    let by_skill = get_as_superuser(&server, uid, "/api/agents/by-skill?tag=findable").await;
+    assert!(!ids(&by_skill).contains(&agent_id.to_string()));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_deleted_agent_cannot_be_restarted_back_to_life() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = running_agent(&server, uid, "stays-deleted").await;
+    assert_eq!(
+        delete_as_superuser(&server, uid, &agent_id.to_string())
+            .await
+            .status(),
+        200
+    );
+    let deploys_before = server.runtime.deployed_specs().len();
+
+    for target in [agent_id.to_string(), "stays-deleted".to_owned()] {
+        let status =
+            post_as_superuser(&server, uid, &format!("/api/containers/{target}/restart")).await;
+        assert_eq!(status, 404, "restart of deleted agent by {target}");
+    }
+    assert_eq!(
+        server.runtime.deployed_specs().len(),
+        deploys_before,
+        "nothing may be deployed for a deleted agent"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_deleted_agents_deployment_cannot_be_restarted() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let uid_uuid: Uuid = uid.parse().unwrap();
+    let agent_id = running_agent(&server, uid, "deployment-of-deleted").await;
+    let build_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agent_builds (agent_id, version_tag, image_reference) \
+         VALUES ($1, '1.0.0', 'nasiko/echo:1.0.0') RETURNING id",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    let deployment_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO agent_deployments (agent_id, build_id, status, owner_id) \
+         VALUES ($1, $2, 'running', $3) RETURNING id",
+    )
+    .bind(agent_id)
+    .bind(build_id)
+    .bind(uid_uuid)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        delete_as_superuser(&server, uid, &agent_id.to_string())
+            .await
+            .status(),
+        200
+    );
+
+    let status = post_as_superuser(
+        &server,
+        uid,
+        &format!("/api/agents/deployment/{deployment_id}/restart"),
+    )
+    .await;
+    assert_eq!(status, 404);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_reused_name_restarts_the_new_agent_not_the_deleted_one() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let old_id = running_agent(&server, uid, "reused-name").await;
+    assert_eq!(
+        delete_as_superuser(&server, uid, &old_id.to_string())
+            .await
+            .status(),
+        200
+    );
+    let new_id = running_agent(&server, uid, "reused-name").await;
+    assert_ne!(old_id, new_id);
+
+    let status = post_as_superuser(&server, uid, "/api/containers/reused-name/restart").await;
+    assert_eq!(status, 200);
+    let redeployed: Vec<_> = server
+        .runtime
+        .deployed_specs()
+        .into_iter()
+        .map(|spec| spec.container_id)
+        .collect();
+    assert!(redeployed.contains(&nasiko_runtime::ContainerId::from_uuid(new_id)));
+    assert!(!redeployed.contains(&nasiko_runtime::ContainerId::from_uuid(old_id)));
+
+    server.cleanup().await;
+}
