@@ -8,6 +8,7 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
@@ -28,14 +29,17 @@ const { Trend } = await import('./components/Trend')
 const { HarnessPanels } = await import('./components/HarnessPanels')
 const { ConnectHelp, SessionsList, TopModels } = await import('./components/IndividualView')
 
-/** ConnectHelp links the CLI guide, so it renders under a router. */
+/** ConnectHelp links the CLI guide, so it renders under a router; its chat-history notice reads the server's policy,
+ *  so under a query client too. */
 const inRouter = (ui: ReactNode) => (
-  <RouterProvider
-    router={createRouter({
-      routeTree: createRootRoute({ component: () => <>{ui}</> }),
-      history: createMemoryHistory({ initialEntries: ['/'] }),
-    })}
-  />
+  <QueryClientProvider client={new QueryClient()}>
+    <RouterProvider
+      router={createRouter({
+        routeTree: createRootRoute({ component: () => <>{ui}</> }),
+        history: createMemoryHistory({ initialEntries: ['/'] }),
+      })}
+    />
+  </QueryClientProvider>
 )
 
 const T = (p: Partial<HarnessTotals> = {}): HarnessTotals => ({
