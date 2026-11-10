@@ -182,10 +182,18 @@ async fn someone_who_cannot_manage_the_agent_cannot_list_what_it_inherits() {
     let agent_id = f.agent("private").await;
     f.layered_secrets(agent_id).await;
 
+    // A real member: an unknown user id is refused as unauthenticated (401) before access is checked.
+    let stranger_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ('stranger', 'stranger@test.local', false) RETURNING id",
+    )
+    .fetch_one(&f.server.db)
+    .await
+    .unwrap();
+
     let path = format!("/api/agents/{agent_id}/secrets/inherited");
     let res = common::as_member(
         f.server.client.get(f.server.url(&path)),
-        &Uuid::new_v4().to_string(),
+        &stranger_id.to_string(),
         "stranger",
     )
     .send()
