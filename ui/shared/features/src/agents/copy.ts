@@ -4,7 +4,6 @@
  * labels and hints live in the status matrix (status.ts), the single status source.
  */
 import { ApiError } from '@nasiko/data-access/client'
-import { isObservabilityUnconfigured } from '@nasiko/features/observability/unconfigured'
 import { SERVER_TEXT_MAX } from './tuning'
 
 export const copy = {
@@ -267,6 +266,9 @@ export const copy = {
   start: 'Start',
   stopTitle: (name: string) => `Stop ${name}?`,
   stopBody: 'The container stops; callers get errors until you start it again.',
+  stopSharedWarning:
+    'Others use this agent: it is shared with people besides you. They will see it was stopped by its owner and cannot chat with it until you start it again.',
+  stoppedByOwner: 'This agent was stopped by its owner. You can use it again once they start it.',
   restarted: 'Restarted',
   started: 'Started',
   stoppedDone: 'Stopped',
@@ -330,7 +332,7 @@ export function errorCopy(err: unknown, context: ErrorContext = 'read'): ErrorCo
         "The runtime couldn't find this agent's container. Redeploy it with `nasiko deploy`.",
       detail,
     }
-  if (isObservabilityUnconfigured(api)) return { message: copy.obsOff, detail }
+  if (s === 503) return { message: copy.obsOff, detail }
   if (api.isServerUnreachable) return { message: copy.serverDown, detail }
   return { message: copy.somethingWrong, detail }
 }

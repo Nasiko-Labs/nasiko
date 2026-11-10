@@ -699,6 +699,8 @@ The gateway supports every authentication shape a custom MCP server might requir
 
 Credentials are loaded in two batched queries per request (no N+1 pattern) — one for user connections, one for OAuth tokens — and a connector with no credential/token stored for the calling user is silently skipped rather than causing the whole request to fail.
 
+**A tool call runs on the calling user's own connection, never the agent owner's.** The user is the flow's (`flows.user_id`), so when someone an agent is shared with chats with it, every credential above is *theirs*. A `bearer`/`basic` connector's static `headers` are sent only for the connector's owner (`credentials::static_headers_usable_by`): on those auth types they hold the owner's own key (a `basic` connector's registration-time username and password land there), so anyone else without a credential of their own gets the connector as `MissingCredential`. A key meant for everyone goes on an `auth_type = "none"` connector. `GET /api/mcp/agents/{agent_id}/my-connections` tells a caller who can use the agent which of its enabled connectors need their own connection (`ready`, `connected`, `needs_connection`, `not_shared`), and nothing about anyone else's.
+
 ---
 
 ## 11. Caching Strategy
@@ -828,6 +830,7 @@ owner or a superuser via `DELETE`.
 | DELETE | `/api/mcp/connectors/{id}/oauth/token` | Revoke the caller's stored OAuth token |
 | GET | `/api/mcp/oauth/callback` | Public OAuth callback (state-verified, not JWT-gated) |
 | GET | `/api/mcp/agents/{agent_id}/connectors` | View per-agent connector access |
+| GET | `/api/mcp/agents/{agent_id}/my-connections` | The agent's enabled connectors with the caller's own standing (anyone who can use the agent) |
 | PUT | `/api/mcp/agents/{agent_id}/connectors/{connector_id}` | Configure one connector's access for that agent |
 | GET | `/api/mcp/agents/{agent_id}/connectors/{connector_id}/tools` | List that connector's tools with effective stances |
 | GET / PUT | `/api/mcp/agents/{agent_id}/tools` | View / bulk-update per-tool allow/ask/block rules |

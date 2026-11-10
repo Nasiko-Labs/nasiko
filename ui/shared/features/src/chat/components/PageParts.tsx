@@ -128,10 +128,13 @@ export function AttachNotes({ notes, inline = false }: { notes: string[]; inline
 export function NotRunningBanner({
   agentId,
   name,
+  byOwner = false,
   refetch,
 }: {
   agentId: string
   name: string
+  /** Stopped by its owner, who isn't this user: they can't start it, so the banner says who stopped it. */
+  byOwner?: boolean
   refetch(): void
 }) {
   // DS17: refetch status on focus and every STATUS_POLL_MS; the banner clears itself.
@@ -160,7 +163,7 @@ export function NotRunningBanner({
         </AgentLinkTo>
       }
     >
-      {copy.targetNotRunning(name)}
+      {byOwner ? copy.stoppedByOwner(name) : copy.targetNotRunning(name)}
     </TargetBanner>
   )
 }

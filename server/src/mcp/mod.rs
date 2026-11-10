@@ -267,6 +267,10 @@ pub fn router() -> Router<AppState> {
             get(handlers::permissions::list_connectors),
         )
         .route(
+            "/mcp/agents/{agent_id}/my-connections",
+            get(handlers::permissions::list_caller_connections),
+        )
+        .route(
             "/mcp/agents/{agent_id}/connectors/{connector_id}",
             put(handlers::permissions::set_connector_access),
         )

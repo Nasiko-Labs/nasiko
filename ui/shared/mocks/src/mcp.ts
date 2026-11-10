@@ -870,6 +870,36 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
         return ok({ connectors }, 'Agent connectors retrieved successfully')
       }),
     ),
+    // `list_caller_connections_view`: the agent's enabled servers with the viewer's own standing (NAS-1461).
+    // Open to anyone the agent is visible to; it never says anything about the owner's connections.
+    http.get(`${P}/agents/:agentId/my-connections`, ({ params }) =>
+      run(() => {
+        const agentId = String(params.agentId)
+        const st = s()
+        const connectors = st.connectors
+          .filter((c) => st.access.get(key(agentId, c.id))?.enabled)
+          .map((c) => {
+            const reachable = canAccess(c, me().id)
+            const status = !reachable
+              ? 'not_shared'
+              : c.auth_type === 'none'
+                ? 'ready'
+                : connection(c)?.active
+                  ? 'connected'
+                  : 'needs_connection'
+            return {
+              connector_id: c.id,
+              provider_type: c.provider,
+              name: c.name,
+              display_name: label(c),
+              logo_url: null,
+              auth_type: c.auth_type,
+              status,
+            }
+          })
+        return ok({ connectors }, 'Your connections for this agent')
+      }),
+    ),
     http.put(`${P}/agents/:agentId/connectors/:connectorId`, async ({ params, request }) =>
       run(async () => {
         const agentId = String(params.agentId)

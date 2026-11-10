@@ -99,6 +99,36 @@ pub async fn list_connectors(
     ))
 }
 
+/// `GET /api/mcp/agents/{agent_id}/my-connections` — the connectors enabled on this agent,
+/// each with where the *caller* stands (`ready`, `connected`, `needs_connection`,
+/// `not_shared`). An agent's tools run on the chatting user's own connections, never its
+/// owner's, so a user the agent is shared with reads this to see which they must connect.
+/// Open to anyone who can use the agent; it reveals nothing about other users' connections.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/agents/{agent_id}/my-connections",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "The agent's enabled connectors with the caller's own standing — `data.connectors` is a list", body = McpEnvelope),
+        (status = 403, description = "Caller cannot use this agent", body = McpEnvelope),
+    ),
+)]
+pub async fn list_caller_connections(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath(agent_id): AppPath<Uuid>,
+) -> Result<ApiResponse, ApiError> {
+    let user_id = parse_user(&claims)?;
+    if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
+        return Err(ApiError(McpError::Forbidden(
+            "you do not have access to this agent".into(),
+        )));
+    }
+    let data = service::permissions::list_caller_connections(&state, user_id, agent_id).await?;
+    Ok(ApiResponse::ok(data, "Your connections for this agent"))
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SetConnectorAccess {
     pub enabled: bool,

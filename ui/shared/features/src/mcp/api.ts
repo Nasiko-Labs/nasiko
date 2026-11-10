@@ -19,6 +19,7 @@ import {
   authorizeSchema,
   buildLogsSchema,
   buildStatusSchema,
+  callerConnectionsSchema,
   connectOutcomeSchema,
   connectorDetailSchema,
   connectorListSchema,
@@ -40,6 +41,7 @@ import {
   type Authorize,
   type BuildLogs,
   type BuildState,
+  type CallerConnections,
   type ConnectorDetail,
   type ConnectorList,
   type Consumers,
@@ -210,6 +212,19 @@ export const useAgentConnectors = (agentId: string, enabled: boolean) =>
       }),
     enabled,
     select: withAlwaysOn,
+  })
+
+/** The agent's servers with where the viewer stands — for someone the agent is shared with. */
+export const useMyConnections = (agentId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: [...mcpKeys.agent(agentId), 'mine'] as const,
+    queryFn: ({ signal }) =>
+      apiData<CallerConnections>(`${A(agentId)}/my-connections`, {
+        signal,
+        schema: callerConnectionsSchema,
+      }),
+    enabled,
+    select: (r) => r.connectors,
   })
 
 // One read per connector until a batch read exists (M-5); this tab's own limiter.

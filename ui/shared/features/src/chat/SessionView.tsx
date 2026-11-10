@@ -47,7 +47,7 @@ import { CHAT_COLUMN, TOUCH } from './components/turnStyles'
 import { chatIdentity, targetIdentity } from './identity'
 import { indexRequests } from './pending'
 import { isMetadataOnly } from './recorded'
-import { resolveChatTarget, type Target } from './target'
+import { resolveChatTarget, stoppedByOwner, type Target } from './target'
 import { answeredResume, firstSeenAnswer, mergeTurns, replyStatus } from './turnModel'
 import { endOf, isLivePhase, sawTerminal, stepsOf, type SendInput } from './turnRegistry'
 import { tuning } from './tuning'
@@ -174,6 +174,8 @@ function SessionView({
     : routed
       ? copy.theOrchestrator
       : (row?.agent_name ?? copy.theAgent)
+  // A stopped agent someone else owns: this user can't start it, so say its owner stopped it.
+  const byOwner = !!agent && stoppedByOwner(agent, userId)
   const identity = row
     ? chatIdentity(row, dir.byId, username)
     : agent
@@ -507,7 +509,7 @@ function SessionView({
     mode = { kind: 'locked', reason: copy.lockedForbidden }
   else if (agent && agent.status !== 'running') {
     // A stopped agent: Send stays focusable, and Enter or Send says why (E16).
-    const reason = copy.targetNotRunning(agentName)
+    const reason = byOwner ? copy.stoppedByOwner(agentName) : copy.targetNotRunning(agentName)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
   }
 
@@ -538,7 +540,12 @@ function SessionView({
       />
 
       {agent && agent.status !== 'running' && !liveNow ? (
-        <NotRunningBanner agentId={agent.id} name={agentName} refetch={() => void dir.refetch()} />
+        <NotRunningBanner
+          agentId={agent.id}
+          name={agentName}
+          byOwner={byOwner}
+          refetch={() => void dir.refetch()}
+        />
       ) : null}
       {capped && target.kind === 'loading' ? (
         <div

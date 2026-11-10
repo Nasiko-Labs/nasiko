@@ -14,7 +14,7 @@ use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::providers::execute_embeddings_once;
-use crate::resolver::{PgRegistry, RegistryStore, resolve_embeddings};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, resolve_embeddings_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
@@ -66,12 +66,14 @@ async fn embeddings_core(
     // fallback.
     let inbound = inbound_for(InboundFormat::OpenAi);
     let req = inbound.parse_embeddings(body)?;
-    let resolved = resolve_embeddings(
+    // A shared agent embeds on its caller's own config and keys, as it chats on them.
+    let subject = ConfigSubject::for_call(&owner_id, attribution.user_id);
+    let resolved = resolve_embeddings_for(
         store,
         &ctx.cache,
         &ctx.cfg,
         &agent_id,
-        &owner_id,
+        subject,
         req.model.as_deref(),
     )
     .await?;
@@ -235,13 +237,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
-            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
-            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
-                1024 * 1024,
-                crate::attachments::ATTACHMENT_CACHE_TTL,
-            )),
-            marker_signer: None,
         }
     }
 
@@ -448,8 +443,7 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.to_string().contains("unknown model"));
+        assert!(matches!(err, GatewayError::Upstream(_)));
         mock.assert_async().await;
     }
 

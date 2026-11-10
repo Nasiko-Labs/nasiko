@@ -146,6 +146,26 @@ export const agentConnectorsSchema = z.looseObject({
 })
 export type AgentConnectors = z.infer<typeof agentConnectorsSchema>
 
+/**
+ * `GET /api/mcp/agents/{id}/my-connections` (`list_caller_connections_view`): the agent's enabled servers with where
+ * the viewer stands. Tools run on the chatting user's own connections, never the agent owner's.
+ */
+export const CALLER_CONNECTION = ['ready', 'connected', 'needs_connection', 'not_shared'] as const
+export type CallerConnection = (typeof CALLER_CONNECTION)[number]
+export const callerConnectionsSchema = z.looseObject({
+  connectors: z.array(
+    z.looseObject({
+      connector_id: z.string(),
+      provider_type: z.string().optional(),
+      name: z.string(),
+      display_name: nullableString,
+      logo_url: nullableString,
+      status: z.enum(CALLER_CONNECTION),
+    }),
+  ),
+})
+export type CallerConnections = z.infer<typeof callerConnectionsSchema>
+
 /** `…/connectors/{cid}/tools` (`list_connector_tools_view`): each tool with this agent's effective stance. */
 export const agentToolsSchema = z.looseObject({
   tools: z.array(

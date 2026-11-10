@@ -100,15 +100,50 @@ describe('tabs', () => {
     await waitFor(() => expect(router.state.location.search).toEqual({}))
   })
 
-  it('a non-manager sees four tabs and, on Details, who owns the agent', async () => {
+  it('a non-manager sees five tabs and, on Details, who owns the agent', async () => {
     configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
     renderApp(url(0, 'details'))
     await title()
-    expect(tabNames()).toEqual(['Overview', 'Activity', 'Versions', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Activity', 'Versions', 'MCP', 'Details'])
     expect(
       await screen.findByText(/^Owned by .+ Only the owner or a superuser/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+  })
+
+  it("a non-manager's MCP tab lists only their own standing per server, never the owner's", async () => {
+    configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
+    const shown = {
+      connectors: [
+        { connector_id: 'c1', name: 'crm', display_name: 'CRM', status: 'needs_connection' },
+        { connector_id: 'c2', name: 'wiki', display_name: 'Wiki', status: 'not_shared' },
+        { connector_id: 'c3', name: 'docs', display_name: 'Docs', status: 'connected' },
+      ],
+    }
+    server.use(
+      http.get('/api/mcp/agents/:id/my-connections', () =>
+        HttpResponse.json({ data: shown, status_code: 200, message: 'ok' }),
+      ),
+    )
+    renderApp(url(0, 'mcp'))
+    expect(await screen.findByText(mcpCopy.sharedMcpSub)).toBeInTheDocument()
+    const connect = await screen.findByRole('link', { name: mcpCopy.callerNeedsConnection })
+    expect(connect).toHaveAttribute('href', '/mcp/c1')
+    expect(screen.getByText(mcpCopy.callerNotShared)).toBeInTheDocument()
+    expect(screen.getByText(mcpCopy.callerNotSharedNote)).toBeInTheDocument()
+    expect(screen.getByText(mcpCopy.callerConnected)).toBeInTheDocument()
+    // The managers' rules editor is not shown to them.
+    expect(screen.queryByText(mcpCopy.agentMcpSub)).toBeNull()
+  })
+
+  it('a non-manager sees that a stopped agent was stopped by its owner', async () => {
+    configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
+    const me = (await (await fetch('/api/me')).json()) as { sub: string }
+    const stopped = await agentWhere((a) => a.status === 'stopped' && a.owner_id !== me.sub)
+    renderApp(`/agents/${stopped.id}`)
+    await title()
+    expect(await screen.findByText(copy.stoppedByOwner)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
 })
 
@@ -491,6 +526,41 @@ describe('lifecycle errors', () => {
     } finally {
       reqs.stop()
     }
+  })
+
+  it('Stopping an agent shared with others warns that they use it', async () => {
+    server.use(
+      http.get('/api/agents/:id/grants', ({ params }) =>
+        HttpResponse.json({
+          agent_id: String(params.id),
+          is_public: false,
+          user_grants: ['someone-else'],
+          agent_acl: [],
+        }),
+      ),
+    )
+    renderApp(url(0))
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Stop' }))[0]!)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(await within(dialog).findByText(copy.stopSharedWarning)).toBeInTheDocument()
+  })
+
+  it('Stopping an agent nobody else uses has no warning', async () => {
+    server.use(
+      http.get('/api/agents/:id/grants', ({ params }) =>
+        HttpResponse.json({
+          agent_id: String(params.id),
+          is_public: false,
+          user_grants: [],
+          agent_acl: [],
+        }),
+      ),
+    )
+    renderApp(url(0))
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Stop' }))[0]!)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(copy.stopBody)).toBeInTheDocument()
+    expect(within(dialog).queryByText(copy.stopSharedWarning)).toBeNull()
   })
 
   it('a 401 on an action sends the user to sign in', async () => {

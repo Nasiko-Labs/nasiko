@@ -55,6 +55,7 @@ use super::handlers;
         handlers::oauth::status,
         handlers::oauth::revoke,
         handlers::permissions::list_connectors,
+        handlers::permissions::list_caller_connections,
         handlers::permissions::set_connector_access,
         handlers::permissions::list_connector_tools,
         handlers::permissions::list_tool_rules,

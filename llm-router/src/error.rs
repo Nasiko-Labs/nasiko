@@ -40,19 +40,17 @@ pub enum GatewayError {
     SecretNotFound(String, String),
     #[error("No api_key_secret_name set and no platform fallback key configured")]
     NoApiKey,
+    /// The agent is shared with the calling user, so it runs on their own LLM config, and they
+    /// have none. Worded for the end user: an agent relays it into the chat.
+    #[error(
+        "Connect a model in LLM router to chat with this agent. It is shared with you, so it \
+         runs on your own default LLM config, and you have not set one."
+    )]
+    NoSharedUserConfig,
 
     // ── 502 — upstream provider (steps 4+) ──────────────────────────────────
     #[error("Upstream LLM error: {0}")]
     Upstream(String),
-    #[error("{message}")]
-    Provider { status: StatusCode, message: String },
-
-    #[error("request body is over the router's {} MiB limit", limit / (1024 * 1024))]
-    PayloadTooLarge { limit: usize },
-    #[error("file storage is unavailable; try again")]
-    StorageUnavailable,
-    #[error("the router is handling too much data right now; try again")]
-    Busy,
 
     // ── 500 — server-side fault (DB/crypto/config integrity) ─────────────────
     // Not client-actionable; the detail is logged but not exposed in the body.
@@ -73,13 +71,9 @@ impl GatewayError {
             GatewayError::BadRequest(_)
             | GatewayError::NoRegistryEntry(_)
             | GatewayError::SecretNotFound(_, _)
-            | GatewayError::NoApiKey => StatusCode::BAD_REQUEST,
+            | GatewayError::NoApiKey
+            | GatewayError::NoSharedUserConfig => StatusCode::BAD_REQUEST,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
-            GatewayError::Provider { status, .. } => *status,
-            GatewayError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
-            GatewayError::StorageUnavailable | GatewayError::Busy => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -100,45 +94,5 @@ impl IntoResponse for GatewayError {
             _ => full,
         };
         (status, Json(json!({ "detail": detail }))).into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_new_refusal_answers_with_its_own_status_and_says_why() {
-        let cases = [
-            (
-                GatewayError::PayloadTooLarge {
-                    limit: 48 * 1024 * 1024,
-                },
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "request body is over the router's 48 MiB limit",
-            ),
-            (
-                GatewayError::StorageUnavailable,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "file storage is unavailable; try again",
-            ),
-            (
-                GatewayError::Busy,
-                StatusCode::SERVICE_UNAVAILABLE,
-                "the router is handling too much data right now; try again",
-            ),
-            (
-                GatewayError::Provider {
-                    status: StatusCode::UNPROCESSABLE_ENTITY,
-                    message: "Upstream LLM error: provider returned 422: x".into(),
-                },
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "Upstream LLM error: provider returned 422: x",
-            ),
-        ];
-        for (error, status, detail) in cases {
-            assert_eq!(error.status(), status);
-            assert_eq!(error.to_string(), detail);
-        }
     }
 }

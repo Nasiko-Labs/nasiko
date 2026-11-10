@@ -6,6 +6,8 @@
 import { Button } from '@nasiko/ui/primitives/button'
 import { copy } from '../copy'
 import { cn } from '@nasiko/ui/lib/utils'
+import { useGrants } from '../api'
+import { isSharedWithOthers } from '../grants'
 import { ACTION_LABEL, outcomeText, type LifecycleFlow } from '../lifecycleFlow'
 import { actionsFor, type DisplayStatus } from '../status'
 import { ErrorNote } from './bits'
@@ -67,12 +69,26 @@ export function LifecycleButtons({
 }
 
 export function StopDialog({ flow, name }: { flow: LifecycleFlow; name: string }) {
+  // Read only once the dialog opens; a failed read just leaves the warning out.
+  const grants = useGrants(flow.id, flow.stopOpen)
+  const shared = !!grants.data && isSharedWithOthers(grants.data)
   return (
     <ConfirmDialog
       open={flow.stopOpen}
       onOpenChange={flow.setStopOpen}
       title={copy.stopTitle(name)}
-      body={copy.stopBody}
+      body={
+        shared ? (
+          <>
+            <span className="block">{copy.stopBody}</span>
+            <span role="note" className="mt-2 block text-warning">
+              {copy.stopSharedWarning}
+            </span>
+          </>
+        ) : (
+          copy.stopBody
+        )
+      }
       confirmLabel={copy.stop}
       destructive
       pending={flow.m.isPending}

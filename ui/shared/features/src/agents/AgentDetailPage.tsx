@@ -55,6 +55,7 @@ import { SettingsTab } from './detail/SettingsTab'
 import { VersionsTab } from './detail/VersionsTab'
 import { AgentBuildsTab } from '@nasiko/features/deploy/AgentBuildsTab'
 import { AgentMcpTab } from '@nasiko/features/mcp/components/AgentMcpTab'
+import { SharedMcpTab } from '@nasiko/features/mcp/components/SharedMcpTab'
 import { isUuid, type AgentView } from './normalize'
 import { DETAIL_TABS, type DetailTab } from './search'
 import { actionsFor, displayStatus, isHarness } from './status'
@@ -171,7 +172,8 @@ function tabsFor(agent: AgentView): DetailTab[] {
   // A harness is an ordinary agent id to the MCP gateway, so its manager gets the MCP tab too.
   if (agent.isHarness)
     return agent.canManage ? ['overview', 'mcp', 'details'] : ['overview', 'details']
-  return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'details']
+  // Someone it is shared with gets an MCP tab too: which servers they must connect themselves (SharedMcpTab).
+  return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'mcp', 'details']
 }
 
 /** The core's tabs with each layer tab after the one it names (or at the end); tabs naming the same one keep their order. */
@@ -289,6 +291,12 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
       {status.failed ? (
         <p className="text-xs text-muted-foreground">{copy.couldntRefresh}</p>
       ) : null}
+      {/* Someone it is shared with can't start it, so say who stopped it rather than offering Start. */}
+      {!agent.canManage && !agent.isHarness && display === 'stopped' ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          {copy.stoppedByOwner}
+        </p>
+      ) : null}
       <Tabs value={current} onValueChange={setTab}>
         <TabsList data-tour="agent-tabs" className="max-w-full justify-start overflow-x-auto">
           {tabs.map((t) => (
@@ -346,7 +354,11 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
         ) : null}
         {allowed.includes('mcp') ? (
           <TabsContent value="mcp" className="pt-3">
-            <AgentMcpTab agentId={agent.id} harness={agent.isHarness} />
+            {agent.canManage ? (
+              <AgentMcpTab agentId={agent.id} harness={agent.isHarness} />
+            ) : (
+              <SharedMcpTab agentId={agent.id} />
+            )}
           </TabsContent>
         ) : null}
         {allowed.includes('access') ? (

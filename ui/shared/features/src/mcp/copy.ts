@@ -303,6 +303,17 @@ export const copy = {
   stanceFor: (tool: string) => `Tool access for ${tool}`,
   toolsFailed: "Couldn't load this server's tools",
   agentFailed: "Couldn't load this agent's MCP servers",
+
+  // The MCP tab for someone the agent is shared with
+  sharedMcpSub:
+    "This agent's tools run on your own connections, never its owner's. Connect each server it uses to let it call that server's tools for you.",
+  noSharedServers: 'This agent uses no MCP servers.',
+  callerReady: 'Ready',
+  callerConnected: 'Connected as you',
+  callerNeedsConnection: 'Connect your account',
+  callerNotShared: 'Not shared with you',
+  callerNotSharedNote:
+    "Ask the agent's owner to share this server with you, then connect your own account.",
   accessFailed: (reason: string) => `Couldn't update access: ${reason}`,
   ruleFailed: (reason: string) => `Couldn't save the tool rule: ${reason}`,
 

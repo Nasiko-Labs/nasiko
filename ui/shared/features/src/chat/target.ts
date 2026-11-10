@@ -14,6 +14,11 @@ import { agentParamText } from './search'
 import type { RememberedTarget } from './rememberTarget'
 import type { ChatSessionRow, HitlDto } from './types'
 
+/** A stopped agent someone else owns: this user can't start it, so the chat says its owner stopped it. */
+export function stoppedByOwner(agent: Pick<Agent, 'status' | 'owner_id'>, userId: string) {
+  return agent.status === 'stopped' && agent.owner_id !== userId
+}
+
 export type Target =
   | { kind: 'loading' }
   | { kind: 'choose' }

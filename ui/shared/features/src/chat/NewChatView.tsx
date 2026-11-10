@@ -47,6 +47,7 @@ import {
   orchestratorExamples,
   preselectTarget,
   resolveAgentParam,
+  stoppedByOwner,
 } from './target'
 import type { DisplayTurn } from './turnModel'
 import { isLivePhase, type LiveTurn, type SendInput } from './turnRegistry'
@@ -71,6 +72,8 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
   const list = useChatSessions()
   const target = resolveAgentParam(search.agent, directoryOf(dir), isAuto(search))
   const agent = target.kind === 'direct' ? target.agent : undefined
+  // A stopped agent someone else owns: this user can't start it, so say its owner stopped it.
+  const byOwner = !!agent && stoppedByOwner(agent, userId)
   const routed = target.kind === 'routed'
   const noTarget = target.kind === 'choose'
   const draftKeyOf = (a: { id: string } | undefined) =>
@@ -315,7 +318,8 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     mode = { kind: 'locked', reason: copy.needTarget, blocked: () => setPickerOpen(true) }
   else if (target.kind === 'loading' || target.kind === 'invalid') mode = { kind: 'locked' }
   else if (agent && agent.status !== 'running') {
-    const reason = copy.stoppedTarget(agentLabel(agent))
+    const name = agentLabel(agent)
+    const reason = byOwner ? copy.stoppedByOwner(name) : copy.stoppedTarget(name)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
   }
   if (live && isLivePhase(live.phase)) mode = { kind: 'locked' }
@@ -423,6 +427,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
           <NotRunningBanner
             agentId={agent.id}
             name={agentLabel(agent)}
+            byOwner={byOwner}
             refetch={() => void dir.refetch()}
           />
         ) : null}
