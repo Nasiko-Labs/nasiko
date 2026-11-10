@@ -165,6 +165,7 @@ export const copy = {
       'Claude Code, Codex, Cursor and the rest report every session to Nasiko: what it cost, which models it used, and the sessions you had before today.',
     steps: {
       install: 'Install the CLI',
+      connect: 'Connect it to this server',
       signIn: 'Sign in',
       signInSso: 'Sign in with your company account',
     },
