@@ -227,6 +227,15 @@ export const copy = {
   // Verified live (QA 2026-09-27): Restart redeploys and injects the new value; the running container doesn't see it before.
   secretsHowItWorks:
     'Available to the agent as environment variables. Restart or redeploy the agent to apply a change.',
+  // NAS-1458. agent_secrets.rs `resolve_secret_env`: the owner's user secrets first, the agent's own on top.
+  secretsPrecedence:
+    'The agent also gets every secret its owner keeps in Settings → Secrets. A secret set here overrides one of the same name there, for this agent only.',
+  inheritedSecrets: 'From the owner’s secrets',
+  inheritedSecretsLink: 'Manage in Settings → Secrets',
+  noInheritedSecrets: 'None. Secrets the owner adds in Settings → Secrets will appear here.',
+  inheritedBadge: 'Inherited',
+  overriddenBadge: 'Overridden here',
+  overridesBadge: 'Overrides owner’s secret',
   // Agent flags (catalog/routes.rs `AgentDetailResponse` at nasiko-cloud-rs 1a305a63): the legacy Settings tab's copy.
   features: 'Features',
   featuresHint: 'Agent-level feature flags. Changes take effect on next restart.',
@@ -266,9 +275,6 @@ export const copy = {
   start: 'Start',
   stopTitle: (name: string) => `Stop ${name}?`,
   stopBody: 'The container stops; callers get errors until you start it again.',
-  stopSharedWarning:
-    'Others use this agent: it is shared with people besides you. They will see it was stopped by its owner and cannot chat with it until you start it again.',
-  stoppedByOwner: 'This agent was stopped by its owner. You can use it again once they start it.',
   restarted: 'Restarted',
   started: 'Started',
   stoppedDone: 'Stopped',

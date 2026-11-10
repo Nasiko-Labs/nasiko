@@ -26,6 +26,10 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(import_secrets),
         )
         .route(
+            "/agents/{agent_id}/secrets/inherited",
+            get(list_inherited_secrets),
+        )
+        .route(
             "/agents/{agent_id}/secrets/{name}",
             axum::routing::delete(delete_secret),
         )
@@ -89,6 +93,63 @@ pub(crate) async fn list_secrets(
     };
 
     Json(names).into_response()
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct InheritedSecret {
+    name: String,
+    /// The agent has a secret of its own with this name, which is the value it gets.
+    overridden: bool,
+}
+
+/// The secret names an agent inherits from its owner's Settings → Secrets, each marked when the
+/// agent's own secret of that name overrides it. Names only, never values. Owner-or-superuser
+/// only; the list is the agent owner's, not the caller's.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{agent_id}/secrets/inherited",
+    tag = "catalog",
+    params(
+        ("agent_id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "The owner's secret names the agent inherits", body = [InheritedSecret]),
+        (status = 403, description = "Caller cannot manage this agent"),
+    ),
+)]
+pub(crate) async fn list_inherited_secrets(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !can_manage_agent(&state, &claims, agent_id).await {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+
+    // `secrets_env ? name` is the agent's own secret of that name, so no value is decrypted.
+    let rows = sqlx::query_as::<_, (String, bool)>(
+        r#"SELECT s.name, COALESCE(a.secrets_env ? s.name, false)
+           FROM agents a
+           JOIN user_secrets s ON s.user_id = a.owner_id
+           WHERE a.id = $1
+           ORDER BY s.name"#,
+    )
+    .bind(agent_id)
+    .fetch_all(&state.db)
+    .await;
+
+    match rows {
+        Ok(rows) => Json(
+            rows.into_iter()
+                .map(|(name, overridden)| InheritedSecret { name, overridden })
+                .collect::<Vec<_>>(),
+        )
+        .into_response(),
+        Err(e) => {
+            tracing::error!(%e, %agent_id, "list_inherited_secrets: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+        }
+    }
 }
 
 /// Create or overwrite one of an agent's secrets. Owner-or-superuser only.
@@ -266,6 +327,37 @@ pub async fn resolve_agent_env(db: &sqlx::PgPool, agent_id: Uuid) -> HashMap<Str
             Some((k, decrypted))
         })
         .collect()
+}
+
+/// The decrypted secrets the user keeps under Settings → Secrets (`user_secrets`). Every agent
+/// the user owns inherits them; a value that cannot be decrypted is left out.
+async fn resolve_owner_secrets(db: &sqlx::PgPool, owner_id: Uuid) -> HashMap<String, String> {
+    let rows: Vec<(String, String)> =
+        sqlx::query_as("SELECT name, encrypted_value FROM user_secrets WHERE user_id = $1")
+            .bind(owner_id)
+            .fetch_all(db)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(%e, %owner_id, "resolve_owner_secrets: db error");
+                Vec::new()
+            });
+    let crypto = SecretsCrypto::for_user(owner_id);
+    rows.into_iter()
+        .filter_map(|(name, encrypted)| Some((name, crypto.decrypt(&encrypted).ok()?)))
+        .collect()
+}
+
+/// Every secret an agent is deployed with: its owner's secrets, then the agent's own on top, so
+/// an agent secret overrides an owner secret of the same name. The one place that order is
+/// decided; every deploy path builds its env from here.
+pub async fn resolve_secret_env(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    agent_id: Uuid,
+) -> HashMap<String, String> {
+    let mut env = resolve_owner_secrets(db, owner_id).await;
+    env.extend(resolve_agent_env(db, agent_id).await);
+    env
 }
 
 pub async fn replace_agent_env(

@@ -61,6 +61,7 @@ import type {
   AgentVersion,
   DeletedAgent,
   DeploymentRow,
+  InheritedSecret,
   RollbackResponse,
   SecretName,
   Unavailable,
@@ -88,6 +89,8 @@ export const agentKeys = {
   userGrants: (id: string) => ['agents', 'grants-users', id] as const,
   agentGrants: (id: string) => ['agents', 'grants-agents', id] as const,
   secrets: (id: string) => ['agents', 'secrets', id] as const,
+  // Under `secrets`, so the agent's own secret writes (which can override one) refresh it too.
+  inheritedSecrets: (id: string) => ['agents', 'secrets', id, 'inherited'] as const,
   stats: (id: string) => ['agents', 'stats', id] as const,
   resources: (id: string) => ['agents', 'resources', id] as const,
   errorLogs: (id: string) => ['agents', 'error-logs', id] as const,
@@ -421,6 +424,20 @@ export function useSecrets(id: string, enabled: boolean) {
   const parse = arrayOf<SecretName>((x) => isObj(x) && typeof x.name === 'string', path)
   return useQuery({
     queryKey: agentKeys.secrets(id),
+    queryFn: async ({ signal }) => parse(await apiFetch<unknown>(path, { signal })),
+    enabled,
+  })
+}
+
+/** The owner's Settings → Secrets names this agent inherits, each marked when the agent overrides it. */
+export function useInheritedSecrets(id: string, enabled: boolean) {
+  const path = `/api/agents/${id}/secrets/inherited`
+  const parse = arrayOf<InheritedSecret>(
+    (x) => isObj(x) && typeof x.name === 'string' && typeof x.overridden === 'boolean',
+    path,
+  )
+  return useQuery({
+    queryKey: agentKeys.inheritedSecrets(id),
     queryFn: async ({ signal }) => parse(await apiFetch<unknown>(path, { signal })),
     enabled,
   })

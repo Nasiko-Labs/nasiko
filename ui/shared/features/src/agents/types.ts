@@ -37,6 +37,15 @@ export interface SecretName {
   updated_at: string | null
 }
 
+/**
+ * `GET /api/agents/{id}/secrets/inherited` (agent_secrets.rs `InheritedSecret`): a name from the agent owner's
+ * Settings → Secrets, which the agent gets unless it has its own secret of that name (`overridden`). Names only.
+ */
+export interface InheritedSecret {
+  name: string
+  overridden: boolean
+}
+
 /** `GET /api/agents/{id}/grants` (agents/grants.rs `GrantsSummary`). */
 export interface GrantsSummary {
   agent_id: string

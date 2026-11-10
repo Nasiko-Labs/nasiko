@@ -2,7 +2,8 @@
  * Settings (plan §7.3, managers only): display name and description, feature flags (prompt comments; minimal-code and
  * self-review for agents whose card reads as code work), Token optimization (TokenOptimization.tsx,
  * plans/feat-context-optimization.md eng E1/E2: saves on flip, rolls back with a toast, harnesses too), secrets (names only;
- * values are write-only and cleared after submit), and delete (type the unique name).
+ * values are write-only and cleared after submit; beside them the owner's Settings → Secrets names the agent inherits,
+ * marked where one of its own overrides them), and delete (type the unique name).
  * Both forms are react-hook-form + zod (plan §2.4) and ask before a route change drops edits; switches save at once.
  */
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -23,7 +24,9 @@ import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Switch } from '@nasiko/ui/primitives/switch'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
 import { LeaveGuard } from '@nasiko/app-core/leave-guard'
-import { useSecretMutations, useSecrets, useUpdateAgent } from '../api'
+import { Link } from '@tanstack/react-router'
+import { Badge } from '@nasiko/ui/primitives/badge'
+import { useInheritedSecrets, useSecretMutations, useSecrets, useUpdateAgent } from '../api'
 import { BetaBadge } from '@nasiko/ui/composites/beta-badge'
 import { ErrorNote, LearnMore, Section } from '../components/bits'
 import { DeleteAgentDialog } from '../components/dialogs'
@@ -127,6 +130,8 @@ const secretSchema = z.object({
 
 function Secrets({ id }: { id: string }) {
   const secrets = useSecrets(id, true)
+  const inherited = useInheritedSecrets(id, true)
+  const inheritedNames = new Set(inherited.data?.map((s) => s.name))
   const m = useSecretMutations(id)
   const [setError, setSetError] = useState<Error | null>(null)
   const [saved, flash] = useSavedNote()
@@ -155,6 +160,7 @@ function Secrets({ id }: { id: string }) {
   return (
     <Section title={copy.secrets} action={<LearnMore href="secrets" />}>
       <p className="text-xs text-muted-foreground">{copy.secretsHowItWorks}</p>
+      <p className="text-xs text-muted-foreground">{copy.secretsPrecedence}</p>
       {secrets.isPending ? (
         <Skeleton className="h-10" />
       ) : secrets.isError ? (
@@ -162,8 +168,13 @@ function Secrets({ id }: { id: string }) {
       ) : secrets.data.length ? (
         <ul className="divide-y divide-border text-sm">
           {secrets.data.map((s) => (
-            <li key={s.name} className="flex items-center justify-between py-1.5">
+            <li key={s.name} className="flex items-center justify-between gap-2 py-1.5">
               <code className="font-mono text-xs">{s.name}</code>
+              {inheritedNames.has(s.name) ? (
+                <Badge variant="info" className="mr-auto">
+                  {copy.overridesBadge}
+                </Badge>
+              ) : null}
               <Button
                 size="sm"
                 variant="ghost"
@@ -212,8 +223,44 @@ function Secrets({ id }: { id: string }) {
       </form>
       {setError ? <ErrorNote error={setError} context="secret" /> : null}
       {m.remove.isError ? <ErrorNote error={m.remove.error} context="secret" /> : null}
+      <InheritedSecrets query={inherited} />
       <LeaveGuard when={isDirty && !isSubmitting} />
     </Section>
+  )
+}
+
+/** The owner's secret names the agent gets from Settings → Secrets; values are never read here. */
+function InheritedSecrets({ query }: { query: ReturnType<typeof useInheritedSecrets> }) {
+  const headingId = useId()
+  return (
+    <section aria-labelledby={headingId} className="space-y-1.5 border-t border-border pt-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 id={headingId} className="text-sm font-medium">
+          {copy.inheritedSecrets}
+        </h4>
+        <Link to="/settings/secrets" className="text-xs underline underline-offset-4">
+          {copy.inheritedSecretsLink}
+        </Link>
+      </div>
+      {query.isPending ? (
+        <Skeleton className="h-8" />
+      ) : query.isError ? (
+        <ErrorNote error={query.error} onRetry={() => void query.refetch()} />
+      ) : query.data.length ? (
+        <ul className="divide-y divide-border text-sm">
+          {query.data.map((s) => (
+            <li key={s.name} className="flex items-center gap-2 py-1.5">
+              <code className="font-mono text-xs">{s.name}</code>
+              <Badge variant={s.overridden ? 'muted' : 'outline'}>
+                {s.overridden ? copy.overriddenBadge : copy.inheritedBadge}
+              </Badge>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-sm text-muted-foreground">{copy.noInheritedSecrets}</p>
+      )}
+    </section>
   )
 }
 

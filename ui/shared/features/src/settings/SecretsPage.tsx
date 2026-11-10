@@ -6,9 +6,11 @@
  *   refresh (someone may have rewritten it) and when the page closes.
  * - Delete asks inline, and says which of your router configs lose their key (the server doesn't check, ST-7).
  * - Add is an inline row: `POST` upserts, so an existing name gets the new value.
+ * - Every agent the user owns is deployed with these; an agent's own secret of the same name wins (NAS-1458).
  */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import { Copy, Eye, EyeOff, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
@@ -111,6 +113,12 @@ export function SecretsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={copy.title} description={copy.sub} />
+      <p className="px-1 text-sm text-muted-foreground">
+        {copy.precedence}{' '}
+        <Link to="/agents" className="underline underline-offset-4">
+          {copy.agentsLink}
+        </Link>
+      </p>
       {secrets.isPending ? (
         <PageLoader label={copy.loading} />
       ) : secrets.isError ? (
