@@ -312,12 +312,15 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     },
   }
 
+  // A parked agent takes messages: the message wakes it (`acceptsMessages` in ./target). Inline, not that
+  // call: a call here makes the React Compiler re-render every turn on each tick (ChatPage.tick.test).
+  const takesMessages = agent?.status === 'running' || agent?.status === 'parked'
   // The composer's lock: no target opens the picker (DS3); a stopped agent says why (E16); a turn in flight locks.
   let mode: ComposerMode = { kind: 'ready' }
   if (noTarget)
     mode = { kind: 'locked', reason: copy.needTarget, blocked: () => setPickerOpen(true) }
   else if (target.kind === 'loading' || target.kind === 'invalid') mode = { kind: 'locked' }
-  else if (agent && agent.status !== 'running') {
+  else if (agent && !takesMessages) {
     const name = agentLabel(agent)
     const reason = byOwner ? copy.stoppedByOwner(name) : copy.stoppedTarget(name)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
@@ -423,7 +426,7 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         ) : (
           <NewChatHero target={identity} description={agent?.description} />
         )}
-        {agent && agent.status !== 'running' ? (
+        {agent && !takesMessages ? (
           <NotRunningBanner
             agentId={agent.id}
             name={agentLabel(agent)}

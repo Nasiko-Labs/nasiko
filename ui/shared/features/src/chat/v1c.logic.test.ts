@@ -120,16 +120,17 @@ describe('chatIdentity (test 1, §5.2)', () => {
     expect(recordedName('admin-', 'admin')).toBe('admin-')
   })
 
-  it('the picker never lists harness agents; running ones come first, by display name', () => {
+  it('the picker never lists harness agents; running and parked ones come first, by display name', () => {
     const { running, stopped } = pickerAgents([
       agent('b', { display_name: 'Beta' }),
       agent('a', { display_name: 'Alpha' }),
       agent('s', { display_name: 'Sleepy', status: 'stopped' }),
+      agent('p', { display_name: 'Parked', status: 'parked' }),
       agent('h1', { tags: ['coding-agent'] }),
       agent('h2', { metadata: { source: 'nasiko-cli-integration' } }),
       agent('h3', { is_coding_agent: true }),
     ])
-    expect(running.map((a) => a.id)).toEqual(['a', 'b'])
+    expect(running.map((a) => a.id)).toEqual(['a', 'b', 'p'])
     expect(stopped.map((a) => a.id)).toEqual(['s'])
   })
 })

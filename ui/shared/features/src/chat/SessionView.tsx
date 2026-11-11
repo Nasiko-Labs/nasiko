@@ -487,6 +487,9 @@ function SessionView({
   }
 
   const readOnly = target.kind === 'readonly'
+  // A parked agent takes messages: the message wakes it (`acceptsMessages` in ./target). Inline, not that
+  // call: a call here makes the React Compiler re-render every turn on each tick (ChatPage.tick.test).
+  const takesMessages = agent?.status === 'running' || agent?.status === 'parked'
   let mode: ComposerMode = { kind: 'ready' }
   if (capped && target.kind === 'loading')
     mode = { kind: 'locked', reason: copy.chatDetailsMissing }
@@ -507,7 +510,7 @@ function SessionView({
   else if (status === 'checking') mode = { kind: 'locked', reason: copy.lockedChecking }
   else if (forbiddenTurn && unlockedTurn !== forbiddenTurn)
     mode = { kind: 'locked', reason: copy.lockedForbidden }
-  else if (agent && agent.status !== 'running') {
+  else if (agent && !takesMessages) {
     // A stopped agent: Send stays focusable, and Enter or Send says why (E16).
     const reason = byOwner ? copy.stoppedByOwner(agentName) : copy.targetNotRunning(agentName)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
@@ -539,7 +542,7 @@ function SessionView({
         onDelete={() => setConfirm('delete')}
       />
 
-      {agent && agent.status !== 'running' && !liveNow ? (
+      {agent && !takesMessages && !liveNow ? (
         <NotRunningBanner
           agentId={agent.id}
           name={agentName}

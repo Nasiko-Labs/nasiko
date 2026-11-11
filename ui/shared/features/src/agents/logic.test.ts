@@ -23,6 +23,7 @@ import { expireWatch, isWatching, shownStatus, startWatch, stepWatch, type Watch
 describe('status matrix', () => {
   it.each([
     ['running', 'running', ['restart', 'stop']],
+    ['parked', 'parked', []],
     ['deploying', 'deploying', ['stop']],
     ['pending', 'deploying', ['stop']],
     ['crashed', 'attention', ['restart', 'stop']],

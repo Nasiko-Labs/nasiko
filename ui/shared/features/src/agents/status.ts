@@ -5,7 +5,14 @@
  */
 
 export type DisplayStatus =
-  'running' | 'deploying' | 'attention' | 'stopped' | 'not-deployed' | 'harness' | 'unknown'
+  | 'running'
+  | 'parked'
+  | 'deploying'
+  | 'attention'
+  | 'stopped'
+  | 'not-deployed'
+  | 'harness'
+  | 'unknown'
 export type LifecycleAction = 'restart' | 'stop' | 'start'
 type BadgeTone = 'success' | 'info' | 'warning' | 'muted' | 'outline'
 
@@ -22,6 +29,12 @@ export const STATUS: Record<DisplayStatus, StatusInfo> = {
     tone: 'success',
     actions: ['restart', 'stop'],
     hint: 'The runtime reports the container as running.',
+  },
+  parked: {
+    label: 'Parked',
+    tone: 'muted',
+    actions: [],
+    hint: 'Idle, so its container was released. The next message wakes it.',
   },
   deploying: {
     label: 'Deploying',
@@ -83,6 +96,8 @@ export function displayStatus(raw: string | null | undefined, harness: boolean):
   switch (raw) {
     case 'running':
       return 'running'
+    case 'parked':
+      return 'parked'
     case 'deploying':
     case 'pending':
       return 'deploying'
