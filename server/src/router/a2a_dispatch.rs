@@ -31,7 +31,7 @@ use crate::agent_resolver::{Caller, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::orchestrator_policy::TurnKind;
-use crate::sessions::admission::SessionAdmission;
+use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
 
@@ -2658,11 +2658,7 @@ async fn harness_agent_stream(
     request_id: &a2a::JsonRpcId,
 ) -> Result<Response, A2aDispatchError> {
     // Before the session, the transcript and the flow are written: a refused turn leaves none.
-    if let Some(refusal) = state
-        .session_admission
-        .refuse(turn.user_id, &target.harness_id)
-        .await
-    {
+    if let Some(refusal) = refuse_session(state, turn.user_id, &target.harness_id).await {
         return Err(A2aDispatchError::SessionRefused {
             refusal,
             id: serde_json::to_value(request_id).unwrap_or(serde_json::Value::Null),

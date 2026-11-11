@@ -49,6 +49,33 @@ impl SessionRefusal {
     }
 }
 
+impl SessionRefusal {
+    /// Coding sessions are switched off on this server (`HARNESS_SESSIONS_ENABLED`).
+    pub fn sessions_disabled() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            body: json!({
+                "error": "coding sessions are not enabled on this server",
+                "code": "harness_sessions_disabled",
+            }),
+        }
+    }
+}
+
+/// Whether `user_id` is refused a session of `harness_id`, or a turn on one: always while coding
+/// sessions are switched off on this server, whatever the installed admission says; otherwise
+/// that admission's answer. Every caller asks this, not the admission directly.
+pub async fn refuse_session(
+    state: &crate::state::AppState,
+    user_id: Uuid,
+    harness_id: &str,
+) -> Option<SessionRefusal> {
+    if !state.config.harness_sessions_enabled {
+        return Some(SessionRefusal::sessions_disabled());
+    }
+    state.session_admission.refuse(user_id, harness_id).await
+}
+
 /// The answer on the session API: the status and body as they stand.
 impl IntoResponse for SessionRefusal {
     fn into_response(self) -> Response {

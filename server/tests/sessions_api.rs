@@ -1812,3 +1812,82 @@ async fn deleting_a_foreign_session_is_a_404_and_leaves_it_alone() {
     assert_eq!(row_state(&server, &sid).await.0, "parked");
     server.cleanup().await;
 }
+
+/// The live platform harness agents, by name, with their ids.
+async fn live_platform_harness_agents(server: &common::TestServer) -> Vec<(String, Uuid)> {
+    sqlx::query_as(
+        "SELECT name, id FROM agents WHERE workload_kind = 'harness' AND name = harness_id \
+         AND deleted_at IS NULL ORDER BY name",
+    )
+    .fetch_all(&server.state.db)
+    .await
+    .unwrap()
+}
+
+/// `HARNESS_SESSIONS_ENABLED` off: the boot seeding hides the harness agents an earlier start
+/// created, the catalog is empty, and opening a session is refused.
+#[tokio::test]
+#[serial]
+async fn with_sessions_switched_off_the_harnesses_are_hidden_and_sessions_refused() {
+    let server = common::TestServer::start_with(|c| c.harness_sessions_enabled = false).await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    assert_eq!(live_platform_harness_agents(&server).await.len(), 3);
+
+    nasiko_server::seed::seed_harness_agents_if_enabled(&server.state).await;
+
+    assert!(live_platform_harness_agents(&server).await.is_empty());
+    let catalog: Value = common::as_superuser(
+        server.client.get(server.url("/api/harnesses")),
+        &admin,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(catalog["data"], json!([]));
+    let resp = common::as_superuser(
+        server.client.post(server.url("/api/sessions")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({ "harness": "codex" }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 403);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["code"],
+        "harness_sessions_disabled"
+    );
+    server.cleanup().await;
+}
+
+/// Switching sessions back on restores the hidden harness agents with their ids, so sessions
+/// opened on them before still resolve, instead of creating new ones beside them.
+#[tokio::test]
+#[serial]
+async fn switching_sessions_back_on_restores_the_hidden_harness_agents() {
+    let server = common::TestServer::start().await;
+    init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let before = live_platform_harness_agents(&server).await;
+    assert_eq!(before.len(), 3);
+
+    nasiko_server::seed::hide_harness_agents(&server.state.db).await;
+    assert!(live_platform_harness_agents(&server).await.is_empty());
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+
+    assert_eq!(live_platform_harness_agents(&server).await, before);
+    let rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents WHERE workload_kind = 'harness' AND name = harness_id",
+    )
+    .fetch_one(&server.state.db)
+    .await
+    .unwrap();
+    assert_eq!(rows, 3, "no new row beside a restored one");
+    server.cleanup().await;
+}

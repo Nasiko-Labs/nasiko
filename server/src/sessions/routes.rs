@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::admission::SessionAdmission;
+use super::admission::refuse_session;
 use super::catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT};
 use super::model::{ListedSession, SessionFilter, SessionRow, SessionRuntimeState, SessionStore};
 use super::suspend::{ReapError, Suspend, claim_suspend, claim_unaccounted};
@@ -89,11 +89,16 @@ impl From<Harness> for HarnessView {
     }
 }
 
+/// The harnesses a session can be opened on: none while coding sessions are switched off.
 async fn list_harnesses(State(state): State<AppState>, _claims: Claims) -> ApiResult<Response> {
-    let harnesses = HarnessCatalog::new(state.db.clone())
-        .list_enabled()
-        .await
-        .map_err(|e| ApiError::internal("list harnesses", e))?;
+    let harnesses = if state.config.harness_sessions_enabled {
+        HarnessCatalog::new(state.db.clone())
+            .list_enabled()
+            .await
+            .map_err(|e| ApiError::internal("list harnesses", e))?
+    } else {
+        Vec::new()
+    };
     let data: Vec<HarnessView> = harnesses.into_iter().map(Into::into).collect();
     Ok(Json(json!({
         "data": data, "has_more": false, "next_cursor": null, "prev_cursor": null
@@ -142,7 +147,7 @@ async fn create_session(
     let user_id = claims.user_uuid().map_err(unauthorized)?;
     let repo = valid_repo(body.repo.as_deref(), &state.config.git_clone_allowed_hosts)?;
     let harness = enabled_harness(&state, &body.harness).await?;
-    if let Some(refusal) = state.session_admission.refuse(user_id, &harness.id).await {
+    if let Some(refusal) = refuse_session(&state, user_id, &harness.id).await {
         return Ok(refusal.into_response());
     }
     let agent_id = harness_agent(&state, &harness.id).await?;

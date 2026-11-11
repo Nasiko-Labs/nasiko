@@ -8,7 +8,8 @@ are parked when idle are described in [Parked agents](AGENT_LIFECYCLE.md#parked-
 
 A coding harness is a platform-built image that runs a coding agent and speaks ACP (the Agent
 Client Protocol) through a small shim, `harness-shim`, which exposes the harness's stdio as a
-WebSocket. Each enabled harness is represented by one platform agent, seeded at server startup.
+WebSocket. Each enabled harness is represented by one platform agent, seeded at server startup
+while coding sessions are switched on (see [Turning sessions on](#turning-sessions-on)).
 A session is one conversation between one user and one harness: it is unique by A2A `contextId`,
 which is the session id, and belongs to the user who created it. The session's sandbox exists only
 while a turn is running, and is suspended when the session goes idle. The workspace under
@@ -23,6 +24,20 @@ the ones sessions are started from, are public and stay so: making one private i
 way. A user's own harness agent is private, and making it private (again) is always allowed.
 `POST /api/agents/{id}/grants/agents` is not a share and is not refused: it lists the agents the
 harness agent may itself call.
+
+### Turning sessions on
+
+Coding sessions are off by default. `HARNESS_SESSIONS_ENABLED=true` turns them on; any other value,
+or none, leaves them off. The server reads it once at startup, so changing it takes a restart.
+
+- **Off.** Startup creates no harness agents and hides (soft-deletes) the ones an earlier start
+  created, so no agent list, chat picker or registry offers them. `GET /api/harnesses` returns an
+  empty list, and `POST /api/sessions` is refused with `403` and code `harness_sessions_disabled`.
+  A turn sent to a harness is refused the same way, as a JSON-RPC error (`-32610`) carrying that
+  body. Sessions opened earlier stay readable, and can be suspended or deleted, but run no turns.
+- **On.** Startup restores the hidden harness agents with their old ids, so sessions opened on them
+  before still resolve, and creates any that are missing. Seeding also needs `AGENT_JWT_SECRET`
+  (section 7).
 
 ## 2. Lifecycle
 

@@ -1098,10 +1098,15 @@ fn harness_seeding_blocked(
     None
 }
 
-/// Boot-time harness seeding: [`seed_harness_agents`], unless [`harness_seeding_blocked`]. When
-/// blocked, logs the reason once (error for a missing secret, warn for an unavailable provider)
-/// with the harness agents already seeded, which stay listed but cannot run.
+/// Boot-time harness seeding: [`seed_harness_agents`], unless coding sessions are switched off
+/// (`HARNESS_SESSIONS_ENABLED`, then [`hide_harness_agents`]) or [`harness_seeding_blocked`].
+/// When blocked, logs the reason once (error for a missing secret, warn for an unavailable
+/// provider) with the harness agents already seeded, which stay listed but cannot run.
 pub async fn seed_harness_agents_if_enabled(state: &AppState) {
+    if !state.config.harness_sessions_enabled {
+        hide_harness_agents(&state.db).await;
+        return;
+    }
     let session_key = nasiko_runtime::SandboxKey::Session {
         session_id: uuid::Uuid::nil(),
     };
@@ -1134,7 +1139,56 @@ pub async fn seed_harness_agents_if_enabled(state: &AppState) {
     seed_harness_agents(state).await;
 }
 
-/// Ensure every enabled harness has the `agents` row sessions attach to.
+/// With coding sessions switched off, soft-delete the platform harness agents an earlier boot
+/// created, so no agent list, chat picker or registry offers them and no turn reaches them.
+/// [`seed_harness_agents`] restores them when the switch is turned back on. A user's own
+/// harness agent is left alone: none is created while sessions are refused.
+pub async fn hide_harness_agents(db: &sqlx::PgPool) {
+    let hidden = sqlx::query(&format!(
+        "UPDATE agents SET deleted_at = now() WHERE {} AND deleted_at IS NULL",
+        crate::sessions::PLATFORM_HARNESS_AGENT
+    ))
+    .execute(db)
+    .await;
+    match hidden {
+        Ok(done) => info!(
+            hidden = done.rows_affected(),
+            "coding sessions are off (HARNESS_SESSIONS_ENABLED); no harness agents are offered"
+        ),
+        Err(e) => {
+            warn!(error = %e, "coding sessions are off, but the harness agents could not be hidden")
+        }
+    }
+}
+
+/// Bring back the platform harness agents [`hide_harness_agents`] hid, keeping their ids so the
+/// sessions opened on them still resolve: per harness, the most recently hidden row of `owner_id`,
+/// unless that owner already has a live one.
+async fn restore_hidden_harness_agents(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    harness_ids: &[String],
+) -> sqlx::Result<u64> {
+    sqlx::query(&format!(
+        "UPDATE agents SET deleted_at = NULL \
+          WHERE id IN (SELECT DISTINCT ON (name) id FROM agents \
+                        WHERE {platform} AND owner_id = $1 AND name = ANY($2) \
+                          AND deleted_at IS NOT NULL \
+                        ORDER BY name, deleted_at DESC) \
+            AND NOT EXISTS (SELECT 1 FROM agents live \
+                             WHERE live.owner_id = $1 AND live.name = agents.name \
+                               AND live.deleted_at IS NULL)",
+        platform = crate::sessions::PLATFORM_HARNESS_AGENT
+    ))
+    .bind(owner_id)
+    .bind(harness_ids)
+    .execute(db)
+    .await
+    .map(|done| done.rows_affected())
+}
+
+/// Ensure every enabled harness has the `agents` row sessions attach to, restoring a row
+/// [`hide_harness_agents`] hid before creating one.
 ///
 /// A harness agent is a routable identity, not a deployment: `status = 'running'` with no
 /// container, because each session brings up its own sandbox. Idempotent. The upsert only
@@ -1165,6 +1219,15 @@ pub async fn seed_harness_agents(state: &AppState) {
             return;
         }
     };
+    let ids: Vec<String> = harnesses.iter().map(|h| h.id.clone()).collect();
+    match restore_hidden_harness_agents(&state.db, owner_id, &ids).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            restored = n,
+            "restored the harness agents hidden while coding sessions were off"
+        ),
+        Err(e) => warn!(error = %e, "could not restore hidden harness agents; creating new ones"),
+    }
     for harness in harnesses {
         match upsert_harness_agent(&state.db, owner_id, &harness).await {
             Ok(1) => info!(harness = %harness.id, "harness agent ready"),

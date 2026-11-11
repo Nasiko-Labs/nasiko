@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::sessions::admission::SessionAdmission;
+use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -901,10 +901,7 @@ async fn refuse_harness_turn(
         return Ok(None);
     };
     let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let refusal = state
-        .session_admission
-        .refuse(user_id, &target.harness_id)
-        .await;
+    let refusal = refuse_session(state, user_id, &target.harness_id).await;
     Ok(refusal.map(|refusal| {
         axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
     }))
