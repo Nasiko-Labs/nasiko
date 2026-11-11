@@ -238,6 +238,13 @@ pub struct Config {
     /// silently falling back, because running sessions on the wrong provider
     /// changes isolation and cost.
     pub sandbox_provider: SandboxProviderSetting,
+    /// Whether users can open coding sessions on this server, from `HARNESS_SESSIONS_ENABLED`
+    /// (**default `false`**). Off, startup creates no harness agents and hides (soft-deletes)
+    /// the ones an earlier start created, so no agent list, chat picker or registry offers them;
+    /// `GET /api/harnesses` is empty and `POST /api/sessions` is refused. On, startup restores
+    /// the hidden rows (same ids, so earlier sessions still resolve) and creates any missing.
+    /// Read once at startup: changing it takes a restart.
+    pub harness_sessions_enabled: bool,
     /// Whether a successful agent build is followed by one smoke run of the image under gVisor,
     /// from `BUILD_SANDBOX_SMOKE`: `off` (default) or `runsc`. The outcome sets
     /// `agents.sandbox_compatible`; it never fails the build. Docker runtime only.
@@ -855,6 +862,7 @@ impl Config {
             hitl_resume_retry_delay_secs: env_parse("HITL_RESUME_RETRY_DELAY_SECS", 2),
             coding_agent_idle_ttl_secs: env_parse("CODING_AGENT_IDLE_TTL_SECS", 900),
             sandbox_provider: sandbox_provider_from_env()?,
+            harness_sessions_enabled: env_bool("HARNESS_SESSIONS_ENABLED", false),
             build_sandbox_smoke: env_or("BUILD_SANDBOX_SMOKE", "off")
                 .parse()
                 .map_err(anyhow::Error::msg)?,

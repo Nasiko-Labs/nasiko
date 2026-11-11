@@ -911,6 +911,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
         sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
+        harness_sessions_enabled: true,
         build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
         session_idle_grace_secs: 120,
         session_cpu_quiescent_millicores: 20,

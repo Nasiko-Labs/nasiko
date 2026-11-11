@@ -722,16 +722,6 @@ pub(crate) struct AgentDetailResponse {
     /// (NAS-842). Served so a client can show and toggle the current state.
     #[serde(rename = "hitl_enabled")]
     hitl_enabled: bool,
-    /// The owner's parking choice: `auto` (parked when idle, woken by the next call) or
-    /// `resident` (always on). The Settings choice renders from this, for the reason
-    /// compress_enabled gives above.
-    #[serde(rename = "parking_policy")]
-    parking_policy: String,
-    /// Whether this server keeps a `resident` agent always on. `false` where every framework
-    /// agent is parked when idle whatever its owner chose (`AgentScaling::honours_resident_policy`),
-    /// so the UI shows the choice unavailable instead of offering one that has no effect.
-    #[serde(rename = "resident_available")]
-    resident_available: bool,
     /// Whether this agent's card reads as code work, and so should be offered minimal-code
     /// mode at all. Served rather than re-derived in the browser: the settings page used to
     /// run its own `/code/i` over the skills, mirroring a Postgres `ILIKE '%code%'` in the
@@ -841,21 +831,19 @@ pub(crate) async fn get_one(
     }
 
     let can_manage = crate::acl::can_manage_agent(&state, &claims, agent.id).await;
-    // Columns the shared `Agent` row does not carry, so every query mapping into it keeps working.
-    let (coding_agent_integration_id, parking_policy) =
-        match sqlx::query_as::<_, (Option<String>, String)>(
-            "SELECT coding_agent_integration_id, parking_policy FROM agents WHERE id = $1",
-        )
-        .bind(agent.id)
-        .fetch_one(&state.db)
-        .await
-        {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::error!(%error, agent_id = %agent.id, "agent detail columns lookup failed");
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        };
+    let coding_agent_integration_id = match sqlx::query_scalar::<_, Option<String>>(
+        "SELECT coding_agent_integration_id FROM agents WHERE id = $1",
+    )
+    .bind(agent.id)
+    .fetch_one(&state.db)
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            tracing::error!(%error, agent_id = %agent.id, "coding-agent identity lookup failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     let skills: Vec<serde_json::Value> = agent
         .skills
@@ -875,8 +863,6 @@ pub(crate) async fn get_one(
         compress_enabled: agent.compress_enabled,
         minimal_code_enabled: agent.minimal_code_enabled,
         hitl_enabled: agent.hitl_enabled,
-        parking_policy,
-        resident_available: state.agent_scaling.honours_resident_policy(),
         has_coding_skills: super::models::has_coding_skills(&agent.skills),
         metadata: agent.metadata.0.clone(),
         status: agent.status.clone(),
