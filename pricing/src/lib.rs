@@ -32,6 +32,7 @@ pub use context::PricingContext;
 mod cost;
 mod db;
 mod engine;
+mod ledger;
 mod model;
 mod quote;
 mod ratio;
@@ -43,6 +44,7 @@ pub use book::{
 pub use cost::{CostBreakdown, cost};
 pub use db::{DbPriceBook, load_cache_ratios};
 pub use engine::{PricedCall, PricingEngine};
+pub use ledger::{LedgerEntry, NoUsageLedger, UsageLedger};
 pub use model::{ModelKey, Vendor, resolve_model};
 pub use quote::{PriceQuote, PriceSource, quote};
 pub use ratio::{CacheRatio, CacheRatioSample, CacheRatios};

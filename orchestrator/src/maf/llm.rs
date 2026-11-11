@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use nasiko_pricing::{NoUsageLedger, UsageLedger};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -6,6 +9,8 @@ pub struct LlmClient {
     api_key: String,
     base_url: String,
     pub model: String,
+    /// Where this client's metered calls are recorded besides `trace_usage`.
+    ledger: Arc<dyn UsageLedger>,
 }
 
 #[derive(Serialize)]
@@ -116,7 +121,17 @@ impl LlmClient {
             api_key,
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             model,
+            ledger: Arc::new(NoUsageLedger),
         }
+    }
+
+    /// The same client, its metered calls handed to `ledger`.
+    pub fn with_ledger(self, ledger: Arc<dyn UsageLedger>) -> Self {
+        Self { ledger, ..self }
+    }
+
+    pub fn ledger(&self) -> &dyn UsageLedger {
+        self.ledger.as_ref()
     }
 
     /// The provider this client talks to, as recorded on `token_usage.provider`.

@@ -193,6 +193,7 @@ where
                 base_url: state.config.openai_base_url.clone(),
                 model: state.config.openai_model.clone(),
             },
+            ledger: state.usage_tracker.ledger(),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
@@ -472,7 +473,10 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx {
+        ledger: state.usage_tracker.ledger(),
+        ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+    };
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
