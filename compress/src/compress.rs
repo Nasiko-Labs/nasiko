@@ -19,6 +19,15 @@ const CEILING_TAIL_CHARS: usize = 1000;
 /// Infallible: anything that cannot be compressed — malformed input, a type with no compressor,
 /// a policy that excludes it, an output that would not be smaller — comes back unchanged.
 pub fn compress<'a>(input: &'a str, policy: &Policy<'_>) -> Compressed<'a> {
+    // Checked before the ceiling, so a disabled policy returns any input byte-identical however
+    // large, and before detection, whose full JSON parse is the cost the ceiling exists to avoid.
+    //
+    // Idempotency: input already carrying one of our breadcrumbs is our own prior output (or
+    // contains it), and re-eliding around a marker would produce different bytes on every pass.
+    if !policy.enabled || marker::contains_marker(input) {
+        return Compressed::unchanged(input, ContentType::Prose);
+    }
+
     // Bounded time, checked before detection: the Json rule needs a full parse, and a huge
     // malformed blob must not pay for one before any ceiling applies.
     if input.len() > policy.max_input_bytes {
@@ -29,7 +38,11 @@ pub fn compress<'a>(input: &'a str, policy: &Policy<'_>) -> Compressed<'a> {
             policy.recovery_ref,
         ) {
             Some(out) if out.len() < input.len() => {
-                Compressed::shrunk(input, ContentType::Prose, out)
+                if policy.dry_run {
+                    Compressed::projected(input, ContentType::Prose, out.len())
+                } else {
+                    Compressed::shrunk(input, ContentType::Prose, out)
+                }
             }
             _ => Compressed::unchanged(input, ContentType::Prose),
         };
@@ -37,19 +50,12 @@ pub fn compress<'a>(input: &'a str, policy: &Policy<'_>) -> Compressed<'a> {
 
     let kind = detect(input);
 
-    // Idempotency: input already carrying one of our breadcrumbs is our own prior output (or
-    // contains it), and re-eliding around a marker would produce different bytes on every pass.
-    //
     // The size floor exists because a marker costs about what eliding a small payload saves.
     // JSON is the exception: below the floor it is still rewritten, but only losslessly (no
     // recovery handle, so nothing is cut) — dropping whitespace from a 600-byte tool schema
     // costs no marker and loses nothing.
     let below_floor = input.len() < policy.min_bytes;
-    if !policy.enabled
-        || (below_floor && kind != ContentType::Json)
-        || !policy.types.contains(kind)
-        || marker::contains_marker(input)
-    {
+    if (below_floor && kind != ContentType::Json) || !policy.types.contains(kind) {
         return Compressed::unchanged(input, kind);
     }
     let lossless_only;
@@ -206,6 +212,35 @@ mod tests {
         assert!(out.is_changed());
         assert!(out.text().len() < input.len());
         assert!(marker::contains_marker(out.text()));
+    }
+
+    #[test]
+    fn oversized_input_under_a_disabled_policy_is_byte_identical() {
+        let input = "a".repeat(10_000);
+        let policy = Policy {
+            max_input_bytes: 1000,
+            ..Policy::default()
+        };
+        let out = compress(&input, &policy);
+        assert!(!out.is_changed());
+        assert_eq!(out.text(), input);
+    }
+
+    #[test]
+    fn oversized_input_under_dry_run_reports_the_cut_without_making_it() {
+        let input = "a".repeat(10_000);
+        let policy = Policy {
+            max_input_bytes: 1000,
+            dry_run: true,
+            ..enabled()
+        };
+        let out = compress(&input, &policy);
+        assert_eq!(out.text(), input);
+        assert!(!out.is_changed());
+        assert!(
+            out.saved_bytes() > 0,
+            "dry run should still report the ceiling's saving"
+        );
     }
 
     #[test]

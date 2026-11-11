@@ -886,6 +886,23 @@ mod tests {
     }
 
     #[test]
+    fn dry_run_over_the_input_ceiling_reports_without_mutating() {
+        let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+        let before = serde_json::to_string(&r).unwrap();
+        let policy = Policy {
+            dry_run: true,
+            max_input_bytes: 1000,
+            ..on()
+        };
+
+        let stats = apply(&mut r, &policy, None);
+
+        assert_eq!(serde_json::to_string(&r).unwrap(), before);
+        assert!(!stats.applied);
+        assert!(stats.bytes_out < stats.bytes_in);
+    }
+
+    #[test]
     fn metadata_carries_counts_per_content_type() {
         // Spaced out, so the lossless rewrite (no recovery handle here) has whitespace to drop.
         let items: Vec<String> = (0..80)
