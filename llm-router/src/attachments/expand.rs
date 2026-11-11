@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use futures::{StreamExt, TryStreamExt, stream};
 use serde_json::{Map, Value, json};
 
@@ -13,14 +15,20 @@ use super::marker::{
 use super::store::{AttachmentFetchError, AttachmentStore};
 use crate::error::GatewayError;
 use crate::ir::{ChatRequest, Message};
+use crate::providers::media::is_text_like;
 
 const CURRENT_MESSAGE: &str = "\n\nCurrent message: ";
 const FETCH_CONCURRENCY: usize = 4;
+const PROBE_BYTES: usize = 512;
+const PROBE_READ_BYTES: usize = PROBE_BYTES + UTF8_BOM.len() + 3;
+const MIN_PROBE_BYTES: usize = 32;
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ExpandReport {
     pub attached: usize,
     pub skipped_media_present: usize,
+    pub skipped_text_present: usize,
     pub repeated: usize,
     pub invalid: usize,
     pub bytes: u64,
@@ -104,15 +112,36 @@ pub async fn expand(
         .try_collect()
         .await?;
 
-    report.attached = files.len();
-    report.bytes = total;
+    let pasted: Vec<bool> = files
+        .iter()
+        .zip(&fetched)
+        .map(|(file, (base64, _))| already_pasted(&req.messages, file, base64))
+        .collect();
+    report.skipped_text_present = pasted.iter().filter(|&&p| p).count();
+    report.attached = files.len() - report.skipped_text_present;
+    report.bytes = files
+        .iter()
+        .zip(&pasted)
+        .filter(|(_, pasted)| !**pasted)
+        .map(|(file, _)| file.size_bytes)
+        .fold(0, u64::saturating_add);
     report.cache_hits = fetched.iter().filter(|(_, hit)| *hit).count();
     let mut media: Vec<Option<Value>> = files
         .iter()
         .zip(&fetched)
-        .map(|(file, (base64, _))| Some(media_part(file, base64)))
+        .zip(&pasted)
+        .map(|((file, (base64, _)), pasted)| (!pasted).then(|| media_part(file, base64)))
         .collect();
     drop(fetched);
+    for (_, texts) in &mut edits {
+        for cut in texts.iter_mut().flat_map(|t| &mut t.cuts) {
+            if let Action::Attach(slot) | Action::Repeat(slot) = cut.action
+                && pasted[slot]
+            {
+                cut.action = Action::Remove;
+            }
+        }
+    }
     for (index, texts) in edits {
         apply(&mut req.messages[index], texts, &files, &mut media);
     }
@@ -144,6 +173,7 @@ pub(crate) async fn attach_marked_files(
             %agent_id,
             attached = report.attached,
             skipped_media_present = report.skipped_media_present,
+            skipped_text_present = report.skipped_text_present,
             repeated = report.repeated,
             invalid = report.invalid,
             bytes = report.bytes,
@@ -199,6 +229,63 @@ fn mentions_token(message: &Message) -> bool {
 fn has_media(message: &Message) -> bool {
     matches!(&message.content, Some(Value::Array(parts))
         if parts.iter().any(|p| p.get("type").and_then(Value::as_str) != Some("text")))
+}
+
+fn already_pasted(messages: &[Message], file: &MarkerClaims, base64: &str) -> bool {
+    if !is_text_like(&normalized_media_type(&file.media_type)) {
+        return false;
+    }
+    let Some(probe) = text_probe(base64) else {
+        return false;
+    };
+    let crlf = probe.contains('\n').then(|| probe.replace('\n', "\r\n"));
+    messages.iter().flat_map(message_texts).any(|text| {
+        text.contains(probe.as_str()) || crlf.as_deref().is_some_and(|p| text.contains(p))
+    })
+}
+
+fn text_probe(base64: &str) -> Option<String> {
+    let head = &base64[..base64.len().min(PROBE_READ_BYTES.div_ceil(3) * 4)];
+    let bytes = STANDARD.decode(head).ok()?;
+    let bytes = bytes.strip_prefix(UTF8_BOM).unwrap_or(&bytes);
+    let text = match std::str::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(e) if e.error_len().is_none() => std::str::from_utf8(&bytes[..e.valid_up_to()]).ok()?,
+        Err(_) => return None,
+    };
+    let text = text.replace("\r\n", "\n");
+    let text = text.trim();
+    let mut end = text.len().min(PROBE_BYTES);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let probe = text[..end].trim_end();
+    (probe.len() >= MIN_PROBE_BYTES).then(|| probe.to_string())
+}
+
+fn message_texts(message: &Message) -> impl Iterator<Item = &str> {
+    let (whole, parts) = match &message.content {
+        Some(Value::String(text)) => (Some(text.as_str()), None),
+        Some(Value::Array(parts)) => (
+            None,
+            Some(
+                parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str)),
+            ),
+        ),
+        _ => (None, None),
+    };
+    whole.into_iter().chain(parts.into_iter().flatten())
+}
+
+fn normalized_media_type(declared: &str) -> String {
+    declared
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
 }
 
 fn scannable_texts(message: &Message) -> Vec<(Option<usize>, &str, usize)> {
@@ -268,13 +355,7 @@ fn fetch_failure(file: &MarkerClaims, error: AttachmentFetchError) -> GatewayErr
 }
 
 fn media_part(file: &MarkerClaims, base64: &str) -> Value {
-    let declared = file
-        .media_type
-        .split(';')
-        .next()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
+    let declared = normalized_media_type(&file.media_type);
     let media_type = if declared.is_empty() {
         "application/octet-stream"
     } else {
@@ -728,6 +809,158 @@ mod tests {
             json!([
                 {"type": "text", "text": "What is this?\n"},
                 {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+            ])
+        );
+    }
+
+    const CSV: &[u8] = b"region,revenue\nEMEA,913\nAPAC,402\nAMER,1188\nLATAM,77\n";
+    const CSV_CRLF: &[u8] = b"region,revenue\r\nEMEA,913\r\nAPAC,402\r\nAMER,1188\r\nLATAM,77\r\n";
+
+    fn text_line(n: u128, media_type: &str, bytes: &[u8]) -> String {
+        signer().marker_line(&claims(
+            chat_file(n),
+            "sales.csv",
+            media_type,
+            bytes.len() as u64,
+        ))
+    }
+
+    fn pasted(bytes: &[u8]) -> String {
+        format!(
+            "--- File: sales.csv (text/csv) ---\n{}",
+            String::from_utf8_lossy(bytes)
+        )
+    }
+
+    #[tokio::test]
+    async fn a_text_file_the_agent_already_pasted_is_not_attached_again() {
+        let mut req = request(json!([
+            {"role": "user", "content": [
+                {"type": "text", "text": format!("Totals?\n{}", text_line(1, "text/csv", CSV))},
+                {"type": "text", "text": pasted(CSV)},
+            ]},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), CSV);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 0);
+        assert_eq!(report.skipped_text_present, 1);
+        assert_eq!(report.bytes, 0);
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "text", "text": "Totals?\n"},
+                {"type": "text", "text": pasted(CSV)},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_pasted_text_file_is_found_whatever_its_line_endings() {
+        for (stored, sent) in [(CSV_CRLF, CSV), (CSV, CSV_CRLF), (CSV_CRLF, CSV_CRLF)] {
+            let mut req = request(json!([
+                {"role": "user", "content": format!("Totals?\n{}\n{}", text_line(1, "text/csv", stored), pasted(sent))},
+            ]));
+            let store = FakeStore::default().with(chat_file(1), stored);
+            let report = run(&mut req, &store).await.unwrap();
+            assert_eq!(report.skipped_text_present, 1);
+            assert_eq!(
+                content(&req, 0),
+                json!(format!("Totals?\n\n{}", pasted(sent)))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_text_file_with_a_byte_order_mark_is_found_when_pasted_without_it() {
+        let with_bom = [b"\xEF\xBB\xBF".as_slice(), CSV].concat().leak();
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{}\n{}", text_line(1, "text/csv", with_bom), pasted(CSV))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), with_bom);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.skipped_text_present, 1);
+        assert_eq!(report.attached, 0);
+    }
+
+    #[tokio::test]
+    async fn a_text_file_pasted_in_the_system_prompt_is_not_attached_again() {
+        let mut req = request(json!([
+            {"role": "system", "content": pasted(CSV)},
+            {"role": "user", "content": format!("Totals?\n{}", text_line(1, "application/json; charset=utf-8", CSV))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), CSV);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.skipped_text_present, 1);
+        assert_eq!(content(&req, 1), json!("Totals?\n"));
+    }
+
+    #[tokio::test]
+    async fn a_second_marker_of_a_pasted_text_file_is_removed_too() {
+        let line = text_line(1, "text/csv", CSV);
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{line}\nagain: {line}\n{}", pasted(CSV))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), CSV);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 0);
+        assert_eq!(
+            content(&req, 0),
+            json!(format!("\nagain: \n{}", pasted(CSV)))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_text_file_the_agent_did_not_paste_is_still_attached() {
+        let other = b"region,revenue\nEMEA,914\nAPAC,402\nAMER,1188\nLATAM,77\n";
+        let mut req = request(json!([
+            {"role": "user", "content": format!("Totals?\n{}\n{}", text_line(1, "text/csv", CSV), pasted(other))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), CSV);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.skipped_text_present, 0);
+        assert_eq!(report.bytes, CSV.len() as u64);
+        let parts = content(&req, 0);
+        assert_eq!(parts[1]["type"], "file");
+        assert_eq!(parts[1]["file"]["file_data"], data_url("text/csv", CSV));
+    }
+
+    #[tokio::test]
+    async fn only_text_files_long_enough_to_recognise_are_checked() {
+        let short = b"EMEA,913\n";
+        let not_utf8 = b"region,revenue\nEMEA,913\xFF\xFEAPAC,402\nAMER,1188\nLATAM,77\n";
+        for (media_type, bytes, sent) in [
+            ("text/csv", short.as_slice(), pasted(short)),
+            ("text/plain", not_utf8.as_slice(), pasted(not_utf8)),
+            ("application/octet-stream", CSV, pasted(CSV)),
+        ] {
+            let mut req = request(json!([
+                {"role": "user", "content": format!("{}\n{sent}", text_line(1, media_type, bytes))},
+            ]));
+            let store = FakeStore::default().with(chat_file(1), bytes);
+            let report = run(&mut req, &store).await.unwrap();
+            assert_eq!(report.attached, 1, "{media_type}");
+            assert_eq!(report.skipped_text_present, 0, "{media_type}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pasted_text_file_beside_an_image_leaves_the_image_attached() {
+        let mut req = request(json!([
+            {"role": "user", "content": format!("{}\n{}\n{}", png_line(2), text_line(1, "text/csv", CSV), pasted(CSV))},
+        ]));
+        let store = FakeStore::default()
+            .with(chat_file(1), CSV)
+            .with(chat_file(2), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.skipped_text_present, 1);
+        assert_eq!(report.bytes, PNG.len() as u64);
+        assert_eq!(
+            content(&req, 0),
+            json!([
+                {"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}},
+                {"type": "text", "text": format!("\n\n{}", pasted(CSV))},
             ])
         );
     }
