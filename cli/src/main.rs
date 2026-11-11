@@ -685,6 +685,33 @@ mod tests {
     }
 
     #[test]
+    fn parses_upload_coding_agent_hitl_flags() {
+        // --coding-agent with --no-hitl parses (mirrors push/deploy).
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "upload",
+            ".",
+            "--coding-agent",
+            "--no-hitl",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Ops(AgentOpsCommands::Upload {
+                coding_agent: true,
+                no_hitl: true,
+                hitl: false,
+                ..
+            })
+        ));
+        // --hitl and --no-hitl are mutually exclusive.
+        assert!(
+            Cli::try_parse_from(["nasiko", "upload", ".", "--hitl", "--no-hitl"]).is_err(),
+            "--hitl and --no-hitl cannot be combined"
+        );
+    }
+
+    #[test]
     fn parses_deploy_dry_run() {
         let cli = Cli::try_parse_from(["nasiko", "deploy", ".", "--dry-run", "--yes"]).unwrap();
         assert!(matches!(

@@ -27,6 +27,7 @@ pub fn upload(
     writable: bool,
     writable_path: Option<&str>,
     coding_agent: bool,
+    hitl: Option<bool>,
 ) -> Result<()> {
     let source_path = Path::new(source);
 
@@ -107,6 +108,7 @@ pub fn upload(
         writable || writable_path.is_some(),
         writable_path,
         workload_kind.as_deref(),
+        hitl,
     );
 
     if is_temp {

@@ -736,6 +736,8 @@ pub fn cmd_deploy(source: &str, agent_name: Option<&str>) -> Result<()> {
         false,
         None,
         None,
+        // No --hitl/--no-hitl here; the server applies the kind's default.
+        None,
     );
 
     if is_temp {

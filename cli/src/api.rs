@@ -999,6 +999,7 @@ impl Client {
         writable: bool,
         writable_path: Option<&str>,
         workload_kind: Option<&str>,
+        hitl: Option<bool>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -1051,6 +1052,13 @@ impl Client {
         if let Some(kind) = workload_kind {
             body.extend_from_slice(
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"workload_kind\"\r\n\r\n{kind}\r\n").as_bytes(),
+            );
+        }
+        // hitl (only when explicitly set via --hitl/--no-hitl; otherwise the
+        // server applies the kind's default — ON for a coding agent)
+        if let Some(hitl) = hitl {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"hitl\"\r\n\r\n{hitl}\r\n").as_bytes(),
             );
         }
         // file (the zip file)
