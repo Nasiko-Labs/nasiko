@@ -53,6 +53,10 @@ pub enum Layer {
     /// The MCP gateway listing the tools a flow's query matched instead of every granted tool
     /// (`MCP_TOOL_SEARCH_MODE`).
     ToolSearch,
+    /// Context an edition injects into an agent's prompt, packed under a token budget instead of
+    /// injected whole. Nothing in OSS writes it; it is here so the label and the `CHECK` constraint
+    /// exist before a writer does.
+    ContextBudget,
 }
 
 /// How a layer is named to users. Several layers roll up to one program — the dashboard says
@@ -69,6 +73,7 @@ pub enum Program {
     PromptComments,
     /// Both tool layers: each shrinks the tool definitions the model reads, by a different route.
     ToolLists,
+    ContextBudget,
 }
 
 /// How the saving was arrived at. The distinction is the whole basis on which a figure can be
@@ -93,6 +98,7 @@ impl Layer {
             Self::PromptComments => "prompt_comments",
             Self::CompactTools => "compact_tools",
             Self::ToolSearch => "tool_search",
+            Self::ContextBudget => "context_budget",
         }
     }
 
@@ -108,6 +114,7 @@ impl Layer {
             Self::MinimalCode => Program::Ponytail,
             Self::PromptComments => Program::PromptComments,
             Self::CompactTools | Self::ToolSearch => Program::ToolLists,
+            Self::ContextBudget => Program::ContextBudget,
         }
     }
 }
@@ -120,6 +127,7 @@ impl Program {
             Self::Ponytail => "ponytail",
             Self::PromptComments => "prompt_comments",
             Self::ToolLists => "tool_lists",
+            Self::ContextBudget => "context_budget",
         }
     }
 }
@@ -211,7 +219,7 @@ pub async fn insert(db: &PgPool, row: &SavingsRow) {
 mod tests {
     use super::*;
 
-    const ALL_LAYERS: [Layer; 9] = [
+    const ALL_LAYERS: [Layer; 10] = [
         Layer::CompressPayload,
         Layer::CompressToolResult,
         Layer::CompressHistory,
@@ -221,6 +229,7 @@ mod tests {
         Layer::PromptComments,
         Layer::CompactTools,
         Layer::ToolSearch,
+        Layer::ContextBudget,
     ];
 
     /// The labels are `CHECK`-constrained by migration 0052 (widened by 0099), so a drifting one is
@@ -238,6 +247,7 @@ mod tests {
             "prompt_comments",
             "compact_tools",
             "tool_search",
+            "context_budget",
         ];
         let actual: Vec<&str> = ALL_LAYERS.iter().map(|l| l.as_label()).collect();
         assert_eq!(actual, expected);
@@ -251,6 +261,7 @@ mod tests {
             (Program::Ponytail, "ponytail"),
             (Program::PromptComments, "prompt_comments"),
             (Program::ToolLists, "tool_lists"),
+            (Program::ContextBudget, "context_budget"),
         ] {
             assert_eq!(program.as_label(), label);
         }
@@ -287,6 +298,9 @@ mod tests {
         // feature.
         assert_eq!(Layer::CompactTools.program(), Program::ToolLists);
         assert_eq!(Layer::ToolSearch.program(), Program::ToolLists);
+        // A budget on injected context, not on chat history: under Pacms the page would name the
+        // wrong feature.
+        assert_eq!(Layer::ContextBudget.program(), Program::ContextBudget);
     }
 
     #[test]

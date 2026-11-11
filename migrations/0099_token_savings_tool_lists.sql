@@ -5,6 +5,9 @@
 -- `tool_search`: one row per MCP gateway `tools/list` served from search, against the generic
 -- connector tools the listing would have held with search off. Signed: the search meta-tools are
 -- listed too, so a small catalog can come out negative.
+-- `context_budget` (its own program): context an edition injects into an agent's prompt, packed
+-- under a token budget. Nothing in OSS writes it yet; it is admitted here so its writer needs no
+-- migration of its own.
 --
 -- 0052 declared the check inline, so Postgres named it `token_savings_layer_check`. NOT VALID so
 -- adding the constraint does not scan the table under this migration's exclusive lock, which would
@@ -24,4 +27,5 @@ ALTER TABLE token_savings
         'minimal_code',
         'prompt_comments',
         'compact_tools',
-        'tool_search')) NOT VALID;
+        'tool_search',
+        'context_budget')) NOT VALID;

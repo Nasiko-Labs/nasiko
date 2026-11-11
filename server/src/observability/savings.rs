@@ -653,6 +653,8 @@ fn program_label(program: &str) -> &'static str {
         "prompt_comments" => "Leaner agent instructions",
         // Compact signatures and tool search: both shrink the tool definitions the model reads.
         "tool_lists" => "Smaller tool lists",
+        // Context an edition injects into the prompt, packed under a token budget.
+        "context_budget" => "Smaller injected context",
         _ => "Other",
     }
 }
@@ -1370,6 +1372,7 @@ mod tests {
         assert_eq!(program_label("caveman"), "Smaller prompts");
         assert_eq!(program_label("ponytail"), "Less code written");
         assert_eq!(program_label("tool_lists"), "Smaller tool lists");
+        assert_eq!(program_label("context_budget"), "Smaller injected context");
     }
     // ── honesty of the zero/partial notes ────────────────────────────────────
 

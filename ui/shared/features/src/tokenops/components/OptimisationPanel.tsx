@@ -53,6 +53,7 @@ const LAYER_LABEL: Record<string, string> = {
   prompt_comments: 'agent instructions',
   compact_tools: 'tool definitions',
   tool_search: 'tools listed',
+  context_budget: 'injected context',
 }
 
 /** `null` percentages mean "no baseline to compare against", not zero. */

@@ -231,34 +231,40 @@ async fn a_listing_with_no_flow_query_writes_nothing() {
     assert_eq!(count, 0);
 }
 
-/// The router writes `compact_tools` rows; it has no DB tests of its own, so the constraint is
-/// checked here, against the same migrated schema.
+/// The other layers 0099 admits, written by code outside this crate: `compact_tools` by the
+/// router, `context_budget` by an edition (nothing in OSS writes it yet). Checked here against the
+/// same migrated schema, so a constraint missing either fails a test rather than dropping rows.
 #[tokio::test]
-async fn the_compact_tools_layer_passes_the_layer_check() {
+async fn the_other_new_layers_pass_the_layer_check() {
     let db = TestDb::new("tool_search_savings", Arc::new(OneConnector(Uuid::nil()))).await;
-    nasiko_savings::insert(
-        &db.state.db,
-        &SavingsRow {
-            user_id: db.owner_user_id,
-            agent_id: Some(db.agent_id),
-            flow_id: Some("trace-compact".into()),
-            session_id: None,
-            provider: Some("openai".into()),
-            model: Some("gpt-4o".into()),
-            layer: Layer::CompactTools,
-            bytes_before: Some(10_270),
-            bytes_after: Some(7_430),
-            saved_input_tokens: 710,
-            saved_output_tokens: 0,
-            saved_cost_usd: 0.0018,
-            method: Method::MeasuredBytes,
-            token_estimated: true,
-            context_tier: None,
-        },
-    )
-    .await;
+    for (layer, program) in [
+        (Layer::CompactTools, "tool_lists"),
+        (Layer::ContextBudget, "context_budget"),
+    ] {
+        nasiko_savings::insert(
+            &db.state.db,
+            &SavingsRow {
+                user_id: db.owner_user_id,
+                agent_id: Some(db.agent_id),
+                flow_id: Some(format!("trace-{}", layer.as_label())),
+                session_id: None,
+                provider: Some("openai".into()),
+                model: Some("gpt-4o".into()),
+                layer,
+                bytes_before: Some(10_270),
+                bytes_after: Some(7_430),
+                saved_input_tokens: 710,
+                saved_output_tokens: 0,
+                saved_cost_usd: 0.0018,
+                method: Method::MeasuredBytes,
+                token_estimated: true,
+                context_tier: None,
+            },
+        )
+        .await;
 
-    let rows = savings_rows(&db.state.db, "compact_tools").await;
-    assert_eq!(rows.len(), 1, "the insert was refused: {rows:?}");
-    assert_eq!(rows[0].0, "tool_lists");
+        let rows = savings_rows(&db.state.db, layer.as_label()).await;
+        assert_eq!(rows.len(), 1, "{layer:?}: the insert was refused");
+        assert_eq!(rows[0].0, program, "{layer:?}");
+    }
 }
