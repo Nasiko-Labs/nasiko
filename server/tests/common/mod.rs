@@ -549,8 +549,30 @@ impl TestServer {
     #[allow(dead_code)]
     pub async fn start_with(configure: impl FnOnce(&mut Config)) -> Self {
         let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(configure, fake_runtime.clone(), fake_runtime, None)
-            .await
+        Self::start_with_runtime_and_handle(
+            configure,
+            fake_runtime.clone(),
+            fake_runtime,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Same as [`start`](Self::start), with `spend_gate` on the app's `AppState`.
+    #[allow(dead_code)]
+    pub async fn start_with_spend_gate(
+        spend_gate: Arc<dyn nasiko_server::spend_gate::SpendGate>,
+    ) -> Self {
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        Self::start_with_runtime_and_handle(
+            |_| {},
+            fake_runtime.clone(),
+            fake_runtime,
+            None,
+            Some(spend_gate),
+        )
+        .await
     }
 
     /// Same as [`start`](Self::start), with `agent_wake` installed on the app's `AppState`.
@@ -564,6 +586,7 @@ impl TestServer {
             fake_runtime.clone(),
             fake_runtime,
             Some(agent_wake),
+            None,
         )
         .await
     }
@@ -585,6 +608,7 @@ impl TestServer {
             configure,
             runtime,
             Arc::new(FakeRuntime::default()),
+            None,
             None,
         )
         .await
@@ -696,6 +720,7 @@ impl TestServer {
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
         agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
+        spend_gate: Option<Arc<dyn nasiko_server::spend_gate::SpendGate>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -745,7 +770,7 @@ impl TestServer {
             runtime.clone(),
             db.clone(),
         ));
-        let state = AppState::from_config_with_sandbox(
+        let mut state = AppState::from_config_with_sandbox(
             config,
             auth,
             runtime,
@@ -755,6 +780,9 @@ impl TestServer {
             sandbox.clone(),
         )
         .await;
+        if let Some(spend_gate) = spend_gate {
+            state.spend_gate = spend_gate;
+        }
         // The platform's default wake starts a parked row's own workload through the runtime, and
         // `FakeRuntime` models no scaling, so it would wait out its budget for an address a seeded
         // parked row never gets. Tests that exercise a wake install one (`RowWake`, or the default
