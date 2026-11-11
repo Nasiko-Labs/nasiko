@@ -1,12 +1,45 @@
-use sqlx::PgPool;
+use std::sync::{Arc, RwLock};
+
+use async_trait::async_trait;
+use nasiko_pricing::{LedgerEntry, NoUsageLedger, UsageLedger};
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::models::{CreateRouterRequestLog, CreateTokenUsage};
 
+/// What a tool call is recorded as on the usage ledger.
+const TOOL_CALL_OPERATION: &str = "mcp_tool_call";
+
 /// Service for tracking spend (`trace_usage`), tool calls (`tool_calls`) and orchestrator requests.
+///
+/// Every spend and tool-call write also hands the call to its [`UsageLedger`], on the same
+/// transaction. The LLM router and the MAF worker take the same ledger from here.
 #[derive(Clone)]
 pub struct UsageTracker {
     db: PgPool,
+    ledger: Arc<SwappableUsageLedger>,
+}
+
+/// The tracker's ledger, installed through this cell rather than by replacing the tracker, for
+/// the same reason `prompt_context` is: the HITL resume dispatcher holds an `AppState` clone taken
+/// before the EE composition root runs, and a clone of the tracker shares this one cell.
+struct SwappableUsageLedger(RwLock<Arc<dyn UsageLedger>>);
+
+impl SwappableUsageLedger {
+    fn current(&self) -> Arc<dyn UsageLedger> {
+        self.0.read().expect("usage ledger lock poisoned").clone()
+    }
+}
+
+#[async_trait]
+impl UsageLedger for SwappableUsageLedger {
+    async fn record(
+        &self,
+        conn: &mut PgConnection,
+        entry: &LedgerEntry<'_>,
+    ) -> Result<(), sqlx::Error> {
+        self.current().record(conn, entry).await
+    }
 }
 
 /// Primary key of the `trace_usage` row a call was added to.
@@ -34,17 +67,33 @@ pub struct ToolCallRecord {
 
 impl UsageTracker {
     pub fn new(db: PgPool) -> Self {
-        Self { db }
+        Self {
+            db,
+            ledger: Arc::new(SwappableUsageLedger(RwLock::new(Arc::new(NoUsageLedger)))),
+        }
     }
 
-    /// Record one MCP tool call in `tool_calls`. Trace id is `mcp:<call id>`: gateway calls carry
-    /// no traceparent here, and a fresh id keeps each call its own row.
+    /// Hands every later call to `ledger`, for every clone of this tracker, past and future.
+    pub fn install_ledger(&self, ledger: Arc<dyn UsageLedger>) {
+        *self.ledger.0.write().expect("usage ledger lock poisoned") = ledger;
+    }
+
+    /// The tracker's ledger cell, for writers outside it: it follows [`Self::install_ledger`].
+    pub fn ledger(&self) -> Arc<dyn UsageLedger> {
+        self.ledger.clone()
+    }
+
+    /// Record one MCP tool call in `tool_calls`, and hand it to the ledger on the same
+    /// transaction. Trace id is `mcp:<call id>`: gateway calls carry no traceparent here, and a
+    /// fresh id keeps each call its own row.
     pub async fn track_tool_call(&self, call: ToolCallRecord) -> Result<(), sqlx::Error> {
         let call_id: String = call.call_id.clone();
         let trace_id: String = match call.verified_flow_id.as_deref() {
             Some(flow) => flow.to_string(),
             None => format!("mcp:{call_id}"),
         };
+        let status: &str = if call.success { "ok" } else { "error" };
+        let mut tx = self.db.begin().await?;
         sqlx::query(
             r#"INSERT INTO tool_calls (
                    trace_id, call_id, user_id, agent_id, agent_name, tool_name, tool_kind,
@@ -62,16 +111,33 @@ impl UsageTracker {
         .bind(call.user_id)
         .bind(call.agent_id)
         .bind(&call.tool_name)
-        .bind(if call.success { "ok" } else { "error" })
-        .bind(sqlx::types::Json(call.metadata))
+        .bind(status)
+        .bind(sqlx::types::Json(&call.metadata))
         .bind(i64::from(call.latency_ms))
         .bind(call.verified_flow_id.as_deref())
-        .execute(&self.db)
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        let entry = LedgerEntry {
+            user_id: call.user_id,
+            agent_id: Some(call.agent_id),
+            operation_type: TOOL_CALL_OPERATION,
+            provider: "mcp",
+            model: &call.tool_name,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            cost_usd: None,
+            finish_reason: Some(status),
+            metadata: &call.metadata,
+        };
+        self.ledger.record(&mut tx, &entry).await?;
+        tx.commit().await
     }
 
-    /// Add a completion priced by the caller's shared engine to its `trace_usage` row.
+    /// Add a completion priced by the caller's shared engine to its `trace_usage` row, and hand
+    /// it to the ledger on the same transaction.
     ///
     /// Keyed `(session_id, agent name)` like the LLM router's live writer, `direct:<uuid>` when
     /// there is no flow. Tokens and cost accumulate; metadata merges with `||`.
@@ -96,6 +162,7 @@ impl UsageTracker {
         if let Some(map) = metadata.as_object_mut() {
             map.insert("operation_type".into(), usage.operation_type.clone().into());
         }
+        let mut tx = self.db.begin().await?;
         sqlx::query(
             r#"INSERT INTO trace_usage (
                    trace_id, agent_name, session_id, agent_id, user_id, model, provider,
@@ -140,9 +207,26 @@ impl UsageTracker {
         .bind(i64::from(usage.cache_creation_input_tokens.unwrap_or(0)))
         .bind(cost_usd)
         .bind(usage.latency_ms.map(i64::from))
-        .bind(sqlx::types::Json(metadata))
-        .execute(&self.db)
+        .bind(sqlx::types::Json(&metadata))
+        .execute(&mut *tx)
         .await?;
+        let entry = LedgerEntry {
+            user_id: usage.user_id,
+            agent_id: usage.agent_id,
+            operation_type: &usage.operation_type,
+            provider: &usage.provider,
+            model: &usage.model,
+            input_tokens: i64::from(usage.input_tokens),
+            output_tokens: i64::from(usage.output_tokens),
+            total_tokens: i64::from(usage.total_tokens),
+            cache_read_tokens: i64::from(usage.cache_read_input_tokens.unwrap_or(0)),
+            cache_creation_tokens: i64::from(usage.cache_creation_input_tokens.unwrap_or(0)),
+            cost_usd: Some(cost_usd),
+            finish_reason: usage.finish_reason.as_deref(),
+            metadata: &metadata,
+        };
+        self.ledger.record(&mut tx, &entry).await?;
+        tx.commit().await?;
         Ok(TraceUsageKey {
             trace_id,
             agent_name,
