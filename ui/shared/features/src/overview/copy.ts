@@ -466,14 +466,17 @@ export const copy = {
   setUpNow: {
     title: 'Works before your first agent',
     orchestrator: 'Chat now. Once agents run, it routes each question to the right one.',
-    model: 'Connect a model',
+    // An empty cell says what it asks for and why, never only that nothing is there (NAS-1448).
+    model: 'Add your model key',
     models: (n: number) => `${n} model config${n === 1 ? '' : 's'} ready`,
-    noModel: 'No model connected yet',
+    noModel:
+      'Agents call their LLM with your own API key. Add one from OpenAI, Anthropic or another provider.',
     tools: 'Connect an MCP server',
     serversOn: (n: number) => `${n} tool server${n === 1 ? '' : 's'} connected`,
-    serversOff: (n: number) => `${n} available, none connected yet`,
-    noServers: 'No MCP servers yet',
-    noHarnesses: 'None connected yet',
+    serversOff: (n: number) => `${n} available. Connect one to give your agents its tools.`,
+    noServers: 'Optional. Give your agents tools to call, such as GitHub or your own API.',
+    noHarnesses:
+      'Optional. Install the CLI and sign in to see your Claude Code, Codex and Cursor sessions here.',
     unknown: "Couldn't check. Open the page for details.",
   },
   firstRun: {

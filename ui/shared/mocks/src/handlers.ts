@@ -236,6 +236,7 @@ const PAGE_VARIANTS: readonly string[] = [
   ...AGENTS_ONBOARDING_VARIANTS,
   'village-unlimited',
   'overview-bare',
+  'fleet-empty',
   'try-run',
 ]
 
@@ -330,6 +331,9 @@ export const MOCK_VARIANTS = [
   // Overview: agents deployed and nothing else yet (the village's and the Map's empty states). Combines with others
   // (`?mock=onboarding-done,overview-bare,no-spend`), so it is a page variant.
   'overview-bare',
+  // No agents at all: Home's first-run layout (hero, setup guide, "Works before your first agent"). Combines with
+  // `router-empty`, `mcp-empty` and `no-harnesses` for a brand-new user (NAS-1448).
+  'fleet-empty',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
   // Home's try-a-run card (mocks/tryRun.ts): a workspace with no activity until the card's simulated runs, each of
@@ -1099,8 +1103,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const asLive = personaLocked && !!p.owner
       if (asLive) liveOwner = p.owner!
       const owner = asLive ? ADMIN_ID : p.owner
-      const rows = getAgents()
-        .agents.filter((a) => !a.deleted && (!owner || a.owner_id === owner))
+      // `?mock=fleet-empty`: a workspace with no agents yet (Home's first-run layout).
+      const rows = (hasVariant('fleet-empty') ? [] : getAgents().agents)
+        .filter((a) => !a.deleted && (!owner || a.owner_id === owner))
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
       // `?mock=no-agents` (v1c): nothing is running, so Chat has no agent to offer.
       const stopped = hasVariant('no-agents')
@@ -1577,6 +1582,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
               calls_with_any_layer_enabled: 0,
               optimized_spend_usd: 0,
               unoptimized_spend_usd: 0,
+              calibrated_pct: null,
             },
           }
         const live = getAgents().agents.filter((a) => !a.deleted)

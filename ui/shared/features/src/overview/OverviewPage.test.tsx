@@ -293,7 +293,7 @@ describe('first run (design 7A)', () => {
     await user.click(screen.getByRole('button', { name: copy.firstRun.cli(3) }))
     expect(await screen.findByText(/^nasiko connect /)).toBeInTheDocument()
     expect(screen.getByText('nasiko deploy ./my-agent')).toBeInTheDocument()
-    await user.click(within(guideCard).getByRole('button', { name: /^Connect a model/ }))
+    await user.click(within(guideCard).getByRole('button', { name: /^Add your model key/ }))
     expect(await screen.findByRole('heading', { name: '2. Your model key' })).toBeInTheDocument()
   })
 
@@ -306,6 +306,13 @@ describe('first run (design 7A)', () => {
     expect(
       await within(guideCard).findByRole('button', { name: 'Start guide' }),
     ).toBeInTheDocument()
+    // NAS-1448: the first step not done says it is next; the rest say nothing, never "not yet".
+    expect(
+      within(guideCard).getByRole('button', { name: /^Add your model key.*Up next$/ }),
+    ).toBeInTheDocument()
+    expect(
+      within(guideCard).getByRole('button', { name: /^Deploy an agent/ }),
+    ).not.toHaveAccessibleName(/Up next/)
   })
 
   it('previews the lead cards without numbers and keeps Harnesses to one line', async () => {
@@ -571,6 +578,7 @@ describe('Savings', () => {
                 agent_name: 'Sales Assistant',
                 spend_usd: 412.5,
               },
+              calibrated_pct: null,
             },
           },
           status_code: 200,
@@ -621,6 +629,7 @@ describe('Savings', () => {
               agents_with_prompt_comments: 0,
               optimized_spend_usd: 0,
               unoptimized_spend_usd: 0,
+              calibrated_pct: null,
             },
           },
           status_code: 200,

@@ -3,6 +3,7 @@
  * reopen the guide at the first step not done yet.
  */
 import { BookOpen, Check } from 'lucide-react'
+import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Progress } from '@nasiko/ui/primitives/progress'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
@@ -60,6 +61,7 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
   // "Resume" only once a step is done: before that there is nothing to resume.
   const started = t.model || t.agent
   const done = doneCount(t)
+  const next = ROWS.find(([id]) => !t[id])?.[0]
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">{copy.card.intro}</p>
@@ -80,7 +82,8 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
             <Button
               variant="ghost"
               className={cn(
-                'h-auto w-full justify-start gap-3 px-2 py-1 text-left font-normal whitespace-normal',
+                // Top-aligned: when the title wraps, the circle and the status stay on its first line.
+                'h-auto w-full items-start justify-start gap-3 px-2 py-1 text-left font-normal whitespace-normal',
                 buttonClassName,
               )}
               onClick={() => openGuide(step)}
@@ -98,9 +101,14 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
                 <span className="font-medium">{s.title}</span>{' '}
                 <span className="text-muted-foreground">· {s.sub}</span>
               </span>
-              <span className="text-xs text-muted-foreground">
-                {t[id] ? copy.card.done : copy.card.todo}
-              </span>
+              {t[id] ? (
+                // leading-5: the title's first-line height, so the smaller text centers on that line.
+                <span className="shrink-0 text-xs leading-5 text-muted-foreground">
+                  {copy.card.done}
+                </span>
+              ) : id === next ? (
+                <Badge variant="info">{copy.card.next}</Badge>
+              ) : null}
             </Button>
           </li>
         ))}

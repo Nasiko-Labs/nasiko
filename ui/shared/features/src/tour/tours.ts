@@ -85,7 +85,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'overview-setup-guide',
       title: 'Get your first agent running',
-      body: 'Pick your role, connect a model and deploy a first agent. Each step opens the setup guide where you left off.',
+      body: 'Add your model key and deploy a first agent. Each step opens the setup guide where you left off.',
     },
     {
       target: 'overview-cli',

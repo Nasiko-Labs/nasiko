@@ -62,6 +62,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'overview-absent',
   'overview-quiet',
   'overview-bare',
+  'fleet-empty',
   'village-unlimited',
   'try-run',
   // Chat page variants (v1c DX1); harmless here, listed so the lists stay equal.

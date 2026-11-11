@@ -180,15 +180,20 @@ export const copy = {
     },
   },
   card: {
-    // The Overview card's rows: the model and agent rows both open the guide's combined step.
-    model: { title: 'Connect a model', sub: 'Provider and keys' },
-    agent: { title: 'Deploy an agent', sub: 'Zip, GitHub or registry' },
+    // The Overview card's rows: the model and agent rows both open the guide's combined step. Each says what it asks
+    // for and why, and the first one not done says it is next, never "not yet" (NAS-1448).
+    model: {
+      title: 'Add your model key',
+      sub: 'An API key from OpenAI, Anthropic or another provider',
+    },
+    agent: { title: 'Deploy an agent', sub: 'Pick a prebuilt one, or bring your own' },
     title: 'Setup guide',
-    intro: 'Finish setting up your workspace. Only your model key is required.',
+    intro:
+      "Two steps to your first agent run. Agents call their LLM with your own API key, so that one can't be skipped.",
     start: 'Start guide',
     resume: 'Resume guide',
     done: 'Done',
-    todo: 'Not yet',
+    next: 'Up next',
     progress: (done: number, total: number) => `${done} of ${total} done`,
     // The header button's own count beside its bar (user request 2026-11-09: progress on the home screen).
     progressShort: (done: number, total: number) => `${done}/${total}`,
