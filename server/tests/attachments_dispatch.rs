@@ -478,6 +478,103 @@ async fn unreadable_storage_is_a_503_naming_the_file() {
     server.cleanup().await;
 }
 
+#[derive(Default)]
+struct SlowStore {
+    blobs: Mutex<Vec<(String, bytes::Bytes)>>,
+    in_flight: std::sync::atomic::AtomicUsize,
+    most_in_flight: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl nasiko_runtime::BlobStore for SlowStore {
+    async fn put_blob(
+        &self,
+        key: &str,
+        data: bytes::Bytes,
+    ) -> Result<i64, nasiko_runtime::BlobStoreError> {
+        let len = data.len() as i64;
+        self.blobs.lock().unwrap().push((key.to_string(), data));
+        Ok(len)
+    }
+    async fn get_blob(&self, key: &str) -> Result<bytes::Bytes, nasiko_runtime::BlobStoreError> {
+        use std::sync::atomic::Ordering::SeqCst;
+        let (position, data, count) = {
+            let blobs = self.blobs.lock().unwrap();
+            let position = blobs.iter().position(|(k, _)| k == key).unwrap();
+            (position, blobs[position].1.clone(), blobs.len())
+        };
+        let now = self.in_flight.fetch_add(1, SeqCst) + 1;
+        self.most_in_flight.fetch_max(now, SeqCst);
+        let slower_first = (count - position) as u64 * 150;
+        tokio::time::sleep(std::time::Duration::from_millis(slower_first)).await;
+        self.in_flight.fetch_sub(1, SeqCst);
+        Ok(data)
+    }
+    async fn delete_blob(&self, _: &str) -> Result<(), nasiko_runtime::BlobStoreError> {
+        Ok(())
+    }
+    async fn blob_exists(&self, _: &str) -> bool {
+        true
+    }
+    async fn blob_size(&self, _: &str) -> Result<i64, nasiko_runtime::BlobStoreError> {
+        Ok(0)
+    }
+    async fn presigned_get_url(
+        &self,
+        _: &str,
+        _: u64,
+    ) -> Result<String, nasiko_runtime::BlobStoreError> {
+        Ok(String::new())
+    }
+    async fn ensure_bucket(&self, _: bool) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn attached_files_are_read_together_and_reach_the_agent_in_order() {
+    let store = Arc::new(SlowStore::default());
+    let server = common::TestServer::start_with_storage(store.clone()).await;
+    let (_, user) = admin_and_member(&server, "att-parallel").await;
+    let sid = create_session(&server, &user).await;
+    let (url, agent, _handle) = start_stub_agent().await;
+    let agent_id = seed_running_agent(&server, &user, &url).await;
+    let names = [
+        "one.png",
+        "two.png",
+        "three.png",
+        "four.png",
+        "five.png",
+        "six.png",
+    ];
+    let mut ids = Vec::new();
+    for (n, name) in names.iter().enumerate() {
+        ids.push(upload(&server, &user, &sid, png_of(64 + n), name, "image/png").await);
+    }
+
+    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &ids, vec![]).await;
+    assert_eq!(status, 200, "{body}");
+    let most = store
+        .most_in_flight
+        .load(std::sync::atomic::Ordering::SeqCst);
+    assert!((2..=4).contains(&most), "reads in flight at once: {most}");
+    let raws = raw_parts_seen(&agent);
+    let seen: Vec<&str> = raws
+        .iter()
+        .map(|p| p["filename"].as_str().unwrap())
+        .collect();
+    assert_eq!(seen, names);
+    for (n, part) in raws.iter().enumerate() {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(part["raw"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(bytes, png_of(64 + n), "{}", names[n]);
+    }
+
+    server.cleanup().await;
+}
+
 const JWT_SECRET: &str = "attachments-dispatch-secret";
 
 struct ChipSource;
