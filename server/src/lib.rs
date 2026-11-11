@@ -34,6 +34,7 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod embedding_change;
+pub mod error_reporting;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -540,6 +541,11 @@ where
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())
         .merge(registry_routes)
+        // Public: the UI's error-reporting settings and its Sentry tunnel (off unless configured).
+        .merge(error_reporting::router(
+            error_reporting::current_config(),
+            state.http_client.clone(),
+        ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
@@ -585,6 +591,9 @@ where
                 span
             },
         ))
+        // Outermost, so the request's Sentry transaction is the parent of the span above. A
+        // pass-through unless this server reports to Sentry (see `error_reporting`).
+        .layer(middleware::from_fn(error_reporting::trace_requests))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error
@@ -680,11 +689,11 @@ async fn authenticate_oci_request(
             && username == nasiko_oci::BUILD_SERVICE_USERNAME
             && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
         {
-            if let Err(retry_after) = auth_state
+            if !auth_state
                 .build_push_limiter
-                .check(nasiko_oci::BUILD_SERVICE_USERNAME)
+                .allow(nasiko_oci::BUILD_SERVICE_USERNAME)
             {
-                return rate_limit::too_many_requests_after(retry_after);
+                return rate_limit::too_many_requests();
             }
             req.extensions_mut()
                 .insert(nasiko_oci::BuildServiceIdentity);
@@ -695,11 +704,11 @@ async fn authenticate_oci_request(
             .await
         {
             Ok(Some(agent_id)) => {
-                if let Err(retry_after) = auth_state
+                if !auth_state
                     .agent_credential_limiter
-                    .check(&agent_id.to_string())
+                    .allow(&agent_id.to_string())
                 {
-                    return rate_limit::too_many_requests_after(retry_after);
+                    return rate_limit::too_many_requests();
                 }
                 req.extensions_mut()
                     .insert(nasiko_oci::PullOnlyIdentity { agent_id });
@@ -729,8 +738,8 @@ async fn authenticate_oci_request(
             };
         }
     };
-    if let Err(retry_after) = auth_state.bearer_limiter.check(&claims.sub) {
-        return rate_limit::too_many_requests_after(retry_after);
+    if !auth_state.bearer_limiter.allow(&claims.sub) {
+        return rate_limit::too_many_requests();
     }
     req.extensions_mut().insert(nasiko_oci::CallerIdentity {
         user_id: claims.sub.clone(),
