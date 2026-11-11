@@ -237,11 +237,10 @@ impl Providers {
         // platform's own client, already passed in for the Composio provider
         // above) is reused as the `plain` client for `trusted == true` backends —
         // i.e. uploaded-build MCP-server connectors, whose address the platform
-        // itself resolved, not a user. Only Composio keeps a connection pool.
+        // itself resolved, not a user.
         Self {
             composio,
-            mcp: GenericMcpProvider::new(crate::net::guarded_http_client_no_reuse(), http)
-                .with_composio_client(crate::net::guarded_http_client()),
+            mcp: GenericMcpProvider::new(crate::net::guarded_http_client(), http),
         }
     }
 

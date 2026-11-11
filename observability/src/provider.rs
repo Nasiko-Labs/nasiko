@@ -471,7 +471,7 @@ impl TempoLokiProvider {
                     None => continue,
                 }
             } else {
-                own_span_agent(span)
+                span.service_name.as_str()
             };
             if name.is_empty() {
                 continue;
@@ -568,7 +568,7 @@ impl TempoLokiProvider {
                         None => continue,
                     }
                 } else {
-                    own_span_agent(span)
+                    span.service_name.as_str()
                 };
                 *errors_by_agent.entry(name).or_insert(0) += 1;
             }
@@ -1679,11 +1679,11 @@ pub fn span_provider(span: &Span) -> Option<&str> {
 /// ([`crate::types::gateway_tool_agent`]); that comes first, because the span's
 /// own service is the control plane's. Otherwise the service name the
 /// router-pairing resolved for it (its cross-service ancestor), else the
-/// `gen_ai.agent.id` stamped on it, else the span's own service when it is not a gateway
-/// span. The fallbacks keep a tool call attributed when no ancestor is in the trace rather
-/// than dropping it — a tool span is a router span by `gen_ai.agent.id`, so the plain
-/// `is_router_llm_span` path would `continue` past an unpaired one. Both the tool-count pass
-/// and the error attribution use this, so a failed tool call lands on the same row its count
+/// `gen_ai.agent.id` stamped on it. The fallback keeps a tool call attributed
+/// when no ancestor is in the trace rather than dropping it — a tool span is a
+/// router span by `gen_ai.agent.id`, so the plain `is_router_llm_span` path
+/// would `continue` past an unpaired one. Both the tool-count pass and the error
+/// attribution use this, so a failed tool call lands on the same row its count
 /// does.
 fn tool_span_agent<'a>(span: &'a Span, attributed: &HashMap<&'a str, &'a str>) -> Option<&'a str> {
     if let Some(agent) = crate::types::gateway_tool_agent(span) {
@@ -1692,32 +1692,10 @@ fn tool_span_agent<'a>(span: &'a Span, attributed: &HashMap<&'a str, &'a str>) -
     if let Some(agent) = attributed.get(span.span_id.as_str()) {
         return Some(agent);
     }
-    if let Some(id) = span
-        .attributes
+    span.attributes
         .get("gen_ai.agent.id")
         .and_then(|v| v.as_str())
         .filter(|id| !id.is_empty())
-    {
-        return Some(id);
-    }
-    // A tool the agent ran itself (a coding agent's, or any tool outside the gateway) names no
-    // agent and has no router ancestor: it is booked to the service that emitted it. A gateway
-    // span is not, since its service is the control plane's and a call it cannot name an agent
-    // for has none to credit.
-    let by_gateway = span.attributes.contains_key("mcp.method.name");
-    (!by_gateway)
-        .then_some(span.service_name.as_str())
-        .filter(|service| !service.is_empty())
-}
-
-/// The agent a span that is not the router's is booked to: its own service, except the
-/// Orchestrator's model calls, which the control plane also writes live as `orchestrator`.
-fn own_span_agent(span: &Span) -> &str {
-    if span.name == crate::types::ORCHESTRATOR_LLM_SPAN {
-        crate::types::ORCHESTRATOR_USAGE_AGENT
-    } else {
-        span.service_name.as_str()
-    }
 }
 
 /// Root span: one whose parent is absent from the trace.
@@ -1944,53 +1922,6 @@ mod tests {
         assert_eq!((row.input_tokens, row.output_tokens), (100, 50));
     }
 
-    /// The control plane writes the Orchestrator's spend live as `orchestrator`; Tempo's copy of
-    /// the same calls must land on that row, not on one named for the control plane's service.
-    #[tokio::test]
-    async fn the_orchestrators_own_model_calls_are_booked_to_orchestrator() {
-        let mut first = model_span("o1", Some("turn"), "gpt-4o-mini", (785, 577, 0, 0));
-        let mut second = model_span("o2", Some("turn"), "gpt-4o-mini", (1_627, 52, 0, 0));
-        for span in [&mut first, &mut second] {
-            span.service_name = "nasiko-cp".into();
-            span.name = crate::types::ORCHESTRATOR_LLM_SPAN.into();
-        }
-
-        let rows = offline_provider()
-            .aggregate_trace_usage(&trace_of(vec![first, second]))
-            .await;
-
-        assert_eq!(rows.len(), 1, "one row, not one per service");
-        assert_eq!(rows[0].agent_name, crate::types::ORCHESTRATOR_USAGE_AGENT);
-        assert_eq!((rows[0].input_tokens, rows[0].output_tokens), (2_412, 629));
-    }
-
-    /// The agent's HTTP client span sits between the router's span and its LLM span; the call
-    /// must still be counted once (913 in, 3000 out), not twice.
-    #[tokio::test]
-    async fn an_agent_with_an_instrumented_http_client_is_counted_once() {
-        let mut llm = model_span("chat", None, "gpt-4o-mini", (913, 3_000, 0, 0));
-        llm.service_name = "meeting-notes".into();
-        let mut post = model_span("post", Some("chat"), "none", (0, 0, 0, 0));
-        post.service_name = "meeting-notes".into();
-        post.attributes.clear();
-        let mut request = model_span("req", Some("post"), "none", (0, 0, 0, 0));
-        request.service_name = "nasiko-cp".into();
-        request.attributes.clear();
-        let mut router = model_span("r1", Some("req"), "gpt-5", (913, 3_000, 0, 0));
-        router.service_name = "nasiko-cp".into();
-        router
-            .attributes
-            .insert("gen_ai.agent.id".into(), serde_json::json!("agent-uuid"));
-
-        let rows = offline_provider()
-            .aggregate_trace_usage(&trace_of(vec![llm, post, request, router]))
-            .await;
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].agent_name, "meeting-notes");
-        assert_eq!((rows[0].input_tokens, rows[0].output_tokens), (913, 3_000));
-    }
-
     #[tokio::test]
     async fn a_tool_only_agent_still_gets_a_row() {
         // #4: an agent seen only through a tool call (no LLM span) is attributed
@@ -2006,44 +1937,6 @@ mod tests {
         assert_eq!(rows[0].tool_call_count, 1);
         assert_eq!(rows[0].input_tokens, 0);
         assert_eq!(rows[0].cost_usd, 0.0);
-    }
-
-    #[tokio::test]
-    async fn a_tool_the_agent_ran_itself_is_booked_to_its_own_service() {
-        // A coding agent's tool span: emitted from the agent's own service, with no
-        // `gen_ai.agent.id` and no gateway or router ancestor. It must still be counted, on the
-        // same row as the agent's LLM span.
-        let mut llm = model_span("llm", None, "claude-sonnet", (10, 5, 0, 0));
-        llm.service_name = "claude-code".into();
-        let mut tool = tool_span("tool", None, "Bash", "unused");
-        tool.service_name = "claude-code".into();
-        tool.attributes.remove("gen_ai.agent.id");
-
-        let rows = offline_provider()
-            .aggregate_trace_usage(&trace_of(vec![llm, tool]))
-            .await;
-
-        assert_eq!(rows.len(), 1, "one row for the one agent");
-        assert_eq!(rows[0].agent_name, "claude-code");
-        assert_eq!(rows[0].tool_call_count, 1);
-        assert_eq!((rows[0].input_tokens, rows[0].output_tokens), (10, 5));
-    }
-
-    #[tokio::test]
-    async fn a_gateway_span_that_names_no_agent_is_not_booked_to_the_control_plane() {
-        // The gateway runs in the control plane, so its span's own service is not an agent. With
-        // no `agent.id` it has nobody to credit and must not fall back to that service.
-        let mut gateway = tool_span("tool", None, "gmail__send_email", "unused");
-        gateway.attributes.remove("gen_ai.agent.id");
-        gateway
-            .attributes
-            .insert("mcp.method.name".into(), serde_json::json!("tools/call"));
-
-        let rows = offline_provider()
-            .aggregate_trace_usage(&trace_of(vec![gateway]))
-            .await;
-
-        assert!(rows.is_empty(), "no agent to credit: {rows:?}");
     }
 
     #[tokio::test]

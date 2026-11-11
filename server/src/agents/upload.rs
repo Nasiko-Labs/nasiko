@@ -105,12 +105,6 @@ pub(crate) struct UploadAndDeployForm {
     /// `auto` (default: the platform parks the agent when idle) | `resident` (always
     /// running). Omit to keep an existing agent's stored policy.
     parking_policy: Option<String>,
-    /// `"true"`/`"false"` — human-in-the-loop approval for a coding agent's tool
-    /// use. Tri-state like `writable`: omit to take the default for the kind on a
-    /// new agent (ON for `acp_coding_agent`, OFF otherwise) and to keep an existing
-    /// agent's stored setting — the CLI only sends it when `--hitl`/`--no-hitl`
-    /// was passed.
-    hitl: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema, sqlx::FromRow)]
@@ -402,11 +396,6 @@ pub(crate) async fn upload_and_deploy(
     // `auto`/`resident`. Tri-state like `writable`: None = keep the stored policy (`auto`
     // for a new agent).
     let mut parking_policy: Option<String> = None;
-    // Human-in-the-loop approval for a coding agent. Tri-state like `writable`:
-    // None = take the kind's default on a new agent (on for a coding agent, off
-    // otherwise) and keep the stored value on a re-upload. The CLI only sends it
-    // when `--hitl`/`--no-hitl` was passed.
-    let mut hitl: Option<bool> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
         match field.name().unwrap_or("") {
@@ -429,15 +418,6 @@ pub(crate) async fn upload_and_deploy(
                 workload_kind = field.text().await.ok().filter(|s| !s.is_empty());
             }
             "parking_policy" => parking_policy = field.text().await.ok(),
-            "hitl" => {
-                // Tri-state like `writable`: only an explicit true/false counts;
-                // anything else is "not specified".
-                hitl = match field.text().await.ok().as_deref() {
-                    Some("true") => Some(true),
-                    Some("false") => Some(false),
-                    _ => None,
-                };
-            }
             "source" | "file" => {
                 use crate::multipart_util::{StreamUploadError, stream_field_to_fresh_temp_file};
                 match stream_field_to_fresh_temp_file(
@@ -650,24 +630,16 @@ pub(crate) async fn upload_and_deploy(
     // back the effective values so the deploy uses the DB's truth. (There is
     // deliberately no way to clear a stored writable_path back to NULL here —
     // pass an explicit new path instead; clearing would move the mount.)
-    // HITL default for a NEW agent follows the resolved kind: on for a coding
-    // agent, off otherwise (mirrors `push`/`deploy`, whose CLI sends HITL on by
-    // default for `--coding-agent`). A caller-sent value ($9) always wins; None
-    // takes this default on insert and keeps the stored value on conflict. The
-    // kind is `COALESCE($8, 'agent')` for a new row, so a plain upload declaring
-    // `workloadKind: acp_coding_agent` in its card gets HITL too, not just `--coding-agent`.
-    let hitl_default_new = workload_kind.as_deref() == Some("acp_coding_agent");
     let (agent_id, writable, writable_path, workload_kind) = {
         match sqlx::query_as::<_, (Uuid, bool, Option<String>, String)>(
-            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path, workload_kind, hitl_enabled) \
-             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7, COALESCE($8, 'agent'), COALESCE($9, $10)) \
+            "INSERT INTO agents (name, owner_id, version, image, status, inbound_format, writable, writable_path, workload_kind) \
+             VALUES ($1, $2, $3, $4, 'deploying', $5, COALESCE($6, false), $7, COALESCE($8, 'agent')) \
              ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL \
              DO UPDATE SET version = EXCLUDED.version, image = EXCLUDED.image, \
                            inbound_format = EXCLUDED.inbound_format, \
                            writable = COALESCE($6, agents.writable), \
                            writable_path = COALESCE($7, agents.writable_path), \
                            workload_kind = COALESCE($8, agents.workload_kind), \
-                           hitl_enabled = COALESCE($9, agents.hitl_enabled), \
                            status = 'deploying', updated_at = now() \
              WHERE agents.workload_kind <> 'harness' \
              RETURNING id, writable, writable_path, workload_kind",
@@ -680,8 +652,6 @@ pub(crate) async fn upload_and_deploy(
         .bind(writable)
         .bind(&writable_path)
         .bind(&workload_kind)
-        .bind(hitl)
-        .bind(hitl_default_new)
         .fetch_optional(&mut *tx)
         .await
         {

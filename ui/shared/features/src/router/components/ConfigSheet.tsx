@@ -256,7 +256,7 @@ function EditorForm({
   const [ackReplace, setAckReplace] = useState(false)
   const [done, setDone] = useState<null | { config: LlmConfig; affected: number }>(null)
   const [advanced, setAdvanced] = useState(
-    () => !!(form.tiers.some(Boolean) || form.temperature || form.maxTokens || form.pinned),
+    () => !!(form.temperature || form.maxTokens || form.pinned),
   )
   const ids = useId()
   const idx = useMemo(() => catalogIndex(catalog.data), [catalog.data])
@@ -519,6 +519,32 @@ function EditorForm({
           {fieldError('secret')}
           {keyMaybeSaved ? <Warn>{copy.keyMaybeSaved}</Warn> : null}
 
+          <FieldSet className="gap-2">
+            <FieldLegend variant="label" className="mb-0">
+              {copy.tierSection}
+            </FieldLegend>
+            {TIERS.map((i) => (
+              <FormField key={i} id={`${ids}-t${i}`} label={copy.tierLabels[i]}>
+                <Controller
+                  control={control}
+                  name={`tiers.${i}`}
+                  render={({ field }) => (
+                    <SuggestInput
+                      id={`${ids}-t${i}`}
+                      suggestions={modelsFor(form.provider)}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                    />
+                  )}
+                />
+                {offCatalog(form.tiers[i]) ? <Warn>{copy.notInCatalog}</Warn> : null}
+                {blockedNote(TIER_FIELDS[i])}
+              </FormField>
+            ))}
+          </FieldSet>
+
           <Fallbacks
             fallbacks={form.fallbacks}
             onChange={(next) => setValue('fallbacks', next, { shouldDirty: true })}
@@ -535,31 +561,6 @@ function EditorForm({
             open={advanced}
             onToggle={() => setAdvanced(!advanced)}
           >
-            <FieldSet className="gap-2">
-              <FieldLegend variant="label" className="mb-0">
-                {copy.tierSection}
-              </FieldLegend>
-              {TIERS.map((i) => (
-                <FormField key={i} id={`${ids}-t${i}`} label={copy.tierLabels[i]}>
-                  <Controller
-                    control={control}
-                    name={`tiers.${i}`}
-                    render={({ field }) => (
-                      <SuggestInput
-                        id={`${ids}-t${i}`}
-                        suggestions={modelsFor(form.provider)}
-                        value={field.value}
-                        onValueChange={field.onChange}
-                        onBlur={field.onBlur}
-                        ref={field.ref}
-                      />
-                    )}
-                  />
-                  {offCatalog(form.tiers[i]) ? <Warn>{copy.notInCatalog}</Warn> : null}
-                  {blockedNote(TIER_FIELDS[i])}
-                </FormField>
-              ))}
-            </FieldSet>
             <FormField id={`${ids}-temp`} label={copy.temperature}>
               <Input
                 id={`${ids}-temp`}

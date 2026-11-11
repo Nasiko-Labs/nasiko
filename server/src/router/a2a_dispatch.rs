@@ -1777,7 +1777,6 @@ async fn agent_stream(
 
     if content_type.contains("text/event-stream") {
         let byte_stream = response.bytes_stream();
-        let spend_gate = state.spend_gate.clone();
         let flow_id_cleanup = flow_id;
         // Dropping the generator (client disconnect) skips the code after the relay loop, which
         // is the only place the outcome is settled.
@@ -1943,8 +1942,6 @@ async fn agent_stream(
                     yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
                 }
 
-                // A refused model call is why the turn failed, whatever the agent said about it.
-                let agent_error = spend_gate.refusal_in_flow(&flow_id_cleanup).await.or(agent_error);
                 if let Some(err) = &agent_error {
                     yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, err))));
                 } else {
@@ -2069,7 +2066,6 @@ async fn agent_stream(
             );
         }
 
-        let refusal = state.spend_gate.refusal_in_flow(&flow_id).await;
         let artifact_id = Uuid::new_v4().to_string();
         let flow_id_cleanup = flow_id;
 
@@ -2103,21 +2099,16 @@ async fn agent_stream(
                 yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, usage_msg))));
             }
 
-            if let Some(reason) = &refusal {
-                yield Ok(to_sse(a2a::status_event(a2a::failed(&task_id, &context_id, reason))));
-            } else {
-                yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
-            }
+            yield Ok(to_sse(a2a::status_event(a2a::completed(&task_id, &context_id))));
 
             // Guarded on 'running' like the other completion sites: a terminal
             // 'failed'/'paused' is never downgraded by a later completion.
             let _ = sqlx::query(
-                r#"UPDATE flows SET status = CASE WHEN $2::TEXT IS NULL THEN 'completed' ELSE 'failed' END,
-                   error_message = $2,
+                r#"UPDATE flows SET status = 'completed',
                    duration_ms = EXTRACT(EPOCH FROM (now() - created_at))::bigint * 1000,
                    completed_at = now()
                    WHERE flow_id = $1 AND status = 'running'"#,
-            ).bind(&flow_id_cleanup).bind(refusal.as_deref()).execute(&db).await;
+            ).bind(&flow_id_cleanup).execute(&db).await;
             flow_events.remove(&flow_id_cleanup).await;
         };
 
