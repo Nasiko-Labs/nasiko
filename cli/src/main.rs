@@ -96,9 +96,7 @@ Coding agents get up to three things: LLM routing through the Nasiko LLM router,
 connectors through the Nasiko gateway, and session reporting to Nasiko observability.
 On a terminal, connect asks about each; flags answer the same questions in scripts.
 Without a terminal, new routing gets MCP and reporting is off unless --reporting, --content
-or --no-content is given. Reporting always syncs usage (tokens, cost, latency, models, tools
-and subagents). Chat history (prompts, responses, tool output) is synced only to a cluster that
-keeps it, after asking or with --content; one that doesn't (a hosted Nasiko) gets usage only.
+or --no-content is given; scripts report prompt and response text only with --content.
 
 Examples:
   nasiko connect                       pick from the coding agents on this machine

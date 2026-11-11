@@ -131,7 +131,7 @@ impl PricedTurn {
         // older callers whose input still includes cache and must not change here.
         let mut row = crate::usage::TokenUsageBuilder::new(
             user_id,
-            nasiko_observability::types::ORCHESTRATOR_USAGE_AGENT,
+            "orchestrator",
             self.usage.provider.as_deref().unwrap_or("unknown"),
             &self.usage.model,
         )
