@@ -10,7 +10,8 @@
  * - Security: (EE: Single sign-on), Secrets (`/settings/secrets`), then a layer's `personalSettingsLinks` (its own
  *   routes), each listed once its own `available` check, when it has one, answers true.
  * A layer's rows come from the `settingsSections` slot, placed after the row they name. A member sees Secrets only:
- * the workspace sections are superuser-gated on the API. This is the sidebar's Organization → Settings.
+ * the workspace sections are superuser-gated on the API. A `personalSettingsLinks` row with `group: 'workspace'` sits
+ * in Workspace, after those sections, and shows the group to a member too. This is the sidebar's Organization → Settings.
  * With `account`, the same layout holds the account's own settings (the account menu's Settings): Appearance
  * (`/account/appearance`; the lab's, this browser's mode and theme) and Password (`/account/password`; Change
  * password). Optimization moved to /optimization (plans/feat-optimization-page.md P2).
@@ -83,7 +84,40 @@ export function SettingsLayout({
     ),
   })
   const links = personalSettingsLinks.filter((l, i) => !l.available || linkChecks[i]?.data === true)
+  // Every user's own, like Secrets — never gated by `admin` (personalSettingsLinks is a plain nav link to the layer's
+  // own route, not a `/settings?section=` page).
+  const linkRows = (g: 'workspace' | 'security') =>
+    links
+      .filter((l) => (l.group ?? 'security') === g)
+      .map((l): Row => ({ key: l.key, label: l.label, to: l.to }))
   const inGroup = (g: 'workspace' | 'security') => settingsSections.filter((s) => s.group === g)
+  const workspaceRows = [
+    ...(admin
+      ? withLayer(
+          CORE_SECTIONS.flatMap((k): Row[] => [
+            {
+              key: k,
+              label: copy.sections[k].label,
+              to: '/settings',
+              // General is the default: its link carries no section.
+              section: k === 'general' ? undefined : k,
+            },
+            // A sub-page after Flow limits (plans/feat-context-optimization.md F4): its own route and read.
+            ...(k === 'limits'
+              ? [
+                  {
+                    key: 'optimization-tiers',
+                    label: copy.optimizationTiers.label,
+                    to: '/settings/optimization-tiers' as const,
+                  },
+                ]
+              : []),
+          ]),
+          inGroup('workspace'),
+        )
+      : []),
+    ...linkRows('workspace'),
+  ]
   const groups: { key: string; label: string; rows: Row[] }[] = account
     ? [
         {
@@ -97,35 +131,8 @@ export function SettingsLayout({
         },
       ]
     : [
-        ...(admin
-          ? [
-              {
-                key: 'workspace',
-                label: copy.nav.workspace,
-                rows: withLayer(
-                  CORE_SECTIONS.flatMap((k): Row[] => [
-                    {
-                      key: k,
-                      label: copy.sections[k].label,
-                      to: '/settings',
-                      // General is the default: its link carries no section.
-                      section: k === 'general' ? undefined : k,
-                    },
-                    // A sub-page after Flow limits (plans/feat-context-optimization.md F4): its own route and read.
-                    ...(k === 'limits'
-                      ? [
-                          {
-                            key: 'optimization-tiers',
-                            label: copy.optimizationTiers.label,
-                            to: '/settings/optimization-tiers' as const,
-                          },
-                        ]
-                      : []),
-                  ]),
-                  inGroup('workspace'),
-                ),
-              },
-            ]
+        ...(workspaceRows.length
+          ? [{ key: 'workspace', label: copy.nav.workspace, rows: workspaceRows }]
           : []),
         {
           key: 'security',
@@ -133,9 +140,7 @@ export function SettingsLayout({
           rows: [
             ...withLayer([], admin ? inGroup('security') : []),
             { key: 'secrets', label: copy.secrets.title, to: '/settings/secrets' },
-            // Every user's own, like Secrets above — never gated by `admin` (personalSettingsLinks is a plain nav
-            // link to the layer's own route, not a `/settings?section=` page).
-            ...links.map((l): Row => ({ key: l.key, label: l.label, to: l.to })),
+            ...linkRows('security'),
           ],
         },
       ]

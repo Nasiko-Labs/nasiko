@@ -127,6 +127,11 @@ export interface PersonalSettingsLink {
   label: string
   /** The layer's own route, e.g. `/settings/memory` — not `/settings?section=`. */
   to: string
+  /**
+   * Its nav group: Security (after Secrets) when absent. Workspace puts it after the admin's sections, and shows the
+   * group to a member for it (MT: the Free plan's admin-only Registry and MCP toolkits, which say so).
+   */
+  group?: 'workspace' | 'security'
   /** The layer's own check that the page exists on this server; the link is listed once it answers true. */
   available?: (userId: string) => SlotQuery<boolean>
 }
@@ -366,8 +371,9 @@ export interface Slots {
    */
   sidebarBrand: ComponentType | null
   /**
-   * A layer's card above the sidebar footer (MT: the plan). Hidden while a page's panel holds the sidebar; it draws
-   * its own collapsed-rail form.
+   * A layer's card above the sidebar footer, in the free assessment's place: while a layer fills it,
+   * the assessment banner and help row are off. Hidden while a page's panel holds the sidebar; it draws its own
+   * collapsed-rail form.
    */
   sidebarCard: ComponentType | null
   /**
