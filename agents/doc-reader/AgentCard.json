@@ -21,7 +21,7 @@
   "protocolVersion": "0.2.9",
   "skills": [
     {
-      "description": "Upload a file and ask questions about it. Supports text, CSV, JSON, code, logs, and more.",
+      "description": "Upload a file and ask questions about it. Supports PDFs, images, text, CSV, JSON, code and logs.",
       "examples": [
         "Summarize this document",
         "What are the key findings in this report?",

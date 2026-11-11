@@ -33,52 +33,52 @@ init_telemetry(os.environ.get("OTEL_SERVICE_NAME", "doc-reader-agent"))
 logger = logging.getLogger(__name__)
 
 
+IMAGE_TYPES = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+TEXT_DOCUMENT_TYPES = {"application/json", "application/xml", "application/yaml", "application/x-yaml"}
+MAX_TEXT_CHARS = 50_000
+
+
 def extract_files_from_message(message) -> list[dict]:
-    """Extract file parts from an A2A message.
+    if message is None:
+        return []
+    return [
+        {
+            "filename": part.filename or "unnamed",
+            "media_type": (part.media_type or "application/octet-stream").split(";")[0].strip().lower(),
+            "data": part.raw,
+        }
+        for part in message.parts
+        if part.WhichOneof("content") == "raw"
+    ]
 
-    Handles both the typed Part model (PartContent.raw) and the raw dict
-    format forwarded by the orchestrator/proxy.
-    """
-    files = []
-    if not message or not hasattr(message, "parts"):
-        return files
 
-    for part in message.parts:
-        # Typed Part model: part.content is PartContent with .raw bytes
-        content = getattr(part, "content", None)
-        if content is not None:
-            raw = getattr(content, "raw", None)
-            if raw is not None:
-                files.append({
-                    "filename": getattr(part, "filename", None) or "unnamed",
-                    "media_type": getattr(part, "media_type", None) or "application/octet-stream",
-                    "data": raw if isinstance(raw, bytes) else base64.b64decode(raw),
-                })
-                continue
-
-        # Raw dict forwarded by the orchestrator JSON body
-        raw_part = part if isinstance(part, dict) else (
-            part.model_dump() if hasattr(part, "model_dump") else None
-        )
-        if not raw_part:
-            continue
-
-        if "raw" in raw_part:
-            raw_b64 = raw_part["raw"]
-            files.append({
-                "filename": raw_part.get("filename") or "unnamed",
-                "media_type": raw_part.get("mediaType") or "application/octet-stream",
-                "data": base64.b64decode(raw_b64) if isinstance(raw_b64, str) else raw_b64,
-            })
-        elif "file" in raw_part:
-            fd = raw_part["file"]
-            files.append({
-                "filename": fd.get("name") or "unnamed",
-                "media_type": fd.get("mimeType") or "application/octet-stream",
-                "data": base64.b64decode(fd["bytes"]) if "bytes" in fd else b"",
-            })
-
-    return files
+def file_content_part(f: dict) -> dict:
+    name, media_type, data = f["filename"], f["media_type"], f["data"]
+    if media_type in IMAGE_TYPES:
+        encoded = base64.b64encode(data).decode()
+        return {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{encoded}"}}
+    if media_type == "application/pdf":
+        encoded = base64.b64encode(data).decode()
+        return {
+            "type": "file",
+            "file": {"filename": name, "file_data": f"data:application/pdf;base64,{encoded}"},
+        }
+    if media_type.startswith("text/") or media_type in TEXT_DOCUMENT_TYPES:
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "type": "text",
+                "text": f"--- File: {name} ({media_type}) was not read: it is not valid UTF-8 text ---",
+            }
+        if len(text) > MAX_TEXT_CHARS:
+            text = text[:MAX_TEXT_CHARS] + f"\n\n... [truncated, {len(text)} total chars]"
+        return {"type": "text", "text": f"--- File: {name} ({media_type}) ---\n{text}"}
+    return {
+        "type": "text",
+        "text": f"--- File: {name} ({media_type}) was not read: this agent reads images "
+        "(PNG, JPEG, GIF, WebP), PDFs and text files ---",
+    }
 
 
 class DocReaderExecutor(AgentExecutor):
@@ -141,38 +141,17 @@ class DocReaderExecutor(AgentExecutor):
                 query or "No files were uploaded. Please upload a document to analyze."
             )
 
-        file_descriptions = []
-        for f in files:
-            try:
-                text = f["data"].decode("utf-8", errors="replace")
-            except Exception:
-                text = f"[Binary file, {len(f['data'])} bytes]"
-
-            # Truncate very large files to stay within token limits
-            max_chars = 50_000
-            if len(text) > max_chars:
-                text = text[:max_chars] + f"\n\n... [truncated, {len(text)} total chars]"
-
-            file_descriptions.append(
-                f"--- File: {f['filename']} ({f['media_type']}) ---\n{text}"
-            )
-
-        files_context = "\n\n".join(file_descriptions)
         prompt = query if query else "Summarize the uploaded document(s)."
-
-        return await self._chat_with_context(prompt, files_context)
-
-    async def _chat_with_context(self, query: str, file_context: str) -> str:
+        content = [{"type": "text", "text": prompt}, *(file_content_part(f) for f in files)]
         resp = await self.llm.chat.completions.create(
             model=self.model,
             messages=[
                 {"role": "system", "content": (
-                    "You are a document analysis assistant. The user has uploaded one or more "
-                    "files whose contents are provided below. Answer the user's question about "
-                    "the documents. If no specific question is asked, provide a concise summary.\n\n"
-                    f"## Uploaded Documents\n\n{file_context}"
+                    "You are a document analysis assistant. The user has attached one or more "
+                    "files to their message. Answer the user's question about them. If no "
+                    "specific question is asked, provide a concise summary."
                 )},
-                {"role": "user", "content": query},
+                {"role": "user", "content": content},
             ],
         )
         return resp.choices[0].message.content
@@ -203,7 +182,7 @@ def main(host, port):
 
     agent_card = AgentCard(
         name="Doc Reader",
-        description="Reads uploaded documents (text, CSV, JSON, code, logs) and answers questions about them.",
+        description="Reads uploaded documents (PDFs, images, text, CSV, JSON, code, logs) and answers questions about them.",
         supported_interfaces=[
             AgentInterface(protocol_binding="JSONRPC", url=f"http://{host}:{port}/"),
         ],
@@ -215,7 +194,7 @@ def main(host, port):
             AgentSkill(
                 id="doc-reader",
                 name="Document Reader",
-                description="Upload a file and ask questions about it. Supports text, CSV, JSON, code, logs, and more.",
+                description="Upload a file and ask questions about it. Supports PDFs, images, text, CSV, JSON, code and logs.",
                 tags=["documents", "files", "upload", "summarize", "analyze"],
                 examples=[
                     "Summarize this document",
