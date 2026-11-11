@@ -195,9 +195,10 @@ export function AppSidebar({
             </>
           )}
         </SidebarMenu>
-        {/* In the rail a layer's brand row goes under the mark, which keeps expanding the sidebar. */}
+        {/* In the rail a layer's brand row goes under the mark, which keeps expanding the sidebar. A brand with
+            nothing to add there renders nothing, and leaves no gap. */}
         {rail && Brand ? (
-          <SidebarMenu>
+          <SidebarMenu className="has-[>li:empty]:hidden">
             <SidebarMenuItem>
               <Brand />
             </SidebarMenuItem>
@@ -237,12 +238,11 @@ export function AppSidebar({
         />
       ) : null}
       {/* {holds ? null : <WaitlistCard />} */}
-      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. The core's own
-          assessment is a banner above the top bar now (AppShell), and gives way to this card. */}
+      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. */}
       {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} assessment={!SidebarCard} />
+          <HelpRows pathname={pathname} onPick={pick} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -436,16 +436,7 @@ function NavGroups({
 }
 
 /** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({
-  pathname,
-  onPick,
-  assessment,
-}: {
-  pathname: string
-  onPick(): void
-  /** The assessment row; off where a layer's card takes the assessment's place. */
-  assessment: boolean
-}) {
+function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
@@ -488,28 +479,26 @@ function HelpRows({
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
-      {/* Here whenever the banner could be, so the assessment stays one click away after it is dismissed. */}
-      {assessment ? (
-        <SidebarMenuItem>
-          <SidebarMenuButton
-            isActive={pathname === '/assessment'}
-            tooltip={copy.help.assessment}
-            className={cn(ROW, ACTIVE_ROW)}
-            render={
-              <Link
-                to="/assessment"
-                onClick={() => {
-                  onPick()
-                  setOpenMobile(false)
-                }}
-              />
-            }
-          >
-            <ClipboardCheck aria-hidden />
-            <span className={LABEL}>{copy.help.assessment}</span>
-          </SidebarMenuButton>
-        </SidebarMenuItem>
-      ) : null}
+      {/* Always here, so the assessment stays one click away after its banner is dismissed. */}
+      <SidebarMenuItem>
+        <SidebarMenuButton
+          isActive={pathname === '/assessment'}
+          tooltip={copy.help.assessment}
+          className={cn(ROW, ACTIVE_ROW)}
+          render={
+            <Link
+              to="/assessment"
+              onClick={() => {
+                onPick()
+                setOpenMobile(false)
+              }}
+            />
+          }
+        >
+          <ClipboardCheck aria-hidden />
+          <span className={LABEL}>{copy.help.assessment}</span>
+        </SidebarMenuButton>
+      </SidebarMenuItem>
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
     </>
   )
