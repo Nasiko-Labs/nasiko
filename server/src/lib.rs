@@ -689,11 +689,11 @@ async fn authenticate_oci_request(
             && username == nasiko_oci::BUILD_SERVICE_USERNAME
             && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
         {
-            if !auth_state
+            if let Err(retry_after) = auth_state
                 .build_push_limiter
-                .allow(nasiko_oci::BUILD_SERVICE_USERNAME)
+                .check(nasiko_oci::BUILD_SERVICE_USERNAME)
             {
-                return rate_limit::too_many_requests();
+                return rate_limit::too_many_requests_after(retry_after);
             }
             req.extensions_mut()
                 .insert(nasiko_oci::BuildServiceIdentity);
@@ -704,11 +704,11 @@ async fn authenticate_oci_request(
             .await
         {
             Ok(Some(agent_id)) => {
-                if !auth_state
+                if let Err(retry_after) = auth_state
                     .agent_credential_limiter
-                    .allow(&agent_id.to_string())
+                    .check(&agent_id.to_string())
                 {
-                    return rate_limit::too_many_requests();
+                    return rate_limit::too_many_requests_after(retry_after);
                 }
                 req.extensions_mut()
                     .insert(nasiko_oci::PullOnlyIdentity { agent_id });
@@ -738,8 +738,8 @@ async fn authenticate_oci_request(
             };
         }
     };
-    if !auth_state.bearer_limiter.allow(&claims.sub) {
-        return rate_limit::too_many_requests();
+    if let Err(retry_after) = auth_state.bearer_limiter.check(&claims.sub) {
+        return rate_limit::too_many_requests_after(retry_after);
     }
     req.extensions_mut().insert(nasiko_oci::CallerIdentity {
         user_id: claims.sub.clone(),
