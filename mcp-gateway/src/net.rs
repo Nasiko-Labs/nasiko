@@ -87,12 +87,19 @@ impl Resolve for GuardedResolver {
 /// (SSRF + DNS-rebinding hardened), for outbound calls to user-registered MCP
 /// backends. Reuses the platform's rustls stack; per-request timeouts are set by
 /// the caller. Honors the `MCP_ALLOW_PRIVATE_URLS` dev/test bypass.
-///
-/// Connections are never reused. A backend that answers before reading the
-/// whole request body (Azure API Management rejecting a session-less call) can
-/// leave those bytes on a kept-alive socket, and the next request on it (our
-/// `initialize`) then fails with a content-length mismatch.
 pub fn guarded_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .dns_resolver(Arc::new(GuardedResolver))
+        .build()
+        .expect("failed to build SSRF-guarded reqwest client")
+}
+
+/// [`guarded_http_client`] that never reuses a connection, for MCP servers a
+/// user registered. A backend that answers before reading the whole request
+/// body (Azure API Management rejecting a session-less call) can leave those
+/// bytes on a kept-alive socket, and the next request on it (our `initialize`)
+/// then fails with a content-length mismatch.
+pub fn guarded_http_client_no_reuse() -> reqwest::Client {
     reqwest::Client::builder()
         .dns_resolver(Arc::new(GuardedResolver))
         .pool_max_idle_per_host(0)
@@ -345,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn guarded_client_opens_a_new_connection_per_request() {
+    async fn no_reuse_client_opens_a_new_connection_per_request() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -370,7 +377,7 @@ mod tests {
             }
         });
 
-        let client = guarded_http_client();
+        let client = guarded_http_client_no_reuse();
         for _ in 0..2 {
             let resp = client
                 .post(format!("http://{addr}/mcp"))

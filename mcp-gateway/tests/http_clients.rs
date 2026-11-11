@@ -694,3 +694,54 @@ async fn untrusted_config_is_still_rejected_by_ssrf_guard_against_loopback() {
     );
     _never_called.assert_async().await;
 }
+
+/// User-registered servers get a new connection per request; Composio reuses one.
+#[tokio::test]
+async fn only_composio_reuses_connections() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    for (kind, expected) in [(ServerType::Mcp, 2), (ServerType::Composio, 1)] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let body = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let mut buf = [0u8; 8192];
+                    while sock.read(&mut buf).await.is_ok_and(|n| n > 0) {
+                        if sock.write_all(reply.as_bytes()).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let provider = GenericMcpProvider::new(
+            nasiko_mcp_gateway::net::guarded_http_client_no_reuse(),
+            reqwest::Client::new(),
+        )
+        .with_composio_client(nasiko_mcp_gateway::net::guarded_http_client());
+        // The literal IP skips the guard's resolver.
+        let server = MCPServerConfig {
+            kind,
+            url: format!("http://{addr}/mcp"),
+            ..loopback_cfg(addr.port(), false)
+        };
+        for _ in 0..2 {
+            provider
+                .list_tools(&server, std::time::Duration::from_secs(5), None)
+                .await
+                .unwrap();
+        }
+        assert_eq!(accepted.load(Ordering::SeqCst), expected, "{kind:?}");
+    }
+}

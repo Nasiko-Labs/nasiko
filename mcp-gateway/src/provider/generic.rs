@@ -18,7 +18,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use crate::error::{McpError, Result};
-use crate::types::MCPServerConfig;
+use crate::types::{MCPServerConfig, ServerType};
 
 /// Protocol version advertised in the MCP `initialize` handshake when this
 /// gateway calls OUT to a backend MCP server. Servers that only speak an
@@ -82,6 +82,8 @@ pub struct GenericMcpProvider {
     /// SSRF/DNS-rebinding-guarded client — used for every backend whose URL a
     /// user typed in (`server.trusted == false`, the default).
     guarded: reqwest::Client,
+    /// Client for Composio backends; defaults to `guarded`.
+    composio: reqwest::Client,
     /// The platform's own shared client — used only for `server.trusted ==
     /// true` (an uploaded-build connector's URL, resolved by
     /// `ContainerRuntime::endpoint()`, never user-typed). See `net.rs`'s
@@ -99,16 +101,25 @@ impl GenericMcpProvider {
     /// `server.trusted == true` (see the struct's field docs).
     pub fn new(guarded: reqwest::Client, plain: reqwest::Client) -> Self {
         Self {
+            composio: guarded.clone(),
             guarded,
             plain,
             sessions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    /// The client to use for one backend, per its `trusted` flag.
+    /// Use `client` for Composio backends instead of `guarded`.
+    pub fn with_composio_client(mut self, client: reqwest::Client) -> Self {
+        self.composio = client;
+        self
+    }
+
+    /// The client to use for one backend, per its `trusted` flag and kind.
     fn client_for(&self, server: &MCPServerConfig) -> &reqwest::Client {
         if server.trusted {
             &self.plain
+        } else if server.kind == ServerType::Composio {
+            &self.composio
         } else {
             &self.guarded
         }
