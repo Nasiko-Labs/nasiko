@@ -2,9 +2,11 @@
 .env.example
 .github/workflows/notify-private.yml
 .gitignore
+CODE_OF_CONDUCT.md
 CONTRIBUTING.md
 Cargo.toml
 README.md
+SECURITY.md
 agent-proxy/Cargo.toml
 agent-proxy/src/context_part.rs
 agent-proxy/src/headers.rs
