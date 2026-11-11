@@ -544,15 +544,23 @@ pub struct Config {
     /// own `max_connections` (100 by default), less what other clients use.
     pub database_max_connections: u32,
     /// Number of agent/connector image builds the build worker runs
-    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=16: each
-    /// in-flight build is a `docker build` on this host (OSS) or a Kubernetes
-    /// Job against one buildkitd (EE), so an unbounded value is a footgun, not
-    /// a feature. Set 1 to restore the old strictly-serial behavior.
+    /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=256: each
+    /// in-flight build is a `docker build` on this host (OSS) or a build on the
+    /// cluster's build backend (EE), so size it to what that backend holds, not
+    /// higher. An in-flight build mostly waits, which is why a high-rate cluster
+    /// needs more than 16. Set 1 to restore the old strictly-serial behavior.
     ///
     /// Two builds for the *same* agent or connector never overlap regardless of
     /// this value — the claim query skips a target that already has a build in
     /// flight (see `build_worker::claim_next_job`).
     pub build_concurrency: usize,
+    /// Requests per minute the in-cluster build service may make to the embedded `/v2`
+    /// registry, all builds together (they share one credential, `build-service`).
+    /// BUILD_PUSH_RATE_LIMIT_PER_MINUTE; unset is 600 times `build_concurrency`, clamped
+    /// 60-100000. One push is dozens of requests (a HEAD per layer, the uploads, the manifest),
+    /// so the per-identity OCI limit of 300 refused pushes once a few builds overlapped. Over
+    /// it a push gets a 429. Counted in memory by each server process.
+    pub build_push_rate_limit_per_minute: u32,
     /// Number of MAF workflow executions each server process runs concurrently.
     /// MAF_WORKER_CONCURRENCY, default 4. Clamped to 1..=32. An execution mostly
     /// waits on agents and LLMs, so the limit that matters is shared capacity, not
@@ -724,6 +732,7 @@ impl Config {
             park_idle_floor_secs(agent_call_timeout_secs, session_reaper_interval_secs),
         )
         .map_err(anyhow::Error::msg)?;
+        let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             domain: std::env::var("CP_DOMAIN").ok(),
@@ -1001,7 +1010,12 @@ impl Config {
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
             database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
-            build_concurrency: env_parse("BUILD_CONCURRENCY", 4).clamp(1, 16),
+            build_concurrency,
+            build_push_rate_limit_per_minute: env_parse(
+                "BUILD_PUSH_RATE_LIMIT_PER_MINUTE",
+                600 * build_concurrency as u32,
+            )
+            .clamp(60, 100_000),
             maf_worker_concurrency: env_parse("MAF_WORKER_CONCURRENCY", 4).clamp(1, 32),
             maf_heartbeat_secs: env_parse("MAF_HEARTBEAT_SECS", 20).clamp(5, 120),
             agent_default_memory: env_or("AGENT_DEFAULT_MEMORY", "1Gi"),
