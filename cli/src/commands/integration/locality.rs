@@ -37,6 +37,23 @@ pub fn content_refused(cluster: &str) -> String {
     )
 }
 
+/// Said instead of asking, for new or moved reporting, when the control plane couldn't be asked
+/// whether it keeps chat history.
+pub fn privacy_unknown(cluster: &str) -> String {
+    format!(
+        "Couldn't ask {cluster} whether it keeps chat history, so it gets usage only for now \
+         ({USAGE})."
+    )
+}
+
+/// Said when `--content` asks for chat history from a control plane that couldn't be asked.
+pub fn content_unconfirmed(cluster: &str) -> String {
+    format!(
+        "--content ignored: couldn't ask {cluster} whether it keeps chat history, so the saved \
+         setting is kept."
+    )
+}
+
 /// What an agent's reporting syncs, for plans and status lines.
 pub fn synced(chat_history: bool) -> String {
     if chat_history {
@@ -52,15 +69,16 @@ struct Privacy {
 }
 
 /// Whether the active cluster (at `cluster_url`) keeps chat history, by its own answer. A server
-/// too old to say (a 404) is taken to keep it only when it runs on this machine; one that can't be
-/// asked at all keeps none.
-pub fn server_accepts_chat_history(cluster_url: &str) -> bool {
+/// too old to say (a 404) is taken to keep it only when it runs on this machine. `None` when it
+/// can't be asked at all (unreachable, an expired login, an unreadable answer): unknown, not no,
+/// so a saved setting is kept rather than rewritten by an outage.
+pub fn server_accepts_chat_history(cluster_url: &str) -> Option<bool> {
     let answer = crate::api::Client::from_active_cluster()
         .and_then(|client| client.get_json_optional::<Privacy>("/me/coding-agents/privacy"));
     match answer {
-        Ok(Some(privacy)) => privacy.chat_history,
-        Ok(None) => is_local_cluster(cluster_url),
-        Err(_) => false,
+        Ok(Some(privacy)) => Some(privacy.chat_history),
+        Ok(None) => Some(is_local_cluster(cluster_url)),
+        Err(_) => None,
     }
 }
 

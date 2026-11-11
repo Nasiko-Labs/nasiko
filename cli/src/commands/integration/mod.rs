@@ -38,8 +38,8 @@ use onboarding::AgentReport;
 use state::{AgentState, InstallationBinding, IntegrationState};
 
 pub use locality::{
-    USAGE, chat_history_question, chat_history_warning, content_refused, is_local_cluster, synced,
-    usage_only_notice,
+    USAGE, chat_history_question, chat_history_warning, content_refused, content_unconfirmed,
+    is_local_cluster, privacy_unknown, synced, usage_only_notice,
 };
 pub use setup::SetupOptions;
 
@@ -83,8 +83,9 @@ pub struct ReportingDestination {
     pub principal_id: String,
     /// Whether this control plane keeps coding agents' chat history. For the active cluster
     /// ([`Self::current`]) the server's own answer; for a recorded binding, whether it runs on
-    /// this machine (the fallback, not used to decide anything).
-    pub accepts_chat_history: bool,
+    /// this machine (the fallback, not used to decide anything). `None` when the server couldn't
+    /// be asked: new reporting then gets usage only, and existing reporting keeps its setting.
+    pub accepts_chat_history: Option<bool>,
 }
 
 impl ReportingDestination {
@@ -122,7 +123,7 @@ impl From<&InstallationBinding> for ReportingDestination {
             cluster_name: binding.cluster_name.clone(),
             cluster_url: binding.cluster_url.clone(),
             principal_id: binding.principal_id.to_string(),
-            accepts_chat_history: is_local_cluster(&binding.cluster_url),
+            accepts_chat_history: Some(is_local_cluster(&binding.cluster_url)),
         }
     }
 }
@@ -289,17 +290,26 @@ pub(super) fn auto_install_detected() -> Result<()> {
     }
 
     let here = ReportingDestination::current()?;
-    let chat_history = chat_history_for_setup(&here)?;
+    let steps: Vec<_> = agents
+        .into_iter()
+        .map(|agent| (agent, setup_step(settings.get(agent.spec().id), &here)))
+        .collect();
+    // Asked only when its answer is used: agents already reporting here are kept as they are.
+    let chat_history = if steps.iter().any(|(_, step)| *step != SetupStep::Keep) {
+        chat_history_for_setup(&here)?
+    } else {
+        false
+    };
     println!("\nConfiguring detected coding agents for this account...");
     let mut installed = 0usize;
-    for agent in agents {
+    for (agent, step) in steps {
         let spec = agent.spec();
         let reconnect = format!(
             "{} connect {} --no-routing --reporting",
             crate::commands::local_agents::cli_name(),
             spec.id
         );
-        let capture_content = match setup_step(settings.get(spec.id), &here) {
+        let capture_content = match step {
             SetupStep::Keep => {
                 println!(
                     "{} already reports sessions to {}.",
@@ -337,13 +347,20 @@ pub(super) fn auto_install_detected() -> Result<()> {
 
 /// Whether `nasiko agents setup` syncs chat history for the agents it connects or moves here. A
 /// control plane that doesn't keep it never gets it (and is said so); one that does is asked
-/// once, on a terminal, defaulting to no. Without a terminal (the desktop app, a script), usage
-/// only.
+/// once, on a terminal, defaulting to no. Without a terminal (the desktop app, a script), or when
+/// the control plane couldn't be asked, usage only.
 fn chat_history_for_setup(here: &ReportingDestination) -> Result<bool> {
     use std::io::IsTerminal;
-    if !here.accepts_chat_history {
-        term::print_info(&usage_only_notice(&here.cluster_name));
-        return Ok(false);
+    match here.accepts_chat_history {
+        Some(true) => {}
+        Some(false) => {
+            term::print_info(&usage_only_notice(&here.cluster_name));
+            return Ok(false);
+        }
+        None => {
+            term::print_warning(&privacy_unknown(&here.cluster_name));
+            return Ok(false);
+        }
     }
     if !std::io::stdin().is_terminal() {
         return Ok(false);
@@ -862,7 +879,7 @@ mod tests {
             cluster_name: cluster_name.into(),
             cluster_url: cluster_url.into(),
             principal_id: uuid::Uuid::nil().to_string(),
-            accepts_chat_history: false,
+            accepts_chat_history: Some(false),
         }
     }
 

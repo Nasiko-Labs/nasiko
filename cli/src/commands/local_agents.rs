@@ -1299,14 +1299,19 @@ fn build_plan(
 /// responses, tool output — as well as usage. Only to a control plane that keeps it (its own
 /// answer, [`ReportingDestination::accepts_chat_history`]): there `--content`/`--no-content`
 /// decide, else a terminal is asked (default no) and a script gets usage only. One that doesn't
-/// never gets it, whatever the flags, and is said so instead.
+/// never gets it, whatever the flags, and is said so instead; nor does one that couldn't be asked.
 fn chat_history_choice(
     options: &ConnectOptions,
     destination: Option<&ReportingDestination>,
     prompter: &dyn Prompter,
 ) -> Result<bool> {
     let cluster = destination.map_or("this cluster", |here| here.cluster_name.as_str());
-    if !destination.is_some_and(|here| here.accepts_chat_history) {
+    let keeps = destination.map_or(Some(false), |here| here.accepts_chat_history);
+    if keeps.is_none() {
+        term::print_warning(&integration::privacy_unknown(cluster));
+        return Ok(false);
+    }
+    if keeps == Some(false) {
         if options.content {
             term::print_warning(&integration::content_refused(cluster));
         } else {
@@ -1330,7 +1335,8 @@ fn chat_history_choice(
 /// (likewise — one coding agent is one control-plane agent), or the flags ask for a different
 /// content setting. Whatever is reinstalled keeps the saved content setting unless `--content`
 /// or `--no-content` says otherwise, so prompt and response text is never turned on unasked —
-/// and never kept for a hosted control plane: one saved with it is reinstalled without.
+/// and never kept for a hosted control plane: one saved with it is reinstalled without. When the
+/// control plane couldn't be asked, the saved setting stands (`--no-content` still turns it off).
 fn existing_reporting_step(
     agent: &AgentPlan,
     options: &ConnectOptions,
@@ -1341,7 +1347,7 @@ fn existing_reporting_step(
     if options.no_reporting {
         return Ok(ReportingStep::Keep);
     }
-    let here_keeps_chat_history = destination.is_some_and(|here| here.accepts_chat_history);
+    let here_keeps_chat_history = destination.map_or(Some(false), |here| here.accepts_chat_history);
     let asked = |question: String| -> Result<bool> {
         Ok(options.mentions_reporting()
             || (prompter.interactive() && prompter.confirm(&question, true)?))
@@ -1360,12 +1366,23 @@ fn existing_reporting_step(
             moving_from: Some(from),
         });
     }
-    if options.content && !here_keeps_chat_history {
-        let cluster = destination.map_or("this cluster", |here| here.cluster_name.as_str());
-        term::print_warning(&integration::content_refused(cluster));
-    }
-    let capture_content =
-        here_keeps_chat_history && options.content_choice().unwrap_or(local.capture_content);
+    let cluster = destination.map_or("this cluster", |here| here.cluster_name.as_str());
+    let capture_content = match here_keeps_chat_history {
+        Some(true) => options.content_choice().unwrap_or(local.capture_content),
+        Some(false) => {
+            if options.content {
+                term::print_warning(&integration::content_refused(cluster));
+            }
+            false
+        }
+        // Unknown, not no: an outage or an expired login must not rewrite an earlier answer.
+        None => {
+            if options.content && !local.capture_content {
+                term::print_warning(&integration::content_unconfirmed(cluster));
+            }
+            local.capture_content && options.content_choice() != Some(false)
+        }
+    };
     let install = |moving_from: Option<String>| ReportingStep::Install {
         capture_content,
         moving_from,
@@ -2562,7 +2579,7 @@ mod tests {
             cluster_url: "http://localhost:8080".into(),
             principal_id: "me".into(),
             // A server that keeps chat history (an open-source one): the other fixtures differ.
-            accepts_chat_history: true,
+            accepts_chat_history: Some(true),
         }
     }
 
@@ -2790,7 +2807,7 @@ mod tests {
     fn hosted() -> ReportingDestination {
         ReportingDestination {
             cluster_url: "https://nasiko.example".into(),
-            accepts_chat_history: false,
+            accepts_chat_history: Some(false),
             ..here()
         }
     }
@@ -2816,7 +2833,7 @@ mod tests {
         // Not localhost, but its server says it keeps chat history (an admin turned it on).
         let enterprise = ReportingDestination {
             cluster_url: "https://nasiko.acme.example".into(),
-            accepts_chat_history: true,
+            accepts_chat_history: Some(true),
             ..here()
         };
         // Report? yes · sync chat history? yes.
@@ -2878,6 +2895,65 @@ mod tests {
             },
             &Unattended,
         );
+        assert_eq!(plan.agents[0].reporting, TOKENS_ONLY);
+    }
+
+    /// The active cluster when its privacy answer couldn't be fetched (down, an expired login).
+    fn unreachable() -> ReportingDestination {
+        ReportingDestination {
+            accepts_chat_history: None,
+            ..here()
+        }
+    }
+
+    #[test]
+    fn a_cluster_that_cant_be_asked_keeps_the_saved_chat_history_setting() {
+        let mut saved = view("claude", false, true);
+        saved.local.capture_content = true;
+        saved.local.reporting_destination = Some(unreachable());
+        let plan = build_plan(
+            vec![saved.clone()],
+            &ConnectOptions {
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            Some(&unreachable()),
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(plan.agents[0].reporting, ReportingStep::Keep);
+
+        // `--no-content` still turns it off.
+        let off = build_plan(
+            vec![saved],
+            &ConnectOptions {
+                no_content: true,
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            Some(&unreachable()),
+            &Unattended,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(off.agents[0].reporting, TOKENS_ONLY);
+    }
+
+    #[test]
+    fn new_reporting_to_a_cluster_that_cant_be_asked_is_usage_only_unasked() {
+        // Report? yes · no chat-history question: it would be an unexpected confirm.
+        let plan = build_plan(
+            vec![view("claude", false, false)],
+            &ConnectOptions {
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            Some(&unreachable()),
+            &Scripted::new(&[true], &[]),
+            &no_configs_expected,
+        )
+        .unwrap();
         assert_eq!(plan.agents[0].reporting, TOKENS_ONLY);
     }
 
