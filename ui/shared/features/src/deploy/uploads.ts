@@ -275,6 +275,12 @@ export function startImport(
     if (imports.get(userId) === started) {
       imports.set(userId, state)
       emit()
+      // Done or failed, the agent's row may have changed (the server writes it before the build), so every agent list
+      // re-reads, as after a followed build; the restart watches are cache-only state (NAS-1449).
+      void qc.invalidateQueries({
+        queryKey: ['agents'],
+        predicate: (q) => q.queryKey[1] !== 'watch',
+      })
       if (state.phase === 'done') {
         const name = parseReference(reference)?.repo.split('/').pop() ?? reference
         const toasted = importFinished(

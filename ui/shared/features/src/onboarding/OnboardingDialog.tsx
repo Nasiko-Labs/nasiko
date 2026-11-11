@@ -64,10 +64,14 @@ export function OnboardingDialog({
 }) {
   const navigate = useNavigate()
   const qc = useQueryClient()
-  // Every way out refreshes the agents list: an import the guide started registers its agent in seconds but finishes
-  // in minutes, so without this the homepage still reads an empty fleet and offers to deploy a first agent.
+  // Every way out refreshes the agent lists: an import the guide started registers its agent in seconds but finishes
+  // in minutes, so without this the homepage still reads an empty fleet and offers to deploy a first agent, and an
+  // Agents list read earlier hides it (NAS-1449). The restart watches are cache-only state.
   const onClose = () => {
-    void qc.invalidateQueries({ queryKey: agentKeys.directory, exact: true })
+    void qc.invalidateQueries({
+      queryKey: agentKeys.directory,
+      predicate: (q) => q.queryKey[1] !== 'watch',
+    })
     close()
   }
   const directory = useAgentsDirectory()

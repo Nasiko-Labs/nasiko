@@ -477,4 +477,7 @@ export const sendRegistryImport = (reference: string) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reference }),
+    // No deadline: the build and deploy run inside the request, for minutes, and the 30 s default reported an import
+    // still building as failed (NAS-1449).
+    timeout: 0,
   })

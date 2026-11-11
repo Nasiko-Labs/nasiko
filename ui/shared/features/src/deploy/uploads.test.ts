@@ -1,6 +1,7 @@
 import { MutationCache, QueryClient } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { ApiError, apiUrl, setApiBase } from '@nasiko/data-access/client'
+import { sendRegistryImport } from './api'
 import {
   cancelUpload,
   clearUploads,
@@ -247,6 +248,38 @@ describe('registry imports in the registry (eng review R4)', () => {
     expect(failed).toMatchObject({ phase: 'failed', error: { status: 401 } })
     expect(onError).toHaveBeenCalledOnce()
     expect(importFor(USER)?.phase).toBe('failed')
+  })
+
+  it('waits as long as the import takes: the server builds and deploys inside the request', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json({ agent_id: 'a1', status: 'success' }, { status: 201 }))
+    onTestFinished(() => fetch.mockRestore())
+    await sendRegistryImport('registry.nasiko.dev/nasiko/b:1.0.0')
+    // No deadline: apiFetch's 30 s one would report an import still building (minutes) as failed (NAS-1449).
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBeUndefined()
+  })
+
+  it('refreshes the agent lists once it settles, done or failed, but not the restart watches', async () => {
+    const { qc } = setup()
+    const { startImport } = await import('./uploads')
+    const keys = [['agents'], ['agents', 'catalog'], ['agents', 'watch', 'a1']]
+    const stale = () => keys.map((k) => qc.getQueryState(k)?.isInvalidated)
+    const seed = () => keys.forEach((k) => qc.setQueryData(k, []))
+    seed()
+    await startImport(qc, USER, 'registry.nasiko.dev/nasiko/b:1.0.0', async () => ({
+      agent_id: 'a1',
+      build_id: 'b1',
+      container_name: 'c',
+      status: 'success',
+    }))
+    expect(stale()).toEqual([true, true, false])
+    // A failed import may still have registered its agent (the row is written before the build).
+    seed()
+    await startImport(qc, USER, 'registry.nasiko.dev/nasiko/b:1.0.1', async () => {
+      throw new ApiError(500, null, '/api/import/registry', 'build failed')
+    })
+    expect(stale()).toEqual([true, true, false])
   })
 
   it('is forgotten on sign-out even if the server answers later (R3)', async () => {
