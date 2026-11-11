@@ -492,7 +492,7 @@ fn chip_reference() -> nasiko_llm_router::attachments::AttachmentRef {
 
 #[async_trait::async_trait]
 impl nasiko_server::chat::turn_artifacts::TurnArtifactSource for ChipSource {
-    async fn capture(&self, _: &sqlx::PgPool, _: &str, _: Uuid) -> Vec<Value> {
+    async fn capture(&self, _: &sqlx::PgPool, _: &str, _: Uuid, _: Option<&str>) -> Vec<Value> {
         Vec::new()
     }
 
