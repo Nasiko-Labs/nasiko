@@ -14,15 +14,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const editions = findEditions(ROOT)
 const [cmd, name, ...rest] = process.argv.slice(2)
 
+// On Windows `npx`/`pnpm` are `.cmd` shims, which Node only starts through a shell (since 20.12, CVE-2024-27980).
+// None of the arguments passed here contain spaces, so going through the shell does not change them.
+const SHELL = process.platform === 'win32'
 function run(bin: string, args: string[], env: NodeJS.ProcessEnv = process.env) {
-  const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', env })
+  const r = spawnSync(bin, args, { cwd: ROOT, stdio: 'inherit', env, shell: SHELL })
+  if (r.error) console.error(`${bin} ${args.join(' ')}: ${r.error.message}`)
   if (r.status !== 0) process.exit(r.status ?? 1)
 }
 function hasPnpm() {
-  return (
-    spawnSync('pnpm', ['--version'], { stdio: 'ignore', shell: process.platform === 'win32' })
-      .status === 0
-  )
+  return spawnSync('pnpm', ['--version'], { stdio: 'ignore', shell: SHELL }).status === 0
 }
 function pick(fallback: 'oss' | 'all') {
   if (name && !name.startsWith('-')) {
