@@ -133,8 +133,9 @@ export interface CodingAgentsState {
   runs: MockSyncRun[]
   /** A server without the routes: every read and write is a bare 404. */
   absent: boolean
-  /** `GET /api/me/coding-agents/privacy`: whether the server keeps chat history (OSS on localhost: true; a hosted
-   *  server, EE: false; coding_agent_onboarding.rs `coding_agent_privacy`). */
+  /** `GET /api/me/coding-agents/privacy`: whether the server keeps chat history (`CODING_AGENT_CHAT_HISTORY`: on by
+   *  default for this server on a developer's machine, off for a hosted one; coding_agent_onboarding.rs
+   *  `coding_agent_privacy`). */
   chatHistory: boolean
   /** Browser demo: when the scripted client started (ms), or null. */
   scriptStart: number | null

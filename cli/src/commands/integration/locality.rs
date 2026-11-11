@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn anything_else_is_not_local() {
         for url in [
-            "https://internal.nasiko.dev",
+            "https://nasiko.example.com",
             "https://nasiko.dev:443",
             "http://10.0.0.5:8080",
             "http://192.168.1.10",
