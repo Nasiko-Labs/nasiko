@@ -1,154 +1,147 @@
 # Contributing to Nasiko
 
-Thanks for your interest in contributing! This guide covers development setup, the build/test
-commands, and the PR flow.
+Thanks for your interest in Nasiko. This guide explains what we accept, how a pull request is
+handled, and the checks a change must pass.
 
-## Development Setup
+- Documentation: [docs.nasiko.com](https://docs.nasiko.com)
+- Questions and discussion: [Discord](https://discord.com/invite/HmnfkTfjFv)
+- Bugs and proposals: [GitHub issues](https://github.com/Nasiko-Labs/nasiko/issues)
 
-### Prerequisites
+## Read this first
 
-- Rust (stable, via [rustup](https://rustup.rs))
-- Docker or Podman (the `justfile` auto-detects Podman)
-- [`just`](https://github.com/casey/just) command runner (`cargo install just`)
+We welcome contributions, and our review time is limited. Opening a pull request does not oblige us
+to review or merge it: we may close or defer it, ask for a smaller scope, or solve the problem a
+different way. Following this guide makes a pull request eligible for review; it does not
+guarantee acceptance.
 
-### Getting Started
+Focused bug fixes, reliability and performance improvements, missing tests, and documentation
+corrections are the most likely to be accepted. Unrequested features, broad rewrites, and unrelated
+cleanups are not.
 
-```sh
-# Start backing infrastructure (Postgres, Redis, MinIO)
-just infra
+## Agree on the problem before you build
 
-# Configure environment (just run falls back to the example if you skip this)
-cp server/.env.example server/.env
+- **Small, obvious bug fix:** open the pull request directly. Explain the defect and why your fix
+  is correct.
+- **Larger bug fix:** link an issue that describes the failure and the expected behaviour.
+- **New feature or change in product behaviour:** open an issue first and wait for a maintainer to
+  agree on the direction and scope. Link that agreement in your pull request. Describing a
+  behaviour change as a bug fix does not skip this step.
 
-# Run the server (single binary — it terminates TLS, validates auth, serves the UI)
-just run
-```
+Search existing issues and pull requests before you start, so two people do not build the same
+thing.
 
-The server is the sole ingress: there is no separate gateway process.
+## One problem per pull request
 
-### Install the CLI
+A pull request solves one underlying problem. Include everything that problem needs (code, tests,
+documentation, migrations) and nothing else. A second fix, a refactor, or a cleanup belongs in its
+own pull request unless the first cannot work without it. A large change is fine; an unrelated one
+is not.
 
-```sh
-cargo build --release -p nasiko
-sudo cp target/release/nasiko /usr/local/bin/
-```
+## Show that it works
 
-### Useful Commands
+In the pull request description, explain:
 
-```sh
-just run              # Server (foreground; sources server/.env)
-just infra            # Start Postgres, Redis, MinIO
-just infra-down       # Stop infrastructure
-just logs             # View infra logs (-f to follow)
-just check            # cargo check --workspace
-just clippy           # Lint
-```
+- how you reproduced the problem,
+- what you changed and why,
+- the exact commands or manual steps you used to check the change, and what you observed,
+- anything you could not check.
 
-## Code Conventions
+"Tests pass" on its own is not evidence. A bug fix needs a test that fails before the fix and
+passes after it. A UI change needs before and after screenshots, plus a short recording when motion
+or timing matters. Attach them to the pull request; do not commit them to the repository.
 
-The authoritative standards live in `docs/`:
+## What happens after you open a pull request
 
-- `docs/CLEAN_CODE_GUIDE.md` — code standards (names, functions, errors, traits, tests)
-- `docs/ORGANIZATION.md` — where code lives (server/CLI/library layout)
-- `docs/API_CONVENTIONS.md` — wire format for every HTTP endpoint
+1. Your pull request is picked up automatically, and checks run for the parts of the code it
+   touches: `cargo test` for the affected crates, and type checking, linting, build and tests when
+   you change `ui/`.
+2. The result appears on your pull request as a commit status and a comment that is kept up to
+   date as you push. If your branch no longer applies cleanly, you are asked to rebase.
+3. When several pull requests solve the same problem, maintainers compare how reviewable they are
+   (tests, size, how many areas they touch, documentation) and keep one.
+4. A merged pull request keeps your original commits and authorship.
+5. A pull request that is closed without merging always gets a comment with the reason: superseded
+   by another pull request, duplicate, out of scope, failing checks, needs a rebase, or stale.
+   Address the reason and you are welcome to open a new pull request.
 
-The highlights:
+## Getting started
 
-### Zero Warnings
-
-The workspace must compile with zero warnings from `cargo check` and `cargo clippy`. CI fails
-on warnings; run `cargo fmt` before committing.
-
-### Single Root Workspace
-
-All dependencies are declared once in the root `Cargo.toml`. Crates use `dep.workspace = true`.
-
-### Architecture Principles
-
-- **The server is the single ingress** — it validates JWTs itself (the `AuthService` trait),
-  runs the middleware stack (CORS, tracing, auth, rate limiting), proxies all agent traffic,
-  and serves the embedded UI. Agents are never publicly exposed.
-- **Trait-based extensibility** — `AuthService`, `ContainerRuntime`, `RoutingEngine`,
-  `ObservabilityProvider` are traits with pluggable implementations, wired once at startup;
-  handlers receive `Arc<dyn Trait>`.
-- **CLI stays lightweight** — the `nasiko` binary uses `ureq` (sync HTTP), no tokio, for fast
-  compile times.
-- **UI is vanilla JS** — web components, no build step, no framework; embedded in the server
-  binary and served same-origin.
-
-### A2A Protocol
-
-Agents implement the [A2A protocol v1.0](https://github.com/a2aproject/a2a-spec). Key details:
-
-- Method names: `SendMessage`, `SendStreamingMessage` (gRPC-style)
-- Role enum: `ROLE_USER`, `ROLE_AGENT`
-- Header: `A2A-Version: 1.0` required
-- Parts: `[{"text": "..."}]` (no `kind` field in v1.0)
-
-### Database Migrations
-
-Migrations live in `migrations/` and run automatically on server startup via sqlx.
-
-To add a migration:
-```sh
-sqlx migrate add -r <description>
-```
-
-## Project Layout
-
-```
-cli/           → `nasiko` binary (developer CLI)
-server/        → Axum control plane: routes, auth middleware, agent proxy, build worker, UI serving
-auth/          → AuthService trait + impls (login, JWT validation, RBAC hooks)
-oidc/          → OIDC SSO client
-config/        → Config struct (env-driven)
-runtime/       → ContainerRuntime trait + DockerRuntime
-orchestrator/  → Routing engine: semantic agent selection (shortlist → rerank → select)
-react-agent/   → ReAct orchestrator (LLM + tool calls to agents)
-mcp-gateway/   → MCP gateway: connectors, per-agent tool permissions, delegation
-types/         → A2A protocol types (wraps the a2a crate)
-oci/           → Embedded OCI Distribution registry (S3-backed)
-flow/          → FlowGuard: anti-DoS cascade limits, flow events
-secrets/       → AES-256-GCM encryption for agent secrets
-agent-proxy/   → Agent endpoint resolution
-observability/ → OpenTelemetry init, Tempo/Loki providers
-github/        → GitHub OAuth + source integration
-utils/         → Shared helpers
-agents/        → Example/seed agents (each a standalone A2A container)
-migrations/    → SQL migrations
-ui/            → Frontend (vanilla JS web components)
-```
-
-## Testing
-
-### Unit Tests (hermetic — no network, DB, or Docker)
+You need Rust 1.85 or newer (the workspace uses edition 2024), Docker or Podman, and
+[`just`](https://github.com/casey/just). UI work also needs Node.js 22.18 or newer and pnpm.
 
 ```sh
+just infra   # start the backing services
+just run     # run the server
+```
+
+The full setup guide for every operating system, with environment variables and troubleshooting,
+is in the [README](README.md#setup-guides-by-operating-system). For where code lives, see
+[Project Structure](README.md#project-structure) and [`docs/ORGANIZATION.md`](docs/ORGANIZATION.md).
+
+## Before you push
+
+All of these must pass with zero warnings:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
 just test-unit
 ```
 
-### Integration Tests
+Then run the integration tests for the area you changed. For changes under `ui/`, run
+`pnpm install`, `pnpm typecheck`, `pnpm lint` and `pnpm test` inside `ui/`.
 
-Server integration tests need infra up and run serially:
+| Command | Needs | Covers |
+|---|---|---|
+| `just test-unit` | nothing | Hermetic unit tests: no network, database or Docker |
+| `just test-crates` | `just infra` | Library integration tests that need Postgres |
+| `just test-server` | `just infra` | Server integration tests |
+| `just test-one <name>` | `just infra` | One server test file, for example `just test-one auth_flow` |
+| `just test` | `just infra` | All of the above |
 
-```sh
-just infra
-just test-server           # all server integration tests
-just test-one auth_flow    # a single test file
-just test                  # unit + server integration
-```
+Unit tests must stay hermetic. Integration tests share one database, so they run one at a time.
 
-## Pull Request Guidelines
+## Code standards
 
-1. `cargo fmt`, then ensure `cargo check --workspace` and `cargo clippy` pass with zero warnings
-2. Add tests for new functionality; keep unit tests hermetic
-3. Keep PRs focused — one logical change per PR
-4. Write a clear description of what and why
+The binding guides live in [`docs/`](docs):
 
-## Reporting Issues
+- [`CLEAN_CODE_GUIDE.md`](docs/CLEAN_CODE_GUIDE.md): names, function size, error handling, traits
+  and tests
+- [`ORGANIZATION.md`](docs/ORGANIZATION.md): where code belongs
+- [`API_CONVENTIONS.md`](docs/API_CONVENTIONS.md): the wire format of every HTTP endpoint
+- [`A2A_PROTOCOL.md`](docs/A2A_PROTOCOL.md): how agents talk to the platform
 
-Open an issue on GitHub with:
-- What you expected to happen
-- What actually happened
-- Steps to reproduce
-- Rust version and OS
+The rules that most often block a pull request:
+
+- **Zero warnings.** `cargo check` and `cargo clippy` report nothing, and the code is formatted with
+  `cargo fmt`.
+- **Dependencies are declared once,** in the root `Cargo.toml`; crates use `dep.workspace = true`.
+  Explain why a new dependency is needed when an existing one cannot do the job.
+- **Extend through traits.** Seams such as `AuthService`, `ContainerRuntime`, `RoutingEngine` and
+  `ObservabilityProvider` are wired once at startup, and handlers receive `Arc<dyn Trait>`.
+- **The CLI stays lightweight:** synchronous HTTP with `ureq`, no async runtime.
+- **Migrations are new files.** Add a file named `NNNN_short_description.sql` in `migrations/`,
+  numbered one above the highest existing file. Migrations run automatically at startup; never edit
+  one that has already been released.
+- **No secrets,** not even in examples, fixtures or tests.
+
+## Reporting bugs
+
+Open an [issue](https://github.com/Nasiko-Labs/nasiko/issues) with:
+
+- what you expected to happen,
+- what happened instead,
+- the steps to reproduce it,
+- your operating system, Rust version, and Nasiko version or commit.
+
+Logs help; remove any secrets from them first.
+
+## Security issues
+
+Do not report a vulnerability in a public issue or pull request. Contact the maintainers privately
+on [Discord](https://discord.com/invite/HmnfkTfjFv) and we will follow up with you directly.
+
+## License
+
+Nasiko is licensed under the [Apache License 2.0](LICENSE). By submitting a contribution, you agree
+that it is licensed under the same terms.
