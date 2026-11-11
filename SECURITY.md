@@ -32,7 +32,7 @@ Please include as much of the following as you can:
 |---|---|
 | Acknowledgement of your report | within 3 business days |
 | Initial assessment and severity | within 10 business days |
-| Status updates while we work on a fix | at least every 14 days |
+| Status updates while we work on a fix | take upto 2 weeks |
 
 We will keep you informed while we investigate, tell you whether we accept the report, and agree a
 disclosure date with you. Once a fix is released, we publish a security advisory and credit you
