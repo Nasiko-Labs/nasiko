@@ -2,12 +2,6 @@
 
 ## Our pledge
 
-We, as members, contributors and maintainers, pledge to make participation in the Nasiko community a
-harassment-free experience for everyone, regardless of age, body size, visible or invisible
-disability, ethnicity, sex characteristics, gender identity and expression, level of experience,
-education, socio-economic status, nationality, personal appearance, race, caste, colour, religion,
-or sexual identity and orientation.
-
 We pledge to act and interact in ways that contribute to an open, welcoming, diverse, inclusive and
 healthy community.
 
@@ -24,12 +18,9 @@ Examples of behaviour that contributes to a positive environment:
 
 Examples of unacceptable behaviour:
 
-- sexualised language or imagery, and sexual attention or advances of any kind;
-- trolling, insulting or derogatory comments, and personal or political attacks;
-- public or private harassment;
-- publishing others' private information, such as a physical or email address, without their
-  explicit permission;
-- other conduct that could reasonably be considered inappropriate in a professional setting.
+- harassment, insults, or personal or political attacks;
+- publishing others' private information without their permission;
+- any other conduct that is inappropriate in a professional setting.
 
 ## Enforcement responsibilities
 
