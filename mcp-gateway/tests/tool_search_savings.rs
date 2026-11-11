@@ -71,22 +71,22 @@ impl ConnectorAuthorizer for OneConnector {
     }
 }
 
-/// Six invoicing tools, each with a schema large enough that listing one instead of all six
+/// Six note-taking tools, each with a schema large enough that listing one instead of all six
 /// outweighs the three meta-tools search mode adds.
 async fn seed_tools(db: &PgPool, connector_id: Uuid) {
     for name in [
-        "send_invoice",
-        "list_invoices",
-        "void_invoice",
-        "refund_payment",
-        "create_customer",
-        "list_customers",
+        "create_note",
+        "list_notes",
+        "delete_note",
+        "archive_note",
+        "share_folder",
+        "list_folders",
     ] {
         let properties: serde_json::Map<String, serde_json::Value> = (0..8)
             .map(|i| {
                 (
                     format!("field_{i}"),
-                    json!({"type": "string", "description": format!("Field {i} of the {name} request, as the billing API names it.")}),
+                    json!({"type": "string", "description": format!("Field {i} of the {name} request, as the notes API names it.")}),
                 )
             })
             .collect();
@@ -96,7 +96,7 @@ async fn seed_tools(db: &PgPool, connector_id: Uuid) {
         )
         .bind(connector_id)
         .bind(name)
-        .bind(format!("{} in the billing system", name.replace('_', " ")))
+        .bind(format!("{} in the notes app", name.replace('_', " ")))
         .bind(json!({"type": "object", "properties": properties}))
         .execute(db)
         .await
@@ -109,7 +109,7 @@ fn session(connector_id: Uuid) -> ResolvedSession {
         servers: vec![MCPServerConfig {
             connector_id,
             kind: ServerType::Mcp,
-            name: "billing".into(),
+            name: "notes".into(),
             url: "http://127.0.0.1:9/mcp".into(),
             headers: HashMap::new(),
             transport: "streamable_http".into(),
@@ -160,7 +160,7 @@ async fn a_search_listing_writes_what_it_left_out() {
 
     let flow_id = format!("{:032x}", Uuid::new_v4().as_u128());
     db.seed_session_trace("ctx-tool-search", &flow_id).await;
-    sqlx::query("UPDATE flows SET title = 'send an invoice to the customer' WHERE flow_id = $1")
+    sqlx::query("UPDATE flows SET title = 'create a note about the meeting' WHERE flow_id = $1")
         .bind(&flow_id)
         .execute(&db.state.db)
         .await

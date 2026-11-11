@@ -10,6 +10,9 @@
 -- adding the constraint does not scan the table under this migration's exclusive lock, which would
 -- hold up the router's savings inserts; 0100 validates it under a lock that does not block reads or
 -- writes. The new set is a superset of the old one, so validation cannot fail.
+--
+-- cold: compatible (the check governs hot rows only; tiering copies `layer` as a plain string, so
+-- cold rows need no rewrite)
 ALTER TABLE token_savings
     DROP CONSTRAINT IF EXISTS token_savings_layer_check,
     ADD CONSTRAINT token_savings_layer_check CHECK (layer IN (
