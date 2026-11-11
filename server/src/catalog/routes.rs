@@ -1285,7 +1285,12 @@ pub(crate) async fn update(
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
     }
     match tx.commit().await {
-        Ok(()) => Json(agent).into_response(),
+        Ok(()) => {
+            if parking_policy.is_some() {
+                state.agent_scaling.parking_policy_changed(agent.id);
+            }
+            Json(agent).into_response()
+        }
         Err(e) => {
             tracing::error!(%e, "update agent: commit failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()

@@ -140,7 +140,8 @@ impl ParkedAgentWake {
     }
 
     /// Wakes the agent under its lock. On any failure the transaction rolls back, the row stays
-    /// `parked`, and the next call tries again.
+    /// `parked`, the workload is scaled back to zero ([`ParkAgainUnlessWoken`]) so nothing runs
+    /// under a parked row, and the next call tries again.
     async fn wake(
         &self,
         agent_id: Uuid,
@@ -166,6 +167,13 @@ impl ParkedAgentWake {
             return Ok(());
         }
         let container_id = ContainerId::from_uuid(agent_id);
+        // Armed before scaling: a scale that times out may still have reached the runtime.
+        let undo = ParkAgainUnlessWoken {
+            db: self.deps.db.clone(),
+            runtime: self.deps.runtime.clone(),
+            agent_id,
+            armed: true,
+        };
         match self.scale_up(&container_id, deadline).await {
             Ok(ScaleUp::Started) => {
                 info!(%agent_id, "agent wake: scaled a parked agent up; waiting until it answers");
@@ -183,6 +191,7 @@ impl ParkedAgentWake {
         tx.commit()
             .await
             .map_err(|e| unavailable(agent_id, "commit", e))?;
+        undo.disarm();
         let wake_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         info!(%agent_id, wake_ms, "agent wake: agent answers");
         Ok(())
@@ -263,6 +272,66 @@ impl ParkedAgentWake {
             tokio::time::sleep(remaining.min(ANSWER_POLL_INTERVAL)).await;
         }
     }
+}
+
+/// How long undoing a failed wake waits for the agent's lock.
+const PARK_AGAIN_LOCK_WAIT: Duration = Duration::from_secs(60);
+
+/// Scales a wake's workload back to zero unless the wake committed. A failed wake rolls its row
+/// back to `parked`, and the idle reaper parks only `running` rows, so a workload it left up
+/// would keep running, and billing, until the next call. Runs on drop, so a caller that went
+/// away mid-wake is covered too.
+struct ParkAgainUnlessWoken {
+    db: PgPool,
+    runtime: Arc<dyn ContainerRuntime>,
+    agent_id: Uuid,
+    armed: bool,
+}
+
+impl ParkAgainUnlessWoken {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ParkAgainUnlessWoken {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            warn!(agent_id = %self.agent_id, "agent wake: no runtime to scale a failed wake back down on");
+            return;
+        };
+        let (db, runtime, agent_id) = (self.db.clone(), self.runtime.clone(), self.agent_id);
+        handle.spawn(async move {
+            if let Err(e) = park_again(&db, runtime.as_ref(), agent_id).await {
+                warn!(%agent_id, %e, "agent wake: could not scale a failed wake back down; the next call retries the wake");
+            }
+        });
+    }
+}
+
+/// Scales a parked agent's workload to zero, under the agent's lock so it cannot undo a wake
+/// that a later caller has since completed: once the lock is held, a row that is no longer
+/// `parked` belongs to that wake (or to the owner) and is left alone.
+async fn park_again(
+    db: &PgPool,
+    runtime: &dyn ContainerRuntime,
+    agent_id: Uuid,
+) -> anyhow::Result<()> {
+    let mut tx = db.begin().await?;
+    lock_agent(&mut tx, agent_id, Instant::now() + PARK_AGAIN_LOCK_WAIT).await?;
+    if !still_parked(&mut tx, agent_id).await? {
+        return Ok(());
+    }
+    match runtime.scale(&ContainerId::from_uuid(agent_id), 0).await {
+        Ok(()) | Err(RuntimeError::ContainerNotFound(_)) => {}
+        Err(e) => return Err(e.into()),
+    }
+    info!(%agent_id, "agent wake: scaled a failed wake's workload back to zero");
+    tx.commit().await?;
+    Ok(())
 }
 
 #[async_trait]

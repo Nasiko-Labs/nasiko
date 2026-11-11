@@ -513,6 +513,32 @@ async fn is_parked(state: &AppState, agent_id: Uuid) -> bool {
     status.as_deref() == Some("parked")
 }
 
+/// Holds the agent's lock ([`crate::agent_wake::lock_agent`]) for one lifecycle change until the
+/// returned transaction is dropped, so the change cannot interleave with a wake or a park: a wake
+/// that scaled the workload up after a `stop` would leave it running under a `stopped` row that
+/// nothing serves or parks. Waits at most one wake budget, which bounds how long a wake holds it.
+async fn lock_for_lifecycle(
+    state: &AppState,
+    agent_id: Uuid,
+    name: &str,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, axum::response::Response> {
+    let budget = std::time::Duration::from_secs(state.config.agent_wake_budget_secs());
+    let locked = async {
+        let mut tx = state.db.begin().await?;
+        crate::agent_wake::lock_agent(&mut tx, agent_id, std::time::Instant::now() + budget)
+            .await?;
+        Ok::<_, sqlx::Error>(tx)
+    };
+    locked.await.map_err(|e| {
+        tracing::warn!(%e, %name, "lifecycle: could not take the agent's lock");
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the agent is being started or parked, try again shortly",
+        )
+            .into_response()
+    })
+}
+
 async fn stop(
     State(state): State<AppState>,
     claims: Claims,
@@ -520,6 +546,10 @@ async fn stop(
 ) -> impl IntoResponse {
     let agent_id = match resolve_authorized_agent(&state, &claims, &name).await {
         Ok(agent_id) => agent_id,
+        Err(resp) => return resp,
+    };
+    let _lock = match lock_for_lifecycle(&state, agent_id, &name).await {
+        Ok(lock) => lock,
         Err(resp) => return resp,
     };
     let id = ContainerId::from_uuid(agent_id);
@@ -551,6 +581,10 @@ async fn start(
 ) -> impl IntoResponse {
     let agent_id = match resolve_authorized_agent(&state, &claims, &name).await {
         Ok(agent_id) => agent_id,
+        Err(resp) => return resp,
+    };
+    let _lock = match lock_for_lifecycle(&state, agent_id, &name).await {
+        Ok(lock) => lock,
         Err(resp) => return resp,
     };
     let status: Option<String> = match sqlx::query_scalar("SELECT status FROM agents WHERE id = $1")
@@ -981,6 +1015,10 @@ async fn scale(
             }
         }
     }
+    let _lock = match lock_for_lifecycle(&state, agent_id, &name).await {
+        Ok(lock) => lock,
+        Err(resp) => return resp,
+    };
     let id = ContainerId::from_uuid(agent_id);
     // Docker keeps the env a container was created with and runs one replica, so a scale there
     // starts no instance a fresh env could reach; its `restart` recreates the container instead.

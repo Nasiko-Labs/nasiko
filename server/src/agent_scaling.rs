@@ -76,6 +76,10 @@ pub trait AgentScaling: Send + Sync {
     /// The agent just went from in-memory to durable state. Must return at once.
     fn agent_became_durable(&self, agent_id: Uuid);
 
+    /// The agent's parking policy was just saved, which may change how many replicas it may
+    /// run. Must return at once. Nothing to do where every agent runs one replica.
+    fn parking_policy_changed(&self, _agent_id: Uuid) {}
+
     /// Called once at startup with the store every HITL pause goes through. May wrap it.
     fn observe_hitl_store(&self, store: Arc<dyn HitlStore>) -> Arc<dyn HitlStore>;
 
