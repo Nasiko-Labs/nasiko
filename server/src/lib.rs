@@ -193,6 +193,7 @@ where
                 base_url: state.config.openai_base_url.clone(),
                 model: state.config.openai_model.clone(),
             },
+            ledger: state.usage_tracker.ledger(),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
@@ -433,19 +434,12 @@ where
         });
     }
     let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
-    // Every in-cluster build pushes as the one `build-service` identity, so it gets a budget of
-    // its own sized for overlapping builds instead of one agent's pull budget.
-    let build_push_limiter = RateLimiter::new(
-        state.config.build_push_rate_limit_per_minute,
-        Duration::from_secs(60),
-    );
     let build_push_token_hash = (!state.config.build_push_token.is_empty())
         .then(|| nasiko_oci::pull_credentials::hash_token(&state.config.build_push_token));
     let oci_auth_state = OciAuthState {
         app: state.clone(),
         bearer_limiter: oci_limiter,
         agent_credential_limiter: oci_pull_limiter,
-        build_push_limiter,
         build_push_token_hash,
     };
     let oci_routes = nasiko_oci::axum_routes(oci_state).layer(middleware::from_fn_with_state(
@@ -479,7 +473,10 @@ where
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx {
+        ledger: state.usage_tracker.ledger(),
+        ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+    };
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
@@ -606,9 +603,6 @@ struct OciAuthState {
     app: AppState,
     bearer_limiter: RateLimiter,
     agent_credential_limiter: RateLimiter,
-    /// The build service's own budget (`BUILD_PUSH_RATE_LIMIT_PER_MINUTE`): every build pushes
-    /// under one identity, so sharing a per-agent budget throttled overlapping builds.
-    build_push_limiter: RateLimiter,
     /// SHA-256 hex of `state.config.build_push_token`, precomputed once at
     /// router-build time (not per-request) — `None` when unconfigured
     /// (`AGENT_RUNTIME=local`, where no in-cluster build path exists), so the
@@ -677,7 +671,7 @@ async fn authenticate_oci_request(
             && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
         {
             if !auth_state
-                .build_push_limiter
+                .agent_credential_limiter
                 .allow(nasiko_oci::BUILD_SERVICE_USERNAME)
             {
                 return rate_limit::too_many_requests();

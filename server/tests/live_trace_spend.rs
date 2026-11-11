@@ -9,7 +9,7 @@
 mod common;
 
 use nasiko_llm_router::usage::{CallFailure, UsageRecord, log_usage};
-use nasiko_pricing::PricingEngine;
+use nasiko_pricing::{NoUsageLedger, PricingEngine};
 use serde_json::json;
 use serial_test::serial;
 use sqlx::PgPool;
@@ -129,6 +129,7 @@ async fn router_calls_accumulate_on_one_trace_row() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 100, 10),
     )
     .await
@@ -136,6 +137,7 @@ async fn router_calls_accumulate_on_one_trace_row() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 200, 20),
     )
     .await
@@ -194,6 +196,7 @@ async fn router_spend_adds_to_tempo_spend_and_keeps_source() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 100, 10),
     )
     .await
@@ -222,6 +225,7 @@ async fn tempo_pass_keeps_router_spend() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 100, 10),
     )
     .await
@@ -349,13 +353,19 @@ async fn failed_calls_count_as_errors_without_inventing_spend() {
 
     // Two failed attempts (4000 bytes ≈ 1000 tokens each), then the fallback that succeeded.
     for _ in 0..2 {
-        log_usage(server.db.clone(), &pricing, failed(user, agent, 4000))
-            .await
-            .unwrap();
+        log_usage(
+            server.db.clone(),
+            &pricing,
+            &NoUsageLedger,
+            failed(user, agent, 4000),
+        )
+        .await
+        .unwrap();
     }
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 100, 10),
     )
     .await
@@ -450,6 +460,7 @@ async fn a_successful_call_leaves_error_count_uncounted() {
     log_usage(
         server.db.clone(),
         &PricingEngine::offline(),
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 10, 1),
     )
     .await
@@ -476,6 +487,7 @@ async fn acp_agent_call_writes_one_acp_row() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 50, 5),
     )
     .await
@@ -505,6 +517,7 @@ async fn local_coding_agent_without_traceparent_gets_direct_row() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, None, 40, 4),
     )
     .await
@@ -512,6 +525,7 @@ async fn local_coding_agent_without_traceparent_gets_direct_row() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, None, 40, 4),
     )
     .await
@@ -539,6 +553,7 @@ async fn owner_editable_metadata_cannot_label_spend_coding() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, Some(TRACE), 40, 4),
     )
     .await
@@ -567,6 +582,7 @@ async fn coding_turn_row_nets_out_calls_the_router_booked() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         record(user, agent, None, 40, 4),
     )
     .await

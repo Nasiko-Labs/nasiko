@@ -425,8 +425,11 @@ async fn write_selector_usage(
         latency_ms: cr.latency_ms as i64,
     };
     let metadata = serde_json::json!({ "operation_type": "router_selection" });
+    // Not a MAF call, so not one for the ledger, which would record it as one. The selector
+    // records no key source, so a ledger entry could not say who paid for it.
     let result = crate::maf::executor::insert_trace_usage(
         pool,
+        &nasiko_pricing::NoUsageLedger,
         user_id,
         Some(session_id),
         "router_selection",
