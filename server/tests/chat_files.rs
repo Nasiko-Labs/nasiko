@@ -10,6 +10,7 @@ mod common;
 
 use serde_json::{Value, json};
 use serial_test::serial;
+use uuid::Uuid;
 
 fn no_redirect_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -288,31 +289,174 @@ async fn list_files_for_message() {
     server.cleanup().await;
 }
 
-#[tokio::test]
-#[serial]
-async fn download_returns_redirect() {
-    let server = common::TestServer::start().await;
-    let admin = init_admin(&server).await;
-    let uid = admin["user_id"].as_str().unwrap();
+async fn uploaded_id(
+    server: &common::TestServer,
+    user_id: &str,
+    session_id: &str,
+    bytes: Vec<u8>,
+    filename: &str,
+    mime: &str,
+) -> String {
+    let (status, body) = upload_bytes(server, user_id, session_id, bytes, filename, mime).await;
+    assert_eq!(status, 201, "{body}");
+    let body: Value = serde_json::from_str(&body).unwrap();
+    body[0]["id"].as_str().unwrap().to_string()
+}
 
-    let session = create_session(&server, uid, true).await;
-    let sid = session["session_id"].as_str().unwrap();
-
-    let (_, files) = upload_file(&server, uid, true, sid, "abc", "abc.txt").await;
-    let file_id = files[0]["id"].as_str().unwrap();
-
-    let res = common::as_superuser(
+async fn download(server: &common::TestServer, user_id: &str, file_id: &str) -> reqwest::Response {
+    common::as_superuser(
         no_redirect_client().get(server.url(&format!("/api/chat/files/{file_id}/download"))),
-        uid,
+        user_id,
         "admin",
     )
     .send()
     .await
-    .unwrap();
+    .unwrap()
+}
 
-    assert_eq!(res.status(), 307, "expect redirect to presigned URL");
-    let location = res.headers().get("location").unwrap().to_str().unwrap();
-    assert!(!location.is_empty(), "Location header should be set");
+fn header<'a>(res: &'a reqwest::Response, name: &str) -> &'a str {
+    res.headers()
+        .get(name)
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .to_str()
+        .unwrap()
+}
+
+async fn seed_chat_file(
+    server: &common::TestServer,
+    session_id: &str,
+    storage_uri: &str,
+) -> String {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO chat_message_files (id, session_id, filename, mime_type, size_bytes, storage_uri) \
+         VALUES ($1, $2, 'gone.png', 'image/png', 64, $3)",
+    )
+    .bind(id)
+    .bind(session_id)
+    .bind(storage_uri)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    id.to_string()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_download_is_served_by_the_server_not_redirected_to_storage() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    let text = uploaded_id(
+        &server,
+        uid,
+        sid,
+        b"abc".to_vec(),
+        "résumé notes.txt",
+        "text/plain",
+    )
+    .await;
+    let res = download(&server, uid, &text).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(header(&res, "content-type"), "text/plain");
+    assert_eq!(header(&res, "x-content-type-options"), "nosniff");
+    assert_eq!(
+        header(&res, "content-disposition"),
+        "attachment; filename*=UTF-8''r%C3%A9sum%C3%A9%20notes.txt"
+    );
+    assert_eq!(res.bytes().await.unwrap().as_ref(), b"abc");
+
+    let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR-preview".to_vec();
+    let image = uploaded_id(&server, uid, sid, png.clone(), "chart.png", "image/png").await;
+    let res = download(&server, uid, &image).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(header(&res, "content-type"), "image/png");
+    assert_eq!(
+        header(&res, "content-disposition"),
+        "inline; filename*=UTF-8''chart.png",
+        "a raster image previews in the browser"
+    );
+    assert_eq!(res.bytes().await.unwrap().as_ref(), png.as_slice());
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_downloaded_html_or_svg_file_is_never_rendered_inline() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+
+    for (bytes, name, mime) in [
+        (
+            b"<script>alert(1)</script>".to_vec(),
+            "page.html",
+            "text/html",
+        ),
+        (
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"/>".to_vec(),
+            "logo.svg",
+            "image/svg+xml",
+        ),
+    ] {
+        let id = uploaded_id(&server, uid, sid, bytes, name, mime).await;
+        let res = download(&server, uid, &id).await;
+        assert_eq!(res.status(), 200, "{name}");
+        assert!(
+            header(&res, "content-disposition").starts_with("attachment;"),
+            "{name} must download, not render on our origin"
+        );
+        assert_eq!(header(&res, "x-content-type-options"), "nosniff", "{name}");
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_download_whose_bytes_are_gone_is_410() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+    let id = seed_chat_file(
+        &server,
+        sid,
+        &format!("chat-files/{sid}/{}", Uuid::new_v4()),
+    )
+    .await;
+
+    assert_eq!(download(&server, uid, &id).await.status(), 410);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_download_while_storage_is_down_is_a_503_that_names_no_backend() {
+    let server = common::TestServer::start_with_storage(std::sync::Arc::new(StorageDown)).await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let session = create_session(&server, uid, true).await;
+    let sid = session["session_id"].as_str().unwrap();
+    let id = seed_chat_file(
+        &server,
+        sid,
+        &format!("chat-files/{sid}/{}", Uuid::new_v4()),
+    )
+    .await;
+
+    let res = download(&server, uid, &id).await;
+    assert_eq!(res.status(), 503);
+    let body = res.text().await.unwrap();
+    assert!(!body.contains("connection refused"), "{body}");
 
     server.cleanup().await;
 }
@@ -927,7 +1071,7 @@ async fn unattached_file_can_be_downloaded_and_deleted() {
     .send()
     .await
     .unwrap();
-    assert_eq!(dl.status(), 307, "unattached file should be downloadable");
+    assert_eq!(dl.status(), 200, "unattached file should be downloadable");
 
     let del = common::as_superuser(
         server
