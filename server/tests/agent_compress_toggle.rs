@@ -1,4 +1,5 @@
-//! Integration tests for the per-agent payload-compression toggle.
+//! Integration tests for the per-agent payload-compression toggle, and the parking policy, which
+//! the Settings page reads back through the same projection.
 //!
 //! Covers the round trip the Settings switch depends on:
 //!   - PUT  /api/agents/{id} {"compress_enabled": true}  — persists
@@ -286,5 +287,33 @@ async fn a_feature_toggle_does_not_wipe_the_rest_of_metadata() {
         "toggling one feature dropped the rest of metadata: {after}"
     );
 
+    server.cleanup().await;
+}
+
+/// `parking_policy` reads back through `GET /api/agents/{id}`: a new agent's `auto`, a saved
+/// `resident`, and a later update that does not name it leaves it alone.
+#[tokio::test]
+#[serial]
+async fn parking_policy_survives_a_reload() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap().to_string();
+    let agent = create_agent(&server, &uid, &format!("parking-{}", uuid::Uuid::new_v4())).await;
+    let id = agent["id"].as_str().unwrap().to_string();
+    let detail = get_agent(&server, &uid, &id).await;
+    assert_eq!(detail["parking_policy"], "auto");
+    assert_eq!(detail["resident_available"], true, "OSS honours resident");
+
+    put_agent(&server, &uid, &id, json!({"parking_policy": "resident"})).await;
+    assert_eq!(
+        get_agent(&server, &uid, &id).await["parking_policy"],
+        "resident"
+    );
+
+    put_agent(&server, &uid, &id, json!({"description": "unrelated edit"})).await;
+    assert_eq!(
+        get_agent(&server, &uid, &id).await["parking_policy"],
+        "resident"
+    );
     server.cleanup().await;
 }
