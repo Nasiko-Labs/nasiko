@@ -270,18 +270,17 @@ fn log_request(op: &str, attempt: &ResolvedConfig, i: usize, total: usize) {
     );
 }
 
-/// Log the response body returned by the upstream LLM. `info!` so it shows at the
-/// default log level; bodies can be large, so filter this target down to `warn` if
-/// it gets noisy (`RUST_LOG=nasiko::llm_router::provider=warn`).
+/// Log that the upstream LLM answered, and how large the answer was. Never the body itself: it is
+/// the conversation (the model's reply, its tool calls and their arguments), and logs — exported
+/// as span events when OTLP is on — are no place to keep one.
 fn log_response<T: serde::Serialize>(op: &str, attempt: &ResolvedConfig, resp: &T) {
     tracing::info!(
         target: "nasiko::llm_router::provider",
         op,
         provider = %attempt.provider,
         model = %attempt.model,
-        response_body = %serde_json::to_string(resp)
-            .unwrap_or_else(|e| format!("<serialize error: {e}>")),
-        "provider response ← {op} body"
+        response_bytes = serde_json::to_vec(resp).map_or(0, |body| body.len()),
+        "provider response ← {op}"
     );
 }
 

@@ -96,7 +96,9 @@ Coding agents get up to three things: LLM routing through the Nasiko LLM router,
 connectors through the Nasiko gateway, and session reporting to Nasiko observability.
 On a terminal, connect asks about each; flags answer the same questions in scripts.
 Without a terminal, new routing gets MCP and reporting is off unless --reporting, --content
-or --no-content is given; scripts report prompt and response text only with --content.
+or --no-content is given. Reporting always syncs usage (tokens, cost, latency, models, tools
+and subagents). Chat history (prompts, responses, tool output) is synced only to a cluster that
+keeps it, after asking or with --content; one that doesn't (a hosted Nasiko) gets usage only.
 
 Examples:
   nasiko connect                       pick from the coding agents on this machine
@@ -681,33 +683,6 @@ mod tests {
         assert!(
             rm(&["nasiko", "rm", "weather", "--name", "other"]).is_err(),
             "not both"
-        );
-    }
-
-    #[test]
-    fn parses_upload_coding_agent_hitl_flags() {
-        // --coding-agent with --no-hitl parses (mirrors push/deploy).
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "upload",
-            ".",
-            "--coding-agent",
-            "--no-hitl",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Ops(AgentOpsCommands::Upload {
-                coding_agent: true,
-                no_hitl: true,
-                hitl: false,
-                ..
-            })
-        ));
-        // --hitl and --no-hitl are mutually exclusive.
-        assert!(
-            Cli::try_parse_from(["nasiko", "upload", ".", "--hitl", "--no-hitl"]).is_err(),
-            "--hitl and --no-hitl cannot be combined"
         );
     }
 

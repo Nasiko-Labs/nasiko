@@ -209,16 +209,6 @@ pub enum AgentOpsCommands {
         /// Overrides any `workloadKind` in AgentCard.json.
         #[arg(long)]
         coding_agent: bool,
-        /// Deprecated / redundant: HITL is ON by default for coding agents, so
-        /// each tool call pauses for a decision via the HITL API. Accepted for
-        /// back-compat; pass --no-hitl to run the agent unattended instead.
-        #[arg(long)]
-        hitl: bool,
-        /// Opt out of human-approval gating: the coding agent's tool use runs
-        /// unattended (autonomous/batch), auto-approving every request. Only
-        /// meaningful with --coding-agent; HITL is on by default otherwise.
-        #[arg(long, conflicts_with = "hitl")]
-        no_hitl: bool,
     },
     /// Deploy an agent from an OCI/artifact-registry reference
     ///
@@ -815,7 +805,7 @@ pub enum AgentsCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// Report tokens, latency and cost, but omit conversation content
+        /// Sync usage only (tokens, cost, latency, models, tools and subagents), never chat history
         #[arg(long)]
         no_content: bool,
     },
@@ -1292,8 +1282,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable,
             writable_path,
             coding_agent,
-            hitl,
-            no_hitl,
         } => commands::upload::upload(
             &source,
             name.as_deref(),
@@ -1304,16 +1292,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
             writable,
             writable_path.as_deref(),
             coding_agent,
-            // Tri-state: only send an explicit choice; otherwise None lets the
-            // server apply the kind's default (HITL on for a coding agent).
-            // --hitl is a back-compat no-op but honored if passed.
-            if no_hitl {
-                Some(false)
-            } else if hitl {
-                Some(true)
-            } else {
-                None
-            },
         ),
         AgentOpsCommands::Import { reference } => commands::import::from_registry(&reference),
         AgentOpsCommands::Ps { json, watch } => commands::agents::ps(json, watch),
@@ -1849,7 +1827,7 @@ pub enum IntegrationSubCommands {
     Install {
         /// Agent to install (e.g. claude or opencode)
         agent: String,
-        /// Report tokens, latency and cost, but omit conversation text from spans
+        /// Sync usage only (tokens, cost, latency, models, tools and subagents), never chat history
         #[arg(long)]
         no_content: bool,
     },

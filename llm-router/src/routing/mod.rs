@@ -255,7 +255,7 @@ pub async fn route_model_with(
             tracing::info!(
                 target: "nasiko::llm_router::routing",
                 agent_id = %inputs.agent_id, %conv_id, provider = %inputs.provider,
-                query_preview = %inputs.query.map(query_preview).unwrap_or_default(),
+                query_chars = query.chars().count(),
                 "route_model: LEVEL 2.5 (SalienceGate) — cache miss at a fireable boundary; asking the gate whether to classify this turn"
             );
             if !gate.is_substantive(query).await {
@@ -461,12 +461,6 @@ async fn maybe_learn(
     cell_store
         .observe(inputs.provider, tier, rt, observation)
         .await;
-}
-
-/// A short, log-safe preview of a query (first 120 chars) — mirrors the classifier's own
-/// `query_preview` so both stages format the query the same way in the logs.
-fn query_preview(q: &str) -> String {
-    q.chars().take(120).collect()
 }
 
 /// The model to answer a non-substantive turn with (Level 2.5). Level 2.5 is only reached
