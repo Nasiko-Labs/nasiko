@@ -250,12 +250,26 @@ fn encode_trace_id(trace_id: &str) -> String {
     )
 }
 
-fn span_display_name(span: &nasiko_observability::Span) -> String {
+/// `model` is the model that answered the span's call, when it has one.
+fn span_display_name(span: &nasiko_observability::Span, model: Option<&str>) -> String {
     let operation = span
         .attributes
         .get("gen_ai.operation.name")
         .and_then(Value::as_str);
     if operation != Some("execute_tool") {
+        // GenAI semconv names an LLM span `{operation} {request model}`. Through the LLM
+        // gateway the agent's routing config picks the model, not the request (often just
+        // the platform's injected `OPENAI_MODEL` default), so name the one that answered.
+        let requested = span
+            .attributes
+            .get("gen_ai.request.model")
+            .and_then(Value::as_str);
+        if let (Some(op), Some(requested), Some(model)) = (operation, requested, model)
+            && model != requested
+            && span.name == format!("{op} {requested}")
+        {
+            return format!("{op} {model}");
+        }
         return span.name.clone();
     }
     let tool = span
@@ -305,9 +319,43 @@ fn tool_argument_summary(attributes: &HashMap<String, Value>) -> Option<String> 
 
 // ─── Span tree builder ────────────────────────────────────────────────────────
 
+/// The model that answered each LLM span that records only the one it asked for.
+///
+/// An agent's call through the LLM gateway nests the gateway's `gen_ai.chat` span, whose
+/// `gen_ai.response.model` is the model the agent's routing config picked, under the
+/// agent's own LLM span. The Rust and Go agents' manual spans record just the requested
+/// model, so without this they show the platform's `OPENAI_MODEL` default.
+fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String> {
+    let by_id: HashMap<&str, &nasiko_observability::Span> =
+        spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
+    let parent_of = |s: &nasiko_observability::Span| {
+        s.parent_span_id
+            .as_deref()
+            .and_then(|id| by_id.get(id))
+            .copied()
+    };
+    let mut answered = HashMap::new();
+    for span in spans {
+        let Some(model) = first_str_attr(&span.attributes, &["gen_ai.response.model"]) else {
+            continue;
+        };
+        // Bounded by the span count, so a malformed parent cycle can't loop forever.
+        let nearest_llm = std::iter::successors(parent_of(span), |s| parent_of(s))
+            .take(spans.len())
+            .find(|s| extract_token_attrs(&s.attributes).2.is_some());
+        if let Some(llm) = nearest_llm
+            && !llm.attributes.contains_key("gen_ai.response.model")
+        {
+            answered.entry(llm.span_id.as_str()).or_insert(model);
+        }
+    }
+    answered
+}
+
 fn build_span_tree(
     spans: &[nasiko_observability::Span],
 ) -> (Vec<SpanNode>, HashMap<String, SpanNode>) {
+    let answered = answered_models(spans);
     let mut seen = HashSet::new();
     let mut trace_usage = (0u64, 0u64, 0u64, 0u64, None);
     for span in spans {
@@ -339,12 +387,13 @@ fn build_span_tree(
             )
         } else {
             let u = extract_usage_attrs(&s.attributes);
-            (u.input, u.output, u.model, u.cache_read, u.cache_creation)
+            let model = answered.get(s.span_id.as_str()).cloned().or(u.model);
+            (u.input, u.output, model, u.cache_read, u.cache_creation)
         };
         SpanNode {
             id: encode_span_id(&s.span_id),
             span_id: s.span_id.clone(),
-            name: span_display_name(s),
+            name: span_display_name(s, model.as_deref()),
             span_kind: span_kind_str(s.kind).to_string(),
             status_code: status_code_str(s.status_code).to_string(),
             status_message: (!s.status_message.is_empty()).then(|| s.status_message.clone()),
@@ -2157,7 +2206,7 @@ impl ObservabilityService {
                         id: encode_trace_id(trace_id),
                         trace_id: trace_id.to_string(),
                     },
-                    name: span_display_name(span),
+                    name: span_display_name(span, model.as_deref()),
                     span_kind,
                     code: status.clone(),
                     status_code: status,
@@ -4119,6 +4168,75 @@ mod tests {
 
         let (roots, _) = build_span_tree(&[span]);
         assert_eq!(roots[0].name, "Bash: git status --short");
+    }
+
+    fn span_with(id: &str, parent: Option<&str>, name: &str, attrs: &[(&str, &str)]) -> Span {
+        Span {
+            span_id: id.into(),
+            parent_span_id: parent.map(String::from),
+            name: name.into(),
+            started_at: Utc.with_ymd_and_hms(2026, 11, 10, 12, 0, 0).unwrap(),
+            ended_at: None,
+            duration_ms: None,
+            service_name: "agent".into(),
+            kind: 3,
+            status_code: 0,
+            status_message: String::new(),
+            attributes: attrs
+                .iter()
+                .map(|(k, v)| ((*k).into(), serde_json::json!(v)))
+                .collect(),
+            events: vec![],
+        }
+    }
+
+    #[test]
+    fn llm_span_is_named_after_the_model_that_answered() {
+        // openai-v2 names the span after the model the agent asked for; the gateway
+        // answered with the agent's configured one.
+        let span = span_with(
+            "llm",
+            None,
+            "chat gpt-4o-mini",
+            &[
+                ("gen_ai.operation.name", "chat"),
+                ("gen_ai.request.model", "gpt-4o-mini"),
+                ("gen_ai.response.model", "gpt-4.1"),
+            ],
+        );
+
+        let (roots, _) = build_span_tree(&[span]);
+        assert_eq!(roots[0].name, "chat gpt-4.1");
+        assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn llm_span_without_a_response_model_takes_the_one_its_gateway_span_answered_with() {
+        // The Rust and Go agents record only the requested model; the gateway's nested
+        // span (under the agent's HTTP client span) records the one that answered.
+        let agent = span_with(
+            "llm",
+            None,
+            "chat gpt-4o-mini",
+            &[
+                ("gen_ai.operation.name", "chat"),
+                ("gen_ai.request.model", "gpt-4o-mini"),
+            ],
+        );
+        let http = span_with("http", Some("llm"), "POST", &[]);
+        let gateway = span_with(
+            "gateway",
+            Some("http"),
+            "gen_ai.chat",
+            &[
+                ("gen_ai.request.model", "gpt-4.1"),
+                ("gen_ai.response.model", "gpt-4.1"),
+            ],
+        );
+
+        let (roots, _) = build_span_tree(&[agent, http, gateway]);
+        assert_eq!(roots[0].name, "chat gpt-4.1");
+        assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
     }
 
     // ── KpiValue::new ────────────────────────────────────────────────────────
