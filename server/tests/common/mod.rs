@@ -1015,7 +1015,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // on them, and a concurrent worker would make those assertions racy.
         database_max_connections: 10,
         build_concurrency: 1,
-        build_push_rate_limit_per_minute: 600,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.
         maf_worker_concurrency: 1,
         maf_heartbeat_secs: 20,

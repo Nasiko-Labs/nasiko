@@ -363,7 +363,7 @@ fn router_shortlist_size_is_parsed_from_env() {
 fn build_concurrency_is_parsed_and_clamped() {
     set_required_vars();
 
-    for (env_value, expected) in [("2", 2), ("1", 1), ("0", 1), ("64", 64), ("1000", 256)] {
+    for (env_value, expected) in [("2", 2), ("1", 1), ("0", 1), ("1000", 16)] {
         unsafe { std::env::set_var("BUILD_CONCURRENCY", env_value) };
         let cfg = Config::from_env().unwrap();
         assert_eq!(

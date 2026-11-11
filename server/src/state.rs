@@ -538,7 +538,6 @@ impl AppState {
                 state.db.clone(),
                 state.http_client.clone(),
                 endpoint,
-                state.config.coding_agent_ingest.accept_chat_history,
             ));
         }
 
