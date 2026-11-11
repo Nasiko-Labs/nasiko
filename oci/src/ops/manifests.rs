@@ -184,9 +184,9 @@ pub async fn put_manifest(
     }
 
     // Claim every blob this manifest references, so a delete elsewhere cannot
-    // reclaim bytes this repository still needs. Sorted and deduplicated to give
-    // every pusher the same digest-lock order — two concurrent pushes sharing
-    // layers could otherwise deadlock.
+    // reclaim bytes this repository still needs. Claims share their digest locks,
+    // so pushes sharing layers run side by side; sorted and deduplicated so every
+    // pusher still takes them in one order.
     let mut blob_digests = extract_referenced_blob_digests(&content);
     blob_digests.sort();
     blob_digests.dedup();

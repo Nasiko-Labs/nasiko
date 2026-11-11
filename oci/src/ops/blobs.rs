@@ -63,12 +63,26 @@ pub async fn get_blob_bytes(state: &OciState, repository: &str, digest: &str) ->
 /// integer key space with no namespacing of its own.
 const BLOB_LOCK_CLASS: i32 = 0x0C1_B10B;
 
-/// Serialize everything that touches one blob digest — claims and reclaims — for
-/// the rest of the transaction. Held per digest, so unrelated blobs never
-/// contend. `hashtext` collisions merely make two digests share a lock, which
-/// costs a little serialization and breaks nothing.
+/// Hold one blob digest exclusively for the rest of the transaction: what
+/// reclaims take, since they decide whether the bytes go. Held per digest, so
+/// unrelated blobs never contend. `hashtext` collisions merely make two digests
+/// share a lock, which costs a little serialization and breaks nothing.
 async fn lock_blob_digest(tx: &mut sqlx::PgConnection, digest: &str) -> Result<()> {
     sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+        .bind(BLOB_LOCK_CLASS)
+        .bind(digest)
+        .execute(tx)
+        .await?;
+    Ok(())
+}
+
+/// The shared side of the same lock, for claims. Claims only add references, and
+/// recording one twice is a no-op, so claims never need to exclude each other —
+/// only a reclaim. Every agent image claims the same base layers, so an exclusive
+/// lock here queued every push behind every other one, each holding a database
+/// connection while it waited.
+async fn lock_blob_digest_shared(tx: &mut sqlx::PgConnection, digest: &str) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock_shared($1, hashtext($2))")
         .bind(BLOB_LOCK_CLASS)
         .bind(digest)
         .execute(tx)
@@ -79,12 +93,17 @@ async fn lock_blob_digest(tx: &mut sqlx::PgConnection, digest: &str) -> Result<(
 /// Claim `digest` for `repository`: cancel any queued reclaim, confirm the bytes
 /// are really there, then record the reference.
 ///
-/// All three steps happen under the digest lock, and the order matters. A sweep
-/// in flight holds that lock, so by the time this proceeds the bytes are either
+/// All three steps happen under the digest lock (shared: claims run side by side,
+/// a reclaim waits for them all), and the order matters. A sweep in flight holds
+/// that lock exclusively, so by the time this proceeds the bytes are either
 /// definitively present or definitively gone — never mid-delete. The presence
 /// check is also what the spec requires of a manifest push: a manifest whose
 /// blobs aren't in the registry must be rejected rather than stored as a pullable
 /// manifest that fails on its own layers.
+///
+/// A digest some repository already references needs no storage round trip:
+/// bytes are only removed under the exclusive lock once nothing references them,
+/// so while this holds the shared lock a reference proves the bytes are there.
 pub(crate) async fn claim_blob(
     tx: &mut sqlx::PgConnection,
     storage: &dyn BlobStore,
@@ -92,14 +111,19 @@ pub(crate) async fn claim_blob(
     digest: &str,
     absent_code: OciCode,
 ) -> Result<()> {
-    lock_blob_digest(tx, digest).await?;
+    lock_blob_digest_shared(tx, digest).await?;
 
     sqlx::query("DELETE FROM oci_blob_gc WHERE digest = $1")
         .bind(digest)
         .execute(&mut *tx)
         .await?;
 
-    if !storage.blob_exists(digest).await {
+    let referenced: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oci_blob_refs WHERE digest = $1)")
+            .bind(digest)
+            .fetch_one(&mut *tx)
+            .await?;
+    if !referenced && !storage.blob_exists(digest).await {
         return Err(OciError::Oci(
             absent_code,
             format!("blob {digest} is not present in the registry"),
