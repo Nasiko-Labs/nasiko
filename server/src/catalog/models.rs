@@ -47,8 +47,10 @@ pub struct Agent {
     /// real read-back route, which is what lets the Settings-tab switch show
     /// its actual current state instead of a per-browser guess.
     pub minimal_code_enabled: bool,
-    /// Per-agent opt-in for structural payload compression on this agent's LLM calls
-    /// (`nasiko-compress`, applied in the LLM router). Off unless explicitly enabled.
+    /// Per-agent opt-in for compression on this agent's traffic: structural payload compression
+    /// on its LLM calls (`nasiko-compress`, applied in the LLM router), brevity
+    /// (`llm-router/src/brevity.rs`) and session-history compression on a direct chat with it
+    /// (`router/a2a_dispatch.rs`). Off unless explicitly enabled.
     #[serde(default)]
     pub compress_enabled: bool,
     /// Whether this coding agent gates its tool use behind human approval
