@@ -35,8 +35,6 @@ pub struct LlmConfig {
 /// execution refreshes its stream message (`Config::maf_heartbeat_secs`).
 pub struct WorkerConfig {
     pub llm: LlmConfig,
-    /// Where the LLM's metered calls are recorded besides `trace_usage`.
-    pub ledger: Arc<dyn nasiko_pricing::UsageLedger>,
     pub concurrency: usize,
     pub heartbeat: std::time::Duration,
 }
@@ -84,8 +82,7 @@ pub fn start_worker(
         config.llm.api_key,
         config.llm.base_url,
         config.llm.model,
-    )
-    .with_ledger(config.ledger);
+    );
     let deps = worker::JobDeps {
         db,
         agent_calls,

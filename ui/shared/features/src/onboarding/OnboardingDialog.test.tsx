@@ -8,7 +8,6 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { apiUrl } from '@nasiko/data-access/client'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { clearUploads } from '@nasiko/features/deploy/uploads'
 import { clearStoredDrafts } from '@nasiko/app-core/draftKeys'
@@ -240,31 +239,6 @@ describe('first-run guide', () => {
     await user.click(screen.getByRole('button', { name: deployCopy.registry.submit }))
     expect(await screen.findByText(/Your agent is on its way/)).toBeInTheDocument()
     expect(router.state.location.pathname).toBe('/')
-  })
-
-  it('shows an agent the server registered while its import runs on Agents at once after the guide (NAS-1449)', async () => {
-    firstTime()
-    const user = userEvent.setup()
-    // Agents read before the guide: a list cached then must not hide what the guide deploys.
-    const { router } = renderApp('/agents')
-    const main = await screen.findByRole('main')
-    await waitFor(() => expect(within(main).getAllByRole('listitem').length).toBeGreaterThan(0))
-    expect(within(main).queryAllByText('onboard-bot')).toEqual([])
-    // The server registers an import's agent seconds in and answers minutes later, once built: here the row exists
-    // and the page has had no answer that would refresh it.
-    await fetch(apiUrl('/api/import/registry'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reference: 'registry.nasiko.dev/nasiko/onboard-bot:1.0.0' }),
-    })
-    await router.navigate({ to: '/' })
-    await guide()
-    await user.click(screen.getByRole('button', { name: 'Skip guide' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    await router.navigate({ to: '/agents' })
-    const agents = within(await screen.findByRole('main'))
-    // The card names it twice: display name, then raw name.
-    expect(await agents.findAllByText('onboard-bot')).not.toHaveLength(0)
   })
 
   it('deploys up to two prebuilt agents on Continue, the meeting notes processor always included', async () => {

@@ -545,13 +545,7 @@ async fn chat_core(
             fallback::execute_chat_stream(&ctx.http, &ctx.cfg, &resolved, &req, &mut attempts)
                 .instrument(llm_span.clone())
                 .await;
-        usage::spawn_log_failed(
-            &ctx.db,
-            &ctx.pricing,
-            &ctx.ledger,
-            &failed_scope,
-            attempts.take_failed(),
-        );
+        usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
         let (stream, (provider, model)) = established?;
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
@@ -588,13 +582,7 @@ async fn chat_core(
     )
     .instrument(llm_span.clone())
     .await;
-    usage::spawn_log_failed(
-        &ctx.db,
-        &ctx.pricing,
-        &ctx.ledger,
-        &failed_scope,
-        attempts.take_failed(),
-    );
+    usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
     let (mut resp, (mut provider, mut model)) = answered?;
 
     // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
@@ -611,7 +599,6 @@ async fn chat_core(
         usage::spawn_log(
             ctx.db.clone(),
             ctx.pricing.clone(),
-            ctx.ledger.clone(),
             UsageRecord {
                 owner_id: owner_id.clone(),
                 agent_id: agent_id.clone(),
@@ -645,13 +632,7 @@ async fn chat_core(
         )
         .instrument(llm_span.clone())
         .await;
-        usage::spawn_log_failed(
-            &ctx.db,
-            &ctx.pricing,
-            &ctx.ledger,
-            &failed_scope,
-            attempts.take_failed(),
-        );
+        usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
         (resp, (provider, model)) = resent?;
     }
     let latency_ms = started.elapsed().as_millis() as i64;
@@ -670,7 +651,6 @@ async fn chat_core(
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
-        ctx.ledger.clone(),
         UsageRecord {
             owner_id,
             agent_id,
@@ -964,7 +944,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
     let guard = UsageGuard {
         db: ctx.db.clone(),
         pricing: ctx.pricing.clone(),
-        ledger: ctx.ledger.clone(),
         span,
         owner_id,
         agent_id,
@@ -1048,7 +1027,6 @@ struct StreamState {
 struct UsageGuard {
     db: sqlx::PgPool,
     pricing: Arc<nasiko_pricing::PricingEngine>,
-    ledger: Arc<dyn nasiko_pricing::UsageLedger>,
     span: tracing::Span,
     owner_id: String,
     agent_id: String,
@@ -1102,12 +1080,7 @@ impl UsageGuard {
 impl Drop for UsageGuard {
     fn drop(&mut self) {
         let record = self.usage_record();
-        usage::spawn_log(
-            self.db.clone(),
-            self.pricing.clone(),
-            self.ledger.clone(),
-            record,
-        );
+        usage::spawn_log(self.db.clone(), self.pricing.clone(), record);
     }
 }
 
@@ -1222,7 +1195,6 @@ mod tests {
             let guard = UsageGuard {
                 db: ctx.db,
                 pricing: Arc::new(nasiko_pricing::PricingEngine::offline()),
-                ledger: Arc::new(nasiko_pricing::NoUsageLedger),
                 span,
                 // An invalid owner skips the asynchronous database write in this
                 // span-lifetime test; persistence is covered by integration tests.
@@ -1278,7 +1250,6 @@ mod tests {
             let guard = UsageGuard {
                 db: ctx.db,
                 pricing: Arc::new(nasiko_pricing::PricingEngine::offline()),
-                ledger: Arc::new(nasiko_pricing::NoUsageLedger),
                 span,
                 owner_id: "no-database-write".into(),
                 agent_id: AGENT.into(),
@@ -1312,7 +1283,6 @@ mod tests {
         let mut guard = UsageGuard {
             db: ctx.db,
             pricing: Arc::new(nasiko_pricing::PricingEngine::offline()),
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             span: tracing::Span::none(),
             owner_id: "no-database-write".into(),
             agent_id: AGENT.into(),
@@ -1443,7 +1413,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
         }
     }
 

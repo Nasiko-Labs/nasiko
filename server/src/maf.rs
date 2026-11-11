@@ -2503,11 +2503,8 @@ async fn record_planner_usage(
         "component": "maf",
         "phase": "generate_plan",
     });
-    // Recorded for spend only, not handed to a ledger: a plan is not part of a run, and its
-    // call may be on the user's own key, which this record names but a MAF entry does not.
     let result = executor::insert_trace_usage(
         db,
-        &nasiko_pricing::NoUsageLedger,
         user_id,
         None,
         &executor::maf_agent_name(None),

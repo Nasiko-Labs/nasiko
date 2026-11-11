@@ -101,13 +101,7 @@ async fn embeddings_core(
         // The input as sent, for the prompt estimate when the provider reports no usage.
         request_bytes: serde_json::to_string(&req.input).ok().map(|s| s.len()),
     };
-    usage::spawn_log_failed(
-        &ctx.db,
-        &ctx.pricing,
-        &ctx.ledger,
-        &failed_scope,
-        attempts.take_failed(),
-    );
+    usage::spawn_log_failed(&ctx.db, &ctx.pricing, &failed_scope, attempts.take_failed());
     let resp = answered?;
     let latency_ms = started.elapsed().as_millis() as i64;
     let (provider, model) = (resolved.provider.clone(), resolved.model.clone());
@@ -115,7 +109,6 @@ async fn embeddings_core(
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
-        ctx.ledger.clone(),
         UsageRecord {
             owner_id,
             agent_id,
@@ -260,7 +253,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
         }
     }
 

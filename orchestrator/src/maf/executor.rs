@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nasiko_flow::{FlowContext, FlowGuard};
-use nasiko_pricing::{LedgerEntry, UsageLedger};
 use nasiko_types::a2a::{PauseReason, StreamDisposition, build_send_request_for_task};
 use nasiko_types::agent_call::AgentCallMeter;
 use sqlx::PgPool;
@@ -117,19 +116,17 @@ pub async fn metered_llm<T>(
     let source = UsageSource {
         provider: llm.provider(),
         key_source: "platform",
-        ledger: llm.ledger(),
     };
     metered_call(phase, db, execution_id, user_id, step_index, source, fut).await
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
-/// `trace_usage` row, and the ledger the call is handed to.
-#[derive(Clone, Copy)]
+/// `token_usage` row.
+#[derive(Debug, Clone, Copy)]
 pub struct UsageSource<'a> {
     pub provider: &'a str,
     /// `"platform"` for the platform's own key, `"user"` for the run owner's.
     pub key_source: &'a str,
-    pub ledger: &'a dyn UsageLedger,
 }
 
 /// [`metered_llm`] for a model call that does not go through [`LlmClient`]: the same span,
@@ -218,7 +215,6 @@ async fn write_trace_usage(
     let agent_name: String = maf_agent_name(step_index);
     let result = insert_trace_usage(
         db,
-        source.ledger,
         user_id,
         Some(&session_id),
         &agent_name,
@@ -256,13 +252,9 @@ pub fn maf_agent_name(step_index: Option<i32>) -> String {
 ///
 /// The row is priced here, by the same engine and with the same `metadata.pricing`
 /// record as the LLM router's rows: an unpriced row would stay at $0 (the pricing
-/// trigger was dropped in migration 0043). The call is handed to `ledger` on the same
-/// transaction.
-// One value per column the row and its ledger entry need; a params struct would only repeat them.
-#[allow(clippy::too_many_arguments)]
+/// trigger was dropped in migration 0043).
 pub async fn insert_trace_usage(
     db: &PgPool,
-    ledger: &dyn UsageLedger,
     user_id: Uuid,
     session_id: Option<&str>,
     agent_name: &str,
@@ -292,7 +284,6 @@ pub async fn insert_trace_usage(
         Some(s) if !s.is_empty() => s.to_string(),
         _ => format!("direct:{}", Uuid::new_v4()),
     };
-    let mut tx = db.begin().await?;
     sqlx::query(
         r#"INSERT INTO trace_usage (
                trace_id, agent_name, session_id, user_id, model, provider,
@@ -328,31 +319,12 @@ pub async fn insert_trace_usage(
     .bind(usage.output_tokens)
     .bind(usage.cached_tokens)
     .bind(usage.latency_ms)
-    .bind(&metadata)
+    .bind(metadata)
     .bind(priced.cost.total_usd)
-    .execute(&mut *tx)
-    .await?;
-    let entry = LedgerEntry {
-        user_id,
-        agent_id: None,
-        operation_type: MAF_OPERATION,
-        provider,
-        model: &usage.model,
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        total_tokens: usage.total_tokens,
-        cache_read_tokens: usage.cached_tokens,
-        cache_creation_tokens: 0,
-        cost_usd: Some(priced.cost.total_usd),
-        finish_reason: None,
-        metadata: &metadata,
-    };
-    ledger.record(&mut tx, &entry).await?;
-    tx.commit().await
+    .execute(db)
+    .await
+    .map(|_| ())
 }
-
-/// What a MAF call is recorded as on the usage ledger.
-const MAF_OPERATION: &str = "maf_orchestration";
 
 /// Every step as the planner sees it: this run's content, when it has any,
 /// folded into step 0's task description. Lets one saved workflow shape (e.g.

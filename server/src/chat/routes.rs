@@ -16,11 +16,11 @@ use crate::auth::Claims;
 use crate::chat::turn_artifacts::DownloadTarget;
 use crate::state::AppState;
 
-use super::attachment_policy::{MAX_UPLOAD_FILE_BYTES, classify};
 use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
+const MAX_FILE_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
 /// Upper bound on how long the per-turn workspace capture may hold the chat
 /// persist path. The reader is a long-lived singleton, so after its first start
@@ -48,7 +48,7 @@ pub fn router() -> Router<AppState> {
             // Bound the multipart body to the file policy (count × per-file cap +
             // small overhead) so a chat upload can't buffer unbounded bytes (SRV-4).
             axum::routing::post(upload_files).layer(axum::extract::DefaultBodyLimit::max(
-                MAX_FILES_PER_UPLOAD * MAX_UPLOAD_FILE_BYTES + 1024 * 1024,
+                MAX_FILES_PER_UPLOAD * MAX_FILE_BYTES + 1024 * 1024,
             )),
         )
         .route(
@@ -144,12 +144,17 @@ fn surface_predicate(surface: Option<&str>, bind: usize) -> String {
 /// its own `WHERE`/`ORDER BY`/`LIMIT`. No user input is interpolated — the
 /// variants differ only in fixed predicates and bind-parameter numbering.
 ///
+/// Columns are listed, never `cs.*`: `chat_sessions` carries the sandbox token's ciphertext and
+/// its `jti`, which a list of sessions has no business reading (and `ChatSessionView` does not
+/// have them). Add a column here only if the view needs it.
+///
 /// The second `LATERAL` is what keeps the sessions page off the trace store:
 /// message/trace counts, billed tokens and p50 latency all come from
 /// `chat_messages` columns (migration 041), covered by
 /// `idx_messages_session(session_id, timestamp)`.
 const SESSION_LIST_SELECT: &str = r#"
-    SELECT cs.*,
+    SELECT cs.session_id, cs.user_id, cs.agent_id, cs.agent_url, cs.title, cs.session_type,
+           cs.created_at, cs.updated_at,
            CASE
              WHEN a.coding_agent_integration_id IS NOT NULL
                   AND u.username IS NOT NULL
@@ -366,16 +371,22 @@ async fn create_session(
     let (agent_id, agent_url): (Option<Uuid>, Option<String>) = match &body.agent_id {
         None => (None, None),
         Some(id_or_name) => {
+            // Live agents only: a deleted agent's name can belong to a new agent, and the
+            // lookup by name must find that one, not whichever row Postgres returns first.
             let row = if let Ok(uuid) = id_or_name.parse::<Uuid>() {
-                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE id = $1")
-                    .bind(uuid)
-                    .fetch_optional(&state.db)
-                    .await
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM agents WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(uuid)
+                .fetch_optional(&state.db)
+                .await
             } else {
-                sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1")
-                    .bind(id_or_name)
-                    .fetch_optional(&state.db)
-                    .await
+                sqlx::query_scalar::<_, Uuid>(
+                    "SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL",
+                )
+                .bind(id_or_name)
+                .fetch_optional(&state.db)
+                .await
             };
 
             match row {
@@ -434,7 +445,7 @@ async fn create_session(
     // (or "New chat"), so creation never fails on the model.
     let title = match body.first_prompt.as_deref().map(str::trim) {
         Some(prompt) if !prompt.is_empty() => {
-            crate::titling::title_from_prompt(&state, prompt).await
+            crate::titling::title_from_prompt(&state, user_id, prompt).await
         }
         _ => "New chat".to_string(),
     };
@@ -539,6 +550,37 @@ async fn get_session(
     }
 
     let limit = params.limit.clamp(1, 500);
+
+    // Tiered sessions: the oldest `limit` rows of the merged hot+cold
+    // conversation, read bounded on both tiers.
+    match super::cold::is_cold(&state.db, &session_id).await {
+        Ok(false) => {}
+        Ok(true) => {
+            let q = nasiko_event_store::chat_page::PageQuery {
+                after: None,
+                before: None,
+                ascending: true,
+                include_system: true,
+                limit: limit as usize,
+            };
+            return match state.event_store().chat_page(&session_id, q).await {
+                Ok(rows) => {
+                    #[derive(serde::Serialize)]
+                    struct ColdResponse {
+                        data: Vec<ChatMessage>,
+                    }
+                    let data: Vec<ChatMessage> =
+                        rows.into_iter().map(super::cold::to_message).collect();
+                    Json(ColdResponse { data }).into_response()
+                }
+                Err(e) => {
+                    tracing::error!(%e, session_id, "get_session: cold load failed");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                }
+            };
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 
     let messages = match sqlx::query_as::<_, ChatMessage>(
         r#"SELECT * FROM chat_messages
@@ -655,20 +697,82 @@ async fn delete_session(
         }
     }
 
-    let result = sqlx::query(
-        "DELETE FROM chat_sessions WHERE session_id = $1 AND (user_id = $2 OR $3::bool)",
-    )
-    .bind(&session_id)
-    .bind(user_id)
-    .bind(claims.is_superuser)
-    .execute(&state.db)
+    // A harness session's sandbox is released once the row is gone, so it is looked up now: the
+    // row is not readable afterwards, and an unauthorized caller's delete below matches nothing.
+    let store = crate::sessions::SessionStore::new(state.db.clone());
+    let doomed =
+        store.get(&session_id).await.ok().flatten().filter(|row| {
+            row.sandbox_ref.is_some() && (claims.is_superuser || row.user_id == user_id)
+        });
+    // The sandbox itself is released and its token revoked only after the delete matched, from
+    // what was read above and what `RETURNING` hands back. RETURNING gives the deleted row's
+    // sandbox-token jti, so the credential of a harness
+    // session's sandbox dies with the session. Revoking from the deleted row (not before) means
+    // a caller who may not delete the session cannot revoke its token either.
+    //
+    // The session row and the request to erase its tiered (cold) messages commit
+    // together, so a delete never leaves cold copies behind unrecorded. Only a
+    // session that may have cold rows gets one: it was tiered (`cold_since`), or a
+    // chat batch is mid-write and may hold some of its messages. Every other
+    // delete stays a plain Postgres delete, with no cold-store work.
+    let result: Result<Option<(Option<String>, bool)>, anyhow::Error> = async {
+        let mut tx = state.db.begin().await?;
+        let deleted: Option<(Option<String>, bool)> = sqlx::query_as(
+            "DELETE FROM chat_sessions WHERE session_id = $1 AND (user_id = $2 OR $3::bool)
+             RETURNING sandbox_token_jti,
+                 cold_since IS NOT NULL
+                 OR EXISTS (SELECT 1 FROM tier_batches
+                             WHERE table_name = 'chat_messages' AND state = 'writing')",
+        )
+        .bind(&session_id)
+        .bind(user_id)
+        .bind(claims.is_superuser)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if matches!(deleted, Some((_, true))) {
+            nasiko_event_store::EventStore::record_session_erasure(&mut tx, &session_id).await?;
+        }
+        tx.commit().await?;
+        Ok(deleted)
+    }
     .await;
 
     match result {
-        Ok(r) if r.rows_affected() > 0 => StatusCode::NO_CONTENT.into_response(),
-        Ok(_) => StatusCode::NOT_FOUND.into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(Some((jti, may_be_cold))) => {
+            // The turn running on it, if any, notices on its next heartbeat and ends with
+            // "session was deleted".
+            if let Some(row) = doomed {
+                crate::sessions::teardown::release_row_sandbox(&state, &row).await;
+            }
+            if let Some(jti) = jti {
+                crate::sessions::teardown::revoke_deleted(&state, &session_id, &jti).await;
+            }
+            if may_be_cold {
+                spawn_cold_session_erasure(
+                    crate::state::event_store(&state.config, &state.db),
+                    session_id,
+                );
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!(%e, session_id, "delete chat session failed");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
+}
+
+/// Removes a deleted chat's tiered messages off the request path. A busy tiering
+/// lock or a cold-store error leaves the recorded request for the tiering worker.
+fn spawn_cold_session_erasure(store: nasiko_event_store::EventStore, session_id: String) {
+    tokio::spawn(async move {
+        match store.erase_session(&session_id).await {
+            Ok(true) => tracing::debug!(session_id, "cold chat messages erased"),
+            Ok(false) => tracing::debug!(session_id, "cold chat erase pending: tiering lock busy"),
+            Err(e) => tracing::warn!(%e, session_id, "cold chat erase pending: will retry"),
+        }
+    });
 }
 
 // ─── Messages ───────────────────────────────────────────────────────────────
@@ -741,51 +845,76 @@ async fn list_messages(
     // consistent with what the client actually receives.
     //
     // Fetch DESC in all cases except `after`; reverse in Rust so client always sees ASC.
-    let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) = match (before, after) {
-        (_, Some((after_ts, after_id))) => {
-            let r = sqlx::query_as::<_, ChatMessage>(
-                r#"SELECT * FROM chat_messages
+    // Sessions with tiered history read one bounded page from each tier
+    // (`EventStore::chat_page`, same keyset and filters), in the same read order.
+    let cold_page: Option<Vec<ChatMessage>> =
+        match super::cold::is_cold(&state.db, &session_id).await {
+            Ok(false) => None,
+            Ok(true) => {
+                let q = nasiko_event_store::chat_page::PageQuery {
+                    after,
+                    before,
+                    ascending: false,
+                    include_system: false,
+                    limit: fetch as usize,
+                };
+                match state.event_store().chat_page(&session_id, q).await {
+                    Ok(rows) => Some(rows.into_iter().map(super::cold::to_message).collect()),
+                    Err(e) => {
+                        tracing::error!(%e, session_id, "list_messages: cold page failed");
+                        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    }
+                }
+            }
+            Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        };
+    let (msg_result, fetched_asc): (Result<Vec<ChatMessage>, _>, bool) =
+        match (cold_page, before, after) {
+            (Some(rows), _, _) => (Ok(rows), after.is_some()),
+            (None, _, Some((after_ts, after_id))) => {
+                let r = sqlx::query_as::<_, ChatMessage>(
+                    r#"SELECT * FROM chat_messages
                    WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) > ($2, $3)
                    ORDER BY timestamp ASC, id ASC
                    LIMIT $4"#,
-            )
-            .bind(&session_id)
-            .bind(after_ts)
-            .bind(after_id)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await;
-            (r, true)
-        }
-        (Some((before_ts, before_id)), None) => {
-            let r = sqlx::query_as::<_, ChatMessage>(
-                r#"SELECT * FROM chat_messages
+                )
+                .bind(&session_id)
+                .bind(after_ts)
+                .bind(after_id)
+                .bind(fetch)
+                .fetch_all(&state.db)
+                .await;
+                (r, true)
+            }
+            (None, Some((before_ts, before_id)), None) => {
+                let r = sqlx::query_as::<_, ChatMessage>(
+                    r#"SELECT * FROM chat_messages
                    WHERE session_id = $1 AND role <> 'system' AND (timestamp, id) < ($2, $3)
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $4"#,
-            )
-            .bind(&session_id)
-            .bind(before_ts)
-            .bind(before_id)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await;
-            (r, false)
-        }
-        (None, None) => {
-            let r = sqlx::query_as::<_, ChatMessage>(
-                r#"SELECT * FROM chat_messages
+                )
+                .bind(&session_id)
+                .bind(before_ts)
+                .bind(before_id)
+                .bind(fetch)
+                .fetch_all(&state.db)
+                .await;
+                (r, false)
+            }
+            (None, None, None) => {
+                let r = sqlx::query_as::<_, ChatMessage>(
+                    r#"SELECT * FROM chat_messages
                    WHERE session_id = $1 AND role <> 'system'
                    ORDER BY timestamp DESC, id DESC
                    LIMIT $2"#,
-            )
-            .bind(&session_id)
-            .bind(fetch)
-            .fetch_all(&state.db)
-            .await;
-            (r, false)
-        }
-    };
+                )
+                .bind(&session_id)
+                .bind(fetch)
+                .fetch_all(&state.db)
+                .await;
+                (r, false)
+            }
+        };
     let mut rows = match msg_result {
         Ok(r) => r,
         Err(e) => {
@@ -1052,13 +1181,7 @@ async fn send_message(
     if msg.role == "assistant" && !is_failure {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
-            capture_turn_files(
-                &state,
-                &session_id,
-                msg.id,
-                msg.trace_id.as_deref(),
-                &msg.content,
-            ),
+            capture_turn_files(&state, &session_id, msg.id, &msg.content),
         )
         .await;
         match capture {
@@ -1271,7 +1394,6 @@ async fn capture_turn_files(
     state: &AppState,
     session_id: &str,
     message_id: Uuid,
-    trace_id: Option<&str>,
     reply: &str,
 ) -> Option<serde_json::Value> {
     // First: a turn-artifact source another edition may have installed (no-op in
@@ -1282,7 +1404,7 @@ async fn capture_turn_files(
     let external = state
         .turn_artifacts
         .get()
-        .capture(&state.db, session_id, message_id, trace_id)
+        .capture(&state.db, session_id, message_id)
         .await;
     if !external.is_empty() {
         let file_parts = serde_json::Value::Array(external);
@@ -1499,7 +1621,7 @@ async fn upload_files(
         }
 
         let filename = field.file_name().unwrap_or("upload").to_string();
-        let declared_type = field
+        let mime_type = field
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
@@ -1510,8 +1632,13 @@ async fn upload_files(
             match field.chunk().await {
                 Ok(Some(chunk)) => {
                     buf.extend_from_slice(&chunk);
-                    if buf.len() > MAX_UPLOAD_FILE_BYTES {
-                        break;
+                    if buf.len() > MAX_FILE_BYTES {
+                        cleanup_uploaded(&state, &uploaded).await;
+                        return (
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            format!("file '{filename}' exceeds 50 MB limit"),
+                        )
+                            .into_response();
                     }
                 }
                 Ok(None) => break,
@@ -1521,33 +1648,16 @@ async fn upload_files(
                 }
             }
         }
-        let (class, mime_type) = classify(&buf, &declared_type, &filename);
-        if buf.len() > class.limit() {
-            cleanup_uploaded(&state, &uploaded).await;
-            return (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                format!(
-                    "file '{filename}' is over the {} MB limit for {} files",
-                    class.limit() / (1024 * 1024),
-                    class.label()
-                ),
-            )
-                .into_response();
-        }
         let data = buf.freeze();
 
         let file_id = Uuid::new_v4();
-        let storage_key = super::attachment_store::chat_file_key(&session_id, file_id);
+        let storage_key = format!("chat-files/{session_id}/{file_id}");
         let size_bytes = data.len() as i64;
 
         if let Err(e) = state.oci_storage.put_blob(&storage_key, data).await {
             tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed; rolling back previous uploads");
             cleanup_uploaded(&state, &uploaded).await;
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "file storage is unavailable; try again",
-            )
-                .into_response();
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
 
         let record = sqlx::query_as::<_, ChatMessageFile>(
@@ -1641,7 +1751,6 @@ fn download_target_response(target: DownloadTarget) -> axum::response::Response 
                 (header::CONTENT_TYPE, mime),
                 (header::CONTENT_LENGTH, size.to_string()),
                 (header::CONTENT_DISPOSITION, content_disposition),
-                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
             ],
             Body::from_stream(body),
         )
@@ -1868,13 +1977,6 @@ mod tests {
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|v| v.to_str().ok()),
             Some("attachment; filename*=UTF-8''a.txt")
-        );
-        assert_eq!(
-            stream
-                .headers()
-                .get(header::X_CONTENT_TYPE_OPTIONS)
-                .and_then(|v| v.to_str().ok()),
-            Some("nosniff")
         );
 
         assert_eq!(

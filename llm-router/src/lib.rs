@@ -21,7 +21,7 @@ use axum::{
     Json, Router,
     routing::{get, post},
 };
-use nasiko_pricing::{NoUsageLedger, PricingEngine, UsageLedger};
+use nasiko_pricing::PricingEngine;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
@@ -92,9 +92,6 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
-    /// Receives each priced call on the transaction of its `trace_usage` write.
-    /// [`NoUsageLedger`] unless the host supplies its own.
-    pub ledger: Arc<dyn UsageLedger>,
 }
 
 impl LlmRouterCtx {
@@ -155,7 +152,6 @@ impl LlmRouterCtx {
             salience_gate,
             classifier,
             pricing,
-            ledger: Arc::new(NoUsageLedger),
         }
     }
 }

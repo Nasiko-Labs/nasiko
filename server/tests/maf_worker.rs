@@ -254,7 +254,6 @@ fn start_with(
                 base_url: None,
                 model: "unused".into(),
             },
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             concurrency,
             heartbeat: HEARTBEAT,
         },

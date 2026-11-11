@@ -17,7 +17,7 @@ mod common;
 use std::sync::Arc;
 
 use nasiko_llm_router::usage::{UsageRecord, log_usage};
-use nasiko_pricing::{NoUsageLedger, PricingEngine};
+use nasiko_pricing::PricingEngine;
 use serde_json::json;
 use serial_test::serial;
 use sqlx::PgPool;
@@ -121,7 +121,6 @@ async fn a_compressed_call_writes_both_the_usage_row_and_its_savings_row() {
     log_usage(
         server.db.clone(),
         &pricing,
-        &NoUsageLedger,
         record(user, agent, Some((40_000, 10_000)), Some(8_000)),
     )
     .await
@@ -175,7 +174,6 @@ async fn a_call_with_no_compression_writes_usage_but_no_savings_row() {
     log_usage(
         server.db.clone(),
         &pricing,
-        &NoUsageLedger,
         record(user, agent, None, Some(8_000)),
     )
     .await
@@ -204,7 +202,6 @@ async fn a_call_that_reported_no_request_size_still_saves_but_says_it_was_estima
     log_usage(
         server.db.clone(),
         &pricing,
-        &NoUsageLedger,
         record(user, agent, Some((40_000, 10_000)), None),
     )
     .await
@@ -228,7 +225,6 @@ async fn the_saving_is_priced_through_the_same_engine_that_priced_the_call() {
     log_usage(
         server.db.clone(),
         &pricing,
-        &NoUsageLedger,
         record(user, agent, Some((40_000, 10_000)), Some(8_000)),
     )
     .await

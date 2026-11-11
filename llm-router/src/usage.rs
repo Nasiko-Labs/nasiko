@@ -1,8 +1,7 @@
 //! Fire-and-forget usage logging to the `trace_usage` spend table.
 //!
 //! Adds each LLM call to its `(trace_id, agent_name)` row, priced here in Rust
-//! through the platform's single cost engine, and hands the call to the host's
-//! [`UsageLedger`] on the same transaction. Failures are logged and swallowed — usage logging must
+//! through the platform's single cost engine. Failures are logged and swallowed — usage logging must
 //! never break or delay the response.
 //!
 //! Missing exact prices fall back through the shared engine. Pricing provenance
@@ -15,7 +14,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
-use nasiko_pricing::{LedgerEntry, PricingEngine, PromptConvention, RawUsage, UsageLedger};
+use nasiko_pricing::{PricingEngine, PromptConvention, RawUsage};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -152,7 +151,6 @@ impl UsageRecord {
 pub fn spawn_log_failed(
     db: &PgPool,
     pricing: &Arc<PricingEngine>,
-    ledger: &Arc<dyn UsageLedger>,
     scope: &CallScope,
     attempts: Vec<FailedAttempt>,
 ) {
@@ -160,7 +158,6 @@ pub fn spawn_log_failed(
         spawn_log(
             db.clone(),
             pricing.clone(),
-            ledger.clone(),
             UsageRecord::failed_attempt(scope, attempt),
         );
     }
@@ -188,25 +185,18 @@ fn estimated_prompt_tokens(
 }
 
 /// Spawn the usage write so it never blocks the response.
-pub fn spawn_log(
-    db: PgPool,
-    pricing: Arc<PricingEngine>,
-    ledger: Arc<dyn UsageLedger>,
-    record: UsageRecord,
-) {
+pub fn spawn_log(db: PgPool, pricing: Arc<PricingEngine>, record: UsageRecord) {
     tokio::spawn(async move {
-        if let Err(e) = log_usage(db, pricing.as_ref(), ledger.as_ref(), record).await {
+        if let Err(e) = log_usage(db, pricing.as_ref(), record).await {
             tracing::warn!(error = %e, "llm_usage write failed (swallowed)");
         }
     });
 }
 
-/// Add one priced call to its `trace_usage` row, and hand it to `ledger` on the same
-/// transaction.
+/// Add one priced call to its `trace_usage` row.
 pub async fn log_usage(
     db: PgPool,
     pricing: &PricingEngine,
-    ledger: &dyn UsageLedger,
     record: UsageRecord,
 ) -> Result<(), String> {
     // trace_usage.user_id and token_savings.user_id are FKs to users(id); without a valid owner we
@@ -318,25 +308,6 @@ pub async fn log_usage(
 
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
     write_trace_usage(&mut tx, &live)
-        .await
-        .map_err(|e| e.to_string())?;
-    let entry = LedgerEntry {
-        user_id: owner,
-        agent_id: agent,
-        operation_type: record.operation_type,
-        provider: &live.provider,
-        model: &live.model,
-        input_tokens: live.input_tokens,
-        output_tokens: live.output_tokens,
-        total_tokens: total.unwrap_or(live.input_tokens + live.output_tokens),
-        cache_read_tokens: live.cache_read_tokens,
-        cache_creation_tokens: live.cache_creation_tokens,
-        cost_usd: Some(live.cost_usd),
-        finish_reason: record.finish_reason.as_deref(),
-        metadata: &live.metadata,
-    };
-    ledger
-        .record(&mut tx, &entry)
         .await
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;

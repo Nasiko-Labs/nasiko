@@ -964,12 +964,7 @@ impl Drop for AttemptGuard {
             record.latency_ms = record
                 .latency_ms
                 .max(self.started.elapsed().as_millis() as i64);
-            usage::spawn_log(
-                self.ctx.db.clone(),
-                self.ctx.pricing.clone(),
-                self.ctx.ledger.clone(),
-                record,
-            );
+            usage::spawn_log(self.ctx.db.clone(), self.ctx.pricing.clone(), record);
         }
     }
 }
@@ -995,7 +990,6 @@ fn log_response_usage(
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
-        ctx.ledger.clone(),
         UsageRecord {
             owner_id: routed.owner_id,
             agent_id: routed.agent_id,
@@ -1234,7 +1228,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
         }
     }
 
