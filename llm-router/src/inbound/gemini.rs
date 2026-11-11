@@ -109,36 +109,15 @@ impl InboundParser for GeminiInbound {
                             .get(name)
                             .cloned()
                             .unwrap_or_else(|| name.to_string());
-                        oa_messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": id,
-                            "content": function_response_text(fr.get("response")),
-                        }));
+                        oa_messages.push(function_response_message(fr, &id)?);
                     } else if let Some(t) = part.get("text").and_then(Value::as_str) {
                         if !t.is_empty() {
                             user_parts.push(ContentPart::Text(t.to_string()));
                         }
                     } else if let Some(inline) = part.get("inlineData") {
-                        let mime_type =
-                            inline
-                                .get("mimeType")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| {
-                                    GatewayError::BadRequest(
-                                        "inlineData missing mimeType".to_string(),
-                                    )
-                                })?;
-                        let data = inline.get("data").and_then(Value::as_str).ok_or_else(|| {
-                            GatewayError::BadRequest("inlineData missing data".to_string())
-                        })?;
-                        let source = DataSource::from_inline(mime_type, data);
-                        let mime_type = source.media_type().unwrap_or_default().to_owned();
-
-                        user_parts.push(gemini_inline_part(&mime_type, source)?);
+                        user_parts.push(inline_data_part(inline)?);
                     } else if part.get("fileData").is_some() {
-                        return Err(GatewayError::BadRequest(
-                            "unsupported content part type: 'fileData'".to_string(),
-                        ));
+                        return Err(file_data_refused());
                     } else {
                         return Err(GatewayError::BadRequest(format!(
                             "unsupported gemini content part: {part}"
@@ -304,6 +283,59 @@ fn gemini_inline_part(mime_type: &str, source: DataSource) -> Result<ContentPart
             "unsupported inlineData mimeType: '{mime_type}'"
         )))
     }
+}
+
+fn inline_data_part(inline: &Value) -> Result<ContentPart, GatewayError> {
+    let mime_type = inline
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::BadRequest("inlineData missing mimeType".to_string()))?;
+    let data = inline
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::BadRequest("inlineData missing data".to_string()))?;
+    let source = DataSource::from_inline(mime_type, data);
+    let mime_type = source.media_type().unwrap_or_default().to_owned();
+    gemini_inline_part(&mime_type, source)
+}
+
+fn file_data_refused() -> GatewayError {
+    GatewayError::BadRequest(
+        "unsupported content part type: 'fileData'; send the file's bytes as inlineData"
+            .to_string(),
+    )
+}
+
+fn function_response_message(fr: &Value, tool_call_id: &str) -> Result<Value, GatewayError> {
+    let text = function_response_text(fr.get("response"));
+    let media = fr
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if media.is_empty() {
+        return Ok(json!({ "role": "tool", "tool_call_id": tool_call_id, "content": text }));
+    }
+    let mut parts = Vec::with_capacity(media.len() + 1);
+    if !text.is_empty() {
+        parts.push(ContentPart::Text(text));
+    }
+    for part in media {
+        if let Some(inline) = part.get("inlineData") {
+            parts.push(inline_data_part(inline)?);
+        } else if part.get("fileData").is_some() {
+            return Err(file_data_refused());
+        } else {
+            return Err(GatewayError::BadRequest(format!(
+                "unsupported gemini functionResponse part: {part}"
+            )));
+        }
+    }
+    Ok(json!({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": parts_to_content_value(&parts),
+    }))
 }
 
 fn parts_text(parts: Option<&Value>) -> String {
@@ -1007,5 +1039,105 @@ mod tests {
             }))
             .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+        assert!(err.to_string().contains("inlineData"), "{err}");
+    }
+
+    fn tool_turn(function_response: Value) -> Value {
+        json!({ "contents": [
+            { "role": "user", "parts": [{ "text": "What colours are in the picture?" }] },
+            { "role": "model", "parts": [{ "functionCall": { "name": "read_file", "args": { "path": "img/fact.png" } } }] },
+            { "role": "user", "parts": [{ "functionResponse": function_response }] }
+        ]})
+    }
+
+    #[test]
+    fn media_in_a_function_response_reaches_the_tool_message() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "response": { "result": "image img/fact.png" },
+                "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": "QUJD", "displayName": "fact.png" } },
+                    { "inlineData": { "mimeType": "application/pdf", "data": "JVBERi0=" } }
+                ]
+            })))
+            .unwrap();
+
+        let roles: Vec<&str> = req.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool"]);
+        let tool = &req.messages[2];
+        assert_eq!(
+            tool.tool_call_id.as_deref(),
+            req.messages[1]
+                .tool_calls
+                .as_ref()
+                .map(|c| c[0].id.as_str())
+        );
+        let parts = tool.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "image img/fact.png");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(
+            parts[2]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0="
+        );
+    }
+
+    #[test]
+    fn a_function_response_of_only_media_carries_no_empty_text() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "parts": [{ "inlineData": { "mimeType": "image/png", "data": "QUJD" } }]
+            })))
+            .unwrap();
+
+        let tool = req.messages[2]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(tool.len(), 1);
+        assert_eq!(tool[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn a_function_response_without_parts_stays_plain_text() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "response": { "result": "7781" },
+                "parts": []
+            })))
+            .unwrap();
+
+        assert_eq!(req.messages[2].content, Some(json!("7781")));
+    }
+
+    #[test]
+    fn a_function_response_part_the_router_cannot_carry_is_refused_by_name() {
+        for (part, named) in [
+            (
+                json!({ "fileData": { "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/abc", "mimeType": "image/png" } }),
+                "fileData",
+            ),
+            (
+                json!({ "inlineData": { "mimeType": "application/x-tar", "data": "QUJD" } }),
+                "application/x-tar",
+            ),
+            (json!({ "inlineData": { "data": "QUJD" } }), "mimeType"),
+            (json!({ "text": "a caption" }), "functionResponse part"),
+        ] {
+            let err = GeminiInbound
+                .parse_chat(tool_turn(json!({
+                    "name": "read_file",
+                    "response": { "result": "x" },
+                    "parts": [part.clone()]
+                })))
+                .unwrap_err();
+            assert!(matches!(err, GatewayError::BadRequest(_)), "{part}");
+            assert!(err.to_string().contains(named), "{part}: {err}");
+        }
     }
 }
