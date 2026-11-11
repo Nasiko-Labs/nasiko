@@ -304,6 +304,14 @@ fn read_u64(attrs: &HashMap<String, serde_json::Value>, keys: &[&str]) -> Option
     })
 }
 
+/// `trace_usage.agent_name` of the Orchestrator's own model calls. The control plane writes its
+/// spend live under this name, so the Tempo copy of those calls must be booked to it too.
+pub const ORCHESTRATOR_USAGE_AGENT: &str = "orchestrator";
+
+/// The span the Orchestrator emits for each of its own model calls
+/// (`oss/react-agent/src/completion.rs`). Its service is the control plane's, not an agent's.
+pub const ORCHESTRATOR_LLM_SPAN: &str = "gen_ai.orchestrator.chat";
+
 /// Whether this span is the LLM router's own record of a call it served.
 ///
 /// `gen_ai.agent.id` is set only there (`oss/llm-router/src/handlers/chat.rs`),
@@ -337,8 +345,8 @@ pub struct RouterSpanLinks<'a> {
 ///
 /// The router's span usually sits under the HTTP span for the agent's request,
 /// whose parent is the agent's own LLM span, so the nearest ancestor from a
-/// different service is the calling agent, and that ancestor's usage is the
-/// duplicate.
+/// different service names the calling agent, and the usage-reporting span at or
+/// above it in that service ([`usage_span_of`]) is the duplicate.
 ///
 /// Some instrumentation doesn't nest that way: an agent's own legacy
 /// instrumentation (pre-GenAI-semconv spans such as `ChatCompletion`) can
@@ -405,8 +413,8 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         match agent {
             Some(agent) => {
                 attributed.insert(span.span_id.as_str(), agent.service_name.as_str());
-                if !extract_usage_attrs(&agent.attributes).is_empty() {
-                    excluded.insert(agent.span_id.as_str());
+                if let Some(duplicate) = usage_span_of(agent, &by_id) {
+                    excluded.insert(duplicate.span_id.as_str());
                 }
             }
             None => {
@@ -440,6 +448,27 @@ pub fn link_router_spans(spans: &[Span]) -> RouterSpanLinks<'_> {
         excluded,
     }
 }
+
+/// The span holding `agent`'s usage for a call: `agent` itself, else its nearest ancestor from
+/// the same service that reports usage. An instrumented HTTP client puts a usage-less `POST`
+/// span between the router's span and the agent's LLM span; stopping there double-counts it.
+fn usage_span_of<'a>(agent: &'a Span, by_id: &HashMap<&str, &'a Span>) -> Option<&'a Span> {
+    let mut current = agent;
+    for _ in 0..MAX_ANCESTOR_HOPS {
+        if !extract_usage_attrs(&current.attributes).is_empty() {
+            return Some(current);
+        }
+        let parent = by_id.get(current.parent_span_id.as_deref()?)?;
+        if parent.service_name != agent.service_name {
+            return None;
+        }
+        current = parent;
+    }
+    None
+}
+
+/// Bounds the walk, so a parent cycle in bad data can't hang it.
+const MAX_ANCESTOR_HOPS: usize = 32;
 
 /// A tool-call span: GenAI semconv `execute_tool` (what the MCP gateway
 /// emits), its older `call_tool` spelling, or OpenInference's `TOOL` kind.
@@ -980,6 +1009,51 @@ mod link_router_spans_tests {
             !links.excluded.contains("o1"),
             "the orchestrator's call stands"
         );
+    }
+
+    #[test]
+    fn an_agents_http_span_between_the_router_and_its_llm_span_does_not_hide_the_duplicate() {
+        // router span -> control-plane request -> the agent's `POST` (no usage) -> the agent's
+        // own LLM span. The LLM span is the duplicate; the `POST` is only where the walk lands.
+        let usage = [
+            ("gen_ai.usage.input_tokens", "913"),
+            ("gen_ai.usage.output_tokens", "3000"),
+        ];
+        let mut router_attrs = vec![("gen_ai.agent.id", "agent-uuid")];
+        router_attrs.extend(usage);
+        let spans = vec![
+            span("chat", None, "meeting-notes", &usage),
+            span("post", Some("chat"), "meeting-notes", &[]),
+            span("req", Some("post"), "nasiko-cp", &[]),
+            span("r1", Some("req"), "nasiko-cp", &router_attrs),
+        ];
+        let links = link_router_spans(&spans);
+        assert_eq!(links.attributed.get("r1"), Some(&"meeting-notes"));
+        assert!(
+            links.excluded.contains("chat"),
+            "the agent's copy is dropped"
+        );
+        assert!(!links.excluded.contains("r1"), "the router's span stands");
+    }
+
+    #[test]
+    fn the_walk_for_a_usage_span_stays_inside_the_agents_service() {
+        // The agent's `POST` has no usage, and above it is another service's span that does:
+        // that one is not this agent's call, so it must not be dropped.
+        let spans = vec![
+            span(
+                "other",
+                None,
+                "caller-agent",
+                &[("gen_ai.usage.input_tokens", "50")],
+            ),
+            span("post", Some("other"), "my-agent", &[]),
+            span("req", Some("post"), "nasiko-cp", &[]),
+            span("r1", Some("req"), "nasiko-cp", &[("gen_ai.agent.id", "a")]),
+        ];
+        let links = link_router_spans(&spans);
+        assert_eq!(links.attributed.get("r1"), Some(&"my-agent"));
+        assert!(!links.excluded.contains("other"));
     }
 
     #[test]
