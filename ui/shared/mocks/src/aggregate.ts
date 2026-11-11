@@ -797,7 +797,6 @@ export function savings(): SavingsData {
         agent_name: 'Sales Assistant',
         spend_usd: 1492,
       },
-      calibrated_pct: 100,
     },
   }
 }

@@ -281,6 +281,8 @@ async fn coverage_separates_optimized_from_unoptimized_spend() {
     assert!(cov["unoptimized_spend_usd"].as_f64().unwrap() >= 40.0);
     // The biggest unoptimized spender is the actionable line: turn it on there next.
     assert_eq!(cov["top_unoptimized"]["agent_name"], "opt-off");
+    // Every saving is stored as estimated now, so a calibrated share would only count old rows.
+    assert!(cov.get("calibrated_pct").is_none());
 }
 
 #[tokio::test]

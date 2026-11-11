@@ -451,8 +451,6 @@ interface SavingsCoverage {
   optimized_spend_usd: number
   unoptimized_spend_usd: number
   top_unoptimized?: { agent_id: string; agent_name: string; spend_usd: number }
-  /** Share of measured savings calibrated against real usage rather than the fallback divisor. */
-  calibrated_pct: number | null
 }
 
 export interface SavingsData {

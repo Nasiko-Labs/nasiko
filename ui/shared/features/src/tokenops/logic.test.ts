@@ -906,7 +906,6 @@ describe('summarizeOptimization', () => {
       optimized_spend_usd: 47.5,
       unoptimized_spend_usd: 52.5,
       top_unoptimized: { agent_id: 'a2', agent_name: 'Sales Assistant', spend_usd: 52.5 },
-      calibrated_pct: 100,
     },
     ...over,
   })

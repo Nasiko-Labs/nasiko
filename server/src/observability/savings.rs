@@ -202,9 +202,6 @@ pub struct Coverage {
     pub unoptimized_spend_usd: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_unoptimized: Option<TopUnoptimized>,
-    /// Share of measured saved tokens whose chars-per-token was calibrated against real reported
-    /// usage rather than the fallback divisor.
-    pub calibrated_pct: Option<f64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -290,8 +287,6 @@ struct LayerRow {
     saved_input: i64,
     saved_output: i64,
     saved_cost: f64,
-    calibrated: i64,
-    uncalibrated: i64,
     /// Saved tokens this layer could not put a price on — no LLM call in the flow, or no
     /// `model_pricing` row covering the model it used. Drives the note that keeps an unpriceable
     /// figure from reading as a free one.
@@ -428,8 +423,6 @@ async fn measured_by_layer(
         "SELECT ss.layer, ss.program,
                 COALESCE(SUM(ss.saved_input_tokens), 0)::BIGINT  AS saved_input,
                 COALESCE(SUM(ss.saved_output_tokens), 0)::BIGINT AS saved_output,
-                COALESCE(SUM(ss.calibrated_tokens), 0)::BIGINT   AS calibrated,
-                COALESCE(SUM(ss.uncalibrated_tokens), 0)::BIGINT AS uncalibrated,
                 COALESCE(SUM(ss.priced_cost_usd), 0)::FLOAT8     AS saved_cost,
                 COALESCE(SUM(ss.unpriced_tokens), 0)::BIGINT     AS unpriced
            FROM savings_spend ss",
@@ -844,8 +837,6 @@ async fn coverage(
     db: &PgPool,
     q: &SavingsQuery<'_>,
     calls_in_window: i64,
-    calibrated: i64,
-    uncalibrated: i64,
 ) -> Result<Coverage, sqlx::Error> {
     #[derive(sqlx::FromRow)]
     struct Flags {
@@ -931,7 +922,6 @@ async fn coverage(
             agent_name: t.agent_name,
             spend_usd: t.spend_usd,
         }),
-        calibrated_pct: pct(calibrated as f64, (calibrated + uncalibrated) as f64),
     })
 }
 
@@ -939,9 +929,6 @@ async fn coverage(
 pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsData, sqlx::Error> {
     let measured = measured_by_layer(db, q).await?;
     let spend = actual_spend(db, q).await?;
-
-    let calibrated: i64 = measured.iter().map(|r| r.calibrated).sum();
-    let uncalibrated: i64 = measured.iter().map(|r| r.uncalibrated).sum();
 
     // Measured layers, grouped into their programs.
     //
@@ -1077,7 +1064,7 @@ pub async fn get_savings(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SavingsDat
             _ => by_session(db, q).await?,
         },
         by_program,
-        coverage: coverage(db, q, spend.calls, calibrated, uncalibrated).await?,
+        coverage: coverage(db, q, spend.calls).await?,
     })
 }
 

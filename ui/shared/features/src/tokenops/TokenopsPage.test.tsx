@@ -7,6 +7,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { delay, http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
+import { savings } from '@nasiko/mocks/aggregate'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { generateHarnessSeed } from '@nasiko/mocks/seed-harness'
 import { FIXED, now, seed, section, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
@@ -93,6 +94,19 @@ describe('TokenOps page', () => {
     const panel = await section('Token optimization savings')
     expect(within(panel).getAllByLabelText('Estimated').length).toBeGreaterThan(0)
     expect(within(panel).getByText('Measured + estimated')).toBeInTheDocument()
+  })
+
+  it('labels a fully measured figure "Measured" and nothing more', async () => {
+    server.use(
+      http.get(`${FINOPS}/savings`, () => {
+        const s = savings()
+        const data = { ...s, total: { ...s.total, basis: 'measured' } }
+        return HttpResponse.json({ data, status_code: 200, message: 'ok' })
+      }),
+    )
+    renderApp('/tokenops?open=optimize')
+    const panel = await section('Token optimization savings')
+    expect(within(panel).getByText('Measured')).toHaveTextContent(/^Measured$/)
   })
 
   it('shows one page loader under the header on a cold load; a window change keeps the panels', async () => {

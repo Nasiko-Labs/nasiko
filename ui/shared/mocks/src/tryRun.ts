@@ -145,7 +145,6 @@ export function tryRunSavings(
       optimized_spend_usd: optimized ? o.cost : 0,
       unoptimized_spend_usd: done.includes('baseline') ? b.cost : 0,
       top_unoptimized: undefined,
-      calibrated_pct: 100,
     },
   }
 }
