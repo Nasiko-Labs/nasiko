@@ -97,3 +97,61 @@ async fn a_verified_email_still_links_to_its_existing_account() {
 
     server.cleanup().await;
 }
+
+/// `would_create_user` is what the EE licence/capacity gate asks before a
+/// sign-in: "does this create an account?". It must answer exactly what
+/// `upsert_oauth_user` then does. A taken username is not an existing user any
+/// more (the sign-in gets `name-2`), so answering "existing" there let anyone
+/// past a full licence cap by picking a username that is already taken.
+#[tokio::test]
+#[serial]
+async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
+    let server = common::TestServer::start().await;
+    let auth = &server.state.auth;
+    let users = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+    seed_user(&server, "dummy-admin", true).await;
+
+    // A first sign-in whose provider username is taken: a new account.
+    let predicted = auth
+        .would_create_user("github", "gh-3003", "dummy-admin", None)
+        .await
+        .unwrap();
+    let before = users().await;
+    auth.upsert_oauth_user("github", "gh-3003", "dummy-admin", None)
+        .await
+        .unwrap();
+    assert!(users().await > before, "the sign-in did create an account");
+    assert!(
+        predicted,
+        "a taken username was counted as an existing user"
+    );
+
+    // The same identity again: no new account, and the check says so.
+    assert!(
+        !auth
+            .would_create_user("github", "gh-3003", "dummy-admin", None)
+            .await
+            .unwrap()
+    );
+
+    // A verified email that belongs to an account links to it: not new either.
+    seed_user(&server, "dummy-mail", false).await;
+    assert!(
+        !auth
+            .would_create_user(
+                "oidc",
+                "sub-4004",
+                "someone-else",
+                Some("dummy-mail@local.test")
+            )
+            .await
+            .unwrap()
+    );
+
+    server.cleanup().await;
+}
