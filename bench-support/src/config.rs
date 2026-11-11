@@ -99,6 +99,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // compete with the benchmarked request path for runtime threads.
         database_max_connections: 10,
         build_concurrency: 1,
+        build_push_rate_limit_per_minute: 600,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
         maf_worker_concurrency: 1,
         maf_heartbeat_secs: 20,
@@ -172,7 +173,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
         sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
-        harness_sessions_enabled: true,
         build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
         session_idle_grace_secs: 120,
         session_cpu_quiescent_millicores: 20,

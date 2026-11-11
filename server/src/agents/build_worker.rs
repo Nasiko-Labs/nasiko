@@ -60,7 +60,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     let mut recovery_tick = tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Config clamps this to 1..=16, but the field is a plain `usize` that test
+    // Config clamps this to 1..=256, but the field is a plain `usize` that test
     // and bench harnesses set by struct literal — a 0 would make the drain loop
     // body unreachable and silently park the worker forever.
     let concurrency = state.config.build_concurrency.max(1);

@@ -911,7 +911,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         coding_agent_turn_lease_secs: 60,
         coding_agent_lease_heartbeat_secs: 20,
         sandbox_provider: nasiko_config::SandboxProviderSetting::Docker,
-        harness_sessions_enabled: true,
         build_sandbox_smoke: nasiko_config::BuildSandboxSmoke::Off,
         session_idle_grace_secs: 120,
         session_cpu_quiescent_millicores: 20,
@@ -1015,6 +1014,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // on them, and a concurrent worker would make those assertions racy.
         database_max_connections: 10,
         build_concurrency: 1,
+        build_push_rate_limit_per_minute: 600,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.
         maf_worker_concurrency: 1,
         maf_heartbeat_secs: 20,
