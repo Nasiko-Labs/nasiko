@@ -87,10 +87,8 @@ impl MarkerSigner {
 
     pub fn marker_line(&self, claims: &MarkerClaims) -> String {
         format!(
-            "{LINE_OPEN}{} ({}, {}) {}]",
-            shown(&claims.filename),
-            shown(&claims.media_type),
-            human_size(claims.size_bytes),
+            "{LINE_OPEN}{} {}]",
+            describe_file(&claims.filename, &claims.media_type, claims.size_bytes),
             self.token(claims)
         )
     }
@@ -195,6 +193,15 @@ fn enclosing_line(text: &str, start: usize, end: usize) -> Range<usize> {
 
 fn is_line_breaking(c: char) -> bool {
     c == '[' || c == ']' || c.is_control()
+}
+
+pub fn describe_file(filename: &str, media_type: &str, size_bytes: u64) -> String {
+    format!(
+        "{} ({}, {})",
+        shown(filename),
+        shown(media_type),
+        human_size(size_bytes)
+    )
 }
 
 fn shown(value: &str) -> String {

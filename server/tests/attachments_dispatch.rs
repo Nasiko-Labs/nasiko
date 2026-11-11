@@ -956,6 +956,60 @@ async fn a_routed_turn_gives_the_chosen_agent_the_signed_line_for_its_flow() {
     server.cleanup().await;
 }
 
+#[tokio::test]
+#[serial]
+async fn the_orchestrator_model_is_told_which_files_the_user_attached() {
+    let server = common::TestServer::start_with(|c| c.agent_jwt_secret = JWT_SECRET.into()).await;
+    let (_, user) = admin_and_member(&server, "att-listed").await;
+    let sid = create_session(&server, &user).await;
+    let (url, _agent, _handle) = start_stub_agent().await;
+    let agent_name = "att-listed-agent";
+    sqlx::query("INSERT INTO agents (name, owner_id, url, status) VALUES ($1, $2, $3, 'running')")
+        .bind(agent_name)
+        .bind(Uuid::parse_str(&user.id).unwrap())
+        .bind(&url)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let png = upload(&server, &user, &sid, png_of(64), "fact.png", "image/png").await;
+
+    let mut llm = mockito::Server::new_async().await;
+    let listed = llm
+        .mock("POST", "/chat/completions")
+        .match_body(mockito::Matcher::Regex(
+            r"\[The user attached: fact\.png \(image/png, 64 B\)\]".into(),
+        ))
+        .expect_at_least(1)
+        .with_status(200)
+        .with_body(streamed_tool_call(
+            &format!("call_agent_{}", agent_name.replace('-', "_")),
+            "describe the picture",
+        ))
+        .create_async()
+        .await;
+    unsafe {
+        std::env::set_var("OPENAI_BASE_URL", llm.url());
+        std::env::set_var("OPENAI_API_KEY", "test-key-for-attachments");
+    }
+
+    let (status, body) = send_turn(&server, &user, None, &sid, &[png], vec![]).await;
+    unsafe {
+        std::env::remove_var("OPENAI_BASE_URL");
+        std::env::remove_var("OPENAI_API_KEY");
+    }
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        listed.matched_async().await,
+        "the orchestrator model never saw the attached file list: {body}"
+    );
+    assert!(
+        !body.contains(nasiko_llm_router::attachments::TOKEN_PREFIX),
+        "the orchestrator's input carries no signed token"
+    );
+
+    server.cleanup().await;
+}
+
 #[derive(Clone)]
 struct TextOnlyAgent {
     router_url: String,
