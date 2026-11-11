@@ -231,40 +231,35 @@ async fn a_listing_with_no_flow_query_writes_nothing() {
     assert_eq!(count, 0);
 }
 
-/// The other layers 0099 admits, written by code outside this crate: `compact_tools` by the
-/// router, `context_budget` by an edition (nothing in OSS writes it yet). Checked here against the
-/// same migrated schema, so a constraint missing either fails a test rather than dropping rows.
+/// `context_budget` has no writer in OSS yet, so nothing else inserts one; checked here against the
+/// same migrated schema, so a constraint missing it fails a test rather than dropping rows.
+/// (`compact_tools` is covered through the real `log_usage` in the server's `token_savings_write`.)
 #[tokio::test]
-async fn the_other_new_layers_pass_the_layer_check() {
+async fn the_context_budget_layer_passes_the_layer_check() {
     let db = TestDb::new("tool_search_savings", Arc::new(OneConnector(Uuid::nil()))).await;
-    for (layer, program) in [
-        (Layer::CompactTools, "tool_lists"),
-        (Layer::ContextBudget, "context_budget"),
-    ] {
-        nasiko_savings::insert(
-            &db.state.db,
-            &SavingsRow {
-                user_id: db.owner_user_id,
-                agent_id: Some(db.agent_id),
-                flow_id: Some(format!("trace-{}", layer.as_label())),
-                session_id: None,
-                provider: Some("openai".into()),
-                model: Some("gpt-4o".into()),
-                layer,
-                bytes_before: Some(10_270),
-                bytes_after: Some(7_430),
-                saved_input_tokens: 710,
-                saved_output_tokens: 0,
-                saved_cost_usd: 0.0018,
-                method: Method::MeasuredBytes,
-                token_estimated: true,
-                context_tier: None,
-            },
-        )
-        .await;
+    nasiko_savings::insert(
+        &db.state.db,
+        &SavingsRow {
+            user_id: db.owner_user_id,
+            agent_id: Some(db.agent_id),
+            flow_id: Some("trace-context-budget".into()),
+            session_id: None,
+            provider: None,
+            model: None,
+            layer: Layer::ContextBudget,
+            bytes_before: Some(4_800),
+            bytes_after: Some(1_200),
+            saved_input_tokens: 900,
+            saved_output_tokens: 0,
+            saved_cost_usd: 0.0,
+            method: Method::MeasuredBytes,
+            token_estimated: true,
+            context_tier: None,
+        },
+    )
+    .await;
 
-        let rows = savings_rows(&db.state.db, layer.as_label()).await;
-        assert_eq!(rows.len(), 1, "{layer:?}: the insert was refused");
-        assert_eq!(rows[0].0, program, "{layer:?}");
-    }
+    let rows = savings_rows(&db.state.db, "context_budget").await;
+    assert_eq!(rows.len(), 1, "the insert was refused");
+    assert_eq!(rows[0].0, "context_budget");
 }

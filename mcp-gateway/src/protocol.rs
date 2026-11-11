@@ -361,6 +361,7 @@ pub async fn handle_tools_list(
             )
             .await;
 
+        tools.extend(search_matches_to_json(&matches, resolved));
         // A query is only ever resolved from a verified flow, so this always holds here.
         if let Some(flow_id) = verified_flow_id {
             record_tool_search_saving(
@@ -369,11 +370,10 @@ pub async fn handle_tools_list(
                 perms,
                 flow_id,
                 resolved,
-                &accessible_ids,
-                &matches,
+                accessible_ids,
+                matches,
             );
         }
-        tools.extend(search_matches_to_json(&matches, resolved));
     }
 
     // The meta-tools ride along in every search-mode listing: the search
@@ -440,21 +440,54 @@ fn search_match_to_json(m: &crate::search::ToolMatch, resolved: &ResolvedSession
 
 /// Write the `tool_search` savings row for one search-mode listing (`crate::savings`).
 ///
-/// The measuring runs inline, over the session's generic connectors only (tens of tools, already in
-/// memory); the insert is spawned, so the listing never waits on the database.
-///
-/// The baseline is every granted tool of the session's generic connectors, rendered as
-/// `tools/list` renders it, which is what the listing holds with search off. The listed side is
-/// the matches from those same connectors plus the three meta-tools, which only search mode lists.
+/// Both the measuring and the insert run in a spawned task, so the listing waits on neither.
 fn record_tool_search_saving(
     state: &McpState,
     user_id: Uuid,
     perms: &PermissionContext,
     flow_id: &str,
     resolved: &ResolvedSession,
+    accessible_ids: Vec<Uuid>,
+    matches: Vec<crate::search::ToolMatch>,
+) {
+    let index = state.search_index.clone();
+    let db = state.db.clone();
+    let perms = perms.clone();
+    let resolved = resolved.clone();
+    let flow_id = flow_id.to_string();
+    tokio::spawn(async move {
+        let (baseline_bytes, listed_bytes) =
+            tool_search_bytes(index.as_ref(), &resolved, &perms, &accessible_ids, &matches);
+        let Some(row) = crate::savings::tool_search_row(
+            baseline_bytes,
+            listed_bytes,
+            crate::savings::ListingContext {
+                user_id,
+                agent_id: perms.agent_id,
+                flow_id,
+            },
+        ) else {
+            return;
+        };
+        nasiko_savings::insert(&db, &row).await;
+    });
+}
+
+/// `(baseline, listed)` bytes for one search-mode listing.
+///
+/// The baseline is every granted tool of the session's generic connectors, rendered as
+/// `tools/list` renders it, which is what the listing holds with search off. Rendering goes
+/// through `router::callable_tool_name`, so it drops exactly what `aggregate_tools` drops: servers
+/// with no URL, and a system connector's tools its synced `tool_names` do not claim. The listed
+/// side is the matches from those same connectors plus the three meta-tools, which only search
+/// mode lists.
+fn tool_search_bytes(
+    index: &dyn crate::search::ToolSearchIndex,
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
     accessible_ids: &[Uuid],
     matches: &[crate::search::ToolMatch],
-) {
+) -> (usize, usize) {
     let generic: Vec<Uuid> = accessible_ids
         .iter()
         .copied()
@@ -465,7 +498,7 @@ fn record_tool_search_saving(
                 .any(|s| s.connector_id == *id && s.kind == ServerType::Mcp)
         })
         .collect();
-    let baseline = state.search_index.granted_tools(&generic, perms);
+    let baseline = index.granted_tools(&generic, perms);
     let baseline_bytes = rendered_bytes(baseline.iter(), resolved);
     let meta_bytes: usize = [
         nasiko_search_tools_definition(),
@@ -479,20 +512,7 @@ fn record_tool_search_saving(
         matches.iter().filter(|m| generic.contains(&m.connector_id)),
         resolved,
     ) + meta_bytes;
-
-    let Some(row) = crate::savings::tool_search_row(
-        baseline_bytes,
-        listed_bytes,
-        crate::savings::ListingContext {
-            user_id,
-            agent_id: perms.agent_id,
-            flow_id: flow_id.to_string(),
-        },
-    ) else {
-        return;
-    };
-    let db = state.db.clone();
-    tokio::spawn(async move { nasiko_savings::insert(&db, &row).await });
+    (baseline_bytes, listed_bytes)
 }
 
 /// The bytes `tools/list` spends on `tools`, each rendered as it is listed.
@@ -3819,5 +3839,103 @@ mod initialize_tests {
                 .all(|s| !s.headers.contains_key(crate::identity::IDENTITY_HEADER)),
             "no backend is system, so nothing should be stamped: {servers:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_search_bytes_tests {
+    use super::*;
+    use crate::search::{ToolMatch, ToolSearchIndex};
+    use std::collections::HashMap;
+
+    /// An index holding a fixed set of `(connector, tool)` pairs, so the test controls exactly what
+    /// the baseline is built from.
+    struct FixedIndex(Vec<(Uuid, &'static str)>);
+
+    #[async_trait::async_trait]
+    impl ToolSearchIndex for FixedIndex {
+        async fn search_tools(
+            &self,
+            _query: &str,
+            _accessible_connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+            _limit: usize,
+        ) -> Vec<ToolMatch> {
+            Vec::new()
+        }
+
+        fn granted_tools(
+            &self,
+            connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+        ) -> Vec<ToolMatch> {
+            self.0
+                .iter()
+                .filter(|(c, _)| connector_ids.contains(c))
+                .map(|(c, name)| ToolMatch {
+                    connector_id: *c,
+                    tool_name: (*name).to_string(),
+                    description: Some(format!("{name} does one thing")),
+                    input_schema: Some(json!({"type": "object"})),
+                    score: 0.0,
+                })
+                .collect()
+        }
+
+        async fn rebuild(&self, _db: &sqlx::PgPool) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server(connector_id: Uuid, url: &str, system: bool, tool_names: &[&str]) -> MCPServerConfig {
+        MCPServerConfig {
+            connector_id,
+            kind: ServerType::Mcp,
+            name: "s".into(),
+            url: url.into(),
+            headers: HashMap::new(),
+            transport: "streamable_http".into(),
+            trusted: false,
+            system,
+            tool_names: tool_names.iter().map(|t| t.to_string()).collect(),
+            instructions: None,
+        }
+    }
+
+    /// The baseline drops what `aggregate_tools` drops with search off: a server with no URL, and
+    /// a system connector's tools its synced `tool_names` do not claim.
+    #[test]
+    fn the_baseline_leaves_out_what_a_search_off_listing_leaves_out() {
+        let (generic, system, urlless) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let resolved = ResolvedSession {
+            servers: vec![
+                server(generic, "http://g/mcp", false, &[]),
+                server(system, "http://s/mcp", true, &["save_file"]),
+                server(urlless, "", false, &[]),
+            ],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
+        };
+        let perms = PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: [generic, system, urlless].into_iter().collect(),
+            rules: vec![],
+            hash: "h".into(),
+        };
+        let ids = [generic, system, urlless];
+
+        let listable = FixedIndex(vec![(generic, "read_doc"), (system, "save_file")]);
+        let with_unlistable = FixedIndex(vec![
+            (generic, "read_doc"),
+            (system, "save_file"),
+            (system, "not_synced_yet"),
+            (urlless, "never_reachable"),
+        ]);
+
+        let (expected, _) = tool_search_bytes(&listable, &resolved, &perms, &ids, &[]);
+        let (baseline, _) = tool_search_bytes(&with_unlistable, &resolved, &perms, &ids, &[]);
+        assert!(expected > 0, "the listable tools are counted");
+        assert_eq!(baseline, expected);
     }
 }

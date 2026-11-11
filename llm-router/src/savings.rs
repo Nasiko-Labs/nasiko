@@ -101,14 +101,18 @@ pub(crate) fn compress_payload_row(
     bytes_out: usize,
     ctx: CallContext<'_>,
 ) -> Option<SavingsRow> {
+    // Compression never grows the payload, so anything but a shrink means it did nothing.
+    if bytes_out >= bytes_in {
+        return None;
+    }
     bytes_row(Layer::CompressPayload, bytes_in, bytes_out, ctx)
 }
 
-/// Build the `compact_tools` row, or `None` when the signatures were not smaller than the native
-/// schemas they replaced.
+/// Build the `compact_tools` row, signed, or `None` when the two forms are within a token.
 ///
 /// `native_bytes` is the serialized native `tools`; `compact_bytes` is the signatures plus the
-/// call-format instruction sent in their place, so the instruction's own cost is netted out.
+/// call-format instruction sent in their place, so the instruction's own cost is netted out. A few
+/// small tools can come out larger compacted, and that is reported as a negative row, not dropped.
 pub(crate) fn compact_tools_row(
     native_bytes: usize,
     compact_bytes: usize,
@@ -117,21 +121,19 @@ pub(crate) fn compact_tools_row(
     bytes_row(Layer::CompactTools, native_bytes, compact_bytes, ctx)
 }
 
-/// A row for a layer that shrank this call's prompt by a measured number of bytes.
+/// A row for a layer that changed this call's prompt by a measured number of bytes; negative when
+/// it grew.
 fn bytes_row(
     layer: Layer,
     bytes_in: usize,
     bytes_out: usize,
     ctx: CallContext<'_>,
 ) -> Option<SavingsRow> {
-    if bytes_out >= bytes_in {
-        return None;
-    }
     let (ratio, token_estimated) = chars_per_token(ctx.calibration);
-    // Truncate, never round. Rounding sends half the sub-token savings upward, and a ledger that
-    // rounds up systematically claims tokens it cannot account for — every bias in this file is
-    // deliberately pointed at under-claiming.
-    let saved_tokens = ((bytes_in - bytes_out) as f64 / ratio).floor() as i64;
+    // Truncate toward zero, never round. Rounding sends half the sub-token difference outward, and
+    // a ledger that rounds systematically claims tokens it cannot account for — every bias in this
+    // file is deliberately pointed at under-claiming, in either direction.
+    let saved_tokens = ((bytes_in as f64 - bytes_out as f64) / ratio) as i64;
     if saved_tokens == 0 {
         return None;
     }
@@ -355,10 +357,17 @@ mod tests {
     }
 
     #[test]
-    fn compact_signatures_no_smaller_than_the_schemas_write_nothing() {
-        // A few tiny tools: the call-format instruction outweighs what the signatures saved.
+    fn compact_signatures_larger_than_the_schemas_write_a_negative_row() {
+        // A few tiny tools: the call-format instruction outweighs what the signatures saved. That
+        // is a real cost of the layer, reported rather than clamped away.
         let c = cost();
-        assert!(compact_tools_row(300, 900, ctx(calibrated(), &c)).is_none());
+        let r = compact_tools_row(300, 900, ctx(calibrated(), &c))
+            .expect("a larger compact form is a cost, not a zero");
+        // -600 bytes at a calibrated 4.0 chars/token.
+        assert_eq!(r.saved_input_tokens, -150);
+        assert!(r.saved_cost_usd < 0.0);
+        // Within a token either way is still no row.
+        assert!(compact_tools_row(1_000, 1_003, ctx(calibrated(), &c)).is_none());
     }
 
     #[test]

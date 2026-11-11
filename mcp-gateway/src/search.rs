@@ -45,10 +45,8 @@ pub trait ToolSearchIndex: Send + Sync {
 
     /// Every indexed tool of `connector_ids` the agent's permissions do not deny, unranked
     /// (`score` 0): what a listing without search is built from, measured against the search
-    /// result by the savings ledger. Empty for an index that holds no tools.
-    fn granted_tools(&self, _connector_ids: &[Uuid], _perms: &PermissionContext) -> Vec<ToolMatch> {
-        Vec::new()
-    }
+    /// result by the savings ledger. Required, so an index cannot silently report no baseline.
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch>;
 
     /// Rebuild the in-memory index from current DB state.
     async fn rebuild(&self, db: &PgPool) -> Result<()>;
@@ -606,6 +604,11 @@ impl ToolSearchIndex for NoopSearchIndex {
         _perms: &PermissionContext,
         _limit: usize,
     ) -> Vec<ToolMatch> {
+        Vec::new()
+    }
+
+    /// Search is off, so no listing is measured against a baseline.
+    fn granted_tools(&self, _connector_ids: &[Uuid], _perms: &PermissionContext) -> Vec<ToolMatch> {
         Vec::new()
     }
 

@@ -1438,6 +1438,14 @@ mod tests {
             Vec::new()
         }
 
+        fn granted_tools(
+            &self,
+            _connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+        ) -> Vec<crate::search::ToolMatch> {
+            Vec::new()
+        }
+
         async fn rebuild(&self, _db: &sqlx::PgPool) -> Result<()> {
             self.rebuilds
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
