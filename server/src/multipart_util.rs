@@ -63,5 +63,13 @@ pub async fn stream_field_to_fresh_temp_file(
             }
         }
     }
+    // A tokio `File` finishes its last write in the background; without the flush a caller that
+    // opens the path at once can read a truncated file (seen as "invalid Zip archive" under load).
+    if let Err(e) = f.flush().await {
+        let _ = tokio::fs::remove_dir_all(&upload_dir).await;
+        return Err(StreamUploadError::Io(format!(
+            "flush destination file: {e}"
+        )));
+    }
     Ok(path)
 }
