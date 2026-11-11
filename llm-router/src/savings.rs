@@ -42,6 +42,7 @@ pub(crate) struct CalibrationInputs {
 ///
 /// A struct rather than eight positional parameters, so the call site reads as data and a
 /// transposed `provider`/`model` pair cannot compile.
+#[derive(Clone)]
 pub(crate) struct CallContext<'a> {
     pub user_id: Uuid,
     pub agent_id: Option<Uuid>,
@@ -100,6 +101,29 @@ pub(crate) fn compress_payload_row(
     bytes_out: usize,
     ctx: CallContext<'_>,
 ) -> Option<SavingsRow> {
+    bytes_row(Layer::CompressPayload, bytes_in, bytes_out, ctx)
+}
+
+/// Build the `compact_tools` row, or `None` when the signatures were not smaller than the native
+/// schemas they replaced.
+///
+/// `native_bytes` is the serialized native `tools`; `compact_bytes` is the signatures plus the
+/// call-format instruction sent in their place, so the instruction's own cost is netted out.
+pub(crate) fn compact_tools_row(
+    native_bytes: usize,
+    compact_bytes: usize,
+    ctx: CallContext<'_>,
+) -> Option<SavingsRow> {
+    bytes_row(Layer::CompactTools, native_bytes, compact_bytes, ctx)
+}
+
+/// A row for a layer that shrank this call's prompt by a measured number of bytes.
+fn bytes_row(
+    layer: Layer,
+    bytes_in: usize,
+    bytes_out: usize,
+    ctx: CallContext<'_>,
+) -> Option<SavingsRow> {
     if bytes_out >= bytes_in {
         return None;
     }
@@ -121,11 +145,11 @@ pub(crate) fn compress_payload_row(
         session_id: None,
         provider: Some(ctx.provider),
         model: Some(ctx.model),
-        layer: Layer::CompressPayload,
+        layer,
         bytes_before: Some(bytes_in as i64),
         bytes_after: Some(bytes_out as i64),
         saved_input_tokens: saved_tokens,
-        // IP-1 shrinks what the model reads; it cannot shorten what the model writes.
+        // Both layers shrink what the model reads; neither can shorten what the model writes.
         saved_output_tokens: 0,
         saved_cost_usd: saved_tokens as f64
             * effective_input_rate(ctx.cost, ctx.prompt_side_tokens),
@@ -312,6 +336,29 @@ mod tests {
 
         assert_eq!(r.saved_input_tokens, 1_500); // 6000 / 4.0
         assert!(r.token_estimated);
+    }
+
+    #[test]
+    fn compact_tools_writes_its_own_layer_at_the_same_rate() {
+        let c = cost();
+        let r = compact_tools_row(10_270, 7_430, ctx(calibrated(), &c))
+            .expect("smaller signatures are a saving");
+
+        assert_eq!(r.layer, Layer::CompactTools);
+        assert_eq!(r.bytes_before, Some(10_270));
+        assert_eq!(r.bytes_after, Some(7_430));
+        // 2840 bytes at a calibrated 4.0 chars/token.
+        assert_eq!(r.saved_input_tokens, 710);
+        assert_eq!(r.saved_output_tokens, 0);
+        assert!(r.token_estimated);
+        assert!((r.saved_cost_usd - 710.0 * 0.000_11).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compact_signatures_no_smaller_than_the_schemas_write_nothing() {
+        // A few tiny tools: the call-format instruction outweighs what the signatures saved.
+        let c = cost();
+        assert!(compact_tools_row(300, 900, ctx(calibrated(), &c)).is_none());
     }
 
     #[test]

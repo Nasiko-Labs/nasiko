@@ -40,6 +40,7 @@ pub mod protocol;
 pub mod provider;
 pub mod repo;
 pub mod router;
+mod savings;
 pub mod search;
 pub mod session;
 pub mod state;

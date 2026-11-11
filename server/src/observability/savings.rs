@@ -302,7 +302,8 @@ struct LayerRow {
 /// multiply by; their rows carry tokens and `saved_cost_usd = 0`. The flow's first `token_usage` row
 /// names the model that then read the context they trimmed, which is the rate those tokens would
 /// have been billed at. Same join `context_savings.rs` already uses (`PRICE_JOIN` there), keyed on
-/// `flow_id` instead of `trace_id` — the same value under two names.
+/// `flow_id` instead of `trace_id` — the same value under two names. The MCP gateway's tool-search
+/// rows are priced the same way: the gateway never sees a model either.
 ///
 /// Rows that already carry a model are left alone: IP-1 priced itself at the **effective blended
 /// input rate**, which accounts for the cached prefix. Re-pricing those at list rate here would
@@ -650,6 +651,8 @@ fn program_label(program: &str) -> &'static str {
         "pacms" => "Shorter chat history",
         "ponytail" => "Less code written",
         "prompt_comments" => "Leaner agent instructions",
+        // Compact signatures and tool search: both shrink the tool definitions the model reads.
+        "tool_lists" => "Smaller tool lists",
         _ => "Other",
     }
 }
@@ -1366,6 +1369,7 @@ mod tests {
         assert_eq!(program_label("pacms"), "Shorter chat history");
         assert_eq!(program_label("caveman"), "Smaller prompts");
         assert_eq!(program_label("ponytail"), "Less code written");
+        assert_eq!(program_label("tool_lists"), "Smaller tool lists");
     }
     // ── honesty of the zero/partial notes ────────────────────────────────────
 

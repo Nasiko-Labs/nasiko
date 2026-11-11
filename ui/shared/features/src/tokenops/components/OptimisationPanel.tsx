@@ -51,6 +51,8 @@ const LAYER_LABEL: Record<string, string> = {
   brevity: 'answer length',
   minimal_code: 'code written',
   prompt_comments: 'agent instructions',
+  compact_tools: 'tool definitions',
+  tool_search: 'tools listed',
 }
 
 /** `null` percentages mean "no baseline to compare against", not zero. */

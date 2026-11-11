@@ -71,6 +71,10 @@ pub struct UsageRecord {
     /// would price a saving at a different rate than the spend it is subtracted from, and the
     /// reduction percentage would stop being coherent.
     pub compress_bytes: Option<(usize, usize)>,
+    /// `(native, compact)` tool-definition bytes when this call was served by a compact-tools
+    /// request whose reply decoded. `None` when compaction was skipped, or when the reply did not
+    /// decode and the native request was re-sent: that call carried the full schemas.
+    pub compact_tools_bytes: Option<(usize, usize)>,
     /// Total text bytes actually sent, after compression and the brevity directive. Calibrates
     /// chars-per-token against this very call rather than a fixed divisor (see `savings.rs`).
     pub request_bytes: Option<usize>,
@@ -141,6 +145,7 @@ impl UsageRecord {
             compress_metadata: None,
             brevity_metadata: None,
             compress_bytes: None,
+            compact_tools_bytes: None,
             request_bytes: scope.request_bytes,
             failure: Some(attempt.failure),
         }
@@ -277,6 +282,7 @@ pub async fn log_usage(
         provider: record.provider.clone(),
         model: record.model.clone(),
         compress_bytes: record.compress_bytes,
+        compact_tools_bytes: record.compact_tools_bytes,
         request_bytes: record.request_bytes,
     };
 
@@ -523,10 +529,11 @@ struct SavingsIds {
     provider: String,
     model: String,
     compress_bytes: Option<(usize, usize)>,
+    compact_tools_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
 }
 
-/// Write the per-layer savings row for this call, if any layer saved anything.
+/// Write the per-layer savings rows for this call, one for each layer that saved anything.
 ///
 /// Separate from the `trace_usage` upsert and best-effort within an already best-effort path: a
 /// missing savings row costs a dashboard a data point, while a failed one must not cost a request
@@ -539,35 +546,36 @@ async fn write_savings(
     cache_read: Option<i64>,
     cache_creation: Option<i64>,
 ) {
-    let Some((bytes_in, bytes_out)) = ids.compress_bytes else {
+    if ids.compress_bytes.is_none() && ids.compact_tools_bytes.is_none() {
         return;
-    };
+    }
     // The denominator of the blended rate must match the numerator's scope: `input` is already
     // disjoint from the cache counts by this point (`normalize_openai_details`), so prompt-side
     // tokens is their sum, not `input` alone.
     let prompt_side_tokens =
         input.unwrap_or(0) + cache_read.unwrap_or(0) + cache_creation.unwrap_or(0);
-
-    let row = crate::savings::compress_payload_row(
-        bytes_in,
-        bytes_out,
-        crate::savings::CallContext {
-            user_id: ids.owner,
-            agent_id: ids.agent,
-            flow_id: ids.flow_id.clone(),
-            provider: ids.provider.clone(),
-            model: ids.model.clone(),
-            cost,
-            prompt_side_tokens,
-            calibration: crate::savings::CalibrationInputs {
-                request_bytes: ids.request_bytes,
-                input_tokens: Some(prompt_side_tokens).filter(|t| *t > 0),
-            },
+    let ctx = crate::savings::CallContext {
+        user_id: ids.owner,
+        agent_id: ids.agent,
+        flow_id: ids.flow_id.clone(),
+        provider: ids.provider.clone(),
+        model: ids.model.clone(),
+        cost,
+        prompt_side_tokens,
+        calibration: crate::savings::CalibrationInputs {
+            request_bytes: ids.request_bytes,
+            input_tokens: Some(prompt_side_tokens).filter(|t| *t > 0),
         },
-    );
+    };
 
-    if let Some(row) = row {
-        nasiko_savings::insert(db, &row).await;
+    let compress = ids.compress_bytes.and_then(|(bytes_in, bytes_out)| {
+        crate::savings::compress_payload_row(bytes_in, bytes_out, ctx.clone())
+    });
+    let compact = ids
+        .compact_tools_bytes
+        .and_then(|(native, compact)| crate::savings::compact_tools_row(native, compact, ctx));
+    for row in compress.iter().chain(compact.iter()) {
+        nasiko_savings::insert(db, row).await;
     }
 }
 

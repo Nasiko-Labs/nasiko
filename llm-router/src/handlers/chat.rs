@@ -597,6 +597,9 @@ async fn chat_core(
     );
     let (mut resp, (mut provider, mut model)) = answered?;
 
+    // Credited only if the compact reply is the one returned; a native re-send below clears it.
+    let mut compact_tools_bytes = compact.as_ref().ok().map(|c| c.bytes);
+
     // Compact calls → native `tool_calls`. A reply that does not decode is never guessed at:
     // the failed attempt is billed as its own row and the original native request is re-sent.
     if let Ok(compacted) = &compact
@@ -630,11 +633,14 @@ async fn chat_core(
                 compress_metadata: compression.to_metadata(),
                 brevity_metadata: brevity_metadata.clone(),
                 compress_bytes,
+                // The schemas this call saved are re-sent in full below, so nothing was saved.
+                compact_tools_bytes: None,
                 request_bytes: Some(sent_bytes),
                 // The provider answered; only the router could not decode the reply.
                 failure: None,
             },
         );
+        compact_tools_bytes = None;
         let resent = fallback::execute_chat_by(
             &ctx.http,
             &ctx.cfg,
@@ -689,6 +695,7 @@ async fn chat_core(
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
             compress_bytes,
+            compact_tools_bytes,
             request_bytes: Some(sent_bytes),
             failure: None,
         },
@@ -1093,6 +1100,8 @@ impl UsageGuard {
             compress_metadata,
             brevity_metadata,
             compress_bytes: self.compress_bytes,
+            // Compact tools skips streaming requests.
+            compact_tools_bytes: None,
             request_bytes: self.request_bytes,
             failure: st.failure,
         }

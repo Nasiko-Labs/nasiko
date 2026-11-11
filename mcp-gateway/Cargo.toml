@@ -49,6 +49,7 @@ nasiko-observability.workspace = true
 nasiko-orchestrator.workspace = true
 # HITL persistence: create_pending_auth_required (protocol.rs's AuthRequired path).
 nasiko-hitl.workspace = true
+nasiko-savings.workspace = true
 # FlowContext::from_traceparent — reused (not reimplemented) to parse the
 # trace_id out of a forwarded `traceparent` header for HITL context resolution.
 nasiko-flow.workspace = true

@@ -915,6 +915,7 @@ impl AttemptGuard {
                 // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
                 compress_bytes: routed.compression.bytes,
+                compact_tools_bytes: None,
                 // Only ever written for a failed attempt (a success disarms the guard), where it
                 // is the basis of the prompt estimate.
                 request_bytes,
@@ -1014,6 +1015,8 @@ fn log_response_usage(
             compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
             compress_bytes: routed.compression.bytes,
+            // Compact tools runs in chat_core only.
+            compact_tools_bytes: None,
             // Only a failed call carries it (its prompt estimate); a success keeps the savings
             // ledger's fixed divisor, as before.
             request_bytes: failure.and(request_bytes),

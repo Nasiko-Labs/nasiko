@@ -136,6 +136,7 @@ async fn embeddings_core(
             brevity_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
+            compact_tools_bytes: None,
             request_bytes: None,
             platform_paid: resolved.platform_paid,
             failure: None,

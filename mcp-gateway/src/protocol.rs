@@ -361,6 +361,18 @@ pub async fn handle_tools_list(
             )
             .await;
 
+        // A query is only ever resolved from a verified flow, so this always holds here.
+        if let Some(flow_id) = verified_flow_id {
+            record_tool_search_saving(
+                state,
+                user_id,
+                perms,
+                flow_id,
+                resolved,
+                &accessible_ids,
+                &matches,
+            );
+        }
         tools.extend(search_matches_to_json(&matches, resolved));
     }
 
@@ -405,23 +417,93 @@ fn search_matches_to_json(
 ) -> Vec<Value> {
     matches
         .iter()
-        .filter_map(|m| {
-            let name = router::callable_tool_name(
-                m.connector_id,
-                &m.tool_name,
-                &resolved.servers,
-                &resolved.toolkit_to_connector,
-            )?;
-            let mut obj = json!({ "name": name });
-            if let Some(ref desc) = m.description {
-                obj["description"] = json!(desc);
-            }
-            if let Some(ref schema) = m.input_schema {
-                obj["inputSchema"] = schema.clone();
-            }
-            Some(obj)
-        })
+        .filter_map(|m| search_match_to_json(m, resolved))
         .collect()
+}
+
+fn search_match_to_json(m: &crate::search::ToolMatch, resolved: &ResolvedSession) -> Option<Value> {
+    let name = router::callable_tool_name(
+        m.connector_id,
+        &m.tool_name,
+        &resolved.servers,
+        &resolved.toolkit_to_connector,
+    )?;
+    let mut obj = json!({ "name": name });
+    if let Some(ref desc) = m.description {
+        obj["description"] = json!(desc);
+    }
+    if let Some(ref schema) = m.input_schema {
+        obj["inputSchema"] = schema.clone();
+    }
+    Some(obj)
+}
+
+/// Write the `tool_search` savings row for one search-mode listing (`crate::savings`).
+///
+/// The measuring runs inline, over the session's generic connectors only (tens of tools, already in
+/// memory); the insert is spawned, so the listing never waits on the database.
+///
+/// The baseline is every granted tool of the session's generic connectors, rendered as
+/// `tools/list` renders it, which is what the listing holds with search off. The listed side is
+/// the matches from those same connectors plus the three meta-tools, which only search mode lists.
+fn record_tool_search_saving(
+    state: &McpState,
+    user_id: Uuid,
+    perms: &PermissionContext,
+    flow_id: &str,
+    resolved: &ResolvedSession,
+    accessible_ids: &[Uuid],
+    matches: &[crate::search::ToolMatch],
+) {
+    let generic: Vec<Uuid> = accessible_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            resolved
+                .servers
+                .iter()
+                .any(|s| s.connector_id == *id && s.kind == ServerType::Mcp)
+        })
+        .collect();
+    let baseline = state.search_index.granted_tools(&generic, perms);
+    let baseline_bytes = rendered_bytes(baseline.iter(), resolved);
+    let meta_bytes: usize = [
+        nasiko_search_tools_definition(),
+        nasiko_call_tool_definition(),
+        recover_compressed_definition(),
+    ]
+    .iter()
+    .map(|v| v.to_string().len())
+    .sum();
+    let listed_bytes = rendered_bytes(
+        matches.iter().filter(|m| generic.contains(&m.connector_id)),
+        resolved,
+    ) + meta_bytes;
+
+    let Some(row) = crate::savings::tool_search_row(
+        baseline_bytes,
+        listed_bytes,
+        crate::savings::ListingContext {
+            user_id,
+            agent_id: perms.agent_id,
+            flow_id: flow_id.to_string(),
+        },
+    ) else {
+        return;
+    };
+    let db = state.db.clone();
+    tokio::spawn(async move { nasiko_savings::insert(&db, &row).await });
+}
+
+/// The bytes `tools/list` spends on `tools`, each rendered as it is listed.
+fn rendered_bytes<'a>(
+    tools: impl Iterator<Item = &'a crate::search::ToolMatch>,
+    resolved: &ResolvedSession,
+) -> usize {
+    tools
+        .filter_map(|m| search_match_to_json(m, resolved))
+        .map(|v| v.to_string().len())
+        .sum()
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in

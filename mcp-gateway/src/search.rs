@@ -43,6 +43,13 @@ pub trait ToolSearchIndex: Send + Sync {
         limit: usize,
     ) -> Vec<ToolMatch>;
 
+    /// Every indexed tool of `connector_ids` the agent's permissions do not deny, unranked
+    /// (`score` 0): what a listing without search is built from, measured against the search
+    /// result by the savings ledger. Empty for an index that holds no tools.
+    fn granted_tools(&self, _connector_ids: &[Uuid], _perms: &PermissionContext) -> Vec<ToolMatch> {
+        Vec::new()
+    }
+
     /// Rebuild the in-memory index from current DB state.
     async fn rebuild(&self, db: &PgPool) -> Result<()>;
 }
@@ -74,6 +81,29 @@ async fn load_all_tools(db: &PgPool) -> Result<Vec<ToolEntry>> {
             input_schema: schema,
         })
         .collect())
+}
+
+/// [`ToolSearchIndex::granted_tools`] over one index's tool list, with the same connector and
+/// permission filter `search_tools` applies.
+fn granted(
+    tools: &[ToolEntry],
+    connector_ids: &[Uuid],
+    perms: &PermissionContext,
+) -> Vec<ToolMatch> {
+    tools
+        .iter()
+        .filter(|t| connector_ids.contains(&t.connector_id))
+        .filter(|t| {
+            perms.decide(t.connector_id, &t.tool_name) != crate::permissions::ToolAccess::Denied
+        })
+        .map(|t| ToolMatch {
+            connector_id: t.connector_id,
+            tool_name: t.tool_name.clone(),
+            description: t.description.clone(),
+            input_schema: t.input_schema.clone(),
+            score: 0.0,
+        })
+        .collect()
 }
 
 fn tool_search_text(name: &str, description: Option<&str>) -> String {
@@ -228,6 +258,10 @@ impl ToolSearchIndex for Bm25SearchIndex {
                 }
             })
             .collect()
+    }
+
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -459,6 +493,10 @@ impl ToolSearchIndex for SemanticSearchIndex {
                 }
             })
             .collect()
+    }
+
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -892,6 +930,35 @@ mod tests {
             .search_tools("", &all_connector_ids(), &permissive_perms(), 5)
             .await;
         assert!(results.is_empty(), "empty query should return empty");
+    }
+
+    /// The savings baseline: every tool of the asked-for connectors the agent may see, whatever
+    /// the query, and nothing from a connector it was not asked about or may not use.
+    #[test]
+    fn granted_tools_lists_the_asked_connectors_permitted_tools_unranked() {
+        let index = Bm25SearchIndex::new();
+        index.index(sample_tools());
+        let perms = PermissionContext {
+            enabled_connectors: [connector_id("slack"), connector_id("github")]
+                .into_iter()
+                .collect(),
+            ..permissive_perms()
+        };
+
+        let granted = index.granted_tools(&[connector_id("gmail"), connector_id("slack")], &perms);
+
+        let names: HashSet<&str> = granted.iter().map(|m| m.tool_name.as_str()).collect();
+        // gmail is asked for but not enabled; github is enabled but not asked for.
+        assert_eq!(
+            names,
+            HashSet::from(["SLACK_CHAT_POST_MESSAGE", "SLACK_LIST_CHANNELS"])
+        );
+        assert!(granted.iter().all(|m| m.score == 0.0));
+        assert!(
+            NoopSearchIndex
+                .granted_tools(&all_connector_ids(), &permissive_perms())
+                .is_empty()
+        );
     }
 
     #[tokio::test]

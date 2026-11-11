@@ -43,6 +43,7 @@ fn record(owner: Uuid, agent: Uuid, flow_id: Option<&str>, input: i64, output: i
         compress_metadata: None,
         brevity_metadata: None,
         compress_bytes: None,
+        compact_tools_bytes: None,
         request_bytes: None,
         failure: None,
     }

@@ -79,6 +79,10 @@ impl Skipped {
 pub(crate) struct Compacted {
     pub(crate) tools: Vec<compact::ToolDef>,
     pub(crate) native: ChatRequest,
+    /// `(native, compact)`: the serialized native `tools` against the signatures and call-format
+    /// instruction that replaced them, for the savings ledger. Measured here because
+    /// `brevity::estimated_bytes` counts message text only and never sees `tools`.
+    pub(crate) bytes: (usize, usize),
 }
 
 /// Rewrites `req` to the compact form unless a carve-out applies. On `Err`, `req` is untouched.
@@ -145,19 +149,26 @@ pub(crate) fn apply(
         })
         .collect();
     let encoded = compact::encode_tools(&tools).map_err(|_| Skipped::Unsupported)?;
+    let native_bytes = serde_json::to_string(native_tools).map_or(0, |s| s.len());
+    let system_prompt = encoded.system_prompt();
+    let bytes = (native_bytes, system_prompt.len());
 
     let native = req.clone();
     req.tools = None;
     req.tool_choice = None;
     req.messages.push(Message {
         role: "system".into(),
-        content: Some(Value::String(encoded.system_prompt())),
+        content: Some(Value::String(system_prompt)),
         name: None,
         tool_calls: None,
         tool_call_id: None,
         extra: Default::default(),
     });
-    Ok(Compacted { tools, native })
+    Ok(Compacted {
+        tools,
+        native,
+        bytes,
+    })
 }
 
 /// Checks and restores a compacted reply. Returns the failure label on any problem, with the
@@ -369,6 +380,19 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&c.native).unwrap(), original);
         assert_eq!(c.tools[0].name, "get_weather");
+    }
+
+    /// The savings ledger compares the schemas sent natively with exactly what replaced them,
+    /// call-format instruction included.
+    #[test]
+    fn measures_the_native_schemas_against_the_message_that_replaced_them() {
+        let mut req = request(json!({}));
+        let native = serde_json::to_string(req.tools.as_ref().unwrap())
+            .unwrap()
+            .len();
+        let c = apply(&mut req, &enabled(), &resolved(true, false)).unwrap();
+        let sent = req.messages.last().unwrap().text().unwrap().len();
+        assert_eq!(c.bytes, (native, sent));
     }
 
     fn response(content: &str) -> ChatResponse {

@@ -58,6 +58,7 @@ fn record(
         compress_metadata: None,
         brevity_metadata: None,
         compress_bytes,
+        compact_tools_bytes: None,
         request_bytes,
         failure: None,
     }
@@ -151,16 +152,50 @@ async fn a_compressed_call_writes_both_the_usage_row_and_its_savings_row() {
         "payload compression cannot shorten what the model writes"
     );
     assert_eq!(r.method, "measured_bytes");
-    assert!(
-        !r.token_estimated,
-        "the ratio came from this call's own reported usage, so it is not an estimate"
-    );
+    // Calibrated on this call's own usage, but still an average over the whole request, so the
+    // tokens the compressed text was worth are an estimate.
+    assert!(r.token_estimated);
     // The llm-router holds the flow id, not the contextId; the read path resolves the latter.
     assert_eq!(
         r.flow_id.as_deref(),
         Some("0af7651916cd43dd8448eb211c80319c")
     );
     assert_eq!(r.session_id, None);
+}
+
+#[tokio::test]
+#[serial]
+async fn a_compact_tools_call_writes_its_own_row_beside_compression() {
+    // One call, two layers: each writes its own row, priced the same way.
+    let server = common::TestServer::start().await;
+    let (user, agent) = seed_user_and_agent(&server.db).await;
+    let pricing = PricingEngine::offline();
+
+    log_usage(
+        server.db.clone(),
+        &pricing,
+        UsageRecord {
+            compact_tools_bytes: Some((10_270, 7_430)),
+            ..record(user, agent, Some((40_000, 10_000)), Some(8_000))
+        },
+    )
+    .await
+    .unwrap();
+
+    let rows = saved_rows(&server.db, agent).await;
+    assert_eq!(rows.len(), 2, "one row per layer that saved");
+    let compact = rows
+        .iter()
+        .find(|r| r.layer == "compact_tools")
+        .expect("a compact_tools row: the layer check must admit it");
+    assert_eq!(compact.program, "tool_lists");
+    assert_eq!(compact.bytes_before, Some(10_270));
+    assert_eq!(compact.bytes_after, Some(7_430));
+    // 2 840 bytes at the calibrated 4.0 chars/token.
+    assert_eq!(compact.saved_input_tokens, 710);
+    assert_eq!(compact.saved_output_tokens, 0);
+    assert_eq!(compact.method, "measured_bytes");
+    assert!(rows.iter().any(|r| r.layer == "compress_payload"));
 }
 
 #[tokio::test]
