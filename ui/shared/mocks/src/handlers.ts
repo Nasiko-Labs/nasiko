@@ -1582,7 +1582,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
               calls_with_any_layer_enabled: 0,
               optimized_spend_usd: 0,
               unoptimized_spend_usd: 0,
-              calibrated_pct: null,
             },
           }
         const live = getAgents().agents.filter((a) => !a.deleted)
