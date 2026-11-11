@@ -774,6 +774,28 @@ describe('Try it (chat plan §9)', () => {
     await screen.findByRole('button', { name: 'Start' })
     expect(screen.queryByRole('link', { name: 'Try it' })).toBeNull()
   })
+
+  it('a parked agent links to Chat: the first message wakes it', async () => {
+    const detail = (await (await fetch(`/api/agents/${running.id}`)).json()) as {
+      data: { owner_id: string }
+    }
+    const rows = (await (
+      await fetch(`/api/agents?owner=${detail.data.owner_id}&limit=100`)
+    ).json()) as { id: string; status: string }[]
+    server.use(
+      http.get('/api/agents', ({ request }) =>
+        new URL(request.url).searchParams.get('owner')
+          ? HttpResponse.json(
+              rows.map((r) => (r.id === running.id ? { ...r, status: 'parked' } : r)),
+            )
+          : undefined,
+      ),
+    )
+    renderApp(url(0))
+    await title()
+    const link = await screen.findByRole('link', { name: 'Try it' })
+    expect(link).toHaveAttribute('href', `/chat?agent=${running.id}`)
+  })
 })
 
 describe('more states (plan §10)', () => {

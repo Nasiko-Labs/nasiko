@@ -236,7 +236,10 @@ export function AgentLinkTo({
   )
 }
 
-/** Opens Chat with this agent (plan §9). Only running A2A agents; harnesses never run as containers. */
+/**
+ * Opens Chat with this agent (plan §9). Only running or parked A2A agents (the first message wakes a
+ * parked one); harnesses never run as containers.
+ */
 export function TryItLink({
   id,
   name,
@@ -252,7 +255,7 @@ export function TryItLink({
   size?: 'sm' | 'xs'
   variant?: 'outline' | 'default'
 }) {
-  if (harness || display !== 'running') return null
+  if (harness || (display !== 'running' && display !== 'parked')) return null
   return (
     <Link
       to="/chat"
