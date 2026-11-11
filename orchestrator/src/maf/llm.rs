@@ -3,6 +3,23 @@ use std::sync::Arc;
 use nasiko_pricing::{NoUsageLedger, UsageLedger};
 use serde::{Deserialize, Serialize};
 
+/// OpenAI reports a model/parameter mismatch as a 400 whose body names the offending
+/// field: `{"error":{"param":"temperature","code":"unsupported_value",...}}` — reasoning
+/// models (the `o` series, gpt-5-class) only accept the default `temperature`. Detected
+/// from the response rather than hardcoding which models reject it, since that set
+/// changes with every new model release.
+fn openai_rejects_temperature(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    let Some(error) = value.get("error") else {
+        return false;
+    };
+    let code = error.get("code").and_then(|c| c.as_str()).unwrap_or_default();
+    let param = error.get("param").and_then(|p| p.as_str()).unwrap_or_default();
+    param == "temperature" && matches!(code, "unsupported_value" | "unsupported_parameter")
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -199,16 +216,32 @@ impl LlmClient {
             body["response_format"] = fmt;
         }
 
+        let send = |body: &serde_json::Value| {
+            self.http
+                .post(format!("{}/chat/completions", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(body)
+                .timeout(std::time::Duration::from_secs(120))
+                .send()
+        };
+
         let started = std::time::Instant::now();
-        let resp = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(120))
-            .send()
+        let mut resp = send(&body)
             .await
             .map_err(|e| format!("LLM request failed: {e}"))?;
+
+        if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+            let status = resp.status();
+            let err_body = resp.text().await.unwrap_or_default();
+            if openai_rejects_temperature(&err_body) {
+                body.as_object_mut().unwrap().remove("temperature");
+                resp = send(&body)
+                    .await
+                    .map_err(|e| format!("LLM request failed: {e}"))?;
+            } else {
+                return Err(format!("LLM HTTP {status}: {err_body}"));
+            }
+        }
 
         if !resp.status().is_success() {
             let status = resp.status();
