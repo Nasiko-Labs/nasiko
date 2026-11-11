@@ -342,7 +342,7 @@ fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String
         // Bounded by the span count, so a malformed parent cycle can't loop forever.
         let nearest_llm = std::iter::successors(parent_of(span), |s| parent_of(s))
             .take(spans.len())
-            .find(|s| extract_token_attrs(&s.attributes).2.is_some());
+            .find(|s| is_llm_call(s));
         if let Some(llm) = nearest_llm
             && !llm.attributes.contains_key("gen_ai.response.model")
         {
@@ -350,6 +350,21 @@ fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String
         }
     }
     answered
+}
+
+/// Whether the span is a model call, not just a span that names a model: an agent's
+/// `invoke_agent` span often carries `gen_ai.request.model` too, and must not take a
+/// gateway answer meant for one of the calls under it.
+fn is_llm_call(span: &nasiko_observability::Span) -> bool {
+    let attr = |key| span.attributes.get(key).and_then(Value::as_str);
+    if let Some(operation) = attr("gen_ai.operation.name") {
+        return matches!(operation, "chat" | "text_completion" | "generate_content");
+    }
+    if attr("openinference.span.kind").is_some_and(|k| k.eq_ignore_ascii_case("llm")) {
+        return true;
+    }
+    let (input, output, model) = extract_token_attrs(&span.attributes);
+    model.is_some() && (input > 0 || output > 0)
 }
 
 fn build_span_tree(
@@ -2139,8 +2154,11 @@ impl ObservabilityService {
         let span = &details.span;
 
         // Token counts come from the provider (it rolls the span's children up);
-        // only the model name still has to be read off the raw attributes.
-        let (.., model) = extract_token_attrs(&span.attributes);
+        // only the model name still has to be read off the raw attributes, after the one
+        // its gateway span answered with, so the panel agrees with the trace tree.
+        let model = answered_models(&trace.spans)
+            .remove(span.span_id.as_str())
+            .or_else(|| extract_token_attrs(&span.attributes).2);
         let usage = &details.token_usage;
 
         // Span kind: prefer openinference.span.kind (e.g. "LLM"), fallback to OTel kind
@@ -4237,6 +4255,31 @@ mod tests {
         let (roots, _) = build_span_tree(&[agent, http, gateway]);
         assert_eq!(roots[0].name, "chat gpt-4.1");
         assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn agent_span_naming_a_model_does_not_take_its_gateway_calls_answer() {
+        // An uninstrumented LLM client leaves the gateway span directly under the
+        // agent's `invoke_agent` span, which names a model but is not a model call.
+        let agent = span_with(
+            "agent",
+            None,
+            "invoke_agent hr",
+            &[
+                ("gen_ai.operation.name", "invoke_agent"),
+                ("gen_ai.request.model", "gpt-4o-mini"),
+            ],
+        );
+        let gateway = span_with(
+            "gateway",
+            Some("agent"),
+            "gen_ai.chat",
+            &[("gen_ai.response.model", "gpt-4.1")],
+        );
+
+        let (roots, _) = build_span_tree(&[agent, gateway]);
+        assert_eq!(roots[0].name, "invoke_agent hr");
+        assert_eq!(roots[0].model.as_deref(), Some("gpt-4o-mini"));
     }
 
     // ── KpiValue::new ────────────────────────────────────────────────────────
