@@ -27,7 +27,7 @@ import { SectionError } from './SectionError'
 /** The select's value for "no choice"; a config id is a UUID, so it cannot collide. */
 const DEFAULT = 'default'
 
-// Not in copy.ts: that module is in the Enterprise shell chunk, whose budget has no room (ee/app/budgets.json).
+// Not in copy.ts: that module is in an app's shell chunk, whose size budget has no room left.
 const text = {
   title: 'Shared with you',
   help: 'Pick one of your models for an agent someone shared with you. Calls then use your key. Left on Default, calls use the agent’s own model where its owner provides one, otherwise your default model.',
