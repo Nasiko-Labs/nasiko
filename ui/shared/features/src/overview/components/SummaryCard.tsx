@@ -23,9 +23,11 @@ import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
 import type { HarnessSummary, Spend } from '../api'
 import { copy } from '../copy'
 import { Harnesses } from './Harnesses'
+import { Sampled } from './HarnessPreview'
 import { Headline } from './Headline'
 import { RunsTile, SpendTile, TokensTile } from './Kpis'
 import { cn } from '@nasiko/ui/lib/utils'
+import { usePreviewSample } from '../preview'
 import { quietTiles, savingsShown, type Quiet, type TileId } from '../quiet'
 import { MonthBar } from './MonthBar'
 import { DidYouKnow } from './DidYouKnow'
@@ -50,7 +52,9 @@ export function SummaryCard({
   savings: { view: OptimisationView | undefined; isPending: boolean }
   harnesses: HarnessSummary
 }) {
-  const computed = quietTiles(spend, harnesses)
+  // While Home's coding harness preview plays past Today, the Harnesses tile is Home's own on sample numbers.
+  const sample = usePreviewSample()
+  const computed = quietTiles(spend, sample ?? harnesses)
   const [settled, setSettled] = useState(computed)
   if (computed.settled && !sameLayout(computed, settled)) setSettled(computed)
   const { tiles, quiet } = computed.settled ? computed : settled
@@ -66,7 +70,13 @@ export function SummaryCard({
     spend: <SpendTile spend={spend} />,
     tokens: <TokensTile spend={spend} />,
     runs: <RunsTile spend={spend} />,
-    harnesses: <Harnesses data={harnesses} days={days} />,
+    harnesses: sample ? (
+      <Sampled>
+        <Harnesses data={sample} days={days} />
+      </Sampled>
+    ) : (
+      <Harnesses data={harnesses} days={days} />
+    ),
   }
   // One or two tiles share the top row (one alone takes it), the panel the row under; three leave the panel a cell.
   const wide = '@[560px]/overview:col-span-2'

@@ -2,10 +2,10 @@
  * The Overview page (plans/feat-overview.md §14): each card renders from the pinned seed and fails on its own, the
  * spend is said as fleet spend (eng R2), and the Fleet health counts match the Agents catalog filter (eng R1).
  */
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearChatRegistry } from '@nasiko/features/chat/registry'
 import { apiFetch } from '@nasiko/data-access/client'
 import { configureMocks } from '@nasiko/mocks/handlers'
@@ -15,8 +15,15 @@ import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { copy } from './copy'
+import { PREVIEW_MS } from './preview'
 import { DEFAULT_RANGE, RANGE_DAYS } from './search'
-import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, SAVED_BARS } from './tuning'
+import {
+  FAILED_SESSION_ROWS,
+  PREVIEW_HOLD_MS,
+  PREVIEW_STEP_MS,
+  RECENT_SESSION_ROWS,
+  SAVED_BARS,
+} from './tuning'
 
 setupPinnedSeed()
 afterEach(() => {
@@ -715,42 +722,112 @@ describe('coding harness activity (2026-11-06)', () => {
   })
 })
 
-describe('the coding harness preview (2026-11-06)', () => {
+describe('the coding harness preview, in place (2026-11-06)', () => {
+  const p = copy.harnessPreview
+  afterEach(() => vi.useRealTimers())
+
   it('stays out while a harness is connected', async () => {
     renderApp('/')
     await loaded()
     await screen.findByTestId('overview-harness-activity', {}, { timeout: 8000 })
-    expect(screen.queryByRole('button', { name: copy.harnessPreview.watch })).toBeNull()
+    expect(screen.queryByRole('button', { name: p.watch })).toBeNull()
   })
 
-  it('sits in the none-connected tile, never a section of its own, and plays Today to Month 1', async () => {
+  it('plays on Home itself, in the tile and the activity card, then comes back 5 s after it ends', async () => {
     window.history.replaceState(null, '', '/?mock=no-harnesses')
     renderApp('/')
     await loaded()
     const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
     expect(tile).toHaveTextContent(copy.quiet.harnessesNone)
     expect(card('overview-harness-activity')).toBeNull()
-    await userEvent.click(within(tile).getByRole('button', { name: copy.harnessPreview.watch }))
-    const dialog = await screen.findByRole('dialog', { name: copy.harnessPreview.stops[0]?.title })
-    expect(dialog).toHaveTextContent(copy.harnessPreview.sample)
-    expect(dialog).toHaveTextContent('nasiko auth login')
-    const next = within(dialog).getByRole('button', { name: copy.harnessPreview.next })
-    for (let i = 0; i < 3; i++) await userEvent.click(next)
+    // Only the preview's clock is faked: the page's reads and Testing Library keep real time.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    await userEvent.click(within(tile).getByRole('button', { name: p.watch }))
+    // No dialog: a bar takes the header's place, and Today's command plays in the tile.
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const bar = screen.getByRole('region', { name: p.bar })
+    expect(bar).toHaveFocus()
+    expect(screen.getByRole('heading', { level: 1, name: copy.title })).toBeInTheDocument()
+    expect(card('quiet-harnesses')).toHaveTextContent('nasiko auth login')
+    await userEvent.click(within(bar).getByRole('button', { name: p.jump('Month 1') }))
+    expect(within(bar).getByRole('button', { name: p.jump('Month 1') })).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
+    // Home's own Harnesses tile and activity card, on sample numbers.
+    expect(card('quiet-harnesses')).toBeNull()
+    expect(card('overview-harnesses')).not.toBeNull()
+    // The sample card plays above Needs your attention; the real one sits below it (user 2026-11-06).
     expect(
-      within(dialog).getByRole('heading', { name: copy.harnessPreview.stops[3]?.title }),
-    ).toBeInTheDocument()
-    expect(
-      within(dialog).getByRole('button', { name: copy.harnessPreview.jump('Month 1') }),
-    ).toHaveAttribute('aria-current', 'step')
-    expect(dialog).toHaveTextContent(copy.harnessPreview.subagents)
-    // Past the last step: the ending hands over the commands and Connect yours.
-    await userEvent.click(next)
-    expect(
-      within(dialog).getByRole('link', { name: copy.harnessPreview.connectYours }),
-    ).toHaveAttribute('href', '/harnesses')
-    expect(dialog).toHaveTextContent('2,555')
-    await userEvent.click(within(dialog).getByRole('button', { name: copy.harnessPreview.close }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+      card('overview-harness-activity').compareDocumentPosition(card('overview-needs')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    act(() => {
+      vi.advanceTimersByTime(PREVIEW_STEP_MS)
+    })
+    expect(card('overview-harnesses')).toHaveTextContent('$1,133.48')
+    expect(bar).toHaveTextContent(p.back(PREVIEW_HOLD_MS / 1000))
+    act(() => {
+      vi.advanceTimersByTime(PREVIEW_HOLD_MS)
+    })
+    expect(screen.queryByRole('region', { name: p.bar })).toBeNull()
+    const back = await screen.findByTestId('quiet-harnesses')
+    expect(back).toHaveTextContent(copy.quiet.harnessesNone)
+    expect(card('overview-harness-activity')).toBeNull()
+    // The focus left with the bar: it returns to the button that started it.
+    expect(within(back).getByRole('button', { name: p.watch })).toHaveFocus()
+  })
+
+  it('keeps the preview when the viewer stays, and Exit leaves at once', async () => {
+    window.history.replaceState(null, '', '/?mock=no-harnesses')
+    renderApp('/')
+    await loaded()
+    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    await userEvent.click(within(tile).getByRole('button', { name: p.watch }))
+    act(() => {
+      vi.advanceTimersByTime(PREVIEW_MS)
+    })
+    const bar = screen.getByRole('region', { name: p.bar })
+    await userEvent.click(within(bar).getByRole('button', { name: p.stay }))
+    act(() => {
+      vi.advanceTimersByTime(2 * PREVIEW_HOLD_MS)
+    })
+    expect(bar).toBeInTheDocument()
+    expect(within(bar).getByRole('link', { name: p.connectYours })).toHaveAttribute(
+      'href',
+      '/harnesses',
+    )
+    await userEvent.click(within(bar).getByRole('button', { name: p.exit }))
+    expect(screen.queryByRole('region', { name: p.bar })).toBeNull()
+    expect(card('quiet-harnesses')).toHaveTextContent(copy.quiet.harnessesNone)
+  })
+
+  it('hands over the commands for the team, connect included, and stays while they are read', async () => {
+    window.history.replaceState(null, '', '/?mock=no-harnesses')
+    renderApp('/')
+    await loaded()
+    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    await user.click(within(tile).getByRole('button', { name: p.watch }))
+    act(() => {
+      vi.advanceTimersByTime(PREVIEW_MS)
+    })
+    const bar = screen.getByRole('region', { name: p.bar })
+    await user.click(within(bar).getByRole('button', { name: p.copyCommands }))
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `nasiko connect ${window.location.origin} --login=false\nnasiko auth login`,
+      ),
+    )
+    act(() => {
+      vi.advanceTimersByTime(2 * PREVIEW_HOLD_MS)
+    })
+    expect(bar).toBeInTheDocument()
+    expect(within(bar).getByRole('button', { name: p.copied })).toHaveFocus()
   })
 })
 

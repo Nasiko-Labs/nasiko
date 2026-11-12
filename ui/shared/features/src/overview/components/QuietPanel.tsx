@@ -22,7 +22,7 @@ import { copy } from '../copy'
 import type { QuietItem } from '../quiet'
 import { LAST_WEEK } from '../tuning'
 import { TOUCH } from './Card'
-import { WatchPreview } from './HarnessPreview'
+import { PreviewSlot, WatchPreview } from './HarnessPreview'
 
 const q = copy.quiet
 
@@ -97,10 +97,30 @@ function QuietCell({
   className?: string
 }) {
   const v = view(item, days)
+  // None connected: a preview of what connecting brings, played on Home in place, on sample data (2026-11-06).
+  const preview = item.id === 'harnesses' && !item.connected
+  const body = (
+    <>
+      <div className="flex flex-col gap-1">
+        <h3 className="text-base font-medium text-pretty">{v.title}</h3>
+        <p className="max-w-prose text-sm text-pretty text-muted-foreground">{v.detail}</p>
+      </div>
+      <div className="mt-auto flex flex-wrap gap-2">
+        {preview ? <WatchPreview /> : null}
+        <Link
+          to={v.to}
+          search={(v.search ?? {}) as never}
+          {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+        >
+          {v.action} <ArrowRight aria-hidden />
+        </Link>
+      </div>
+    </>
+  )
   return (
     <div
       data-testid={`quiet-${item.id}`}
-      className={cn('flex flex-col items-start gap-3 bg-card p-4', className)}
+      className={cn('relative flex flex-col items-start gap-3 bg-card p-4', className)}
     >
       <p className="flex items-center gap-2 text-sm text-muted-foreground">
         <span
@@ -111,21 +131,7 @@ function QuietCell({
         </span>
         {v.label}
       </p>
-      <div className="flex flex-col gap-1">
-        <h3 className="text-base font-medium text-pretty">{v.title}</h3>
-        <p className="max-w-prose text-sm text-pretty text-muted-foreground">{v.detail}</p>
-      </div>
-      <div className="mt-auto flex flex-wrap gap-2">
-        {/* None connected: a preview of what connecting brings, on sample data (2026-11-06). */}
-        {item.id === 'harnesses' && !item.connected ? <WatchPreview /> : null}
-        <Link
-          to={v.to}
-          search={(v.search ?? {}) as never}
-          {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
-        >
-          {v.action} <ArrowRight aria-hidden />
-        </Link>
-      </div>
+      {preview ? <PreviewSlot>{body}</PreviewSlot> : body}
     </div>
   )
 }
