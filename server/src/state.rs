@@ -49,6 +49,9 @@ pub struct AppState {
     /// `NoSpendGate`, which never refuses; the EE composition root replaces it
     /// with its budget check.
     pub spend_gate: Arc<dyn crate::spend_gate::SpendGate>,
+    /// Who pays for a model call another user makes through an agent. OSS wires `CallerPays`; the
+    /// EE composition root may replace it.
+    pub shared_call_payer: Arc<dyn nasiko_llm_router::payer::SharedCallPayer>,
     /// Asked before a harness session is opened and before each of its turns starts. OSS wires
     /// `AdmitEverySession`; an edition whose sessions can add an agent installs its limit check
     /// through this cell (`SwappableSessionAdmission::install`), once it has what that needs.
@@ -437,6 +440,7 @@ impl AppState {
             routing_engine,
             orchestrator_policy,
             spend_gate,
+            shared_call_payer: Arc::new(nasiko_llm_router::payer::CallerPays),
             session_admission,
             tiering_hold,
             agent_wake,

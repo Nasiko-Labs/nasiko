@@ -263,6 +263,7 @@ mod tests {
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
+            payer: Arc::new(crate::payer::CallerPays),
         }
     }
 

@@ -36,6 +36,7 @@ pub mod handlers;
 pub mod inbound;
 pub mod inject;
 pub mod ir;
+pub mod payer;
 pub mod providers;
 mod range_view;
 pub mod recovery;
@@ -95,6 +96,9 @@ pub struct LlmRouterCtx {
     /// Receives each priced call on the transaction of its `trace_usage` write.
     /// [`NoUsageLedger`] unless the host supplies its own.
     pub ledger: Arc<dyn UsageLedger>,
+    /// Who pays for a call another user makes through an agent. [`payer::CallerPays`] unless the host
+    /// supplies its own.
+    pub payer: Arc<dyn payer::SharedCallPayer>,
 }
 
 impl LlmRouterCtx {
@@ -156,6 +160,7 @@ impl LlmRouterCtx {
             classifier,
             pricing,
             ledger: Arc::new(NoUsageLedger),
+            payer: Arc::new(payer::CallerPays),
         }
     }
 }
