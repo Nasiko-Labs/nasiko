@@ -1427,7 +1427,7 @@ mod tests {
             .match_header("x-goog-api-key", "gemini-key")
             .match_body(mockito::Matcher::PartialJson(json!({
                 "contents":[{"role":"user","parts":[{"text":"weather"}]}],
-                "tools":[{"functionDeclarations":[{"name":"weather","parameters":{"type":"object"}}]}]
+                "tools":[{"functionDeclarations":[{"name":"weather","parametersJsonSchema":{"type":"object"}}]}]
             })))
             .with_status(200).with_header("content-type", "application/json")
             .with_body(json!({

@@ -546,8 +546,11 @@ fn translate(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<GeminiRequest, P
                 if let Some(desc) = &t.function.description {
                     d["description"] = json!(desc);
                 }
+                // `parametersJsonSchema` takes standard JSON Schema as is. `parameters` takes only
+                // an OpenAPI subset and 400s on keys Pydantic, Zod and MCP emit ($schema, $defs,
+                // additionalProperties, exclusiveMinimum, …). The two are mutually exclusive.
                 if let Some(params) = &t.function.parameters {
-                    d["parameters"] = params.clone();
+                    d["parametersJsonSchema"] = params.clone();
                 }
                 d
             })
@@ -566,6 +569,15 @@ fn translate(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<GeminiRequest, P
     }
     if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
         gen_cfg.insert("maxOutputTokens".into(), json!(mt));
+    }
+    // OpenAI `stop` is a string or an array of strings, and not a named IR field.
+    let stop: Vec<&str> = match req.extra.get("stop") {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !stop.is_empty() {
+        gen_cfg.insert("stopSequences".into(), json!(stop));
     }
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
@@ -807,7 +819,10 @@ mod tests {
         assert_eq!(body["contents"][0]["parts"][0]["text"], "hi");
         let decl = &body["tools"][0]["functionDeclarations"][0];
         assert_eq!(decl["name"], "translate_text");
-        assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
+        assert_eq!(
+            decl["parametersJsonSchema"]["properties"]["text"]["type"],
+            "string"
+        );
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
     }
@@ -1055,6 +1070,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_of_real_events_skips_the_empty_thought_signature_part() {
+        // The two events Gemini really streamed for QA test PR-01 (gemini-3.1-flash-lite). The
+        // second carries only empty text plus a `thoughtSignature`, together with finishReason.
+        // Framed with "\n\n" here; the "\r\n\r\n" framing Google uses is covered in `sse.rs`.
+        let usage = concat!(
+            "\"usageMetadata\":{\"promptTokenCount\":16,\"candidatesTokenCount\":2,\"totalTokenCount\":18,",
+            "\"promptTokensDetails\":[{\"modality\":\"TEXT\",\"tokenCount\":16}],\"serviceTier\":\"standard\"},",
+            "\"modelVersion\":\"gemini-3.1-flash-lite\",\"responseId\":\"OV30arqIA52v694PgqiioAY\"}",
+        );
+        let sse = format!(
+            "data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"text\":\"42\"}}],\"role\":\"model\"}},\"index\":0}}],{usage}\n\n\
+             data: {{\"candidates\":[{{\"content\":{{\"parts\":[{{\"text\":\"\",\"thoughtSignature\":\"EnMKcQFpFH0T25PNK1ycdkqkRkLEbe5/dO/kNe1hnw5T0DdoeZ7aPDNfq9Teg6+FSRToPSEtNwuGkggv6OTYFbTLS5i6T55XXwLJUQ5jfC/ljM2H3JuM4NaYPXzSMkF/F443CpC0Wuqm8pRvRBBQilRQGMuy\"}}],\"role\":\"model\"}},\"finishReason\":\"STOP\",\"index\":0}}],{usage}\n\n"
+        );
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock(
+                "POST",
+                "/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
+            )
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+
+        let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
+        let req: ChatRequest = serde_json::from_value(json!({
+            "stream": true, "messages": [{ "role": "user", "content": "What is 6 times 7?" }]
+        }))
+        .unwrap();
+        let chunks: Vec<ChatChunk> = provider
+            .chat_stream(&req, &resolved())
+            .await
+            .unwrap()
+            .map(|r| r.expect("no stream error"))
+            .collect()
+            .await;
+
+        // Role, the "42" text, finish, usage: the empty-text part adds no chunk of its own.
+        assert_eq!(chunks.len(), 4);
+        let contents: Vec<String> = chunks
+            .iter()
+            .filter_map(|c| c.choices.first().and_then(|ch| ch.delta.content.clone()))
+            .collect();
+        assert_eq!(contents, vec!["42"]);
+        let finish = chunks
+            .iter()
+            .find_map(|c| c.choices.first().and_then(|ch| ch.finish_reason.clone()));
+        assert_eq!(finish.as_deref(), Some("stop"));
+        let usage = chunks.iter().find_map(|c| c.usage.clone()).unwrap();
+        assert_eq!(usage.prompt_tokens, Some(16));
+        assert_eq!(usage.completion_tokens, Some(2));
+    }
+
+    #[tokio::test]
     async fn stream_function_call_becomes_tool_call_delta() {
         let mut server = mockito::Server::new_async().await;
         let sse = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"translate_text\",\"args\":{\"text\":\"hi\"}}}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n";
@@ -1244,6 +1314,50 @@ mod tests {
     #[test]
     fn gemini_prompt_count_clamps_instead_of_going_negative() {
         assert_eq!(uncached_prompt(Some(100), Some(640)), Some(0));
+    }
+
+    #[test]
+    fn tool_schema_is_sent_unchanged_as_parameters_json_schema() {
+        // A Pydantic/MCP-style schema with keys Gemini's `parameters` field rejects.
+        let schema = json!({
+            "$schema": "http://json-schema.org/draft-07/schema#",
+            "type": "object",
+            "additionalProperties": false,
+            "$defs": { "Unit": { "type": "string", "enum": ["c", "f"] } },
+            "properties": {
+                "limit": { "type": "integer", "exclusiveMinimum": 0 },
+                "unit": { "$ref": "#/$defs/Unit" },
+                "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+                "mode": { "oneOf": [{ "const": "fast" }, { "const": "exact" }], "examples": ["fast"] }
+            },
+            "required": ["limit"]
+        });
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tools": [{ "type": "function", "function": { "name": "search", "parameters": schema } }]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        let decl = &body["tools"][0]["functionDeclarations"][0];
+        assert_eq!(decl["parametersJsonSchema"], schema);
+        assert!(decl.get("parameters").is_none());
+    }
+
+    #[test]
+    fn stop_becomes_stop_sequences() {
+        for (stop, expected) in [
+            (json!(["6", "7"]), json!(["6", "7"])),
+            (json!("END"), json!(["END"])),
+        ] {
+            let req: ChatRequest = serde_json::from_value(json!({
+                "messages": [{ "role": "user", "content": "count to 10" }],
+                "stop": stop
+            }))
+            .unwrap();
+            let body = to_gemini_request(&req, &resolved()).unwrap();
+            assert_eq!(body["generationConfig"]["stopSequences"], expected);
+            assert!(body.get("stop").is_none());
+        }
     }
 
     #[test]
