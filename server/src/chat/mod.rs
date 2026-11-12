@@ -1,4 +1,5 @@
-mod cold;
+pub mod attachment_policy;
+pub mod attachment_store;
 pub(crate) mod external_turn;
 pub(crate) mod models;
 mod routes;

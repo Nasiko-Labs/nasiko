@@ -3,7 +3,7 @@ const MIB: usize = 1024 * 1024;
 pub(crate) const MAX_UPLOAD_FILE_BYTES: usize = 25 * MIB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MediaClass {
+pub enum MediaClass {
     Image,
     Pdf,
     TextLike,
@@ -29,7 +29,7 @@ impl MediaClass {
     }
 }
 
-pub(crate) fn classify(bytes: &[u8], declared: &str, filename: &str) -> (MediaClass, String) {
+pub fn classify(bytes: &[u8], declared: &str, filename: &str) -> (MediaClass, String) {
     let declared = declared
         .split(';')
         .next()
