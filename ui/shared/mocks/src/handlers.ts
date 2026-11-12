@@ -111,6 +111,7 @@ import {
   queueUpload,
   readMultipart,
   recordAt,
+  registerImport,
   settleUploads,
   uploadAt,
   type DeployState,
@@ -2688,6 +2689,8 @@ function deployHandlers(): HttpHandler[] {
           `version ${version} already exists in this agent's history — choose a new version`,
           409,
         )
+      // The row is there, `deploying`, while the import runs (NAS-1450).
+      registerImport(agents, { name, version, ownerId: ADMIN_ID, now: nowFn() })
       if (import.meta.env.MODE !== 'test') await new Promise((r) => setTimeout(r, 6_000))
       const running = variant() !== 'deploy-registry-not-running'
       const ids = completeImport(getDeploy(), agents, {

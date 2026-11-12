@@ -6,7 +6,7 @@
  *
  * The guide's Continue deploys, not a button on the tab (user request 2026-11-09): the Prebuilt picks, or the mandatory
  * agent from any other tab, so the guide owns the open tab and the picks. An agent that already exists is shown as
- * deployed and never deployed again.
+ * deployed and never deployed again. Once deployed, the Prebuilt tab follows each one live (NAS-1450).
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
@@ -19,11 +19,16 @@ import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { cn } from '@nasiko/ui/lib/utils'
+import { useNow } from '@nasiko/app-core/useNow'
+import { StageIcon } from '@nasiko/features/deploy/components/StageList'
+import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { GithubTab } from '@nasiko/features/deploy/GithubTab'
 import { RegistryTab } from '@nasiko/features/deploy/RegistryTab'
 import type { DeploySearch } from '@nasiko/features/deploy/search'
+import { fmtElapsed, type Stage } from '@nasiko/features/deploy/steps'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
+import { type SeededDeploy, useSeededDeploys } from './api'
 import { copy } from './copy'
 import { type AgentTab, MANDATORY, MAX_SEEDED, SEEDED_AGENTS, togglePick } from './logic'
 import { SectionHeading } from './parts'
@@ -36,7 +41,6 @@ const OFFERED = [
 export function AgentStep({
   started,
   onStarted,
-  seeded,
   tab,
   onTab,
   picks,
@@ -46,8 +50,6 @@ export function AgentStep({
 }: {
   started: DeployStarted | null
   onStarted: (to: DeployStarted) => void
-  /** The prebuilt agents deployed from this guide, null until then (kept by the guide across steps). */
-  seeded: readonly string[] | null
   /** The open tab: on Prebuilt, the guide's Continue deploys `picks`. */
   tab: AgentTab
   onTab: (tab: AgentTab) => void
@@ -63,33 +65,43 @@ export function AgentStep({
   // The Deploy page keeps the GitHub tab's picks in its URL; inside the guide they are local.
   const [search, setSearchState] = useState<DeploySearch>({ method: 'github' })
   const setSearch = (patch: Partial<DeploySearch>) => setSearchState((s) => ({ ...s, ...patch }))
+  // The prebuilt agents this guide deployed in this page (the store outlives the dialog), each followed live.
+  const deploys = useSeededDeploys()
+  const progress = deploys.size ? <SeededProgress deploys={deploys} onLeave={onLeave} /> : null
   return (
     <section className="flex flex-col gap-4">
       <SectionHeading title={copy.agent.title} intro={copy.agent.intro} />
       {started ? (
-        <Alert role="status">
-          <CircleCheck aria-hidden />
-          <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>{copy.agent.started}</span>
-            {withButtonStyle(
-              'buildId' in started ? (
-                <Link to="/builds/$buildId" params={{ buildId: started.buildId }} onClick={onLeave}>
-                  {copy.agent.openBuild}
-                </Link>
-              ) : (
-                <Link
-                  to="/agents/$agentId"
-                  params={{ agentId: started.agentId }}
-                  search={{}}
-                  onClick={onLeave}
-                >
-                  {copy.agent.openAgent}
-                </Link>
-              ),
-              { variant: 'link', size: 'sm', className: 'h-auto px-0' },
-            )}
-          </AlertDescription>
-        </Alert>
+        <>
+          <Alert role="status">
+            <CircleCheck aria-hidden />
+            <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <span>{copy.agent.started}</span>
+              {withButtonStyle(
+                'buildId' in started ? (
+                  <Link
+                    to="/builds/$buildId"
+                    params={{ buildId: started.buildId }}
+                    onClick={onLeave}
+                  >
+                    {copy.agent.openBuild}
+                  </Link>
+                ) : (
+                  <Link
+                    to="/agents/$agentId"
+                    params={{ agentId: started.agentId }}
+                    search={{}}
+                    onClick={onLeave}
+                  >
+                    {copy.agent.openAgent}
+                  </Link>
+                ),
+                { variant: 'link', size: 'sm', className: 'h-auto px-0' },
+              )}
+            </AlertDescription>
+          </Alert>
+          {progress}
+        </>
       ) : !me ? (
         <Skeleton className="h-48 w-full" />
       ) : (
@@ -104,23 +116,7 @@ export function AgentStep({
             </TabsList>
           </div>
           <TabsContent value="seeded">
-            {seeded ? (
-              <Alert role="status">
-                <CircleCheck aria-hidden />
-                <AlertDescription className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span>{copy.agent.deploying(seeded)}</span>
-                  <Link
-                    to="/agents"
-                    onClick={onLeave}
-                    {...asButton({ variant: 'link', size: 'sm', className: 'h-auto px-0' })}
-                  >
-                    {copy.agent.openAgents}
-                  </Link>
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <Seeded picks={picks} onPicks={onPicks} existing={existing} />
-            )}
+            {progress ?? <Seeded picks={picks} onPicks={onPicks} existing={existing} />}
           </TabsContent>
           <TabsContent value="registry" className="flex flex-col gap-4">
             <RegistryHow />
@@ -144,6 +140,82 @@ export function AgentStep({
         ))}
       </div>
     </section>
+  )
+}
+
+/** A deploy's phase as the build page's stage icon. */
+const STAGE: Record<SeededDeploy['phase'], Stage['state']> = {
+  deploying: 'current',
+  running: 'done',
+  notRunning: 'warning',
+  failed: 'failed',
+}
+const LINK = asButton({ variant: 'link', size: 'sm', className: 'h-auto px-0' })
+
+/** Each prebuilt agent the guide deployed: a clock while it deploys (the import says nothing until it ends, as on the
+ *  Registry tab), then Running, not started, or why it failed, with where to look. The finish is announced by its toast,
+ *  so the rows aren't a live region (the clock would be read out every second). */
+function SeededProgress({
+  deploys,
+  onLeave,
+}: {
+  deploys: ReadonlyMap<string, SeededDeploy>
+  onLeave: () => void
+}) {
+  const live = [...deploys.values()].some((d) => d.phase === 'deploying')
+  // A seconds clock, as the Registry tab's.
+  const now = useNow(live ? 1_000 : null)
+  return (
+    <div className="flex flex-col gap-2">
+      <ul
+        aria-label={copy.agent.progressLabel}
+        className="flex flex-col divide-y rounded-xl border bg-card"
+      >
+        {[...deploys].map(([name, d]) => (
+          <li
+            key={name}
+            data-phase={d.phase}
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
+          >
+            <StageIcon state={STAGE[d.phase]} />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="text-sm font-medium">{d.title}</span>
+              <span
+                className={cn(
+                  'text-xs text-muted-foreground tabular-nums',
+                  d.phase === 'failed' && 'text-destructive',
+                )}
+              >
+                {d.phase === 'deploying'
+                  ? copy.agent.progress.deploying(
+                      fmtElapsed(now - d.startedAt),
+                      deployCopy.registry.usual,
+                    )
+                  : d.phase === 'failed'
+                    ? copy.agent.progress.failed(d.reason)
+                    : copy.agent.progress[d.phase]}
+              </span>
+            </span>
+            {d.phase === 'running' || d.phase === 'notRunning' ? (
+              <Link
+                to="/agents/$agentId"
+                params={{ agentId: d.agentId }}
+                search={{}}
+                onClick={onLeave}
+                {...LINK}
+              >
+                {copy.agent.openAgent}
+              </Link>
+            ) : d.phase === 'failed' ? (
+              <Link to="/agents" onClick={onLeave} {...LINK}>
+                {copy.agent.openAgents}
+              </Link>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {live ? <p className="text-xs text-muted-foreground">{copy.agent.keepGoing}</p> : null}
+    </div>
   )
 }
 

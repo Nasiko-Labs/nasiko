@@ -2,14 +2,14 @@
  * The Overview's Setup guide for returning users (spec §4): the header button and the empty-fleet card's body. Both
  * reopen the guide at the first step not done yet.
  */
-import { BookOpen, Check } from 'lucide-react'
+import { BookOpen, Check, Loader2 } from 'lucide-react'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Progress } from '@nasiko/ui/primitives/progress'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { useConfigs } from '@nasiko/features/router/api'
 import { cn } from '@nasiko/ui/lib/utils'
-import { openGuide } from './api'
+import { openGuide, useSeededDeploys } from './api'
 import { copy } from './copy'
 import { firstOpenStep, ticks as tick, type Ticks } from './logic'
 
@@ -62,6 +62,11 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
   const started = t.model || t.agent
   const done = doneCount(t)
   const next = ROWS.find(([id]) => !t[id])?.[0]
+  // The fleet is still empty while the guide's prebuilt deploy runs, or after it didn't start: the agent row says so
+  // (NAS-1450). It turns Done once the agents list has the agent.
+  const deploys = [...useSeededDeploys().values()]
+  const agentDeploying = deploys.some((d) => d.phase === 'deploying')
+  const agentFailed = deploys.some((d) => d.phase === 'failed' || d.phase === 'notRunning')
   return (
     <div className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">{copy.card.intro}</p>
@@ -106,6 +111,13 @@ export function GuideSteps({ buttonClassName }: { buttonClassName?: string }) {
                 <span className="shrink-0 text-xs leading-5 text-muted-foreground">
                   {copy.card.done}
                 </span>
+              ) : id === 'agent' && agentDeploying ? (
+                <span className="flex shrink-0 items-center gap-1 text-xs leading-5 text-muted-foreground">
+                  <Loader2 aria-hidden className="size-3 motion-safe:animate-spin" />
+                  {copy.card.deploying}
+                </span>
+              ) : id === 'agent' && agentFailed ? (
+                <Badge variant="destructive">{copy.card.notStarted}</Badge>
               ) : id === next ? (
                 <Badge variant="info">{copy.card.next}</Badge>
               ) : null}

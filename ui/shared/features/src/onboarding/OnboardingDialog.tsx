@@ -29,8 +29,10 @@ import { TextGenerateEffect } from '@nasiko/ui/composites/text-generate-effect'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Dialog, DialogContent } from '@nasiko/ui/primitives/dialog'
 import { Progress } from '@nasiko/ui/primitives/progress'
+import { StageIcon } from '@nasiko/features/deploy/components/StageList'
 import type { DeployStarted } from '@nasiko/features/deploy/UploadTab'
 import { cn } from '@nasiko/ui/lib/utils'
+import { type SeededDeploy, useSeededDeploys } from './api'
 import { AgentStep } from './AgentStep'
 import { copy } from './copy'
 import { HarnessStep } from './HarnessStep'
@@ -81,7 +83,10 @@ export function OnboardingDialog({
   const [reached, setReached] = useState(index)
   const [model, setModel] = useState<string | null>(null)
   const [agent, setAgent] = useState<DeployStarted | null>(null)
-  const [seeded, setSeeded] = useState<string[] | null>(null)
+  // The prebuilt agents deployed from the guide in this page, kept outside the dialog (NAS-1450): reopened, it shows
+  // their progress again instead of offering them a second time.
+  const deploys = useSeededDeploys()
+  const seeded = deploys.size > 0
   const [tab, setTab] = useState<AgentTab>('seeded')
   const [picks, setPicks] = useState<string[]>([MANDATORY])
   const step = STEPS[index] ?? 'welcome'
@@ -117,7 +122,8 @@ export function OnboardingDialog({
     if (last) return leave({ to: '/' })
     if (deploying.length) {
       deploySeeded(qc, deploying)
-      setSeeded(deploying.map((a) => a.title))
+      // Back on this step, the Prebuilt tab is where their progress is.
+      setTab('seeded')
     }
     next()
   }
@@ -150,9 +156,7 @@ export function OnboardingDialog({
               // Ticked only when done, not merely passed: a skipped model or agent stays a number.
               const done =
                 i !== index &&
-                (id === 'welcome'
-                  ? reached > 0
-                  : id === 'start' && (!!model || !!agent || !!seeded))
+                (id === 'welcome' ? reached > 0 : id === 'start' && (!!model || !!agent || seeded))
               return (
                 <Button
                   key={id}
@@ -234,7 +238,6 @@ export function OnboardingDialog({
                 <AgentStep
                   started={agent}
                   onStarted={setAgent}
-                  seeded={seeded}
                   tab={tab}
                   onTab={setTab}
                   picks={picks}
@@ -255,6 +258,8 @@ export function OnboardingDialog({
                 {copy.guide.back}
               </Button>
             ) : null}
+            {/* The agent step has a row per deploy; after it, this line keeps them in view while the guide goes on. */}
+            {seeded && step !== 'start' ? <DeploySummary deploys={deploys} /> : null}
             <span className="flex-1" />
             <Button
               ref={primary}
@@ -280,6 +285,23 @@ export function OnboardingDialog({
         </div>
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** The guide's prebuilt deploys in one line: how many are still deploying, then how many run or didn't start. A status
+ *  region: it changes only when one finishes. */
+function DeploySummary({ deploys }: { deploys: ReadonlyMap<string, SeededDeploy> }) {
+  const all = [...deploys.values()]
+  const busy = all.filter((d) => d.phase === 'deploying').length
+  const bad = all.filter((d) => d.phase === 'failed' || d.phase === 'notRunning').length
+  const s = copy.agent.summary
+  return (
+    <p role="status" className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <StageIcon state={busy ? 'current' : bad ? 'failed' : 'done'} />
+      <span className="truncate">
+        {busy ? s.deploying(busy) : bad ? s.failed(bad, all.length) : s.running(all.length)}
+      </span>
+    </p>
   )
 }
 

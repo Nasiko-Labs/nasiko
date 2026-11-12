@@ -1,10 +1,11 @@
 /**
  * The first-run guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §2-§3, the Agent and key step from
  * 2026-11-04-quick-onboarding-design.md): a first-time user gets it on `/` with Home hidden; three steps, no role
- * (user request 2026-11-09); the Agent and key step's Continue waits a moment and deploys the prebuilt picks; it saves a
- * default config; skipping lasts the session; Finish lands on the homepage.
+ * (user request 2026-11-09); the Agent and key step's Continue waits a moment and deploys the prebuilt picks, then
+ * follows each one until it runs or fails (NAS-1450); it saves a default config; skipping lasts the session; Finish
+ * lands on the homepage.
  */
-import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -18,6 +19,7 @@ import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, server } from '@nasiko/testing/setup'
+import { clearSeededDeploys } from './api'
 import { skipKey } from './logic'
 
 // The real 5 s hold would make every flow slow: 2 s still proves the countdown and outlasts a click under a loaded run.
@@ -27,7 +29,11 @@ vi.mock('./logic', async (importOriginal) => ({
 }))
 
 setupPinnedSeed()
-afterEach(() => clearUploads())
+afterEach(() => {
+  clearUploads()
+  // The guide's deploys outlive the dialog for the page: each test is a new page.
+  clearSeededDeploys()
+})
 
 // `variant: null`: a variant set by one test outlives it.
 const firstTime = () =>
@@ -295,11 +301,23 @@ describe('first-run guide', () => {
     expect(within(picks).queryByRole('button')).toBeNull()
     await continueAs(user, 'Deploy 2 agents and continue')
     await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // The guide keeps it across steps, and Continue is plain once they're on their way.
-    await user.click(screen.getByRole('button', { name: 'Back' }))
+    // One toast says they started (NAS-1450).
     expect(
-      await screen.findByText(/^Meeting Notes Processor and Summarizer are on their way/),
+      await screen.findByText(
+        "Deploying Meeting Notes Processor and Summarizer. We'll let you know when each one finishes.",
+      ),
     ).toBeInTheDocument()
+    // The guide follows each one across steps, and Continue is plain once they're on their way.
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
+    expect(
+      within(rows)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual([
+      expect.stringMatching(/^Meeting Notes Processor/),
+      expect.stringMatching(/^Summarizer/),
+    ])
     expect(screen.getByRole('button', { name: /^Continue( \(\d\))?$/ })).toBeInTheDocument()
     // Each one imported from the registry, once.
     await rec.flush()
@@ -325,6 +343,8 @@ describe('first-run guide', () => {
     await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
     await user.click(screen.getByRole('button', { name: /finish/i }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    // A reload forgets this page's deploys: then only the agents list knows it exists.
+    act(() => clearSeededDeploys())
     // Back through the Setup guide: it now exists, so it shows as deployed and Continue deploys nothing.
     await user.click(await screen.findByRole('button', { name: 'Setup guide' }))
     // Key and agent both done: it reopens on the last step.
@@ -343,6 +363,75 @@ describe('first-run guide', () => {
     expect(
       rec.requests.filter((r) => r.method === 'POST' && r.url.pathname === '/api/import/registry'),
     ).toHaveLength(1)
+  })
+
+  it('follows a prebuilt deploy on every step until it runs (NAS-1450)', async () => {
+    firstTime()
+    const agentId = '5eed000c-0000-4000-8000-000000001450'
+    // The import answers only once its build and deploy are done, minutes in: here, when the test says so.
+    let answer!: () => void
+    const answered = new Promise<void>((r) => (answer = r))
+    server.use(
+      http.post('*/api/import/registry', async () => {
+        await answered
+        return HttpResponse.json(
+          { agent_id: agentId, build_id: null, container_name: 'agent-x', status: 'success' },
+          { status: 201 },
+        )
+      }),
+    )
+    const user = userEvent.setup()
+    renderApp('/')
+    await guide()
+    await advance(user, /get started/i)
+    await continueAs(user, 'Deploy 1 agent and continue')
+    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
+    // A toast says it started, and the next step keeps it in view, beside Back and Finish.
+    expect(
+      await screen.findByText(
+        "Deploying Meeting Notes Processor. We'll let you know when it finishes.",
+      ),
+    ).toBeInTheDocument()
+    expect(await screen.findByText('Deploying 1 agent…')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
+    expect(within(rows).getByText('Meeting Notes Processor')).toBeInTheDocument()
+    expect(within(rows).getByText(/^Deploying · \d+ s · usually 1–5 min$/)).toBeInTheDocument()
+    // Here the row says it: the footer line is for the steps after.
+    expect(screen.queryByText('Deploying 1 agent…')).toBeNull()
+    answer()
+    expect(await within(rows).findByText('Running')).toBeInTheDocument()
+    expect(within(rows).getByRole('link', { name: 'Open the agent' })).toHaveAttribute(
+      'href',
+      `/agents/${agentId}`,
+    )
+    await continueAs(user, 'Continue')
+    expect(await screen.findByText('1 agent running')).toBeInTheDocument()
+  })
+
+  it('says why a prebuilt deploy failed (NAS-1450)', async () => {
+    firstTime()
+    server.use(
+      http.post(
+        '*/api/import/registry',
+        () => new HttpResponse('registry returned 404: not found', { status: 400 }),
+      ),
+    )
+    const user = userEvent.setup()
+    renderApp('/')
+    await guide()
+    await advance(user, /get started/i)
+    await continueAs(user, 'Deploy 1 agent and continue')
+    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
+    expect(await screen.findByText("Your agent didn't start")).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
+    // The server's own reason, not the request's status line.
+    expect(within(rows).getByText('Failed: registry returned 404: not found')).toBeInTheDocument()
+    expect(within(rows).getByRole('link', { name: 'Open Agents' })).toHaveAttribute(
+      'href',
+      '/agents',
+    )
   })
 
   it('turns Continue on after the hold with no key yet', async () => {

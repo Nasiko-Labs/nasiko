@@ -13,6 +13,7 @@ import { logout } from '@nasiko/data-access/auth'
 import { isDeadSession401 } from '@nasiko/data-access/detect'
 import { clearStoredDrafts } from '@nasiko/app-core/draftKeys'
 import { clearSidebarCookie } from '@nasiko/app-core/shell/sidebarState'
+import { clearSeededDeploys } from '@nasiko/features/onboarding/api'
 import {
   broadcastSession,
   clearSignedOutMark,
@@ -149,9 +150,11 @@ export async function stopChatTurns() {
 
 /**
  * Aborts this tab's uploads and forgets them (plans/feat-deploy.md eng review R3), so the next account never sees an
- * earlier account's upload finish. A missing deploy chunk means no upload was ever started here.
+ * earlier account's upload finish, nor the onboarding guide's prebuilt deploys. A missing deploy chunk means no upload
+ * was ever started here.
  */
 export async function stopDeployWork() {
+  clearSeededDeploys()
   try {
     const { clearUploads } = await withTimeout(
       import('@nasiko/features/deploy/uploads'),

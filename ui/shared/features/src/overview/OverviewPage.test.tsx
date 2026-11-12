@@ -14,6 +14,7 @@ import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
+import { clearSeededDeploys, setSeededDeploy } from '@nasiko/features/onboarding/api'
 import { copy } from './copy'
 import { PREVIEW_MS } from './preview'
 import { DEFAULT_RANGE, RANGE_DAYS } from './search'
@@ -31,6 +32,7 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
   configureChatMock({ waiting: false })
   clearChatRegistry()
+  clearSeededDeploys()
 })
 
 const card = (id: string) => document.querySelector(`[data-testid="${id}"]`) as HTMLElement
@@ -320,6 +322,28 @@ describe('first run (design 7A)', () => {
     expect(
       within(guideCard).getByRole('button', { name: /^Deploy an agent/ }),
     ).not.toHaveAccessibleName(/Up next/)
+  })
+
+  it("says the guide's agent is deploying while the fleet is still empty, then that it didn't start (NAS-1450)", async () => {
+    server.use(http.get('*/api/agents', () => HttpResponse.json([])))
+    configureMocks({ onboarding: { persona: null, completed: true } })
+    const title = 'Meeting Notes Processor'
+    setSeededDeploy('meeting-notes-processor', { phase: 'deploying', title, startedAt: Date.now() })
+    renderApp('/')
+    const guideCard = await screen.findByTestId('overview-setup-guide')
+    expect(
+      await within(guideCard).findByRole('button', { name: /^Deploy an agent.*Deploying…$/ }),
+    ).toBeInTheDocument()
+    act(() =>
+      setSeededDeploy('meeting-notes-processor', {
+        phase: 'failed',
+        title,
+        reason: 'internal error',
+      }),
+    )
+    expect(
+      await within(guideCard).findByRole('button', { name: /^Deploy an agent.*Didn't start$/ }),
+    ).toBeInTheDocument()
   })
 
   it('previews the lead cards without numbers and keeps Harnesses to one line', async () => {

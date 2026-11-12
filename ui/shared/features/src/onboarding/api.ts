@@ -141,3 +141,37 @@ export function useGuideHiddenNav(): readonly string[] {
 }
 const HIDE_HOME = ['/'] as const
 const NONE = [] as const
+
+// ─── The guide's prebuilt deploys ───────────────────────────────────────────────────────────────────────────────────
+// Each import runs for minutes (seededDeploy.ts): the guide and Home's try-a-run card show where it is (NAS-1450).
+// Here, not in the lazy dialog, so Home reads it without loading the deploy code. A reload forgets them.
+
+/** One prebuilt agent the guide deployed, by its name. */
+export type SeededDeploy =
+  | { phase: 'deploying'; title: string; startedAt: number }
+  | { phase: 'running' | 'notRunning'; title: string; agentId: string }
+  | { phase: 'failed'; title: string; reason: string }
+
+let seededDeploys: ReadonlyMap<string, SeededDeploy> = new Map()
+const seededListeners = new Set<() => void>()
+function setSeededDeploys(next: ReadonlyMap<string, SeededDeploy>) {
+  seededDeploys = next
+  for (const fn of seededListeners) fn()
+}
+export const setSeededDeploy = (name: string, d: SeededDeploy) =>
+  setSeededDeploys(new Map(seededDeploys).set(name, d))
+export const seededDeployOf = (name: string) => seededDeploys.get(name)
+/** Sign-out: the next account never sees this one's deploys. */
+export const clearSeededDeploys = () => {
+  if (seededDeploys.size) setSeededDeploys(new Map())
+}
+const subscribeSeeded = (fn: () => void) => {
+  seededListeners.add(fn)
+  return () => void seededListeners.delete(fn)
+}
+export const useSeededDeploys = () =>
+  useSyncExternalStore(
+    subscribeSeeded,
+    () => seededDeploys,
+    () => seededDeploys,
+  )

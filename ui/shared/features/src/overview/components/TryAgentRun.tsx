@@ -12,6 +12,7 @@ import { Button } from '@nasiko/ui/primitives/button'
 import { fmtCostPerOp, fmtInt } from '@nasiko/ui/lib/format'
 import { cn, uuid } from '@nasiko/ui/lib/utils'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import { useSeededDeploys } from '@nasiko/features/onboarding/api'
 import { copy } from '../copy'
 import {
   readDone,
@@ -127,6 +128,10 @@ export function TryAgentRun({
   onRan?: () => void
 }) {
   const agentId = useAgentsDirectory().byName.get(TRY_RUN_AGENT)?.id ?? null
+  // The Setup guide's deploy of it, while this page has one (NAS-1450): its row exists minutes before it can run.
+  const deploy = useSeededDeploys().get(TRY_RUN_AGENT)
+  const deploying = deploy?.phase === 'deploying'
+  const unstarted = deploy?.phase === 'failed' || deploy?.phase === 'notRunning'
   // Runs finished in this tab (kept through a refresh), what each cost, and the one running now.
   const [done, setDone] = useState(() => readDone(userId))
   const [figures, setFigures] = useState(() => readFigures(userId))
@@ -183,7 +188,7 @@ export function TryAgentRun({
     >
       <Card
         id="overview-try-run"
-        title={t.title(TRY_RUN_AGENT)}
+        title={deploying ? t.deployingTitle(TRY_RUN_AGENT) : t.title(TRY_RUN_AGENT)}
         className="h-full rounded-[calc(var(--radius-lg)-1.5px)] border-transparent"
       >
         <div className="flex flex-col gap-3">
@@ -194,19 +199,37 @@ export function TryAgentRun({
               {t.request}
             </blockquote>
           </figure>
-          {!agentId ? (
+          {deploying ? (
+            <p className="text-sm text-muted-foreground">{t.deployingHint}</p>
+          ) : unstarted ? (
+            <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-destructive">
+              <span>
+                {t.deployFailed(TRY_RUN_AGENT, deploy.phase === 'failed' ? deploy.reason : null)}
+              </span>
+              <Link to="/agents" className="text-primary-text underline underline-offset-4">
+                {t.openAgents}
+              </Link>
+            </p>
+          ) : !agentId ? (
             <p className="text-sm text-muted-foreground">{t.notDeployed(TRY_RUN_AGENT)}</p>
           ) : null}
           {ranBaseline && !done.includes('optimized') && !active ? (
             <p className="text-sm font-medium">{t.nextStep}</p>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            <RunButton
-              kind={next}
-              phase={phaseOf(next)}
-              disabled={!agentId || !!active}
-              onRun={() => void run(next)}
-            />
+            {deploying ? (
+              <Button className={`justify-start ${TOUCH}`} disabled aria-busy>
+                <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden />
+                {t.deploying}
+              </Button>
+            ) : (
+              <RunButton
+                kind={next}
+                phase={phaseOf(next)}
+                disabled={!agentId || !!active}
+                onRun={() => void run(next)}
+              />
+            )}
           </div>
           <div aria-live="polite" className="flex flex-col gap-3 empty:hidden">
             {failure ? (

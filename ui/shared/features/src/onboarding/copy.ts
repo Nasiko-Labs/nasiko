@@ -126,16 +126,33 @@ export const copy = {
     included: 'Always included',
     alreadyDeployed: 'Already deployed',
     deployFailed: (title: string, reason: string) => `Couldn't deploy ${title}: ${reason}`,
+    // Said as Continue starts them (NAS-1450): the guide moves straight on, so the start is said outside it too.
+    deployStarted: (titles: readonly string[]) =>
+      titles.length === 1
+        ? `Deploying ${titles[0]}. We'll let you know when it finishes.`
+        : `Deploying ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}. We'll let you know when each one finishes.`,
     record: (runs: number, success: number) =>
       `${runs.toLocaleString('en-US')} runs · ${Math.round(success * 100)}% succeeded`,
     // The guide's Continue deploys (user request 2026-11-09): the Prebuilt picks, or the mandatory agent from any other
     // tab; no separate Deploy button.
     deployAndContinue: (n: number) =>
       n === 1 ? 'Deploy 1 agent and continue' : `Deploy ${n} agents and continue`,
-    deploying: (names: readonly string[]) =>
-      names.length === 1
-        ? `${names[0]} is on its way. It shows up in Agents once it's running.`
-        : `${names.slice(0, -1).join(', ')} and ${names.at(-1)} are on their way. They show up in Agents once they're running.`,
+    // Each prebuilt deploy, live (NAS-1450): the import is one long request, so a clock and the usual time, no percentage.
+    progressLabel: 'Prebuilt agents',
+    progress: {
+      deploying: (elapsed: string, usual: string) => `Deploying · ${elapsed} · ${usual}`,
+      running: 'Running',
+      notRunning: 'Deployed, but it did not start',
+      failed: (reason: string) => `Failed: ${reason}`,
+    },
+    keepGoing: 'You can keep going; it carries on while you finish the guide.',
+    /** The guide's footer, on the steps after the agent one. */
+    summary: {
+      deploying: (n: number) => (n === 1 ? 'Deploying 1 agent…' : `Deploying ${n} agents…`),
+      running: (n: number) => (n === 1 ? '1 agent running' : `${n} agents running`),
+      failed: (n: number, of: number) =>
+        of === 1 ? "Your agent didn't start" : `${n} of ${of} agents didn't start`,
+    },
     openAgents: 'Open Agents',
     upload: 'Upload a zip',
     github: 'GitHub',
@@ -194,6 +211,9 @@ export const copy = {
     resume: 'Resume guide',
     done: 'Done',
     next: 'Up next',
+    // The agent row while the guide's prebuilt deploy runs, and when it didn't start (NAS-1450).
+    deploying: 'Deploying…',
+    notStarted: "Didn't start",
     progress: (done: number, total: number) => `${done} of ${total} done`,
     // The header button's own count beside its bar (user request 2026-11-09: progress on the home screen).
     progressShort: (done: number, total: number) => `${done}/${total}`,

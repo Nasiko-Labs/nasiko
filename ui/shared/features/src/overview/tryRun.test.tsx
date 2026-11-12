@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -10,6 +10,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordRequestBodies, server } from '@nasiko/testing/setup'
 import { agentKeys } from '@nasiko/features/agents/api'
+import { clearSeededDeploys, setSeededDeploy } from '@nasiko/features/onboarding/api'
 import { TryAgentRun } from './components/TryAgentRun'
 import { copy } from './copy'
 import {
@@ -132,7 +133,10 @@ function renderCard(opts: { deployed?: boolean; onRan?: () => void } = {}) {
 
 describe('TryAgentRun', () => {
   beforeEach(() => stubChat())
-  afterEach(() => vi.restoreAllMocks())
+  afterEach(() => {
+    vi.restoreAllMocks()
+    clearSeededDeploys()
+  })
 
   it('runs the agent for real, shows what it cost, then runs it again with Token optimization on', async () => {
     const runs = [
@@ -224,6 +228,37 @@ describe('TryAgentRun', () => {
     renderCard({ deployed: false })
     expect(await screen.findByText(t.notDeployed(TRY_RUN_AGENT))).toBeInTheDocument()
     expect(screen.getByRole('button', { name: t.baseline })).toBeDisabled()
+  })
+
+  it('says its agent is deploying until the Setup guide deploy runs, then offers the run (NAS-1450)', async () => {
+    const title = 'Meeting Notes Processor'
+    setSeededDeploy(TRY_RUN_AGENT, { phase: 'deploying', title, startedAt: Date.now() })
+    // The row exists seconds into the import, minutes before the agent can run.
+    renderCard()
+    expect(
+      await screen.findByRole('heading', { name: t.deployingTitle(TRY_RUN_AGENT) }),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: t.deploying })).toBeDisabled()
+    expect(screen.getByText(t.deployingHint)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: t.baseline })).toBeNull()
+    act(() => setSeededDeploy(TRY_RUN_AGENT, { phase: 'running', title, agentId: AGENT_ID }))
+    expect(await screen.findByRole('button', { name: t.baseline })).toBeEnabled()
+    expect(screen.getByRole('heading', { name: t.title(TRY_RUN_AGENT) })).toBeInTheDocument()
+  })
+
+  it('says why the Setup guide could not deploy its agent (NAS-1450)', async () => {
+    setSeededDeploy(TRY_RUN_AGENT, {
+      phase: 'failed',
+      title: 'Meeting Notes Processor',
+      reason: 'cannot reach registry',
+    })
+    renderCard({ deployed: false })
+    expect(
+      await screen.findByText(t.deployFailed(TRY_RUN_AGENT, 'cannot reach registry')),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: t.openAgents })).toHaveAttribute('href', '/agents')
+    // Not "deploy it from the Setup guide": that is what just failed.
+    expect(screen.queryByText(t.notDeployed(TRY_RUN_AGENT))).toBeNull()
   })
 
   it('offers the optimized run after a refresh once the first run is done', async () => {
