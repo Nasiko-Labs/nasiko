@@ -19,9 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::Router;
-use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits,
-};
+use nasiko_runtime::{ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus};
 use nasiko_utils::image::strip_image_to_repo;
 use uuid::Uuid;
 
@@ -461,15 +459,10 @@ pub(crate) fn build_agent_spec(
         min_replicas: bounds.min,
         max_replicas: bounds.max,
         replica_target: bounds.target,
-        // No per-agent override exists yet — every caller wants the
-        // platform's configured default (AGENT_DEFAULT_MEMORY, see
-        // Config::agent_default_memory's doc comment). cpu_milli is
-        // unaffected by this change: the OOM issue this fixes is specific to
-        // memory, and 500m has never been observed to be insufficient.
-        resources: Some(ResourceLimits {
-            memory: default_memory.to_owned(),
-            cpu_milli: 500,
-        }),
+        // The agent's own CPU and memory where it has any (OSS migration 0101), else the
+        // platform's: AGENT_DEFAULT_MEMORY (see Config::agent_default_memory's doc comment)
+        // and a 500m CPU limit.
+        resources: Some(plan.resources.limits(default_memory)),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
         harden: false,
@@ -541,6 +534,7 @@ async fn get_image_namespace(claims: crate::auth::Claims) -> impl axum::response
 #[cfg(test)]
 mod spec_tests {
     use super::*;
+    use crate::agent_scaling::AgentResources;
 
     #[test]
     fn a_recorded_port_wins_then_the_env_port_then_the_default() {
@@ -560,6 +554,7 @@ mod spec_tests {
     const RESIDENT: DeployPlan = DeployPlan {
         bounds: ReplicaBounds::SINGLE,
         parkable: false,
+        resources: AgentResources::PLATFORM,
     };
 
     #[test]
@@ -716,6 +711,7 @@ mod spec_tests {
             DeployPlan {
                 bounds,
                 parkable: false,
+                resources: AgentResources::PLATFORM,
             },
             false,
             None,
@@ -742,6 +738,7 @@ mod spec_tests {
             DeployPlan {
                 bounds,
                 parkable: false,
+                resources: AgentResources::PLATFORM,
             },
             true,
             None,
@@ -764,6 +761,7 @@ mod spec_tests {
                     DeployPlan {
                         bounds: ReplicaBounds::SINGLE,
                         parkable,
+                        resources: AgentResources::PLATFORM,
                     },
                     writable,
                     None,
@@ -773,6 +771,58 @@ mod spec_tests {
                 assert_eq!(s.workload_kind, nasiko_runtime::WorkloadKind::Agent);
             }
         }
+    }
+
+    fn spec_with(resources: AgentResources) -> DeploymentSpec {
+        build_agent_spec(
+            Uuid::new_v4(),
+            "a",
+            "img:1",
+            vec![],
+            HashMap::new(),
+            "1Gi",
+            DeployPlan {
+                resources,
+                ..RESIDENT
+            },
+            false,
+            None,
+            Uuid::nil(),
+        )
+    }
+
+    #[test]
+    fn an_agent_without_resources_of_its_own_gets_the_platform_defaults() {
+        let limits = spec_with(AgentResources::PLATFORM).resources.unwrap();
+        assert_eq!(limits.memory, "1Gi");
+        assert_eq!(limits.cpu_milli, AgentResources::DEFAULT_CPU_LIMIT_MILLI);
+        assert_eq!(limits.cpu_request_milli, None);
+    }
+
+    #[test]
+    fn an_agents_own_resources_reach_its_spec_and_fill_in_from_the_defaults() {
+        let limits = spec_with(AgentResources {
+            cpu_limit_milli: Some(2000),
+            cpu_request_milli: Some(250),
+            memory_limit_mib: Some(1536),
+        })
+        .resources
+        .unwrap();
+        assert_eq!(limits.memory, "1536Mi");
+        assert_eq!(limits.cpu_milli, 2000);
+        assert_eq!(limits.cpu_request_milli, Some(250));
+
+        let memory_only = spec_with(AgentResources {
+            memory_limit_mib: Some(2048),
+            ..AgentResources::PLATFORM
+        })
+        .resources
+        .unwrap();
+        assert_eq!(memory_only.memory, "2048Mi");
+        assert_eq!(
+            memory_only.cpu_milli,
+            AgentResources::DEFAULT_CPU_LIMIT_MILLI
+        );
     }
 
     #[test]

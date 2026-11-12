@@ -1,9 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use nasiko_config::SeedAgentSettings;
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use crate::agent_scaling::{ParkingPolicy, save_parking_policy};
+use crate::agent_scaling::{
+    AgentResources, ParkingPolicy, ReplicaBounds, save_agent_resources, save_parking_policy,
+};
 use crate::catalog::models::Agent;
 use crate::seed_mirror::{self, MirrorSettings, RegistryCredential};
 use crate::seed_registry_ready;
@@ -77,6 +80,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     );
     let mirror_settings = mirror_settings(&state.config);
     let mut registry_checked = false;
+    warn_unmatched_settings(&state.config.seed_agent_settings, &images);
 
     for source_image in images.split_whitespace() {
         let agent_name = extract_name(source_image);
@@ -110,15 +114,22 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
         let image = mirrored.as_str();
 
+        let settings = state.config.seed_agent_settings.get(&agent_name);
+        let settings_changed = match &existing {
+            Some(agent) => apply_seed_settings(state, agent.id, &agent_name, settings).await,
+            None => false,
+        };
+
         let force_pull = std::env::var("SEED_FORCE_PULL").is_ok();
         let needs_deploy = match &existing {
             None => true,
             Some(agent) => {
                 // `repointed`: the external tag moved, so the internal tag now
                 // holds new content under the same ref string — redeploy so the
-                // running agent picks it up.
+                // running agent picks it up. Changed settings reach the workload
+                // only through a deploy too.
                 let image_changed = agent.image.as_deref() != Some(image) || repointed;
-                if image_changed || force_pull {
+                if image_changed || force_pull || settings_changed {
                     true
                 } else {
                     // UUID-keyed (see agents::build_agent_spec / RUN-2c) — the deploy a
@@ -166,7 +177,11 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 a.clone()
             }
             None => match register_agent(&state.db, &agent_name, image, owner_id).await {
-                Ok(a) => a,
+                Ok(a) => {
+                    // Before the first deploy's plan is read, so it deploys with them.
+                    apply_seed_settings(state, a.id, &agent_name, settings).await;
+                    a
+                }
                 Err(e) => {
                     warn!(agent = %agent_name, error = %e, "failed to register seed agent");
                     continue;
@@ -635,6 +650,75 @@ async fn keep_resident(db: &sqlx::PgPool, agent_id: Uuid, agent_name: &str) {
     }
 }
 
+/// Saves the agent's `SEED_AGENT_SETTINGS` entry, the config being the source of truth for what
+/// it names: its CPU and memory (a value it leaves out returns to the platform's), and, when it
+/// names replicas, its replica bounds as a stateless agent. An agent with no entry keeps what it
+/// has. `true` when anything changed, which only a deploy brings to its workload. A failed save is
+/// logged and the agent deploys with what it had.
+async fn apply_seed_settings(
+    state: &AppState,
+    agent_id: Uuid,
+    agent_name: &str,
+    settings: Option<&SeedAgentSettings>,
+) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    let resources = AgentResources {
+        cpu_limit_milli: settings.cpu_limit_milli,
+        cpu_request_milli: settings.cpu_request_milli,
+        memory_limit_mib: settings.memory_limit_mib,
+    };
+    let resources_changed = save_agent_resources(&state.db, agent_id, resources)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(agent = %agent_name, error = %e, "could not save the seed agent's CPU and memory");
+            false
+        });
+    let bounds_changed = match settings.replicas {
+        None => false,
+        Some((min, max)) => {
+            let bounds = ReplicaBounds {
+                min,
+                max,
+                target: settings.replica_target,
+            };
+            state
+                .agent_scaling
+                .declare_stateless_bounds(agent_id, bounds)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(agent = %agent_name, error = %e, "could not save the seed agent's replica bounds");
+                    false
+                })
+        }
+    };
+    if resources_changed || bounds_changed {
+        info!(agent = %agent_name, ?settings, "seed agent settings changed");
+    }
+    resources_changed || bounds_changed
+}
+
+/// Warns for each `SEED_AGENT_SETTINGS` entry that names no agent in `images` (`SEED_AGENTS`):
+/// most likely a typo, which would leave the agent it meant on the platform's defaults.
+fn warn_unmatched_settings(settings: &BTreeMap<String, SeedAgentSettings>, images: &str) {
+    for name in unmatched_settings(settings, images) {
+        warn!(agent = %name, "SEED_AGENT_SETTINGS names an agent SEED_AGENTS does not seed; ignored");
+    }
+}
+
+fn unmatched_settings<'a>(
+    settings: &'a BTreeMap<String, SeedAgentSettings>,
+    images: &str,
+) -> Vec<&'a str> {
+    let seeded: HashSet<String> = images.split_whitespace().map(extract_name).collect();
+    settings
+        .keys()
+        .filter(|name| !seeded.contains(name.as_str()))
+        .map(String::as_str)
+        .collect()
+}
+
 /// The `(writable, writable_path)` an agent's row records, as `build_agent_spec` takes them.
 async fn stored_writable(
     db: &sqlx::PgPool,
@@ -1013,6 +1097,21 @@ mod registry_address_pending_tests {
     fn seeding_runs_when_no_placeholder_is_configured() {
         assert!(!registry_address_pending("", None));
         assert!(!registry_address_pending("registry.example.com", None));
+    }
+}
+
+#[cfg(test)]
+mod unmatched_settings_tests {
+    use super::*;
+
+    #[test]
+    fn only_settings_for_an_agent_seed_agents_does_not_seed_are_unmatched() {
+        let settings: BTreeMap<String, SeedAgentSettings> = ["summarizer", "summariser"]
+            .into_iter()
+            .map(|name| (name.to_owned(), SeedAgentSettings::default()))
+            .collect();
+        let images = "registry.nasiko.dev/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
+        assert_eq!(unmatched_settings(&settings, images), ["summariser"]);
     }
 }
 

@@ -130,6 +130,7 @@ fn resource_limits_custom_construction() {
     let limits = ResourceLimits {
         memory: "1Gi".to_owned(),
         cpu_milli: 1000,
+        cpu_request_milli: None,
     };
     assert_eq!(limits.memory, "1Gi");
     assert_eq!(limits.cpu_milli, 1000);
@@ -140,6 +141,7 @@ fn resource_limits_serialization_roundtrip() {
     let limits = ResourceLimits {
         memory: "256Mi".to_owned(),
         cpu_milli: 250,
+        cpu_request_milli: None,
     };
     let json = serde_json::to_string(&limits).unwrap();
     let back: ResourceLimits = serde_json::from_str(&json).unwrap();
@@ -253,6 +255,7 @@ fn deployment_spec_with_all_fields() {
         resources: Some(ResourceLimits {
             memory: "1Gi".to_owned(),
             cpu_milli: 1000,
+            cpu_request_milli: None,
         }),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,

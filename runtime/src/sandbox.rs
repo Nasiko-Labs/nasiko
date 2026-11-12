@@ -727,6 +727,7 @@ mod tests {
         s.resources = Some(ResourceLimits {
             memory: "512Mi".to_owned(),
             cpu_milli: 0,
+            cpu_request_milli: None,
         });
         assert!(matches!(s.validate(), Err(RuntimeError::InvalidSpec(_))));
         s.resources = Some(ResourceLimits::default());

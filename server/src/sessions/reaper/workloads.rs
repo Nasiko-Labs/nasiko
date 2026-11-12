@@ -5,7 +5,8 @@
 //! workload is scaled to zero (`ContainerRuntime::scale(id, 0)`) and its row marked `parked`, and
 //! the next call wakes it (`agent_wake::parked::ParkedAgentWake`). An edition that does not honour
 //! the owner's `resident` choice (`AgentScaling::honours_resident_policy`) has every framework
-//! agent parked this way. `AGENT_PARK_IDLE_SECS=0` turns the pass off (`Config::parks_agents`);
+//! agent parked this way, except a superuser's `resident` ones: the platform's own, which every
+//! user shares (`agent_scaling::parking_policy_in_force`). `AGENT_PARK_IDLE_SECS=0` turns the pass off (`Config::parks_agents`);
 //! agents already parked still wake on their next call. Idle means all of:
 //!
 //! - nothing has happened to it for `AGENT_PARK_IDLE_SECS`: no request (`last_request_at`) and no
@@ -41,6 +42,7 @@ use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::SweepOutcome;
+use crate::agent_scaling::OWNER_IS_SUPERUSER_SQL;
 use crate::agent_wake::try_lock_agent;
 use crate::agents::deployments::record_newest_deployment_status;
 use crate::state::AppState;
@@ -304,11 +306,12 @@ fn inflight_now(state: &AppState, agent_id: Uuid) -> u64 {
 }
 
 /// Which framework agents the pass may park: those whose owner left the policy at `auto`, or,
-/// where the edition does not honour `resident`, all of them.
+/// where the edition does not honour `resident`, all of them but a superuser's `resident` ones
+/// (`agent_scaling::parking_policy_in_force`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PolicyFilter {
     AutoOnly,
-    Every,
+    AllButSuperusersResident,
 }
 
 impl PolicyFilter {
@@ -316,15 +319,17 @@ impl PolicyFilter {
         if state.agent_scaling.honours_resident_policy() {
             Self::AutoOnly
         } else {
-            Self::Every
+            Self::AllButSuperusersResident
         }
     }
 
     /// The SQL condition on `agents.parking_policy`, `AND`-ed onto a query's `WHERE`.
-    fn condition(self) -> &'static str {
+    fn condition(self) -> String {
         match self {
-            Self::AutoOnly => "AND parking_policy = 'auto'",
-            Self::Every => "",
+            Self::AutoOnly => "AND parking_policy = 'auto'".to_owned(),
+            Self::AllButSuperusersResident => {
+                format!("AND (parking_policy = 'auto' OR NOT {OWNER_IS_SUPERUSER_SQL})")
+            }
         }
     }
 }
@@ -332,7 +337,8 @@ impl PolicyFilter {
 /// The running, parkable framework agents with a workload image whose last request and last row
 /// change are both older than `idle_after`, the longest idle first. With [`PolicyFilter::AutoOnly`]
 /// it is spelled exactly as `idx_agents_parkable_idle` (OSS migration 0096), which serves both the
-/// filter and the order; [`PolicyFilter::Every`] reads the running agents through `idx_agents_status`.
+/// filter and the order; [`PolicyFilter::AllButSuperusersResident`] reads the running agents
+/// through `idx_agents_status`.
 async fn idle_candidates(
     db: &PgPool,
     idle_after: Duration,
@@ -451,12 +457,15 @@ mod tests {
     }
 
     #[test]
-    fn only_an_edition_that_does_not_honour_resident_parks_every_agent() {
+    fn an_edition_that_does_not_honour_resident_still_keeps_a_superusers_resident_agents() {
         assert_eq!(
             PolicyFilter::AutoOnly.condition(),
             "AND parking_policy = 'auto'"
         );
-        assert_eq!(PolicyFilter::Every.condition(), "");
+        assert_eq!(
+            PolicyFilter::AllButSuperusersResident.condition(),
+            format!("AND (parking_policy = 'auto' OR NOT {OWNER_IS_SUPERUSER_SQL})")
+        );
     }
 
     #[test]

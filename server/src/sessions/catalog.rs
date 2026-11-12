@@ -111,6 +111,7 @@ fn build_spec(
         resources: Some(ResourceLimits {
             memory: harness.min_memory.clone(),
             cpu_milli: u32::try_from(harness.min_cpu_milli).unwrap_or(0),
+            cpu_request_milli: None,
         }),
         workspace: session.agent_id.map(|agent_id| WorkspaceRef {
             owner_id,

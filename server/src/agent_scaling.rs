@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nasiko_hitl::HitlStore;
-use nasiko_runtime::{ContainerRuntime, DeploymentSpec, DeploymentStatus, WorkloadKind};
+use nasiko_runtime::{
+    ContainerRuntime, DeploymentSpec, DeploymentStatus, ResourceLimits, WorkloadKind,
+};
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -37,13 +39,106 @@ impl ReplicaBounds {
     }
 }
 
-/// How one deploy runs an agent: within which replica bounds, and whether the platform parks
-/// it when idle. Read once, from one look at the agent, so the two cannot disagree.
+/// How one deploy runs an agent: within which replica bounds, whether the platform parks it
+/// when idle, and with what CPU and memory. Read once, from one look at the agent, so they
+/// cannot disagree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeployPlan {
     pub bounds: ReplicaBounds,
     /// Becomes [`DeploymentSpec::parkable`]; see [`deploys_parkable`].
     pub parkable: bool,
+    /// The agent's own CPU and memory, where it has any; see [`load_agent_resources`].
+    pub resources: AgentResources,
+}
+
+/// The CPU and memory one agent's workload gets where they differ from the platform's
+/// (`agents.cpu_limit_milli`, `cpu_request_milli`, `memory_limit_mib`, OSS migration 0101).
+/// `None` is the platform's value for that one setting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AgentResources {
+    pub cpu_limit_milli: Option<u32>,
+    /// [`ResourceLimits::cpu_request_milli`]; the runtime's own rule when `None`.
+    pub cpu_request_milli: Option<u32>,
+    pub memory_limit_mib: Option<u32>,
+}
+
+impl AgentResources {
+    /// The CPU limit of an agent that sets none.
+    pub const DEFAULT_CPU_LIMIT_MILLI: u32 = 500;
+
+    /// Every value the platform's.
+    pub const PLATFORM: Self = Self {
+        cpu_limit_milli: None,
+        cpu_request_milli: None,
+        memory_limit_mib: None,
+    };
+
+    /// Whether every value is the platform's.
+    pub fn is_default(&self) -> bool {
+        *self == Self::PLATFORM
+    }
+
+    /// The agent's limits, with [`Self::DEFAULT_CPU_LIMIT_MILLI`] and `default_memory`
+    /// (`AGENT_DEFAULT_MEMORY`) for what it leaves unset.
+    pub fn limits(&self, default_memory: &str) -> ResourceLimits {
+        ResourceLimits {
+            memory: self
+                .memory_limit_mib
+                .map_or_else(|| default_memory.to_owned(), |mib| format!("{mib}Mi")),
+            cpu_milli: self
+                .cpu_limit_milli
+                .unwrap_or(Self::DEFAULT_CPU_LIMIT_MILLI),
+            cpu_request_milli: self.cpu_request_milli,
+        }
+    }
+}
+
+/// The live agent's own CPU and memory; all defaults when it has none, or there is no live agent.
+pub async fn load_agent_resources(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+) -> sqlx::Result<AgentResources> {
+    let row: Option<(Option<i32>, Option<i32>, Option<i32>)> = sqlx::query_as(
+        "SELECT cpu_limit_milli, cpu_request_milli, memory_limit_mib \
+         FROM agents WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await?;
+    let count = |v: Option<i32>| v.and_then(|v| u32::try_from(v).ok());
+    Ok(
+        row.map_or_else(AgentResources::default, |(limit, request, memory)| {
+            AgentResources {
+                cpu_limit_milli: count(limit),
+                cpu_request_milli: count(request),
+                memory_limit_mib: count(memory),
+            }
+        }),
+    )
+}
+
+/// Saves the agent's own CPU and memory, `None` returning a value to the platform's. `true` when
+/// they changed, which takes a redeploy to reach its workload.
+pub async fn save_agent_resources(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    resources: AgentResources,
+) -> sqlx::Result<bool> {
+    let column = |v: Option<u32>| v.map(|v| i32::try_from(v).unwrap_or(i32::MAX));
+    let updated = sqlx::query(
+        "UPDATE agents SET cpu_limit_milli = $2, cpu_request_milli = $3, memory_limit_mib = $4, \
+         updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL \
+           AND (cpu_limit_milli, cpu_request_milli, memory_limit_mib) \
+               IS DISTINCT FROM ($2, $3, $4)",
+    )
+    .bind(agent_id)
+    .bind(column(resources.cpu_limit_milli))
+    .bind(column(resources.cpu_request_milli))
+    .bind(column(resources.memory_limit_mib))
+    .execute(db)
+    .await?;
+    Ok(updated.rows_affected() > 0)
 }
 
 impl DeployPlan {
@@ -87,9 +182,22 @@ pub trait AgentScaling: Send + Sync {
     /// the idle reaper parks only what [`oss_parking_rule`] calls parkable. An edition that parks
     /// every framework agent, whatever its owner chose, answers `false`; its
     /// [`AgentDeploy::plan`] must then call every framework agent parkable too, so each one
-    /// deploys as a workload that can be parked.
+    /// deploys as a workload that can be parked. A superuser's `resident` is honoured either way
+    /// ([`parking_policy_in_force`]).
     fn honours_resident_policy(&self) -> bool {
         true
+    }
+
+    /// The platform declares that the agent keeps no task state in memory and may run between
+    /// `bounds.min` and `bounds.max` replicas, `bounds.target` requests at a time each
+    /// (`SEED_AGENT_SETTINGS`). Saved only when it differs from what is stored; `true` when it
+    /// did, which the agent's next deploy applies. Nothing here: every agent runs one replica.
+    async fn declare_stateless_bounds(
+        &self,
+        _agent_id: Uuid,
+        _bounds: ReplicaBounds,
+    ) -> sqlx::Result<bool> {
+        Ok(false)
     }
 }
 
@@ -191,43 +299,69 @@ pub fn oss_parking_rule(workload_kind: &str, policy: ParkingPolicy) -> ParkingEl
     }
 }
 
-/// The live agent's kind and parking policy, `None` when there is no live agent.
+/// The parking policy that decides whether an agent is parked: the one its owner chose
+/// (`stored`), except where the edition does not honour `resident`
+/// ([`AgentScaling::honours_resident_policy`]), which counts it as `auto` unless a superuser owns
+/// the agent. A superuser's agents are the platform's own (`SEED_AGENTS`), which every user
+/// shares: parking them would make the next caller wait for a cold start and hold them to one
+/// replica.
+pub fn parking_policy_in_force(
+    stored: ParkingPolicy,
+    honours_resident: bool,
+    owner_is_superuser: bool,
+) -> ParkingPolicy {
+    if honours_resident || owner_is_superuser {
+        stored
+    } else {
+        ParkingPolicy::Auto
+    }
+}
+
+/// SQL true for an `agents` row a superuser owns, the row's table spelled `agents`; see
+/// [`parking_policy_in_force`].
+pub const OWNER_IS_SUPERUSER_SQL: &str =
+    "EXISTS (SELECT 1 FROM users u WHERE u.id = agents.owner_id AND u.is_superuser)";
+
+/// The live agent's kind and parking policy, and whether a superuser owns it; `None` when there
+/// is no live agent.
 async fn load_parking_inputs(
     db: &sqlx::PgPool,
     agent_id: Uuid,
-) -> sqlx::Result<Option<(String, ParkingPolicy)>> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT workload_kind, parking_policy FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
+) -> sqlx::Result<Option<(String, ParkingPolicy, bool)>> {
+    let row: Option<(String, String, bool)> = sqlx::query_as(&format!(
+        "SELECT workload_kind, parking_policy, {OWNER_IS_SUPERUSER_SQL} \
+         FROM agents WHERE id = $1 AND deleted_at IS NULL"
+    ))
     .bind(agent_id)
     .fetch_optional(db)
     .await?;
-    row.map(|(workload_kind, policy)| {
+    row.map(|(workload_kind, policy, owner_is_superuser)| {
         let policy = policy
             .parse()
             .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        Ok((workload_kind, policy))
+        Ok((workload_kind, policy, owner_is_superuser))
     })
     .transpose()
 }
 
 /// Whether the live agent `agent_id` runs as a parkable workload under `scaling`, as its next
 /// deploy's plan would say, without starting a deploy: [`deploys_parkable`] over its row, with the
-/// owner's `resident` counting as `auto` where `scaling` does not honour it. `false` when there is
-/// no live agent.
+/// policy in force ([`parking_policy_in_force`]). `false` when there is no live agent.
 pub async fn runs_parkable(
     scaling: &dyn AgentScaling,
     db: &sqlx::PgPool,
     agent_id: Uuid,
 ) -> sqlx::Result<bool> {
-    let Some((workload_kind, policy)) = load_parking_inputs(db, agent_id).await? else {
+    let Some((workload_kind, policy, owner_is_superuser)) =
+        load_parking_inputs(db, agent_id).await?
+    else {
         return Ok(false);
     };
-    let policy = if scaling.honours_resident_policy() {
-        policy
-    } else {
-        ParkingPolicy::Auto
-    };
+    let policy = parking_policy_in_force(
+        policy,
+        scaling.honours_resident_policy(),
+        owner_is_superuser,
+    );
     Ok(deploys_parkable(&workload_kind, policy))
 }
 
@@ -306,10 +440,11 @@ impl AgentDeploy for SingleReplicaDeploy {
     async fn plan(&self) -> sqlx::Result<DeployPlan> {
         let parkable = load_parking_inputs(&self.db, self.agent_id)
             .await?
-            .is_some_and(|(kind, policy)| deploys_parkable(&kind, policy));
+            .is_some_and(|(kind, policy, _)| deploys_parkable(&kind, policy));
         Ok(DeployPlan {
             bounds: ReplicaBounds::SINGLE,
             parkable,
+            resources: load_agent_resources(&self.db, self.agent_id).await?,
         })
     }
 
@@ -379,10 +514,32 @@ mod tests {
     }
 
     #[test]
+    fn where_resident_is_not_honoured_only_a_superusers_resident_agent_keeps_it() {
+        use ParkingPolicy::{Auto, Resident};
+        // (stored, honours_resident, owner_is_superuser) -> in force
+        let cases = [
+            (Resident, true, false, Resident),
+            (Resident, true, true, Resident),
+            (Resident, false, false, Auto),
+            (Resident, false, true, Resident),
+            (Auto, false, true, Auto),
+            (Auto, true, false, Auto),
+        ];
+        for (stored, honours, superuser, expected) in cases {
+            assert_eq!(
+                parking_policy_in_force(stored, honours, superuser),
+                expected,
+                "{stored:?} honours={honours} superuser={superuser}"
+            );
+        }
+    }
+
+    #[test]
     fn a_plan_is_parkable_only_for_a_framework_agent_deploy() {
         let parkable = DeployPlan {
             bounds: ReplicaBounds::SINGLE,
             parkable: true,
+            resources: AgentResources::PLATFORM,
         };
         assert!(parkable.for_kind(WorkloadKind::Agent).parkable);
         assert!(!parkable.for_kind(WorkloadKind::AcpCodingAgent).parkable);

@@ -687,6 +687,61 @@ async fn where_resident_is_not_honoured_a_resident_agent_is_parked() {
     server.cleanup().await;
 }
 
+/// Makes the owner of `agent` a superuser: the agent becomes one of the platform's own.
+async fn owned_by_a_superuser(server: &common::TestServer, agent: Uuid) {
+    sqlx::query(
+        "UPDATE users SET is_superuser = true \
+         WHERE id = (SELECT owner_id FROM agents WHERE id = $1)",
+    )
+    .bind(agent)
+    .execute(&server.db)
+    .await
+    .expect("make the owner a superuser");
+}
+
+/// The platform's own agents (a superuser's, as `SEED_AGENTS` registers them) are shared by every
+/// user: where `resident` is not honoured, a superuser's resident agent still stays up, and one
+/// left at `auto` is parked like any other.
+#[tokio::test]
+#[serial]
+async fn where_resident_is_not_honoured_a_superusers_resident_agent_stays_up() {
+    let runtime = WorkloadRuntime::answering_at(String::new());
+    let server = server_over(&runtime).await;
+    let platform_resident = seed_agent(
+        &server,
+        &runtime,
+        Seed {
+            policy: "resident",
+            ..Seed::idle()
+        },
+    )
+    .await;
+    owned_by_a_superuser(&server, platform_resident).await;
+    let platform_auto = seed_agent(&server, &runtime, Seed::idle()).await;
+    owned_by_a_superuser(&server, platform_auto).await;
+    let mut state = server.state.clone();
+    state.agent_scaling = Arc::new(ParksEveryAgent(state.agent_scaling.clone()));
+
+    sweep(&state, &mut ReaperMemory::default(), SweepScope::Full)
+        .await
+        .expect("sweep");
+
+    assert_eq!(status(&server, platform_resident).await, "running");
+    assert_eq!(runtime.replicas_of(platform_resident), Some(1));
+    assert!(
+        !nasiko_server::agent_scaling::runs_parkable(
+            state.agent_scaling.as_ref(),
+            &server.db,
+            platform_resident
+        )
+        .await
+        .expect("runs_parkable")
+    );
+    assert_eq!(status(&server, platform_auto).await, "parked");
+    assert_eq!(runtime.replicas_of(platform_auto), Some(0));
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn a_scale_that_fails_leaves_the_agent_running() {

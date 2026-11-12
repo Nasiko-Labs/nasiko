@@ -1,7 +1,11 @@
+use std::collections::BTreeMap;
+
 use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
 mod coding_agent_ingest;
+mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
+pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
@@ -123,6 +127,9 @@ pub struct Config {
     /// `MEMORY_ENABLED=false`, where the route is never mounted at all).
     pub injection_proxy_token: String,
     pub seed_agents: Option<String>,
+    /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
+    /// agent name. Empty when unset; an invalid value fails startup.
+    pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -786,6 +793,10 @@ impl Config {
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", "HS256"),
             injection_proxy_token: env_or("INJECTION_PROXY_TOKEN", ""),
             seed_agents: std::env::var("SEED_AGENTS").ok(),
+            seed_agent_settings: parse_seed_agent_settings(
+                std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
+            )
+            .map_err(anyhow::Error::msg)?,
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),

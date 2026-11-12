@@ -285,6 +285,83 @@ async fn seed_agent_deploy_carries_the_platform_env() {
     f.server.cleanup().await;
 }
 
+/// Runs the seed routine over `images` once, as the server's startup does.
+async fn seed_once(f: &Fixture, images: &str) {
+    // SAFETY: serial tests.
+    unsafe { std::env::set_var("SEED_AGENTS", images) };
+    // As above: cut off the agent-card wait once the deploy is recorded.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        seed_agents_if_configured(&f.server.state),
+    )
+    .await;
+    unsafe { std::env::remove_var("SEED_AGENTS") };
+}
+
+/// `SEED_AGENT_SETTINGS` gives a seed agent its own CPU and memory on its deploy, a running seed
+/// agent is redeployed only when its settings change, and the stored values are what every later
+/// deploy reads.
+#[tokio::test]
+#[serial]
+async fn seed_agent_settings_reach_the_deploy_and_only_a_change_redeploys() {
+    let settings = |memory: &str| {
+        nasiko_config::parse_seed_agent_settings(Some(&format!(
+            r#"{{"seeded-echo": {{"cpu_limit_milli": 1000, "cpu_request_milli": 250,
+                                 "memory_limit": "{memory}"}}}}"#
+        )))
+        .unwrap()
+    };
+    let mut f = start_configured(|config| config.seed_agent_settings = settings("1536Mi")).await;
+    // As in the test above: a running agent with an earlier mirrored copy, which a failed mirror
+    // falls back to. Without SEED_FORCE_PULL only a settings change redeploys it.
+    let agent_id = f.create_agent("seeded-echo", "1.0.0").await;
+    sqlx::query("UPDATE agents SET image = 'localhost:5000/nasiko/seeded-echo:v1' WHERE id = $1")
+        .bind(agent_id)
+        .execute(&f.server.db)
+        .await
+        .unwrap();
+    let images = "127.0.0.1:9/nasiko/seeded-echo:v1";
+
+    seed_once(&f, images).await;
+    let limits = f.first_spec(agent_id).await.resources.expect("resources");
+    assert_eq!(
+        (
+            limits.memory.as_str(),
+            limits.cpu_milli,
+            limits.cpu_request_milli
+        ),
+        ("1536Mi", 1000, Some(250))
+    );
+    let stored: (Option<i32>, Option<i32>, Option<i32>) = sqlx::query_as(
+        "SELECT cpu_limit_milli, cpu_request_milli, memory_limit_mib FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_one(&f.server.db)
+    .await
+    .unwrap();
+    assert_eq!(stored, (Some(1000), Some(250), Some(1536)));
+
+    seed_once(&f, images).await;
+    assert_eq!(
+        f.specs_for(agent_id).len(),
+        1,
+        "unchanged settings, no redeploy"
+    );
+
+    f.server.state.config = std::sync::Arc::new(nasiko_config::Config {
+        seed_agent_settings: settings("2Gi"),
+        ..(*f.server.state.config).clone()
+    });
+    seed_once(&f, images).await;
+    let limits = f
+        .spec_after(agent_id, 1)
+        .await
+        .resources
+        .expect("resources");
+    assert_eq!(limits.memory, "2048Mi");
+    f.server.cleanup().await;
+}
+
 /// An internal agent's model access is its own `env`; the LLM router (configured in this
 /// fixture) must not take it over, but the credentials still arrive.
 #[tokio::test]

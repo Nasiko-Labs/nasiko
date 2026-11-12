@@ -147,6 +147,10 @@ pub struct ResourceLimits {
     /// CPU limit in millicores (e.g. `500` = 0.5 CPU).
     /// K8s: emitted as `"<n>m"`. Docker: `nano_cpus = cpu_milli × 1_000_000`.
     pub cpu_milli: u32,
+    /// CPU the pod is guaranteed, in millicores, at most `cpu_milli`. `None` leaves it to the
+    /// backend's rule for the workload's kind. K8s only: Docker has no request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_request_milli: Option<u32>,
 }
 
 impl Default for ResourceLimits {
@@ -154,6 +158,7 @@ impl Default for ResourceLimits {
         ResourceLimits {
             memory: "512Mi".to_owned(),
             cpu_milli: 500,
+            cpu_request_milli: None,
         }
     }
 }
@@ -192,12 +197,21 @@ impl ResourceLimits {
             .ok_or_else(invalid)
     }
 
-    /// Validate that memory uses a recognized suffix and cpu_milli is non-zero.
+    /// Validate that memory uses a recognized suffix, cpu_milli is non-zero, and a CPU request
+    /// is non-zero and within the limit.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.cpu_milli == 0 {
             return Err(RuntimeError::InvalidSpec(
                 "cpu_milli must be > 0".to_owned(),
             ));
+        }
+        if let Some(request) = self.cpu_request_milli
+            && (request == 0 || request > self.cpu_milli)
+        {
+            return Err(RuntimeError::InvalidSpec(format!(
+                "cpu_request_milli {request} must be > 0 and at most cpu_milli {}",
+                self.cpu_milli
+            )));
         }
         // suffix → multiplier (bytes) used to detect overflow before parse_memory_bytes runs
         let suffixes: &[(&str, i64)] = &[

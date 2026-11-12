@@ -444,11 +444,11 @@ pub(crate) async fn restart_deployment(
             min_replicas: plan.bounds.min,
             max_replicas: plan.bounds.max,
             replica_target: plan.bounds.target,
-            // TODO: persist spec_resources in agent_deployments and restore here.
-            // Currently the upload path also uses None, so both deploy and restart
-            // apply the runtime default (0.5 CPU / 512 MiB). No behavioral regression
-            // until the API supports caller-specified resource limits.
-            resources: None,
+            // The agent's own CPU and memory (OSS migration 0101), so a restart keeps
+            // them. An agent with none keeps the runtime default (0.5 CPU / 512 MiB) this
+            // path has always restarted with.
+            resources: (!plan.resources.is_default())
+                .then(|| plan.resources.limits(&state.config.agent_default_memory)),
             // Docker-only path (see the `if`/`else` above) — these fields are
             // meaningless to DockerRuntime.
             image_pull_secret_name: None,

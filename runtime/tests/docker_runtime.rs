@@ -79,6 +79,7 @@ fn test_spec() -> DeploymentSpec {
         resources: Some(ResourceLimits {
             memory: "256Mi".to_owned(),
             cpu_milli: 250,
+            cpu_request_milli: None,
         }),
         image_pull_secret_name: None,
         image_pull_credential_seed: None,
@@ -106,6 +107,7 @@ fn spec_resource_limits_zero_cpu_fails() {
     spec.resources = Some(ResourceLimits {
         memory: "256Mi".to_owned(),
         cpu_milli: 0,
+        cpu_request_milli: None,
     });
     // validate() on DeploymentSpec calls ResourceLimits::validate() internally
     assert!(spec.validate().is_err());
@@ -117,6 +119,7 @@ fn spec_resource_limits_unrecognized_memory_suffix_fails() {
     spec.resources = Some(ResourceLimits {
         memory: "256KB".to_owned(),
         cpu_milli: 250,
+        cpu_request_milli: None,
     });
     assert!(spec.validate().is_err());
 }
@@ -127,6 +130,7 @@ fn spec_resource_limits_bare_bytes_is_valid() {
     spec.resources = Some(ResourceLimits {
         memory: "536870912".to_owned(), // 512 MiB in bytes
         cpu_milli: 500,
+        cpu_request_milli: None,
     });
     assert!(spec.validate().is_ok());
 }
@@ -137,6 +141,7 @@ fn spec_resource_limits_gi_suffix_is_valid() {
     spec.resources = Some(ResourceLimits {
         memory: "2Gi".to_owned(),
         cpu_milli: 2000,
+        cpu_request_milli: None,
     });
     assert!(spec.validate().is_ok());
 }
