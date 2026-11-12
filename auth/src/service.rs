@@ -93,15 +93,20 @@ impl AuthService for AuthServiceImpl {
             locked_until: Option<chrono::DateTime<chrono::Utc>>,
         }
 
+        // Serialize authentication attempts for this account. Without the row lock,
+        // concurrent failures can all read the same counter value and overwrite one
+        // another's update, bypassing the lockout threshold.
+        let mut tx = self.db.begin().await?;
         let row: Option<CredRow> = sqlx::query_as(
             r#"SELECT u.id, u.username, u.is_superuser, u.is_active,
                       uc.access_secret_hash, u.failed_login_attempts, u.locked_until
                FROM users u
                JOIN user_credentials uc ON uc.user_id = u.id
-               WHERE (uc.access_key = $1 OR u.username = $1) AND u.deleted_at IS NULL"#,
+               WHERE (uc.access_key = $1 OR u.username = $1) AND u.deleted_at IS NULL
+               FOR UPDATE OF u"#,
         )
         .bind(username)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         let row = row.ok_or(AuthError::InvalidCredentials {
@@ -122,34 +127,36 @@ impl AuthService for AuthServiceImpl {
                 });
             }
             // Lockout expired — clear it so the attempt proceeds.
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
             )
             .bind(row.id)
-            .execute(&self.db)
-            .await;
+            .execute(&mut *tx)
+            .await?;
         }
 
         if !crate::verify_password_async(password, &row.access_secret_hash).await {
             let attempts = row.failed_login_attempts + 1;
             if attempts >= LOGIN_LOCKOUT_THRESHOLD {
-                let _ = sqlx::query(
+                sqlx::query(
                     "UPDATE users SET failed_login_attempts = $2, \
                      locked_until = now() + interval '15 minutes' WHERE id = $1",
                 )
                 .bind(row.id)
                 .bind(attempts)
-                .execute(&self.db)
-                .await;
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
                 return Err(AuthError::AccountLocked {
                     retry_after_secs: LOGIN_LOCKOUT_DURATION_SECS,
                 });
             }
-            let _ = sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
+            sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
                 .bind(row.id)
                 .bind(attempts)
-                .execute(&self.db)
-                .await;
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
             let remaining = LOGIN_LOCKOUT_THRESHOLD - attempts;
             return Err(AuthError::InvalidCredentials {
                 remaining_attempts: Some(remaining),
@@ -157,12 +164,13 @@ impl AuthService for AuthServiceImpl {
         }
 
         // Successful login — reset failed attempts and update last_login.
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE users SET last_login = now(), failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
         )
         .bind(row.id)
-        .execute(&self.db)
-        .await;
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
 
         let identity = Identity {
             user_id: row.id.to_string(),
