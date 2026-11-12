@@ -160,13 +160,20 @@ function Bar({ state, reduced, set }: PreviewControl) {
         </Badge>
         <p
           aria-live="polite"
-          className="min-w-0 flex-1 truncate text-sm font-semibold @[900px]/overview:w-60 @[900px]/overview:flex-none"
+          className={cn(
+            'min-w-0 flex-1 truncate text-sm font-semibold @[1160px]/overview:flex-none',
+            // A fixed width while the stops change the title, so the timeline holds still; at the end, where the
+            // countdown and its buttons need the room to stay on one line, only as wide as it says.
+            !f.done && '@[1160px]/overview:w-60',
+          )}
         >
           {stop.title}
         </p>
+        {/* One row from 1160px (the ending's countdown and buttons fit there, sidebar open on a 1440px screen);
+            narrower, the timeline takes a row of its own rather than the buttons breaking mid-row. */}
         <nav
           aria-label={p.timeline}
-          className="order-last grid basis-full grid-cols-4 gap-1.5 @[900px]/overview:order-none @[900px]/overview:flex-1 @[900px]/overview:basis-auto"
+          className="order-last grid basis-full grid-cols-4 gap-1.5 @[1160px]/overview:order-none @[1160px]/overview:flex-1 @[1160px]/overview:basis-auto"
         >
           {p.stops.map((s, i) => (
             <Button

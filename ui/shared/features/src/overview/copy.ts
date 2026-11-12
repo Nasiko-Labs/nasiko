@@ -185,7 +185,7 @@ export const copy = {
     backSoon: (secs: number) =>
       `Home comes back in ${secs} seconds. Choose Stay to keep the preview.`,
     stay: 'Stay',
-    copyCommands: 'Copy the commands for your team',
+    copyCommands: 'Copy commands',
     copied: 'Copied',
     connectYours: 'Connect yours',
   },
