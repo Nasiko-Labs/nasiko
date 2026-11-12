@@ -802,6 +802,33 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     expect(screen.queryByRole('region', { name: p.bar })).toBeNull()
     expect(card('quiet-harnesses')).toHaveTextContent(copy.quiet.harnessesNone)
   })
+
+  it('hands over the commands for the team, connect included, and stays while they are read', async () => {
+    window.history.replaceState(null, '', '/?mock=no-harnesses')
+    renderApp('/')
+    await loaded()
+    const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const user = userEvent.setup()
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    await user.click(within(tile).getByRole('button', { name: p.watch }))
+    act(() => {
+      vi.advanceTimersByTime(PREVIEW_MS)
+    })
+    const bar = screen.getByRole('region', { name: p.bar })
+    await user.click(within(bar).getByRole('button', { name: p.copyCommands }))
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `nasiko connect ${window.location.origin} --login=false\nnasiko auth login`,
+      ),
+    )
+    act(() => {
+      vi.advanceTimersByTime(2 * PREVIEW_HOLD_MS)
+    })
+    expect(bar).toBeInTheDocument()
+    expect(within(bar).getByRole('button', { name: p.copied })).toHaveFocus()
+  })
 })
 
 describe('quiet tiles (2026-11-05)', () => {
