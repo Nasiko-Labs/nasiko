@@ -833,7 +833,7 @@ impl Orchestrator {
         file_parts: Vec<nasiko_types::a2a::Part>,
     ) -> mpsc::Receiver<OrchestratorEvent> {
         let (tx, rx) = mpsc::channel(64);
-        let query = user_query.to_string();
+        let query = query_with_attachment_note(user_query, &file_parts);
 
         // Pre-serialize file parts to JSON once; the A2aTool will include them
         // in every agent call's message.parts alongside the text part.
@@ -1575,6 +1575,51 @@ async fn run_stream_inner(
 /// non-empty text so estimated usage is distinguishable from "no data".
 fn estimate_tokens_from_chars(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
+}
+
+/// The query an upload turn reasons over: the user's words plus one line naming the attached
+/// files. The model never sees the file parts themselves (they ride along on every agent call), so
+/// without the note it asks the user for a file it already has (Q2-2). Lives only in this turn's
+/// in-memory context; stored chat history keeps the user's words as sent.
+fn query_with_attachment_note(user_query: &str, file_parts: &[nasiko_types::a2a::Part]) -> String {
+    if file_parts.is_empty() {
+        return user_query.to_string();
+    }
+    let names: Vec<&str> = file_parts
+        .iter()
+        .map(|part| part.filename.as_deref().unwrap_or("unnamed"))
+        .collect();
+    format!(
+        "{user_query}\n\n[Attached files ({}): {}. They are passed automatically to any agent you call.]",
+        file_parts.len(),
+        names.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod attachment_note_tests {
+    use super::query_with_attachment_note;
+    use nasiko_types::a2a::file_part;
+
+    #[test]
+    fn a_turn_without_files_keeps_the_query_unchanged() {
+        assert_eq!(
+            query_with_attachment_note("summarise it", &[]),
+            "summarise it"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_files_names_each_one() {
+        let parts = [
+            file_part(b"a".to_vec(), Some("report.pdf".into()), None),
+            file_part(b"b".to_vec(), None, None),
+        ];
+        let query = query_with_attachment_note("summarise it", &parts);
+        assert!(query.starts_with("summarise it\n\n"));
+        assert!(query.contains("Attached files (2): report.pdf, unnamed."));
+        assert!(query.contains("passed automatically to any agent you call"));
+    }
 }
 
 #[cfg(test)]
