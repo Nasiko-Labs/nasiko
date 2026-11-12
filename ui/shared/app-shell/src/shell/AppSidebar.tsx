@@ -112,7 +112,8 @@ export type NavBadges = Partial<Record<string, { count: number; label: string }>
 export function AppSidebar({
   badges,
   hidden,
-}: { badges?: NavBadges; hidden?: readonly string[] } = {}) {
+  assessment = false,
+}: { badges?: NavBadges; hidden?: readonly string[]; assessment?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const href = useRouterState({ select: (s) => s.location.href })
   const navigate = useNavigate()
@@ -242,7 +243,7 @@ export function AppSidebar({
       {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} />
+          <HelpRows pathname={pathname} onPick={pick} assessment={assessment} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -436,7 +437,15 @@ function NavGroups({
 }
 
 /** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
+function HelpRows({
+  pathname,
+  onPick,
+  assessment,
+}: {
+  pathname: string
+  onPick(): void
+  assessment: boolean
+}) {
   const { setOpenMobile } = useSidebar()
   const external = (href: string, label: string, Icon: typeof BookOpen) => (
     <SidebarMenuItem>
@@ -479,26 +488,28 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
-      {/* Always here, so the assessment stays one click away after its banner is dismissed. */}
-      <SidebarMenuItem>
-        <SidebarMenuButton
-          isActive={pathname === '/assessment'}
-          tooltip={copy.help.assessment}
-          className={cn(ROW, ACTIVE_ROW)}
-          render={
-            <Link
-              to="/assessment"
-              onClick={() => {
-                onPick()
-                setOpenMobile(false)
-              }}
-            />
-          }
-        >
-          <ClipboardCheck aria-hidden />
-          <span className={LABEL}>{copy.help.assessment}</span>
-        </SidebarMenuButton>
-      </SidebarMenuItem>
+      {/* Only once its banner is dismissed, so the assessment stays one click away without showing twice. */}
+      {assessment ? (
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname === '/assessment'}
+            tooltip={copy.help.assessment}
+            className={cn(ROW, ACTIVE_ROW)}
+            render={
+              <Link
+                to="/assessment"
+                onClick={() => {
+                  onPick()
+                  setOpenMobile(false)
+                }}
+              />
+            }
+          >
+            <ClipboardCheck aria-hidden />
+            <span className={LABEL}>{copy.help.assessment}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ) : null}
       {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
     </>
   )

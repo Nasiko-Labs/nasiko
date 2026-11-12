@@ -903,11 +903,19 @@ describe('assessment banner', () => {
       'href',
       '/assessment',
     )
+    // The sidebar's row waits for the banner to go, so the assessment never shows twice.
+    const sidebarRow = () =>
+      within(document.querySelector<HTMLElement>('[data-slot="sidebar"]')!).queryByRole('link', {
+        name: copy.help.assessment,
+      })
+    expect(sidebarRow()).toBeNull()
     await userEvent.click(screen.getByRole('button', { name: copy.assessment.dismiss }))
     expect(screen.queryByRole('region', { name: copy.assessment.title })).toBeNull()
+    expect(sidebarRow()).toHaveAttribute('href', '/assessment')
     cleanup()
     renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
     expect(screen.queryByRole('region', { name: copy.assessment.title })).toBeNull()
+    expect(sidebarRow()).toHaveAttribute('href', '/assessment')
   })
 })

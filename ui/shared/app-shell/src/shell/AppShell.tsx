@@ -111,7 +111,8 @@ export function AppShell({
         >
           {copy.skipToContent}
         </Button>
-        <AppSidebar badges={badges} hidden={hidden} />
+        {/* Its assessment row takes over once the banner is dismissed. */}
+        <AppSidebar badges={badges} hidden={hidden} assessment={!bannerShown} />
         {Split ? <Split path={pathname}>{inset}</Split> : inset}
         {end}
       </SidebarProvider>
