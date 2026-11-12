@@ -375,6 +375,7 @@ pub(crate) struct CreateUserResponse {
     responses(
         (status = 201, description = "User created", body = CreateUserResponse),
         (status = 403, description = "Only a superuser can create a superuser"),
+        (status = 400, description = "The database rejected a value, such as an unknown or retired role"),
         (status = 409, description = "Username or email already exists"),
     ),
 )]
@@ -444,6 +445,8 @@ pub(crate) async fn create_user(
         Err(e) => {
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already exists").into_response()
+            } else if let Some(reason) = rejected_input(&e) {
+                (StatusCode::BAD_REQUEST, reason).into_response()
             } else {
                 tracing::error!(%e, %id, "create_user: insert user failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -640,6 +643,83 @@ pub async fn update_user(
     }
 }
 
+/// The database's own reason when it refused a value the caller sent (Q3-15): an invalid enum
+/// value such as an unknown role (`22P02`), or a trigger that raised one, such as a retired role
+/// (`P0001`). `None` for anything else, which stays a server error.
+fn rejected_input(e: &sqlx::Error) -> Option<String> {
+    let db = e.as_database_error()?;
+    matches!(db.code().as_deref(), Some("22P02" | "P0001")).then(|| db.message().to_string())
+}
+
+/// Clears what would stop the final `DELETE FROM users` while nothing has been erased yet (Q3-14).
+/// Soft-deleted agents still reference their owner (`agents.owner_id` has no cascade), so they pass
+/// to the admin making the call. The delete is then tried and rolled back: any other row that still
+/// references the user (an MCP connector, a custom provider, ...) refuses it here with 409, not
+/// after the user's data is gone. Both happen in one transaction, so a refusal reassigns nothing.
+async fn clear_delete_blockers(
+    state: &AppState,
+    id: Uuid,
+    caller_sub: &str,
+) -> Option<axum::response::Response> {
+    let internal = |e: &dyn std::fmt::Display, step: &str| {
+        tracing::error!(%e, %id, step, "delete_user: pre-flight failed, nothing erased");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response()
+    };
+    let new_owner = match Uuid::parse_str(caller_sub) {
+        Ok(caller) => caller,
+        Err(e) => return Some(internal(&e, "caller id")),
+    };
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return Some(internal(&e, "begin")),
+    };
+    if let Err(e) = sqlx::query(
+        "UPDATE agents SET owner_id = $2 WHERE owner_id = $1 AND deleted_at IS NOT NULL",
+    )
+    .bind(id)
+    .bind(new_owner)
+    .execute(&mut *tx)
+    .await
+    {
+        return Some(internal(&e, "reassign deleted agents"));
+    }
+    let trial = {
+        let mut savepoint = match sqlx::Connection::begin(&mut *tx).await {
+            Ok(savepoint) => savepoint,
+            Err(e) => return Some(internal(&e, "savepoint")),
+        };
+        let trial = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(id)
+            .execute(&mut *savepoint)
+            .await;
+        if let Err(e) = savepoint.rollback().await {
+            return Some(internal(&e, "trial rollback"));
+        }
+        trial
+    };
+    match trial {
+        Ok(_) => match tx.commit().await {
+            Ok(()) => None,
+            Err(e) => Some(internal(&e, "commit")),
+        },
+        Err(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => Some(
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "other records still reference this user — reassign or delete them first",
+                    "table": db.table(),
+                })),
+            )
+                .into_response(),
+        ),
+        Err(e) => Some(internal(&e, "trial delete")),
+    }
+}
+
 /// Delete a user. Rejects self-deletion, deleting the last admin, or a user
 /// who still owns agents (reassign or delete those first).
 #[utoipa::path(
@@ -654,7 +734,7 @@ pub async fn update_user(
         (status = 403, description = "Cannot delete your own account, or the target is a superuser and the caller is not"),
         (status = 409, description = "Cannot delete the last admin"),
         (status = 404, description = "No such user"),
-        (status = 409, description = "User still owns agents"),
+        (status = 409, description = "User still owns agents, or other rows still reference the user"),
     ),
 )]
 pub(crate) async fn delete_user(
@@ -698,6 +778,10 @@ pub(crate) async fn delete_user(
             })),
         )
             .into_response();
+    }
+
+    if let Some(err) = clear_delete_blockers(&state, id, &claims.sub).await {
+        return err;
     }
 
     // The user's rows cascade away, which would strand their harness sandboxes and credentials

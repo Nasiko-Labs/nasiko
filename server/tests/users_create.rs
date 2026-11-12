@@ -100,3 +100,31 @@ async fn create_user_without_is_superuser_field_defaults_false() {
 
     server.cleanup().await;
 }
+
+/// A role the database rejects is the caller's mistake (Q3-15): 400 with the database's reason,
+/// not 500. In OSS that is an unknown `user_role` value; an EE trigger refusing a retired role
+/// takes the same path.
+#[tokio::test]
+#[serial]
+async fn create_user_with_a_role_the_database_rejects_is_a_bad_request() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+
+    let res = common::as_superuser(
+        server.client.post(server.url("/api/users")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({
+        "username": "bad-role",
+        "email": "bad-role@test.local",
+        "role": "no_such_role",
+    }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(res.text().await.unwrap().contains("no_such_role"));
+
+    server.cleanup().await;
+}
