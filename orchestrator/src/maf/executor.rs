@@ -809,6 +809,17 @@ async fn step_endpoint(
     }
 }
 
+/// The `flows.metadata` a step's flow row carries. `user_message` is the text the step's agent is
+/// sent: the LLM router scores that, not the framework framing around it, when it picks a model
+/// for the agent's calls under this flow.
+fn step_flow_metadata(execution_id: Uuid, step_prompt: &str) -> serde_json::Value {
+    serde_json::json!({
+        "context_id": execution_id.to_string(),
+        "mode": "free_flowing",
+        "user_message": step_prompt,
+    })
+}
+
 /// Runs one step fresh: prompt generation (LLM call 2) → agent call → extraction (LLM call 3),
 /// persisting progress at every transition exactly as the original inline loop body did. Shared by
 /// `run_maf` and, for every step after the resumed one, `run_maf_from`.
@@ -909,10 +920,7 @@ pub async fn execute_step(
     // step, so the gateway keys its decision cache on the whole MAF run: the
     // first step writes the tier decision, later steps reuse it. Best-effort —
     // a failed insert only means this step falls back to the default model.
-    let flow_metadata = serde_json::json!({
-        "context_id": execution_id.to_string(),
-        "mode": "free_flowing",
-    });
+    let flow_metadata = step_flow_metadata(execution_id, &actual_prompt);
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata, session_id)
            VALUES ($1, $2, $3, $4, 'running', $5, $6)
@@ -953,7 +961,8 @@ pub async fn execute_step(
     // only the fallback for an agent that is routable but has no address of its own.
     //
     // The A2A mount from the agent's card (`agents.transport_path`) is read here: it does not
-    // depend on where the agent runs, and an agent mounted off root is called nowhere else.
+    // depend on where the agent runs, and an agent mounted off root is called nowhere else. A
+    // resolved URL that already ends with it is not mounted twice (`mounted_a2a_url`).
     let a2a_path: Option<String> =
         sqlx::query_scalar("SELECT transport_path FROM agents WHERE id = $1")
             .bind(step.agent_id)
@@ -2304,11 +2313,17 @@ async fn call_agent_continuation(
 }
 
 /// `{base}{path}` for an agent mounted at a non-root path, `None` for a root mount or no path.
+/// A `base` that already ends with the mount is returned as is: the server's resolver hands back
+/// the message URL with the mount appended, while the saved snapshot and the catalog address come
+/// without it, and appending a second time is a 404 (`/a2a/jsonrpc/a2a/jsonrpc`).
 fn mounted_a2a_url(base: &str, a2a_path: Option<&str>) -> Option<String> {
     let path = a2a_path
         .map(str::trim)
         .filter(|p| !p.is_empty() && *p != "/")?;
     let sep = if path.starts_with('/') { "" } else { "/" };
+    if base.ends_with(&format!("{sep}{}", path.trim_end_matches('/'))) {
+        return Some(base.to_string());
+    }
     Some(format!("{base}{sep}{path}"))
 }
 
@@ -2511,6 +2526,32 @@ mod resume_tests {
         assert_eq!(mounted_a2a_url(base, None), None);
         assert_eq!(mounted_a2a_url(base, Some("/")), None);
         assert_eq!(mounted_a2a_url(base, Some("")), None);
+    }
+
+    /// Q5-1: the server's resolver returns the URL with the mount already on it; a second copy
+    /// (`/a2a/jsonrpc/a2a/jsonrpc`) is a 404 from OpenCode.
+    #[test]
+    fn a_url_that_already_carries_the_mount_is_not_mounted_twice() {
+        let resolved = "http://10.0.0.5:8080/a2a/jsonrpc";
+        assert_eq!(
+            mounted_a2a_url(resolved, Some("/a2a/jsonrpc")).as_deref(),
+            Some(resolved)
+        );
+        assert_eq!(
+            mounted_a2a_url("http://10.0.0.5:8080/a2a", Some("/a2a/")).as_deref(),
+            Some("http://10.0.0.5:8080/a2a")
+        );
+    }
+
+    /// NAS-1256: the router scores a step's flow by `user_message`, so the step row must carry
+    /// the text the step's agent is sent.
+    #[test]
+    fn a_step_flow_row_carries_the_step_prompt_as_its_user_message() {
+        let execution = Uuid::new_v4();
+        let metadata = step_flow_metadata(execution, "summarise the Q3 report");
+        assert_eq!(metadata["user_message"], "summarise the Q3 report");
+        assert_eq!(metadata["context_id"], execution.to_string());
+        assert_eq!(metadata["mode"], "free_flowing");
     }
 
     fn step(index: i32) -> MafStep {
@@ -2944,6 +2985,41 @@ mod resume_tests {
         mounted.assert_async().await;
         jsonrpc.assert_async().await;
         root.assert_async().await;
+        assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
+    }
+
+    /// Q5-1: a resolver-sourced target already ends with the mount and is called at exactly that
+    /// URL, never at the mount appended a second time.
+    #[tokio::test]
+    async fn call_agent_does_not_mount_a_resolved_url_twice() {
+        let mut server = mockito::Server::new_async().await;
+        let mounted = server
+            .mock("POST", "/a2a/jsonrpc")
+            .with_status(200)
+            .with_body(completed_agent_response())
+            .create_async()
+            .await;
+        let doubled = server
+            .mock("POST", "/a2a/jsonrpc/a2a/jsonrpc")
+            .expect(0)
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_agent(
+            &client,
+            &ForwardTarget::from(format!("{}/a2a/jsonrpc", server.url())),
+            Some("/a2a/jsonrpc"),
+            "ctx-1",
+            "user-1",
+            "do the thing",
+            None,
+            "00-trace-span-01",
+        )
+        .await;
+
+        mounted.assert_async().await;
+        doubled.assert_async().await;
         assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
     }
 
