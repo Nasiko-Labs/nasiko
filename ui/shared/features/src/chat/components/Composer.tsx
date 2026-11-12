@@ -275,7 +275,9 @@ export function Composer({
                   aria-label={copy.attach}
                   title={copy.attachHint(
                     tuning.MAX_ATTACHMENTS,
-                    fmtBytes(tuning.ATTACHMENT_MAX_BYTES),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.image),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.text),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.other),
                   )}
                   onClick={() => picker.current?.click()}
                 >

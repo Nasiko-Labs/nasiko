@@ -196,15 +196,17 @@ export const copy = {
   receivingStopped: 'Receiving stopped. The agent may still be running tools.',
   // Attachments (§7.7). `attach` names the control; the rejection lines each say which file and why.
   attach: 'Attach files',
-  attachHint: (max: number, size: string) => `Up to ${max} files, ${size} each`,
+  attachHint: (max: number, media: string, text: string, other: string) =>
+    `Up to ${max} files: images and PDFs ${media}, text files ${text}, other files ${other} each`,
+  attachKinds: { image: 'images', pdf: 'PDFs', text: 'text files', other: 'other files' },
   attachedCount: (n: number) => `${n} attachment${n === 1 ? '' : 's'}`,
   removeAttachment: (name: string) => `Remove ${name}`,
   attachDrop: 'Drop files to attach',
   uploading: 'Uploading attachments…',
   attachTooMany: (name: string, max: number) =>
     `${name} wasn't attached: a message can carry ${max} files.`,
-  attachTooLarge: (name: string, size: string) =>
-    `${name} wasn't attached: files must be under ${size}.`,
+  attachTooLarge: (name: string, kind: string, size: string) =>
+    `${name} wasn't attached: ${kind} must be under ${size}.`,
   attachOverBudget: (name: string, size: string) =>
     `${name} wasn't attached: one message can carry ${size} of files in total.`,
   attachEmpty: (name: string) => `${name} wasn't attached: it is empty, or it is a folder.`,
@@ -235,8 +237,6 @@ export const copy = {
   targetInvalid: (v: string) => `'${v}' isn't an agent you can use. Pick one on Agents.`,
   targetAmbiguous: (v: string) => `Several agents are called '${v}'. Pick one:`,
   targetNotRunning: (name: string) => `${name} isn't running, so it can't reply.`,
-  stoppedByOwner: (name: string) =>
-    `${name} was stopped by its owner. You can chat with it again once they start it.`,
   targetNotRunningAction: 'Open the agent',
   agentRemoved: "This chat's agent was removed.",
   recordedReadOnly: 'Recorded from a coding harness.',

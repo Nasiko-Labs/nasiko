@@ -61,10 +61,14 @@ const DEFAULTS = {
   MESSAGE_MAX_CHARS: 100_000,
   /** Files one message may carry (`chat/routes.rs::MAX_FILES_PER_UPLOAD`). */
   MAX_ATTACHMENTS: 10,
-  /** Largest single attachment (`chat/routes.rs::MAX_FILE_BYTES`). */
-  ATTACHMENT_MAX_BYTES: 50 * 1024 * 1024,
+  ATTACHMENT_LIMITS: {
+    image: 25 * 1024 * 1024,
+    pdf: 25 * 1024 * 1024,
+    text: 1024 * 1024,
+    other: 10 * 1024 * 1024,
+  },
   /** Every attachment on one message, together (`a2a_dispatch.rs::MAX_ATTACHED_BYTES`). */
-  ATTACHMENTS_MAX_TOTAL_BYTES: 50 * 1024 * 1024,
+  ATTACHMENTS_MAX_TOTAL_BYTES: 30 * 1024 * 1024,
   /** Live turns per tab before a new routed send is refused (HTTP/1.1: 6 connections per origin, G-10). */
   MAX_LIVE_TURNS: 3,
   /** Characters of an agent's excerpt in expanded Activity (NC-4). */
