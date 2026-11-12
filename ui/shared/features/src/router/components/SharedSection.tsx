@@ -30,7 +30,7 @@ const DEFAULT = 'default'
 // Not in copy.ts: that module is in an app's shell chunk, whose size budget has no room left.
 const text = {
   title: 'Shared with you',
-  help: 'Pick one of your models for an agent someone shared with you. Calls then use your key. Left on Default, calls use the agent’s own model where its owner provides one, otherwise your default model.',
+  help: 'Pick one of your models for an agent someone shared with you. Calls then use your key. Left on Default, calls use your default model, unless the agent’s owner covers them.',
   default: 'Default',
   pick: (name: string) => `Your model for ${name}`,
   listFailed: 'Couldn’t list the agents shared with you',
