@@ -1,7 +1,9 @@
 "use client"
 
 // Ported from the legacy ui/ on development (3aac84f66) common/src/components/ui/calendar.tsx (shadcn new-york-v4 on
-// react-day-picker; no Radix). Local edits: `cn` from "../lib/utils" and `Button`/`buttonVariants` from "./button".
+// react-day-picker; no Radix). Local edits: `cn` from "../lib/utils" and `Button`/`buttonVariants` from "./button";
+// `Root`, `Chevron` and `WeekNumber` are module-level components, not inline ones: inline, every render of `Calendar`
+// gave them new identities, so React remounted the whole grid and a click that re-rendered it mid-press was lost.
 import * as React from "react"
 import { cn } from "../lib/utils"
 import {
@@ -12,6 +14,7 @@ import {
 import {
   DayPicker,
   getDefaultClassNames,
+  type CustomComponents,
   type DayButton,
 } from "react-day-picker"
 
@@ -134,52 +137,56 @@ function Calendar({
         ...classNames,
       }}
       components={{
-        Root: ({ className, rootRef, ...props }) => {
-          return (
-            <div
-              data-slot="calendar"
-              ref={rootRef}
-              className={cn(className)}
-              {...props}
-            />
-          )
-        },
-        Chevron: ({ className, orientation, ...props }) => {
-          if (orientation === "left") {
-            return (
-              <ChevronLeftIcon className={cn("size-4", className)} {...props} />
-            )
-          }
-
-          if (orientation === "right") {
-            return (
-              <ChevronRightIcon
-                className={cn("size-4", className)}
-                {...props}
-              />
-            )
-          }
-
-          return (
-            <ChevronDownIcon className={cn("size-4", className)} {...props} />
-          )
-        },
+        Root: CalendarRoot,
+        Chevron: CalendarChevron,
         DayButton: CalendarDayButton,
-        WeekNumber: ({ children, ...props }) => {
-          return (
-            <td {...props}>
-              <div className="flex size-(--cell-size) items-center justify-center text-center">
-                {children}
-              </div>
-            </td>
-          )
-        },
+        WeekNumber: CalendarWeekNumber,
         ...components,
       }}
       {...props}
     />
   )
 }
+
+const CalendarRoot: CustomComponents["Root"] = ({
+  className,
+  rootRef,
+  ...props
+}) => (
+  <div
+    data-slot="calendar"
+    ref={rootRef}
+    className={cn(className)}
+    {...props}
+  />
+)
+
+const CalendarChevron: CustomComponents["Chevron"] = ({
+  className,
+  orientation,
+  ...props
+}) => {
+  if (orientation === "left") {
+    return <ChevronLeftIcon className={cn("size-4", className)} {...props} />
+  }
+
+  if (orientation === "right") {
+    return <ChevronRightIcon className={cn("size-4", className)} {...props} />
+  }
+
+  return <ChevronDownIcon className={cn("size-4", className)} {...props} />
+}
+
+const CalendarWeekNumber: CustomComponents["WeekNumber"] = ({
+  children,
+  ...props
+}) => (
+  <td {...props}>
+    <div className="flex size-(--cell-size) items-center justify-center text-center">
+      {children}
+    </div>
+  </td>
+)
 
 function CalendarDayButton({
   className,

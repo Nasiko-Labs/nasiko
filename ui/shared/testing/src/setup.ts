@@ -5,6 +5,11 @@ import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { allHandlers, resetAgentsMock } from '@nasiko/mocks/handlers'
 import { editionHandlers } from '@edition/mocks'
+// Loads react-day-picker's @date-fns/tz before any test fakes Date. Its TZDate extends whatever `Date` is global when
+// it is first evaluated; a lazily loaded page that first evaluates it under `setupPinnedSeed`'s fake Date gets a TZDate
+// whose date math breaks (every `addDays` returns its start), so a UTC calendar reports the grid's first day for every
+// click (NAS-1516).
+import '@nasiko/ui/primitives/calendar'
 import { clearQueryClients } from './queryClients'
 
 /**
