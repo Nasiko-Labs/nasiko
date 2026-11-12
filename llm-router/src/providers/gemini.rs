@@ -234,7 +234,10 @@ impl ProviderClient for GeminiProvider {
                 }
 
                 if let Some(fr) = candidate["finishReason"].as_str() {
-                    finish = Some(map_finish_reason(fr).to_string());
+                    match map_finish_reason(candidate, fr) {
+                        Ok(mapped) => finish = Some(mapped.to_string()),
+                        Err(error) => { yield Err(error); return; }
+                    }
                 }
                 if let Some(um) = response.get("usageMetadata") {
                     let cached = um["cachedContentTokenCount"].as_i64();
@@ -705,7 +708,7 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
     let provider_finish = candidate["finishReason"]
         .as_str()
         .ok_or_else(|| ProviderError::Parse("Gemini response has no finishReason".into()))?;
-    let mapped_finish = map_finish_reason(provider_finish);
+    let mapped_finish = map_finish_reason(candidate, provider_finish)?;
     let finish_reason = if !tool_calls.is_empty() && mapped_finish == "stop" {
         "tool_calls"
     } else {
@@ -753,13 +756,22 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
     })
 }
 
-fn map_finish_reason(reason: &str) -> &'static str {
+/// Gemini `finishReason` → OpenAI `finish_reason`. `MALFORMED_FUNCTION_CALL` is the model
+/// failing to produce a valid tool call, not a block, so it is an error carrying Gemini's
+/// `finishMessage` rather than `content_filter`.
+fn map_finish_reason(candidate: &Value, reason: &str) -> Result<&'static str, ProviderError> {
     match reason {
-        "STOP" => "stop",
-        "MAX_TOKENS" => "length",
+        "STOP" => Ok("stop"),
+        "MAX_TOKENS" => Ok("length"),
+        "MALFORMED_FUNCTION_CALL" => Err(ProviderError::Parse(format!(
+            "Gemini returned a malformed function call: {}",
+            candidate["finishMessage"]
+                .as_str()
+                .unwrap_or("no finishMessage")
+        ))),
         // Gemini adds blocking reasons over time. Anything except the two successful
         // terminals above must fail closed rather than become an executable response.
-        _ => "content_filter",
+        _ => Ok("content_filter"),
     }
 }
 
@@ -1006,7 +1018,6 @@ mod tests {
             "BLOCKLIST",
             "PROHIBITED_CONTENT",
             "SPII",
-            "MALFORMED_FUNCTION_CALL",
             "FUTURE_BLOCK_REASON",
         ] {
             let response = from_gemini_response(
@@ -1022,6 +1033,24 @@ mod tests {
         }
         assert!(from_gemini_response(&json!({"candidates":[]}), "m").is_err());
         assert!(from_gemini_response(&json!({}), "m").is_err());
+    }
+
+    #[test]
+    fn malformed_function_call_is_an_error_with_the_finish_message() {
+        let error = from_gemini_response(
+            &json!({"candidates":[{
+                "content": {"parts": []},
+                "finishReason": "MALFORMED_FUNCTION_CALL",
+                "finishMessage": "Malformed function call: print(default_api.f(x=))"
+            }]}),
+            "m",
+        )
+        .unwrap_err();
+        assert!(matches!(error, ProviderError::Parse(_)));
+        assert!(
+            error.to_string().contains("print(default_api.f(x=))"),
+            "{error}"
+        );
     }
 
     #[tokio::test]
@@ -1188,6 +1217,7 @@ mod tests {
             "data: {\"error\":{\"code\":503,\"message\":\"unavailable\"}}\n\n",
             "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}\n\n",
             "data: [DONE]\n\n",
+            "data: {\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"MALFORMED_FUNCTION_CALL\",\"finishMessage\":\"bad call\"}]}\n\n",
         ] {
             let mut server = mockito::Server::new_async().await;
             server
