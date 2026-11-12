@@ -168,6 +168,8 @@ struct ExecRow {
     attempt_count: i32,
     max_attempts: i32,
     tokens_used: i64,
+    /// MAF's own LLM spend (planning, step selection, synthesis); agent steps are not in it.
+    cost_usd: f64,
     started_at: Option<DateTime<Utc>>,
     completed_at: Option<DateTime<Utc>>,
     duration_ms: Option<i64>,
@@ -1972,7 +1974,7 @@ async fn list_executions(
 
     let rows = sqlx::query_as::<_, ExecRow>(
         r#"SELECT id, execution_number, maf_id, user_id, status, attempt_count, max_attempts, tokens_used,
-                  started_at, completed_at, duration_ms, output,
+                  cost_usd, started_at, completed_at, duration_ms, output,
                   step_results::text AS step_results, error, created_at
            FROM maf_executions
            WHERE maf_id = $1 AND user_id = $2
@@ -2270,7 +2272,8 @@ async fn get_execution_usage(
         cache_creation_tokens: 0,
         agent_tokens: 0,
         maf_tokens: row.tokens_used,
-        cost_usd: 0.0,
+        // MAF's own calls are priced on the execution, not on any step's trace.
+        cost_usd: row.cost_usd,
     };
 
     let steps: Vec<StepUsage> = step_results
@@ -2544,7 +2547,7 @@ async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::
 async fn fetch_exec(db: &sqlx::PgPool, id: Uuid) -> Result<Option<ExecRow>, sqlx::Error> {
     sqlx::query_as::<_, ExecRow>(
         r#"SELECT id, execution_number, maf_id, user_id, status, attempt_count, max_attempts, tokens_used,
-                  started_at, completed_at, duration_ms, output,
+                  cost_usd, started_at, completed_at, duration_ms, output,
                   step_results::text AS step_results, error, created_at
            FROM maf_executions WHERE id = $1"#,
     )

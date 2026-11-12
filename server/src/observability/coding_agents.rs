@@ -402,7 +402,7 @@ async fn individual(
                             + u.cache_read_tokens + u.cache_creation_tokens), 0)::bigint AS tokens,
                COALESCE(sum(u.cost_usd), 0)::float8 AS cost_usd,
                count(*) FILTER (
-                   WHERE u.cost_usd = 0
+                   WHERE (u.cost_usd = 0 OR u.metadata->'pricing'->>'source' = 'Default')
                      AND (u.input_tokens + u.output_tokens
                           + u.cache_read_tokens + u.cache_creation_tokens) > 0
                )::bigint AS unpriced_calls

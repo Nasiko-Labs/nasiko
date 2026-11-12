@@ -1548,3 +1548,121 @@ async fn test_usage_counts_only_steps_that_called_an_agent_as_unresolved() {
 
     server.cleanup().await;
 }
+
+/// Q1-4: a run costs MAF's own calls plus its agent steps. The execution usage endpoint and the
+/// TokenOps workflow view must both say so, and the workflow view takes its tokens from the
+/// steps' traces rather than from the step records (which never carry any).
+#[tokio::test]
+#[serial]
+async fn test_run_cost_is_maf_cost_plus_step_cost_in_both_views() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let created: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Costed", agent_id)),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id: Uuid = created["data"]["id"].as_str().unwrap().parse().unwrap();
+
+    let traces = [
+        "1b4f0e9846d24b1c9a2f6e7d8c9b0a11",
+        "2c5a1f0957e35c2d0b3a7f8e9d0c1b22",
+    ];
+    let steps: Vec<_> = traces
+        .iter()
+        .zip(0..)
+        .map(|(trace, index)| {
+            let mut ran = nasiko_orchestrator::maf::executor::pending_result(
+                &nasiko_orchestrator::maf::types::MafStep {
+                    step_id: Uuid::new_v4(),
+                    step_index: index,
+                    agent_id,
+                    agent_name: "MAF Test Agent".to_string(),
+                    agent_endpoint: String::new(),
+                    task_description: format!("task {index}"),
+                    ext: serde_json::Map::new(),
+                },
+            );
+            ran.status = "success".to_string();
+            ran.trace_id = Some(trace.to_string());
+            ran
+        })
+        .collect();
+    // MAF's own planning and selection calls cost 0.50.
+    let execution_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json, step_results, \
+                                     cost_usd, started_at, completed_at) \
+         VALUES ($1, $2, 'success', 3, '{}'::jsonb, $3::jsonb, 0.5, now(), now()) RETURNING id",
+    )
+    .bind(maf_id)
+    .bind(user_id)
+    .bind(serde_json::to_string(&steps).unwrap())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    // The two agent steps cost 1.00 and 0.25.
+    for (trace, cost) in traces.iter().zip([1.0, 0.25]) {
+        sqlx::query(
+            "INSERT INTO trace_usage (trace_id, agent_name, agent_id, user_id, model, provider, \
+                                      input_tokens, output_tokens, cost_usd, started_at) \
+             VALUES ($1, 'MAF Test Agent', $2, $3, 'gpt-4o', 'openai', 100, 10, $4, now())",
+        )
+        .bind(trace)
+        .bind(agent_id)
+        .bind(user_id)
+        .bind(cost)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+
+    let usage: Value = auth(
+        server
+            .client
+            .get(server.url(&format!("/api/maf/execution/{execution_id}/usage"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let endpoint_cost = usage["data"]["totals"]["cost_usd"].as_f64().unwrap();
+    assert!((endpoint_cost - 1.75).abs() < 1e-9, "{usage}");
+
+    let view: Value = auth(
+        server
+            .client
+            .get(server.url("/api/observability/finops/attributions?range=7d&view=workflow")),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let row = view["data"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["maf_id"] == maf_id.to_string())
+        .unwrap_or_else(|| panic!("the workflow must be listed: {view}"));
+    let view_cost = row["total_cost"].as_f64().unwrap();
+    assert!((view_cost - endpoint_cost).abs() < 1e-6, "{view}");
+    assert_eq!(row["prompt_tokens"], 200, "{view}");
+    assert_eq!(row["completion_tokens"], 20, "{view}");
+
+    server.cleanup().await;
+}

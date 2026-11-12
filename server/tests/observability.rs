@@ -2784,3 +2784,99 @@ async fn coding_agent_usage_requires_auth() {
     assert_eq!(res.status(), 401);
     server.cleanup().await;
 }
+
+/// Q1-3: the orchestrator's and MAF's own rows carry the routed agent's id, yet they are platform
+/// spend. The dashboard totals must count them, and agree with the spend calendar.
+#[tokio::test]
+#[serial]
+async fn finops_dashboard_totals_count_orchestrator_and_maf_rows() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let admin = seed_user(&server, "platform-rows-admin").await;
+    let agent = seed_agent(&server, admin, "platform-rows-agent").await;
+    spend_row(&server, "platform-rows-agent", admin, 1.0).await;
+    // Both store the agent they ran for; the orchestrator's latency is never recorded (0).
+    for (name, cost) in [("orchestrator", 2.0), ("maf:step0", 0.5)] {
+        sqlx::query(
+            "INSERT INTO trace_usage \
+               (trace_id, agent_name, agent_id, user_id, model, provider, input_tokens, \
+                output_tokens, cost_usd, latency_ms, started_at) \
+             VALUES ($1, $2, $3, $4, 'gpt-4o', 'openai', 100, 10, $5, 0, now())",
+        )
+        .bind(format!("trace-{}", Uuid::new_v4()))
+        .bind(name)
+        .bind(agent)
+        .bind(admin)
+        .bind(cost)
+        .execute(&server.db)
+        .await
+        .expect("seed platform row");
+    }
+    let token = common::sign_token(&admin.to_string(), "platform-rows-admin", true, "admin");
+
+    let body: Value = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard?range=7d"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let total = body["data"]["summary"]["total_cost"].as_f64().unwrap();
+    assert!(
+        (total - 3.5).abs() < 1e-6,
+        "agent 1.0 + orchestrator 2.0 + MAF step 0.5: {body}"
+    );
+    assert_eq!(
+        body["data"]["kpis"]["avg_latency_ms"]["current"].as_f64(),
+        Some(500.0),
+        "the platform rows' zero latency must not pull the KPI down: {body}"
+    );
+
+    let (calendar, text) = spend_seen(&server, "calendar", &token).await;
+    assert!(
+        (calendar - total).abs() < 1e-6,
+        "the calendar must match the dashboard: {text}"
+    );
+    server.cleanup().await;
+}
+
+/// Q1-2 (count half): a call on a model with no price is costed at the default rate, so it is
+/// never free; it must still count as unpriced.
+#[tokio::test]
+#[serial]
+async fn finops_dashboard_counts_default_priced_calls_as_unpriced() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let admin = seed_user(&server, "unpriced-admin").await;
+    seed_agent(&server, admin, "unpriced-agent").await;
+    spend_row(&server, "unpriced-agent", admin, 1.0).await;
+    sqlx::query(
+        "INSERT INTO trace_usage \
+           (trace_id, agent_name, user_id, model, provider, input_tokens, output_tokens, \
+            cost_usd, latency_ms, started_at, metadata) \
+         VALUES ($1, 'unpriced-agent', $2, 'custom-model', 'custom', 100, 10, 0.00035, 500, now(), \
+                 '{\"pricing\": {\"source\": \"Default\", \"estimated\": true}}'::jsonb)",
+    )
+    .bind(format!("trace-{}", Uuid::new_v4()))
+    .bind(admin)
+    .execute(&server.db)
+    .await
+    .expect("seed default-priced row");
+    let token = common::sign_token(&admin.to_string(), "unpriced-admin", true, "admin");
+
+    let body: Value = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard?range=7d"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["data"]["summary"]["unpriced_calls"], 1, "{body}");
+    server.cleanup().await;
+}
