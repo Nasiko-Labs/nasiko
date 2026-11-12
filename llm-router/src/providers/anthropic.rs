@@ -514,6 +514,9 @@ fn to_anthropic_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<Value
     if let Some(t) = cfg.temperature.or(req.temperature) {
         body["temperature"] = json!(t);
     }
+    if let Some(stop) = stop_sequences(req) {
+        body["stop_sequences"] = json!(stop);
+    }
     if let Some(system) = system_field(&system_messages) {
         body["system"] = system;
     }
@@ -754,11 +757,22 @@ fn as_blocks(field: &mut Value) -> Option<&mut Vec<Value>> {
     field.as_array_mut()
 }
 
+/// OpenAI `stop` (a string or an array of strings; not a named IR field, so it sits in
+/// `extra`) as Anthropic `stop_sequences`. `None` when absent or empty.
+fn stop_sequences(req: &ChatRequest) -> Option<Vec<&str>> {
+    let stop: Vec<&str> = match req.extra.get("stop")? {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(items) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    (!stop.is_empty()).then_some(stop)
+}
+
 fn tool_choice_to_anthropic(choice: &Value) -> Option<Value> {
     match choice {
         Value::String(s) => match s.as_str() {
             "required" => Some(json!({ "type": "any" })),
-            "none" => None, // Anthropic has no "none"; omit
+            "none" => Some(json!({ "type": "none" })),
             _ => Some(json!({ "type": "auto" })),
         },
         Value::Object(o) => o
@@ -995,6 +1009,34 @@ mod tests {
         assert!(tool.get("type").is_none());
         assert_eq!(tool["input_schema"]["properties"]["text"]["type"], "string");
         assert_eq!(body["tool_choice"], json!({ "type": "auto" }));
+    }
+
+    #[test]
+    fn request_sends_tool_choice_none_and_stop_sequences() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "count to 10" }],
+            "tools": [{ "type": "function", "function": { "name": "f", "parameters": { "type": "object" } } }],
+            "tool_choice": "none",
+            "stop": ["6"]
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        assert_eq!(body["tool_choice"], json!({ "type": "none" }));
+        assert_eq!(body["stop_sequences"], json!(["6"]));
+    }
+
+    #[test]
+    fn request_accepts_a_single_stop_string() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gpt-4o",
+            "messages": [{ "role": "user", "content": "hi" }],
+            "stop": "END"
+        }))
+        .unwrap();
+        let body = to_anthropic_request(&req, &resolved()).unwrap();
+        assert_eq!(body["stop_sequences"], json!(["END"]));
+        assert!(body.get("stop").is_none());
     }
 
     #[test]

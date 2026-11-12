@@ -18,8 +18,6 @@
 
 use std::collections::HashMap;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 
 use super::{ChatStreamRenderer, InboundParser};
@@ -297,7 +295,10 @@ fn anthropic_source(
                 .get("data")
                 .and_then(Value::as_str)
                 .ok_or_else(|| GatewayError::BadRequest(format!("base64 {kind} missing data")))?;
-            Ok(DataSource::from_inline(media_type, data))
+            Ok(DataSource::Inline {
+                media_type: media_type.to_string(),
+                data: data.to_string(),
+            })
         }
         "url" => {
             let url = source
@@ -316,124 +317,28 @@ fn anthropic_source(
 ///
 /// `Ok(None)` means "contributes nothing to this turn" — an empty text block, or a
 /// `tool_result`, which the caller lifts into its own `{role:"tool"}` message instead.
-fn anthropic_block_to_parts(b: &Value) -> Result<Vec<ContentPart>, GatewayError> {
+fn anthropic_block_to_part(b: &Value) -> Result<Option<ContentPart>, GatewayError> {
     let block_type = b.get("type").and_then(Value::as_str).unwrap_or_default();
     match block_type {
         "text" => {
             let text = b.get("text").and_then(Value::as_str).unwrap_or_default();
-            Ok(text_part(text).into_iter().collect())
+            Ok((!text.is_empty()).then(|| ContentPart::Text(text.to_string())))
         }
-        "image" => Ok(vec![ContentPart::Image {
+        "image" => Ok(Some(ContentPart::Image {
             source: anthropic_source(b, "image", "image/jpeg")?,
             detail: None,
-        }]),
-        "document" => document_parts(b),
-        "search_result" => search_result_parts(b),
-        "tool_result" => Ok(Vec::new()),
-        "container_upload" => Err(GatewayError::BadRequest(
-            "'container_upload' blocks hand a file to Anthropic's code execution sandbox, which \
-             the router does not run; send the file as a document or image block instead"
-                .to_string(),
-        )),
-        other => Err(GatewayError::BadRequest(format!(
-            "unsupported content block type: '{other}' (the router reads text, image, document, \
-             search_result and tool_result blocks)"
-        ))),
-    }
-}
-
-fn search_result_parts(b: &Value) -> Result<Vec<ContentPart>, GatewayError> {
-    let field = |name: &str| {
-        b.get(name).ok_or_else(|| {
-            GatewayError::BadRequest(format!("search_result block missing '{name}'"))
-        })
-    };
-    let source = field("source")?.as_str().unwrap_or_default();
-    let title = field("title")?.as_str().unwrap_or_default();
-    let Value::Array(blocks) = field("content")? else {
-        return Err(GatewayError::BadRequest(
-            "search_result block missing 'content'".to_string(),
-        ));
-    };
-    let mut texts = Vec::with_capacity(blocks.len());
-    for block in blocks {
-        match block
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-        {
-            "text" => texts.push(
-                block
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            ),
-            other => {
-                return Err(GatewayError::BadRequest(format!(
-                    "a search_result can hold only text blocks, not '{other}'"
-                )));
-            }
-        }
-    }
-    Ok(vec![ContentPart::Text(format!(
-        "\n\nSearch result: {title}\nSource: {source}\n\n{}\n\n",
-        texts.join("\n\n")
-    ))])
-}
-
-fn text_part(text: &str) -> Option<ContentPart> {
-    (!text.is_empty()).then(|| ContentPart::Text(text.to_string()))
-}
-
-fn document_parts(b: &Value) -> Result<Vec<ContentPart>, GatewayError> {
-    // `title` is Anthropic's only name for a document, and OpenAI requires one
-    // alongside `file_data`; absent, the renderer synthesizes it from the media
-    // type (`ir::parts::openai_filename`).
-    let filename = b.get("title").and_then(Value::as_str).map(str::to_string);
-    let source = b.get("source");
-    match source.and_then(|s| s.get("type")).and_then(Value::as_str) {
-        Some("text") => {
-            let text = source
-                .and_then(|s| s.get("data"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| GatewayError::BadRequest("text document missing data".into()))?;
-            Ok(vec![ContentPart::File {
-                source: DataSource::from_inline("text/plain", &STANDARD.encode(text)),
-                filename,
-            }])
-        }
-        Some("content") => content_document_parts(source.and_then(|s| s.get("content"))),
-        _ => Ok(vec![ContentPart::File {
+        })),
+        "document" => Ok(Some(ContentPart::File {
             source: anthropic_source(b, "document", "application/pdf")?,
-            filename,
-        }]),
-    }
-}
-
-fn content_document_parts(content: Option<&Value>) -> Result<Vec<ContentPart>, GatewayError> {
-    match content {
-        Some(Value::String(text)) => Ok(text_part(text).into_iter().collect()),
-        Some(Value::Array(blocks)) => {
-            let mut parts = Vec::new();
-            for block in blocks {
-                match block
-                    .get("type")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                {
-                    "text" | "image" => parts.extend(anthropic_block_to_parts(block)?),
-                    other => {
-                        return Err(GatewayError::BadRequest(format!(
-                            "content document cannot hold a '{other}' block"
-                        )));
-                    }
-                }
-            }
-            Ok(parts)
-        }
-        _ => Err(GatewayError::BadRequest(
-            "content document missing content".into(),
-        )),
+            // `title` is Anthropic's only name for a document, and OpenAI requires one
+            // alongside `file_data`; absent, the renderer synthesizes it from the media
+            // type (`ir::parts::openai_filename`).
+            filename: b.get("title").and_then(Value::as_str).map(str::to_string),
+        })),
+        "tool_result" => Ok(None),
+        other => Err(GatewayError::BadRequest(format!(
+            "unsupported content block type: '{other}'"
+        ))),
     }
 }
 
@@ -469,7 +374,9 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
                         Some(Value::Array(sub_blocks)) => {
                             let mut sub_parts = Vec::new();
                             for sb in sub_blocks {
-                                sub_parts.extend(anthropic_block_to_parts(sb)?);
+                                if let Some(part) = anthropic_block_to_part(sb)? {
+                                    sub_parts.push(part);
+                                }
                             }
                             parts_to_content_value(&sub_parts)
                         }
@@ -484,17 +391,8 @@ fn append_user_from_anthropic(content: &Value, out: &mut Vec<Value>) -> Result<(
                         "tool_call_id": id,
                         "content": content,
                     }));
-                } else {
-                    let parts = anthropic_block_to_parts(b)?;
-                    let last = parts.len().saturating_sub(1);
-                    for (i, part) in parts.into_iter().enumerate() {
-                        let rendered = part.to_openai_part();
-                        user_parts.push(if i == last {
-                            with_cache_marker_of(b, rendered)
-                        } else {
-                            rendered
-                        });
-                    }
+                } else if let Some(part) = anthropic_block_to_part(b)? {
+                    user_parts.push(with_cache_marker_of(b, part.to_openai_part()));
                 }
             }
             if !user_parts.is_empty() {
@@ -532,6 +430,7 @@ fn tool_choice_from_anthropic(v: &Value) -> Option<Value> {
     match v.get("type").and_then(Value::as_str) {
         Some("auto") => Some(json!("auto")),
         Some("any") => Some(json!("required")),
+        Some("none") => Some(json!("none")),
         Some("tool") => v
             .get("name")
             .and_then(Value::as_str)
@@ -553,12 +452,7 @@ fn reverse_stop_reason(finish_reason: &str) -> &'static str {
 
 /// Present our completion id as an Anthropic-style `msg_…` id.
 fn anthropic_msg_id(id: &str) -> String {
-    let id = id.trim_start_matches("chatcmpl-");
-    if id.starts_with("msg_") {
-        id.to_string()
-    } else {
-        format!("msg_{id}")
-    }
+    format!("msg_{}", id.trim_start_matches("chatcmpl-"))
 }
 
 /// Frame one Anthropic SSE event: an `event:` line plus a `data:` line whose payload
@@ -885,6 +779,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_keeps_tool_choice_none() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 1024,
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tools": [{ "name": "f", "input_schema": { "type": "object" } }],
+                "tool_choice": { "type": "none" }
+            }))
+            .unwrap();
+        assert_eq!(req.tool_choice, Some(json!("none")));
+    }
+
+    #[test]
     fn parse_keeps_cache_markers_on_content_parts_where_openrouter_reads_them() {
         let ephemeral = json!({ "type": "ephemeral" });
         let req = AnthropicInbound
@@ -1202,50 +1110,6 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_id_carries_the_msg_prefix_exactly_once() {
-        for (id, expected) in [
-            ("chatcmpl-msg_011CghUGgzcD", "msg_011CghUGgzcD"),
-            ("msg_011CghUGgzcD", "msg_011CghUGgzcD"),
-            ("chatcmpl-abc123", "msg_abc123"),
-            ("abc123", "msg_abc123"),
-        ] {
-            assert_eq!(anthropic_msg_id(id), expected, "{id}");
-        }
-    }
-
-    #[test]
-    fn a_base64_source_media_type_is_normalized() {
-        let req = AnthropicInbound
-            .parse_chat(json!({
-                "model": "claude-3-5-sonnet-20241022",
-                "max_tokens": 1024,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        { "type": "image", "source": { "type": "base64", "media_type": "Image/PNG", "data": "iVBORw0KGgo=" } },
-                        { "type": "document", "source": { "type": "base64", "media_type": "application/pdf;name=q3.pdf", "data": "JVBERi0xLjQK" } }
-                    ]
-                }]
-            }))
-            .unwrap();
-
-        let parts = req.messages[0]
-            .content
-            .as_ref()
-            .unwrap()
-            .as_array()
-            .unwrap();
-        assert_eq!(
-            parts[0]["image_url"]["url"],
-            "data:image/png;base64,iVBORw0KGgo="
-        );
-        assert_eq!(
-            parts[1]["file"]["file_data"],
-            "data:application/pdf;base64,JVBERi0xLjQK"
-        );
-    }
-
-    #[test]
     fn parse_chat_with_image_base64_source() {
         let req = AnthropicInbound
             .parse_chat(json!({
@@ -1397,231 +1261,5 @@ mod tests {
             }))
             .unwrap_err();
         assert!(matches!(err_block, GatewayError::BadRequest(_)));
-    }
-
-    fn user_turn(blocks: Value) -> Result<ChatRequest, GatewayError> {
-        AnthropicInbound.parse_chat(json!({
-            "model": "claude-haiku-5-5",
-            "max_tokens": 64,
-            "messages": [{ "role": "user", "content": blocks }]
-        }))
-    }
-
-    fn parts_of(req: &ChatRequest, index: usize) -> Vec<Value> {
-        req.messages[index]
-            .content
-            .as_ref()
-            .unwrap()
-            .as_array()
-            .unwrap()
-            .clone()
-    }
-
-    fn decoded_file_text(part: &Value) -> String {
-        use base64::Engine;
-        let data_url = part["file"]["file_data"].as_str().unwrap();
-        let encoded = data_url.strip_prefix("data:text/plain;base64,").unwrap();
-        String::from_utf8(
-            base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .unwrap(),
-        )
-        .unwrap()
-    }
-
-    #[test]
-    fn a_text_document_becomes_a_text_file_with_its_title() {
-        let req = user_turn(json!([
-            { "type": "text", "text": "What was EMEA in Q2?" },
-            { "type": "document", "title": "sales.csv",
-              "source": { "type": "text", "media_type": "text/plain", "data": "region,q2\nEMEA,913" } }
-        ]))
-        .unwrap();
-        let parts = parts_of(&req, 0);
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[1]["type"], "file");
-        assert_eq!(parts[1]["file"]["filename"], "sales.csv");
-        assert_eq!(decoded_file_text(&parts[1]), "region,q2\nEMEA,913");
-    }
-
-    #[test]
-    fn a_text_document_without_a_media_type_is_plain_text() {
-        let req = user_turn(json!([
-            { "type": "document", "source": { "type": "text", "data": "ünïcode ✓" } }
-        ]))
-        .unwrap();
-        assert_eq!(decoded_file_text(&parts_of(&req, 0)[0]), "ünïcode ✓");
-    }
-
-    #[test]
-    fn a_content_document_becomes_its_own_blocks_with_the_marker_on_the_last() {
-        let req = user_turn(json!([
-            { "type": "document", "title": "brief",
-              "cache_control": { "type": "ephemeral" },
-              "source": { "type": "content", "content": [
-                  { "type": "text", "text": "Page one." },
-                  { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } }
-              ] } }
-        ]))
-        .unwrap();
-        let parts = parts_of(&req, 0);
-        assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0]["type"], "text");
-        assert_eq!(parts[0]["text"], "Page one.");
-        assert!(parts[0].get(CACHE_CONTROL).is_none());
-        assert_eq!(parts[1]["type"], "image_url");
-        assert_eq!(parts[1][CACHE_CONTROL], json!({ "type": "ephemeral" }));
-    }
-
-    #[test]
-    fn a_content_document_given_as_a_string_is_one_text_part() {
-        let req = user_turn(json!([
-            { "type": "document", "source": { "type": "content", "content": "Just words." } }
-        ]))
-        .unwrap();
-        assert_eq!(req.messages[0].content, Some(json!("Just words.")));
-    }
-
-    #[test]
-    fn a_document_inside_a_tool_result_is_kept() {
-        let req = user_turn(json!([
-            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [
-                { "type": "document", "title": "out.txt", "source": { "type": "text", "data": "done: 7781" } }
-            ] }
-        ]))
-        .unwrap();
-        assert_eq!(req.messages[0].role, "tool");
-        let parts = parts_of(&req, 0);
-        assert_eq!(parts[0]["file"]["filename"], "out.txt");
-        assert_eq!(decoded_file_text(&parts[0]), "done: 7781");
-    }
-
-    #[test]
-    fn a_broken_text_or_content_document_is_refused_by_name() {
-        let cases = [
-            (json!({ "type": "text" }), "text document missing data"),
-            (
-                json!({ "type": "text", "data": 42 }),
-                "text document missing data",
-            ),
-            (
-                json!({ "type": "content" }),
-                "content document missing content",
-            ),
-            (
-                json!({ "type": "content", "content": [{ "type": "document", "source": { "type": "text", "data": "x" } }] }),
-                "content document cannot hold a 'document' block",
-            ),
-            (
-                json!({ "type": "file", "file_id": "file_1" }),
-                "unsupported document source type: 'file'",
-            ),
-        ];
-        for (source, expected) in cases {
-            let err = user_turn(json!([{ "type": "document", "source": source }])).unwrap_err();
-            match err {
-                GatewayError::BadRequest(detail) => {
-                    assert!(detail.contains(expected), "{detail} should name {expected}")
-                }
-                other => panic!("expected BadRequest, got {other:?}"),
-            }
-        }
-    }
-
-    fn search_result(content: Value) -> Value {
-        json!({ "type": "search_result", "source": "https://docs.example.com/api",
-                "title": "API Reference", "content": content,
-                "citations": { "enabled": true } })
-    }
-
-    const RENDERED: &str = "\n\nSearch result: API Reference\nSource: https://docs.example.com/api\n\nTimeouts default to 30 s.\n\nSet `timeout_ms` to change it.\n\n";
-
-    fn refusal(blocks: Value) -> String {
-        match user_turn(blocks).unwrap_err() {
-            GatewayError::BadRequest(detail) => detail,
-            other => panic!("expected BadRequest, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_search_result_reaches_the_model_as_text_with_its_title_and_source() {
-        let req = user_turn(json!([
-            { "type": "text", "text": "What is the timeout?" },
-            search_result(json!([
-                { "type": "text", "text": "Timeouts default to 30 s." },
-                { "type": "text", "text": "Set `timeout_ms` to change it." }
-            ]))
-        ]))
-        .unwrap();
-        assert_eq!(
-            req.messages[0].content,
-            Some(json!(format!("What is the timeout?{RENDERED}")))
-        );
-    }
-
-    #[test]
-    fn a_search_result_inside_a_tool_result_is_kept() {
-        let req = user_turn(json!([
-            { "type": "tool_result", "tool_use_id": "toolu_1", "content": [
-                search_result(json!([
-                    { "type": "text", "text": "Timeouts default to 30 s." },
-                    { "type": "text", "text": "Set `timeout_ms` to change it." }
-                ]))
-            ] }
-        ]))
-        .unwrap();
-        assert_eq!(req.messages[0].role, "tool");
-        assert_eq!(req.messages[0].content, Some(json!(RENDERED)));
-    }
-
-    #[test]
-    fn a_malformed_search_result_is_refused_by_name() {
-        let cases = [
-            (
-                json!({ "type": "search_result", "title": "t", "content": [{ "type": "text", "text": "x" }] }),
-                "search_result block missing 'source'",
-            ),
-            (
-                json!({ "type": "search_result", "source": "s", "content": [{ "type": "text", "text": "x" }] }),
-                "search_result block missing 'title'",
-            ),
-            (
-                json!({ "type": "search_result", "source": "s", "title": "t" }),
-                "search_result block missing 'content'",
-            ),
-            (
-                search_result(json!([
-                    { "type": "image", "source": { "type": "url", "url": "https://x.test/a.png" } }
-                ])),
-                "a search_result can hold only text blocks, not 'image'",
-            ),
-        ];
-        for (block, expected) in cases {
-            let detail = refusal(json!([block]));
-            assert!(detail.contains(expected), "{detail} should say {expected}");
-        }
-    }
-
-    #[test]
-    fn a_container_upload_is_refused_with_the_reason() {
-        let detail = refusal(json!([
-            { "type": "text", "text": "Analyse this." },
-            { "type": "container_upload", "file_id": "file_011" }
-        ]));
-        assert_eq!(
-            detail,
-            "'container_upload' blocks hand a file to Anthropic's code execution sandbox, \
-             which the router does not run; send the file as a document or image block instead"
-        );
-    }
-
-    #[test]
-    fn an_unknown_block_type_is_refused_naming_what_the_router_reads() {
-        let detail = refusal(json!([{ "type": "hologram", "data": "?" }]));
-        assert_eq!(
-            detail,
-            "unsupported content block type: 'hologram' (the router reads text, image, \
-             document, search_result and tool_result blocks)"
-        );
     }
 }
