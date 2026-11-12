@@ -138,15 +138,14 @@ pub trait AuthService: Send + Sync + 'static {
     /// only after — a plain user/agent-count would let an over-limit login
     /// through as easily as an under-limit one.
     ///
-    /// Takes the same arguments `upsert_oauth_user` does, and must answer what
-    /// it then does: only an existing identity or a verified email resolves
-    /// to an existing user. A taken username does not: the sign-in creates a
-    /// new account (`name-2`, NAS-1111), so it is a new signup.
+    /// Must answer what `upsert_oauth_user` then does: only an existing
+    /// identity or a verified email resolves to an existing user. The username
+    /// plays no part, because a first-time sign-in whose username is taken gets
+    /// a numbered username of its own, so it takes no argument for it.
     async fn would_create_user(
         &self,
         provider: &str,
         provider_id: &str,
-        username: &str,
         verified_email: Option<&str>,
     ) -> Result<bool, AuthError>;
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError>;
@@ -528,7 +527,6 @@ impl AuthService for SimpleJwtAuth {
         &self,
         _provider: &str,
         _provider_id: &str,
-        _username: &str,
         _verified_email: Option<&str>,
     ) -> Result<bool, AuthError> {
         Err(AuthError::Unsupported)

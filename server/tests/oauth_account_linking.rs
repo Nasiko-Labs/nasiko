@@ -100,9 +100,9 @@ async fn a_verified_email_still_links_to_its_existing_account() {
 
 /// `would_create_user` is what a cap on new accounts asks before a sign-in:
 /// "does this create an account?". It must answer exactly what
-/// `upsert_oauth_user` then does. A taken username is not an existing user any
-/// more (the sign-in gets `name-2`), so answering "existing" there let anyone
-/// past a full cap by picking a username that is already taken.
+/// `upsert_oauth_user` then does: a first sign-in whose username is taken
+/// creates an account (`name-2`), so it is new; a known identity, or a verified
+/// email that belongs to an account, is not.
 #[tokio::test]
 #[serial]
 async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
@@ -118,7 +118,7 @@ async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
 
     // A first sign-in whose provider username is taken: a new account.
     let predicted = auth
-        .would_create_user("github", "gh-3003", "dummy-admin", None)
+        .would_create_user("github", "gh-3003", None)
         .await
         .unwrap();
     let before = users().await;
@@ -134,7 +134,7 @@ async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
     // The same identity again: no new account, and the check says so.
     assert!(
         !auth
-            .would_create_user("github", "gh-3003", "dummy-admin", None)
+            .would_create_user("github", "gh-3003", None)
             .await
             .unwrap()
     );
@@ -143,12 +143,7 @@ async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
     seed_user(&server, "dummy-mail", false).await;
     assert!(
         !auth
-            .would_create_user(
-                "oidc",
-                "sub-4004",
-                "someone-else",
-                Some("dummy-mail@local.test")
-            )
+            .would_create_user("oidc", "sub-4004", Some("dummy-mail@local.test"))
             .await
             .unwrap()
     );

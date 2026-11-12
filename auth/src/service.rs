@@ -63,27 +63,23 @@ impl AuthServiceImpl {
         .await;
     }
 
-    /// The user this `(provider, provider_id)` OAuth login resolves to, if
-    /// one already exists: an exact identity match, or a *verified* email that
+    /// Whether this `(provider, provider_id)` OAuth login resolves to a user
+    /// that already exists: an exact identity match, or a *verified* email that
     /// already belongs to a user (how one person keeps a single CP user across
     /// Google + GitHub). Synthetic email placeholders
     /// (`{username}@{provider}.users`) are never matched: callers only pass
-    /// emails they have verified. `None` means this login would create a
-    /// brand-new user. Backs `would_create_user` (a read-only check of that
-    /// question, used to enforce a creation cap before provisioning), which
-    /// must resolve "new" exactly as `upsert_oauth_user`'s own find-or-create
-    /// does, or the cap and the write would disagree.
+    /// emails they have verified. Backs `would_create_user`, which must resolve
+    /// "new" exactly as `upsert_oauth_user`'s own find-or-create does, or a cap
+    /// on new accounts and the write would disagree.
     ///
-    /// A taken username is deliberately *not* a match: `insert_oauth_user`
-    /// never adopts an account by username (NAS-1111), it creates `name-2`.
-    /// Counting it as existing let any sign-in past a full cap on new
-    /// accounts by choosing a username that is already taken.
-    async fn find_existing_or_linked_user(
+    /// A username never matches: `insert_oauth_user` gives a first-time
+    /// sign-in whose username is taken a numbered username of its own.
+    async fn resolves_to_existing_user(
         &self,
         provider: &str,
         provider_id: &str,
         verified_email: Option<&str>,
-    ) -> Result<Option<ExistingUser>, AuthError> {
+    ) -> Result<bool, AuthError> {
         let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
             "SELECT user_id FROM user_identities WHERE provider = $1 AND provider_id = $2",
         )
@@ -92,7 +88,7 @@ impl AuthServiceImpl {
         .fetch_optional(&self.db)
         .await?;
         if existing.is_some() {
-            return Ok(Some(ExistingUser::ExactMatch));
+            return Ok(true);
         }
 
         let linked: Option<(uuid::Uuid,)> = match verified_email {
@@ -104,16 +100,8 @@ impl AuthServiceImpl {
             }
             None => None,
         };
-        Ok(linked.map(|_| ExistingUser::LinkedByEmail))
+        Ok(linked.is_some())
     }
-}
-
-/// The two ways `find_existing_or_linked_user` can resolve to an existing
-/// user. Only the presence of a match is read today (by `would_create_user`);
-/// the variant names record which lookup matched for anyone extending this.
-enum ExistingUser {
-    ExactMatch,
-    LinkedByEmail,
 }
 
 /// How many usernames `insert_oauth_user` tries: the provider's own, then
@@ -605,15 +593,12 @@ impl AuthService for AuthServiceImpl {
         &self,
         provider: &str,
         provider_id: &str,
-        // Not consulted: a taken username never resolves to an existing user
-        // (see `find_existing_or_linked_user`).
-        _username: &str,
         verified_email: Option<&str>,
     ) -> Result<bool, AuthError> {
-        let found = self
-            .find_existing_or_linked_user(provider, provider_id, verified_email)
+        let existing = self
+            .resolves_to_existing_user(provider, provider_id, verified_email)
             .await?;
-        Ok(found.is_none())
+        Ok(!existing)
     }
 
     async fn lookup_user(&self, user_id: &str) -> Result<Identity, AuthError> {
