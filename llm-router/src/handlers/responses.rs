@@ -914,6 +914,7 @@ impl AttemptGuard {
                 compress_metadata: routed.compression.metadata.clone(),
                 // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
+                compact_tools_metadata: None,
                 compress_bytes: routed.compression.bytes,
                 compact_tools_bytes: None,
                 // Only ever written for a failed attempt (a success disarms the guard), where it
@@ -1014,6 +1015,7 @@ fn log_response_usage(
             platform_paid: attempt.platform_paid,
             compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
+            compact_tools_metadata: None,
             compress_bytes: routed.compression.bytes,
             // Compact tools runs in chat_core only.
             compact_tools_bytes: None,

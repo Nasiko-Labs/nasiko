@@ -62,6 +62,11 @@ pub struct UsageRecord {
     /// having: IP-1 leaves a row only when it acted, so a missing block is ambiguous between
     /// "off" and "nothing to do". This one always says which.
     pub brevity_metadata: Option<serde_json::Value>,
+    /// Pre-serialized `metadata.compact_tools` block (`compact_tools::to_metadata`): what this call
+    /// did with compact schemas and the tool-definition bytes it sent. Unlike the blocks above it
+    /// is added up across a flow's calls, not overwritten (see [`write_trace_usage`]). `None` on
+    /// a call that did not come through chat (embeddings, `/v1/responses`, a failed attempt).
+    pub compact_tools_metadata: Option<serde_json::Value>,
     /// `(bytes_in, bytes_out)` from IP-1 when it actually reduced the payload, for the
     /// `token_savings` ledger. Two integers rather than the compression module's type, so this
     /// module stays a pure DB concern.
@@ -144,6 +149,7 @@ impl UsageRecord {
             platform_paid: attempt.platform_paid,
             compress_metadata: None,
             brevity_metadata: None,
+            compact_tools_metadata: None,
             compress_bytes: None,
             compact_tools_bytes: None,
             request_bytes: scope.request_bytes,
@@ -294,6 +300,7 @@ pub async fn log_usage(
         cache_creation: serde_json::to_value(&cache_details).unwrap_or(serde_json::Value::Null),
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
+        compact_tools: record.compact_tools_metadata,
         failure: record.failure.map(|failure| FailureMetadata {
             failure,
             reported_usage,
@@ -362,7 +369,8 @@ pub async fn log_usage(
 /// One priced LLM call, added live to its `trace_usage` row so budgets read
 /// spend with no materializer lag.
 struct LiveSpend {
-    /// Per-call metadata, merged into `trace_usage.metadata` (later call wins per key).
+    /// Per-call metadata, merged into `trace_usage.metadata` (later call wins per key, except
+    /// `compact_tools`, whose counters add up).
     metadata: serde_json::Value,
     owner: Uuid,
     agent: Option<Uuid>,
@@ -494,7 +502,21 @@ async fn write_trace_usage(
                source                       = CASE WHEN EXCLUDED.source = 'agent' THEN trace_usage.source ELSE EXCLUDED.source END,
                priced_by                    = 'router',
                materialized_at              = now(),
-               metadata                     = trace_usage.metadata || EXCLUDED.metadata"#,
+               -- Later call wins per key, except `compact_tools`: its flat counters are added
+               -- key by key, so a flow that compacted its first call and skipped the rest keeps
+               -- both (`compact_tools::to_metadata`).
+               metadata                     = trace_usage.metadata || EXCLUDED.metadata
+                   || CASE WHEN trace_usage.metadata ? 'compact_tools'
+                            AND EXCLUDED.metadata ? 'compact_tools'
+                       THEN jsonb_build_object('compact_tools', (
+                           SELECT jsonb_object_agg(
+                                      k,
+                                      COALESCE((trace_usage.metadata->'compact_tools'->>k)::bigint, 0)
+                                      + COALESCE((EXCLUDED.metadata->'compact_tools'->>k)::bigint, 0))
+                             FROM (SELECT jsonb_object_keys(trace_usage.metadata->'compact_tools')
+                                   UNION
+                                   SELECT jsonb_object_keys(EXCLUDED.metadata->'compact_tools')) AS keys(k)))
+                       ELSE '{}'::jsonb END"#,
     )
     .bind(&trace_id)
     .bind(&agent_name)
@@ -596,6 +618,8 @@ struct MetadataInputs {
     compress: Option<serde_json::Value>,
     /// Always `Some` once the brevity layer exists: it records "skipped, and why" too.
     brevity: Option<serde_json::Value>,
+    /// `Some` on every chat call, applied or skipped; summed across the flow on write.
+    compact_tools: Option<serde_json::Value>,
     /// `None` for a call that succeeded.
     failure: Option<FailureMetadata>,
 }
@@ -628,6 +652,9 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     if let Some(brevity) = inputs.brevity {
         metadata["brevity"] = brevity;
     }
+    if let Some(compact_tools) = inputs.compact_tools {
+        metadata["compact_tools"] = compact_tools;
+    }
     if let Some(failure) = inputs.failure {
         metadata["failure"] = serde_json::json!({
             "class": failure.failure.class,
@@ -656,6 +683,7 @@ mod tests {
             cache_creation: serde_json::Value::Null,
             compress: None,
             brevity: None,
+            compact_tools: None,
             failure: None,
         }
     }
@@ -675,6 +703,16 @@ mod tests {
             })
         );
         assert_eq!(build_metadata(inputs(false))["key_source"], "user_secret");
+    }
+
+    #[test]
+    fn a_chat_calls_compact_tools_block_reaches_the_row_metadata() {
+        let block = serde_json::json!({ "calls": 1, "applied": 1, "tool_bytes_sent": 10 });
+        let metadata = build_metadata(MetadataInputs {
+            compact_tools: Some(block.clone()),
+            ..inputs(true)
+        });
+        assert_eq!(metadata["compact_tools"], block);
     }
 
     /// NAS-1018: only a failed call with no reported usage gets a prompt estimate, at the

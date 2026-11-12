@@ -42,6 +42,7 @@ fn record(owner: Uuid, agent: Uuid, flow_id: Option<&str>, input: i64, output: i
         platform_paid: true,
         compress_metadata: None,
         brevity_metadata: None,
+        compact_tools_metadata: None,
         compress_bytes: None,
         compact_tools_bytes: None,
         request_bytes: None,
@@ -118,6 +119,64 @@ async fn rows(db: &PgPool, agent: Uuid) -> Vec<Row> {
     .fetch_all(db)
     .await
     .unwrap()
+}
+
+/// A flow's `metadata.compact_tools` adds its calls' counters together, where every other block
+/// keeps the last call's: a flow that compacted its first call and skipped the rest must show
+/// both, or the last skip would read as "compact schemas never ran".
+#[tokio::test]
+#[serial]
+async fn compact_tools_counters_add_up_across_a_flows_calls() {
+    let server = common::TestServer::start().await;
+    let (user, agent, _) = seed(&server.db, None, json!({})).await;
+    let pricing = PricingEngine::offline();
+
+    // The block `compact_tools::to_metadata` writes for one call.
+    let call = |outcome: &str, sent: i64, brevity: &str| UsageRecord {
+        compact_tools_metadata: Some(json!({
+            "calls": 1, outcome: 1, "tool_bytes_sent": sent, "tool_bytes_native": 10_270,
+        })),
+        brevity_metadata: Some(json!({ "skipped": brevity })),
+        ..record(user, agent, Some(TRACE), 100, 10)
+    };
+    // A call that is not a chat call (an embedding, a `/v1/responses` call) carries no block, and
+    // must leave the counters the chat calls before and after it wrote.
+    let not_chat = UsageRecord {
+        brevity_metadata: Some(json!({ "skipped": "not_chat" })),
+        ..record(user, agent, Some(TRACE), 100, 10)
+    };
+    for record in [
+        call("applied", 7_430, "first"),
+        call("skipped_tool_history", 10_270, "second"),
+        not_chat,
+        call("skipped_tool_history", 10_270, "third"),
+    ] {
+        log_usage(server.db.clone(), &pricing, &NoUsageLedger, record)
+            .await
+            .unwrap();
+    }
+
+    let metadata: serde_json::Value =
+        sqlx::query_scalar("SELECT metadata FROM trace_usage WHERE agent_id = $1")
+            .bind(agent)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(
+        metadata["compact_tools"],
+        json!({
+            "calls": 3,
+            "applied": 1,
+            "skipped_tool_history": 2,
+            "tool_bytes_sent": 27_970,
+            "tool_bytes_native": 30_810,
+        })
+    );
+    assert_eq!(
+        metadata["brevity"],
+        json!({ "skipped": "third" }),
+        "every other block still keeps the last call's"
+    );
 }
 
 #[tokio::test]

@@ -458,6 +458,26 @@ async fn chat_core(
         skipped = compact.as_ref().err().map(|s| s.as_label()),
         "compact_tools: decision"
     );
+    // The usage row's `metadata.compact_tools`, one block per provider call: what it did with
+    // compact schemas and the tool-definition bytes it sent, against what native would have.
+    let native_tool_bytes = match &compact {
+        Ok(compacted) => compacted.bytes.0,
+        Err(_) => crate::compact_tools::native_tool_bytes(&req, &ctx.cfg, &resolved),
+    };
+    let compact_tools_metadata = |outcome, tool_bytes_sent| {
+        Some(crate::compact_tools::to_metadata(
+            outcome,
+            tool_bytes_sent,
+            native_tool_bytes,
+        ))
+    };
+    let mut compact_outcome = match &compact {
+        Ok(compacted) => (crate::compact_tools::Outcome::Applied, compacted.bytes.1),
+        Err(reason) => (
+            crate::compact_tools::Outcome::Skipped(*reason),
+            native_tool_bytes,
+        ),
+    };
 
     // ── savings ledger inputs ─────────────────────────────────────────────────────────────
     // Measured here, after both seams, because this is the payload the provider will actually
@@ -569,6 +589,7 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
+            compact_tools_metadata: compact_tools_metadata(compact_outcome.0, compact_outcome.1),
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
@@ -632,6 +653,10 @@ async fn chat_core(
                 platform_paid,
                 compress_metadata: compression.to_metadata(),
                 brevity_metadata: brevity_metadata.clone(),
+                compact_tools_metadata: compact_tools_metadata(
+                    crate::compact_tools::Outcome::Retried,
+                    compacted.bytes.1,
+                ),
                 compress_bytes,
                 // The schemas this call saved are re-sent in full below, so nothing was saved.
                 compact_tools_bytes: None,
@@ -641,6 +666,10 @@ async fn chat_core(
             },
         );
         compact_tools_bytes = None;
+        compact_outcome = (
+            crate::compact_tools::Outcome::NativeResend,
+            native_tool_bytes,
+        );
         let resent = fallback::execute_chat_by(
             &ctx.http,
             &ctx.cfg,
@@ -694,6 +723,7 @@ async fn chat_core(
             platform_paid,
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
+            compact_tools_metadata: compact_tools_metadata(compact_outcome.0, compact_outcome.1),
             compress_bytes,
             compact_tools_bytes,
             request_bytes: Some(sent_bytes),
@@ -938,6 +968,7 @@ struct StreamChatArgs<'a> {
     /// all, so every trace-derived figure counted it as free.
     span: tracing::Span,
     brevity_metadata: Option<serde_json::Value>,
+    compact_tools_metadata: Option<serde_json::Value>,
     /// Savings-ledger inputs, threaded through to the `Drop` write for the same reason
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
@@ -964,6 +995,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_metadata,
         span,
         brevity_metadata,
+        compact_tools_metadata,
         compress_bytes,
         request_bytes,
     } = args;
@@ -984,6 +1016,7 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         platform_paid,
         compress_metadata,
         brevity_metadata,
+        compact_tools_metadata,
         compress_bytes,
         request_bytes,
     };
@@ -1069,7 +1102,8 @@ struct UsageGuard {
     /// Taken in `drop`, which runs exactly once.
     compress_metadata: Option<serde_json::Value>,
     brevity_metadata: Option<serde_json::Value>,
-    /// `Copy`, so unlike the two above these are read rather than taken.
+    compact_tools_metadata: Option<serde_json::Value>,
+    /// `Copy`, so unlike the three above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
 }
@@ -1079,6 +1113,7 @@ impl UsageGuard {
     fn usage_record(&mut self) -> UsageRecord {
         let compress_metadata = self.compress_metadata.take();
         let brevity_metadata = self.brevity_metadata.take();
+        let compact_tools_metadata = self.compact_tools_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         record_tool_calls(&self.span, st.tool_call_indexes.len());
@@ -1099,6 +1134,7 @@ impl UsageGuard {
             platform_paid: self.platform_paid,
             compress_metadata,
             brevity_metadata,
+            compact_tools_metadata,
             compress_bytes: self.compress_bytes,
             // Compact tools skips streaming requests.
             compact_tools_bytes: None,
@@ -1263,6 +1299,7 @@ mod tests {
                 // This test covers span lifetime, not compression.
                 compress_metadata: None,
                 brevity_metadata: None,
+                compact_tools_metadata: None,
             };
             drop(guard);
         });
@@ -1307,6 +1344,7 @@ mod tests {
                 platform_paid: true,
                 compress_metadata: None,
                 brevity_metadata: None,
+                compact_tools_metadata: None,
             };
             drop(guard);
         });
@@ -1347,6 +1385,7 @@ mod tests {
             platform_paid: true,
             compress_metadata: None,
             brevity_metadata: None,
+            compact_tools_metadata: None,
         };
         let record = guard.usage_record();
         assert_eq!(

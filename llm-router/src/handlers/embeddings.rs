@@ -134,6 +134,7 @@ async fn embeddings_core(
             compress_metadata: None,
             // Embeddings are not chat completions; IP-2 never runs here.
             brevity_metadata: None,
+            compact_tools_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
             compact_tools_bytes: None,

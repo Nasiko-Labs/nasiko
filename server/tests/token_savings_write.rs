@@ -57,6 +57,7 @@ fn record(
         platform_paid: true,
         compress_metadata: None,
         brevity_metadata: None,
+        compact_tools_metadata: None,
         compress_bytes,
         compact_tools_bytes: None,
         request_bytes,

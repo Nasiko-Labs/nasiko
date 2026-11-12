@@ -193,6 +193,58 @@ fn native_sent_bytes(
     size(&kept)
 }
 
+/// [`native_sent_bytes`] for a request that was not compacted: 0 when it carries no tools.
+pub(crate) fn native_tool_bytes(
+    req: &ChatRequest,
+    cfg: &GatewayConfig,
+    resolved: &ResolvedConfig,
+) -> usize {
+    match &req.tools {
+        Some(tools) if !tools.is_empty() => native_sent_bytes(tools, &req.messages, cfg, resolved),
+        _ => 0,
+    }
+}
+
+/// What one provider call did with compact schemas, for its usage row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// Sent compact, and the reply decoded.
+    Applied,
+    /// Sent native, and why compaction did not apply.
+    Skipped(Skipped),
+    /// Sent compact, but the reply did not decode; the native request goes out as its own call.
+    Retried,
+    /// That native re-send.
+    NativeResend,
+}
+
+/// One call's `metadata.compact_tools` block.
+///
+/// Flat counters (`calls`, one outcome key, the two byte counts), so the usage write can add a
+/// flow's calls together key by key (`usage::write_trace_usage`) rather than letting the last call
+/// overwrite the first: a flow typically compacts its first call and skips the rest with
+/// `tool_history`, and only the sum shows both. `tool_bytes_native` is what full schemas would have
+/// sent; it equals `tool_bytes_sent` on every call that was not compacted.
+pub(crate) fn to_metadata(
+    outcome: Outcome,
+    tool_bytes_sent: usize,
+    tool_bytes_native: usize,
+) -> Value {
+    let key = match outcome {
+        Outcome::Applied => "applied".to_string(),
+        Outcome::Skipped(reason) => format!("skipped_{}", reason.as_label()),
+        Outcome::Retried => "retried".to_string(),
+        Outcome::NativeResend => "native_resend".to_string(),
+    };
+    let mut block = serde_json::json!({
+        "calls": 1,
+        "tool_bytes_sent": tool_bytes_sent,
+        "tool_bytes_native": tool_bytes_native,
+    });
+    block[key.as_str()] = Value::from(1);
+    block
+}
+
 /// Checks and restores a compacted reply. Returns the failure label on any problem, with the
 /// response untouched; on success, compact calls have become native `tool_calls`.
 ///
@@ -402,6 +454,38 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&c.native).unwrap(), original);
         assert_eq!(c.tools[0].name, "get_weather");
+    }
+
+    /// One flat counter per outcome, so the usage write can add a flow's calls key by key.
+    #[test]
+    fn each_outcome_writes_its_own_counter_beside_the_byte_counts() {
+        for (outcome, key) in [
+            (Outcome::Applied, "applied"),
+            (
+                Outcome::Skipped(Skipped::ToolHistory),
+                "skipped_tool_history",
+            ),
+            (Outcome::Skipped(Skipped::Disabled), "skipped_disabled"),
+            (Outcome::Retried, "retried"),
+            (Outcome::NativeResend, "native_resend"),
+        ] {
+            assert_eq!(
+                to_metadata(outcome, 7_430, 10_270),
+                json!({ "calls": 1, key: 1, "tool_bytes_sent": 7_430, "tool_bytes_native": 10_270 }),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_tools_sends_no_tool_bytes() {
+        let req = request(json!({"tools": null}));
+        assert_eq!(
+            native_tool_bytes(&req, &enabled(), &resolved(true, false)),
+            0
+        );
+        let req = request(json!({}));
+        assert!(native_tool_bytes(&req, &enabled(), &resolved(true, false)) > 0);
     }
 
     /// The savings ledger compares the schemas sent natively with exactly what replaced them,
