@@ -208,6 +208,58 @@ async fn the_agent_scope_reports_input_tokens_before_and_after() {
     assert_eq!(row["calls"], 1);
 }
 
+/// Q1-5: saved tokens include cache reads and writes, so the actual tokens they are measured
+/// against must too, or the percentage is too high. All three views must agree.
+#[tokio::test]
+#[serial]
+async fn actual_tokens_count_cache_reads_and_writes_in_every_view() {
+    let server = common::TestServer::start().await;
+    let token = admin_token(&server).await;
+    let user = admin_user_id(&server.db).await;
+    let agent = seed_agent(&server.db, user, "cached-agent", true).await;
+    seed_call(
+        &server.db,
+        Call {
+            user_id: user,
+            agent_id: agent,
+            flow_id: "trace-cached",
+            input_tokens: 1000,
+            cost_usd: 10.0,
+            saved_tokens: 250,
+            saved_cost: 2.5,
+        },
+    )
+    .await;
+    sqlx::query(
+        "UPDATE trace_usage SET cache_read_tokens = 500, cache_creation_tokens = 100
+         WHERE trace_id = 'trace-cached'",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let body = savings(&server, &token, "?range=30d&scope=total").await;
+    let data = &body["data"];
+
+    // 1000 uncached input + 500 cache reads + 100 cache writes.
+    assert_eq!(data["total"]["actual_tokens"], 1600);
+    assert_eq!(data["total"]["baseline_tokens"], 1850);
+    let agent_row = data["by_agent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["agent_name"] == "cached-agent")
+        .expect("the agent with savings must appear");
+    assert_eq!(agent_row["actual_tokens"], 1600);
+    let session_row = data["by_session"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["session_id"] == "trace-cached")
+        .expect("the session with savings must appear");
+    assert_eq!(session_row["actual_tokens"], 1600);
+}
+
 #[tokio::test]
 #[serial]
 async fn a_category_with_no_eligible_traffic_returns_zero_with_a_reason() {

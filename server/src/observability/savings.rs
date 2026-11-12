@@ -437,9 +437,12 @@ async fn measured_by_layer(
 }
 
 /// Actual billed spend over the same scope — the denominator of every percentage.
+///
+/// Tokens include cache reads and writes: `input_tokens` excludes them, while the saved tokens
+/// they are compared with do not.
 async fn actual_spend(db: &PgPool, q: &SavingsQuery<'_>) -> Result<SpendRow, sqlx::Error> {
     let mut qb = QueryBuilder::new(
-        "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)::BIGINT AS tokens,
+        "SELECT COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0)::BIGINT AS tokens,
                 COALESCE(SUM(cost_usd), 0)::FLOAT8     AS cost,
                 COALESCE(SUM(traces), 0)::BIGINT        AS calls
          FROM trace_spend",
@@ -675,7 +678,7 @@ async fn by_agent(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<AgentSavings>
     }
 
     let mut qb = QueryBuilder::new(
-        "WITH spend AS (SELECT agent_id, COALESCE(SUM(traces),0)::BIGINT AS calls, COALESCE(SUM(input_tokens),0)::BIGINT AS input_tokens, COALESCE(SUM(input_tokens + output_tokens),0)::BIGINT AS tokens, COALESCE(SUM(cost_usd),0)::FLOAT8 AS cost FROM trace_spend",
+        "WITH spend AS (SELECT agent_id, COALESCE(SUM(traces),0)::BIGINT AS calls, COALESCE(SUM(input_tokens),0)::BIGINT AS input_tokens, COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0)::BIGINT AS tokens, COALESCE(SUM(cost_usd),0)::FLOAT8 AS cost FROM trace_spend",
     );
     push_filters(&mut qb, q, "ts", "agent_id");
     qb.push(" AND agent_id IS NOT NULL GROUP BY agent_id), sav AS (SELECT ss.agent_id, COALESCE(SUM(ss.saved_input_tokens),0)::BIGINT AS saved_input, COALESCE(SUM(ss.saved_output_tokens),0)::BIGINT AS saved_output, COALESCE(SUM(ss.priced_cost_usd),0)::FLOAT8 AS saved_cost FROM savings_spend ss");
@@ -794,7 +797,7 @@ async fn by_session(db: &PgPool, q: &SavingsQuery<'_>) -> Result<Vec<SessionSavi
                   COALESCE(SUM(tu.cost_usd),0)::FLOAT8     AS cost
            -- Hot trace_usage rows plus per-trace totals of tiered rows (trace_totals).
            FROM (SELECT trace_id AS session_id, started_at AS created_at, agent_id, user_id, provider, model,
-                        (input_tokens + output_tokens)::bigint AS total_tokens, cost_usd
+                        (input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens)::bigint AS total_tokens, cost_usd
                    FROM trace_usage
                  UNION ALL
                  SELECT trace_id, first_at, NULL::uuid, user_id, NULL::text, model, tokens, cost_usd
