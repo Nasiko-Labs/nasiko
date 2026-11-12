@@ -103,6 +103,15 @@ impl RouteInputs<'_> {
                 || self.tier2_model.is_some()
                 || self.tier3_model.is_some())
     }
+
+    /// The model this config names for `tier`, if any (else the global registry decides).
+    fn config_model_for(&self, tier: Tier) -> Option<&str> {
+        match tier {
+            Tier::Tier1 => self.tier1_model,
+            Tier::Tier2 => self.tier2_model,
+            Tier::Tier3 => self.tier3_model,
+        }
+    }
 }
 
 /// The outcome of routing: the model to call and how it was chosen.
@@ -216,7 +225,23 @@ pub async fn route_model_with(
             agent_id = %inputs.agent_id, %conv_id,
             "route_model: LEVEL 2 (CacheHit) — looking up sticky decision for (conv_id, agent_id)"
         );
-        if let Some(hit) = cache.get(conv_id, inputs.agent_id).await {
+        // A decision cached before the config named a different model for its tier is stale:
+        // the cache key holds no config, so reusing it would keep the old model (Q3-5).
+        let hit = cache.get(conv_id, inputs.agent_id).await.filter(|hit| {
+            let configured = hit.tier.and_then(|tier| inputs.config_model_for(tier));
+            let stale = configured.is_some_and(|model| model != hit.model);
+            if stale {
+                tracing::info!(
+                    target: "nasiko::llm_router::routing",
+                    agent_id = %inputs.agent_id, %conv_id,
+                    cached_model = %hit.model,
+                    tier = ?hit.tier,
+                    "route_model: LEVEL 2 (CacheHit) ignored — the config now names a different model for the cached tier"
+                );
+            }
+            !stale
+        });
+        if let Some(hit) = hit {
             // Learning write: this turn's user message is the verdict on the previous turn's
             // answer, which the cached decision identifies. Credit it to that (tier,
             // request_type). `signal` is conservative, so a genuine new question scores None
@@ -314,11 +339,7 @@ pub async fn route_model_with(
                 }
             };
             // Per-config tier override takes priority over the global registry.
-            let config_override = match tier {
-                Tier::Tier1 => inputs.tier1_model.map(str::to_string),
-                Tier::Tier2 => inputs.tier2_model.map(str::to_string),
-                Tier::Tier3 => inputs.tier3_model.map(str::to_string),
-            };
+            let config_override = inputs.config_model_for(tier).map(str::to_string);
             let tier_model = match config_override {
                 Some(ref m) => {
                     tracing::info!(
@@ -520,7 +541,7 @@ pub fn latest_user_query(messages: &[crate::ir::Message]) -> Option<String> {
 /// `text` without coding-harness wrappers: every `<system-reminder>…</system-reminder>` span
 /// removed, and only the inside of a `<session>…</session>` span kept. `None` when nothing but
 /// whitespace is left, so the caller falls back as it does for a turn with no text.
-fn strip_harness_wrappers(text: &str) -> Option<String> {
+pub(crate) fn strip_harness_wrappers(text: &str) -> Option<String> {
     const REMINDER_OPEN: &str = "<system-reminder>";
     const REMINDER_CLOSE: &str = "</system-reminder>";
     const SESSION_OPEN: &str = "<session>";
@@ -559,9 +580,14 @@ pub fn user_turn_ordinal(messages: &[crate::ir::Message]) -> usize {
 }
 
 /// Whether the transcript's last turn is a tool result — a coding-agent CLI mid tool-loop,
-/// which [`BoundarySignals::for_coding_agent`] must keep sticky (`Phase::Continue`).
+/// which [`BoundarySignals::for_coding_agent`] must keep sticky (`Phase::Continue`). Trailing
+/// `system` messages are skipped: Claude Code appends a reminder after the tool result (Q5-3).
 pub fn is_tool_continuation(messages: &[crate::ir::Message]) -> bool {
-    messages.last().is_some_and(|m| m.role == "tool")
+    messages
+        .iter()
+        .rev()
+        .find(|m| m.role != "system")
+        .is_some_and(|m| m.role == "tool")
 }
 
 #[cfg(test)]
@@ -585,11 +611,16 @@ mod tests {
                 puts: Mutex::new(vec![]),
             }
         }
+        /// A hit at tier 2, which [`inputs`]' config leaves to the registry, so Level 2
+        /// reuses it as is.
         fn with_hit(model: &str) -> Self {
+            Self::with_tier_hit(model, Tier::Tier2)
+        }
+        fn with_tier_hit(model: &str, tier: Tier) -> Self {
             Self {
                 hit: Some(CachedDecision {
                     model: model.into(),
-                    tier: Some(Tier::Tier1),
+                    tier: Some(tier),
                     request_type: Some(RequestType::CodeGeneration),
                 }),
                 puts: Mutex::new(vec![]),
@@ -685,6 +716,41 @@ mod tests {
         .await;
         assert_eq!(d.source, RouteSource::CacheHit);
         assert_eq!(d.model, "cached-model");
+    }
+
+    #[tokio::test]
+    async fn cache_hit_is_ignored_when_the_config_names_another_model_for_its_tier() {
+        // Q3-5: the conversation was pinned to tier 2 = model A; the config now says tier 2 = B.
+        // Not a fireable boundary, so the stale hit must fall through rather than reclassify.
+        let cache = FakeCache::with_tier_hit("model-a", Tier::Tier2);
+        let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
+        let mut i = inputs("anthropic", &s, None);
+        i.tier2_model = Some("model-b");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_ne!(d.source, RouteSource::CacheHit);
+        assert_ne!(d.model, "model-a");
+
+        // The same hit is still reused while the config agrees with it.
+        i.tier2_model = Some("model-a");
+        let d = route_model(
+            &cache,
+            &test_support::StubRegistry,
+            &InMemoryCellStore::new(),
+            &AllowAllGate,
+            &i,
+        )
+        .await;
+        assert_eq!(
+            (d.source, d.model.as_str()),
+            (RouteSource::CacheHit, "model-a")
+        );
     }
 
     #[tokio::test]
@@ -947,7 +1013,7 @@ mod tests {
         // A continuation turn whose message approves the prior answer: the router returns the
         // sticky cached model (Level 2) AND folds a positive reward into the cached decision's
         // (tier, request_type) cell for this provider.
-        let cache = FakeCache::with_hit("claude-opus-4-8"); // hit tier=Tier1, rt=CodeGeneration
+        let cache = FakeCache::with_hit("claude-opus-4-8"); // hit tier=Tier2, rt=CodeGeneration
         let cells = InMemoryCellStore::new();
         let s = signals(Some("c1"), Phase::Continue, Mode::FreeFlowing);
         let mut i = inputs("anthropic", &s, None);
@@ -964,7 +1030,7 @@ mod tests {
         assert_eq!(d.model, "claude-opus-4-8");
         let learned = cells.load("anthropic").await;
         let cell = learned
-            .get(&(Tier::Tier1, RequestType::CodeGeneration))
+            .get(&(Tier::Tier2, RequestType::CodeGeneration))
             .expect("positive feedback should have created a learned cell");
         assert_eq!(cell.quality_mean, 1.0);
         assert_eq!(cell.samples, 1);
@@ -1316,5 +1382,14 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("assistant")]));
         assert!(!is_tool_continuation(&[]));
+        // Q5-3: Claude Code appends a system reminder after the tool result.
+        assert!(is_tool_continuation(&[
+            msg("user"),
+            msg("assistant"),
+            msg("tool"),
+            msg("system")
+        ]));
+        assert!(!is_tool_continuation(&[msg("user"), msg("system")]));
+        assert!(!is_tool_continuation(&[msg("system")]));
     }
 }

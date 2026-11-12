@@ -1027,14 +1027,17 @@ fn log_response_usage(
     );
 }
 
+/// The latest user message's text for routing, with coding-harness wrappers removed the
+/// same way the chat surface does (`routing::latest_user_query`, NAS-1257).
 fn latest_user_text(input: Option<&Value>) -> Option<String> {
-    input
+    let text = input
         .and_then(Value::as_array)?
         .iter()
         .rev()
         .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
         .and_then(|item| item.get("content"))
-        .and_then(content_text)
+        .and_then(content_text)?;
+    crate::routing::strip_harness_wrappers(&text)
 }
 
 /// Number of top-level user turns so far in a Responses-API `input` array — the
@@ -2013,6 +2016,25 @@ mod tests {
                 .as_deref(),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn routing_query_drops_harness_reminders() {
+        let input = json!([
+            {"role": "user", "content": "first prompt"},
+            {"role": "user", "content": [
+                {"type": "input_text", "text": "<system-reminder>harness rules</system-reminder>"},
+                {"type": "input_text", "text": "refactor this function"},
+            ]},
+        ]);
+        assert_eq!(
+            latest_user_text(Some(&input)).as_deref(),
+            Some("refactor this function")
+        );
+        let only_reminder = json!([
+            {"role": "user", "content": "<system-reminder>harness rules</system-reminder>"},
+        ]);
+        assert_eq!(latest_user_text(Some(&only_reminder)), None);
     }
 
     #[test]
