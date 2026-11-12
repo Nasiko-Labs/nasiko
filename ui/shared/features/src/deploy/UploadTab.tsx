@@ -20,6 +20,13 @@ import { Card } from '@nasiko/ui/primitives/card'
 import { Field, FieldDescription, FieldLabel } from '@nasiko/ui/primitives/field'
 import { Input } from '@nasiko/ui/primitives/input'
 import { Progress } from '@nasiko/ui/primitives/progress'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@nasiko/ui/primitives/select'
 import { Switch } from '@nasiko/ui/primitives/switch'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { fmtBytes } from '@nasiko/ui/lib/format'
@@ -46,6 +53,8 @@ import { DropZone } from './components/DropZone'
 import { LockedNameHint } from './components/LockedNameHint'
 import { Requirements, RequirementsCompact } from './components/Requirements'
 
+const INBOUND = ['openai', 'anthropic', 'gemini'] as const
+
 const schema = z.object({
   name: z.string().superRefine((v, ctx) => {
     const p = nameProblem(v)
@@ -70,6 +79,7 @@ const schema = z.object({
   storageTouched: z.boolean(),
   writable: z.boolean(),
   writablePath: z.string().trim(),
+  inbound: z.enum(['default', ...INBOUND]),
 })
 type Form = z.infer<typeof schema>
 
@@ -130,6 +140,7 @@ export function UploadTab({
       storageTouched: false,
       writable: false,
       writablePath: '',
+      inbound: 'default',
     },
     mode: 'onTouched',
   })
@@ -235,6 +246,7 @@ export function UploadTab({
       // Tri-state on the server: sent only when touched.
       writable: v.storageTouched ? v.writable : undefined,
       writablePath: v.storageTouched && v.writable ? v.writablePath || undefined : undefined,
+      inboundFormat: v.inbound === 'default' ? undefined : v.inbound,
     }
     void startUpload(qc, userId, file, file.name, fields)
   }
@@ -458,6 +470,26 @@ export function UploadTab({
                 </FieldDescription>
               </Field>
             ) : null}
+            <Field className="gap-1">
+              <FieldLabel htmlFor={`${ids}-inbound`}>{copy.deploy.inbound}</FieldLabel>
+              <Select
+                defaultValue="default"
+                disabled={busy}
+                onValueChange={(v) => setValue('inbound', v as Form['inbound'])}
+              >
+                <SelectTrigger id={`${ids}-inbound`} className="w-full pointer-coarse:min-h-11">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="default">{copy.deploy.inboundDefault}</SelectItem>
+                  {INBOUND.map((f) => (
+                    <SelectItem key={f} value={f}>
+                      {f}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
           </Disclosure>
 
           {blocked ? (

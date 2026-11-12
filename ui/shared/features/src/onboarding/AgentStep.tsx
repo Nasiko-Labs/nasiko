@@ -6,21 +6,31 @@
  *
  * The Starter pack is offered only where the edition's `starterPack` slot says so (user request 2026-11-12: the MT layer
  * offers it on the Free plan, so an upgraded workspace starts clean, on the Registry tab, and brings its own agents).
+ *
+ * Every deploy started from the tabs is followed live under them (NAS-1450): a clock while it runs, then its outcome
+ * (guideDeploys.ts).
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { Bot, ChevronRight, CircleCheck, ExternalLink } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
-import { withButtonStyle } from '@nasiko/ui/primitives/button'
+import { asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
+import { cn } from '@nasiko/ui/lib/utils'
+import { useNow } from '@nasiko/app-core/useNow'
+import { StageIcon } from '@nasiko/features/deploy/components/StageList'
+import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { GithubTab } from '@nasiko/features/deploy/GithubTab'
 import { RegistryTab } from '@nasiko/features/deploy/RegistryTab'
 import type { DeploySearch } from '@nasiko/features/deploy/search'
+import { fmtElapsed, type Stage } from '@nasiko/features/deploy/steps'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { type SeededDeploy, useSeededDeploys } from './api'
+import { watchGuideDeploys } from './guideDeploys'
 import { copy } from './copy'
 import { SEEDED_AGENTS } from './logic'
 import { SectionHeading } from './parts'
@@ -54,6 +64,12 @@ export function AgentStep({
   // The Deploy page keeps the GitHub tab's picks in its URL; inside the guide they are local.
   const [search, setSearchState] = useState<DeploySearch>({ method: 'github' })
   const setSearch = (patch: Partial<DeploySearch>) => setSearchState((s) => ({ ...s, ...patch }))
+  // Every deploy started from these tabs in this page (the store outlives the dialog), each followed live.
+  useEffect(() => {
+    if (me) watchGuideDeploys(me.sub)
+  }, [me])
+  const deploys = useSeededDeploys()
+  const progress = deploys.size ? <SeededProgress deploys={deploys} onLeave={onLeave} /> : null
   return (
     <section className="flex flex-col gap-4">
       <SectionHeading
@@ -114,6 +130,7 @@ export function AgentStep({
           </TabsContent>
         </Tabs>
       )}
+      {progress}
       <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted/40 px-4 py-3 text-xs text-muted-foreground">
         <span className="font-medium text-foreground">{copy.agent.lifecycle}</span>
         {copy.agent.stages.map((s, i) => (
@@ -124,6 +141,82 @@ export function AgentStep({
         ))}
       </div>
     </section>
+  )
+}
+
+/** A deploy's phase as the build page's stage icon. */
+const STAGE: Record<SeededDeploy['phase'], Stage['state']> = {
+  deploying: 'current',
+  running: 'done',
+  notRunning: 'warning',
+  failed: 'failed',
+}
+const LINK = asButton({ variant: 'link', size: 'sm', className: 'h-auto px-0' })
+
+/** Each prebuilt agent the guide deployed: a clock while it deploys (the import says nothing until it ends, as on the
+ *  Registry tab), then Running, not started, or why it failed, with where to look. The finish is announced by its toast,
+ *  so the rows aren't a live region (the clock would be read out every second). */
+function SeededProgress({
+  deploys,
+  onLeave,
+}: {
+  deploys: ReadonlyMap<string, SeededDeploy>
+  onLeave: () => void
+}) {
+  const live = [...deploys.values()].some((d) => d.phase === 'deploying')
+  // A seconds clock, as the Registry tab's.
+  const now = useNow(live ? 1_000 : null)
+  return (
+    <div className="flex flex-col gap-2">
+      <ul
+        aria-label={copy.agent.progressLabel}
+        className="flex flex-col divide-y rounded-xl border bg-card"
+      >
+        {[...deploys].map(([name, d]) => (
+          <li
+            key={name}
+            data-phase={d.phase}
+            className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3"
+          >
+            <StageIcon state={STAGE[d.phase]} />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <span className="text-sm font-medium">{d.title}</span>
+              <span
+                className={cn(
+                  'text-xs text-muted-foreground tabular-nums',
+                  d.phase === 'failed' && 'text-destructive',
+                )}
+              >
+                {d.phase === 'deploying'
+                  ? copy.agent.progress.deploying(
+                      fmtElapsed(now - d.startedAt),
+                      deployCopy.registry.usual,
+                    )
+                  : d.phase === 'failed'
+                    ? copy.agent.progress.failed(d.reason)
+                    : copy.agent.progress[d.phase]}
+              </span>
+            </span>
+            {d.phase === 'running' || d.phase === 'notRunning' ? (
+              <Link
+                to="/agents/$agentId"
+                params={{ agentId: d.agentId }}
+                search={{}}
+                onClick={onLeave}
+                {...LINK}
+              >
+                {copy.agent.openAgent}
+              </Link>
+            ) : d.phase === 'failed' ? (
+              <Link to="/agents" onClick={onLeave} {...LINK}>
+                {copy.agent.openAgents}
+              </Link>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      {live ? <p className="text-xs text-muted-foreground">{copy.agent.keepGoing}</p> : null}
+    </div>
   )
 }
 
