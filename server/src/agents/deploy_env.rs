@@ -95,7 +95,7 @@ pub async fn apply_platform_env(
     state_mode: StateModeOnDeploy,
 ) {
     apply_credentials(state, env, agent_id, state_mode).await;
-    apply_llm_wiring(state, env, agent_id, owner_id).await;
+    apply_llm_wiring(env, agent_id, owner_id);
 }
 
 /// Sets the platform's credential keys on `env`, replacing anything the caller put under those
@@ -117,13 +117,8 @@ pub async fn apply_credentials(
 }
 
 /// Points the agent's LLM SDK at the LLM router, when one is configured.
-pub async fn apply_llm_wiring(
-    state: &AppState,
-    env: &mut HashMap<String, String>,
-    agent_id: Uuid,
-    owner_id: Uuid,
-) {
-    crate::llm_router::wiring::inject_agent_llm_env(&state.db, env, agent_id, Some(owner_id)).await;
+fn apply_llm_wiring(env: &mut HashMap<String, String>, agent_id: Uuid, owner_id: Uuid) {
+    crate::llm_router::wiring::inject_agent_llm_env(env, agent_id, Some(owner_id));
 }
 
 /// Gives the agent its state API address and credential, and, for a deploy that

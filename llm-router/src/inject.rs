@@ -10,10 +10,11 @@
 //! (`oss/observability/src/injector.rs`): a pure function that mutates an
 //! `env_vars: HashMap<String, String>` from a small context.
 //!
-//! Every agent gets the **OpenAI** pair (`OPENAI_BASE_URL` / `OPENAI_API_KEY`); an agent whose
-//! `inbound_format` is Anthropic or Gemini also gets its own SDK's pair
-//! (`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`, or `GOOGLE_GEMINI_BASE_URL` / `GEMINI_API_KEY` /
-//! `GOOGLE_API_KEY`). All of them carry the same agent JWT.
+//! Every agent gets the env of all three SDKs: OpenAI (`OPENAI_BASE_URL` / `OPENAI_API_KEY`),
+//! Anthropic (`ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`) and Gemini (`GOOGLE_GEMINI_BASE_URL` /
+//! `GEMINI_API_KEY` / `GOOGLE_API_KEY`), all carrying the same agent JWT. Which SDK an agent's
+//! code uses is not known at deploy time (`agents.inbound_format` is set by hand and defaults to
+//! OpenAI), and the router tells the formats apart by request path, so every SDK is wired.
 //!
 //! The base URL points directly at the server (the LLM router mounts on it at `/v1/...`);
 //! there is no edge proxy stripping a `/llm` prefix anymore.
@@ -31,9 +32,14 @@ pub struct LlmInjectCtx {
     pub agent_id: String,
     /// Owner UUID string — becomes the JWT `owner_id` claim (may be empty).
     pub owner_id: String,
-    /// Which SDK the agent speaks; determines the env-var names written.
-    pub inbound_format: InboundFormat,
 }
+
+/// Every SDK format the router serves; each is wired at deploy.
+const ALL_FORMATS: [InboundFormat; 3] = [
+    InboundFormat::OpenAi,
+    InboundFormat::Anthropic,
+    InboundFormat::Gemini,
+];
 
 /// Mint an agent JWT and inject the base-URL + key env vars into `env_vars`.
 ///
@@ -67,15 +73,13 @@ pub fn inject_llm_env(
     )
     .map_err(|e| GatewayError::Internal(format!("failed to mint agent token: {e}")))?;
 
-    // Every agent gets the OpenAI pair, whatever its format. The platform's own defaults put
-    // `OPENAI_API_KEY` (the real provider key, while `AGENT_PLATFORM_KEY_FALLBACK` is on) and
-    // `OPENAI_BASE_URL` in every agent's env; writing the pair only for OpenAI-format agents
-    // left an Anthropic or Gemini agent holding the real key. The router accepts the same JWT
-    // on its OpenAI path, so an agent that mixes SDKs still reaches it.
-    if ctx.inbound_format != InboundFormat::OpenAi {
-        write_router_credential(env_vars, cfg, InboundFormat::OpenAi, &token);
+    // Every SDK, whatever `agents.inbound_format` says: an Anthropic or Gemini agent left at the
+    // OpenAI default otherwise got no router URL or key, and the platform's defaults put the
+    // real OpenAI key in every agent's env (while `AGENT_PLATFORM_KEY_FALLBACK` is on). The
+    // router accepts the same JWT on every path, so an agent that mixes SDKs reaches it too.
+    for format in ALL_FORMATS {
+        write_router_credential(env_vars, cfg, format, &token);
     }
-    write_router_credential(env_vars, cfg, ctx.inbound_format, &token);
     Ok(())
 }
 
@@ -149,7 +153,6 @@ mod tests {
         LlmInjectCtx {
             agent_id: "11111111-1111-1111-1111-111111111111".into(),
             owner_id: "22222222-2222-2222-2222-222222222222".into(),
-            inbound_format: InboundFormat::OpenAi,
         }
     }
 
@@ -179,12 +182,7 @@ mod tests {
     fn anthropic_base_is_bare_server_origin() {
         // The Anthropic SDK appends `/v1/messages` itself, so no `/v1` in the base.
         let mut env = HashMap::new();
-        let c = cfg();
-        let ctx = LlmInjectCtx {
-            inbound_format: InboundFormat::Anthropic,
-            ..ctx()
-        };
-        inject_llm_env(&mut env, &ctx, &c).unwrap();
+        inject_llm_env(&mut env, &ctx(), &cfg()).unwrap();
         assert_eq!(
             env.get("ANTHROPIC_BASE_URL").map(String::as_str),
             Some("http://gateway:8080")
@@ -196,12 +194,7 @@ mod tests {
     fn gemini_base_is_bare_server_origin() {
         // The Google GenAI SDK appends `/v1beta/models/{model}:…` itself.
         let mut env = HashMap::new();
-        let c = cfg();
-        let ctx = LlmInjectCtx {
-            inbound_format: InboundFormat::Gemini,
-            ..ctx()
-        };
-        inject_llm_env(&mut env, &ctx, &c).unwrap();
+        inject_llm_env(&mut env, &ctx(), &cfg()).unwrap();
         assert_eq!(
             env.get("GOOGLE_GEMINI_BASE_URL").map(String::as_str),
             Some("http://gateway:8080")
@@ -243,6 +236,8 @@ mod tests {
             env.get("OPENAI_BASE_URL").map(String::as_str),
             Some("http://gateway:8080/v1")
         );
+        assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gateway:8080");
+        assert_eq!(env["GOOGLE_GEMINI_BASE_URL"], "http://gateway:8080");
     }
 
     #[test]
@@ -272,13 +267,9 @@ mod tests {
         ])
     }
 
-    fn injected_for(format: InboundFormat) -> HashMap<String, String> {
+    fn injected() -> HashMap<String, String> {
         let mut env = env_with_platform_defaults();
-        let ctx = LlmInjectCtx {
-            inbound_format: format,
-            ..ctx()
-        };
-        inject_llm_env(&mut env, &ctx, &cfg()).unwrap();
+        inject_llm_env(&mut env, &ctx(), &cfg()).unwrap();
         env
     }
 
@@ -289,45 +280,37 @@ mod tests {
         assert_eq!(agent_id, "11111111-1111-1111-1111-111111111111");
     }
 
+    /// The fix for agents left at the default `inbound_format`: whichever SDK the code uses,
+    /// it finds the router and the agent JWT, and the real provider key is gone.
     #[test]
-    fn openai_agent_gets_the_router_and_a_jwt_in_place_of_the_real_key() {
-        let env = injected_for(InboundFormat::OpenAi);
+    fn every_sdk_gets_the_router_and_the_agent_jwt() {
+        let env = injected();
         assert_eq!(env["OPENAI_BASE_URL"], "http://gateway:8080/v1");
-        assert_is_agent_jwt(&env, "OPENAI_API_KEY");
-        assert!(!env.contains_key("ANTHROPIC_API_KEY"));
-        assert!(!env.contains_key("GEMINI_API_KEY"));
-    }
-
-    #[test]
-    fn anthropic_agent_never_keeps_the_real_openai_key() {
-        let env = injected_for(InboundFormat::Anthropic);
         assert_eq!(env["ANTHROPIC_BASE_URL"], "http://gateway:8080");
-        assert_is_agent_jwt(&env, "ANTHROPIC_API_KEY");
-        assert_eq!(env["OPENAI_BASE_URL"], "http://gateway:8080/v1");
-        assert_is_agent_jwt(&env, "OPENAI_API_KEY");
+        assert_eq!(env["GOOGLE_GEMINI_BASE_URL"], "http://gateway:8080");
+        for key in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ] {
+            assert_is_agent_jwt(&env, key);
+        }
         assert!(env.values().all(|v| v != REAL_PROVIDER_KEY));
     }
 
     #[test]
-    fn gemini_agent_never_keeps_the_real_openai_key() {
-        let env = injected_for(InboundFormat::Gemini);
-        assert_eq!(env["GOOGLE_GEMINI_BASE_URL"], "http://gateway:8080");
-        assert_is_agent_jwt(&env, "GEMINI_API_KEY");
-        assert_is_agent_jwt(&env, "GOOGLE_API_KEY");
-        assert_eq!(env["OPENAI_BASE_URL"], "http://gateway:8080/v1");
-        assert_is_agent_jwt(&env, "OPENAI_API_KEY");
-        assert!(env.values().all(|v| v != REAL_PROVIDER_KEY));
+    fn every_sdk_carries_the_same_jwt() {
+        let env = injected();
+        let token = &env["OPENAI_API_KEY"];
+        for key in ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"] {
+            assert_eq!(&env[key], token, "{key} differs from OPENAI_API_KEY");
+        }
     }
 
     #[test]
     fn the_model_default_survives_the_wiring() {
-        for format in [
-            InboundFormat::OpenAi,
-            InboundFormat::Anthropic,
-            InboundFormat::Gemini,
-        ] {
-            assert_eq!(injected_for(format)["OPENAI_MODEL"], "gpt-4o-mini");
-        }
+        assert_eq!(injected()["OPENAI_MODEL"], "gpt-4o-mini");
     }
 
     #[test]
@@ -343,11 +326,7 @@ mod tests {
             },
         ] {
             let mut env = env_with_platform_defaults();
-            let ctx = LlmInjectCtx {
-                inbound_format: InboundFormat::Anthropic,
-                ..ctx()
-            };
-            assert!(inject_llm_env(&mut env, &ctx, &unconfigured).is_err());
+            assert!(inject_llm_env(&mut env, &ctx(), &unconfigured).is_err());
             assert_eq!(env, env_with_platform_defaults());
         }
     }

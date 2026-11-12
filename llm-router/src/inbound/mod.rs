@@ -20,7 +20,7 @@ pub use gemini::GeminiInbound;
 pub use openai::OpenAiInbound;
 
 /// Which SDK/wire format a caller speaks — selects the [`InboundParser`] at request
-/// time and the base-URL/key env-var names at deploy time (see `crate::inject`).
+/// time and names each SDK's base-URL/key env vars (see `crate::inject`).
 ///
 /// Independent of the *outbound* provider in `agents.llm_config`: this is about how the
 /// agent's own code calls an LLM, not where we route it. v1 supports only [`OpenAi`];
