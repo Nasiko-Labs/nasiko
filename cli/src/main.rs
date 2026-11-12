@@ -689,14 +689,8 @@ mod tests {
     #[test]
     fn parses_upload_coding_agent_hitl_flags() {
         // --coding-agent with --no-hitl parses (mirrors push/deploy).
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "upload",
-            ".",
-            "--coding-agent",
-            "--no-hitl",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["nasiko", "upload", ".", "--coding-agent", "--no-hitl"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::Ops(AgentOpsCommands::Upload {

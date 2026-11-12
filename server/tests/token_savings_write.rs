@@ -174,6 +174,7 @@ async fn a_compact_tools_call_writes_its_own_row_beside_compression() {
     log_usage(
         server.db.clone(),
         &pricing,
+        &NoUsageLedger,
         UsageRecord {
             compact_tools_bytes: Some((10_270, 7_430)),
             ..record(user, agent, Some((40_000, 10_000)), Some(8_000))
