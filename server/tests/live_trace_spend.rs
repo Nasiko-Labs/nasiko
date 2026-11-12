@@ -511,17 +511,19 @@ async fn failed_calls_count_as_errors_without_inventing_spend() {
     server.cleanup().await;
 }
 
-/// A success alone leaves `error_count` NULL ("not yet counted"), as before.
+/// A success alone leaves `error_count` NULL ("not yet counted"), as before, and an exactly
+/// priced one leaves `cost_estimated` NULL too.
 #[tokio::test]
 #[serial]
 async fn a_successful_call_leaves_error_count_uncounted() {
     let server = common::TestServer::start().await;
     let (user, agent, _) = seed(&server.db, None, json!({})).await;
+    let model = exactly_priced_model(&server.db).await;
     log_usage(
         server.db.clone(),
-        &PricingEngine::offline(),
+        &PricingEngine::new(server.db.clone()),
         &NoUsageLedger,
-        record(user, agent, Some(TRACE), 10, 1),
+        answered(user, agent, &model),
     )
     .await
     .unwrap();
@@ -689,5 +691,145 @@ async fn coding_turn_row_nets_out_calls_the_router_booked() {
         (Some(60), Some(6)),
         "only the unrouted remainder of the turn is counted again"
     );
+    server.cleanup().await;
+}
+
+/// A model with a synced price row, so the router prices it exactly rather than from the offline
+/// list, which is itself an estimate.
+async fn exactly_priced_model(db: &PgPool) -> String {
+    let model = format!("exact-model-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO model_pricing (provider, model, input_price_per_1m, output_price_per_1m,
+             cache_read_price_per_1m, cache_creation_price_per_1m, effective_from)
+         VALUES ('test-provider', $1, 2, 10, 0.2, 2.5, '2020-01-01')",
+    )
+    .bind(&model)
+    .execute(db)
+    .await
+    .unwrap();
+    model
+}
+
+/// The fallback call that answered, on `model` (see [`exactly_priced_model`]).
+fn answered(owner: Uuid, agent: Uuid, model: &str) -> UsageRecord {
+    UsageRecord {
+        provider: "test-provider".into(),
+        model: model.into(),
+        ..record(owner, agent, Some(TRACE), 100, 10)
+    }
+}
+
+/// An attempt the provider refused with a 404 (the model does not exist there).
+fn refused(owner: Uuid, agent: Uuid) -> UsageRecord {
+    UsageRecord {
+        provider: "openai".into(),
+        model: "gpt-4o-mini".into(),
+        failure: Some(CallFailure::new("status", Some(404))),
+        ..failed(owner, agent, 4000)
+    }
+}
+
+#[derive(sqlx::FromRow, Debug, PartialEq)]
+struct Named {
+    model: Option<String>,
+    provider: Option<String>,
+    pricing_source: Option<String>,
+    failure_status: Option<i64>,
+}
+
+async fn named(db: &PgPool, agent: Uuid) -> Named {
+    sqlx::query_as(
+        "SELECT model, provider, metadata->'pricing'->>'source' AS pricing_source,
+                (metadata->'failure'->>'http_status')::int8 AS failure_status
+         FROM trace_usage WHERE agent_id = $1",
+    )
+    .bind(agent)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+/// Q1-1: the success and the failed attempt of one fallback chain are written by separate
+/// tasks, so either can land last. Both orders must leave the row naming the model that
+/// answered, priced as it was, with the refused attempt counted but not flagged as an estimate.
+#[tokio::test]
+#[serial]
+async fn a_failed_attempt_never_replaces_the_model_that_answered() {
+    for failure_lands_last in [true, false] {
+        let server = common::TestServer::start().await;
+        let (user, agent, _) = seed(&server.db, None, json!({})).await;
+        let model = exactly_priced_model(&server.db).await;
+        let pricing = PricingEngine::new(server.db.clone());
+        let writes = if failure_lands_last {
+            [answered(user, agent, &model), refused(user, agent)]
+        } else {
+            [refused(user, agent), answered(user, agent, &model)]
+        };
+        for write in writes {
+            log_usage(server.db.clone(), &pricing, &NoUsageLedger, write)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            named(&server.db, agent).await,
+            Named {
+                model: Some(model.clone()),
+                provider: Some("test-provider".into()),
+                pricing_source: Some("Exact".into()),
+                failure_status: Some(404),
+            },
+            "failure lands last: {failure_lands_last}"
+        );
+        assert_eq!(
+            failures(&server.db, agent).await,
+            Failures {
+                error_count: Some(1),
+                router_error_count: 1,
+                router_estimated_input_tokens: 0,
+                cost_estimated: None,
+            },
+            "a refused call bills nothing, so nothing is estimated (failure lands last: {failure_lands_last})"
+        );
+        server.cleanup().await;
+    }
+}
+
+/// Q1-2: a call priced at the default rate (no price for the model anywhere) marks its row
+/// estimated, and the chat summary of the turn says so.
+#[tokio::test]
+#[serial]
+async fn a_default_priced_call_is_marked_estimated() {
+    use nasiko_server::router::usage_meta::{TurnUsage, summarize_flow_usage};
+
+    let server = common::TestServer::start().await;
+    let (user, agent, _) = seed(&server.db, None, json!({})).await;
+    let pricing = std::sync::Arc::new(PricingEngine::offline());
+    log_usage(
+        server.db.clone(),
+        &pricing,
+        &NoUsageLedger,
+        UsageRecord {
+            model: format!("unpriced-model-{}", Uuid::new_v4()),
+            ..record(user, agent, Some(TRACE), 100, 10)
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        named(&server.db, agent).await.pricing_source.as_deref(),
+        Some("Default")
+    );
+    assert_eq!(failures(&server.db, agent).await.cost_estimated, Some(true));
+
+    let provider = nasiko_observability::TempoLokiProvider::new(
+        "http://unused.invalid".into(),
+        "http://unused.invalid".into(),
+        pricing,
+    );
+    let summary =
+        summarize_flow_usage(&server.db, &provider, TRACE, &TurnUsage::default(), 100).await;
+    assert!(summary.estimated, "the chat summary must say estimated");
     server.cleanup().await;
 }

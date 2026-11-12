@@ -104,6 +104,15 @@ impl CallFailure {
     pub const fn new(class: &'static str, http_status: Option<u16>) -> Self {
         Self { class, http_status }
     }
+
+    /// The provider answered with a 4xx other than 408 (timeout) or 429 (rate limit): it turned
+    /// the request away without running the model, so nothing was billed.
+    fn was_refused(self) -> bool {
+        self.class == "status"
+            && self
+                .http_status
+                .is_some_and(|code| (400..500).contains(&code) && code != 408 && code != 429)
+    }
 }
 
 /// The context every call of one request shares, so each failed attempt of a fallback chain can
@@ -179,13 +188,14 @@ pub fn spawn_log_failed(
 
 /// The prompt tokens a failed call most likely sent, estimated from the bytes sent at the
 /// fallback chars-per-token ratio (`savings::chars_per_token`, which has no reported count to
-/// calibrate against here). `0` for a call that succeeded, reported usage, or has no byte count.
+/// calibrate against here). `0` for a call that succeeded, reported usage, has no byte count, or
+/// was refused (see [`CallFailure::was_refused`]).
 fn estimated_prompt_tokens(
     failure: Option<CallFailure>,
     usage: Option<&Usage>,
     request_bytes: Option<usize>,
 ) -> i64 {
-    if failure.is_none() || usage.is_some() {
+    if failure.is_none_or(CallFailure::was_refused) || usage.is_some() {
         return 0;
     }
     let Some(bytes) = request_bytes else {
@@ -327,6 +337,7 @@ pub async fn log_usage(
         latency_ms: record.latency_ms,
         error_count: i32::from(record.failure.is_some()),
         estimated_input_tokens,
+        price_estimated: priced.cost.estimated,
     };
 
     let mut tx = db.begin().await.map_err(|e| e.to_string())?;
@@ -369,8 +380,9 @@ pub async fn log_usage(
 /// One priced LLM call, added live to its `trace_usage` row so budgets read
 /// spend with no materializer lag.
 struct LiveSpend {
-    /// Per-call metadata, merged into `trace_usage.metadata` (later call wins per key, except
-    /// `compact_tools`, whose counters add up).
+    /// Per-call metadata, merged into `trace_usage.metadata` (a later success wins per key,
+    /// except `compact_tools`, whose counters add up; a failure adds only the keys the row
+    /// lacks, plus its `failure`).
     metadata: serde_json::Value,
     owner: Uuid,
     agent: Option<Uuid>,
@@ -390,6 +402,8 @@ struct LiveSpend {
     /// A failed call's prompt estimate when the provider reported no usage; kept out of the
     /// spend columns.
     estimated_input_tokens: i64,
+    /// The call was priced at an inferred rate (a family, static, ratio or default price).
+    price_estimated: bool,
 }
 
 /// `trace_usage.source` for an agent row: ACP containers, local coding agents
@@ -470,15 +484,16 @@ async fn write_trace_usage(
                      -- A success leaves error_count NULL: "not yet counted", which the
                      -- materializer fills; only a failure is evidence on its own.
                      NULLIF($18, 0), $18, $19,
-                     -- An unreported prompt means the cost may be understated.
-                     CASE WHEN $19 > 0 THEN true END)
+                     -- An unreported prompt means the cost may be understated; an
+                     -- inferred rate means it may be wrong either way.
+                     CASE WHEN $19 > 0 OR $20 THEN true END)
            ON CONFLICT (trace_id, agent_name) DO UPDATE SET
                error_count                  = CASE WHEN EXCLUDED.router_error_count > 0
                                                    THEN COALESCE(trace_usage.error_count, 0) + EXCLUDED.router_error_count
                                                    ELSE trace_usage.error_count END,
                router_error_count           = trace_usage.router_error_count + EXCLUDED.router_error_count,
                router_estimated_input_tokens = trace_usage.router_estimated_input_tokens + EXCLUDED.router_estimated_input_tokens,
-               cost_estimated               = CASE WHEN EXCLUDED.router_estimated_input_tokens > 0
+               cost_estimated               = CASE WHEN EXCLUDED.router_estimated_input_tokens > 0 OR $20
                                                    THEN true ELSE trace_usage.cost_estimated END,
                input_tokens                 = trace_usage.input_tokens + EXCLUDED.input_tokens,
                output_tokens                = trace_usage.output_tokens + EXCLUDED.output_tokens,
@@ -494,18 +509,27 @@ async fn write_trace_usage(
                router_cost_usd              = trace_usage.router_cost_usd + EXCLUDED.router_cost_usd,
                router_prompt_cost_usd       = trace_usage.router_prompt_cost_usd + EXCLUDED.router_prompt_cost_usd,
                router_completion_cost_usd   = trace_usage.router_completion_cost_usd + EXCLUDED.router_completion_cost_usd,
-               model                        = EXCLUDED.model,
-               provider                     = EXCLUDED.provider,
+               -- A failed attempt never names the row: the model that answered keeps it,
+               -- whichever of the two writes lands last.
+               model                        = CASE WHEN EXCLUDED.router_error_count > 0
+                                                   THEN COALESCE(trace_usage.model, EXCLUDED.model) ELSE EXCLUDED.model END,
+               provider                     = CASE WHEN EXCLUDED.router_error_count > 0
+                                                   THEN COALESCE(trace_usage.provider, EXCLUDED.provider) ELSE EXCLUDED.provider END,
                agent_id                     = COALESCE(trace_usage.agent_id, EXCLUDED.agent_id),
                user_id                      = COALESCE(trace_usage.user_id, EXCLUDED.user_id),
                latency_ms                   = COALESCE(trace_usage.latency_ms, 0) + EXCLUDED.latency_ms,
                source                       = CASE WHEN EXCLUDED.source = 'agent' THEN trace_usage.source ELSE EXCLUDED.source END,
                priced_by                    = 'router',
                materialized_at              = now(),
-               -- Later call wins per key, except `compact_tools`: its flat counters are added
-               -- key by key, so a flow that compacted its first call and skipped the rest keeps
-               -- both (`compact_tools::to_metadata`).
-               metadata                     = trace_usage.metadata || EXCLUDED.metadata
+               -- A failure keeps the answering call's keys (its `pricing` above all) and
+               -- records itself as the trace's latest `failure`; failures carry no
+               -- `compact_tools` block. A success wins per key, except `compact_tools`: its flat
+               -- counters are added key by key, so a flow that compacted its first call and
+               -- skipped the rest keeps both (`compact_tools::to_metadata`).
+               metadata                     = CASE WHEN EXCLUDED.router_error_count > 0
+                   THEN EXCLUDED.metadata || trace_usage.metadata
+                        || jsonb_build_object('failure', EXCLUDED.metadata->'failure')
+                   ELSE trace_usage.metadata || EXCLUDED.metadata
                    || CASE WHEN trace_usage.metadata ? 'compact_tools'
                             AND EXCLUDED.metadata ? 'compact_tools'
                        THEN jsonb_build_object('compact_tools', (
@@ -516,7 +540,8 @@ async fn write_trace_usage(
                              FROM (SELECT jsonb_object_keys(trace_usage.metadata->'compact_tools')
                                    UNION
                                    SELECT jsonb_object_keys(EXCLUDED.metadata->'compact_tools')) AS keys(k)))
-                       ELSE '{}'::jsonb END"#,
+                       ELSE '{}'::jsonb END
+                   END"#,
     )
     .bind(&trace_id)
     .bind(&agent_name)
@@ -537,6 +562,7 @@ async fn write_trace_usage(
     .bind(&live.metadata)
     .bind(live.error_count)
     .bind(live.estimated_input_tokens)
+    .bind(live.price_estimated)
     .execute(&mut *tx)
     .await?;
     Ok(())
@@ -729,6 +755,30 @@ mod tests {
         );
         assert_eq!(estimated_prompt_tokens(None, None, Some(4000)), 0);
         assert_eq!(estimated_prompt_tokens(failure, None, None), 0);
+    }
+
+    /// Q1-1: a provider that refuses a call (a 4xx such as 404) bills nothing, so the turn must
+    /// not be flagged as an estimate. A timeout, a rate limit or a server error may have run the
+    /// prompt, so those keep their estimate.
+    #[test]
+    fn a_refused_call_gets_no_prompt_estimate() {
+        let status = |code| Some(CallFailure::new("status", Some(code)));
+        for refused in [400, 401, 404, 422] {
+            assert_eq!(
+                estimated_prompt_tokens(status(refused), None, Some(4000)),
+                0,
+                "{refused}"
+            );
+        }
+        for may_have_run in [408, 429, 500, 503] {
+            assert_eq!(
+                estimated_prompt_tokens(status(may_have_run), None, Some(4000)),
+                1000,
+                "{may_have_run}"
+            );
+        }
+        let transport = Some(CallFailure::new("transport", None));
+        assert_eq!(estimated_prompt_tokens(transport, None, Some(4000)), 1000);
     }
 
     #[test]
