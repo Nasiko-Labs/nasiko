@@ -1013,11 +1013,28 @@ fn to_converse_request_inner(
     if allow_temperature && let Some(t) = cfg.temperature.or(req.temperature) {
         body["inferenceConfig"]["temperature"] = json!(t);
     }
+    // OpenAI `stop` is a string or an array of strings, and not a named IR field.
+    let stop: Vec<&str> = match req.extra.get("stop") {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    if !stop.is_empty() {
+        body["inferenceConfig"]["stopSequences"] = json!(stop);
+    }
     if !system_parts.is_empty() {
         body["system"] = json!(system_parts);
     }
+    // Converse has no "none" tool choice, so honour it by sending no tools. Bedrock rejects
+    // toolUse/toolResult blocks without a `toolConfig`, so with tool history the tools stay.
+    let has_tool_history = req
+        .messages
+        .iter()
+        .any(|m| m.role == "tool" || m.tool_calls.as_ref().is_some_and(|c| !c.is_empty()));
+    let tools_off =
+        req.tool_choice.as_ref().and_then(Value::as_str) == Some("none") && !has_tool_history;
     let mut name_map = HashMap::new();
-    if let Some(tools) = &req.tools {
+    if let Some(tools) = req.tools.as_ref().filter(|_| !tools_off) {
         name_map = build_tool_name_map(tools);
         let mut translated: Vec<Value> = Vec::new();
         for t in tools {
@@ -2056,6 +2073,55 @@ mod tests {
             "string"
         );
         assert_eq!(body["toolConfig"]["toolChoice"], json!({ "auto": {} }));
+    }
+
+    fn tool_request(tool_choice: &str, extra_messages: Value) -> ChatRequest {
+        let mut messages = vec![json!({ "role": "user", "content": "count to 10" })];
+        messages.extend(extra_messages.as_array().cloned().unwrap_or_default());
+        serde_json::from_value(json!({
+            "messages": messages,
+            "tools": [{ "type": "function", "function": { "name": "f", "parameters": { "type": "object" } } }],
+            "tool_choice": tool_choice,
+            "stop": ["6"]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tool_choice_none_without_tool_history_sends_no_tools() {
+        let req = tool_request("none", json!([]));
+        let (body, _map) = to_converse_request(&req, &resolved("amazon.nova-pro-v1:0")).unwrap();
+        assert!(body.get("toolConfig").is_none());
+    }
+
+    #[test]
+    fn tool_choice_none_with_tool_history_keeps_the_tools() {
+        let history = json!([
+            { "role": "assistant", "content": null, "tool_calls": [{
+                "id": "c1", "type": "function", "function": { "name": "f", "arguments": "{}" }
+            }]},
+            { "role": "tool", "tool_call_id": "c1", "content": "ok" }
+        ]);
+        let req = tool_request("none", history);
+        let (body, _map) = to_converse_request(&req, &resolved("amazon.nova-pro-v1:0")).unwrap();
+        assert_eq!(body["toolConfig"]["tools"][0]["toolSpec"]["name"], "f");
+        assert!(body["toolConfig"].get("toolChoice").is_none());
+    }
+
+    #[test]
+    fn stop_becomes_stop_sequences() {
+        let req = tool_request("auto", json!([]));
+        let (body, _map) = to_converse_request(&req, &resolved("amazon.nova-pro-v1:0")).unwrap();
+        assert_eq!(body["inferenceConfig"]["stopSequences"], json!(["6"]));
+
+        let single: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "stop": "END"
+        }))
+        .unwrap();
+        let (body, _map) = to_converse_request(&single, &resolved("amazon.nova-pro-v1:0")).unwrap();
+        assert_eq!(body["inferenceConfig"]["stopSequences"], json!(["END"]));
+        assert!(body.get("stop").is_none());
     }
 
     #[test]
