@@ -661,7 +661,10 @@ pub(crate) async fn list(
 /// per agent. Read-only override on the response, not persisted — avoids
 /// racing the crash guardian's own DB writes on K8s, and a stale read here is
 /// harmless where a stale write would linger.
-async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
+///
+/// Public so a build that serves this listing with its own handler applies the
+/// same override; otherwise its list shows a stopped agent as running.
+pub async fn reconcile_running_status(state: &AppState, agents: &mut [Agent]) {
     for agent in agents.iter_mut() {
         if let Some(live) = live_status(state, agent.id, &agent.status).await {
             agent.status = live;
