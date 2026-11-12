@@ -3,8 +3,9 @@
 //! This trait is called just before each place that forwards a call to an agent, ahead of
 //! resolving where the call goes: the agent proxy, direct A2A dispatch, a routed orchestrator leg
 //! (`CpCallGuard::before_call`), the HITL resume, and every caller that resolves through
-//! `agent_resolver::ServerTargetResolver` (MAF steps, HITL nudges). It is not called while the
-//! orchestrator lists the agents it may choose from, since listing forwards nothing.
+//! `agent_resolver::ServerTargetResolver` (MAF steps, HITL nudges). Start on a parked agent
+//! (`admin::routes::start`) asks it too, so Start is the wake the next call would get. It is not
+//! called while the orchestrator lists the agents it may choose from, since listing forwards nothing.
 //!
 //! The platform default ([`parked::ParkedAgentWake`]) scales a parked agent's own workload back up
 //! and waits until it is reachable. [`NoAgentWake`] does nothing. An edition that prepares agents

@@ -32,7 +32,7 @@ import {
   type AccessGrants,
   type GrantsBody,
 } from './grants'
-import { normalizeDetail, type AgentView } from './normalize'
+import { normalizeDetail, type AgentView, type ParkingPolicy } from './normalize'
 import { displayStatus, isHarness, type DisplayStatus } from './status'
 import {
   AGENTS_MAX_PAGES,
@@ -711,7 +711,12 @@ export function useLifecycle(id: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (action: 'restart' | 'stop' | 'start') =>
-      apiFetch<unknown>(`/api/containers/${id}/${action}`, { method: 'POST' }),
+      apiFetch<unknown>(`/api/containers/${id}/${action}`, {
+        method: 'POST',
+        // Start on a parked agent answers once it serves, within the server's own wake budget (up to minutes);
+        // a client deadline would cut the request and the server would park it again (admin/routes.rs `start`).
+        timeout: action === 'start' ? 0 : undefined,
+      }),
     onSettled: () => invalidateAgent(qc, id),
   })
 }
@@ -750,6 +755,8 @@ export interface AgentUpdate {
   metadata?: Record<string, unknown>
   compress_enabled?: boolean
   minimal_code_enabled?: boolean
+  /** `auto` parks it when idle, `resident` keeps it running (catalog/routes.rs `update`, 400 otherwise). */
+  parking_policy?: ParkingPolicy
 }
 
 export function useUpdateAgent(id: string) {

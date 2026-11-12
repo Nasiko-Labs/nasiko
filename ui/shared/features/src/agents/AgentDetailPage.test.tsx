@@ -11,7 +11,7 @@ import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fmtMoney } from '@nasiko/ui/lib/format'
-import { configureMocks } from '@nasiko/mocks/handlers'
+import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { agentWhere } from '@nasiko/testing/agents'
@@ -776,25 +776,48 @@ describe('Try it (chat plan §9)', () => {
   })
 
   it('a parked agent links to Chat: the first message wakes it', async () => {
-    const detail = (await (await fetch(`/api/agents/${running.id}`)).json()) as {
-      data: { owner_id: string }
-    }
-    const rows = (await (
-      await fetch(`/api/agents?owner=${detail.data.owner_id}&limit=100`)
-    ).json()) as { id: string; status: string }[]
-    server.use(
-      http.get('/api/agents', ({ request }) =>
-        new URL(request.url).searchParams.get('owner')
-          ? HttpResponse.json(
-              rows.map((r) => (r.id === running.id ? { ...r, status: 'parked' } : r)),
-            )
-          : undefined,
-      ),
-    )
+    deployMockState().setAgentStatus(running.id, 'parked')
     renderApp(url(0))
     await title()
     const link = await screen.findByRole('link', { name: 'Try it' })
     expect(link).toHaveAttribute('href', `/chat?agent=${running.id}`)
+  })
+
+  it('a parked agent says what Parked means, and Start wakes it (NAS-1487)', async () => {
+    deployMockState().setAgentStatus(running.id, 'parked')
+    const rec = recordRequestBodies()
+    renderApp(url(0))
+    await title()
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent(copy.parkedTitle)
+    expect(note).toHaveTextContent(copy.parkedKeepRunning)
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(screen.queryByRole('note')).toBeNull())
+    await rec.flush()
+    rec.stop()
+    expect(rec.requests.filter((r) => r.method === 'POST').map((r) => r.url.pathname)).toContain(
+      `/api/containers/${running.id}/start`,
+    )
+  })
+
+  it('the parked note opens Settings, where Always on saves parking_policy (NAS-1487)', async () => {
+    deployMockState().setAgentStatus(running.id, 'parked')
+    const rec = recordRequestBodies()
+    renderApp(url(0))
+    await title()
+    const note = await screen.findByRole('note')
+    await userEvent.click(within(note).getByRole('button', { name: copy.tabSettings }))
+    const section = await screen.findByRole('region', { name: copy.availability })
+    const sw = within(section).getByRole('switch', { name: copy.alwaysOn })
+    expect(sw).not.toBeChecked()
+    await userEvent.click(sw)
+    await waitFor(() => expect(sw).toBeChecked())
+    await rec.flush()
+    rec.stop()
+    expect(
+      rec.requests.filter((r) => r.method === 'PUT').map((r) => [r.url.pathname, r.body]),
+    ).toEqual([[`/api/agents/${running.id}`, { parking_policy: 'resident' }]])
   })
 })
 

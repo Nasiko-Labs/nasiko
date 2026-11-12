@@ -47,8 +47,12 @@ export function LifecycleButtons({
         <Button
           key={a}
           size={size}
-          // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is.
-          variant={i === 0 && a !== 'stop' && display !== 'running' ? 'default' : 'outline'}
+          // A healthy agent's lifecycle actions are maintenance, not the page's primary — Try it is (a parked one's too).
+          variant={
+            i === 0 && a !== 'stop' && display !== 'running' && display !== 'parked'
+              ? 'default'
+              : 'outline'
+          }
           className={cn(collapse && i > 0 && 'hidden sm:inline-flex')}
           disabled={flow.m.isPending || flow.w.watching}
           onClick={() => flow.run(a)}

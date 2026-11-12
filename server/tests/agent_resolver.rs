@@ -1,5 +1,6 @@
 //! The shared agent-target resolver: wake-before-resolve for parked agents, the rule table by
-//! (status, kind), `agent_acl`, the registry's proxy URLs, and open tasks holding a park.
+//! (status, kind), `agent_acl`, the registry's proxy URLs, and open tasks holding a park. Also
+//! Start on a parked agent, which wakes it through the same seam.
 //!
 //! Requires infra (Postgres :5432, Redis, S3):
 //!   cargo test -p nasiko-server --test agent_resolver -- --test-threads=1
@@ -236,6 +237,71 @@ async fn dispatch_by_name_wakes_a_parked_agent() {
         status_and_last_request(&server, agent).await,
         ("running".to_owned(), true)
     );
+    server.cleanup().await;
+}
+
+/// `POST /api/containers/{id}/{action}` as the agent's owner (the admin).
+async fn lifecycle(
+    server: &common::TestServer,
+    owner: Uuid,
+    agent: Uuid,
+    action: &str,
+) -> (u16, String) {
+    let res = common::as_superuser(
+        server
+            .client
+            .post(server.url(&format!("/api/containers/{agent}/{action}"))),
+        &owner.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    (res.status().as_u16(), res.text().await.unwrap())
+}
+
+/// Start on a parked agent is the wake its next message would get, so it comes back with its
+/// address and idle clock, not as a `running` row nothing serves.
+#[tokio::test]
+#[serial]
+async fn starting_a_parked_agent_wakes_it() {
+    let server = common::TestServer::start().await;
+    server.runtime.set_status_follows_deploys(true);
+    let wake = common::RowWake::install(&server);
+    let owner = init_admin(&server).await;
+    let agent = seed_agent(&server, owner, Seed::parked("start-me")).await;
+    let stub = start_stub_agent().await;
+    wake.serve_at(agent, &stub);
+
+    assert_eq!(lifecycle(&server, owner, agent, "start").await.0, 200);
+    assert_eq!(wake.woken_count(agent), 1);
+    assert_eq!(
+        status_and_last_request(&server, agent).await,
+        ("running".to_owned(), true)
+    );
+    let url: Option<String> = sqlx::query_scalar("SELECT url FROM agents WHERE id = $1")
+        .bind(agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(url.as_deref(), Some(stub.as_str()));
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_parked_agent_the_wake_cannot_start_is_refused_and_stays_parked() {
+    let server = common::TestServer::start().await;
+    server.runtime.set_status_follows_deploys(true);
+    common::RowWake::install(&server);
+    let owner = init_admin(&server).await;
+    let agent = seed_agent(&server, owner, Seed::parked("cannot-start")).await;
+
+    let (status, body) = lifecycle(&server, owner, agent, "start").await;
+
+    assert_eq!(status, 503);
+    assert!(body.contains("could not be started"), "{body}");
+    assert_eq!(status_and_last_request(&server, agent).await.0, "parked");
     server.cleanup().await;
 }
 

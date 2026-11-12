@@ -33,8 +33,9 @@ export const STATUS: Record<DisplayStatus, StatusInfo> = {
   parked: {
     label: 'Parked',
     tone: 'muted',
-    actions: [],
-    hint: 'Idle, so its container was released. The next message wakes it.',
+    // Start wakes it now (the wake a message would do); Stop keeps the next message from waking it.
+    actions: ['start', 'stop'],
+    hint: 'Idle for a while, so its container was released to save resources. The next message, or Start, brings it back.',
   },
   deploying: {
     label: 'Deploying',
@@ -75,7 +76,7 @@ export const STATUS: Record<DisplayStatus, StatusInfo> = {
 }
 
 /** Order of the Your agents tabs after "All". */
-export const TAB_STATUSES = ['running', 'deploying', 'attention', 'stopped'] as const
+export const TAB_STATUSES = ['running', 'parked', 'deploying', 'attention', 'stopped'] as const
 
 interface HarnessMarkers {
   tags?: string[] | null

@@ -279,6 +279,17 @@ export const copy = {
   stopSharedWarning:
     'Others use this agent: it is shared with people besides you. They will see it was stopped by its owner and cannot chat with it until you start it again.',
   stoppedByOwner: 'This agent was stopped by its owner. You can use it again once they start it.',
+  // NAS-1487: what Parked means and what to do, under the detail header; the switch is on the Settings tab.
+  parkedTitle: 'Parked while idle',
+  parkedBody:
+    'Nobody called this agent for a while, so its container was released to save resources. Nothing is lost: the next message starts it again, and that first reply takes a little longer.',
+  parkedStart: 'Select Start to bring it up now.',
+  parkedKeepRunning: 'Select Start to bring it up now, or keep it running with Always on in',
+  availability: 'Availability',
+  alwaysOn: 'Always on',
+  alwaysOnHint:
+    'Off: when nobody has called it for a while, the agent is parked and the next message starts it again. On: it keeps running, and using resources, while idle.',
+  alwaysOnUnavailable: 'This workspace parks every idle agent, so none can be kept always on.',
   restarted: 'Restarted',
   started: 'Started',
   stoppedDone: 'Stopped',

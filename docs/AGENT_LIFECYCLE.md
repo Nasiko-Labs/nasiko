@@ -277,9 +277,15 @@ connections, and stops it. A host without gVisor leaves the column empty (logged
 failure sets `false` with the reason in the build log, and the build itself never fails because of
 the smoke run. On Kubernetes the check is skipped, and agents do not run under gVisor there.
 
-The lifecycle commands work on a parked agent's workload as on any other: `nasiko stop` leaves it
-`stopped`, and `nasiko start` scales it back up. An agent parked by an earlier release has no
-workload; its next request (or `nasiko start`) deploys one from its stored image.
+The lifecycle commands work on a parked agent too: `nasiko stop` leaves it `stopped` (a request no
+longer wakes it), and `nasiko start` wakes it the way its next request would, answering once the
+agent serves (`503` with the reason if it does not start in time, and it stays `parked`). An agent
+parked by an earlier release has no workload; its next request (or `nasiko start`) deploys one from
+its stored image.
+
+In the web UI a parked agent's page says what parked means and offers Start and Stop beside Try it,
+and the agent's Settings tab has an Always on switch: on sets the policy to `resident`, off to
+`auto`. Where every idle agent is parked whatever its policy, the switch is shown off and disabled.
 
 `nasiko ps` reads the agent list, so a parked agent appears in it with state `parked`; only
 `GET /api/containers` lists workloads.

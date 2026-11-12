@@ -22,6 +22,7 @@ export type CatalogView = NonNullable<CatalogSearch['view']>
 export const MINE_TABS = [
   'all',
   'running',
+  'parked',
   'deploying',
   'attention',
   'stopped',
