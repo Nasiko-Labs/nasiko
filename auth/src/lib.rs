@@ -138,10 +138,11 @@ pub trait AuthService: Send + Sync + 'static {
     /// only after — a plain user/agent-count would let an over-limit login
     /// through as easily as an under-limit one.
     ///
-    /// Takes the same arguments `upsert_oauth_user` does, and must answer what
-    /// it then does: only an existing identity or a verified email resolves
-    /// to an existing user. A taken username does not: the sign-in creates a
-    /// new account (`name-2`, NAS-1111), so it is a new signup.
+    /// Takes the same `username` `upsert_oauth_user` does, and must check it
+    /// the same way: a login that resolves to an existing user only by
+    /// username (the `ON CONFLICT (username)` path — a pre-seeded user, or
+    /// one whose provider label changed) is not a new signup either, even
+    /// though neither the identity nor a verified email matched.
     async fn would_create_user(
         &self,
         provider: &str,
