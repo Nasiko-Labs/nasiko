@@ -66,6 +66,7 @@ import {
   listRow,
   liveStatus,
   logLines,
+  withFleetSize,
   type AgentsState,
   type MockAgent,
 } from './agents'
@@ -111,7 +112,6 @@ import {
   queueUpload,
   readMultipart,
   recordAt,
-  registerImport,
   settleUploads,
   uploadAt,
   type DeployState,
@@ -238,6 +238,8 @@ const PAGE_VARIANTS: readonly string[] = [
   'village-unlimited',
   'overview-bare',
   'fleet-empty',
+  'fleet-100',
+  'fleet-1000',
   'try-run',
 ]
 
@@ -335,6 +337,10 @@ export const MOCK_VARIANTS = [
   // No agents at all: Home's first-run layout (hero, setup guide, "Works before your first agent"). Combines with
   // `router-empty`, `mcp-empty` and `no-harnesses` for a brand-new user (NAS-1448).
   'fleet-empty',
+  // A fleet of 100 or 1,000 agents (NAS-1519; the seed has 19), copies of the seed's (agents.ts `withFleetSize`). Read
+  // when the agents state is built, so load a page with it; they combine (`?mock=onboarding-done,fleet-1000`).
+  'fleet-100',
+  'fleet-1000',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
   // Home's try-a-run card (mocks/tryRun.ts): a workspace with no activity until the card's simulated runs, each of
@@ -485,7 +491,11 @@ function freshlyImported(state: AgentsState): AgentsState {
 // Agents pages: mutable state derived from both seeds, rebuilt on reset (plan §8).
 let agentsState: AgentsState | null = null
 const getAgents = (): AgentsState => {
-  agentsState ??= freshlyImported(buildAgentsState(getSeed(), getHarnessSeed(), nowFn()))
+  if (!agentsState) {
+    const built = buildAgentsState(getSeed(), getHarnessSeed(), nowFn())
+    const size = hasVariant('fleet-1000') ? 1000 : hasVariant('fleet-100') ? 100 : 0
+    agentsState = freshlyImported(size ? withFleetSize(built, size) : built)
+  }
   // Uploads that finished since the last read change their agent rows (plans/feat-deploy.md §9).
   if (deployState?.pending.length) settleUploads(deployState, agentsState, nowFn())
   return agentsState
@@ -2689,8 +2699,6 @@ function deployHandlers(): HttpHandler[] {
           `version ${version} already exists in this agent's history — choose a new version`,
           409,
         )
-      // The row is there, `deploying`, while the import runs (NAS-1450).
-      registerImport(agents, { name, version, ownerId: ADMIN_ID, now: nowFn() })
       if (import.meta.env.MODE !== 'test') await new Promise((r) => setTimeout(r, 6_000))
       const running = variant() !== 'deploy-registry-not-running'
       const ids = completeImport(getDeploy(), agents, {

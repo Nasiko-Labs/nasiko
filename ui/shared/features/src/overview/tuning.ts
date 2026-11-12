@@ -40,6 +40,9 @@ export const FAILED_SESSION_ROWS = 25
 export const NEEDS_VISIBLE_ROWS = 5
 /** Fleet health lists at most this many rated agents, Watch first. */
 export const HEALTH_LIST_ROWS = 5
+/** Fleet health draws a square per agent up to this many agents (4 rows in the card); past it, one bar sized by the
+ * rating counts, so the card stays the same height at any fleet size (NAS-1519). */
+export const HEALTH_SQUARES_MAX = 100
 /** Recent sessions shows this many rows — and asks the server for exactly that. */
 export const RECENT_SESSION_ROWS = 5
 /** Saved tokens by agent: named bars before Other; 7 fill the card beside 5 Recent sessions rows. */

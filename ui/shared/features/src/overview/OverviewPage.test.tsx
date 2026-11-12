@@ -19,6 +19,7 @@ import { PREVIEW_MS } from './preview'
 import { DEFAULT_RANGE, RANGE_DAYS } from './search'
 import {
   FAILED_SESSION_ROWS,
+  HEALTH_SQUARES_MAX,
   PREVIEW_HOLD_MS,
   PREVIEW_STEP_MS,
   RECENT_SESSION_ROWS,
@@ -896,6 +897,75 @@ describe('the summary tiles (redesign 2026-10-19)', () => {
     expect(within(card('overview-health')).getByTestId('health-run-states')).toHaveTextContent(
       /^\d+ of \d+ running/,
     )
+  })
+})
+
+describe('Fleet health at any fleet size (NAS-1519)', () => {
+  const counts = (health: HTMLElement) =>
+    within(health)
+      .getAllByRole('link', { name: /^\d+ (healthy|watch|needs? action|unknown)/ })
+      .map((l) => Number.parseInt(l.textContent ?? '', 10))
+
+  it(`draws a square per agent up to ${HEALTH_SQUARES_MAX} agents`, async () => {
+    window.history.replaceState(null, '', '/?mock=fleet-100')
+    renderApp('/')
+    await loaded()
+    const health = card('overview-health')
+    await waitFor(() =>
+      expect(within(health).getByTestId('health-run-states')).toHaveTextContent(
+        /^\d+ of 100 running/,
+      ),
+    )
+    expect(within(health).getByTestId('health-squares').children).toHaveLength(100)
+    expect(within(health).queryByTestId('health-bar')).toBeNull()
+  })
+
+  it('lists as many agents as fit the height its row gives it, not just the first 5', async () => {
+    // jsdom has no layout: the list's box reports ten 44 px rows of room once observed.
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        cb: () => void
+        constructor(cb: () => void) {
+          this.cb = cb
+        }
+        observe(el: Element) {
+          if (el.getAttribute('data-testid') === 'health-list') this.cb()
+        }
+        unobserve() {}
+        disconnect() {}
+      },
+    )
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.dataset.testid === 'health-list' ? 440 : 0
+    })
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.tagName === 'LI' ? 44 : 0
+    })
+    window.history.replaceState(null, '', '/?mock=fleet-100')
+    renderApp('/')
+    await loaded()
+    const list = within(card('overview-health')).getByRole('list', { name: copy.health.title })
+    await waitFor(() => expect(list.children).toHaveLength(10))
+  })
+
+  it('past that, one bar whose segments are the rating counts, in the badges’ order', async () => {
+    window.history.replaceState(null, '', '/?mock=fleet-1000')
+    renderApp('/')
+    await loaded()
+    const health = card('overview-health')
+    await waitFor(() =>
+      expect(within(health).getByTestId('health-run-states')).toHaveTextContent(
+        /^\d+ of 1000 running/,
+      ),
+    )
+    expect(within(health).queryByTestId('health-squares')).toBeNull()
+    const segments = [...within(health).getByTestId('health-bar').children] as HTMLElement[]
+    expect(segments.map((s) => Number(s.style.flexGrow))).toEqual(counts(health).filter(Boolean))
   })
 })
 
