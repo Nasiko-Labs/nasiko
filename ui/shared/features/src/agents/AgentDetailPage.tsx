@@ -169,9 +169,9 @@ function ResolveByName({ name, tab }: { name: string; tab?: string }) {
 }
 
 function tabsFor(agent: AgentView): DetailTab[] {
-  // A harness is an ordinary agent id to the MCP gateway, so its manager gets the MCP tab too.
-  if (agent.isHarness)
-    return agent.canManage ? ['overview', 'mcp', 'details'] : ['overview', 'details']
+  // A coding harness has its own native MCP client and server config, so the platform's MCP
+  // Gateway tab (allow/block per connector) doesn't apply to it.
+  if (agent.isHarness) return ['overview', 'details']
   // Someone it is shared with gets an MCP tab too: which servers they must connect themselves (SharedMcpTab).
   return agent.canManage ? [...DETAIL_TABS] : ['overview', 'activity', 'versions', 'mcp', 'details']
 }

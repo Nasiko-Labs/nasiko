@@ -17,7 +17,7 @@ import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { agentWhere } from '@nasiko/testing/agents'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, recordRequests, server } from '@nasiko/testing/setup'
-import { copy as mcpCopy, STANCE } from '@nasiko/features/mcp/copy'
+import { copy as mcpCopy } from '@nasiko/features/mcp/copy'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -799,11 +799,11 @@ describe('Try it (chat plan §9)', () => {
 })
 
 describe('more states (plan §10)', () => {
-  it('a coding harness shows Overview and MCP and points at Coding harnesses', async () => {
+  it('a coding harness shows Overview and Details, no MCP, and points at Coding harnesses', async () => {
     const harness = await agentWhere((a) => !!a.tags?.includes('coding-agent'))
     renderApp(`/agents/${harness.id}`)
     await title()
-    expect(tabNames()).toEqual(['Overview', 'MCP', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Details'])
     expect(screen.getByRole('link', { name: /See usage on Coding harnesses/ })).toHaveAttribute(
       'href',
       expect.stringContaining('/harnesses'),
@@ -818,20 +818,16 @@ describe('more states (plan §10)', () => {
     expect(sw).toHaveAccessibleDescription(
       `${copy.tokenOptimizationHint} ${copy.tokenOptimizationHarness}`,
     )
-    expect(tabNames()).toEqual(['Overview', 'MCP', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Details'])
   })
 
-  it('a coding harness’s MCP tab lists servers for its owner, like any agent', async () => {
+  it('a coding harness has no MCP tab: it has its own native MCP client and server config', async () => {
     const harness = await agentWhere((a) => !!a.tags?.includes('coding-agent'))
     renderApp(`/agents/${harness.id}?tab=mcp`)
-    expect(await screen.findByText(mcpCopy.agentMcpSubHarness)).toBeInTheDocument()
-    // No Ask: a harness call has no flow, so the gateway stores no approval to answer (PR #631 reverted f5cb65e7).
-    await userEvent.click(await screen.findByRole('button', { name: mcpCopy.expand('GitHub') }))
-    const groups = await screen.findAllByRole('radiogroup')
-    for (const g of groups) {
-      expect(within(g).getByRole('radio', { name: STANCE.allow.label })).toBeInTheDocument()
-      expect(within(g).queryByRole('radio', { name: STANCE.ask.label })).toBeNull()
-    }
+    await title()
+    expect(screen.queryByRole('tab', { name: 'MCP' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText(mcpCopy.agentMcpSubHarness)).toBeNull()
   })
 
   it('a harness its viewer can’t manage shows no Token optimization switch', async () => {
