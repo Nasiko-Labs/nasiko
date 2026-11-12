@@ -52,6 +52,23 @@ pub fn provider_for(
             GeminiProvider::new(http.clone(), cfg.gemini_api_base.clone())
                 .with_explicit_cache(cfg.cache_markers_enabled),
         )),
+        "vertex" => {
+            static TOKENS: std::sync::OnceLock<std::sync::Arc<vertex_auth::TokenSource>> =
+                std::sync::OnceLock::new();
+            let tokens: std::sync::Arc<vertex_auth::TokenSource> = match TOKENS.get() {
+                Some(t) => t.clone(),
+                None => {
+                    let t = std::sync::Arc::new(
+                        vertex_auth::TokenSource::discover(http.clone())
+                            .map_err(|e| GatewayError::Internal(e.to_string()))?,
+                    );
+                    TOKENS.get_or_init(|| t).clone()
+                }
+            };
+            Ok(Box::new(
+                GeminiProvider::new(http.clone(), cfg.vertex_api_base()).with_adc(tokens),
+            ))
+        }
         "openrouter" => Ok(Box::new(
             OpenRouterProvider::new(
                 http.clone(),
@@ -159,6 +176,7 @@ pub(crate) mod media;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
+pub mod vertex_auth;
 
 pub use anthropic::AnthropicProvider;
 pub use bedrock_converse::BedrockConverseProvider;

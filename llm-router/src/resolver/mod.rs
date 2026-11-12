@@ -29,7 +29,6 @@
 //! testable without a database; [`PgRegistry`] is the Postgres implementation.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use nasiko_secrets::SecretsCrypto;
 use serde::Deserialize;
 use sqlx::PgPool;
@@ -278,15 +277,6 @@ pub struct CustomProvider {
 }
 
 /// Storage seam for the resolver — mockable in tests.
-/// What the router needs to know about a live agent to accept its identity token.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentIdentity {
-    pub owner_id: Uuid,
-    /// When the owner last revoked the agent's LLM routing tokens; a token issued before it is
-    /// refused. `None` = never revoked.
-    pub llm_tokens_revoked_at: Option<DateTime<Utc>>,
-}
-
 #[async_trait]
 pub trait RegistryStore: Send + Sync {
     /// Resolve the agent's config: attached (`agents.llm_config_id`) → agent owner's default
@@ -301,22 +291,6 @@ pub trait RegistryStore: Send + Sync {
     /// no such agent. Read per request, never cached: it decides whose keys pay,
     /// and an ownership transfer must take effect at once.
     async fn fetch_agent_owner(&self, agent_id: Uuid) -> Result<Option<Uuid>, sqlx::Error>;
-
-    /// [`fetch_agent_owner`](Self::fetch_agent_owner) plus when the owner last revoked the
-    /// agent's LLM routing tokens, in one read. Read per request for the same reason. The
-    /// default reports no revocation, for stores that do not track it.
-    async fn fetch_agent_identity(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentIdentity>, sqlx::Error> {
-        Ok(self
-            .fetch_agent_owner(agent_id)
-            .await?
-            .map(|owner_id| AgentIdentity {
-                owner_id,
-                llm_tokens_revoked_at: None,
-            }))
-    }
 
     /// [`fetch_llm_config`](Self::fetch_llm_config) without the config: the agent-level pin and
     /// flags only, for a caller whose config came from the cache. What it returns in `config` is
@@ -540,23 +514,6 @@ impl RegistryStore for PgRegistry {
             .bind(agent_id)
             .fetch_optional(&self.db)
             .await
-    }
-
-    async fn fetch_agent_identity(
-        &self,
-        agent_id: Uuid,
-    ) -> Result<Option<AgentIdentity>, sqlx::Error> {
-        let row: Option<(Uuid, Option<DateTime<Utc>>)> = sqlx::query_as(
-            "SELECT owner_id, llm_tokens_revoked_at FROM agents \
-             WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(agent_id)
-        .fetch_optional(&self.db)
-        .await?;
-        Ok(row.map(|(owner_id, llm_tokens_revoked_at)| AgentIdentity {
-            owner_id,
-            llm_tokens_revoked_at,
-        }))
     }
 
     async fn fetch_agent_flags(
@@ -1300,7 +1257,7 @@ struct ConfigPlan {
 /// here while present in both of those, so a config naming it resolved to
 /// "not a registered custom provider" despite the rest of the stack supporting it.
 fn is_builtin_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "anthropic" | "gemini" | "openrouter")
+    matches!(provider, "openai" | "anthropic" | "gemini" | "vertex" | "openrouter")
 }
 
 /// The destination provider name, decided exactly as [`plan_config`] decides it:

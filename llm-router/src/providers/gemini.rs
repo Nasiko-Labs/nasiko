@@ -38,6 +38,8 @@ pub struct GeminiProvider {
     base: String,
     /// Cache the agent's marked prefix as a `cachedContents` resource (`gemini_cache`).
     explicit_cache: bool,
+    /// Vertex mode: bearer token from ADC instead of the `x-goog-api-key` header.
+    adc: Option<std::sync::Arc<super::vertex_auth::TokenSource>>,
 }
 
 impl GeminiProvider {
@@ -46,6 +48,26 @@ impl GeminiProvider {
             http,
             base,
             explicit_cache: false,
+            adc: None,
+        }
+    }
+
+    /// Vertex AI: authenticate with ADC bearer tokens. Explicit caching stays off
+    /// (`cachedContents` is API-key only here).
+    pub fn with_adc(mut self, tokens: std::sync::Arc<super::vertex_auth::TokenSource>) -> Self {
+        self.adc = Some(tokens);
+        self.explicit_cache = false;
+        self
+    }
+
+    async fn authed(
+        &self,
+        builder: reqwest::RequestBuilder,
+        api_key: &str,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        match &self.adc {
+            Some(tokens) => Ok(builder.bearer_auth(tokens.token().await?)),
+            None => Ok(builder.header("x-goog-api-key", api_key)),
         }
     }
 
@@ -99,9 +121,8 @@ impl GeminiProvider {
         cfg: &ResolvedConfig,
         body: &Value,
     ) -> Result<reqwest::Response, ProviderError> {
-        self.http
-            .post(url)
-            .header("x-goog-api-key", &cfg.api_key)
+        self.authed(self.http.post(url), &cfg.api_key)
+            .await?
             .json(body)
             .send()
             .await
@@ -302,13 +323,10 @@ impl ProviderClient for GeminiProvider {
             .map(|text| json!({ "model": model_path, "content": { "parts": [{ "text": text }] } }))
             .collect();
 
+        let url = format!("{}/models/{}:batchEmbedContents", self.base, cfg.model);
         let resp = self
-            .http
-            .post(format!(
-                "{}/models/{}:batchEmbedContents",
-                self.base, cfg.model
-            ))
-            .header("x-goog-api-key", &cfg.api_key)
+            .authed(self.http.post(url), &cfg.api_key)
+            .await?
             .json(&json!({ "requests": requests }))
             .send()
             .await

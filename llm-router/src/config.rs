@@ -98,6 +98,11 @@ pub struct GatewayConfig {
     pub openai_max_tools: usize,
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
+    /// Vertex AI (ADC auth): GCP project id. Empty disables the `vertex` provider.
+    /// Env `VERTEX_PROJECT`, falling back to `GOOGLE_CLOUD_PROJECT`.
+    pub vertex_project: String,
+    /// Vertex location, env `VERTEX_LOCATION` (default `global`).
+    pub vertex_location: String,
     pub openrouter_api_base: String,
 
     /// Optional OpenRouter attribution headers (`HTTP-Referer` / `X-Title`) — affect
@@ -262,6 +267,8 @@ impl Default for GatewayConfig {
             openai_max_tools: 128,
             anthropic_api_base: "https://api.anthropic.com/v1".into(),
             gemini_api_base: "https://generativelanguage.googleapis.com/v1beta".into(),
+            vertex_project: String::new(),
+            vertex_location: "global".into(),
             openrouter_api_base: "https://openrouter.ai/api/v1".into(),
             openrouter_http_referer: String::new(),
             openrouter_x_title: String::new(),
@@ -409,6 +416,11 @@ impl GatewayConfig {
             openai_max_tools: env_parse_first(&["OPENAI_MAX_TOOLS"], d.openai_max_tools),
             anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
             gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
+            vertex_project: env_or(
+                "VERTEX_PROJECT",
+                &env_or("GOOGLE_CLOUD_PROJECT", &d.vertex_project),
+            ),
+            vertex_location: env_or("VERTEX_LOCATION", &d.vertex_location),
             openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
@@ -481,6 +493,18 @@ impl GatewayConfig {
         }
     }
 
+    /// Vertex AI base URL up to `/publishers/google`; the Gemini spoke appends
+    /// `/models/{model}:{method}`. `global` uses the region-less host.
+    pub fn vertex_api_base(&self) -> String {
+        let (p, l) = (&self.vertex_project, &self.vertex_location);
+        let host: String = if l == "global" {
+            "aiplatform.googleapis.com".to_string()
+        } else {
+            format!("{l}-aiplatform.googleapis.com")
+        };
+        format!("https://{host}/v1/projects/{p}/locations/{l}/publishers/google")
+    }
+
     /// The platform-owned fallback key for a **built-in** `provider`, used when an
     /// agent sets no per-user `api_key_secret_name`. An unknown provider (e.g. a
     /// DB-registered custom provider, or a mistyped name) returns `""` — never the
@@ -492,6 +516,8 @@ impl GatewayConfig {
             "openai" => &self.platform_openai_api_key,
             "anthropic" => &self.platform_anthropic_api_key,
             "gemini" => &self.platform_gemini_api_key,
+            // Vertex authenticates with ADC, not a key; a non-empty marker means "configured".
+            "vertex" if !self.vertex_project.is_empty() => "adc",
             "openrouter" => &self.platform_openrouter_api_key,
             _ => "",
         }
@@ -622,6 +648,40 @@ fn env_platform_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vertex_api_base_global_uses_regionless_host() {
+        let cfg = GatewayConfig {
+            vertex_project: "p1".into(),
+            vertex_location: "global".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.vertex_api_base(),
+            "https://aiplatform.googleapis.com/v1/projects/p1/locations/global/publishers/google"
+        );
+    }
+
+    #[test]
+    fn vertex_api_base_regional_uses_prefixed_host() {
+        let cfg = GatewayConfig {
+            vertex_project: "p1".into(),
+            vertex_location: "us-central1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.vertex_api_base(),
+            "https://us-central1-aiplatform.googleapis.com/v1/projects/p1/locations/us-central1/publishers/google"
+        );
+    }
+
+    #[test]
+    fn platform_key_for_vertex_needs_project() {
+        let mut cfg = GatewayConfig::default();
+        assert_eq!(cfg.platform_key_for("vertex"), "");
+        cfg.vertex_project = "p1".into();
+        assert_eq!(cfg.platform_key_for("vertex"), "adc");
+    }
 
     #[test]
     fn platform_key_for_built_ins() {
