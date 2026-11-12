@@ -90,7 +90,19 @@ export function SettingsLayout({
     links
       .filter((l) => (l.group ?? 'security') === g)
       .map((l): Row => ({ key: l.key, label: l.label, to: l.to }))
-  const inGroup = (g: 'workspace' | 'security') => settingsSections.filter((s) => s.group === g)
+  // A layer's section with its own `available` check is listed once that answers true (EE: Memory recall, absent
+  // while memory is off). Asked only for an admin, who alone sees the sections.
+  const sectionChecks = useQueries({
+    queries: settingsSections.map((s): UseQueryOptions<boolean> =>
+      s.available && admin && userId
+        ? s.available(userId)
+        : { queryKey: ['settings-section', s.key], queryFn: skipToken },
+    ),
+  })
+  const sections = settingsSections.filter(
+    (s, i) => !s.available || sectionChecks[i]?.data === true,
+  )
+  const inGroup = (g: 'workspace' | 'security') => sections.filter((s) => s.group === g)
   const workspaceRows = [
     ...(admin
       ? withLayer(

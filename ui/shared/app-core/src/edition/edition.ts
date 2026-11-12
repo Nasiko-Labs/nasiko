@@ -113,6 +113,8 @@ export interface SettingsSection {
   after?: string
   /** Admin-only, like the core's workspace sections. It draws its own page header (its words load with it). */
   Section: ComponentType
+  /** The layer's own check that the section exists on this server; listed once it answers true. Always listed when absent. */
+  available?: (userId: string) => SlotQuery<boolean>
 }
 
 /**
@@ -120,7 +122,7 @@ export interface SettingsSection {
  * `SettingsSection` — which renders at `/settings?section=<key>`, a page the core redirects every non-superuser
  * away from — this is a plain nav link to the layer's own dedicated route (its own file under `routes/_app/`,
  * same as the core's Chat context), so every user, admin or not, can reach it. Placed in the Security group,
- * after Chat context: a data preference, the same bucket as that one, not an Account (UI/auth) one. No layer fills it today.
+ * after Chat context: a data preference, the same bucket as that one, not an Account (UI/auth) one.
  */
 export interface PersonalSettingsLink {
   key: string
@@ -221,7 +223,6 @@ export type BudgetSource<T> =
   | { state: 'failed' }
   | { state: 'ok'; value: T; incomplete?: boolean }
 
-/** The fields the hub's Budget section needs; the core passes them rather than its own `AgentView`. */
 /** One section a layer adds to an agent's Settings tab. */
 export interface AgentSettingsSection {
   key: string
@@ -234,6 +235,7 @@ export interface AgentSettingsRef {
   name: string
 }
 
+/** The fields the hub's Budget section needs; the core passes them rather than its own `AgentView`. */
 export interface HubBudgetAgent {
   id: string
   name: string
