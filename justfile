@@ -112,8 +112,7 @@ build-harness-images TAG="0.1.0" REPO="nasiko":
     )
     for h in opencode claude-code codex; do
       ctx=agents/harnesses/$h
-      # Both binaries go everywhere so the loop stays uniform; only the opencode and codex images
-      # COPY the supervisor (claude-code does not carry it yet).
+      # Every image carries both binaries.
       for bin in harness-shim harness-supervisor; do
         cp "$ws/x86_64-unknown-linux-musl/release/$bin" "$ctx/$bin"
       done

@@ -1,6 +1,6 @@
 # Platform harness image: Claude Code behind the ACP-over-WebSocket shim.
-# Build via `just build-harness-images`, which places a prebuilt static
-# `harness-shim` binary in this build context.
+# Build via `just build-harness-images`, which places prebuilt static
+# `harness-shim` and `harness-supervisor` binaries in this build context.
 FROM node:22-bookworm-slim
 
 # curl exists only for the HEALTHCHECK below. Kubernetes ignores HEALTHCHECK; the provider
@@ -16,6 +16,8 @@ ARG CLAUDE_CODE_ACP_VERSION=0.16.2
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @zed-industries/claude-code-acp@${CLAUDE_CODE_ACP_VERSION}
 
 COPY harness-shim /usr/local/bin/harness-shim
+# One shim per session in a shared pod; a provider using it overrides the command (ENTRYPOINT stays the shim).
+COPY harness-supervisor /usr/local/bin/harness-supervisor
 
 ENV HOME=/workspace/home
 # The image is immutable; a self-update would only fail or drift from the pinned version.

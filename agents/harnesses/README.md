@@ -35,12 +35,12 @@ stdio. Sandboxes are reached only over the network, so each image runs `harness-
 
 ## The supervisor
 
-The OpenCode and Codex images also carry `harness-supervisor` (same crate), for providers that run
+Every harness image also carries `harness-supervisor` (same crate), for providers that run
 many sessions of one image in a single shared pod. It starts one `harness-shim` per session, in
 handshake mode, in the session's own directory `<root>/<id>` (named by the session id; it is the
 shim's workspace and holds its `HOME`), on the port the platform tells it: the platform owns port
 placement, the supervisor never picks one. Requests for one session are handled one at a time;
-different sessions proceed in parallel. The Claude Code image does not carry it yet. Each
+different sessions proceed in parallel. Each
 session's process tree is confined to its own directory (with a private `TMPDIR` inside it) and
 a tightened syscall policy, switchable per layer (`HARNESS_SUPERVISOR_CONFINE_FS`,
 `HARNESS_SUPERVISOR_CONFINE_SYSCALLS`, both on by default), and a kernel that cannot enforce a
