@@ -224,7 +224,12 @@ fn group_by_provider(
             effective_until: row.effective_until,
         };
         if let Some(group) = out.iter_mut().find(|g| g.provider == provider) {
-            group.models.push(entry);
+            // A model priced under both a legacy and a canonical name (`google` and `gemini`)
+            // lands in the same group twice; keep the first. `ORDER BY provider` puts the
+            // canonical `gemini` row ahead of `google`, so its price is the one shown.
+            if !group.models.iter().any(|m| m.model == entry.model) {
+                group.models.push(entry);
+            }
         } else {
             let (provider_id, display_name) = custom_meta
                 .get(&provider)
@@ -322,6 +327,26 @@ mod tests {
             models_of(&group_by_provider(rows, &labels, &meta), "gemini"),
             vec!["gemini-2.0-flash"]
         );
+    }
+
+    /// Q3-7: a model priced under both `gemini` and the legacy `google` is listed once, with
+    /// the `gemini` row's price (the query's order puts it first).
+    #[test]
+    fn model_priced_under_legacy_and_canonical_name_is_listed_once() {
+        let (labels, meta) = custom(&[]);
+        let mut legacy = priced("google", "gemini-2.0-flash", false);
+        legacy.input_price_per_1m = Some(Decimal::new(9, 0));
+        let rows = vec![
+            priced("gemini", "gemini-2.0-flash", false),
+            priced("gemini", "gemini-2.5-pro", false),
+            legacy,
+        ];
+        let groups = group_by_provider(rows, &labels, &meta);
+        assert_eq!(
+            models_of(&groups, "gemini"),
+            vec!["gemini-2.0-flash", "gemini-2.5-pro"]
+        );
+        assert_eq!(groups[0].models[0].input_price_per_1m, Some(1.0));
     }
 
     /// A custom provider's served model stays even when nothing prices it — the common
