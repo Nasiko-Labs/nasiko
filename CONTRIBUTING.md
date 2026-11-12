@@ -70,13 +70,101 @@ You need Rust 1.85 or newer (the workspace uses edition 2024), Docker or Podman,
 [`just`](https://github.com/casey/just). UI work also needs Node.js 22.18 or newer and pnpm.
 
 ```sh
-just infra   # start the backing services
-just run     # run the server
+just infra                             # start Postgres, Redis, RustFS and the OTel stack in Docker
+cp server/.env.example server/.env     # annotated reference for every server variable
+just dev                               # run the server natively with hot-reload (needs cargo-watch)
+# ...or without hot-reload:
+just run
 ```
 
-The full setup guide for every operating system, with environment variables and troubleshooting,
-is in the [README](README.md#setup-guides-by-operating-system). For where code lives, see
-[Project Structure](README.md#project-structure) and [`docs/ORGANIZATION.md`](docs/ORGANIZATION.md).
+The server runs on [http://localhost:8080](http://localhost:8080). Edit `server/.env` for anything
+beyond the defaults. For a host-run server, set `CODING_AGENT_OTLP_ENDPOINT=http://localhost:4318`
+there if you need coding-agent traces and cost.
+
+Useful while developing:
+
+```sh
+just check                               # cargo check --workspace
+just clippy                              # lint (zero-warnings policy)
+cargo build --release -p nasiko          # CLI binary
+cargo build --release -p nasiko-server   # server binary
+```
+
+### Installing the toolchain
+
+**macOS**
+
+```sh
+xcode-select --install                                           # C toolchain and linker
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
+source "$HOME/.cargo/env"
+cargo install just cargo-watch
+```
+
+**Linux (Debian/Ubuntu)**
+
+```sh
+sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+cargo install just cargo-watch
+# Docker engine + Compose plugin: https://docs.docker.com/engine/install/ubuntu/
+```
+
+**Windows**
+
+```powershell
+winget install --id Rustlang.Rustup -e
+# reopen the terminal, then:
+cargo install just cargo-watch
+```
+
+If native crates such as `ring` fail to link on the MSVC toolchain (`link.exe not found`), install
+the C++ build tools:
+
+```powershell
+winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+A `dlltool ... Invalid bfd target` error means a 32-bit MinGW (`C:\MinGW`) is on `PATH`. Install
+64-bit MinGW-w64 (for example through [MSYS2](https://www.msys2.org/)) or switch to MSVC.
+
+Check everything is in place:
+
+```sh
+rustc --version && cargo --version && just --version
+docker --version && docker compose version
+```
+
+The first `cargo` build compiles the whole workspace and is slow. Use a native clone rather than a
+mounted or 9p filesystem.
+
+### Where code lives
+
+```
+server/         Control plane: Axum routes, auth, agent proxy, build worker, embedded UI
+orchestrator/   Routing engine: semantic agent selection (shortlist, rerank, select)
+mcp-gateway/    MCP Gateway: connectors, tool aggregation, per-agent permissions, OAuth
+llm-router/     Provider-agnostic OpenAI-compatible egress proxy for agent LLM calls
+runtime/        ContainerRuntime trait + DockerRuntime (bollard)
+auth/           AuthService trait + OSS implementation (JWT login, RBAC hooks)
+flow/           FlowGuard: anti-DoS cascade limits + live flow events
+secrets/        AES-256-GCM encryption for agent secrets at rest
+oci/            Embedded OCI Distribution v2 registry (S3-backed, layer dedup)
+observability/  OTel init, Tempo/Loki clients, DB-backed model pricing
+agent-proxy/    Agent ID -> running-container endpoint resolution
+github/         GitHub OAuth + repo import for source-based deploys
+types/          A2A protocol + registry types
+config/         Single env-driven Config struct
+utils/          Shared helpers
+cli/            nasiko binary (agent developer CLI, sync HTTP via ureq)
+agents/         Example and seed agents (each a standalone A2A container)
+migrations/     Postgres migrations (sqlx, run automatically at startup)
+ui/             Frontend (vanilla JS web components, embedded in the server binary)
+docs/           Design docs (architecture, protocol, conventions)
+```
+
+See [`docs/ORGANIZATION.md`](docs/ORGANIZATION.md) for more on how the code is organized.
 
 ## Before you push
 
