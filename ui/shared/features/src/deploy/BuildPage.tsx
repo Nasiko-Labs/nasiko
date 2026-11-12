@@ -277,6 +277,8 @@ export function BuildPage({ buildId }: { buildId: string }) {
                 ...(repo ? { method: 'github' as const, repo } : {}),
                 name: agent?.name ?? upload.data?.agent_name,
                 version: error.suggested,
+                // The agent still exists (a failed first upload deletes it), so this is a version of it.
+                ...(agent ? { newVersion: true } : {}),
               }}
               {...asButton({ size: 'sm', className: 'pointer-coarse:min-h-11' })}
             >

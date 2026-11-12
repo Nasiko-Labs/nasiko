@@ -208,6 +208,22 @@ describe('Deploy: upload a zip (plans/feat-deploy.md §4.1)', () => {
       await screen.findByRole('textbox', { name: copy.deploy.name }, { timeout: 5000 }),
     ).toHaveValue('doc-writer')
     expect(versionInput()).toHaveValue('1.3.2')
+    // A plain pre-fill is only a suggestion: the name stays editable.
+    expect(nameInput()).not.toHaveAttribute('readonly')
+  })
+
+  it("keeps a new version's name: read-only, and the zip's own name never replaces it", async () => {
+    renderApp('/deploy?name=doc-writer&newVersion=true')
+    const input = await screen.findByRole('textbox', { name: copy.deploy.name }, { timeout: 5000 })
+    expect(input).toHaveAttribute('readonly')
+    expect(screen.getByText(copy.deploy.nameLocked, { exact: false })).toBeVisible()
+    expect(screen.getByRole('link', { name: copy.deploy.deployOther }).getAttribute('href')).toBe(
+      '/deploy',
+    )
+    // GOOD's AgentCard.json names `new-helper`: deploying under it would make a second agent.
+    await choose(zipFile(GOOD))
+    await waitFor(() => expect(itemState('dockerfile')).toBe('pass'))
+    expect(nameInput()).toHaveValue('doc-writer')
   })
 
   it('shows the CLI equivalent', async () => {

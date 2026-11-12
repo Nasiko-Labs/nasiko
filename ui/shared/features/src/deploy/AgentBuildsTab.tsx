@@ -37,7 +37,7 @@ export function AgentBuildsTab({ agentId, agentName }: { agentId: string; agentN
   const deploy = (
     <Link
       to="/deploy"
-      search={{ name: agentName }}
+      search={agentName ? { name: agentName, newVersion: true } : {}}
       {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
     >
       {copy.agentBuilds.deploy}

@@ -24,7 +24,7 @@ describe("An agent's Builds tab (plans/feat-deploy.md §6, design review 1)", ()
       expect(within(r).getAllByRole('link')[0]!.getAttribute('href')).toMatch(/^\/builds\/5eed/)
     expect(
       screen.getByRole('link', { name: copy.agentBuilds.deploy }).getAttribute('href'),
-    ).toMatch(/^\/deploy\?name=/)
+    ).toMatch(/^\/deploy\?name=[^&]+&newVersion=true$/)
   })
 
   it('says why an agent has no builds', async () => {

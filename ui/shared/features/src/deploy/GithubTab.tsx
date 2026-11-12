@@ -33,7 +33,8 @@ import { copy } from './copy'
 import type { DeployStarted } from './UploadTab'
 import { filterRepos, useGithubConnect } from './github'
 import { nameFromFile, nameProblem, uploadCommand } from './name'
-import type { DeploySearch } from './search'
+import { type DeploySearch, lockedName } from './search'
+import { LockedNameHint } from './components/LockedNameHint'
 import { Requirements } from './components/Requirements'
 import { parseVersion } from './version'
 
@@ -203,7 +204,9 @@ function RepoPicker({
   const [typedBranch, setTypedBranch] = useState<string | null>(null)
   const [typedName, setTypedName] = useState<string | null>(search.name ?? null)
   const branch = typedBranch ?? picked?.default_branch ?? ''
-  const name = typedName ?? (picked ? nameFromFile(picked.name) : '')
+  // A new version of an existing agent keeps its name, whichever repository is picked (`search.ts` `newVersion`).
+  const locked = lockedName(search)
+  const name = locked ?? typedName ?? (picked ? nameFromFile(picked.name) : '')
   const [touched, setTouched] = useState({ branch: false, name: !!search.name })
   const [pickError, setPickError] = useState(false)
 
@@ -386,6 +389,7 @@ function RepoPicker({
             <Input
               id={`${ids}-name`}
               value={name}
+              readOnly={locked !== null}
               placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -400,6 +404,8 @@ function RepoPicker({
               <p id={`${ids}-name-msg`} className="text-xs text-destructive">
                 {nameErr ?? serverNameErr}
               </p>
+            ) : locked ? (
+              <LockedNameHint id={`${ids}-name-msg`} />
             ) : (
               <FieldDescription id={`${ids}-name-msg`} className="text-xs">
                 {copy.deploy.nameHint}

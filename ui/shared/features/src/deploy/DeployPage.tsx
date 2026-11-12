@@ -12,7 +12,7 @@ import { meQuery } from '@nasiko/data-access/auth'
 import { copy } from './copy'
 import { GithubTab } from './GithubTab'
 import { RegistryTab } from './RegistryTab'
-import { DEPLOY_METHODS, type DeployMethod, type DeploySearch } from './search'
+import { DEPLOY_METHODS, type DeployMethod, type DeploySearch, lockedName } from './search'
 import { UploadTab } from './UploadTab'
 
 const ICON = { upload: Upload, github: FolderGit2, registry: Container } as const
@@ -73,7 +73,11 @@ export function DeployPage({
           {me.data ? (
             <UploadTab
               userId={me.data.sub}
-              prefill={{ name: search.name, version: search.version }}
+              prefill={{
+                name: search.name,
+                version: search.version,
+                locked: lockedName(search) !== null,
+              }}
             />
           ) : (
             <Skeleton className="h-80 w-full" />

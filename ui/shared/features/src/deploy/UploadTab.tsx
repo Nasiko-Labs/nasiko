@@ -50,6 +50,7 @@ import {
   type ZipCheck,
 } from './zipcheck'
 import { DropZone } from './components/DropZone'
+import { LockedNameHint } from './components/LockedNameHint'
 import { Requirements, RequirementsCompact } from './components/Requirements'
 
 const INBOUND = ['openai', 'anthropic', 'gemini'] as const
@@ -99,10 +100,12 @@ export function UploadTab({
   onStarted,
 }: {
   userId: string
-  prefill: { name?: string; version?: string }
+  /** `locked`: a new version of the agent `name` names, so the name can't change (`search.ts` `newVersion`). */
+  prefill: { name?: string; version?: string; locked?: boolean }
   onStarted?: (to: DeployStarted) => void
 }) {
   const ids = useId()
+  const locked = prefill.locked && prefill.name ? prefill.name : null
   const qc = useQueryClient()
   const navigate = useNavigate()
   const upload = useSyncExternalStore(subscribeUploads, () => uploadFor(userId))
@@ -209,8 +212,8 @@ export function UploadTab({
     if (latestFile.current !== f) return
     setCheck(r)
     setChecking(false)
-    // Never overwrite what the user typed.
-    if (!getFieldState('name').isDirty)
+    // Never overwrite what the user typed, nor a locked name: the zip's own name would deploy a second agent.
+    if (locked === null && !getFieldState('name').isDirty)
       setValue('name', nameFromFile(r.cardName ?? '') || nameFromFile(f.name), {
         shouldValidate: true,
       })
@@ -306,7 +309,7 @@ export function UploadTab({
             <FieldLabel htmlFor={`${ids}-name`}>{copy.deploy.name}</FieldLabel>
             <Input
               id={`${ids}-name`}
-              readOnly={busy}
+              readOnly={busy || locked !== null}
               placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -318,6 +321,8 @@ export function UploadTab({
               <p id={`${ids}-name-err`} className="text-xs text-destructive">
                 {err('name')}
               </p>
+            ) : locked ? (
+              <LockedNameHint id={`${ids}-name-hint`} />
             ) : (
               <FieldDescription id={`${ids}-name-hint`} className="text-xs">
                 {copy.deploy.nameHint}

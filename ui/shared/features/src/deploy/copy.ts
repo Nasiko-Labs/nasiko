@@ -17,6 +17,8 @@ export const copy = {
     name: 'Name',
     namePlaceholder: 'my-agent',
     nameHint: 'Lowercase letters, digits, dots, dashes and underscores work best.',
+    nameLocked: "The name can't change when you deploy a new version.",
+    deployOther: 'Deploy a new agent',
     version: 'Version',
     versionHint: 'x.y.z. Leave empty to use the version in the zip.',
     versionNeeded: 'Set a version (x.y.z): the zip has none.',
