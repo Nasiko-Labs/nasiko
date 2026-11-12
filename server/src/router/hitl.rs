@@ -592,7 +592,9 @@ async fn resolve(
     // unconditional insert): defensive here too, since a client could in principle retry this
     // same POST. Fire-and-forget and silently a no-op for any origin with no
     // `chat_sessions`-registered session at all (e.g. MAF) — this is specifically for the chat
-    // experience, not a correctness-critical write.
+    // experience, not a correctness-critical write. Tagged `hitl_request_id`, so the web UI shows
+    // it as the answer on that request's card rather than as a new message opening its own turn
+    // (NAS-1540); history readers filter on `turn_error` only, so the agent still sees it.
     if !already_resolved && let Some(session_id) = crate::hitl::stable_session_id(&row) {
         let answer = crate::hitl::answer_text(&row);
         if !answer.is_empty() {
@@ -600,6 +602,7 @@ async fn resolve(
                 state.db.clone(),
                 session_id.to_string(),
                 answer,
+                json!({ "hitl_request_id": row.id }),
             );
         }
     }

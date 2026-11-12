@@ -99,6 +99,41 @@ describe('mergeTurns', () => {
     expect(done[0].live).toBeUndefined()
     expect(done[0].replies.map((r) => r.id)).toEqual(['r1'])
   })
+
+  it('keeps an answer the server saved on its request, not as a turn of its own (NAS-1540)', () => {
+    const answer = { ...msg('u2', 'user', '03', 'the answer'), metadata: { hitl_request_id: 'a' } }
+    const turns = mergeTurns([
+      page(
+        [msg('u1', 'user', '01'), answer],
+        [req('a', '02', 'resolved', '03'), req('b', '04', 'pending')],
+      ),
+    ])
+    expect(turns.map((t) => [t.user?.id, t.requests.map((r) => r.id)])).toEqual([
+      ['u1', ['a', 'b']],
+    ])
+    // Its request isn't loaded (an older page): the row stays, so the answer never disappears.
+    expect(mergeTurns([page([msg('u1', 'user', '01'), answer])]).map((t) => t.user?.id)).toEqual([
+      'u1',
+      'u2',
+    ])
+  })
+
+  it('puts a resume on the turn its saved answer opened, beside the request it raised (NAS-1540)', () => {
+    // The server saves the answer as a user row (router/hitl.rs resolve); the next request comes after it.
+    const turns = mergeTurns(
+      [
+        page(
+          [msg('u1', 'user', '01'), msg('u2', 'user', '03', 'the answer')],
+          [req('a', '02', 'resolved', '03'), req('b', '04', 'pending')],
+        ),
+      ],
+      { userMessageId: 'u1', userText: 'hi', finalized: false, resumedRequestId: 'a' },
+    )
+    expect(turns.map((t) => [t.user?.id, t.requests.map((r) => r.id), !!t.live])).toEqual([
+      ['u1', ['a'], false],
+      ['u2', ['b'], true],
+    ])
+  })
 })
 
 describe('replyStatus', () => {

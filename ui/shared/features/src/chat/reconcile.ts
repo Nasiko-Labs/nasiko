@@ -4,7 +4,7 @@
  * otherwise a turn paused on a request handled elsewhere, or an "unsaved" reply that actually committed, would
  * lock the composer forever. The page reports what it saw and dispatches the returned action.
  */
-import type { DisplayTurn } from './turnModel'
+import { ownTurn, type DisplayTurn } from './turnModel'
 import {
   attemptKeyOf,
   isLivePhase,
@@ -52,10 +52,6 @@ export type ReconcileAction =
 
 const NONE: ReconcileAction = { type: 'none' }
 const FORGET: ReconcileAction = { type: 'forget' }
-
-/** The history turn of the live turn's user message. */
-export const ownTurn = (turns: ReconcileInput['turns'], live: LiveTurn | undefined) =>
-  live?.userMessageId ? turns.find((t) => t.user?.id === live.userMessageId) : undefined
 
 /** The turn just stopped running: note when, and refresh (a routed turn's registry already invalidated). */
 export function turnEnded(

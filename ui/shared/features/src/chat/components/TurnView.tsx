@@ -1,6 +1,7 @@
 /**
- * One turn, top to bottom (plan §7.4, DS1): user message → pending request → reply → file chips
- * → activity → footer (Copy · usage · View trace) → notices. Each notice has one primary action.
+ * One turn, top to bottom (plan §7.4, DS1): user message → saved replies and answered requests →
+ * pending request → reply → file chips → activity → footer (Copy · usage · View trace) → notices.
+ * Each notice has one primary action.
  * The transcript is a plain region: nothing here is a live region; StatusAnnouncer speaks (§8.1).
  */
 import { ChevronDown, ChevronUp, FileDown, Loader2, Wrench } from 'lucide-react'
@@ -462,22 +463,6 @@ function TurnViewBody({
         </div>
       ) : null}
 
-      <PendingRequests
-        requests={pending}
-        agentName={requestAgent}
-        actions={handlers.requests}
-        focusRequestId={focusRequestId}
-      />
-      {/* A request history doesn't have yet; Go to request targets the first card only. */}
-      {liveFrame ? (
-        <RequestCard
-          id={`request-${liveFrame.id}`}
-          frame={liveFrame}
-          agentName={frameAgent}
-          actions={handlers.requests}
-        />
-      ) : null}
-
       {/* Replies and answered requests in the order they happened: a receipt sits where its
           question was asked, before the reply it unlocked (§6.8). */}
       {timeline(
@@ -561,6 +546,23 @@ function TurnViewBody({
           </div>
         )
       })}
+
+      {/* After what was already answered: an agent that asks again asks after its last answer. */}
+      <PendingRequests
+        requests={pending}
+        agentName={requestAgent}
+        actions={handlers.requests}
+        focusRequestId={focusRequestId}
+      />
+      {/* A request history doesn't have yet; Go to request targets the first card only. */}
+      {liveFrame ? (
+        <RequestCard
+          id={`request-${liveFrame.id}`}
+          frame={liveFrame}
+          agentName={frameAgent}
+          actions={handlers.requests}
+        />
+      ) : null}
 
       {showLive && live ? (
         <div className="space-y-2">

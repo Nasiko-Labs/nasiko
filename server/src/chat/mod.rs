@@ -16,11 +16,12 @@ pub(crate) fn spawn_dedup_user_message_insert(
     db: sqlx::PgPool,
     session_id: String,
     content: String,
+    metadata: serde_json::Value,
 ) {
     tokio::spawn(async move {
         if let Err(e) = sqlx::query(
-            "INSERT INTO chat_messages (session_id, role, content) \
-             SELECT $1, 'user', $2 \
+            "INSERT INTO chat_messages (session_id, role, content, metadata) \
+             SELECT $1, 'user', $2, $3 \
              WHERE NOT EXISTS ( \
                  SELECT 1 FROM chat_messages \
                  WHERE session_id = $1 AND role = 'user' AND content = $2 \
@@ -29,6 +30,7 @@ pub(crate) fn spawn_dedup_user_message_insert(
         )
         .bind(&session_id)
         .bind(&content)
+        .bind(sqlx::types::Json(metadata))
         .execute(&db)
         .await
         {

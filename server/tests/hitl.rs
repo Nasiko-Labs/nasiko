@@ -1061,6 +1061,15 @@ async fn resolving_input_required_persists_the_answer_as_a_chat_message() {
         Some("nasiko-bishnu/test"),
         "the human's answer must show up as a real chat_messages turn, not just human_response"
     );
+    // Tagged with its request, so the web UI shows it on the request's card instead of as a new turn.
+    let tagged: Option<String> = sqlx::query_scalar(
+        "SELECT metadata->>'hitl_request_id' FROM chat_messages WHERE session_id = $1 AND role = 'user'",
+    )
+    .bind(context_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(tagged, Some(request_id.to_string()));
 
     server.cleanup().await;
 }

@@ -48,7 +48,7 @@ import { chatIdentity, targetIdentity } from './identity'
 import { indexRequests } from './pending'
 import { isMetadataOnly } from './recorded'
 import { resolveChatTarget, stoppedByOwner, type Target } from './target'
-import { answeredResume, firstSeenAnswer, mergeTurns, replyStatus } from './turnModel'
+import { answeredResume, firstSeenAnswer, mergeTurns, ownTurn, replyStatus } from './turnModel'
 import { endOf, isLivePhase, sawTerminal, stepsOf, type SendInput } from './turnRegistry'
 import { tuning } from './tuning'
 import type { HitlDto } from './types'
@@ -66,7 +66,6 @@ import {
 } from './components/PageParts'
 import { DebugFrames, RoutedMetricLine } from './components/DebugPanels'
 import { SessionHeader } from './components/SessionHeader'
-import { ownTurn } from './reconcile'
 import { useReconcile } from './useReconcile'
 
 /** Rail pages searched for an existing chat's row; after that the chat reads as "agent removed" (§6.11). */

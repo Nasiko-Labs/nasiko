@@ -131,6 +131,12 @@ describe('who asked (ISSUE-001, ship review D1)', () => {
         .getByRole('button', { name: 'now' })
         .closest('[data-testid="request-card"]') as HTMLElement
       expect(card).toHaveTextContent('Deploy to us-east-1 now or at the next window?')
+      // The server saves the answer as a user row: it shows on its receipt, not as a turn of its own,
+      // so the new question has one card, after the answered one (NAS-1540).
+      const receipt = await screen.findByTestId('request-receipt', {}, { timeout: 8000 })
+      expect(screen.getAllByTestId('turn')).toHaveLength(1)
+      expect(screen.getAllByTestId('request-card')).toHaveLength(1)
+      expect(receipt.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
       expect(card).not.toHaveTextContent(/Requested by (OpenRuntime|the Orchestrator)/)
       const link = within(within(card).getByText(/^Requested by/).parentElement!).getByRole('link')
       expect(link.getAttribute('href')).toMatch(/^\/agents\/5eed/)

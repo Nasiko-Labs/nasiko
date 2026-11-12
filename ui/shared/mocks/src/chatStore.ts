@@ -1505,6 +1505,23 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       h.status = body.decision === 'reject' ? 'rejected' : 'resolved'
       h.human_response = response
       h.resolved_at = iso(ctx.now())
+      // The answer saved as a user row tagged with its request (router/hitl.rs resolve, hitl/mod.rs answer_text).
+      // ponytail: typed answers only; the server also saves "authorized"/"denied" for auth_required.
+      const answered = (response as { answer?: unknown; custom_answer?: unknown }) ?? {}
+      const answerText = Array.isArray(answered.answer)
+        ? [...answered.answer, ...(answered.custom_answer ? [answered.custom_answer] : [])].join(
+            '\n',
+          )
+        : typeof answered.answer === 'string'
+          ? answered.answer
+          : ''
+      if (answerText) {
+        const c = [...chats.values()].find((x) => x.hitl.includes(h))!
+        c.messages.push({
+          ...msg(c.row.session_id, 'user', answerText, ctx.now()),
+          metadata: { hitl_request_id: h.id },
+        })
+      }
       // The reconnect-refusal scenarios model an execution with no continuation to run.
       if (
         h.execution.origin === 'orchestrator' &&
