@@ -64,23 +64,24 @@ impl AuthServiceImpl {
     }
 
     /// The user this `(provider, provider_id)` OAuth login resolves to, if
-    /// one already exists — an exact identity match, a *verified* email that
-    /// already belongs to a user (how one person keeps a single CP user
-    /// across Google + GitHub), or a username that already belongs to a user
-    /// (a pre-seeded account, or one whose provider label changed since a
-    /// previous login) — the same conflict target `upsert_oauth_user`'s own
-    /// `INSERT ... ON CONFLICT (username)` uses. Synthetic email placeholders
+    /// one already exists: an exact identity match, or a *verified* email that
+    /// already belongs to a user (how one person keeps a single CP user across
+    /// Google + GitHub). Synthetic email placeholders
     /// (`{username}@{provider}.users`) are never matched: callers only pass
     /// emails they have verified. `None` means this login would create a
     /// brand-new user. Backs `would_create_user` (a read-only check of that
     /// question, used to enforce a creation cap before provisioning), which
     /// must resolve "new" exactly as `upsert_oauth_user`'s own find-or-create
     /// does, or the cap and the write would disagree.
+    ///
+    /// A taken username is deliberately *not* a match: `insert_oauth_user`
+    /// never adopts an account by username (NAS-1111), it creates `name-2`.
+    /// Counting it as existing let any sign-in past a full cap on new
+    /// accounts by choosing a username that is already taken.
     async fn find_existing_or_linked_user(
         &self,
         provider: &str,
         provider_id: &str,
-        username: &str,
         verified_email: Option<&str>,
     ) -> Result<Option<ExistingUser>, AuthError> {
         let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
@@ -103,35 +104,16 @@ impl AuthServiceImpl {
             }
             None => None,
         };
-        if linked.is_some() {
-            return Ok(Some(ExistingUser::LinkedByEmail));
-        }
-
-        // No `deleted_at IS NULL` filter here, unlike the email lookup above:
-        // `users.username` is a plain, non-partial `UNIQUE` constraint
-        // (`oss/migrations/0001_schema.sql`), so it still reserves a
-        // soft-deleted user's username too. `upsert_oauth_user`'s own
-        // `ON CONFLICT (username)` will match that row regardless of
-        // `deleted_at` — this has to agree, or a soft-deleted user's old
-        // username would look like a genuinely new signup here and get
-        // wrongly capacity-gated for what the real write actually does
-        // (reactivate/relink the existing row, not insert a new one).
-        let linked_by_username: Option<(uuid::Uuid,)> =
-            sqlx::query_as("SELECT id FROM users WHERE username = $1")
-                .bind(username)
-                .fetch_optional(&self.db)
-                .await?;
-        Ok(linked_by_username.map(|_| ExistingUser::LinkedByUsername))
+        Ok(linked.map(|_| ExistingUser::LinkedByEmail))
     }
 }
 
-/// The three ways `find_existing_or_linked_user` can resolve to an existing
+/// The two ways `find_existing_or_linked_user` can resolve to an existing
 /// user. Only the presence of a match is read today (by `would_create_user`);
 /// the variant names record which lookup matched for anyone extending this.
 enum ExistingUser {
     ExactMatch,
     LinkedByEmail,
-    LinkedByUsername,
 }
 
 /// How many usernames `insert_oauth_user` tries: the provider's own, then
@@ -623,11 +605,13 @@ impl AuthService for AuthServiceImpl {
         &self,
         provider: &str,
         provider_id: &str,
-        username: &str,
+        // Not consulted: a taken username never resolves to an existing user
+        // (see `find_existing_or_linked_user`).
+        _username: &str,
         verified_email: Option<&str>,
     ) -> Result<bool, AuthError> {
         let found = self
-            .find_existing_or_linked_user(provider, provider_id, username, verified_email)
+            .find_existing_or_linked_user(provider, provider_id, verified_email)
             .await?;
         Ok(found.is_none())
     }

@@ -98,11 +98,11 @@ async fn a_verified_email_still_links_to_its_existing_account() {
     server.cleanup().await;
 }
 
-/// `would_create_user` is what the EE licence/capacity gate asks before a
-/// sign-in: "does this create an account?". It must answer exactly what
+/// `would_create_user` is what a cap on new accounts asks before a sign-in:
+/// "does this create an account?". It must answer exactly what
 /// `upsert_oauth_user` then does. A taken username is not an existing user any
 /// more (the sign-in gets `name-2`), so answering "existing" there let anyone
-/// past a full licence cap by picking a username that is already taken.
+/// past a full cap by picking a username that is already taken.
 #[tokio::test]
 #[serial]
 async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
