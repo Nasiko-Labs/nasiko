@@ -37,8 +37,6 @@ export const copy = {
     storage: 'Persistent storage',
     storagePath: 'Storage path',
     storagePathHint: 'Where the volume mounts, like /workspace.',
-    inbound: 'Inbound format',
-    inboundDefault: 'Server default',
     submit: (name: string) => (name ? `Deploy ${name}` : 'Deploy'),
     uploading: (done: string, total: string) => `Uploading ${done} of ${total}`,
     cancel: 'Cancel upload',

@@ -247,9 +247,6 @@ export const copy = {
   keepNotOffered: (model: string, provider: string) => `${model} isn’t offered by ${provider}`,
   keepAnyProvider: 'Applies to the provider each request names.',
   cantSeeOwnerConfigs: 'You can’t see this owner’s configs.',
-  requestFormat: 'Request format',
-  requestFormatWayOut: (agent: string) =>
-    `Change with nasiko llm-config attach ${agent} <config> --inbound-format <format>.`,
   checkHint: (by: string) =>
     `To check, start a new conversation after ${by}: ongoing ones may keep the old model.`,
   cantConfirm: 'This page can’t confirm routed calls yet.',

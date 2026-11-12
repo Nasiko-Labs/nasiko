@@ -8,7 +8,7 @@
  * - R7: the XHR comes from an injectable factory (the default is the browser's); tests drive a fake one.
  *
  * `POST /api/agents/upload` (`agents/upload.rs` `upload_and_deploy`): multipart `name`, `file`, optional `version_tag`,
- * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`, `inbound_format`;
+ * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`;
  * 202 `{data: {build_id, agent_id, …}}`; errors are plain text (400/409/413/500).
  */
 import type { QueryClient } from '@tanstack/react-query'
@@ -25,7 +25,6 @@ export interface UploadFields {
   /** Sent only when the user touched storage: the server treats these as tri-state. */
   writable?: boolean
   writablePath?: string
-  inboundFormat?: 'openai' | 'anthropic' | 'gemini'
 }
 
 export type UploadState =
@@ -93,7 +92,6 @@ function formFor(file: Blob, fileName: string, f: UploadFields): FormData {
   if (f.env && Object.keys(f.env).length) fd.set('env', JSON.stringify(f.env))
   if (f.writable !== undefined) fd.set('writable', String(f.writable))
   if (f.writable && f.writablePath) fd.set('writable_path', f.writablePath)
-  if (f.inboundFormat) fd.set('inbound_format', f.inboundFormat)
   fd.set('file', file, fileName)
   return fd
 }

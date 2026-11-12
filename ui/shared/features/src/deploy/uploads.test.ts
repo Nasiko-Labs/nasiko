@@ -103,7 +103,6 @@ describe('upload registry (eng review R1, R2, R3, R7)', () => {
       version: '1.0.0',
       ports: '8000,9000',
       env: { A: '1' },
-      inboundFormat: 'openai',
     })
     const x = await xhr()
     expect([x.method, x.url, x.withCredentials]).toEqual(['POST', apiUrl(UPLOAD_PATH).href, true])
@@ -116,7 +115,6 @@ describe('upload registry (eng review R1, R2, R3, R7)', () => {
       version_tag: '1.0.0',
       ports: '8000,9000',
       env: '{"A":"1"}',
-      inbound_format: 'openai',
       file: 'FILE',
     })
     // Storage is tri-state on the server: sent only when touched.

@@ -350,13 +350,6 @@ function Body({
           <dd className="font-mono text-xs">
             {routing.pinned_model ?? <span className="font-sans text-sm">{copy.none}</span>}
           </dd>
-          <dt className="text-muted-foreground">{copy.requestFormat}</dt>
-          <dd>
-            <span className="font-mono text-xs">{routing.inbound_format}</span>
-            <span className="block text-xs text-muted-foreground">
-              {copy.requestFormatWayOut(target.name)}
-            </span>
-          </dd>
         </dl>
 
         {outcome ? (

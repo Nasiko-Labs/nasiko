@@ -246,7 +246,6 @@ describe('Deploy: upload form branches', () => {
     expect(fd?.get('env')).toBe('{"API_URL":"https://x"}')
     expect(fd?.get('writable')).toBe('true')
     expect(fd?.get('writable_path')).toBe('/data')
-    expect(fd?.has('inbound_format')).toBe(false)
   })
 })
 

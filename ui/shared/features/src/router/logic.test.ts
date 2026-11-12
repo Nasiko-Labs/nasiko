@@ -405,7 +405,6 @@ describe('the CLI equivalent (DX #4)', () => {
       "nasiko llm-config attach support-bot 'my config'",
     )
     expect(attachHelp).toContain('nasiko llm-config attach [OPTIONS] <AGENT> <CONFIG>')
-    expect(attachHelp).toContain('--inbound-format')
   })
 })
 
