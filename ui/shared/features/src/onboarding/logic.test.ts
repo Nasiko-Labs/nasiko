@@ -6,43 +6,29 @@ import {
   guideDue,
   guideProviders,
   MANDATORY,
-  MAX_SEEDED,
   minutesLeft,
   opensFor,
   skipKey,
   STEPS,
+  SEEDED_AGENTS,
   ticks,
-  toDeploy,
-  togglePick,
 } from './logic'
 import { PERSONAS } from './types'
 
 describe('onboarding logic', () => {
-  it('always deploys the meeting notes processor: the picks on Prebuilt, it alone from any other tab', () => {
-    expect(MANDATORY).toBe('meeting-notes-processor')
-    const none = new Set<string>()
-    expect(toDeploy('seeded', [MANDATORY, 'summarizer'], none).map((a) => a.reference)).toEqual([
-      'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0',
-      'registry.nasiko.dev/nasiko/summarizer:1.0.0',
-    ])
-    for (const tab of ['registry', 'github', 'upload'] as const)
-      expect(toDeploy(tab, [MANDATORY, 'summarizer'], none).map((a) => a.name)).toEqual([MANDATORY])
-  })
-
-  it('never deploys an agent that already exists', () => {
-    const existing = new Set([MANDATORY])
-    expect(toDeploy('registry', [MANDATORY], existing)).toEqual([])
-    expect(toDeploy('seeded', [MANDATORY, 'translator'], existing).map((a) => a.name)).toEqual([
+  it('gives every new workspace the six Nasiko registry agents, meeting notes first', () => {
+    expect(SEEDED_AGENTS.map((a) => a.name)).toEqual([
+      'meeting-notes-processor',
+      'summarizer',
+      'reply-drafter',
+      'task-breakdown',
+      'humanizer',
       'translator',
     ])
-  })
-
-  it('never drops the mandatory pick, and a pick at the cap swaps out the latest one', () => {
-    expect(togglePick(['M'], 'M', 'M')).toEqual(['M'])
-    expect(togglePick(['M'], 'A', 'M')).toEqual(['M', 'A'])
-    expect(togglePick(['M', 'A'], 'A', 'M')).toEqual(['M'])
-    expect(MAX_SEEDED).toBe(2)
-    expect(togglePick(['M', 'A'], 'B', 'M')).toEqual(['M', 'B'])
+    expect(SEEDED_AGENTS[0]?.reference).toBe(
+      'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0',
+    )
+    expect(MANDATORY).toBe('meeting-notes-processor')
   })
 
   it('has the three steps in order, no role, the first agent and the model key as one', () => {

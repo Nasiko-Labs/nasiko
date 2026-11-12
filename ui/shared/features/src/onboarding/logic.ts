@@ -106,36 +106,8 @@ export const SEEDED_AGENTS: readonly SeededAgent[] = [
   seeded('translator', 'Translator', 'Translates text while keeping its tone.', 2_600, 0.96),
 ]
 
-/** How many prebuilt agents one pick deploys at most, the mandatory one included (user request 2026-11-09: was 3). */
-export const MAX_SEEDED = 2
-
-/** The agent every pick includes and every Continue on the Agent and key step deploys, whatever the tab, so one agent
- *  is always up (user request 2026-11-09). */
+/** The agent Home's try-a-run card runs (overview/tryRun.ts): the first of the agents every new workspace is given. */
 export const MANDATORY = 'meeting-notes-processor'
-
-/** The Agent and key step's tabs, Prebuilt first: deploying them is the quickest start. */
-export type AgentTab = 'seeded' | 'registry' | 'github' | 'upload'
-
-/** What Continue deploys: the picks on the Prebuilt tab, the mandatory agent on any other; never an agent that already
- *  exists, so coming back to the guide redeploys nothing (a re-import would redeploy it). */
-export function toDeploy(
-  tab: AgentTab,
-  picks: readonly string[],
-  existing: ReadonlySet<string>,
-): SeededAgent[] {
-  const names = tab === 'seeded' ? picks : [MANDATORY]
-  return SEEDED_AGENTS.filter((a) => names.includes(a.name) && !existing.has(a.name))
-}
-
-/** The picks after toggling `name`: the mandatory one never leaves, and the pick never grows past MAX_SEEDED. A new
- *  pick when full swaps out the latest one, so any agent can be chosen without unchecking first (user 2026-11-09). */
-export function togglePick(picks: readonly string[], name: string, mandatory: string): string[] {
-  if (name === mandatory) return [...picks]
-  if (picks.includes(name)) return picks.filter((p) => p !== name)
-  if (picks.length < MAX_SEEDED) return [...picks, name]
-  const latest = picks.findLast((p) => p !== mandatory)
-  return latest ? [...picks.filter((p) => p !== latest), name] : [...picks]
-}
 
 /** The guide opens on its own once per user (user request 2026-11-05): set when it does, and not under the drafts prefix,
  *  so sign-out keeps it and an unfinished guide never comes back by itself. The Setup guide still reopens it. */
