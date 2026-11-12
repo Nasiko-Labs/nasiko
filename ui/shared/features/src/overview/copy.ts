@@ -582,13 +582,6 @@ export const copy = {
     retry: 'Try again',
     notDeployed: (agent: string) =>
       `${agent} isn't deployed yet. Deploy it from the Setup guide, then run it here.`,
-    // While the Setup guide's deploy of it runs, and when it didn't start (NAS-1450).
-    deployingTitle: (agent: string) => `Your ${agent} is deploying`,
-    deploying: 'Deploying your agent…',
-    deployingHint: 'Usually 1–5 min. You can run it here once it is up.',
-    deployFailed: (agent: string, reason: string | null) =>
-      reason ? `${agent} didn't start: ${reason}` : `${agent} was deployed, but didn't start.`,
-    openAgents: 'Open Agents',
   },
   rating: {
     healthy: 'Healthy',
