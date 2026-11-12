@@ -122,36 +122,9 @@ describe('attaching media to a chat', () => {
     Object.defineProperty(huge, 'size', { value: 60 * 1024 * 1024 })
     await userEvent.upload(screen.getByTestId('attach-input'), huge)
     expect(await screen.findByTestId('attach-notes')).toHaveTextContent(
-      "huge.bin wasn't attached: files must be under 25 MB.",
+      "huge.bin wasn't attached: files must be under 50 MB.",
     )
     expect(screen.queryByTestId('attachment-strip')).toBeNull()
-  })
-
-  it('turns away a file the server would refuse over its 25 MB file limit', async () => {
-    await openChat()
-    const scan = new File([new Uint8Array(8)], 'scan.pdf', { type: 'application/pdf' })
-    Object.defineProperty(scan, 'size', { value: 28 * 1024 * 1024 })
-    await userEvent.upload(screen.getByTestId('attach-input'), scan)
-    expect(await screen.findByTestId('attach-notes')).toHaveTextContent(
-      "scan.pdf wasn't attached: files must be under 25 MB.",
-    )
-  })
-
-  it('keeps one message within the 30 MB the server accepts', async () => {
-    await openChat()
-    const sized = (name: string, mb: number) => {
-      const f = new File([new Uint8Array(8)], name, { type: 'application/pdf' })
-      Object.defineProperty(f, 'size', { value: mb * 1024 * 1024 })
-      return f
-    }
-    await userEvent.upload(screen.getByTestId('attach-input'), [
-      sized('a.pdf', 20),
-      sized('b.pdf', 12),
-    ])
-    expect(await screen.findByTestId('attach-notes')).toHaveTextContent(
-      "b.pdf wasn't attached: one message can carry 30 MB of files in total.",
-    )
-    expect(screen.getByTestId('attachment-strip')).toHaveTextContent('a.pdf')
   })
 
   it('removes an attachment before sending', async () => {

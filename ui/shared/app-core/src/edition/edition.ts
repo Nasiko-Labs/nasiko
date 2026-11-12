@@ -116,16 +116,16 @@ export interface SettingsSection {
 }
 
 /**
- * A layer's own personal (non-admin) settings row, e.g. EE's memory L2-proxy-consent toggle. Unlike
+ * A layer's own personal (non-admin) settings row. Unlike
  * `SettingsSection` — which renders at `/settings?section=<key>`, a page the core redirects every non-superuser
  * away from — this is a plain nav link to the layer's own dedicated route (its own file under `routes/_app/`,
  * same as the core's Chat context), so every user, admin or not, can reach it. Placed in the Security group,
- * after Chat context: a data/recall preference, the same bucket as that one, not an Account (UI/auth) one.
+ * after Chat context: a data preference, the same bucket as that one, not an Account (UI/auth) one. No layer fills it today.
  */
 export interface PersonalSettingsLink {
   key: string
   label: string
-  /** The layer's own route, e.g. `/settings/memory` — not `/settings?section=`. */
+  /** The layer's own route, e.g. `/settings/<name>` — not `/settings?section=`. */
   to: string
   /**
    * Its nav group: Security (after Secrets) when absent. Workspace puts it after the admin's sections, and shows the
@@ -222,6 +222,18 @@ export type BudgetSource<T> =
   | { state: 'ok'; value: T; incomplete?: boolean }
 
 /** The fields the hub's Budget section needs; the core passes them rather than its own `AgentView`. */
+/** One section a layer adds to an agent's Settings tab. */
+export interface AgentSettingsSection {
+  key: string
+  Section: ComponentType<{ agent: AgentSettingsRef }>
+}
+
+/** The agent an `agentSettingsSections` entry renders for. */
+export interface AgentSettingsRef {
+  id: string
+  name: string
+}
+
 export interface HubBudgetAgent {
   id: string
   name: string
@@ -359,6 +371,12 @@ export interface Slots {
   connectorGranteeKinds: ConnectorGranteeKind[]
   settingsSections: SettingsSection[]
   personalSettingsLinks: PersonalSettingsLink[]
+  /**
+   * Sections a layer adds to an agent's Settings tab (managers only, after Token optimization; EE: Memory recall).
+   * A section decides for itself who sees it and renders nothing otherwise. Not shown for coding harnesses, which
+   * have no Settings tab.
+   */
+  agentSettingsSections: AgentSettingsSection[]
   loginMethods: ComponentType<LoginMethodsProps> | null
   /** /login's username and password form. false when an edition signs in only through `loginMethods`. */
   passwordSignIn: boolean
@@ -462,6 +480,7 @@ export const OSS_SLOTS: Slots = {
   connectorGranteeKinds: [],
   settingsSections: [],
   personalSettingsLinks: [],
+  agentSettingsSections: [],
   loginMethods: null,
   passwordSignIn: true,
   tokenopsOrgUnitFilter: null,
@@ -513,6 +532,7 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     connectorGranteeKinds: [],
     settingsSections: [],
     personalSettingsLinks: [],
+    agentSettingsSections: [],
     accessSections: [],
     tours: [],
   }
@@ -532,6 +552,8 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     }
     if (s.personalSettingsLinks)
       out.personalSettingsLinks = [...out.personalSettingsLinks, ...s.personalSettingsLinks]
+    if (s.agentSettingsSections)
+      out.agentSettingsSections = [...out.agentSettingsSections, ...s.agentSettingsSections]
     if (s.tours) out.tours = [...out.tours, ...s.tours]
     if (s.accessSections) out.accessSections = [...out.accessSections, ...s.accessSections]
     if (s.harnessOrgScope !== undefined) out.harnessOrgScope = s.harnessOrgScope

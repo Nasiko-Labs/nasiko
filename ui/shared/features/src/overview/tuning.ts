@@ -54,10 +54,8 @@ export const RETURN_REFRESH_MS = 60_000
 export const LAST_WEEK = { preset: '7d' } as const
 /** "Did you know?" turns to the next tip after this long (paused on hover or focus, never under reduced motion). */
 export const TIP_ROTATE_MS = 6_000
-/** The coding harness preview's steps (Today, Day 1, Week 1, Month 1) each play this long: 12 s in all (canvas D). */
-export const PREVIEW_STEP_MS = 3_000
-/** Once the preview ends, Home comes back after this long unless the viewer stays (user 2026-11-06: 5 s). */
-export const PREVIEW_HOLD_MS = 5_000
+/** The coding harness preview's steps (Today, Day 1, Week 1, Month 1) each play this long: 20 s in all. */
+export const PREVIEW_STEP_MS = 5_000
 /** The preview's clock moves on in steps this long (20 frames a second). */
 export const PREVIEW_TICK_MS = 50
 /** The try-a-run card (components/TryAgentRun.tsx): "Agent completed" stays on the button this long before it resets. */

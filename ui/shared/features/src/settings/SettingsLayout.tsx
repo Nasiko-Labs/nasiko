@@ -43,7 +43,7 @@ import { CORE_SECTIONS } from './search'
 interface Row {
   key: string
   label: string
-  // A layer's own `personalSettingsLinks` entry carries its own route (e.g. `/settings/memory`), not one of the
+  // A layer's own `personalSettingsLinks` entry carries its own route (its own `/settings/<name>`), not one of the
   // core's — same widening `LayerNavItem` uses for the app sidebar (edition.ts).
   to: string
   section?: string

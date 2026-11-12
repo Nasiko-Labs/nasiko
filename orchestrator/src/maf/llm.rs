@@ -15,14 +15,8 @@ fn openai_rejects_temperature(body: &str) -> bool {
     let Some(error) = value.get("error") else {
         return false;
     };
-    let code = error
-        .get("code")
-        .and_then(|c| c.as_str())
-        .unwrap_or_default();
-    let param = error
-        .get("param")
-        .and_then(|p| p.as_str())
-        .unwrap_or_default();
+    let code = error.get("code").and_then(|c| c.as_str()).unwrap_or_default();
+    let param = error.get("param").and_then(|p| p.as_str()).unwrap_or_default();
     param == "temperature" && matches!(code, "unsupported_value" | "unsupported_parameter")
 }
 
