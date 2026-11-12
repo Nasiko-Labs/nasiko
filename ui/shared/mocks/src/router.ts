@@ -50,6 +50,8 @@ interface MockCustomProvider extends CustomProvider {
 export interface RouterState {
   configs: MockConfig[]
   routing: Map<string, MockRouting>
+  /** The viewer's own config choice per agent they do not own (`agent_user_llm_configs`). */
+  mine: Map<string, string>
   secrets: Map<string, SecretEntry[]>
   custom: MockCustomProvider[]
   registry: ModelMapping[]
@@ -190,6 +192,7 @@ export function buildRouterState(
   return {
     configs,
     routing,
+    mine: new Map(),
     secrets: new Map([
       [ADMIN_ID, [secret('ANTHROPIC_API_KEY'), secret('OPENAI_API_KEY')]],
       ...others.map((o) => [o, [secret('ANTHROPIC_API_KEY')]] as [string, SecretEntry[]]),
@@ -493,6 +496,33 @@ export function patchRouting(
   // LlmConfigUpdateResponse (agents/llm_config.rs): the GET's fields without inbound_format.
   const { inbound_format: _f, ...patched } = resolveRouting(s, agent)
   return patched
+}
+
+/**
+ * `my-llm-config` (agents/llm_config.rs): the caller's own choice on an agent they can use but do not own. The owner
+ * gets 400; a choice of a deleted config reads as none; a PUT of anyone else's config is a 404.
+ */
+export function myChoice(
+  s: RouterState,
+  agent: MockAgent,
+  user: string,
+  write?: { configId: string | null },
+) {
+  if (agent.owner_id === user)
+    throw new MockHttpError(
+      400,
+      'you own this agent: set its model with PATCH /api/agents/{id}/llm-config',
+    )
+  if (write?.configId) {
+    findConfig(s, write.configId, user)
+    s.mine.set(agent.id, write.configId)
+  } else if (write) s.mine.delete(agent.id)
+  const chosen = live(s, user).find((c) => c.id === s.mine.get(agent.id))
+  return {
+    agent_id: agent.id,
+    llm_config_id: chosen?.id ?? null,
+    llm_config: chosen ? routingConfigJson(chosen) : null,
+  }
 }
 
 // ─── secrets, registry, custom providers ────────────────────────────────────

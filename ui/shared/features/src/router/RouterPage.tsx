@@ -1,6 +1,6 @@
 /**
- * The LLM router page (plan §4). Order: title + "How routing works" → tabs: Your agents · Your configs · Providers
- * (`?tab=`, one at a time). The routing summary is the Agents table's own filter tabs, the only thing it filters. It shows configured routing and who pays, not observed calls (R-L5).
+ * The LLM router page (plan §4). Order: title + "How routing works" → tabs: Your agents (then Shared with you, the
+ * agents others own) · Your configs · Providers (`?tab=`, one at a time). The routing summary is the Agents table's own filter tabs, the only thing it filters. It shows configured routing and who pays, not observed calls (R-L5).
  *
  *   useOwnedAgents ─► ids ─► useRowReads (limiter, 4 at a time) ─► rows ─┬─► summary strip / counts / Affects N
  *   useConfigs · useSecrets · useCatalog · useCustomProviders ───────────┴─► sections and sheets
@@ -35,6 +35,7 @@ import { CustomProviderSheet, type CustomMode } from './components/CustomProvide
 import { DeleteConfigDialog } from './components/DeleteConfigDialog'
 import { ProvidersSection } from './components/ProvidersSection'
 import { RoutingSheet } from './components/RoutingSheet'
+import { SharedSection } from './components/SharedSection'
 import { copy } from './copy'
 import { routerError } from './errors'
 import {
@@ -329,6 +330,7 @@ function Page({
                 onShowConfig={(id) => goTo('configs', () => focusEl(`config-${id}`))}
                 filterLabel={filterLabel}
               />
+              {me?.sub ? <SharedSection viewer={me.sub} configs={configs.data} /> : null}
             </TabsContent>
             <TabsContent value="configs" keepMounted hidden={tab !== 'configs'} className="pt-4">
               <ConfigsSection
