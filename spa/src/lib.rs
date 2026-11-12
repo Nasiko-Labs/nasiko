@@ -201,7 +201,7 @@ impl Spa {
             "default-src 'self'".to_owned(),
             format!("script-src {script}"),
             "style-src 'self' 'unsafe-inline'".to_owned(),
-            join("img-src 'self' data:", extras.img_src),
+            join("img-src 'self' data: blob:", extras.img_src),
             "font-src 'self'".to_owned(),
             join("connect-src 'self'", extras.connect_src),
             "frame-ancestors 'none'".to_owned(),
@@ -753,5 +753,15 @@ mod tests {
         assert!(csp.contains("frame-ancestors 'none'"));
         // Scripts stay hash-pinned even though styles are relaxed.
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+    }
+
+    #[test]
+    fn images_allow_the_pages_own_object_urls_and_nothing_remote() {
+        let csp = Spa::build_csp(&[], &CspExtras::default());
+        let img_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("img-src "))
+            .expect("img-src directive");
+        assert_eq!(img_src, "img-src 'self' data: blob:");
     }
 }
