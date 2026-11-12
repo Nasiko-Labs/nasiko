@@ -30,9 +30,8 @@ use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
-use crate::payer;
 use crate::providers::{ProviderError, fallback};
-use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve_for};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, RequestHint, resolve_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
 use crate::usage::{self, UsageRecord};
@@ -747,8 +746,7 @@ pub(crate) async fn resolve_routed_request(
     session: Option<SessionClaims>,
 ) -> Result<RoutedRequest, GatewayError> {
     // Attribution runs before config resolution: the attributed user decides whose config and
-    // keys pay (a shared agent runs on its caller's own, or on what the payer says,
-    // `payer::subject_for_call`).
+    // keys pay (a shared agent runs on its caller's own, `ConfigSubject::for_call`).
     //
     // A coding-agent CLI (Claude Code, Codex, OpenCode, Cursor) is never dispatched through
     // the orchestrator, so it never has a `flows` row — derive_boundary_signals's
@@ -828,12 +826,8 @@ pub(crate) async fn resolve_routed_request(
                 attribution.user_id,
             )
         };
-    let (subject, retry_after) =
-        payer::subject_for_call(store, ctx.payer.as_ref(), &agent_id, &owner_id, acting_user)
-            .await?;
-    let mut resolved = resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint)
-        .await
-        .map_err(|e| payer::allowance_error(e, retry_after))?;
+    let subject = ConfigSubject::for_call(&owner_id, acting_user);
+    let mut resolved = resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint).await?;
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
     let decision = routing::route_model_with(
         ctx.classifier.as_ref(),
@@ -1166,11 +1160,9 @@ impl Drop for UsageGuard {
 mod tests {
     use super::*;
     use crate::config::GatewayConfig;
-    use crate::payer::Payer;
     use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
     use async_trait::async_trait;
     use jsonwebtoken::Algorithm;
-    use nasiko_secrets::SecretsCrypto;
     use serde_json::json;
     use sqlx::PgPool;
     use std::time::Duration;
@@ -1500,7 +1492,6 @@ mod tests {
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            payer: Arc::new(crate::payer::CallerPays),
         }
     }
 
@@ -2021,323 +2012,6 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::NoSharedUserConfig), "{err:?}");
-    }
-
-    const SHARED: &str = "33333333-3333-3333-3333-333333333333";
-
-    /// An agent `OWNER` owns, attached to `owner-model`, called by `flow_user`. Every secret
-    /// decrypts to `key-of-<holder>`, so the key a provider receives names whose key it is.
-    struct PayerStore {
-        flow_user: Uuid,
-        chosen: Option<LLMConfig>,
-        default: Option<LLMConfig>,
-        is_coding_agent: bool,
-        choice_read_fails: bool,
-    }
-
-    impl PayerStore {
-        fn new(chosen: Option<&str>, default: Option<&str>) -> Self {
-            let keyed = |model: &str| LLMConfig {
-                model: Some(model.into()),
-                api_key_secret_name: Some("KEY".into()),
-                ..openai_config()
-            };
-            Self {
-                flow_user: Uuid::parse_str(SHARED).unwrap(),
-                chosen: chosen.map(keyed),
-                default: default.map(keyed),
-                is_coding_agent: false,
-                choice_read_fails: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl RegistryStore for PayerStore {
-        async fn fetch_llm_config(
-            &self,
-            _: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            Ok(Some(AgentConfigResult {
-                config: Some(LLMConfig {
-                    model: Some("owner-model".into()),
-                    api_key_secret_name: Some("KEY".into()),
-                    ..openai_config()
-                }),
-                agent_pinned_model: None,
-                is_coding_agent: self.is_coding_agent,
-                compress_enabled: false,
-            }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
-        }
-        async fn has_user_agent_config(&self, user: Uuid, _: Uuid) -> Result<bool, sqlx::Error> {
-            assert_eq!(user, self.flow_user, "only the caller's own choice");
-            if self.choice_read_fails {
-                return Err(sqlx::Error::PoolTimedOut);
-            }
-            Ok(self.chosen.is_some())
-        }
-        async fn fetch_user_agent_config(
-            &self,
-            user: Uuid,
-            _: Uuid,
-        ) -> Result<Option<LLMConfig>, sqlx::Error> {
-            assert_eq!(user, self.flow_user, "only the caller's own config");
-            Ok(self.chosen.clone().or_else(|| self.default.clone()))
-        }
-        async fn fetch_user_secret(
-            &self,
-            holder: Uuid,
-            _: &str,
-        ) -> Result<Option<String>, sqlx::Error> {
-            let key = format!("key-of-{holder}");
-            Ok(Some(SecretsCrypto::for_user(holder).encrypt(&key)))
-        }
-        async fn fetch_live_flow(
-            &self,
-            _: &str,
-            _: Uuid,
-            _: i64,
-        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
-            Ok(Some(routing::attribution::LiveFlow {
-                user_id: Some(self.flow_user),
-                context_id: Some("ses_payer".into()),
-                mode: None,
-                user_message: None,
-                agent_is_participant: true,
-            }))
-        }
-        async fn fetch_custom_provider(
-            &self,
-            _: &str,
-        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            Ok(None)
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
-            Ok(None)
-        }
-    }
-
-    fn install_master_key() {
-        use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-        // SAFETY: every caller is #[serial]; no other test reads the env concurrently.
-        unsafe {
-            std::env::set_var("SECRETS_ENCRYPTION_KEY", BASE64.encode([7u8; 32]));
-        }
-    }
-
-    fn hello() -> Value {
-        json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] })
-    }
-
-    type Payers = Arc<crate::payer::RecordingPayer>;
-
-    async fn chat_paid_by(
-        payer: &Payers,
-        base: String,
-        store: &PayerStore,
-    ) -> Result<Response, GatewayError> {
-        let ctx = LlmRouterCtx {
-            payer: payer.clone(),
-            ..ctx_with(base)
-        };
-        let headers = auth_headers(&token());
-        chat_core(&ctx, store, &headers, hello(), InboundFormat::OpenAi, None).await
-    }
-
-    fn asked(payer: &Payers) -> Vec<(Uuid, Uuid)> {
-        payer.calls.lock().unwrap().clone()
-    }
-
-    /// One chat call, answered only when the provider receives `model` with `key-of-<key_holder>`.
-    async fn paid_chat(store: &PayerStore, payer: &Payers, model: &str, key_holder: &str) {
-        install_master_key();
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/chat/completions")
-            .match_header("authorization", format!("Bearer key-of-{key_holder}").as_str())
-            .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id": "chatcmpl-p", "object": "chat.completion", "model": model,
-                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-                    "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
-                })
-                .to_string(),
-            )
-            .expect(1)
-            .create_async()
-            .await;
-        chat_paid_by(payer, server.url(), store).await.unwrap();
-        mock.assert_async().await;
-    }
-
-    /// What the payer is asked about: the agent's owner, then the calling user.
-    fn owner_and_caller() -> Vec<(Uuid, Uuid)> {
-        vec![(
-            Uuid::parse_str(OWNER).unwrap(),
-            Uuid::parse_str(SHARED).unwrap(),
-        )]
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_caller_with_a_choice_runs_on_it_and_the_payer_is_never_asked() {
-        // The payer would put them on the owner, so a call that reaches it fails the stub.
-        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Owner));
-        let store = PayerStore::new(Some("chosen-model"), Some("default-model"));
-        paid_chat(&store, &payer, "chosen-model", SHARED).await;
-        assert!(asked(&payer).is_empty());
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn the_owner_pays_for_a_shared_caller_without_a_choice() {
-        // The caller has a default, which the owner's payment must not use.
-        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Owner));
-        let store = PayerStore::new(None, Some("default-model"));
-        paid_chat(&store, &payer, "owner-model", OWNER).await;
-        assert_eq!(asked(&payer), owner_and_caller());
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn a_shared_caller_the_payer_leaves_to_themselves_runs_on_their_default() {
-        // Left to themselves outright, or after a spent allowance: the same config and key.
-        let spent = Payer::CallerAfterAllowance {
-            retry_after_secs: 120,
-        };
-        for left in [Payer::Caller, spent] {
-            let payer = crate::payer::RecordingPayer::answering(Some(left));
-            let store = PayerStore::new(None, Some("default-model"));
-            paid_chat(&store, &payer, "default-model", SHARED).await;
-            assert_eq!(asked(&payer), owner_and_caller());
-        }
-    }
-
-    #[tokio::test]
-    async fn a_spent_allowance_without_a_config_is_a_429_with_retry_after() {
-        let spent = Payer::CallerAfterAllowance {
-            retry_after_secs: 120,
-        };
-        let payer = crate::payer::RecordingPayer::answering(Some(spent));
-        let store = PayerStore::new(None, None);
-        let err = chat_paid_by(&payer, "http://unused".into(), &store)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(
-                err,
-                GatewayError::OwnerAllowanceSpent {
-                    retry_after_secs: 120
-                }
-            ),
-            "{err:?}"
-        );
-        let response = err.into_response();
-        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers()["retry-after"], "120");
-        let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
-        assert_eq!(
-            body["detail"],
-            "Today's calls on this agent's own model are used up. Connect your own model in LLM \
-             router to keep chatting with it, or try again after 00:00 UTC."
-        );
-    }
-
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn the_owner_a_session_token_and_a_coding_agent_never_ask_the_payer() {
-        install_master_key();
-        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Caller));
-        // The owner calling their own agent.
-        let owner_store = PayerStore {
-            flow_user: Uuid::parse_str(OWNER).unwrap(),
-            ..PayerStore::new(None, None)
-        };
-        paid_chat(&owner_store, &payer, "owner-model", OWNER).await;
-        // A coding agent and a session token are never attributed to a flow user, so they
-        // resolve on the agent owner whoever the token names.
-        let coding_store = PayerStore {
-            is_coding_agent: true,
-            ..PayerStore::new(None, None)
-        };
-        let session = SessionClaims {
-            agent_id: AGENT.into(),
-            user_id: SHARED.into(),
-            session_id: "ses_1".into(),
-            flow_id: "flow".into(),
-            jti: "jti".into(),
-            aud: String::new(),
-            iat: 0,
-            exp: 0,
-        };
-        let ctx = LlmRouterCtx {
-            payer: payer.clone(),
-            ..ctx_with("http://unused".into())
-        };
-        for session in [None, Some(session)] {
-            let routed = resolve_routed_request(
-                &ctx,
-                &coding_store,
-                &HeaderMap::new(),
-                AGENT.into(),
-                OWNER.into(),
-                RequestHint {
-                    provider: Some("openai"),
-                    model: None,
-                },
-                RequestSignals {
-                    query: Some("hi".into()),
-                    turn_ordinal: 1,
-                    is_tool_continuation: false,
-                },
-                session,
-            )
-            .await
-            .unwrap();
-            assert_eq!(routed.resolved.model, "owner-model");
-            assert_eq!(routed.resolved.api_key, format!("key-of-{OWNER}"));
-        }
-        assert!(asked(&payer).is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_payer_failure_is_internal_and_calls_no_provider() {
-        let payer = crate::payer::RecordingPayer::answering(None);
-        let store = PayerStore::new(None, Some("default-model"));
-        let err = chat_paid_by(&payer, "http://unused".into(), &store)
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, GatewayError::Internal(m) if m == "counter store down"),
-            "{err:?}"
-        );
-        assert_eq!(asked(&payer), owner_and_caller());
-    }
-
-    #[tokio::test]
-    async fn a_failed_choice_read_is_internal_and_the_payer_is_not_asked() {
-        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Owner));
-        let store = PayerStore {
-            choice_read_fails: true,
-            ..PayerStore::new(Some("chosen-model"), None)
-        };
-        let err = chat_paid_by(&payer, "http://unused".into(), &store)
-            .await
-            .unwrap_err();
-        let read_failed = "shared user choice read failed";
-        assert!(
-            matches!(&err, GatewayError::Internal(m) if m.starts_with(read_failed)),
-            "{err:?}"
-        );
-        assert!(asked(&payer).is_empty());
     }
 
     /// A store whose session-flow lookup answers a fixed later-turn flow.

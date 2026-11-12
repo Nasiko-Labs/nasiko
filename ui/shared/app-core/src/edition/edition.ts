@@ -438,12 +438,6 @@ export interface Slots {
    * one.
    */
   chatRefusal: ((detail: string) => ChatRefusal | null) | null
-  /**
-   * Whether the setup guide offers its Starter pack tab: a layer that knows the workspace's plan answers it (the MT
-   * layer offers it on the Free plan only, so an upgraded workspace starts clean and brings its own agents). Null: the
-   * tab is always offered.
-   */
-  starterPack: StarterPack | null
 }
 
 export interface BudgetsOrgRoleOf {
@@ -479,15 +473,6 @@ export interface NavHidden<T = unknown> {
 
 export const navHidden = <T>(n: NavHidden<T>) => n as NavHidden
 
-/** The setup guide's Starter pack tab, offered by `offered(data)` once `query` has answered (`Slots.starterPack`). */
-export interface StarterPack<T = unknown> {
-  query: SlotQuery<T>
-  /** `data` is undefined when the read failed: the layer decides what that means. */
-  offered: (data: T | undefined) => boolean
-}
-
-export const starterPack = <T>(s: StarterPack<T>) => s as unknown as StarterPack
-
 /** The core's answer for every slot: an OSS build renders exactly this. */
 export const OSS_SLOTS: Slots = {
   harnessOrgScope: null,
@@ -516,7 +501,6 @@ export const OSS_SLOTS: Slots = {
   budgetsOrgRole: null,
   budgets: NO_BUDGETS,
   chatRefusal: null,
-  starterPack: null,
 }
 
 /** A layer's own sidebar item: any path its routes serve. */
@@ -592,7 +576,6 @@ export function resolveSlots(layers: readonly EditionLayer[]): Slots {
     if (s.budgetsOrgRole !== undefined) out.budgetsOrgRole = s.budgetsOrgRole
     if (s.budgets !== undefined) out.budgets = s.budgets
     if (s.chatRefusal !== undefined) out.chatRefusal = s.chatRefusal
-    if (s.starterPack !== undefined) out.starterPack = s.starterPack
   }
   return out
 }

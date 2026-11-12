@@ -9,8 +9,8 @@ use std::time::Instant;
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -78,23 +78,13 @@ pub async fn responses(
 fn gateway_error_response(error: GatewayError) -> Response {
     let status = error.status();
     let code = error_code(&error);
-    let retry_after = match &error {
-        GatewayError::OwnerAllowanceSpent { retry_after_secs } => Some(*retry_after_secs),
-        _ => None,
-    };
     let message = if matches!(error, GatewayError::Internal(_)) {
         tracing::error!(error = %error, "Responses handler internal error");
         "Internal server error".to_string()
     } else {
         error.to_string()
     };
-    let mut response = responses_error(status, message, code);
-    if let Some(secs) = retry_after {
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(secs));
-    }
-    response
+    responses_error(status, message, code)
 }
 
 async fn responses_core(
@@ -1100,7 +1090,6 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::SecretNotFound(_, _)
         | GatewayError::NoApiKey
         | GatewayError::NoSharedUserConfig => "routing_configuration_error",
-        GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
         GatewayError::Upstream(_) => "upstream_error",
         GatewayError::Internal(_) => "internal_error",
     }
@@ -1251,7 +1240,6 @@ mod tests {
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            payer: Arc::new(crate::payer::CallerPays),
         }
     }
 
@@ -1292,21 +1280,6 @@ mod tests {
         assert_eq!(value["error"]["message"], "Internal server error");
         assert_eq!(value["error"]["type"], "server_error");
         assert_eq!(value["error"]["code"], "internal_error");
-    }
-
-    #[tokio::test]
-    async fn a_spent_allowance_is_a_429_allowance_exhausted() {
-        let response = gateway_error_response(GatewayError::OwnerAllowanceSpent {
-            retry_after_secs: 120,
-        });
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(response.headers()["retry-after"], "120");
-        let value: Value = serde_json::from_slice(&body(response).await).unwrap();
-        assert_eq!(value["error"]["code"], "allowance_exhausted");
-        assert_eq!(value["error"]["type"], "invalid_request_error");
-        assert!(value["error"]["message"].as_str().is_some_and(|m| {
-            m.starts_with("Today's calls on this agent's own model are used up.")
-        }));
     }
 
     #[tokio::test]

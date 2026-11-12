@@ -12,7 +12,6 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { AgentTab } from '@nasiko/app-core/edition/edition'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
-import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import {
@@ -297,33 +296,6 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
         <p role="status" className="text-sm text-muted-foreground">
           {copy.stoppedByOwner}
         </p>
-      ) : null}
-      {/* Under the header on every tab: what Parked means, and Start (in the header) or Always on for a manager. */}
-      {display === 'parked' ? (
-        // A note, not the primitive's `alert`: it explains a state, nothing just went wrong.
-        <Alert role="note">
-          <AlertTitle>{copy.parkedTitle}</AlertTitle>
-          <AlertDescription>
-            <p>
-              {copy.parkedBody}{' '}
-              {agent.canManage && agent.parkingPolicy === 'auto' && agent.residentAvailable ? (
-                <>
-                  {copy.parkedKeepRunning}{' '}
-                  <Button
-                    variant="link"
-                    className="h-auto p-0 align-baseline"
-                    onClick={() => setTab('settings')}
-                  >
-                    {copy.tabSettings}
-                  </Button>
-                  .
-                </>
-              ) : agent.canManage ? (
-                copy.parkedStart
-              ) : null}
-            </p>
-          </AlertDescription>
-        </Alert>
       ) : null}
       <Tabs value={current} onValueChange={setTab}>
         <TabsList data-tour="agent-tabs" className="max-w-full justify-start overflow-x-auto">

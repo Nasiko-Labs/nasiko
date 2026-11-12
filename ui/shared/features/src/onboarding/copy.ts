@@ -115,19 +115,30 @@ export const copy = {
   },
   agent: {
     title: '1. Your first agent',
-    intro: 'Start with the agents we give you, or bring your own.',
-    /** Without the Starter pack (an upgraded workspace): the user brings their own. */
-    introOwn: 'Bring your own agent: from a registry, GitHub or a zip.',
-    // The agents every new workspace is given, listed, not picked (user request 2026-11-12).
-    seeded: 'Starter pack',
-    seededLabel: 'Your starter pack',
-    giveaway: (n: number) =>
-      `Here's your starter pack: ${n} agents, ready to go. When you want more, the Marketplace has plenty to install.`,
+    intro: 'Deploy prebuilt agents, or bring your own.',
+    // Pre-seeded agents to deploy, in place of chatting with a running one (meeting 2026-11-06).
+    seeded: 'Prebuilt',
+    seededLabel: 'Prebuilt agents to deploy',
+    seededLead: (max: number) =>
+      `Pick up to ${max}. The one with the best record is always included.`,
+    picked: (n: number, max: number) => `${n} of ${max} picked`,
+    full: 'Pick another to swap it in.',
+    included: 'Always included',
+    alreadyDeployed: 'Already deployed',
+    deployFailed: (title: string, reason: string) => `Couldn't deploy ${title}: ${reason}`,
+    // Said as Continue starts them (NAS-1450): the guide moves straight on, so the start is said outside it too.
+    deployStarted: (titles: readonly string[]) =>
+      titles.length === 1
+        ? `Deploying ${titles[0]}. We'll let you know when it finishes.`
+        : `Deploying ${titles.slice(0, -1).join(', ')} and ${titles.at(-1)}. We'll let you know when each one finishes.`,
     record: (runs: number, success: number) =>
       `${runs.toLocaleString('en-US')} runs · ${Math.round(success * 100)}% succeeded`,
-    // Each deploy started from the guide's tabs, live (NAS-1450; user request 2026-11-12): a clock while it runs, then
-    // its outcome.
-    progressLabel: 'Your deploys',
+    // The guide's Continue deploys (user request 2026-11-09): the Prebuilt picks, or the mandatory agent from any other
+    // tab; no separate Deploy button.
+    deployAndContinue: (n: number) =>
+      n === 1 ? 'Deploy 1 agent and continue' : `Deploy ${n} agents and continue`,
+    // Each prebuilt deploy, live (NAS-1450): the import is one long request, so a clock and the usual time, no percentage.
+    progressLabel: 'Prebuilt agents',
     progress: {
       deploying: (elapsed: string, usual: string) => `Deploying · ${elapsed} · ${usual}`,
       running: 'Running',
@@ -135,8 +146,6 @@ export const copy = {
       failed: (reason: string) => `Failed: ${reason}`,
     },
     keepGoing: 'You can keep going; it carries on while you finish the guide.',
-    /** A followed build's failure carries no reason of its own; the build page has the log. */
-    buildFailed: 'The build failed',
     /** The guide's footer, on the steps after the agent one. */
     summary: {
       deploying: (n: number) => (n === 1 ? 'Deploying 1 agent…' : `Deploying ${n} agents…`),

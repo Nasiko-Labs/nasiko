@@ -1,6 +1,6 @@
 /**
- * Settings (plan §7.3, managers only): display name and description, Always on (parking), feature flags (prompt
- * comments; minimal-code and self-review for agents whose card reads as code work), Token optimization (TokenOptimization.tsx,
+ * Settings (plan §7.3, managers only): display name and description, feature flags (prompt comments; minimal-code and
+ * self-review for agents whose card reads as code work), Token optimization (TokenOptimization.tsx,
  * plans/feat-context-optimization.md eng E1/E2: saves on flip, rolls back with a toast, harnesses too), secrets (names only;
  * values are write-only and cleared after submit; beside them the owner's Settings → Secrets names the agent inherits,
  * marked where one of its own overrides them), and delete (type the unique name).
@@ -46,7 +46,6 @@ export function SettingsTab({ agent }: { agent: AgentView }) {
         <TokenOptimization agent={agent} />
       ) : (
         <>
-          {agent.parkingPolicy ? <Availability agent={agent} /> : null}
           <Features agent={agent} />
           <TokenOptimization agent={agent} />
           {layerSections.map(({ key, Section: LayerSection }) => (
@@ -302,27 +301,6 @@ function FlagRow({
 
 /** While a write is in flight the switch shows where it is going (the mutation stays pending until the re-read). */
 const shown = (saved: boolean, pending: boolean) => (pending ? !saved : saved)
-
-/**
- * Always on (NAS-1487): `parking_policy` `resident`, else `auto` (parked when idle). The reaper reads it on its next
- * pass, so it saves at once with no restart; where the server parks every agent it is shown off and disabled.
- */
-function Availability({ agent }: { agent: AgentView }) {
-  const update = useUpdateAgent(agent.id)
-  const resident = agent.residentAvailable && agent.parkingPolicy === 'resident'
-  return (
-    <Section title={copy.availability}>
-      <FlagRow
-        label={copy.alwaysOn}
-        hint={agent.residentAvailable ? copy.alwaysOnHint : copy.alwaysOnUnavailable}
-        checked={shown(resident, update.isPending)}
-        disabled={update.isPending || !agent.residentAvailable}
-        onCheckedChange={(on) => update.mutate({ parking_policy: on ? 'resident' : 'auto' })}
-      />
-      {update.isError ? <ErrorNote error={update.error} context="manage" /> : null}
-    </Section>
-  )
-}
 
 function Features({ agent }: { agent: AgentView }) {
   const update = useUpdateAgent(agent.id)

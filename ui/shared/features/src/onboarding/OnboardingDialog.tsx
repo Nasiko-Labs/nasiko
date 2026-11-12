@@ -20,8 +20,8 @@ import {
   WandSparkles,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
-import { agentKeys } from '@nasiko/features/agents/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { agentKeys, useAgentsDirectory } from '@nasiko/features/agents/api'
 import { DotBackground } from '@nasiko/ui/composites/dot-background'
 import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
 import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
@@ -36,8 +36,17 @@ import { type SeededDeploy, useSeededDeploys } from './api'
 import { AgentStep } from './AgentStep'
 import { copy } from './copy'
 import { HarnessStep } from './HarnessStep'
-import { CONTINUE_HOLD_SECONDS, minutesLeft, STEPS, type StepId } from './logic'
+import {
+  type AgentTab,
+  CONTINUE_HOLD_SECONDS,
+  MANDATORY,
+  minutesLeft,
+  STEPS,
+  type StepId,
+  toDeploy,
+} from './logic'
 import { ModelStep } from './ModelStep'
+import { deploySeeded } from './seededDeploy'
 import { StepHeading } from './parts'
 
 /** The Welcome rows' icons: the nav's own for Agents, Monitor, Optimize and Coding harnesses. */
@@ -67,15 +76,19 @@ export function OnboardingDialog({
     })
     close()
   }
+  const directory = useAgentsDirectory()
+  const existing = useMemo(() => new Set(directory.byName.keys()), [directory.byName])
   // An opening at a step that no longer exists (a stale link) starts at the beginning.
   const [index, setIndex] = useState(Math.max(0, STEPS.indexOf(initialStep)))
   const [reached, setReached] = useState(index)
   const [model, setModel] = useState<string | null>(null)
   const [agent, setAgent] = useState<DeployStarted | null>(null)
-  // Every deploy started from the guide's tabs in this page, kept outside the dialog (NAS-1450): reopened, it shows
-  // their progress again.
+  // The prebuilt agents deployed from the guide in this page, kept outside the dialog (NAS-1450): reopened, it shows
+  // their progress again instead of offering them a second time.
   const deploys = useSeededDeploys()
   const seeded = deploys.size > 0
+  const [tab, setTab] = useState<AgentTab>('seeded')
+  const [picks, setPicks] = useState<string[]>([MANDATORY])
   const step = STEPS[index] ?? 'welcome'
   const primary = useRef<HTMLButtonElement>(null)
   const go = (i: number) => {
@@ -94,6 +107,10 @@ export function OnboardingDialog({
   }, [held, index])
   const waiting = held > 0
   const last = index === STEPS.length - 1
+  // What Continue deploys on the Agent and key step (user request 2026-11-09): the picks, or the mandatory agent from
+  // any other tab. Nothing until the agents list has loaded, so an agent that exists is never deployed again.
+  const deploying =
+    step === 'start' && !seeded && directory.isSuccess ? toDeploy(tab, picks, existing) : []
   /** Out of the guide to a page: closing first, so the guide never stays open over it. */
   const leave = (to: Parameters<typeof navigate>[0]) => {
     onClose()
@@ -103,7 +120,11 @@ export function OnboardingDialog({
   const onContinue = () => {
     // Finish takes everyone to the homepage (user request 2026-11-09).
     if (last) return leave({ to: '/' })
-    // Continue only moves on: it deploys nothing (user request 2026-11-12).
+    if (deploying.length) {
+      deploySeeded(qc, deploying)
+      // Back on this step, the Prebuilt tab is where their progress is.
+      setTab('seeded')
+    }
     next()
   }
 
@@ -214,7 +235,16 @@ export function OnboardingDialog({
             {step === 'start' ? (
               <div className="flex flex-col gap-10">
                 <StepHeading title={copy.start.title} intro={copy.start.intro} />
-                <AgentStep started={agent} onStarted={setAgent} onLeave={onClose} />
+                <AgentStep
+                  started={agent}
+                  onStarted={setAgent}
+                  tab={tab}
+                  onTab={setTab}
+                  picks={picks}
+                  onPicks={setPicks}
+                  existing={existing}
+                  onLeave={onClose}
+                />
                 <ModelStep connected={model} onConnected={setModel} />
               </div>
             ) : null}
@@ -246,7 +276,9 @@ export function OnboardingDialog({
                   ? copy.guide.finish
                   : held > 0
                     ? copy.guide.continueIn(held)
-                    : copy.guide.continue}
+                    : deploying.length
+                      ? copy.agent.deployAndContinue(deploying.length)
+                      : copy.guide.continue}
               <ArrowRight aria-hidden />
             </Button>
           </div>
@@ -256,7 +288,7 @@ export function OnboardingDialog({
   )
 }
 
-/** The guide's deploys (its tabs') in one line: how many are still deploying, then how many run or didn't start. A status
+/** The guide's prebuilt deploys in one line: how many are still deploying, then how many run or didn't start. A status
  *  region: it changes only when one finishes. */
 function DeploySummary({ deploys }: { deploys: ReadonlyMap<string, SeededDeploy> }) {
   const all = [...deploys.values()]
