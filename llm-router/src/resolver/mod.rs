@@ -11,10 +11,12 @@
 //!
 //! **A shared agent runs on the caller's config, not the owner's.** When the user a call is
 //! attributed to (`flows.user_id`) is not the agent's owner — the agent was shared with them —
-//! the call resolves against *that user's* default config and secret store
-//! ([`ConfigSubject::SharedUser`]); the agent's attached config and the owner's keys are never
-//! read. A shared user with no default config is refused
-//! ([`GatewayError::NoSharedUserConfig`]), never silently put on the owner's key.
+//! the call resolves against *that user's* config (the one they chose for this agent, else their
+//! default) and secret store ([`ConfigSubject::SharedUser`]); the agent's attached config and the
+//! owner's keys are not read. A shared user with no such config is refused
+//! ([`GatewayError::NoSharedUserConfig`]), never silently put on the owner's key. The one way
+//! onto the owner's config and keys is [`crate::payer::SharedCallPayer`] answering
+//! [`crate::payer::Payer::Owner`], which selects [`ConfigSubject::Owner`] instead.
 //!
 //! **When the agent resolves to a config it is authoritative** — the incoming request's
 //! `model`/provider are ignored (a configured agent is routed where its config says).
@@ -310,6 +312,26 @@ pub trait RegistryStore: Send + Sync {
         Ok(None)
     }
 
+    /// Whether `user` chose one of their own live configs for `agent` (`agent_user_llm_configs`).
+    /// The default answers `false`, so a store that does not implement it never reports a choice.
+    async fn has_user_agent_config(
+        &self,
+        _user_id: Uuid,
+        _agent_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(false)
+    }
+
+    /// The config `user` runs `agent` on: the one they chose for it, else their default, or `None`
+    /// when they have neither. The default skips the choice and answers their default.
+    async fn fetch_user_agent_config(
+        &self,
+        user_id: Uuid,
+        _agent_id: Uuid,
+    ) -> Result<Option<LLMConfig>, sqlx::Error> {
+        self.fetch_user_default_config(user_id).await
+    }
+
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -515,6 +537,47 @@ impl RegistryStore for PgRegistry {
         self.load_owner_default(user_id).await
     }
 
+    async fn has_user_agent_config(
+        &self,
+        user_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        // The cascades only cover hard deletes: a soft-deleted config, or one row naming
+        // another user's config, must read as no choice.
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM agent_user_llm_configs a \
+             JOIN llm_configs c ON c.id = a.llm_config_id \
+             WHERE a.user_id = $1 AND a.agent_id = $2 \
+               AND c.created_by = $1 AND c.deleted_at IS NULL)",
+        )
+        .bind(user_id)
+        .bind(agent_id)
+        .fetch_one(&self.db)
+        .await
+    }
+
+    async fn fetch_user_agent_config(
+        &self,
+        user_id: Uuid,
+        agent_id: Uuid,
+    ) -> Result<Option<LLMConfig>, sqlx::Error> {
+        // One read for both cases: the chosen config sorts ahead of the default.
+        let row: Option<ConfigRow> = sqlx::query_as(&format!(
+            "SELECT {CONFIG_COLS} FROM llm_configs c \
+             LEFT JOIN agent_user_llm_configs a \
+                    ON a.llm_config_id = c.id AND a.user_id = $1 AND a.agent_id = $2 \
+             WHERE c.created_by = $1 AND c.deleted_at IS NULL \
+               AND (a.llm_config_id IS NOT NULL OR c.is_default) \
+             ORDER BY a.llm_config_id IS NULL \
+             LIMIT 1"
+        ))
+        .bind(user_id)
+        .bind(agent_id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(row_to_config))
+    }
+
     async fn fetch_user_secret(
         &self,
         owner_id: Uuid,
@@ -651,7 +714,7 @@ pub enum ConfigSubject<'a> {
     /// owner, which takes the platform-key path): the agent's attached config, else the owner's
     /// default, with the owner's keys.
     Owner(&'a str),
-    /// A user the agent is shared with: that user's own default config and keys. The agent's
+    /// A user the agent is shared with: their own chosen-or-default config and keys. The agent's
     /// attached config and its owner's keys are never read for them.
     SharedUser(Uuid),
 }
@@ -840,8 +903,8 @@ pub async fn resolve_embeddings(
     resolve_embeddings_for(store, cache, cfg, agent_id, subject, request_model).await
 }
 
-/// [`resolve_embeddings`] on `subject`'s config and keys — a shared user's own default config
-/// stands in for the agent's at levels 1 and 3.
+/// [`resolve_embeddings`] on `subject`'s config and keys: a shared user's own config stands in
+/// for the agent's at levels 1 and 3.
 pub async fn resolve_embeddings_for(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -1045,7 +1108,7 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
 }
 
 /// The agent's flags plus the config `subject` runs on: the owner's through
-/// [`load_llm_config`], a shared user's own default otherwise.
+/// [`load_llm_config`], a shared user's own otherwise.
 async fn load_subject_config(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -1061,8 +1124,9 @@ async fn load_subject_config(
     }
 }
 
-/// A shared user's own default config, with the agent's flags. Not cached: the agent-keyed
-/// cache holds the owner's config, and this read is one indexed row.
+/// A shared user's own config (their choice for this agent, else their default), with the agent's
+/// flags. Not cached: the agent-keyed cache holds the owner's config, and this read is one
+/// indexed row.
 ///
 /// The owner's agent-level model pin is dropped along with the owner's config: it names a
 /// model on the owner's provider, which the shared user's config may not reach.
@@ -1078,14 +1142,14 @@ async fn load_shared_user_config(
         .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
         .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
     let config = store
-        .fetch_user_default_config(user)
+        .fetch_user_agent_config(user, agent_uuid)
         .await
         .map_err(|e| GatewayError::Internal(format!("shared user config read failed: {e}")))?
         .ok_or(GatewayError::NoSharedUserConfig)?;
     tracing::info!(
         target: "nasiko::llm_router::resolver",
         %agent_id, %user, provider = %config.provider,
-        "resolver: shared agent — running on the calling user's own default config"
+        "resolver: shared agent, running on the calling user's own config"
     );
     Ok(AgentConfigResult {
         config: Some(config),
@@ -2488,5 +2552,124 @@ mod shared_user_tests {
         assert_eq!(r.model, "owner-model");
         assert_eq!(r.api_key, format!("key-of-{OWNER}"));
         assert_eq!(r.pinned_model.as_deref(), Some("owner-pin"));
+    }
+
+    const MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!("../migrations");
+
+    async fn insert_user(pool: &PgPool) -> Result<Uuid, sqlx::Error> {
+        let name = Uuid::new_v4().simple().to_string();
+        sqlx::query_scalar("INSERT INTO users (username, email) VALUES ($1, $2) RETURNING id")
+            .bind(format!("u-{name}"))
+            .bind(format!("{name}@test.local"))
+            .fetch_one(pool)
+            .await
+    }
+
+    async fn insert_agent(pool: &PgPool, owner: Uuid) -> Result<Uuid, sqlx::Error> {
+        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
+            .bind(format!("a-{}", Uuid::new_v4().simple()))
+            .bind(owner)
+            .fetch_one(pool)
+            .await
+    }
+
+    /// A config whose model is its name, so a read says which row it returned.
+    async fn insert_config(
+        pool: &PgPool,
+        owner: Uuid,
+        name: &str,
+        is_default: bool,
+    ) -> Result<Uuid, sqlx::Error> {
+        sqlx::query_scalar(
+            "INSERT INTO llm_configs (created_by, name, provider, model, is_default) \
+             VALUES ($1, $2, 'openai', $2, $3) RETURNING id",
+        )
+        .bind(owner)
+        .bind(name)
+        .bind(is_default)
+        .fetch_one(pool)
+        .await
+    }
+
+    async fn choose(
+        pool: &PgPool,
+        user: Uuid,
+        agent: Uuid,
+        config: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO agent_user_llm_configs (user_id, agent_id, llm_config_id) \
+             VALUES ($1, $2, $3)",
+        )
+        .bind(user)
+        .bind(agent)
+        .bind(config)
+        .execute(pool)
+        .await
+        .map(|_| ())
+    }
+
+    #[sqlx::test(migrator = "MIGRATIONS")]
+    #[ignore = "requires disposable PostgreSQL"]
+    async fn a_users_choice_for_an_agent_is_read_live_and_never_anothers(
+        pool: PgPool,
+    ) -> Result<(), sqlx::Error> {
+        let store = PgRegistry::new(pool.clone());
+        let model = |config: Option<LLMConfig>| config.and_then(|c| c.model);
+        let (alice, bob, carol) = (
+            insert_user(&pool).await?,
+            insert_user(&pool).await?,
+            insert_user(&pool).await?,
+        );
+        let (agent, other_agent) = (
+            insert_agent(&pool, alice).await?,
+            insert_agent(&pool, alice).await?,
+        );
+        insert_config(&pool, alice, "alice-default", true).await?;
+        let chosen = insert_config(&pool, alice, "alice-chosen", false).await?;
+        insert_config(&pool, bob, "bob-default", true).await?;
+        choose(&pool, alice, agent, chosen).await?;
+
+        // The choice wins for its own agent; every other agent gets the default.
+        assert!(store.has_user_agent_config(alice, agent).await?);
+        let on_agent = store.fetch_user_agent_config(alice, agent).await?;
+        assert_eq!(model(on_agent).as_deref(), Some("alice-chosen"));
+        assert!(!store.has_user_agent_config(alice, other_agent).await?);
+        let on_other = store.fetch_user_agent_config(alice, other_agent).await?;
+        assert_eq!(model(on_other).as_deref(), Some("alice-default"));
+
+        // Alice's choice is not Bob's, even from a row of his that names her config: the
+        // payer is still asked about him, not short-circuited by that row.
+        choose(&pool, bob, agent, chosen).await?;
+        let payer = crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Owner));
+        let alice_id = alice.to_string();
+        let (subject, _) = crate::payer::subject_for_call(
+            &store,
+            payer.as_ref(),
+            &agent.to_string(),
+            &alice_id,
+            Some(bob),
+        )
+        .await
+        .unwrap();
+        assert_eq!(subject, ConfigSubject::Owner(&alice_id));
+        assert_eq!(*payer.calls.lock().unwrap(), [(alice, bob)]);
+        assert!(!store.has_user_agent_config(bob, agent).await?);
+        let bobs = store.fetch_user_agent_config(bob, agent).await?;
+        assert_eq!(model(bobs).as_deref(), Some("bob-default"));
+
+        // A soft-deleted config reads as no choice: the default takes over.
+        sqlx::query("UPDATE llm_configs SET deleted_at = now() WHERE id = $1")
+            .bind(chosen)
+            .execute(&pool)
+            .await?;
+        assert!(!store.has_user_agent_config(alice, agent).await?);
+        let after_delete = store.fetch_user_agent_config(alice, agent).await?;
+        assert_eq!(model(after_delete).as_deref(), Some("alice-default"));
+
+        // Neither a choice nor a default is no config.
+        assert!(!store.has_user_agent_config(carol, agent).await?);
+        assert!(store.fetch_user_agent_config(carol, agent).await?.is_none());
+        Ok(())
     }
 }

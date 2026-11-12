@@ -13,8 +13,9 @@ use serde_json::Value;
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
+use crate::payer;
 use crate::providers::execute_embeddings_once;
-use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, resolve_embeddings_for};
+use crate::resolver::{PgRegistry, RegistryStore, resolve_embeddings_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
@@ -66,8 +67,15 @@ async fn embeddings_core(
     // fallback.
     let inbound = inbound_for(InboundFormat::OpenAi);
     let req = inbound.parse_embeddings(body)?;
-    // A shared agent embeds on its caller's own config and keys, as it chats on them.
-    let subject = ConfigSubject::for_call(&owner_id, attribution.user_id);
+    // A shared agent embeds on the same config and keys it chats on.
+    let (subject, retry_after) = payer::subject_for_call(
+        store,
+        ctx.payer.as_ref(),
+        &agent_id,
+        &owner_id,
+        attribution.user_id,
+    )
+    .await?;
     let resolved = resolve_embeddings_for(
         store,
         &ctx.cache,
@@ -76,7 +84,8 @@ async fn embeddings_core(
         subject,
         req.model.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|e| payer::allowance_error(e, retry_after))?;
 
     // Exactly one attempt. A failure here is the caller's answer — swapping in another
     // embedding model would return vectors in a different space, which is worse than an
@@ -168,6 +177,8 @@ mod tests {
     struct Store {
         config: Option<crate::resolver::LLMConfig>,
         org_embedding_default: Option<crate::resolver::OrgEmbeddingDefault>,
+        /// The user the flow belongs to; `None` is unattributed.
+        flow_user: Option<Uuid>,
     }
 
     /// An agent configured for *chat* against Anthropic — which has no embeddings API at
@@ -220,7 +231,7 @@ mod tests {
             _: i64,
         ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
             Ok(Some(crate::routing::attribution::LiveFlow {
-                user_id: None,
+                user_id: self.flow_user,
                 context_id: None,
                 mode: None,
                 user_message: None,
@@ -421,6 +432,7 @@ mod tests {
                 model: "org-embedding-model".into(),
                 api_key: Some("sk-org".into()),
             }),
+            ..Default::default()
         };
         let token =
             crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
@@ -463,6 +475,7 @@ mod tests {
                 model: "org-embedding-model".into(),
                 api_key: Some("sk-org".into()),
             }),
+            ..Default::default()
         };
         let token =
             crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
@@ -472,6 +485,41 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, GatewayError::Upstream(_)));
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn the_owner_pays_for_a_shared_callers_embeddings() {
+        // The caller has no config of their own; the owner's embedding model is what the
+        // provider must receive, and the payer is asked once, about this owner and caller.
+        let (server, mock) = openai_embeddings_mock("text-embedding-3-small").await;
+        let payer = crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Owner));
+        let ctx = LlmRouterCtx {
+            payer: payer.clone(),
+            ..ctx_with(server.url())
+        };
+        let caller = Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap();
+        let store = Store {
+            config: Some(anthropic_chat_config(Some((
+                "openai",
+                "text-embedding-3-small",
+            )))),
+            flow_user: Some(caller),
+            ..Default::default()
+        };
+        let token =
+            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
+        let resp = embeddings_core(
+            &ctx,
+            &store,
+            &auth_headers(&token),
+            json!({ "input": "hello" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(body_json(resp).await["model"], "text-embedding-3-small");
+        mock.assert_async().await;
+        let owner = Uuid::parse_str(OWNER).unwrap();
+        assert_eq!(*payer.calls.lock().unwrap(), [(owner, caller)]);
     }
 
     #[tokio::test]

@@ -5,7 +5,8 @@
 //! expiry message MUST contain the word "expired".
 
 use axum::Json;
-use axum::http::StatusCode;
+use axum::http::header::RETRY_AFTER;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 
@@ -48,6 +49,16 @@ pub enum GatewayError {
     )]
     NoSharedUserConfig,
 
+    // ── 429 - the owner's allowance for this caller is spent ────────────────
+    /// A call the agent's owner would pay for was refused until the allowance renews, and the
+    /// caller has no config of their own to fall back on. Worded for the end user, like
+    /// [`NoSharedUserConfig`](Self::NoSharedUserConfig); `Retry-After` carries the seconds.
+    #[error(
+        "Today's calls on this agent's own model are used up. Connect your own model in LLM \
+         router to keep chatting with it, or try again after 00:00 UTC."
+    )]
+    OwnerAllowanceSpent { retry_after_secs: u64 },
+
     // ── 502 — upstream provider (steps 4+) ──────────────────────────────────
     #[error("Upstream LLM error: {0}")]
     Upstream(String),
@@ -73,6 +84,7 @@ impl GatewayError {
             | GatewayError::SecretNotFound(_, _)
             | GatewayError::NoApiKey
             | GatewayError::NoSharedUserConfig => StatusCode::BAD_REQUEST,
+            GatewayError::OwnerAllowanceSpent { .. } => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -93,6 +105,12 @@ impl IntoResponse for GatewayError {
             GatewayError::Internal(_) => "Internal server error".to_string(),
             _ => full,
         };
-        (status, Json(json!({ "detail": detail }))).into_response()
+        let mut response = (status, Json(json!({ "detail": detail }))).into_response();
+        if let GatewayError::OwnerAllowanceSpent { retry_after_secs } = self {
+            response
+                .headers_mut()
+                .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+        }
+        response
     }
 }

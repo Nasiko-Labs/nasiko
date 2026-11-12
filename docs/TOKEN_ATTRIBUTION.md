@@ -53,10 +53,13 @@ For agent calls there is exactly one path — **`traceparent`, resolved, or reje
 
 The caller also decides **whose config and keys** the call runs on. The owner on their own agent
 keeps the agent's attached config, else their default. Anyone else — a user the agent is shared
-with — runs on *their own* default config and `user_secrets` (`resolver::ConfigSubject::SharedUser`);
-the agent's attached config, its model pin and the owner's keys are never read for them. A shared
-caller with no default config is refused with `400` "Connect a model in LLM router to chat with
-this agent…" (`GatewayError::NoSharedUserConfig`), never put on the owner's key. Session-token
+with — runs on *their own* config and `user_secrets` (`resolver::ConfigSubject::SharedUser`): the
+config they chose for this agent (`PUT /api/agents/{id}/my-llm-config`), else their default. The
+agent's attached config, its model pin and the owner's keys are not read for them, unless the
+deployment's `payer::SharedCallPayer` answers `Owner` for a caller with no choice; the default
+(`CallerPays`) never does. A shared caller with no config of their own is refused with `400`
+"Connect a model in LLM router to chat with this agent…" (`GatewayError::NoSharedUserConfig`), or
+`429` with `Retry-After` when the payer said the owner's allowance for them is spent. Session-token
 (coding-agent) calls and coding-agent integrations are unchanged: they resolve on the agent owner.
 
 `token_usage.metadata.attribution` records `"traceparent"`, `"session"` or `"claim"` (the last two
