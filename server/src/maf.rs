@@ -14,7 +14,6 @@ use nasiko_orchestrator::maf::{
     executor,
     llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
-    stop,
     types::{MafDefinition, MafStep, StepResult},
 };
 use serde::{Deserialize, Serialize};
@@ -69,9 +68,6 @@ pub fn router(
         )
         .route("/maf/workflow/{id}/executions", get(list_executions))
         .route("/maf/executions", get(list_all_executions))
-        // A stop is a conditional row update plus one Redis call: CRUD-cheap.
-        .route("/maf/executions/stop", post(stop_executions))
-        .route("/maf/execution/{id}/stop", post(stop_execution))
         .route("/maf/execution/{id}", get(get_execution))
         .route("/maf/execution/{id}/usage", get(get_execution_usage))
         .layer(axum::middleware::from_fn_with_state(
@@ -751,9 +747,8 @@ async fn fetch_workflow_page(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
                   m.status, m.created_at, m.updated_at,
                   COUNT(e.id) AS execution_count,
-                  -- A run its owner stopped never got the chance to succeed or fail.
                   ROUND(100.0 * COUNT(*) FILTER (WHERE e.status = 'success')
-                        / NULLIF(COUNT(e.id) FILTER (WHERE e.status <> 'stopped'), 0), 1)::float8 AS success_rate,
+                        / NULLIF(COUNT(e.id), 0), 1)::float8 AS success_rate,
                   COALESCE(SUM(e.tokens_used), 0)::bigint AS total_tokens,
                   MAX(e.started_at) AS last_run_at,
                   (SELECT latest.status
@@ -2114,171 +2109,6 @@ async fn get_execution(
     }
 }
 
-// ─── POST /maf/execution/{id}/stop · POST /maf/executions/stop ─────────────
-//
-// Stops the caller's own runs (only a workflow's owner can run it, so these are the runs of
-// the caller's workflows). The database decides: every run still in flight
-// becomes `stopped` in one transaction (`stop::stop_in_db`), which every later write by a worker
-// respects. The worker running a stopped run is then told to cut it short now
-// (`stop::notify_owners`); a run whose worker can't be told still ends, at its next step, when
-// its progress write finds the row stopped.
-
-/// At most this many ids per bulk stop.
-const MAX_STOP_IDS: usize = 1000;
-
-#[derive(Serialize)]
-struct StoppedExecution {
-    id: Uuid,
-    /// What the run was doing when it was stopped: `pending`, `running` or `awaiting_human`.
-    previous_status: String,
-}
-
-#[derive(Serialize)]
-struct FinishedExecution {
-    id: Uuid,
-    status: String,
-}
-
-#[derive(Serialize)]
-struct StopResponse {
-    stopped: Vec<StoppedExecution>,
-    /// Asked for, but already over (`success`, `failed` or `stopped`).
-    already_finished: Vec<FinishedExecution>,
-    /// Asked for, but not a run of the caller's workflows.
-    not_found: Vec<Uuid>,
-}
-
-impl From<stop::StopReport> for StopResponse {
-    fn from(report: stop::StopReport) -> Self {
-        Self {
-            stopped: report
-                .stopped
-                .into_iter()
-                .map(|(id, previous_status)| StoppedExecution {
-                    id,
-                    previous_status,
-                })
-                .collect(),
-            already_finished: report
-                .already_finished
-                .into_iter()
-                .map(|(id, status)| FinishedExecution { id, status })
-                .collect(),
-            not_found: report.not_found,
-        }
-    }
-}
-
-/// Exactly one of the two: these runs, or every unfinished run of this workflow.
-#[derive(Deserialize)]
-struct StopExecutionsRequest {
-    #[serde(default)]
-    execution_ids: Vec<Uuid>,
-    workflow_id: Option<Uuid>,
-}
-
-async fn stop_execution(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    claims: Claims,
-) -> impl IntoResponse {
-    let Some(user_id) = parse_user_id(&claims) else {
-        return unauthorized();
-    };
-    let report =
-        match stop::stop_in_db(&state.db, user_id, stop::StopScope::Executions(&[id])).await {
-            Ok(report) => report,
-            Err(e) => return internal_err(e),
-        };
-    notify_workers(&state, &report).await;
-
-    if let Some((_, previous_status)) = report.stopped.into_iter().next() {
-        return ok_json(
-            StatusCode::OK,
-            StoppedExecution {
-                id,
-                previous_status,
-            },
-            "Execution stopped",
-        );
-    }
-    match report.already_finished.first() {
-        Some((_, status)) => err_json(
-            StatusCode::CONFLICT,
-            &format!("execution already finished: {status}"),
-        ),
-        None => not_found("execution"),
-    }
-}
-
-async fn stop_executions(
-    State(state): State<AppState>,
-    claims: Claims,
-    body: axum::body::Bytes,
-) -> impl IntoResponse {
-    let Some(user_id) = parse_user_id(&claims) else {
-        return unauthorized();
-    };
-    // Parsed here rather than by the `Json` extractor, so a malformed body is answered in the
-    // same envelope as every other error (as `run_workflow` does).
-    let body: StopExecutionsRequest = match serde_json::from_slice(&body) {
-        Ok(body) => body,
-        Err(e) => return bad_request(&format!("invalid request body: {e}")),
-    };
-    let mut ids = body.execution_ids;
-    ids.sort_unstable();
-    ids.dedup();
-
-    let scope = match (body.workflow_id, ids.is_empty()) {
-        (Some(_), false) => {
-            return bad_request("give either execution_ids or workflow_id, not both");
-        }
-        (None, true) => return bad_request("execution_ids or workflow_id is required"),
-        (None, false) if ids.len() > MAX_STOP_IDS => {
-            return bad_request(&format!("at most {MAX_STOP_IDS} execution_ids per request"));
-        }
-        (None, false) => stop::StopScope::Executions(&ids),
-        (Some(workflow_id), true) => match fetch_maf(&state.db, workflow_id).await {
-            Ok(Some(row)) if row.user_id == user_id => stop::StopScope::Workflow(workflow_id),
-            Ok(Some(_)) => return forbidden("not owned by caller"),
-            Ok(None) => return not_found("workflow"),
-            Err(e) => return internal_err(e),
-        },
-    };
-
-    let report = match stop::stop_in_db(&state.db, user_id, scope).await {
-        Ok(report) => report,
-        Err(e) => return internal_err(e),
-    };
-    notify_workers(&state, &report).await;
-    let count = report.stopped.len();
-    ok_json(
-        StatusCode::OK,
-        StopResponse::from(report),
-        &format!("{count} execution(s) stopped"),
-    )
-}
-
-/// Tells the workers running the stopped runs to cut them short now. Best-effort: the stop is
-/// already recorded, and a run whose worker isn't told ends at its next step instead.
-async fn notify_workers(state: &AppState, report: &stop::StopReport) {
-    let running = report.were_running();
-    if running.is_empty() {
-        return;
-    }
-    let notified = match state.redis.connection().await {
-        Ok(mut conn) => stop::notify_owners(&mut conn, &running).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = notified {
-        tracing::warn!(
-            error = %e,
-            runs = running.len(),
-            "MAF stop: could not message the workers running the stopped runs; they stop at their next step"
-        );
-    }
-}
-
 // ─── 10. GET /maf/execution/{id}/usage ────────────────────────────────────
 //
 // Agent-side token and cost figures for one execution.
@@ -2504,10 +2334,7 @@ async fn get_execution_usage(
     // "coming" on a deployment with no observability backend at all.
     let usage_available =
         state.config.observability_enabled && state.config.trace_usage_sync_secs > 0;
-    let terminal = matches!(
-        row.status.as_str(),
-        "success" | "failed" | nasiko_types::maf::STOPPED
-    );
+    let terminal = matches!(row.status.as_str(), "success" | "failed");
 
     // Two full materializer passes after the run ended is the point past
     // which anything still missing isn't arriving — most often because the

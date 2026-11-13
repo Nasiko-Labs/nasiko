@@ -17,20 +17,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use attachments::{
-    ATTACHMENT_CACHE_TTL, AttachmentCache, AttachmentStore, MarkerSigner, NoAttachmentStore,
-};
 use axum::{
     Json, Router,
-    http::{Method, StatusCode, Uri},
-    routing::{any, get, post},
+    routing::{get, post},
 };
 use nasiko_pricing::{NoUsageLedger, PricingEngine, UsageLedger};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
-pub mod attachments;
 pub mod auth;
 mod brevity;
 mod compact_tools;
@@ -98,11 +93,6 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
-    pub body_permits: Arc<tokio::sync::Semaphore>,
-    pub attachment_store: Arc<dyn AttachmentStore>,
-    pub attachment_cache: Arc<AttachmentCache>,
-    pub marker_signer: Option<Arc<MarkerSigner>>,
-
     /// Receives each priced call on the transaction of its `trace_usage` write.
     /// [`NoUsageLedger`] unless the host supplies its own.
     pub ledger: Arc<dyn UsageLedger>,
@@ -158,12 +148,6 @@ impl LlmRouterCtx {
         let salience_gate = build_salience_gate(&cfg);
         let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
-        let body_permits = handlers::auth_layer::body_permit_pool(cfg.max_inflight_body_bytes);
-        let attachment_cache = Arc::new(AttachmentCache::new(
-            cfg.attachment_cache_bytes,
-            ATTACHMENT_CACHE_TTL,
-        ));
-        let marker_signer = MarkerSigner::from_secret(&cfg.agent_jwt_secret).map(Arc::new);
         Self {
             db,
             http,
@@ -175,24 +159,9 @@ impl LlmRouterCtx {
             salience_gate,
             classifier,
             pricing,
-
-            body_permits,
-            attachment_store: Arc::new(NoAttachmentStore),
-            attachment_cache,
-            marker_signer,
             ledger: Arc::new(NoUsageLedger),
             payer: Arc::new(payer::CallerPays),
         }
-    }
-
-    pub fn with_config_cache(mut self, cache: Arc<ConfigCache>) -> Self {
-        self.cache = cache;
-        self
-    }
-
-    pub fn with_attachment_store(mut self, store: Arc<dyn AttachmentStore>) -> Self {
-        self.attachment_store = store;
-        self
     }
 }
 
@@ -383,7 +352,10 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
 /// server: the OpenAI-compatible surface lives under `/v1`, and Gemini under `/v1beta`
 /// (each path mirrors what that provider's stock SDK appends to its base URL).
 pub fn router(ctx: LlmRouterCtx) -> Router {
-    let llm_routes = Router::new()
+    Router::new()
+        // Liveness probe owned by this router. The host server keeps its own
+        // top-level `/health`; a future standalone binary will also map `/health`.
+        .route("/v1/health", get(health))
         .route(
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
@@ -392,10 +364,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
-        .route(
-            "/v1/messages/count_tokens",
-            post(handlers::chat::count_tokens),
-        )
         // Gemini `generateContent` surface — a Gemini-SDK agent (`GOOGLE_GEMINI_BASE_URL`)
         // POSTs to `…/v1beta/models/{model}:generateContent` (or `:streamGenerateContent`);
         // the `{model}:{method}` segment is captured and the method picks (non-)streaming (P2.4).
@@ -403,20 +371,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1beta/models/{model_method}",
             post(handlers::chat::gemini_generate),
         )
-        .route_layer(axum::middleware::from_fn_with_state(
-            ctx.clone(),
-            handlers::auth_layer::authenticate_first,
-        ))
-        .layer(axum::extract::DefaultBodyLimit::max(ctx.cfg.max_body_bytes));
-    Router::new()
-        // Liveness probe owned by this router. The host server keeps its own
-        // top-level `/health`; a future standalone binary will also map `/health`.
-        .route("/v1/health", get(health))
-        .merge(llm_routes)
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
-        .route("/v1/{*rest}", any(unknown_endpoint))
-        .route("/v1beta/{*rest}", any(unknown_endpoint))
         .with_state(ctx)
         .layer(RequestDecompressionLayer::new())
 }
@@ -424,16 +380,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
-}
-
-async fn unknown_endpoint(method: Method, uri: Uri) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_FOUND,
-        crate::error::error_body(
-            StatusCode::NOT_FOUND,
-            &format!("no such router endpoint: {method} {}", uri.path()),
-        ),
-    )
 }
 
 #[cfg(test)]

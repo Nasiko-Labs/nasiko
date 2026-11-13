@@ -109,9 +109,6 @@ async fn embeddings_core(
         attribution_source: Some(attribution.source),
         // The input as sent, for the prompt estimate when the provider reports no usage.
         request_bytes: serde_json::to_string(&req.input).ok().map(|s| s.len()),
-        // `/v1/embeddings` picks its model in the resolver, not through the precedence chain, so
-        // there is no routing decision to record (`embeddings::select_model`).
-        routing_metadata: None,
     };
     usage::spawn_log_failed(
         &ctx.db,
@@ -147,8 +144,6 @@ async fn embeddings_core(
             // Embeddings are not chat completions; IP-2 never runs here.
             brevity_metadata: None,
             compact_tools_metadata: None,
-            // Model routing (and its tier) is a chat-path decision; see the scope above.
-            routing_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
             compact_tools_bytes: None,

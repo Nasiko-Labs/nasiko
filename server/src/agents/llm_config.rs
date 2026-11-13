@@ -559,17 +559,6 @@ pub(crate) async fn update_llm_config(
     Path(agent_id): Path<Uuid>,
     Json(req): Json<AttachLlmConfigRequest>,
 ) -> impl IntoResponse {
-    let response = apply_llm_config_update(&state, claims, agent_id, req).await;
-    state.llm_config_cache.invalidate(agent_id);
-    response
-}
-
-async fn apply_llm_config_update(
-    state: &AppState,
-    claims: Claims,
-    agent_id: Uuid,
-    req: AttachLlmConfigRequest,
-) -> axum::response::Response {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -748,7 +737,6 @@ pub(crate) async fn delete_llm_config(
     {
         return db_error("delete", e);
     }
-    state.llm_config_cache.invalidate(agent_id);
     ApiResponse::ok(json!(null), "Agent LLM config removed successfully").into_response()
 }
 

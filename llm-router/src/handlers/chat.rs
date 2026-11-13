@@ -47,11 +47,6 @@ pub(crate) struct RoutedRequest {
     /// What payload compression did to this request, for its usage rows. Set by the Responses
     /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
     pub compression: crate::compress::Ledger,
-    /// Pre-serialized `metadata.routing` block for this request's calls
-    /// (`RouteDecision::to_metadata`): which precedence level chose the model, which tier it drew,
-    /// and whether that overrode the resolver's model (NAS-1263). Every call of the request —
-    /// success, failed attempt, streamed — carries the same block, since the model was chosen once.
-    pub routing_metadata: Option<serde_json::Value>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -370,7 +365,6 @@ async fn chat_core(
         flow_id,
         attribution_source,
         compression: _,
-        routing_metadata,
     } = routed;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
@@ -564,7 +558,6 @@ async fn chat_core(
         flow_id: flow_id.clone(),
         attribution_source,
         request_bytes: Some(sent_bytes),
-        routing_metadata: routing_metadata.clone(),
     };
     let mut attempts = crate::providers::attempts::AttemptLog::default();
 
@@ -598,7 +591,6 @@ async fn chat_core(
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
             compact_tools_metadata: compact_tools_metadata(compact_outcome.0, compact_outcome.1),
-            routing_metadata,
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
@@ -666,7 +658,6 @@ async fn chat_core(
                     crate::compact_tools::Outcome::Retried,
                     compacted.bytes.1,
                 ),
-                routing_metadata: routing_metadata.clone(),
                 compress_bytes,
                 // The schemas this call saved are re-sent in full below, so nothing was saved.
                 compact_tools_bytes: None,
@@ -734,7 +725,6 @@ async fn chat_core(
             compress_metadata: compression.to_metadata(),
             brevity_metadata: brevity_metadata.clone(),
             compact_tools_metadata: compact_tools_metadata(compact_outcome.0, compact_outcome.1),
-            routing_metadata,
             compress_bytes,
             compact_tools_bytes,
             request_bytes: Some(sent_bytes),
@@ -866,7 +856,6 @@ pub(crate) async fn resolve_routed_request(
         },
     )
     .await;
-    let model_overridden = decision.model != resolved.model;
     tracing::info!(
         target: "nasiko::llm_router::chat",
         %agent_id,
@@ -874,13 +863,10 @@ pub(crate) async fn resolve_routed_request(
         provider = %resolved.provider,
         resolved_model = %resolved.model,
         decision_model = %decision.model,
-        model_overridden,
+        model_overridden = decision.model != resolved.model,
         "chat_core: model routing decision"
     );
-    // Built before the override below consumes `decision.model`, so the block records the decision
-    // as it was made rather than what survived it.
-    let routing_metadata = Some(decision.to_metadata(model_overridden));
-    if model_overridden {
+    if decision.model != resolved.model {
         tracing::info!(
             target: "nasiko::llm_router::chat",
             %agent_id,
@@ -907,7 +893,6 @@ pub(crate) async fn resolve_routed_request(
         flow_id,
         attribution_source,
         compression: crate::compress::Ledger::default(),
-        routing_metadata,
     })
 }
 
@@ -990,9 +975,6 @@ struct StreamChatArgs<'a> {
     span: tracing::Span,
     brevity_metadata: Option<serde_json::Value>,
     compact_tools_metadata: Option<serde_json::Value>,
-    /// How the model was chosen (`RoutedRequest::routing_metadata`), carried to the row the stream
-    /// writes when it ends.
-    routing_metadata: Option<serde_json::Value>,
     /// Savings-ledger inputs, threaded through to the `Drop` write for the same reason
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
@@ -1020,7 +1002,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         span,
         brevity_metadata,
         compact_tools_metadata,
-        routing_metadata,
         compress_bytes,
         request_bytes,
     } = args;
@@ -1042,7 +1023,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_metadata,
         brevity_metadata,
         compact_tools_metadata,
-        routing_metadata,
         compress_bytes,
         request_bytes,
     };
@@ -1129,8 +1109,7 @@ struct UsageGuard {
     compress_metadata: Option<serde_json::Value>,
     brevity_metadata: Option<serde_json::Value>,
     compact_tools_metadata: Option<serde_json::Value>,
-    routing_metadata: Option<serde_json::Value>,
-    /// `Copy`, so unlike the four above these are read rather than taken.
+    /// `Copy`, so unlike the three above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
 }
@@ -1141,7 +1120,6 @@ impl UsageGuard {
         let compress_metadata = self.compress_metadata.take();
         let brevity_metadata = self.brevity_metadata.take();
         let compact_tools_metadata = self.compact_tools_metadata.take();
-        let routing_metadata = self.routing_metadata.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         record_tool_calls(&self.span, st.tool_call_indexes.len());
@@ -1163,7 +1141,6 @@ impl UsageGuard {
             compress_metadata,
             brevity_metadata,
             compact_tools_metadata,
-            routing_metadata,
             compress_bytes: self.compress_bytes,
             // Compact tools skips streaming requests.
             compact_tools_bytes: None,
@@ -1331,7 +1308,6 @@ mod tests {
                 compress_metadata: None,
                 brevity_metadata: None,
                 compact_tools_metadata: None,
-                routing_metadata: None,
             };
             drop(guard);
         });
@@ -1377,7 +1353,6 @@ mod tests {
                 compress_metadata: None,
                 brevity_metadata: None,
                 compact_tools_metadata: None,
-                routing_metadata: None,
             };
             drop(guard);
         });
@@ -1419,7 +1394,6 @@ mod tests {
             compress_metadata: None,
             brevity_metadata: None,
             compact_tools_metadata: None,
-            routing_metadata: None,
         };
         let record = guard.usage_record();
         assert_eq!(

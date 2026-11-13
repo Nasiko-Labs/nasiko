@@ -416,7 +416,6 @@ pub struct OrchestratorConfig {
     /// the same for every leg — resolving it once per turn is what keeps a
     /// fan-out from paying for it N times.
     pub outbound_prefix: Option<String>,
-    pub attachment_note: Option<String>,
 }
 
 impl Default for OrchestratorConfig {
@@ -431,7 +430,6 @@ impl Default for OrchestratorConfig {
             api_key: None,
             policy: None,
             outbound_prefix: None,
-            attachment_note: None,
         }
     }
 }
@@ -891,8 +889,7 @@ impl Orchestrator {
         for agent in agents {
             let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
                 .with_policy(self.config.policy.clone())
-                .with_outbound_prefix(self.config.outbound_prefix.clone())
-                .with_attachment_note(self.config.attachment_note.clone());
+                .with_outbound_prefix(self.config.outbound_prefix.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -958,8 +955,7 @@ async fn run_stream_inner(
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec())
             .with_policy(config.policy.clone())
-            .with_outbound_prefix(config.outbound_prefix.clone())
-            .with_attachment_note(config.attachment_note.clone());
+            .with_outbound_prefix(config.outbound_prefix.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }

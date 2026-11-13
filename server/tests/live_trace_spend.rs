@@ -43,7 +43,6 @@ fn record(owner: Uuid, agent: Uuid, flow_id: Option<&str>, input: i64, output: i
         compress_metadata: None,
         brevity_metadata: None,
         compact_tools_metadata: None,
-        routing_metadata: None,
         compress_bytes: None,
         compact_tools_bytes: None,
         request_bytes: None,
@@ -177,58 +176,6 @@ async fn compact_tools_counters_add_up_across_a_flows_calls() {
         metadata["brevity"],
         json!({ "skipped": "third" }),
         "every other block still keeps the last call's"
-    );
-}
-
-/// NAS-1263: a flow's `metadata.routing` adds its calls' counters together too, so a turn that
-/// classified its first call and served the rest from the decision cache reports both levels.
-/// Keeping the last call's block instead would erase every classification behind a cache hit.
-#[tokio::test]
-#[serial]
-async fn routing_counters_add_up_across_a_flows_calls() {
-    let server = common::TestServer::start().await;
-    let (user, agent, _) = seed(&server.db, None, json!({})).await;
-    let pricing = PricingEngine::offline();
-
-    // The block `RouteDecision::to_metadata` writes for one call, at the two levels a tiered turn
-    // goes through: the classifier once, then the decision cache for the rest of the turn.
-    let call = |level: &str, tier: &str, overridden: i64| UsageRecord {
-        routing_metadata: Some(json!({
-            "calls": 1, level: 1, tier: 1, "model_overridden": overridden,
-        })),
-        ..record(user, agent, Some(TRACE), 100, 10)
-    };
-    // An embedding routes no model, carries no block, and must leave the counters alone.
-    let embedding = UsageRecord {
-        operation_type: "embedding",
-        ..record(user, agent, Some(TRACE), 100, 0)
-    };
-    for record in [
-        call("classified", "tier2", 1),
-        call("cache_hit", "tier2", 1),
-        embedding,
-        call("cache_hit", "tier2", 0),
-    ] {
-        log_usage(server.db.clone(), &pricing, &NoUsageLedger, record)
-            .await
-            .unwrap();
-    }
-
-    let metadata: serde_json::Value =
-        sqlx::query_scalar("SELECT metadata FROM trace_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(
-        metadata["routing"],
-        json!({
-            "calls": 3,
-            "classified": 1,
-            "cache_hit": 2,
-            "tier2": 3,
-            "model_overridden": 2,
-        })
     );
 }
 
