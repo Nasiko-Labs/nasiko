@@ -723,7 +723,7 @@ impl EventStore {
             return Ok(hot);
         }
         let filter = format!("flow_id = {}", cold::lit(flow_id));
-        let cold = self.cold_flows(&filter).await?;
+        let cold = hot_only_on_error(flows::TABLE, self.cold_flows(&filter).await);
         Ok(cold.into_iter().next())
     }
 
@@ -739,7 +739,7 @@ impl EventStore {
         .await?;
 
         let filter = format!("session_id = {}", cold::lit(session_id));
-        let cold = self.cold_flows(&filter).await?;
+        let cold = hot_only_on_error(flows::TABLE, self.cold_flows(&filter).await);
         Ok(flows::merge(hot, cold))
     }
 
@@ -764,11 +764,8 @@ impl EventStore {
             let ids: Vec<String> = flow_ids.iter().map(|i| cold::lit(i)).collect();
             filter = format!("{filter} OR trace_id IN ({})", ids.join(", "));
         }
-        let mut cold_rows = Vec::new();
-        for b in cold::scan(&self.uri(trace_usage::TABLE), &filter).await? {
-            cold_rows.extend(trace_usage::from_record_batch(&b)?);
-        }
-        Ok(trace_usage::merge(hot, cold_rows))
+        let cold = hot_only_on_error(trace_usage::TABLE, self.cold_trace_usage(&filter).await);
+        Ok(trace_usage::merge(hot, cold))
     }
 
     /// One trace's `trace_usage` rows, hot Postgres merged with cold Lance.
@@ -781,11 +778,17 @@ impl EventStore {
         .fetch_all(&self.db)
         .await?;
         let filter = format!("trace_id = {}", cold::lit(trace_id));
-        let mut cold_rows = Vec::new();
-        for b in cold::scan(&self.uri(trace_usage::TABLE), &filter).await? {
-            cold_rows.extend(trace_usage::from_record_batch(&b)?);
+        let cold = hot_only_on_error(trace_usage::TABLE, self.cold_trace_usage(&filter).await);
+        Ok(trace_usage::merge(hot, cold))
+    }
+
+    /// Reads cold `trace_usage` rows matching a Lance filter.
+    async fn cold_trace_usage(&self, filter: &str) -> Result<Vec<TraceUsageRow>> {
+        let mut out = Vec::new();
+        for b in cold::scan(&self.uri(trace_usage::TABLE), filter).await? {
+            out.extend(trace_usage::from_record_batch(&b)?);
         }
-        Ok(trace_usage::merge(hot, cold_rows))
+        Ok(out)
     }
 
     /// Settles one `writing` `tool_calls` batch left by a crash.
@@ -2219,6 +2222,17 @@ fn ts_lit(t: DateTime<Utc>) -> String {
     format!("TIMESTAMP '{}'", t.format("%Y-%m-%d %H:%M:%S%.6f"))
 }
 
+/// The cold half of a hot + cold read. An unreachable cold tier (a bucket the server lost access
+/// to, a storage outage) is logged and read as empty, so the hot rows still answer: failing the
+/// read instead turns every session and trace drill-down into a 500. Tiering keeps failing loudly.
+fn hot_only_on_error<T>(table: &str, cold: Result<Vec<T>>) -> Vec<T> {
+    cold.unwrap_or_else(|error| {
+        tracing::warn!(target: "nasiko::tiering", table, error = %format!("{error:#}"),
+            "cold tier unreadable; answering from hot rows only");
+        Vec::new()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2259,6 +2273,13 @@ mod tests {
         let hits: Vec<u32> = (1..=15).filter(|r| is_maintenance_run(*r, 7)).collect();
         assert_eq!(hits, [7, 14]);
         assert!(!is_maintenance_run(7, 0));
+    }
+
+    #[test]
+    fn unreadable_cold_tier_reads_as_empty() {
+        let failed: Result<Vec<u8>> = Err(anyhow::anyhow!("403 Forbidden"));
+        assert!(hot_only_on_error(flows::TABLE, failed).is_empty());
+        assert_eq!(hot_only_on_error(flows::TABLE, Ok(vec![1, 2])), [1, 2]);
     }
 
     #[test]
