@@ -3,5 +3,7 @@ export const DOCS_URL = 'https://docs.nasiko.com'
 export const CLI_DOCS_URL = 'https://docs.nasiko.com/reference/cli/overview'
 /** A docs page under the CLI reference (`setup`, `operate`, …). */
 export const cliDocsUrl = (page: string) => `https://docs.nasiko.com/reference/cli/${page}`
-/** The team's booking page: Talk to an expert, and the assessment's last step. */
+/** The team's booking page: the assessment's last step and Contact sales. */
 export const EXPERT_CALL_URL = 'https://calendar.app.google/9e8V6Rtbm3gNz1x6A'
+/** The sidebar's Report an issue row: a mail to support. */
+export const SUPPORT_MAIL_URL = 'mailto:support@nasiko.com'

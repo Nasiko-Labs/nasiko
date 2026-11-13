@@ -391,8 +391,8 @@ export interface Slots {
    */
   sidebarBrand: ComponentType | null
   /**
-   * A layer's card above the sidebar footer (MT: the plan). Hidden while a page's panel holds the sidebar; it draws
-   * its own collapsed-rail form.
+   * A layer's card at the end of the sidebar's scrolling nav (MT: the plan), at the bottom while the nav fits. Hidden
+   * while a page's panel holds the sidebar; it draws its own collapsed-rail form.
    */
   sidebarCard: ComponentType | null
   /**

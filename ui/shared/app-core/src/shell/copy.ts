@@ -115,7 +115,7 @@ export const copy = {
     docs: 'How to use',
     cli: 'CLI guide',
     assessment: 'Free TokenOps assessment',
-    expert: 'Talk to an expert',
+    issue: 'Report an issue',
     newTab: '(opens in a new tab)',
   },
   // The desktop app's sign-in, while it runs Nasiko on this computer (ForgotPassword.tsx).

@@ -3,7 +3,7 @@ import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy as shell } from '@nasiko/app-core/shell/copy'
-import { DOCS_URL, EXPERT_CALL_URL } from '@nasiko/app-core/links'
+import { DOCS_URL, EXPERT_CALL_URL, SUPPORT_MAIL_URL } from '@nasiko/app-core/links'
 import { assessmentsMockState, configureMocks } from '@nasiko/mocks/handlers'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
@@ -96,9 +96,9 @@ describe('assessment', () => {
       'href',
       DOCS_URL,
     )
-    expect(s.getByRole('link', { name: new RegExp(`^${shell.help.expert}`) })).toHaveAttribute(
+    expect(s.getByRole('link', { name: shell.help.issue })).toHaveAttribute(
       'href',
-      EXPERT_CALL_URL,
+      SUPPORT_MAIL_URL,
     )
     expect(s.getAllByRole('link', { name: shell.help.cli })[0]).toHaveAttribute('href', '/cli')
     expect(s.queryByRole('link', { name: shell.assessment.cta })).toBeNull()
