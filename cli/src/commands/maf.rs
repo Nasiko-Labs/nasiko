@@ -18,9 +18,9 @@ use crate::commands::local_agents::maf_hint;
 /// `nasiko maf trace "<instruction>"` — the whole MAF pipeline in one command.
 ///
 /// Creates a workflow from one compound instruction, runs it, and reports every
-/// stage as it happens: how the decomposer split the sentence, which agent the
-/// routing engine gave each step, each step's outcome as it lands, and the
-/// closing token/cost breakdown.
+/// stage as it happens: how the planner split the sentence and which agent it
+/// gave each step, each step's outcome as it lands, and the closing token/cost
+/// breakdown.
 ///
 /// This exists because no single existing subcommand answers "is MAF working
 /// end to end" — `workflow create`, `workflow run --wait` and `execution get`
@@ -34,7 +34,7 @@ pub fn trace(
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
 
-    let (workflow, decompose_secs) = create_from_instruction(&client, instruction)?;
+    let (workflow, plan_secs) = create_from_instruction(&client, instruction)?;
     let workflow_id = workflow
         .get("id")
         .and_then(Value::as_str)
@@ -43,7 +43,7 @@ pub fn trace(
     let steps = planned_steps(&workflow);
 
     if !json_out {
-        print_plan(&workflow, &steps, decompose_secs);
+        print_plan(&workflow, &steps, plan_secs);
     }
 
     let (exec_id, number) = queue_run(&client, &workflow_id, content)?;
@@ -78,19 +78,67 @@ pub fn trace(
 
 /// Creates the workflow, returning it with how long the call took.
 ///
-/// The elapsed time is worth surfacing on its own: this is the one stage that
-/// depends on an external service (the decomposer at `MODEL_API_URL`), so when
-/// a trace feels slow this number says whether that is where the time went.
+/// The elapsed time is worth surfacing on its own: planning is an LLM call, so
+/// when a trace feels slow this number says whether that is where the time went.
 fn create_from_instruction(client: &Client, instruction: &str) -> Result<(Value, f64)> {
-    let spin = nasiko_utils::term::start_status("decomposing instruction");
+    let spin = nasiko_utils::term::start_status("planning instruction");
     let start = std::time::Instant::now();
-    let resp = client.post_json(
-        "/maf/workflow/from-instruction",
-        &json!({ "instruction": instruction }),
-    );
+    let workflow = plan_and_create(client, instruction, None, None);
     drop(spin);
-    let workflow: Value = unwrap_data(resp?)?;
-    Ok((workflow, start.elapsed().as_secs_f64()))
+    Ok((workflow?, start.elapsed().as_secs_f64()))
+}
+
+/// Splits `instruction` into steps with the server's MAF planner (`POST /maf/generate`, the call
+/// the web UI makes). The planner gives every step its own agent, so the returned steps need no
+/// further routing. Also returns the planner's own name/description, for a caller with none of
+/// its own to fall back to.
+fn plan_steps(
+    client: &Client,
+    instruction: &str,
+) -> Result<(Vec<Value>, Option<String>, Option<String>)> {
+    let plan: Value =
+        unwrap_data(client.post_json("/maf/generate", &json!({ "description": instruction }))?)?;
+    let steps: Vec<Value> = plan
+        .get("steps")
+        .and_then(Value::as_array)
+        .map(|steps| {
+            steps
+                .iter()
+                .map(|s| {
+                    json!({
+                        "task_description": s.get("task_description"),
+                        "agent_id": s.get("agent_id"),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if steps.is_empty() {
+        anyhow::bail!("the planner returned no steps for this instruction");
+    }
+    let name = plan.get("name").and_then(Value::as_str).map(String::from);
+    let description = plan
+        .get("description")
+        .and_then(Value::as_str)
+        .map(String::from);
+    Ok((steps, name, description))
+}
+
+/// Plans `instruction` and saves the result as a live workflow in one call —
+/// `name`/`description` override the planner's own.
+fn plan_and_create(
+    client: &Client,
+    instruction: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<Value> {
+    let (steps, plan_name, plan_description) = plan_steps(client, instruction)?;
+    let body = json!({
+        "name": name.or(plan_name.as_deref()),
+        "description": description.or(plan_description.as_deref()),
+        "steps": steps,
+    });
+    unwrap_data(client.post_json("/maf/workflows", &body)?)
 }
 
 /// One step of the plan, as stored in the workflow definition.
@@ -124,13 +172,13 @@ fn planned_steps(workflow: &Value) -> Vec<PlannedStep> {
         .collect()
 }
 
-fn print_plan(workflow: &Value, steps: &[PlannedStep], decompose_secs: f64) {
+fn print_plan(workflow: &Value, steps: &[PlannedStep], plan_secs: f64) {
     let name = workflow.get("name").and_then(Value::as_str).unwrap_or("?");
     let id = workflow.get("id").and_then(Value::as_str).unwrap_or("?");
     println!(
         "\n{}",
         term::bold(&format!(
-            "1. Decomposed into {} step(s) in {decompose_secs:.1}s",
+            "1. Planned into {} step(s) in {plan_secs:.1}s",
             steps.len()
         ))
     );
@@ -407,10 +455,8 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
 /// workflow. Steps run in the order given; an omitted (or "-") `--agent` for a step lets the
 /// routing engine auto-assign it.
 ///
-/// `--instruction "..."` is the alternative, mutually-exclusive form: sends one compound
-/// sentence to the decomposer service, which splits it into atomic steps server-side (each
-/// then auto-assigned an agent) — see `POST /maf/workflow/from-instruction` in
-/// `oss/server/src/maf.rs`.
+/// `--instruction "..."` is the alternative, mutually-exclusive form: the server's MAF planner
+/// splits one compound sentence into steps and picks each step's agent ([`plan_and_create`]).
 pub fn workflow_create(
     name: Option<&str>,
     description: Option<&str>,
@@ -421,8 +467,7 @@ pub fn workflow_create(
     let client = Client::from_active_cluster()?;
 
     if let Some(instruction) = instruction {
-        let body = json!({ "instruction": instruction });
-        let resp: Value = unwrap_data(client.post_json("/maf/workflow/from-instruction", &body)?)?;
+        let resp = plan_and_create(&client, instruction, name, description)?;
         return print_created(&resp, None);
     }
 
@@ -442,7 +487,7 @@ pub fn workflow_create(
 
 /// Prints the `Created workflow '<name>' (<id>) with N step(s)` confirmation line.
 /// `known_step_count` is `None` when the step count isn't known client-side (the
-/// `--instruction` path — the decomposer decides it server-side), so it's read back
+/// `--instruction` path — the planner decides it server-side), so it's read back
 /// from the response's `maf_json.steps` instead.
 fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
     let id = resp.get("id").and_then(Value::as_str).unwrap_or("?");

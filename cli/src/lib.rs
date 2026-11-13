@@ -655,14 +655,14 @@ pub enum MafCommands {
     /// Run one instruction end to end and report every stage
     #[command(
         after_help = "Does in one command what `workflow create --instruction`, \
-`workflow run --wait` and `execution get` do in three: sends the sentence to the decomposer, \
-shows how it was split and which agent each step was routed to, runs it while reporting each \
+`workflow run --wait` and `execution get` do in three: sends the sentence to the MAF planner, \
+shows how it was split and which agent each step was given, runs it while reporting each \
 step as it finishes, then prints the result with its token breakdown.\n\n\
 The workflow is kept by default so it can be re-run or inspected; pass --cleanup to delete it \
 once the run finishes."
     )]
     Trace {
-        /// The compound instruction to decompose into a workflow and run
+        /// The compound instruction to plan into a workflow and run
         instruction: String,
         /// Run-time data folded into step 0's task before planning
         #[arg(long)]
@@ -689,8 +689,8 @@ pub enum MafWorkflowCommands {
 an agent (name or UUID) to that step, or \"-\" to auto-assign it; omit --agent entirely to \
 auto-assign every step via the routing engine.\n\n\
 --instruction is mutually exclusive with --step/--agent: it sends the whole sentence to the \
-decomposer service (MODEL_API_URL), which splits it into atomic steps; each is then \
-auto-assigned an agent exactly like an auto-assigned --step."
+MAF planner (the same one the web UI uses), which splits it into steps and picks each step's \
+agent. --name/--description, when given, replace the planner's own."
     )]
     Create {
         #[arg(long)]
@@ -703,7 +703,7 @@ auto-assigned an agent exactly like an auto-assigned --step."
         /// Agent (name or UUID) for the step at the same position, or "-" to auto-assign
         #[arg(long = "agent", conflicts_with = "instruction")]
         agents: Vec<String>,
-        /// One compound instruction to split into atomic steps via the decomposer service
+        /// One compound instruction to split into steps via the MAF planner
         #[arg(long, conflicts_with_all = ["steps", "agents"])]
         instruction: Option<String>,
     },
