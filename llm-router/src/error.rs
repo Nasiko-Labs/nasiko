@@ -64,6 +64,9 @@ pub enum GatewayError {
     Upstream(String),
     #[error("{message}")]
     Provider { status: StatusCode, message: String },
+    /// No model answered in time: 504, so the caller can tell a slow provider from a broken one.
+    #[error("Upstream LLM error: {0}")]
+    UpstreamTimeout(String),
 
     #[error("request body is over the router's {} MiB limit", limit / (1024 * 1024))]
     PayloadTooLarge { limit: usize },
@@ -96,6 +99,7 @@ impl GatewayError {
             GatewayError::OwnerAllowanceSpent { .. } => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Provider { status, .. } => *status,
+            GatewayError::UpstreamTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             GatewayError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             GatewayError::StorageUnavailable | GatewayError::Busy => {
                 StatusCode::SERVICE_UNAVAILABLE
@@ -173,6 +177,11 @@ mod tests {
                 },
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "Upstream LLM error: provider returned 422: x",
+            ),
+            (
+                GatewayError::UpstreamTimeout("model m did not answer within 5.0s".into()),
+                StatusCode::GATEWAY_TIMEOUT,
+                "Upstream LLM error: model m did not answer within 5.0s",
             ),
         ];
         for (error, status, detail) in cases {
