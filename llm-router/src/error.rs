@@ -62,15 +62,6 @@ pub enum GatewayError {
     // ── 502 — upstream provider (steps 4+) ──────────────────────────────────
     #[error("Upstream LLM error: {0}")]
     Upstream(String),
-    /// The provider refused the request with a status the caller can act on (the model is
-    /// unknown, the body is invalid, the rate limit is hit), so that status reaches the
-    /// caller instead of a 502. The text matches [`Upstream`](Self::Upstream)'s, so log
-    /// searches still find it.
-    #[error("Upstream LLM error: provider returned {status}: {message}")]
-    UpstreamStatus { status: u16, message: String },
-    /// No model answered in time: 504, so the caller can tell a slow provider from a broken one.
-    #[error("Upstream LLM error: {0}")]
-    UpstreamTimeout(String),
 
     // ── 500 — server-side fault (DB/crypto/config integrity) ─────────────────
     // Not client-actionable; the detail is logged but not exposed in the body.
@@ -95,10 +86,6 @@ impl GatewayError {
             | GatewayError::NoSharedUserConfig => StatusCode::BAD_REQUEST,
             GatewayError::OwnerAllowanceSpent { .. } => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
-            GatewayError::UpstreamStatus { status, .. } => {
-                StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY)
-            }
-            GatewayError::UpstreamTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -125,25 +112,5 @@ impl IntoResponse for GatewayError {
                 .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
         }
         response
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn upstream_errors_carry_their_own_status() {
-        let status = GatewayError::UpstreamStatus {
-            status: 404,
-            message: "model not found".into(),
-        };
-        assert_eq!(status.status(), StatusCode::NOT_FOUND);
-        assert_eq!(
-            status.to_string(),
-            "Upstream LLM error: provider returned 404: model not found"
-        );
-        let timeout = GatewayError::UpstreamTimeout("model m did not answer within 5.0s".into());
-        assert_eq!(timeout.status(), StatusCode::GATEWAY_TIMEOUT);
     }
 }

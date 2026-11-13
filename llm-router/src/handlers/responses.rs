@@ -1104,8 +1104,7 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::NoApiKey
         | GatewayError::NoSharedUserConfig => "routing_configuration_error",
         GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
-        GatewayError::UpstreamStatus { .. } => "invalid_request_error",
-        GatewayError::Upstream(_) | GatewayError::UpstreamTimeout(_) => "upstream_error",
+        GatewayError::Upstream(_) => "upstream_error",
         GatewayError::Internal(_) => "internal_error",
     }
 }
