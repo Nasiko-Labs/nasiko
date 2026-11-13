@@ -578,6 +578,10 @@ export const copy = {
     seeRun: 'See what it did',
     updated: "Home's spend and tokens now include this run.",
     nextStep: 'Next: run the same task with Token optimization on.',
+    /** In place of "Run it optimized" while the viewer has no LLM router config: optimization works through it. */
+    needsRouter:
+      'To run it optimized, set up the LLM router first: Token optimization works through it. Add a model and its key, then come back here and run the same task optimized.',
+    setUpRouter: 'Set up the LLM router',
     failed: (reason: string) => `The run didn't finish: ${reason}`,
     retry: 'Try again',
     notDeployed: (agent: string) =>

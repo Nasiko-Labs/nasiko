@@ -432,6 +432,20 @@ describe('review fixes (page)', () => {
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/[0-9a-f-]{36}$/))
     await waitFor(() => expect(screen.getByLabelText(/^Message /)).toHaveFocus())
   })
+
+  it("keeps the first send's turn on screen while the new chat's history loads", async () => {
+    const agent = await runningAgent()
+    let release = () => {}
+    const held = new Promise<void>((r) => (release = r))
+    // Held, then left to the mock: a slow network's first history read.
+    server.use(http.get('/api/chat/sessions/:id/messages', async () => void (await held)))
+    const { router } = renderApp(`/chat?agent=${agent.id}`)
+    await userEvent.type(await screen.findByLabelText(/^Message /), 'hello{Enter}')
+    await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/chat\/[0-9a-f-]{36}$/))
+    expect(within(await screen.findByTestId('transcript')).getByText('hello')).toBeInTheDocument()
+    expect(screen.queryByRole('img', { name: 'Loading chat…' })).toBeNull()
+    release()
+  })
 })
 
 describe('TraceSheet states', () => {

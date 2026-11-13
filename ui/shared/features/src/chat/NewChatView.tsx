@@ -190,12 +190,18 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
       void client.invalidateQueries({ queryKey: chatKeys.history(row.session_id) })
       // Only move to the chat if this view is still the one the user sent from (EN8). The URL
       // alone isn't enough: leaving and coming back to the same URL makes a new view.
-      if (mounted.current && router.state.location.href === sentFrom)
-        void navigate({
-          to: '/chat/$sessionId',
-          params: { sessionId: row.session_id },
-          search: carry,
-          replace: true,
+      const stillHere = () => mounted.current && router.state.location.href === sentFrom
+      const to = {
+        to: '/chat/$sessionId',
+        params: { sessionId: row.session_id },
+        search: carry,
+      } as const
+      // Load the chat route's code (and start its history read) before moving: a first move to code that isn't
+      // loaded yet shows the router's pending loader over the whole page (past 150 ms, for at least 500 ms), which on
+      // a real network reads as a reload. This view keeps showing the turn meanwhile. preloadRoute never rejects.
+      if (stillHere())
+        void router.preloadRoute(to).then(() => {
+          if (stillHere()) void navigate({ ...to, replace: true })
         })
     }
     // Runs from the registry, so it works even if this view is gone by then.
