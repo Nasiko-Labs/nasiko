@@ -23,7 +23,7 @@ export const copy = {
     install: 'Install the CLI',
     connect: 'Connect to this cluster',
     signIn: 'Sign in with your Nasiko account',
-    deploy: 'Deploy an agent from its folder',
+    signInSso: 'Sign in with your company account',
   },
   copyCommand: (what: string) => `Copy: ${what}`,
 }
