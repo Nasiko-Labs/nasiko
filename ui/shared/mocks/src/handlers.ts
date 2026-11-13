@@ -19,6 +19,7 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
+  modelRouting,
   savings,
   spendCalendar,
   spendTimeseries,
@@ -1570,6 +1571,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     ),
   ],
   savings: [
+    // NAS-1263 (`model_routing.rs`): how the router chose each call's model. In the savings group
+    // because the card that reads it sits in TokenOps' Optimization section, beside /finops/savings.
+    http.get(`${FINOPS}/model-routing`, () => respond(() => modelRouting())),
     http.get(`${FINOPS}/savings`, ({ request }) =>
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization

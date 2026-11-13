@@ -114,6 +114,7 @@ use crate::state::AppState;
         crate::observability::handler::get_finops_spend_calendar_day,
         crate::observability::handler::get_finops_attributions,
         crate::observability::handler::get_finops_insights,
+        crate::observability::handler::get_model_routing,
         crate::observability::handler::get_agent_hours,
         crate::observability::coding_agents::get_coding_agent_usage,
         // CX-1: the `/api/me/*` preference routes and `/api/settings/context-tiers` predate the

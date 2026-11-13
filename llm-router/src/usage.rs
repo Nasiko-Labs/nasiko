@@ -12,7 +12,7 @@
 //! `error_count`, prices only the usage the provider reported, and when it reported none, books
 //! an estimated prompt in `router_estimated_input_tokens` and flags the row `cost_estimated`.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use chrono::Utc;
 use nasiko_pricing::{LedgerEntry, PricingEngine, PromptConvention, RawUsage, UsageLedger};
@@ -67,6 +67,11 @@ pub struct UsageRecord {
     /// is added up across a flow's calls, not overwritten (see [`write_trace_usage`]). `None` on
     /// a call that did not come through chat (embeddings, `/v1/responses`, a failed attempt).
     pub compact_tools_metadata: Option<serde_json::Value>,
+    /// Pre-serialized `metadata.routing` block (`RouteDecision::to_metadata`): flat counters for
+    /// the precedence level that chose this call's model, the tier it drew, and whether that
+    /// overrode the resolver's model (NAS-1263). `None` on a call that never routed by model
+    /// (embeddings), which is why the block's absence is meaningful and its zeros are not.
+    pub routing_metadata: Option<serde_json::Value>,
     /// `(bytes_in, bytes_out)` from IP-1 when it actually reduced the payload, for the
     /// `token_savings` ledger. Two integers rather than the compression module's type, so this
     /// module stays a pure DB concern.
@@ -125,6 +130,9 @@ pub struct CallScope {
     pub flow_id: Option<String>,
     pub attribution_source: Option<AttributionSource>,
     pub request_bytes: Option<usize>,
+    /// The request's `metadata.routing` block: the model was chosen once, so every attempt of the
+    /// fallback chain was routed the same way and counts the same.
+    pub routing_metadata: Option<serde_json::Value>,
 }
 
 /// One provider attempt that reached the provider and failed.
@@ -159,6 +167,7 @@ impl UsageRecord {
             compress_metadata: None,
             brevity_metadata: None,
             compact_tools_metadata: None,
+            routing_metadata: scope.routing_metadata.clone(),
             compress_bytes: None,
             compact_tools_bytes: None,
             request_bytes: scope.request_bytes,
@@ -311,6 +320,7 @@ pub async fn log_usage(
         compress: record.compress_metadata,
         brevity: record.brevity_metadata,
         compact_tools: record.compact_tools_metadata,
+        routing: record.routing_metadata,
         failure: record.failure.map(|failure| FailureMetadata {
             failure,
             reported_usage,
@@ -425,50 +435,10 @@ fn trace_key(flow_id: Option<&str>) -> String {
     }
 }
 
-/// Add one call to its `(trace_id, agent_name)` row, marking it router-priced.
-///
-/// The call is added to both the visible spend columns and the row's `router_*`
-/// share. A Tempo-priced row keeps what Tempo already counted (the agent's own-key
-/// calls among it); the materializer later sets each visible column to
-/// `GREATEST(tempo, router_*)`, so neither half of a mixed trace is lost.
-async fn write_trace_usage(
-    tx: &mut sqlx::PgConnection,
-    live: &LiveSpend,
-) -> Result<(), sqlx::Error> {
-    #[derive(sqlx::FromRow)]
-    struct AgentInfo {
-        name: String,
-        workload_kind: Option<String>,
-        is_coding: bool,
-    }
-    let info: Option<AgentInfo> = match live.agent {
-        Some(id) => {
-            // `coding_agent_integration_id` is server-managed; `metadata` is
-            // owner-editable, and a `coding` label exempts spend from routed
-            // budgets, so it must not be self-assignable (resolver/mod.rs does the same).
-            sqlx::query_as(
-                "SELECT name, workload_kind, \
-                        coding_agent_integration_id IS NOT NULL AS is_coding \
-                 FROM agents WHERE id = $1",
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?
-        }
-        None => None,
-    };
-    let agent_name: String = match (&info, live.agent) {
-        (Some(i), _) => i.name.clone(),
-        (None, Some(id)) => id.to_string(),
-        (None, None) => String::new(),
-    };
-    let source: &'static str = info
-        .as_ref()
-        .map(|i| source_for(i.workload_kind.as_deref(), i.is_coding))
-        .unwrap_or("agent");
-    let trace_id: String = trace_key(live.flow_id.as_deref());
-
-    sqlx::query(
+/// The one statement every priced call is added to its trace's row with — built once, because
+/// its two summed-block fragments are generated ([`summed_block`]).
+static UPSERT: LazyLock<String> = LazyLock::new(|| {
+    format!(
         r#"INSERT INTO trace_usage (
                trace_id, agent_name, session_id, agent_id, user_id, model, provider,
                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
@@ -523,48 +493,110 @@ async fn write_trace_usage(
                materialized_at              = now(),
                -- A failure keeps the answering call's keys (its `pricing` above all) and
                -- records itself as the trace's latest `failure`; failures carry no
-               -- `compact_tools` block. A success wins per key, except `compact_tools`: its flat
-               -- counters are added key by key, so a flow that compacted its first call and
-               -- skipped the rest keeps both (`compact_tools::to_metadata`).
+               -- `compact_tools` block. A success wins per key, except the summed blocks
+               -- (`compact_tools`, `routing`): their flat counters are added key by key, so a flow
+               -- that compacted its first call and skipped the rest keeps both, and one that
+               -- classified its first call and cached the rest keeps both levels.
                metadata                     = CASE WHEN EXCLUDED.router_error_count > 0
                    THEN EXCLUDED.metadata || trace_usage.metadata
                         || jsonb_build_object('failure', EXCLUDED.metadata->'failure')
                    ELSE trace_usage.metadata || EXCLUDED.metadata
-                   || CASE WHEN trace_usage.metadata ? 'compact_tools'
-                            AND EXCLUDED.metadata ? 'compact_tools'
-                       THEN jsonb_build_object('compact_tools', (
-                           SELECT jsonb_object_agg(
-                                      k,
-                                      COALESCE((trace_usage.metadata->'compact_tools'->>k)::bigint, 0)
-                                      + COALESCE((EXCLUDED.metadata->'compact_tools'->>k)::bigint, 0))
-                             FROM (SELECT jsonb_object_keys(trace_usage.metadata->'compact_tools')
-                                   UNION
-                                   SELECT jsonb_object_keys(EXCLUDED.metadata->'compact_tools')) AS keys(k)))
-                       ELSE '{}'::jsonb END
+                   || {compact_tools}
+                   || {routing}
                    END"#,
+        compact_tools = summed_block("compact_tools"),
+        routing = summed_block("routing"),
     )
-    .bind(&trace_id)
-    .bind(&agent_name)
-    .bind(live.flow_id.as_deref())
-    .bind(info.as_ref().and(live.agent))
-    .bind(live.owner)
-    .bind(&live.model)
-    .bind(&live.provider)
-    .bind(live.input_tokens)
-    .bind(live.output_tokens)
-    .bind(live.cache_read_tokens)
-    .bind(live.cache_creation_tokens)
-    .bind(live.cost_usd)
-    .bind(live.prompt_cost_usd)
-    .bind(live.completion_cost_usd)
-    .bind(live.latency_ms)
-    .bind(source)
-    .bind(&live.metadata)
-    .bind(live.error_count)
-    .bind(live.estimated_input_tokens)
-    .bind(live.price_estimated)
-    .execute(&mut *tx)
-    .await?;
+});
+
+/// Add two rows' copies of one flat-integer metadata block, key by key.
+///
+/// `||` merges jsonb later-value-wins, which is right for a block that describes the trace's latest
+/// call (`pricing`, `compress`) and wrong for one that counts calls: `compact_tools` counts bytes
+/// and applications, `routing` counts the precedence level and tier each call was served by, and
+/// both must add up over a flow rather than be replaced by its last call's. Only sums where both
+/// rows carry the block; otherwise `||` has already kept whichever one does.
+fn summed_block(key: &str) -> String {
+    format!(
+        "CASE WHEN trace_usage.metadata ? '{key}' AND EXCLUDED.metadata ? '{key}'
+             THEN jsonb_build_object('{key}', (
+                 SELECT jsonb_object_agg(
+                            k,
+                            COALESCE((trace_usage.metadata->'{key}'->>k)::bigint, 0)
+                            + COALESCE((EXCLUDED.metadata->'{key}'->>k)::bigint, 0))
+                   FROM (SELECT jsonb_object_keys(trace_usage.metadata->'{key}')
+                         UNION
+                         SELECT jsonb_object_keys(EXCLUDED.metadata->'{key}')) AS keys(k)))
+             ELSE '{{}}'::jsonb END"
+    )
+}
+
+/// Add one call to its `(trace_id, agent_name)` row, marking it router-priced.
+///
+/// The call is added to both the visible spend columns and the row's `router_*`
+/// share. A Tempo-priced row keeps what Tempo already counted (the agent's own-key
+/// calls among it); the materializer later sets each visible column to
+/// `GREATEST(tempo, router_*)`, so neither half of a mixed trace is lost.
+async fn write_trace_usage(
+    tx: &mut sqlx::PgConnection,
+    live: &LiveSpend,
+) -> Result<(), sqlx::Error> {
+    #[derive(sqlx::FromRow)]
+    struct AgentInfo {
+        name: String,
+        workload_kind: Option<String>,
+        is_coding: bool,
+    }
+    let info: Option<AgentInfo> = match live.agent {
+        Some(id) => {
+            // `coding_agent_integration_id` is server-managed; `metadata` is
+            // owner-editable, and a `coding` label exempts spend from routed
+            // budgets, so it must not be self-assignable (resolver/mod.rs does the same).
+            sqlx::query_as(
+                "SELECT name, workload_kind, \
+                        coding_agent_integration_id IS NOT NULL AS is_coding \
+                 FROM agents WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        None => None,
+    };
+    let agent_name: String = match (&info, live.agent) {
+        (Some(i), _) => i.name.clone(),
+        (None, Some(id)) => id.to_string(),
+        (None, None) => String::new(),
+    };
+    let source: &'static str = info
+        .as_ref()
+        .map(|i| source_for(i.workload_kind.as_deref(), i.is_coding))
+        .unwrap_or("agent");
+    let trace_id: String = trace_key(live.flow_id.as_deref());
+
+    sqlx::query(&UPSERT)
+        .bind(&trace_id)
+        .bind(&agent_name)
+        .bind(live.flow_id.as_deref())
+        .bind(info.as_ref().and(live.agent))
+        .bind(live.owner)
+        .bind(&live.model)
+        .bind(&live.provider)
+        .bind(live.input_tokens)
+        .bind(live.output_tokens)
+        .bind(live.cache_read_tokens)
+        .bind(live.cache_creation_tokens)
+        .bind(live.cost_usd)
+        .bind(live.prompt_cost_usd)
+        .bind(live.completion_cost_usd)
+        .bind(live.latency_ms)
+        .bind(source)
+        .bind(&live.metadata)
+        .bind(live.error_count)
+        .bind(live.estimated_input_tokens)
+        .bind(live.price_estimated)
+        .execute(&mut *tx)
+        .await?;
     Ok(())
 }
 
@@ -646,6 +678,9 @@ struct MetadataInputs {
     brevity: Option<serde_json::Value>,
     /// `Some` on every chat call, applied or skipped; summed across the flow on write.
     compact_tools: Option<serde_json::Value>,
+    /// `Some` on every call that went through model routing; summed across the flow on write, like
+    /// `compact_tools`. `None` on one that did not route (embeddings).
+    routing: Option<serde_json::Value>,
     /// `None` for a call that succeeded.
     failure: Option<FailureMetadata>,
 }
@@ -681,6 +716,9 @@ fn build_metadata(inputs: MetadataInputs) -> serde_json::Value {
     if let Some(compact_tools) = inputs.compact_tools {
         metadata["compact_tools"] = compact_tools;
     }
+    if let Some(routing) = inputs.routing {
+        metadata["routing"] = routing;
+    }
     if let Some(failure) = inputs.failure {
         metadata["failure"] = serde_json::json!({
             "class": failure.failure.class,
@@ -710,6 +748,7 @@ mod tests {
             compress: None,
             brevity: None,
             compact_tools: None,
+            routing: None,
             failure: None,
         }
     }
@@ -813,6 +852,7 @@ mod tests {
             flow_id: Some("flow".into()),
             attribution_source: None,
             request_bytes: Some(800),
+            routing_metadata: Some(serde_json::json!({ "calls": 1, "classified": 1 })),
         };
         let record = UsageRecord::failed_attempt(
             &scope,
@@ -833,6 +873,33 @@ mod tests {
         );
         assert!(!record.platform_paid);
         assert_eq!(record.latency_ms, 29_000);
+        // A failed attempt was routed like the call that followed it, so it counts the same way
+        // (NAS-1263) — a chain whose first model was classified and whose fallback answered must
+        // not look like a call that never classified.
+        assert_eq!(
+            record.routing_metadata,
+            Some(serde_json::json!({ "calls": 1, "classified": 1 }))
+        );
+    }
+
+    /// NAS-1263: the routing block reaches the row's metadata under its own key, beside the
+    /// billing keys rather than in place of any of them.
+    #[test]
+    fn a_routed_calls_routing_block_reaches_the_row_metadata() {
+        let block = serde_json::json!({ "calls": 1, "small_talk": 1, "tier3": 1 });
+        let metadata = build_metadata(MetadataInputs {
+            routing: Some(block.clone()),
+            ..inputs(true)
+        });
+        assert_eq!(metadata["routing"], block);
+        assert_eq!(metadata["key_source"], "platform");
+    }
+
+    /// A call that never routed by model (embeddings) writes no block at all: its absence is what
+    /// tells a reader the call had no routing decision, which zeros could not.
+    #[test]
+    fn a_call_that_did_not_route_writes_no_routing_block() {
+        assert!(build_metadata(inputs(true)).get("routing").is_none());
     }
 
     #[test]
