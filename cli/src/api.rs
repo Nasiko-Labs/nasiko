@@ -1317,36 +1317,53 @@ impl Client {
     /// the MCP upload route is deliberately plain polling JSON in v1 — no
     /// streaming (see `docs/MCP_UPLOAD_ITERATION_PLAN.md` Step 10's "Deferred"
     /// note) — so this polls on a fixed interval instead of reading a stream.
-    pub fn poll_mcp_build_status(&self, connector_id: &str) -> anyhow::Result<()> {
+    /// Polls `/mcp/connectors/uploads/{upload_id}` — not the connector-scoped
+    /// `/mcp/connectors/{id}/build-status` — because a first-time build
+    /// failure deletes the connector entirely
+    /// (`delete_mcp_connector_or_mark_failed`); the upload-status row is the
+    /// durable one that survives that (`oss/migrations/0101_mcp_upload_status.sql`),
+    /// so `upload_id` (the build's own id, exactly what `upload_mcp_connector_zip`
+    /// returned as `build_id`) keeps answering either way. The explicit 404
+    /// branch below is defense in depth, not the expected path: with this
+    /// table in place, this id should never 404 once the upload was queued.
+    pub fn poll_mcp_build_status(&self, upload_id: &str) -> anyhow::Result<()> {
         let mut last_status = String::new();
         let mut spin = Some(nasiko_utils::term::start_status("waiting for build"));
         let mut succeeded = false;
         let mut fail_msg = String::new();
 
         loop {
-            let raw: serde_json::Value =
-                self.get_json(&format!("/mcp/connectors/{connector_id}/build-status"))?;
-            let status: McpBuildStatus = unwrap_data(raw)?;
-            let build_status = status.build_status.unwrap_or_else(|| "pending".to_string());
-            if build_status != last_status {
-                last_status = build_status.clone();
+            let path = format!("/mcp/connectors/uploads/{upload_id}");
+            let raw: serde_json::Value = match self.get_json_or_status(&path, &[404])? {
+                Ok(raw) => raw,
+                Err(_) => {
+                    drop(spin);
+                    bail!(
+                        "build status for upload '{upload_id}' could not be found — \
+                         this shouldn't happen; please report it"
+                    );
+                }
+            };
+            let status: McpUploadStatus = unwrap_data(raw)?;
+            if status.status != last_status {
+                last_status = status.status.clone();
                 spin = None; // Drop first so the spinner line clears before the transition prints.
-                match build_status.as_str() {
+                match status.status.as_str() {
                     "pending" => spin = Some(nasiko_utils::term::start_status("queued")),
                     "building" => spin = Some(nasiko_utils::term::start_status("building image")),
-                    "running" => {
+                    "success" => {
                         println!("  build succeeded — connector is live");
                         succeeded = true;
                     }
                     "failed" => {
                         fail_msg = status
-                            .error_msg
+                            .error_message
                             .unwrap_or_else(|| "(no error message)".to_string());
                     }
                     other => println!("  {other}"),
                 }
             }
-            if succeeded || build_status == "failed" {
+            if succeeded || status.status == "failed" {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1379,6 +1396,22 @@ pub struct McpBuildStatus {
     pub error_msg: Option<String>,
     #[serde(default)]
     pub image_tag: Option<String>,
+}
+
+/// Response body of `GET /api/mcp/connectors/uploads/{upload_id}` — the
+/// durable counterpart to `McpBuildStatus` above (see `poll_mcp_build_status`'s
+/// doc comment). `status` is `pending`/`building`/`success`/`failed`, the same
+/// vocabulary `mcp_connector_builds.status` uses — not `McpBuildStatus`'s
+/// `running`, which is the connector row's own, separate vocabulary.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct McpUploadStatus {
+    pub upload_id: String,
+    #[serde(default)]
+    pub connector_id: Option<String>,
+    pub connector_name: String,
+    pub status: String,
+    #[serde(default)]
+    pub error_message: Option<String>,
 }
 
 // ─── API types ──────────────────────────────────────────────────────────────
@@ -1965,25 +1998,25 @@ mod tests {
     #[test]
     fn poll_mcp_build_status_returns_ok_once_running() {
         let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+        srv.mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running","image_tag":"my-image:v1"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":"c-1","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&srv.url(), None);
-        client.poll_mcp_build_status("c-1").unwrap();
+        client.poll_mcp_build_status("b-1").unwrap();
     }
 
     #[test]
     fn poll_mcp_build_status_errors_with_message_on_failed() {
         let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+        srv.mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"failed","error_msg":"no Dockerfile found"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":null,"connector_name":"my-server","status":"failed","error_message":"no Dockerfile found"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&srv.url(), None);
-        let err = client.poll_mcp_build_status("c-1").unwrap_err();
+        let err = client.poll_mcp_build_status("b-1").unwrap_err();
         assert!(
             err.to_string().contains("no Dockerfile found"),
             "got: {err}"

@@ -1429,7 +1429,7 @@ fn connector_upload_with(
         queued.connector_id, queued.build_id
     );
     println!("Waiting for the server to build and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
+    client.poll_mcp_build_status(&queued.build_id)?;
     println!("\nConnector '{name}' is live ({}).", queued.connector_id);
     println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
     Ok(())
@@ -1472,7 +1472,7 @@ fn connector_upload_github_with(
         queued.connector_id, queued.build_id
     );
     println!("Waiting for the server to clone, build, and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
+    client.poll_mcp_build_status(&queued.build_id)?;
     println!("\nConnector '{name}' is live ({}).", queued.connector_id);
     println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
     Ok(())
@@ -2127,10 +2127,10 @@ mod tests {
             .with_body(r#"{"data":{"connector_id":"c-1","build_id":"b-1"},"status_code":202,"message":"MCP server build queued"}"#)
             .create();
         server
-            .mock("GET", "/api/mcp/connectors/c-1/build-status")
+            .mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":"c-1","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         connector_upload_with(&client, &zip_path, "my-server", "v1", &HashMap::new()).unwrap();
@@ -2153,10 +2153,10 @@ mod tests {
             .with_body(r#"{"data":{"connector_id":"c-2","build_id":"b-2"},"status_code":202,"message":"MCP server build queued"}"#)
             .create();
         server
-            .mock("GET", "/api/mcp/connectors/c-2/build-status")
+            .mock("GET", "/api/mcp/connectors/uploads/b-2")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-2","connector_id":"c-2","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         connector_upload_github_with(
