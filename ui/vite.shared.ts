@@ -226,7 +226,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 /**
- * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus the Reo loader where the page has one) for
+ * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script) for
  * the server's CSP (plan §8 Phase 9). The page has no other inline script or style attribute.
  */
 function cspHashes(): Plugin {
@@ -244,19 +244,6 @@ function cspHashes(): Plugin {
         `${JSON.stringify({ 'script-src': inlineScriptHashes(html) }, null, 2)}\n`,
       )
     },
-  }
-}
-
-/**
- * Reo (product analytics) reports from built bundles only: the dev server, and with it every e2e and sweep run, drops
- * the loader between index.html's "Start/End of Reo Javascript" comments, so no local session counts as a visit.
- */
-function analyticsInBuildsOnly(): Plugin {
-  return {
-    name: 'nasiko:analytics-in-builds-only',
-    apply: 'serve',
-    transformIndexHtml: (html) =>
-      html.replace(/\s*<!-- Start of Reo Javascript -->[\s\S]*?<!-- End of Reo Javascript -->/, ''),
   }
 }
 
@@ -398,7 +385,6 @@ export function nasikoApp(o: AppOptions): UserConfig {
       // NASIKO_PRECOMPRESS=0: a bundle no server negotiates encodings for (the desktop app embeds it compressed).
       ...(env.NASIKO_PRECOMPRESS === '0' ? [] : [precompressed()]),
       apiMode(),
-      analyticsInBuildsOnly(),
       zodJitless(),
       bootGuard(),
       cspHashes(),

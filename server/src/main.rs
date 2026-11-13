@@ -165,17 +165,11 @@ async fn main() {
     nasiko_server::serve::serve(listener, app).await;
 }
 
-/// The OSS shell loads the Reo analytics snippet, which injects a `<script>`
-/// pointing at this host. The hash of the inline loader itself comes from
-/// `csp.json`; the host it reaches for has to be named here.
-///
-/// `connect_src` names the host `reo.js` posts its events to
-/// (`/api/v1/ghost/event`), taken from a browser trace rather than a guess, as
-/// docs/designs/openruntime-embedding-recommendations.md asks. If Reo starts
-/// beaconing elsewhere, the console shows a `connect-src` violation naming it.
+/// The open-source shell loads no third-party script, so the CSP names no extra host. Its inline
+/// scripts are pinned by hash from `csp.json`.
 const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
-    script_src: &["https://static.reo.dev"],
-    connect_src: &["https://api.reo.dev"],
+    script_src: &[],
+    connect_src: &[],
     img_src: &[],
 };
 
