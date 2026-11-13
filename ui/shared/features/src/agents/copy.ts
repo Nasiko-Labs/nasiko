@@ -228,8 +228,9 @@ export const copy = {
   secretValue: 'Value',
   addSecret: 'Add or replace',
   // Verified live (QA 2026-09-27): Restart redeploys and injects the new value; the running container doesn't see it before.
+  // NAS-1489: say the agent uses them at runtime. Agent secrets list names only (agent_secrets.rs `list_secrets`).
   secretsHowItWorks:
-    'Available to the agent as environment variables. Restart or redeploy the agent to apply a change.',
+    'The agent reads these as environment variables at runtime. Values can’t be read back; Add or replace overwrites one. Restart or redeploy the agent to apply a change.',
   // NAS-1458. agent_secrets.rs `resolve_secret_env`: the owner's user secrets first, the agent's own on top.
   secretsPrecedence:
     'The agent also gets every secret its owner keeps in Settings → Secrets. A secret set here overrides one of the same name there, for this agent only.',
