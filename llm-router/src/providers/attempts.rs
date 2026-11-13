@@ -18,6 +18,7 @@ pub fn failure_of(error: &ProviderError) -> Option<CallFailure> {
         ProviderError::Status { status, .. } => Some(CallFailure::new("status", Some(*status))),
         ProviderError::Transport(_) => Some(CallFailure::new("transport", None)),
         ProviderError::Parse(_) => Some(CallFailure::new("parse", None)),
+        ProviderError::TimedOut(_) => Some(CallFailure::new("timeout", None)),
         ProviderError::Rejected(_) => None,
     }
 }
