@@ -8,7 +8,6 @@
 #[allow(dead_code)]
 mod common;
 
-use chrono::{Duration, Utc};
 use nasiko_llm_router::usage::{CallFailure, UsageRecord, log_usage};
 use nasiko_pricing::{NoUsageLedger, PricingEngine};
 use serde_json::json;
@@ -44,7 +43,6 @@ fn record(owner: Uuid, agent: Uuid, flow_id: Option<&str>, input: i64, output: i
         compress_metadata: None,
         brevity_metadata: None,
         compact_tools_metadata: None,
-        routing_metadata: None,
         compress_bytes: None,
         compact_tools_bytes: None,
         request_bytes: None,
@@ -179,102 +177,6 @@ async fn compact_tools_counters_add_up_across_a_flows_calls() {
         json!({ "skipped": "third" }),
         "every other block still keeps the last call's"
     );
-}
-
-/// NAS-1263: a flow's `metadata.routing` adds its calls' counters together too, so a turn that
-/// classified its first call and served the rest from the decision cache reports both levels.
-/// Keeping the last call's block instead would erase every classification behind a cache hit.
-#[tokio::test]
-#[serial]
-async fn routing_counters_add_up_across_a_flows_calls() {
-    let server = common::TestServer::start().await;
-    let (user, agent, _) = seed(&server.db, None, json!({})).await;
-    let pricing = PricingEngine::offline();
-
-    // The block `RouteDecision::to_metadata` writes for one call, at the two levels a tiered turn
-    // goes through: the classifier once, then the decision cache for the rest of the turn.
-    let call = |level: &str, tier: &str, overridden: i64| UsageRecord {
-        routing_metadata: Some(json!({
-            "calls": 1, level: 1, tier: 1, "model_overridden": overridden,
-        })),
-        ..record(user, agent, Some(TRACE), 100, 10)
-    };
-    // An embedding routes no model, carries no block, and must leave the counters alone.
-    let embedding = UsageRecord {
-        operation_type: "embedding",
-        ..record(user, agent, Some(TRACE), 100, 0)
-    };
-    for record in [
-        call("classified", "tier2", 1),
-        call("cache_hit", "tier2", 1),
-        embedding,
-        call("cache_hit", "tier2", 0),
-    ] {
-        log_usage(server.db.clone(), &pricing, &NoUsageLedger, record)
-            .await
-            .unwrap();
-    }
-
-    let metadata: serde_json::Value =
-        sqlx::query_scalar("SELECT metadata FROM trace_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(
-        metadata["routing"],
-        json!({
-            "calls": 3,
-            "classified": 1,
-            "cache_hit": 2,
-            "tier2": 3,
-            "model_overridden": 2,
-        })
-    );
-
-    // Read the counters back the way `/finops/model-routing` does. The endpoint's own SQL only
-    // ever ran here: a unit test sees the laid-out rows, never the statement, so a query that
-    // Postgres refuses to parse reached a running server once (a `FILTER` inside `SUM(...)`'s
-    // argument list) and was found by hand.
-    let data = nasiko_server::observability::model_routing::get_model_routing(
-        &server.db,
-        &nasiko_server::observability::model_routing::ModelRoutingQuery {
-            start: Utc::now() - Duration::hours(1),
-            end: Utc::now() + Duration::hours(1),
-            agent_id: Some(agent),
-            provider: None,
-            model: None,
-            accessible_agent_ids: None,
-            user_ids: None,
-        },
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(data.calls, 3);
-    assert_eq!(data.model_overridden, 2);
-    assert_eq!(data.traces, 1);
-    let level = |key: &str| {
-        data.by_level
-            .iter()
-            .find(|b| b.key == key)
-            .unwrap_or_else(|| panic!("no {key} row"))
-    };
-    assert_eq!(level("cache_hit").calls, 2);
-    assert_eq!(level("classified").calls, 1);
-    // A level that served nothing is still a row, so the card's order never shifts.
-    assert_eq!(level("small_talk").calls, 0);
-    // Both levels shared the one trace, so neither can claim its cost.
-    assert_eq!(level("cache_hit").attributed_calls, 0);
-    assert_eq!(level("classified").attributed_calls, 0);
-    // The embedding's row carries no routing block, so it is counted as unrecorded, never as a
-    // level's call. It shares the trace row here, so the window's single row is recorded.
-    assert_eq!(data.unrecorded_traces, 0);
-    let tier2 = data.by_tier.iter().find(|b| b.key == "tier2").unwrap();
-    assert_eq!(tier2.calls, 3);
-    // Every call of the trace drew tier 2, so the tier does own the trace's tokens and cost.
-    assert_eq!(tier2.attributed_calls, 3);
-    assert!(tier2.tokens > 0, "tier2 tokens: {}", tier2.tokens);
 }
 
 #[tokio::test]
