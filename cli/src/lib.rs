@@ -803,6 +803,22 @@ pub enum MafExecutionCommands {
         #[arg(long)]
         json: bool,
     },
+    /// Stop executions that haven't finished, by UUID or every one of a workflow
+    #[command(
+        after_help = "A queued run never starts, a running one is cut short where it is (its \
+spend so far is still recorded), and a paused one's open question is withdrawn. Runs that \
+already finished are left as they are and listed. Only runs of your own workflows can be stopped."
+    )]
+    Stop {
+        /// Execution UUIDs
+        #[arg(conflicts_with = "workflow")]
+        execution_ids: Vec<String>,
+        /// Stop every unfinished run of this workflow (name or UUID)
+        #[arg(long)]
+        workflow: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1761,6 +1777,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 MafExecutionCommands::Get { execution_id, json } => {
                     commands::maf::execution_get(&execution_id, json)
                 }
+                MafExecutionCommands::Stop {
+                    execution_ids,
+                    workflow,
+                    json,
+                } => commands::maf::execution_stop(&execution_ids, workflow.as_deref(), json),
                 MafExecutionCommands::Result { execution_id, json } => {
                     commands::maf::execution_result(&execution_id, json)
                 }

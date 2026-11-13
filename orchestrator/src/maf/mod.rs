@@ -4,6 +4,7 @@ pub mod executor;
 pub mod llm;
 pub mod planner;
 pub mod runner;
+pub mod stop;
 pub mod types;
 mod worker;
 

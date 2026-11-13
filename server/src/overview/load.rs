@@ -979,7 +979,9 @@ fn attribute_tool_calls(
 
 async fn runs_daily(db: &PgPool, mafs: &[Uuid], w: Window) -> Result<Vec<RunDay>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT maf_id, (started_at AT TIME ZONE 'UTC')::date AS day, COUNT(*)::bigint AS runs, \
+        // A stopped run is left out of the failure rate's denominator: it neither succeeded nor failed.
+        "SELECT maf_id, (started_at AT TIME ZONE 'UTC')::date AS day, \
+                COUNT(*) FILTER (WHERE status <> 'stopped')::bigint AS runs, \
                 COUNT(*) FILTER (WHERE status = 'failed')::bigint AS failed \
            FROM maf_executions \
           WHERE maf_id = ANY($1) AND started_at >= $2 AND started_at < $3 GROUP BY 1, 2",
