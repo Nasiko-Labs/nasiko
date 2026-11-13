@@ -23,3 +23,7 @@ allowBuilds:
   electron-winstaller: true
   esbuild: false
   msw: false
+
+# The toolchain's pnpm is pinned (package.json `packageManager`) and moves with a reviewed change, not a prompt in
+# every install's output.
+updateNotifier: false
