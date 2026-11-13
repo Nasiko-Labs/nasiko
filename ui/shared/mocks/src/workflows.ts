@@ -10,7 +10,9 @@
  * A run advances with the clock: queued for 0.5 s, then each step (`stepMs`), then the final synthesis. A step whose
  * task asks for approval pauses on an `input_required` request; answering it through `/api/hitl/:id/resolve` resumes the
  * run, dismissing it stops the run there (the mock's reading of the resume path; hitl ids this mock doesn't own fall
- * through to chat's handlers). Ids: workflows `5eed0010-*` (the three TokenOps seed workflows keep their `…f00n` ids),
+ * through to chat's handlers). A stop (`/maf/execution/:id/stop`, `/maf/executions/stop`, nasiko-cloud-rs
+ * `feat/maf-stop-execution` `f466d7a1`) freezes a run where it is at that moment: unfinished steps read `stopped`, a
+ * pending request is canceled, and the list's success rate leaves stopped runs out. Ids: workflows `5eed0010-*` (the three TokenOps seed workflows keep their `…f00n` ids),
  * runs `5eed0011-*`, requests `5eed0012-*`, steps `5eed0013-*`.
  */
 import { http, HttpResponse, type HttpHandler } from 'msw'
@@ -60,6 +62,8 @@ interface MockRun {
   steps: MockStep[]
   outcome: Outcome
   hitl: HitlDto[]
+  /** When its owner stopped it (`maf::stop::stop_in_db`): the run is frozen where it was at that moment. */
+  stoppedAt?: number
 }
 
 export interface WorkflowsState {
@@ -315,8 +319,30 @@ interface StepView {
   latency_ms: number
 }
 
+/** Statuses a run or a step can still move on from (`STOPPABLE` in `maf/stop.rs`). */
+const UNFINISHED = new Set(['pending', 'running', 'awaiting_human'])
+
 /** A run as the server would report it at `now`. `st` creates a pause's request when the run first reaches it. */
 function deriveRun(run: MockRun, now: number, st: WorkflowsState | null) {
+  if (run.stoppedAt !== undefined && now >= run.stoppedAt) {
+    const at = runAt({ ...run, stoppedAt: undefined }, run.stoppedAt, st)
+    // A run that had already finished when the stop came is left as it ended (the server answers 409).
+    if (!UNFINISHED.has(at.status)) return runAt(run, now, st)
+    const startedAt = at.started_at ? Date.parse(at.started_at) : run.stoppedAt
+    return {
+      ...at,
+      status: 'stopped',
+      completed_at: iso(run.stoppedAt),
+      duration_ms: run.stoppedAt - startedAt,
+      step_results: at.step_results.map((v) =>
+        UNFINISHED.has(v.status) ? { ...v, status: 'stopped' } : v,
+      ),
+    }
+  }
+  return runAt(run, now, st)
+}
+
+function runAt(run: MockRun, now: number, st: WorkflowsState | null) {
   const steps: StepView[] = run.steps.map((s) => ({
     step_id: s.step_id,
     step_index: s.step_index,
@@ -528,8 +554,10 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
   const listRow = (wf: MockWorkflow) => {
     if (classic()) return response(wf)
     const views = runsOf(wf).map((r) => deriveRun(r, now(), s()))
-    const rate = views.length
-      ? Math.round((1000 * views.filter((v) => v.status === 'success').length) / views.length) / 10
+    // A stopped run neither succeeded nor failed: left out of the rate (`fetch_workflow_page`).
+    const rated = views.filter((v) => v.status !== 'stopped')
+    const rate = rated.length
+      ? Math.round((1000 * rated.filter((v) => v.status === 'success').length) / rated.length) / 10
       : null
     const startedViews = views.filter((v) => v.started_at)
     const latest = startedViews.sort((a, b) => b.started_at!.localeCompare(a.started_at!))[0]
@@ -607,6 +635,18 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
       }
       return mafStep(s(), a, task, idx)
     })
+  }
+  /** Stops `r` if it hasn't finished (its pending request is canceled too); the status it had. */
+  const stop = (r: MockRun) => {
+    const was = deriveRun(r, now(), s()).status
+    if (!UNFINISHED.has(was)) return was
+    r.stoppedAt = now()
+    for (const h of r.hitl)
+      if (h.status === 'pending') {
+        h.status = 'canceled'
+        h.resolved_at = iso(now())
+      }
+    return was
   }
   const body = async (request: Request) =>
     (await request.json().catch(() => ({}))) as Record<string, unknown>
@@ -798,6 +838,64 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
         if (!r) throw new MafError(404, 'execution not found')
         if (r.user_id !== ctx.me().id) throw new MafError(403, 'not owned by caller')
         return ok({ ...deriveRun(r, now(), s()), hitl: r.hitl }, 'Execution retrieved successfully')
+      }),
+    ),
+    http.post('/api/maf/execution/:id/stop', ({ params }) =>
+      guard(() => {
+        // `main` has no stop route.
+        if (classic()) return new HttpResponse(null, { status: 404 })
+        const id = String(params.id)
+        if (!UUID.test(id)) return badPath(id)
+        // Another user's run reads as not found (`stop_in_db` checks `maf_executions.user_id`).
+        const r = s().runs.find((x) => x.id === id && x.user_id === ctx.me().id)
+        if (!r) throw new MafError(404, 'execution not found')
+        const was = stop(r)
+        if (!UNFINISHED.has(was)) throw new MafError(409, `execution already finished: ${was}`)
+        return ok({ id, previous_status: was }, 'Execution stopped')
+      }),
+    ),
+    http.post('/api/maf/executions/stop', ({ request }) =>
+      guard(async () => {
+        if (classic()) return new HttpResponse(null, { status: 404 })
+        // Parsed by hand, as the server does, so a malformed body is a 400 in the envelope.
+        let b: { execution_ids?: unknown; workflow_id?: unknown }
+        try {
+          b = JSON.parse(await request.text()) as typeof b
+        } catch (e) {
+          throw new MafError(400, `invalid request body: ${(e as Error).message}`)
+        }
+        const ids = Array.isArray(b.execution_ids) ? [...new Set(b.execution_ids.map(String))] : []
+        if (ids.some((x) => !UUID.test(x)))
+          throw new MafError(400, 'invalid request body: UUID parsing failed')
+        const workflow = typeof b.workflow_id === 'string' ? b.workflow_id : null
+        if (workflow && ids.length)
+          throw new MafError(400, 'give either execution_ids or workflow_id, not both')
+        if (!workflow && !ids.length)
+          throw new MafError(400, 'execution_ids or workflow_id is required')
+        if (ids.length > 1000) throw new MafError(400, 'at most 1000 execution_ids per request')
+        const mine = s().runs.filter((x) => x.user_id === ctx.me().id)
+        const report = {
+          stopped: [] as { id: string; previous_status: string }[],
+          already_finished: [] as { id: string; status: string }[],
+          not_found: [] as string[],
+        }
+        if (workflow) {
+          owned(workflow)
+          for (const r of mine.filter((x) => x.maf_id === workflow)) {
+            const was = deriveRun(r, now(), s()).status
+            if (UNFINISHED.has(was)) report.stopped.push({ id: r.id, previous_status: stop(r) })
+          }
+        } else
+          for (const id of ids) {
+            const r = mine.find((x) => x.id === id)
+            if (!r) report.not_found.push(id)
+            else {
+              const was = stop(r)
+              if (UNFINISHED.has(was)) report.stopped.push({ id, previous_status: was })
+              else report.already_finished.push({ id, status: was })
+            }
+          }
+        return ok(report, `${report.stopped.length} execution(s) stopped`)
       }),
     ),
     http.post('/api/maf/generate', ({ request }) =>

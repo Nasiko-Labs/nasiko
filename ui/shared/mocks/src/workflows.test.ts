@@ -120,6 +120,92 @@ describe('workflows mock', () => {
     expect((await run(waiting.id)).status).toBe('stopped')
   })
 
+  it('stops a moving run where it is, and only once (feat/maf-stop-execution)', async () => {
+    let t = now()
+    configureMocks({ now: () => t })
+    const contract = (await list('/api/maf/workflows')).find((r) => r.name === 'Contract intake')!
+    const { execution_id: id } = await apiData<{ execution_id: string }>(
+      `/api/maf/workflow/${contract.id}/run`,
+      json('POST'),
+    )
+    t += 1_000
+    const stopped = await apiData<{ previous_status: string }>(
+      `/api/maf/execution/${id}/stop`,
+      json('POST'),
+    )
+    expect(stopped.previous_status).toBe('running')
+    t += 60_000
+    const after = await run(id)
+    expect(after.status).toBe('stopped')
+    expect(after.step_results.map((s) => s.status)).toEqual(['stopped', 'stopped', 'stopped'])
+    const again = await fail(apiFetch(`/api/maf/execution/${id}/stop`, json('POST')))
+    expect(again.status).toBe(409)
+    expect(again.serverMessage).toBe('execution already finished: stopped')
+    const unknown = await fail(
+      apiFetch('/api/maf/execution/00000000-0000-4000-8000-000000000001/stop', json('POST')),
+    )
+    expect(unknown.status).toBe(404)
+  })
+
+  it("withdraws a paused run's request when it is stopped", async () => {
+    const runs = (await apiData<{ data: Run[] }>('/api/maf/executions')).data
+    const waiting = runs.find((r) => r.status === 'awaiting_human')!
+    await apiFetch(`/api/maf/execution/${waiting.id}/stop`, json('POST'))
+    const after = await run(waiting.id)
+    expect(after.status).toBe('stopped')
+    expect(after.hitl![0]!.status).toBe('canceled')
+    expect(after.step_results.map((s) => s.status)).toEqual(['success', 'success', 'stopped'])
+  })
+
+  it('stops every unfinished run of a workflow, and reports runs asked for by id', async () => {
+    const contract = (await list('/api/maf/workflows')).find((r) => r.name === 'Contract intake')!
+    await apiData(`/api/maf/workflow/${contract.id}/run`, json('POST'))
+    const report = await apiData<{ stopped: { previous_status: string }[] }>(
+      '/api/maf/executions/stop',
+      json('POST', { workflow_id: contract.id }),
+    )
+    // The run just started (queued) and the seed's paused one; the filed run had finished.
+    expect(report.stopped.map((r) => r.previous_status).sort()).toEqual([
+      'awaiting_human',
+      'pending',
+    ])
+    const runs = (await apiData<{ data: Run[] }>('/api/maf/executions')).data
+    const done = runs.find((r) => r.status === 'success')!
+    const unknown = '00000000-0000-4000-8000-000000000002'
+    const byIds = await apiData<{
+      stopped: unknown[]
+      already_finished: { id: string; status: string }[]
+      not_found: string[]
+    }>('/api/maf/executions/stop', json('POST', { execution_ids: [done.id, unknown, done.id] }))
+    expect(byIds).toMatchObject({
+      stopped: [],
+      already_finished: [{ id: done.id, status: 'success' }],
+      not_found: [unknown],
+    })
+    for (const bad of [{}, { execution_ids: [done.id], workflow_id: contract.id }]) {
+      const e = await fail(apiFetch('/api/maf/executions/stop', json('POST', bad)))
+      expect(e.status).toBe(400)
+      expect(e.serverMessage).toBeTruthy()
+    }
+    const malformed = await fail(
+      apiFetch('/api/maf/executions/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not json',
+      }),
+    )
+    expect(malformed.status).toBe(400)
+    expect(malformed.serverMessage).toMatch(/^invalid request body/)
+  })
+
+  it('leaves stopped runs out of the success rate', async () => {
+    // The second seed workflow (Quarterly report): 2 succeeded, 1 failed, 1 stopped.
+    const report = (await list('/api/maf/workflows')).find(
+      (r) => r.id === seed.workflows[1]!.maf_id,
+    )
+    expect(report?.success_rate).toBe(66.7)
+  })
+
   it('answers as `main` under workflows-classic (W-1..W-4)', async () => {
     configureMocks({ variant: 'workflows-classic' })
     const rows = await list('/api/maf/workflows?sort=health')
