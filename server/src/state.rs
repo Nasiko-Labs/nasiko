@@ -56,6 +56,10 @@ pub struct AppState {
     /// `AdmitEverySession`; an edition whose sessions can add an agent installs its limit check
     /// through this cell (`SwappableSessionAdmission::install`), once it has what that needs.
     pub session_admission: Arc<crate::sessions::admission::SwappableSessionAdmission>,
+    /// Asked inside the transaction that inserts a new agent row. OSS wires `AdmitEveryAgent`; an
+    /// edition with an agent limit replaces it at its composition root, before the routers take
+    /// their `AppState` clones.
+    pub agent_admission: Arc<dyn crate::agents::admission::AgentAdmission>,
     /// Where a downstream reader of hot `trace_usage` rows has read up to, so
     /// tiering never moves rows it has not seen. OSS wires `NoTieringHold` (no such
     /// reader); the EE composition root replaces it before `init`.
@@ -442,6 +446,7 @@ impl AppState {
             spend_gate,
             shared_call_payer: Arc::new(nasiko_llm_router::payer::CallerPays),
             session_admission,
+            agent_admission: Arc::new(crate::agents::admission::AdmitEveryAgent),
             tiering_hold,
             agent_wake,
             maf_executor,

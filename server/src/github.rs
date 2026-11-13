@@ -829,6 +829,14 @@ async fn github_clone(
         None => (None, None, None),
     };
 
+    if let Err(refusal) = state
+        .agent_admission
+        .admit(&mut tx, user_id, &agent_name)
+        .await
+    {
+        return refusal.into_response();
+    }
+
     let agent_id = match sqlx::query_scalar::<_, Uuid>(
         "INSERT INTO agents (name, owner_id, version, image, status) \
          VALUES ($1, $2, $3, $4, 'deploying') \
