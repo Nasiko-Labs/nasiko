@@ -1825,6 +1825,13 @@ async fn agent_stream(
             // The task's last word, whichever way the stream ended: a pause or a dropped stream
             // leaves it open, a terminal event closes it (the reaper must not park mid-task).
             let mut last_task: Option<crate::agents::open_tasks::Observed> = None;
+            // A direct agent narrates each tool call as a free-form "{tool}: {preview}"
+            // Working-status message, never the structured tool_call data part the orchestrator
+            // emits. These track the open tool so the loop can synthesise the structured
+            // tool_call/tool_result parts the chat renders as tool rows — see
+            // `tool_from_status_text`. `(turn seq, tool name, started-at)`.
+            let mut open_tool: Option<(u64, String, Instant)> = None;
+            let mut tool_seq: u64 = 0;
 
             loop {
                 if agent_done { break; }
@@ -1874,6 +1881,31 @@ async fn agent_stream(
                                 }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
+                                // Translate the agent's free-form tool narration into the
+                                // structured tool_call/tool_result parts the chat renders as tool
+                                // rows, so a direct chat streams tool activity like a routed one,
+                                // with no change to the agents. The agent reports no per-tool
+                                // completion, so the next tool call (or the terminal event below)
+                                // closes the one before it.
+                                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                                    for sse in a2a::classify_sse_event(&event) {
+                                        let a2a::SseEvent::StatusText(text) = &sse else { continue };
+                                        let Some((name, preview)) = tool_from_status_text(text) else { continue };
+                                        if let Some((seq, prev, started)) = open_tool.take() {
+                                            let done = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                                "type": "tool_result", "tool": prev, "success": true,
+                                                "turn": seq, "duration_ms": started.elapsed().as_millis() as u64,
+                                            })));
+                                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, done))));
+                                        }
+                                        tool_seq += 1;
+                                        let call = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                                            "type": "tool_call", "tool": name, "message": preview, "turn": tool_seq,
+                                        })));
+                                        yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, call))));
+                                        open_tool = Some((tool_seq, name.to_string(), Instant::now()));
+                                    }
+                                }
                                 // The python a2a-sdk never closes its SSE stream;
                                 // end the exchange on the task's terminal (or paused) event.
                                 let disposition = a2a::classify_stream_disposition(data);
@@ -1895,6 +1927,16 @@ async fn agent_stream(
                         yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                     }
                 }
+            }
+
+            // Close the last tool the agent never reported finishing: its terminal event or
+            // final answer is the completion. Without this the row would hang "running".
+            if let Some((seq, prev, started)) = open_tool.take() {
+                let done = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
+                    "type": "tool_result", "tool": prev, "success": true,
+                    "turn": seq, "duration_ms": started.elapsed().as_millis() as u64,
+                })));
+                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, done))));
             }
 
             if let Some(observed) = &last_task {
@@ -3392,6 +3434,23 @@ pub(crate) fn normalize_agent_event(data: &str, task_id: &str, context_id: &str)
     }
 }
 
+/// A direct agent narrates each tool call as a free-form Working-status message of the form
+/// `"{tool_name}: {preview}"` (`oss/agents/*/src/main.rs::status_working`), rather than the
+/// structured `tool_call` data part the orchestrator emits and the chat renders as a tool row.
+/// Split that convention back out — `(tool_name, preview)` — so the dispatch loop can synthesise
+/// the structured parts without any change to the agents. `None` for ordinary progress narration,
+/// which has no leading `identifier` + `": "` (e.g. "Looking up the exchange rates...").
+fn tool_from_status_text(text: &str) -> Option<(&str, &str)> {
+    let (name, preview) = text.split_once(": ")?;
+    let name = name.trim();
+    let looks_like_tool = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+    looks_like_tool.then_some((name, preview.trim()))
+}
+
 fn drop_task_history(frame: &mut serde_json::Value) -> bool {
     let result_is_task = frame
         .get("result")
@@ -3560,6 +3619,47 @@ mod hitl_pause_tests {
             pause_kind(AUTH_REQUIRED_PAYLOAD),
             nasiko_hitl::HitlKind::AuthRequired
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_status_text_tests {
+    use super::*;
+
+    #[test]
+    fn splits_the_seed_agent_tool_convention() {
+        // `oss/agents/*/src/main.rs::status_working(Some("{name}: {preview}"))`.
+        assert_eq!(
+            tool_from_status_text("web_search: set up GitHub Actions for Rust"),
+            Some(("web_search", "set up GitHub Actions for Rust"))
+        );
+        assert_eq!(
+            tool_from_status_text("github_repo_info: tokio-rs/tokio"),
+            Some(("github_repo_info", "tokio-rs/tokio"))
+        );
+    }
+
+    #[test]
+    fn keeps_a_colon_in_the_preview() {
+        assert_eq!(
+            tool_from_status_text("web_search: how to: do a thing"),
+            Some(("web_search", "how to: do a thing"))
+        );
+    }
+
+    #[test]
+    fn ignores_ordinary_progress_narration() {
+        // A tool name is an identifier, never a sentence with spaces before the colon.
+        assert_eq!(
+            tool_from_status_text("Looking up the exchange rates..."),
+            None
+        );
+        assert_eq!(
+            tool_from_status_text("Processing the exchange rates: done"),
+            None
+        );
+        assert_eq!(tool_from_status_text("no colon here"), None);
+        assert_eq!(tool_from_status_text(": no name"), None);
     }
 }
 
