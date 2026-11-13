@@ -138,9 +138,9 @@ export const copy = {
     title: 'Sign in to Nasiko',
     // The decorative showcase beside the form (aria-hidden; the h1 names the page). Its chips are `nav` labels.
     showcaseTitle: 'Nasiko',
-    // nasiko.com's hero: the lead, then each word in turn, looping (LoginShowcase). In the prototype's order; the
-    // chips and the layer stack carry the same words.
-    showcaseLead: 'The OpenRuntime for',
+    // nasiko.com's hero: the lead, then "for" and each word in turn, looping (LoginShowcase).
+    showcaseLead: 'The OpenRuntime',
+    showcaseFor: 'for',
     showcaseWords: ['Agents', 'Coding Harnesses', 'Tools', 'Frameworks'],
     showcaseLine: 'Use any harness. Reach any model. Measure every token. Change nothing.',
     username: 'Username',
