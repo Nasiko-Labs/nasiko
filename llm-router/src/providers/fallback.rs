@@ -2,7 +2,7 @@
 //!
 //! Try the primary resolved config, then each `fallback_models` entry in order; the
 //! first success wins, and only after all are exhausted — or the chain's shared
-//! `provider_timeout_secs` deadline passes (a 504) — do we surface an error. Each
+//! `provider_timeout_secs` deadline passes — do we surface a 502. Each
 //! call returns the **effective** provider/model actually used, so usage logging
 //! records the fallback when one fires.
 //!
@@ -14,6 +14,7 @@
 //! could end up with vectors from two different models in one corpus. They now take a
 //! single attempt in [`crate::providers::execute_embeddings_once`].
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use futures::stream::BoxStream;
@@ -123,9 +124,9 @@ async fn within_provider_deadline<T>(
     attempts: impl Future<Output = Result<T, GatewayError>>,
 ) -> Result<T, GatewayError> {
     let timed_out = || {
-        GatewayError::UpstreamTimeout(format!(
-            "no provider answered within the {}s chain deadline \
-             (LLM_PROVIDER_TIMEOUT_SECS) across all attempts",
+        GatewayError::Upstream(format!(
+            "the fallback chain ran out of time: no provider answered within {}s across all \
+             attempts (LLM_PROVIDER_TIMEOUT_SECS)",
             cfg.provider_timeout_secs
         ))
     };
@@ -147,7 +148,7 @@ async fn chat_attempts(
     log: &mut AttemptLog,
 ) -> Result<(ChatResponse, Effective), GatewayError> {
     let attempts = build_attempts(primary, cfg);
-    let mut last: Option<GatewayError> = None;
+    let mut failures = Failures::default();
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat", attempt, i, total);
@@ -159,12 +160,12 @@ async fn chat_attempts(
         ) {
             Ok(p) => p,
             Err(e) => {
-                last = Some(e);
+                failures.note_gateway(e);
                 continue;
             }
         };
         // Working copies so a parameter-fix retry can mutate the request + config.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
@@ -176,20 +177,81 @@ async fn chat_attempts(
                     return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
                         log.settle();
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
                     log.fail(&e);
-                    warn_attempt(attempt, &e, i, total);
-                    last = Some(e.into());
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
+                    if let Some(stop) = failures.note(attempt, e) {
+                        return Err(stop);
+                    }
                     break;
                 }
             }
         }
     }
-    Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
+    Err(failures.into_error())
+}
+
+#[derive(Default)]
+struct Failures {
+    first: Option<GatewayError>,
+    rejected: Option<GatewayError>,
+}
+
+impl Failures {
+    fn note_gateway(&mut self, err: GatewayError) {
+        self.first.get_or_insert(err);
+    }
+
+    fn note(&mut self, attempt: &ResolvedConfig, err: ProviderError) -> Option<GatewayError> {
+        let ends_chain = ends_the_chain(&err);
+        let rejected = matches!(err, ProviderError::Rejected(_));
+        let err = GatewayError::from(err);
+        if ends_chain {
+            tracing::warn!(
+                target: "nasiko::llm_router::fallback",
+                provider = %attempt.provider, model = %attempt.model, status = %err.status(),
+                "llm attempt failed on the request itself; not re-sending it to a fallback"
+            );
+            return Some(err);
+        }
+        if rejected {
+            self.rejected.get_or_insert(err);
+        } else {
+            self.first.get_or_insert(err);
+        }
+        None
+    }
+
+    fn into_error(self) -> GatewayError {
+        self.rejected
+            .or(self.first)
+            .unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string()))
+    }
+}
+
+fn ends_the_chain(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Status {
+            status: 400 | 413 | 415 | 422,
+            message,
+            ..
+        } => !message.to_ascii_lowercase().contains("model"),
+        _ => false,
+    }
 }
 
 async fn chat_stream_attempts(
@@ -206,7 +268,7 @@ async fn chat_stream_attempts(
     GatewayError,
 > {
     let attempts = build_attempts(primary, cfg);
-    let mut last: Option<GatewayError> = None;
+    let mut failures = Failures::default();
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat_stream", attempt, i, total);
@@ -218,13 +280,13 @@ async fn chat_stream_attempts(
         ) {
             Ok(p) => p,
             Err(e) => {
-                last = Some(e);
+                failures.note_gateway(e);
                 continue;
             }
         };
         // The initial connect (status check) happens before any chunk flows, so a
         // parameter-rejection surfaces here and is safe to fix-and-retry — same as `chat`.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
@@ -241,20 +303,36 @@ async fn chat_stream_attempts(
                     return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
                         log.settle();
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
                     log.fail(&e);
-                    warn_attempt(attempt, &e, i, total);
-                    last = Some(e.into());
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
+                    if let Some(stop) = failures.note(attempt, e) {
+                        return Err(stop);
+                    }
                     break;
                 }
             }
         }
     }
-    Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
+    Err(failures.into_error())
+}
+
+fn names_a_param(provider: &dyn ProviderClient, err: &ProviderError) -> bool {
+    provider.droppable_param(err).is_some() || provider.repairable_param(err).is_some()
 }
 
 /// Log the outbound request to an upstream LLM — provider + model only (never the
@@ -275,7 +353,7 @@ fn log_request(op: &str, attempt: &ResolvedConfig, i: usize, total: usize) {
 /// the conversation (the model's reply, its tool calls and their arguments), and logs — exported
 /// as span events when OTLP is on — are no place to keep one.
 fn log_response<T: serde::Serialize>(op: &str, attempt: &ResolvedConfig, resp: &T) {
-    tracing::info!(
+    tracing::debug!(
         target: "nasiko::llm_router::provider",
         op,
         provider = %attempt.provider,
@@ -1132,6 +1210,101 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
     }
 
+    fn bedrock_primary(base: String) -> ResolvedConfig {
+        let mut p = primary("my-bedrock", vec![]);
+        p.model = "global.anthropic.claude-haiku-5-5".into();
+        p.temperature = Some(0.3);
+        p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
+            base_url: base,
+            dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+        });
+        p
+    }
+
+    async fn bedrock_refuses_temperature(
+        server: &mut mockito::ServerGuard,
+        path: &str,
+        wording: &str,
+    ) -> (mockito::Mock, mockito::Mock) {
+        let rejected = server
+            .mock("POST", path)
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "inferenceConfig": { "temperature": 0.3 } }),
+            ))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "message": wording }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("POST", path)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "output": { "message": { "role": "assistant", "content": [{ "text": "ok" }] } },
+                    "stopReason": "end_turn",
+                    "usage": { "inputTokens": 5, "outputTokens": 1, "totalTokens": 6 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        (rejected, ok)
+    }
+
+    #[tokio::test]
+    async fn bedrock_retries_without_a_temperature_its_claude_5_models_call_deprecated() {
+        for wording in [
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+            "This model doesn't support the temperature field.",
+        ] {
+            let mut bedrock = mockito::Server::new_async().await;
+            let path = "/model/global.anthropic.claude-haiku-5-5/converse";
+            let (rejected, ok) = bedrock_refuses_temperature(&mut bedrock, path, wording).await;
+            let primary = bedrock_primary(bedrock.url());
+
+            let (resp, _) = execute_chat(&reqwest::Client::new(), &cfg(""), &primary, &hi())
+                .await
+                .unwrap_or_else(|e| panic!("{wording}: {e}"));
+
+            rejected.assert_async().await;
+            ok.assert_async().await;
+            assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+        }
+    }
+
+    #[tokio::test]
+    async fn bedrock_streaming_retries_without_a_deprecated_temperature() {
+        let mut bedrock = mockito::Server::new_async().await;
+        let path = "/model/global.anthropic.claude-haiku-5-5/converse-stream";
+        let (rejected, ok) = bedrock_refuses_temperature(
+            &mut bedrock,
+            path,
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+        )
+        .await;
+        let primary = bedrock_primary(bedrock.url());
+
+        let established = execute_chat_stream(
+            &reqwest::Client::new(),
+            &cfg(""),
+            &primary,
+            &hi(),
+            &mut AttemptLog::default(),
+        )
+        .await;
+
+        assert!(
+            established.is_ok(),
+            "stream was not retried without temperature"
+        );
+        rejected.assert_async().await;
+        ok.assert_async().await;
+    }
+
     #[tokio::test]
     async fn anthropic_deprecated_param_is_dropped_and_retried_on_same_model() {
         // claude-opus-4-8 rejects `temperature` with a 400 naming it in the message text
@@ -1257,6 +1430,273 @@ mod tests {
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
     }
 
+    fn openai_chain(base: String, fallbacks: Vec<&str>) -> (GatewayConfig, ResolvedConfig) {
+        let cfg = GatewayConfig {
+            openai_api_base: base,
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("openai", fallbacks);
+        primary.model = "gpt-4o".into();
+        primary.litellm_model = "openai/gpt-4o".into();
+        primary.temperature = None;
+        primary.max_tokens = None;
+        (cfg, primary)
+    }
+
+    fn ok_body() -> String {
+        json!({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-4o-mini",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    async fn model_mock(
+        server: &mut mockito::ServerGuard,
+        model: &str,
+        status: usize,
+        body: String,
+        hits: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .expect(hits)
+            .create_async()
+            .await
+    }
+
+    fn hi() -> ChatRequest {
+        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_fallback_that_takes_forced_tool_choice_answers_after_claude_refuses_it() {
+        let mut anthropic = mockito::Server::new_async().await;
+        anthropic
+            .mock("POST", "/messages")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({"type": "error", "error": {"type": "invalid_request_error",
+                    "message": "tool_choice: type \"tool\" and \"any\" are not supported for this model"}})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let mut openai = mockito::Server::new_async().await;
+        let answered = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let cfg = GatewayConfig {
+            anthropic_api_base: anthropic.url(),
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("anthropic", vec!["openai/gpt-4o-mini"]);
+        primary.model = "claude-sonnet-5-5".into();
+        let mut req = chat_req();
+        req.tool_choice = Some(json!("required"));
+
+        let (_, (provider, _)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "openai");
+        answered.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_payload_error_ends_the_chain_and_is_what_the_caller_sees() {
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();
+        let first = model_mock(&mut openai, "gpt-4o", 400, corrupt, 1).await;
+        let fallback = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("could not be processed"), "{err}");
+        first.assert_async().await;
+        fallback.assert_async().await;
+    }
+
+    #[derive(Clone, Default)]
+    struct LoggedMessages(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing::field::Visit for LoggedMessages {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.lock().unwrap().push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedMessages {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            event.record(&mut self.clone());
+        }
+    }
+
+    impl LoggedMessages {
+        fn any(&self, needle: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|m| m.contains(needle))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_stops_never_logs_that_it_is_trying_a_fallback() {
+        use tracing_subscriber::prelude::*;
+        let logged = LoggedMessages::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(logged.clone()));
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 400, corrupt, 2).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+        let http = reqwest::Client::new();
+
+        execute_chat(&http, &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+        assert!(
+            execute_chat_stream(&http, &cfg, &primary, &hi(), &mut AttemptLog::default())
+                .await
+                .is_err()
+        );
+
+        assert!(logged.any("not re-sending it to a fallback"));
+        assert!(
+            !logged.any("trying fallback"),
+            "{:?}",
+            logged.0.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_moves_on_still_logs_that_it_is_trying_a_fallback() {
+        use tracing_subscriber::prelude::*;
+        let logged = LoggedMessages::default();
+        let _guard =
+            tracing::subscriber::set_default(tracing_subscriber::registry().with(logged.clone()));
+        let mut openai = mockito::Server::new_async().await;
+        let missing =
+            json!({"error": {"message": "The model `gpt-4o` does not exist."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 404, missing, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert!(logged.any("llm attempt failed; trying fallback"));
+        assert!(!logged.any("not re-sending"));
+    }
+
+    #[tokio::test]
+    async fn a_payload_error_ends_a_streaming_chain_too() {
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "Invalid MIME type."}}).to_string();
+        let first = model_mock(&mut openai, "gpt-4o", 400, corrupt, 1).await;
+        let fallback = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let err = match execute_chat_stream(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary,
+            &hi(),
+            &mut AttemptLog::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("a payload error must not be answered by a fallback"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        first.assert_async().await;
+        fallback.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_400_that_blames_the_model_still_lets_the_fallback_answer() {
+        let mut openai = mockito::Server::new_async().await;
+        let refusal =
+            json!({"error": {"message": "The model `gpt-4o` does not exist or you do not have access to it."}})
+                .to_string();
+        model_mock(&mut openai, "gpt-4o", 400, refusal, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let (_, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert_eq!(model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_still_lets_the_fallback_answer() {
+        let mut openai = mockito::Server::new_async().await;
+        let gone = json!({"error": {"message": "This model has been deprecated."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 404, gone, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let (_, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert_eq!(model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn an_input_refused_by_name_beats_a_later_server_error() {
+        let mut openai = mockito::Server::new_async().await;
+        model_mock(&mut openai, "gpt-4o-mini", 502, "bad gateway".into(), 1).await;
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("anthropic", vec!["openai/gpt-4o-mini"]);
+        primary.temperature = None;
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "what is this" },
+                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
+            ]}]
+        }))
+        .unwrap();
+
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            err.to_string()
+                .starts_with("Anthropic does not accept this input"),
+            "{err}"
+        );
+    }
+
     /// A provider that accepts the connection and never answers costs each attempt its
     /// read timeout. Three attempts at 700 ms would be 2.1 s; the shared 1 s deadline ends
     /// the chain part-way through the second.
@@ -1296,10 +1736,13 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(
-            err.to_string().contains("LLM_PROVIDER_TIMEOUT_SECS"),
+            err.to_string().contains(
+                "the fallback chain ran out of time: no provider answered within 1s across all \
+                 attempts (LLM_PROVIDER_TIMEOUT_SECS)"
+            ),
             "expected the chain deadline, got {err}"
         );
-        assert_eq!(err.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
         assert!(
             elapsed < std::time::Duration::from_millis(1600),
             "{elapsed:?}"
@@ -1449,7 +1892,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(err.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
         let statuses: Vec<_> = attempts
             .take_failed()
             .into_iter()

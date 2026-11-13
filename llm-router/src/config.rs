@@ -72,6 +72,11 @@ pub struct GatewayConfig {
     /// agent's own LLM-client timeout, or the agent retries while the router still waits.
     pub provider_timeout_secs: u64,
 
+    pub max_body_bytes: usize,
+    pub max_inflight_body_bytes: usize,
+    pub attachment_cache_bytes: usize,
+    pub attachment_max_bytes: usize,
+
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
     pub model_catalog_sync_interval_secs: u64,
@@ -246,6 +251,10 @@ impl Default for GatewayConfig {
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
             provider_timeout_secs: 300,
+            max_body_bytes: 48 * 1024 * 1024,
+            max_inflight_body_bytes: 256 * 1024 * 1024,
+            attachment_cache_bytes: 256 * 1024 * 1024,
+            attachment_max_bytes: 30 * 1024 * 1024,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -286,6 +295,13 @@ impl Default for GatewayConfig {
 }
 
 impl GatewayConfig {
+    pub fn llm_config_cache_ttl_secs_from_env() -> u64 {
+        std::env::var("LLM_CONFIG_CACHE_TTL")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(Self::default().llm_config_cache_ttl_secs)
+    }
+
     /// Load configuration from the process environment, falling back to [`Default`]
     /// per key.
     pub fn from_env() -> Self {
@@ -343,10 +359,7 @@ impl GatewayConfig {
                 &d.platform_openrouter_api_key,
             ),
             generic_key_fallback,
-            llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d.llm_config_cache_ttl_secs),
+            llm_config_cache_ttl_secs: Self::llm_config_cache_ttl_secs_from_env(),
             redis_url: env_or("REDIS_URL", &d.redis_url),
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
                 .ok()
@@ -366,6 +379,19 @@ impl GatewayConfig {
                     Err(e) => Err(e.to_string()),
                 },
                 d.provider_timeout_secs,
+            ),
+            max_body_bytes: env_usize("LLM_ROUTER_MAX_BODY_BYTES", d.max_body_bytes),
+            max_inflight_body_bytes: env_usize(
+                "LLM_ROUTER_MAX_INFLIGHT_BODY_BYTES",
+                d.max_inflight_body_bytes,
+            ),
+            attachment_cache_bytes: env_usize(
+                "LLM_ROUTER_ATTACHMENT_CACHE_BYTES",
+                d.attachment_cache_bytes,
+            ),
+            attachment_max_bytes: env_usize(
+                "LLM_ROUTER_ATTACHMENT_MAX_BYTES",
+                d.attachment_max_bytes,
             ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()

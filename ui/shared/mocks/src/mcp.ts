@@ -39,23 +39,6 @@ interface MockBuild {
   tools: MockTool[]
 }
 
-/**
- * `mcp_upload_status` (0101_mcp_upload_status.sql): one entry per upload attempt, independent of the
- * connector — it survives `s()` filtering a failed-with-no-prior-success connector out of
- * `st.connectors` entirely, so `GET /connectors/my-uploads` still has something to answer with.
- * `build` is the SAME object the connector (while it exists) points at, so its derived status
- * (`buildState`) reads identically from either place — no separate state to keep in sync.
- */
-interface MockUploadRecord {
-  uploadId: string
-  connectorId: string
-  connectorName: string
-  ownerId: string | null
-  createdAt: string
-  source: 'zip' | 'github'
-  build: MockBuild
-}
-
 interface MockConnector {
   id: string
   provider: 'composio' | 'mcp_server'
@@ -93,8 +76,6 @@ export interface McpState {
   connections: Map<string, Connection>
   /** `${agentId}:${connectorId}` → `agent_connector_access` (enabled + tool rules). */
   access: Map<string, { enabled: boolean; rules: Record<string, Stance> }>
-  /** One entry per upload attempt ever made, oldest first — survives connector deletion. */
-  uploadHistory: MockUploadRecord[]
   serial: number
 }
 
@@ -177,20 +158,7 @@ export function buildMcpState(
     if (agentId)
       access.set(`${agentId}:${byName(a.name)}`, { enabled: a.enabled, rules: { ...a.rules } })
   }
-  const uploadHistory: MockUploadRecord[] = connectors
-    .filter((c) => c.build)
-    .map((c) => ({
-      uploadId: c.build!.id,
-      connectorId: c.id,
-      connectorName: c.name,
-      ownerId: c.owner_id,
-      createdAt: c.created_at,
-      // None of the seed fixtures distinguish a GitHub-sourced historical build; a real 'github' one
-      // only exists once `queue()` creates it live, via `upload-github`.
-      source: 'zip',
-      build: c.build!,
-    }))
-  return { connectors, connections, access, uploadHistory, serial }
+  return { connectors, connections, access, serial }
 }
 
 // ── Derived state ─────────────────────────────────────────────────────────────────────────────
@@ -414,50 +382,6 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
         )
       }),
     ),
-    // `handlers/upload.rs list_my_uploads`: FROM mcp_upload_status, not mcp_connectors — unlike the
-    // list above, still answers for an upload whose connector was deleted after a first-time failure.
-    http.get(`${P}/connectors/my-uploads`, () =>
-      run(() => {
-        const mine = me().id
-        const rows = s()
-          .uploadHistory.filter((u) => me().is_superuser || u.ownerId === mine)
-          .slice()
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-          .slice(0, 50)
-        const data = rows.map((u) => {
-          const build = buildState(u.build, ctx.now())
-          const displayStatus = build === 'running' ? 'Active' : build === 'failed' ? 'Failed' : 'Deploying'
-          const statusMessage =
-            displayStatus === 'Active'
-              ? 'MCP server deployed successfully'
-              : displayStatus === 'Deploying'
-                ? 'MCP server is being built...'
-                : 'Build failed'
-          const live = s().connectors.find((c) => c.id === u.connectorId)
-          // Settled: updated_at is when it settled (doneAt). Still building: it ticks forward with "now",
-          // same as `mark_building`'s real UPDATE would on every poll.
-          const updatedAt = build === 'building' || build === 'pending' ? ctx.now() : u.build.doneAt
-          return {
-            upload_id: u.uploadId,
-            connector_id: live ? live.id : null,
-            connector_name: u.connectorName,
-            icon_url: null,
-            upload_info: {
-              upload_type: 'mcp_server',
-              upload_status: displayStatus,
-              status_message: statusMessage,
-              error_detail: displayStatus === 'Failed' ? u.build.error : null,
-            },
-            url: live?.url ?? null,
-            description: null,
-            source: u.source,
-            created_at: u.createdAt,
-            updated_at: new Date(updatedAt).toISOString(),
-          }
-        })
-        return ok(data, `Retrieved ${data.length} uploaded MCP connectors`)
-      }),
-    ),
     http.get(`${P}/composio/toolkits`, () =>
       run(() => {
         if (ctx.hasVariant('mcp-toolkits-fail'))
@@ -567,7 +491,7 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
         if (!name) throw bad('name is required')
         if (!(fd?.get('file') instanceof Blob) && !(fd?.get('source') instanceof Blob))
           throw bad('source zip is required')
-        return queue(name, String(fd?.get('version_tag') ?? '') || 'v1', 'zip')
+        return queue(name, String(fd?.get('version_tag') ?? '') || 'v1')
       }),
     ),
     http.post(`${P}/connectors/upload-github`, async ({ request }) =>
@@ -582,7 +506,7 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
           /* checked below */
         }
         if (host !== 'github.com') throw bad('only https://github.com repositories can be cloned')
-        return queue(name, b.version_tag || 'v1', 'github')
+        return queue(name, b.version_tag || 'v1')
       }),
     ),
     http.get(`${P}/connectors/:id`, ({ params }) =>
@@ -1051,7 +975,7 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
   ]
 
   /** `mcp/build.rs queue_*_upload`: writes the `pending` row before answering 202. */
-  function queue(name: string, version: string, source: 'zip' | 'github'): Response {
+  function queue(name: string, version: string): Response {
     const st = s()
     if (st.connectors.some((c) => c.owner_id === me().id && c.name === name))
       throw new McpHttpError(409, `conflict: you already have a connector named '${name}'`)
@@ -1094,15 +1018,6 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
       unitGrants: [],
     }
     st.connectors.push(c)
-    st.uploadHistory.push({
-      uploadId: build.id,
-      connectorId: c.id,
-      connectorName: c.name,
-      ownerId: c.owner_id,
-      createdAt: at,
-      source,
-      build,
-    })
     return ok({ connector_id: c.id, build_id: build.id }, 'MCP server build queued', 202)
   }
 }

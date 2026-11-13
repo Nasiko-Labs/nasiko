@@ -2,7 +2,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Multipart, Path, Query, State, rejection::JsonRejection},
-    http::{StatusCode, header},
+    http::{HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
@@ -16,11 +16,11 @@ use crate::auth::Claims;
 use crate::chat::turn_artifacts::DownloadTarget;
 use crate::state::AppState;
 
+use super::attachment_policy::{MAX_UPLOAD_FILE_BYTES, classify};
 use super::external_turn::{PersistExternalTurnError, persist_external_turn};
 use super::models::*;
 
 const MAX_FILES_PER_UPLOAD: usize = 10;
-const MAX_FILE_BYTES: usize = 50 * 1024 * 1024; // 50 MB
 
 /// Upper bound on how long the per-turn workspace capture may hold the chat
 /// persist path. The reader is a long-lived singleton, so after its first start
@@ -48,7 +48,7 @@ pub fn router() -> Router<AppState> {
             // Bound the multipart body to the file policy (count × per-file cap +
             // small overhead) so a chat upload can't buffer unbounded bytes (SRV-4).
             axum::routing::post(upload_files).layer(axum::extract::DefaultBodyLimit::max(
-                MAX_FILES_PER_UPLOAD * MAX_FILE_BYTES + 1024 * 1024,
+                MAX_FILES_PER_UPLOAD * MAX_UPLOAD_FILE_BYTES + 1024 * 1024,
             )),
         )
         .route(
@@ -1181,7 +1181,13 @@ async fn send_message(
     if msg.role == "assistant" && !is_failure {
         let capture = tokio::time::timeout(
             CAPTURE_TIMEOUT,
-            capture_turn_files(&state, &session_id, msg.id, &msg.content),
+            capture_turn_files(
+                &state,
+                &session_id,
+                msg.id,
+                msg.trace_id.as_deref(),
+                &msg.content,
+            ),
         )
         .await;
         match capture {
@@ -1394,6 +1400,7 @@ async fn capture_turn_files(
     state: &AppState,
     session_id: &str,
     message_id: Uuid,
+    trace_id: Option<&str>,
     reply: &str,
 ) -> Option<serde_json::Value> {
     // First: a turn-artifact source another edition may have installed (no-op in
@@ -1404,7 +1411,7 @@ async fn capture_turn_files(
     let external = state
         .turn_artifacts
         .get()
-        .capture(&state.db, session_id, message_id)
+        .capture(&state.db, session_id, message_id, trace_id)
         .await;
     if !external.is_empty() {
         let file_parts = serde_json::Value::Array(external);
@@ -1621,7 +1628,7 @@ async fn upload_files(
         }
 
         let filename = field.file_name().unwrap_or("upload").to_string();
-        let mime_type = field
+        let declared_type = field
             .content_type()
             .unwrap_or("application/octet-stream")
             .to_string();
@@ -1632,13 +1639,8 @@ async fn upload_files(
             match field.chunk().await {
                 Ok(Some(chunk)) => {
                     buf.extend_from_slice(&chunk);
-                    if buf.len() > MAX_FILE_BYTES {
-                        cleanup_uploaded(&state, &uploaded).await;
-                        return (
-                            StatusCode::PAYLOAD_TOO_LARGE,
-                            format!("file '{filename}' exceeds 50 MB limit"),
-                        )
-                            .into_response();
+                    if buf.len() > MAX_UPLOAD_FILE_BYTES {
+                        break;
                     }
                 }
                 Ok(None) => break,
@@ -1648,16 +1650,33 @@ async fn upload_files(
                 }
             }
         }
+        let (class, mime_type) = classify(&buf, &declared_type, &filename);
+        if buf.len() > class.limit() {
+            cleanup_uploaded(&state, &uploaded).await;
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!(
+                    "file '{filename}' is over the {} MB limit for {} files",
+                    class.limit() / (1024 * 1024),
+                    class.label()
+                ),
+            )
+                .into_response();
+        }
         let data = buf.freeze();
 
         let file_id = Uuid::new_v4();
-        let storage_key = format!("chat-files/{session_id}/{file_id}");
+        let storage_key = super::attachment_store::chat_file_key(&session_id, file_id);
         let size_bytes = data.len() as i64;
 
         if let Err(e) = state.oci_storage.put_blob(&storage_key, data).await {
             tracing::warn!(file_id = %file_id, %e, "S3 put_blob failed; rolling back previous uploads");
             cleanup_uploaded(&state, &uploaded).await;
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "file storage is unavailable; try again",
+            )
+                .into_response();
         }
 
         let record = sqlx::query_as::<_, ChatMessageFile>(
@@ -1751,6 +1770,7 @@ fn download_target_response(target: DownloadTarget) -> axum::response::Response 
                 (header::CONTENT_TYPE, mime),
                 (header::CONTENT_LENGTH, size.to_string()),
                 (header::CONTENT_DISPOSITION, content_disposition),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_owned()),
             ],
             Body::from_stream(body),
         )
@@ -1803,20 +1823,58 @@ async fn download_file(
     // Phase 1 captures keep their bytes in the agent's PVC; `storage_uri` encodes
     // the reader-side location (`workspace://<owner>/<agent>/<relpath>`) and we
     // stream them out. Uploads (and Phase 2 captures) live in object storage and
-    // redirect to a presigned URL. The route is identical either way, so the FE
+    // are served from it by this route. The route is identical either way, so the FE
     // never learns where the bytes are.
     if let Some(rest) = file.storage_uri.strip_prefix("workspace://") {
         return stream_workspace_file(&state, &file, rest).await;
     }
 
-    match state
-        .oci_storage
-        .presigned_get_url(&file.storage_uri, 3600)
-        .await
-    {
-        Ok(url) => (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, url)]).into_response(),
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    match state.oci_storage.get_blob(&file.storage_uri).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, download_content_type(&file.mime_type)),
+                (
+                    header::CONTENT_DISPOSITION,
+                    download_disposition(&file.mime_type, &file.filename),
+                ),
+                (
+                    header::X_CONTENT_TYPE_OPTIONS,
+                    HeaderValue::from_static("nosniff"),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(nasiko_runtime::BlobStoreError::NotFound(_)) => StatusCode::GONE.into_response(),
+        Err(e) => {
+            tracing::warn!(file_id = %file.id, %e, "chat file bytes unreadable");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
     }
+}
+
+const PREVIEWABLE_IMAGES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+const FILENAME_ENCODE_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn download_content_type(mime_type: &str) -> HeaderValue {
+    HeaderValue::from_str(mime_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"))
+}
+
+fn download_disposition(mime_type: &str, filename: &str) -> HeaderValue {
+    let kind = if PREVIEWABLE_IMAGES.contains(&mime_type.to_ascii_lowercase().as_str()) {
+        "inline"
+    } else {
+        "attachment"
+    };
+    let name = percent_encoding::utf8_percent_encode(filename, FILENAME_ENCODE_SET);
+    HeaderValue::from_str(&format!("{kind}; filename*=UTF-8''{name}"))
+        .unwrap_or_else(|_| HeaderValue::from_static("attachment"))
 }
 
 /// Stream a PVC-backed capture out of the agent's `/workspace` via the runtime's
@@ -1977,6 +2035,13 @@ mod tests {
                 .get(header::CONTENT_DISPOSITION)
                 .and_then(|v| v.to_str().ok()),
             Some("attachment; filename*=UTF-8''a.txt")
+        );
+        assert_eq!(
+            stream
+                .headers()
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
         );
 
         assert_eq!(

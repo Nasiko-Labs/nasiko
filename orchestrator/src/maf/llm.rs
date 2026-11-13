@@ -153,8 +153,8 @@ impl LlmClient {
         Self { ledger, ..self }
     }
 
-    pub fn ledger(&self) -> Arc<dyn UsageLedger> {
-        self.ledger.clone()
+    pub fn ledger(&self) -> &dyn UsageLedger {
+        self.ledger.as_ref()
     }
 
     /// The provider this client talks to, as recorded on `token_usage.provider`.

@@ -1465,6 +1465,7 @@ async fn trigger_new_orchestrator_turn(
             // under a role the transcript does not render.
             transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
+            attached_files: Vec::new(),
             // `reasoning_query` above explicitly instructs the model NOT to call any
             // agent again, because the call this turn reports on already succeeded in
             // an earlier turn. A policy that demands an agent call per turn would see

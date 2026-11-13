@@ -9,12 +9,13 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use axum::Json;
 use axum::body::Body;
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderMap, HeaderName};
 use axum::response::{IntoResponse, Response};
+use axum::{Extension, Json};
 use futures::StreamExt;
 use serde_json::Value;
 use tracing::Instrument;
@@ -25,6 +26,7 @@ use nasiko_session_token::{
     SessionClaims, SessionTokenError, parse_algorithm, verify_session_token,
 };
 
+use super::auth_layer::rejected_body;
 use crate::LlmRouterCtx;
 use crate::auth::verify_agent_jwt;
 use crate::error::GatewayError;
@@ -47,6 +49,7 @@ pub(crate) struct RoutedRequest {
     /// What payload compression did to this request, for its usage rows. Set by the Responses
     /// surface after routing; `chat_core` passes its own stats straight to its rows instead.
     pub compression: crate::compress::Ledger,
+    pub sticky_conv_id: Option<String>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -112,7 +115,8 @@ fn record_span_usage(span: &tracing::Span, usage: Option<&Usage>) {
 }
 
 /// Who is calling the router.
-pub(crate) enum AuthedCaller {
+#[derive(Clone)]
+pub enum AuthedCaller {
     /// The deploy-time agent-identity token: `{agent_id, owner_id}`. Identity for
     /// the actual turn is still inferred from the request's `traceparent`.
     Agent { agent_id: String, owner_id: String },
@@ -121,6 +125,12 @@ pub(crate) enum AuthedCaller {
     /// straight off the claims with no `traceparent` and no freshness window.
     Session(SessionClaims),
 }
+
+const CREDENTIAL_HEADERS: [HeaderName; 3] = [
+    AUTHORIZATION,
+    HeaderName::from_static("x-api-key"),
+    HeaderName::from_static("x-goog-api-key"),
+];
 
 /// Authenticate the caller, preferring a coding-agent session token and falling
 /// back to the agent-identity token.
@@ -133,18 +143,9 @@ pub(crate) async fn authenticate_caller(
     store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
-    let authz = headers
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        // Anthropic-format clients (e.g. Claude Code) authenticate with
-        // `x-api-key`, not `Authorization: Bearer` — so a coding agent using the
-        // Anthropic SDK carries its session token there. Accept it as a fallback;
-        // `verify_session_token` tolerates a raw token with no `Bearer` prefix.
-        .or_else(|| {
-            headers
-                .get("x-api-key")
-                .and_then(|value| value.to_str().ok())
-        });
+    let authz = CREDENTIAL_HEADERS
+        .into_iter()
+        .find_map(|name| headers.get(name).and_then(|value| value.to_str().ok()));
 
     if !ctx.cfg.agent_jwt_secret.is_empty()
         && let Some(raw) = authz
@@ -250,22 +251,124 @@ pub(crate) async fn lookup_agent_owner(
 /// Axum handler for the OpenAI surface (`POST /v1/chat/completions`).
 pub async fn chat_completions(
     State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, GatewayError> {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return Ok(rejected_body(
+                rejection,
+                ctx.cfg.max_body_bytes,
+                IntoResponse::into_response,
+            ));
+        }
+    };
     let store = PgRegistry::new(ctx.db.clone());
-    chat_core(&ctx, &store, &headers, body, InboundFormat::OpenAi, None).await
+    chat_core_as(
+        &ctx,
+        &store,
+        caller,
+        &headers,
+        body,
+        InboundFormat::OpenAi,
+        None,
+    )
+    .await
 }
 
 /// Axum handler for the Anthropic surface (`POST /v1/messages`). Same core; the inbound
 /// format selects the Anthropic parser/renderer (P2.3).
 pub async fn messages(
     State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, GatewayError> {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return Ok(rejected_body(
+                rejection,
+                ctx.cfg.max_body_bytes,
+                IntoResponse::into_response,
+            ));
+        }
+    };
     let store = PgRegistry::new(ctx.db.clone());
-    chat_core(&ctx, &store, &headers, body, InboundFormat::Anthropic, None).await
+    chat_core_as(
+        &ctx,
+        &store,
+        caller,
+        &headers,
+        body,
+        InboundFormat::Anthropic,
+        None,
+    )
+    .await
+}
+
+pub async fn count_tokens(
+    State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Result<Response, GatewayError> {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return Ok(rejected_body(
+                rejection,
+                ctx.cfg.max_body_bytes,
+                IntoResponse::into_response,
+            ));
+        }
+    };
+    let store = PgRegistry::new(ctx.db.clone());
+    count_tokens_as(&ctx, &store, caller, body).await
+}
+
+async fn count_tokens_as(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    caller: AuthedCaller,
+    mut body: Value,
+) -> Result<Response, GatewayError> {
+    let (agent_id, owner_id) = match caller {
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id),
+        AuthedCaller::Session(claims) => {
+            let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
+            (claims.agent_id, owner_id)
+        }
+    };
+    let hint = RequestHint {
+        provider: Some(InboundFormat::Anthropic.provider_label()),
+        model: body["model"].as_str(),
+    };
+    let resolved =
+        crate::resolver::resolve(store, &ctx.cache, &ctx.cfg, &agent_id, &owner_id, hint).await?;
+    if resolved.provider != "anthropic" {
+        return Ok((
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            crate::error::error_body(
+                axum::http::StatusCode::NOT_IMPLEMENTED,
+                &format!(
+                    "count_tokens is available only when the agent's model is served by Anthropic (this agent uses {})",
+                    resolved.provider
+                ),
+            ),
+        )
+            .into_response());
+    }
+    body["model"] = Value::String(resolved.model);
+    let counted = crate::providers::anthropic::count_tokens(
+        &ctx.http,
+        &ctx.cfg.anthropic_api_base,
+        &resolved.api_key,
+        &body,
+    )
+    .await?;
+    Ok(Json(counted).into_response())
 }
 
 /// Axum handler for the Gemini surface (`POST /v1beta/models/{model}:{method}`). Gemini
@@ -273,19 +376,31 @@ pub async fn messages(
 /// so we force the stream flag from the path (P2.4).
 pub async fn gemini_generate(
     State(ctx): State<LlmRouterCtx>,
+    Extension(caller): Extension<AuthedCaller>,
     Path(model_method): Path<String>,
     headers: HeaderMap,
-    Json(body): Json<Value>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, GatewayError> {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            return Ok(rejected_body(
+                rejection,
+                ctx.cfg.max_body_bytes,
+                IntoResponse::into_response,
+            ));
+        }
+    };
     let stream = model_method
         .rsplit(':')
         .next()
         .map(|m| m.eq_ignore_ascii_case("streamGenerateContent"))
         .unwrap_or(false);
     let store = PgRegistry::new(ctx.db.clone());
-    chat_core(
+    chat_core_as(
         &ctx,
         &store,
+        caller,
         &headers,
         body,
         InboundFormat::Gemini,
@@ -298,6 +413,7 @@ pub async fn gemini_generate(
 /// renderer; `force_stream` overrides the request's `stream` flag when the wire protocol
 /// signals streaming out-of-band (Gemini's endpoint method). The canonical IR, resolver,
 /// providers, and fallbacks are format-agnostic.
+#[cfg(test)]
 async fn chat_core(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
@@ -306,9 +422,22 @@ async fn chat_core(
     format: InboundFormat,
     force_stream: Option<bool>,
 ) -> Result<Response, GatewayError> {
+    let caller = authenticate_caller(ctx, store, headers).await?;
+    chat_core_as(ctx, store, caller, headers, body, format, force_stream).await
+}
+
+async fn chat_core_as(
+    ctx: &LlmRouterCtx,
+    store: &dyn RegistryStore,
+    caller: AuthedCaller,
+    headers: &HeaderMap,
+    body: Value,
+    format: InboundFormat,
+    force_stream: Option<bool>,
+) -> Result<Response, GatewayError> {
     // A coding-agent session token carries the user + flow in signed claims; the
     // agent-identity token does not, and still relies on the request traceparent.
-    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
+    let (agent_id, owner_id, session) = match caller {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             // Config/secrets resolve on the agent owner, which the token doesn't
@@ -346,7 +475,7 @@ async fn chat_core(
         model: req.model.as_deref(),
     };
     let signals = RequestSignals {
-        query: routing::latest_user_query(&req.messages),
+        query: routing::latest_user_query(&req.messages).map(crate::attachments::strip_markers),
         turn_ordinal: routing::user_turn_ordinal(&req.messages),
         is_tool_continuation: routing::is_tool_continuation(&req.messages),
     };
@@ -365,7 +494,11 @@ async fn chat_core(
         flow_id,
         attribution_source,
         compression: _,
+        sticky_conv_id,
     } = routed;
+
+    crate::attachments::expand::attach_marked_files(ctx, &mut req, flow_id.as_deref(), &agent_id)
+        .await?;
 
     // ── compression seam ──────────────────────────────────────────────────────────────────
     // After `resolve_routed_request`, not before it: `RequestSignals` (built at :159 from
@@ -574,6 +707,14 @@ async fn chat_core(
             attempts.take_failed(),
         );
         let (stream, (provider, model)) = established?;
+        forget_route_that_did_not_answer(
+            ctx,
+            &agent_id,
+            sticky_conv_id.as_deref(),
+            &resolved,
+            (&provider, &model),
+        )
+        .await;
         llm_span.record("gen_ai.response.model", model.as_str());
         let renderer = inbound.chat_stream_renderer();
         return stream_chat(StreamChatArgs {
@@ -618,6 +759,14 @@ async fn chat_core(
         attempts.take_failed(),
     );
     let (mut resp, (mut provider, mut model)) = answered?;
+    forget_route_that_did_not_answer(
+        ctx,
+        &agent_id,
+        sticky_conv_id.as_deref(),
+        &resolved,
+        (&provider, &model),
+    )
+    .await;
 
     // Credited only if the compact reply is the one returned; a native re-send below clears it.
     let mut compact_tools_bytes = compact.as_ref().ok().map(|c| c.bytes);
@@ -866,6 +1015,7 @@ pub(crate) async fn resolve_routed_request(
         model_overridden = decision.model != resolved.model,
         "chat_core: model routing decision"
     );
+    let mut sticky_conv_id = None;
     if decision.model != resolved.model {
         tracing::info!(
             target: "nasiko::llm_router::chat",
@@ -873,6 +1023,13 @@ pub(crate) async fn resolve_routed_request(
             from = %resolved.model, to = %decision.model,
             "chat_core: router overrode the resolved model"
         );
+        keep_configured_model_as_fallback(&mut resolved);
+        if matches!(
+            decision.source,
+            routing::RouteSource::CacheHit | routing::RouteSource::Classified
+        ) {
+            sticky_conv_id = boundary.conv_id;
+        }
         resolved.litellm_model = format!("{}/{}", resolved.provider, decision.model);
         resolved.model = decision.model;
     }
@@ -893,7 +1050,40 @@ pub(crate) async fn resolve_routed_request(
         flow_id,
         attribution_source,
         compression: crate::compress::Ledger::default(),
+        sticky_conv_id,
     })
+}
+
+fn keep_configured_model_as_fallback(resolved: &mut crate::resolver::ResolvedConfig) {
+    let configured = format!("{}/{}", resolved.provider, resolved.model);
+    let listed = resolved
+        .fallback_models
+        .iter()
+        .any(|entry| *entry == configured || *entry == resolved.model);
+    if !listed {
+        resolved.fallback_models.insert(0, configured);
+    }
+}
+
+pub(crate) async fn forget_route_that_did_not_answer(
+    ctx: &LlmRouterCtx,
+    agent_id: &str,
+    sticky_conv_id: Option<&str>,
+    routed: &crate::resolver::ResolvedConfig,
+    answered: (&str, &str),
+) {
+    let Some(conv_id) = sticky_conv_id else {
+        return;
+    };
+    if answered == (routed.provider.as_str(), routed.model.as_str()) {
+        return;
+    }
+    tracing::info!(
+        target: "nasiko::llm_router::chat",
+        %agent_id, routed_model = %routed.model, answered_model = %answered.1,
+        "chat_core: routed model did not answer; dropping its sticky decision"
+    );
+    ctx.router_cache.forget(conv_id, agent_id).await;
 }
 
 /// Whether the agent is a coding-agent CLI integration, read before its config is resolved
@@ -1169,6 +1359,7 @@ mod tests {
     use crate::payer::Payer;
     use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
     use async_trait::async_trait;
+    use axum::http::StatusCode;
     use jsonwebtoken::Algorithm;
     use nasiko_secrets::SecretsCrypto;
     use serde_json::json;
@@ -1499,6 +1690,13 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
+            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
+            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
+                1024 * 1024,
+                crate::attachments::ATTACHMENT_CACHE_TTL,
+            )),
+            marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
         }
@@ -1899,6 +2097,132 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::MissingAuthHeader));
+    }
+
+    fn gemini_sdk_headers(key: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-goog-api-key", key.parse().unwrap());
+        h.insert(TRACEPARENT_HEADER, TRACEPARENT.parse().unwrap());
+        h
+    }
+
+    fn gemini_hi() -> Value {
+        json!({ "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }] })
+    }
+
+    fn store_pinned_to_openai() -> Store {
+        Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gemini_sdks_x_goog_api_key_header_authenticates_and_is_not_forwarded() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .match_header("x-goog-api-key", mockito::Matcher::Missing)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-g", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let resp = chat_core(
+            &ctx_with(server.url()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers(&token()),
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+        upstream.assert_async().await;
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
+    async fn an_empty_gemini_turn_reaches_a_provider_that_accepts_one() {
+        let mut server = mockito::Server::new_async().await;
+        let upstream = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({
+                "messages": [{ "role": "user", "content": "" }]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "chatcmpl-e", "object": "chat.completion", "model": "gpt-4o-mini",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+
+        let resp = chat_core(
+            &ctx_with(server.url()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers(&token()),
+            json!({ "contents": [{ "role": "user", "parts": [] }] }),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap();
+
+        upstream.assert_async().await;
+        let v: Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["candidates"][0]["content"]["parts"][0]["text"], "ok");
+    }
+
+    #[tokio::test]
+    async fn a_bad_token_in_x_goog_api_key_is_refused_before_any_provider_call() {
+        let err = chat_core(
+            &ctx_with("http://unused".into()),
+            &store_pinned_to_openai(),
+            &gemini_sdk_headers("not-a-token"),
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn authorization_wins_over_x_goog_api_key() {
+        let mut headers = gemini_sdk_headers(&token());
+        headers.insert(AUTHORIZATION, "Bearer not-a-token".parse().unwrap());
+
+        let err = chat_core(
+            &ctx_with("http://unused".into()),
+            &store_pinned_to_openai(),
+            &headers,
+            gemini_hi(),
+            InboundFormat::Gemini,
+            Some(false),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(err, GatewayError::InvalidToken(_)), "{err:?}");
     }
 
     #[test]
@@ -2492,6 +2816,198 @@ mod tests {
         );
     }
 
+    use crate::routing::cache::test_support::ForgetLog;
+
+    const STUB_OPENAI_TIERS: [&str; 3] = ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"];
+
+    fn tiered_store(fallback_models: Vec<String>, pinned_model: Option<&str>) -> Store {
+        let mut config = openai_config();
+        config.model = Some("static-configured-model".into());
+        config.tier1_model = Some("gpt-5.5".into());
+        config.fallback_models = fallback_models;
+        config.pinned = pinned_model.is_some();
+        config.pinned_model = pinned_model.map(str::to_string);
+        Store {
+            config: Some(config),
+            is_coding_agent: true,
+            compress_enabled: false,
+        }
+    }
+
+    fn tiered_ctx(base: String) -> (LlmRouterCtx, Arc<ForgetLog>) {
+        let mut ctx = ctx_with(base);
+        ctx.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
+        let log = Arc::new(ForgetLog::default());
+        ctx.router_cache = log.clone();
+        (ctx, log)
+    }
+
+    async fn route_tiered(ctx: &LlmRouterCtx, store: &Store) -> RoutedRequest {
+        resolve_routed_request(
+            ctx,
+            store,
+            &HeaderMap::new(),
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint {
+                provider: Some("openai"),
+                model: None,
+            },
+            RequestSignals {
+                query: Some("write a function that reverses a string".into()),
+                turn_ordinal: 1,
+                is_tool_continuation: false,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_tier_model_keeps_the_configured_model_as_its_first_fallback() {
+        let (ctx, _) = tiered_ctx("http://unused".into());
+        let routed = route_tiered(
+            &ctx,
+            &tiered_store(vec!["anthropic/claude-haiku-4-5".into()], None),
+        )
+        .await;
+        assert!(STUB_OPENAI_TIERS.contains(&routed.resolved.model.as_str()));
+        assert_eq!(
+            routed.resolved.fallback_models,
+            vec![
+                "openai/static-configured-model".to_string(),
+                "anthropic/claude-haiku-4-5".to_string(),
+            ]
+        );
+        assert!(routed.sticky_conv_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_configured_model_already_in_the_fallbacks_is_not_added_twice() {
+        for listed in ["static-configured-model", "openai/static-configured-model"] {
+            let (ctx, _) = tiered_ctx("http://unused".into());
+            let routed = route_tiered(&ctx, &tiered_store(vec![listed.into()], None)).await;
+            assert_eq!(routed.resolved.fallback_models, vec![listed.to_string()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_pinned_agent_still_gets_no_fallbacks() {
+        let (ctx, _) = tiered_ctx("http://unused".into());
+        let routed = route_tiered(
+            &ctx,
+            &tiered_store(vec!["openai/gpt-4o".into()], Some("gpt-4.1")),
+        )
+        .await;
+        assert_eq!(routed.resolved.model, "gpt-4.1");
+        assert!(routed.resolved.fallback_models.is_empty());
+        assert!(routed.sticky_conv_id.is_none());
+    }
+
+    async fn tier_models_answer(server: &mut mockito::ServerGuard, status: usize, body: &str) {
+        for model in STUB_OPENAI_TIERS {
+            server
+                .mock("POST", "/chat/completions")
+                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                .with_status(status)
+                .with_header("content-type", "application/json")
+                .with_body(body)
+                .create_async()
+                .await;
+        }
+    }
+
+    const MODEL_GONE: &str =
+        r#"{"error":{"message":"The model does not exist","code":"model_not_found"}}"#;
+
+    fn completion(model: &str) -> String {
+        json!({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": model,
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    fn reverse_question() -> Value {
+        json!({ "messages": [{ "role": "user", "content": "write a function that reverses a string" }] })
+    }
+
+    fn agent_only_headers() -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            AUTHORIZATION,
+            format!("Bearer {}", token()).parse().unwrap(),
+        );
+        h
+    }
+
+    #[tokio::test]
+    async fn a_missing_tier_model_falls_back_to_the_configured_model_and_drops_the_sticky_choice() {
+        for stream in [false, true] {
+            let mut server = mockito::Server::new_async().await;
+            tier_models_answer(&mut server, 404, MODEL_GONE).await;
+            let configured = server
+                .mock("POST", "/chat/completions")
+                .match_body(mockito::Matcher::PartialJson(
+                    json!({ "model": "static-configured-model" }),
+                ))
+                .with_status(200)
+                .with_header(
+                    "content-type",
+                    if stream {
+                        "text/event-stream"
+                    } else {
+                        "application/json"
+                    },
+                )
+                .with_body(if stream {
+                    "data: [DONE]\n\n".to_string()
+                } else {
+                    completion("static-configured-model")
+                })
+                .expect(1)
+                .create_async()
+                .await;
+            let (ctx, log) = tiered_ctx(server.url());
+            let resp = chat_core(
+                &ctx,
+                &tiered_store(vec![], None),
+                &agent_only_headers(),
+                reverse_question(),
+                InboundFormat::OpenAi,
+                Some(stream),
+            )
+            .await
+            .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "stream={stream}");
+            configured.assert_async().await;
+            let forgotten = log.forgotten.lock().unwrap().clone();
+            assert_eq!(forgotten.len(), 1, "stream={stream}");
+            assert_eq!(forgotten[0].1, AGENT);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_tier_model_that_answers_keeps_its_sticky_choice() {
+        let mut server = mockito::Server::new_async().await;
+        tier_models_answer(&mut server, 200, &completion("gpt-5.5")).await;
+        let (ctx, log) = tiered_ctx(server.url());
+        let resp = chat_core(
+            &ctx,
+            &tiered_store(vec![], None),
+            &agent_only_headers(),
+            reverse_question(),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(log.forgotten.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn non_coding_agent_with_no_traceparent_is_rejected() {
         // Ordinary agents remain subject to development's strict flow attribution.
@@ -2919,6 +3435,253 @@ mod tests {
             result["content"].as_str().unwrap().contains("lines elided"),
             "the marked tool result was not compressed: {result}"
         );
+    }
+
+    fn agent_caller() -> AuthedCaller {
+        AuthedCaller::Agent {
+            agent_id: AGENT.into(),
+            owner_id: OWNER.into(),
+        }
+    }
+
+    fn count_request(model: &str) -> Value {
+        json!({
+            "model": model,
+            "system": "be brief",
+            "messages": [{"role": "user", "content": "how many tokens is this?"}]
+        })
+    }
+
+    async fn response_json(response: Response) -> Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn count_tokens_reaches_anthropic_with_the_agents_model_and_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/messages/count_tokens")
+            .match_header("x-api-key", "sk-ant-platform")
+            .match_header("anthropic-version", "2023-06-01")
+            .match_body(mockito::Matcher::Json(count_request("claude-haiku-5-5")))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"input_tokens":42}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let response = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &anthropic_store(vec![]),
+            agent_caller(),
+            count_request("claude-opus-4-1"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await, json!({"input_tokens": 42}));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn count_tokens_keeps_an_anthropic_refusal_status() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/messages/count_tokens")
+            .with_status(400)
+            .with_body(r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: field required"}}"#)
+            .create_async()
+            .await;
+
+        let err = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &anthropic_store(vec![]),
+            agent_caller(),
+            json!({"model": "x"}),
+        )
+        .await
+        .unwrap_err();
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let detail = response_json(response).await["detail"].to_string();
+        assert!(detail.contains("messages: field required"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn count_tokens_for_an_agent_not_on_anthropic_is_501_and_calls_nothing() {
+        let server = mockito::Server::new_async().await;
+        let store = Store {
+            config: Some(openai_config()),
+            is_coding_agent: false,
+            compress_enabled: false,
+        };
+
+        let response = count_tokens_as(
+            &anthropic_ctx(server.url()),
+            &store,
+            agent_caller(),
+            count_request("claude-haiku-5-5"),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            response_json(response).await["detail"],
+            "count_tokens is available only when the agent's model is served by Anthropic (this agent uses openai)"
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_router_paths_answer_a_json_404_and_known_ones_are_untouched() {
+        let send = |method: &str, path: &str| {
+            let request = axum::http::Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap();
+            tower::ServiceExt::oneshot(crate::router(ctx_with("http://unused".into())), request)
+        };
+
+        for (method, path) in [
+            ("GET", "/v1/nope"),
+            ("POST", "/v1/messages/batches"),
+            ("POST", "/v1beta/nope"),
+            ("GET", "/v1beta/models/gemini:generateContent/extra"),
+        ] {
+            let response = send(method, path).await.unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+            assert_eq!(
+                response_json(response).await,
+                json!({
+                    "detail": format!("no such router endpoint: {method} {path}"),
+                    "error": {
+                        "message": format!("no such router endpoint: {method} {path}"),
+                        "type": "not_found_error"
+                    }
+                })
+            );
+        }
+
+        let wrong_method = send("GET", "/v1/chat/completions").await.unwrap();
+        assert_eq!(wrong_method.status(), StatusCode::UNAUTHORIZED);
+        let unauthenticated = send("POST", "/v1/messages/count_tokens").await.unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let health = send("GET", "/v1/health").await.unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+    }
+
+    struct OneFile(&'static [u8]);
+
+    #[async_trait]
+    impl crate::attachments::AttachmentStore for OneFile {
+        async fn fetch(
+            &self,
+            _: &crate::attachments::AttachmentRef,
+        ) -> Result<bytes::Bytes, crate::attachments::AttachmentFetchError> {
+            Ok(bytes::Bytes::from_static(self.0))
+        }
+    }
+
+    const PNG: &[u8] = b"\x89PNG\r\n\x1a\nfake-png";
+
+    fn png_marker_line() -> String {
+        crate::attachments::MarkerSigner::from_secret(SECRET)
+            .unwrap()
+            .marker_line(&crate::attachments::MarkerClaims {
+                reference: crate::attachments::AttachmentRef::ChatUpload {
+                    session_id: "sess".into(),
+                    file_id: Uuid::from_u128(1),
+                },
+                filename: "fact.png".into(),
+                media_type: "image/png".into(),
+                size_bytes: PNG.len() as u64,
+                flow_id: "4bf92f3577b34da6a3ce929d0e0e4736".into(),
+                expires_at: chrono::Utc::now().timestamp() + 600,
+            })
+    }
+
+    fn anthropic_turn_with_marker() -> Value {
+        json!({
+            "model": "claude-haiku-5-5",
+            "max_tokens": 64,
+            "messages": [{ "role": "user", "content": format!("What is in this?\n{}", png_marker_line()) }]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_marked_chat_file_reaches_anthropic_as_an_image_block() {
+        use base64::Engine as _;
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+        let mut ctx = anthropic_ctx(server.url());
+        ctx.marker_signer = crate::attachments::MarkerSigner::from_secret(SECRET).map(Arc::new);
+        ctx.attachment_store = Arc::new(OneFile(PNG));
+
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            anthropic_turn_with_marker(),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = &sent(&seen)["messages"][0]["content"];
+        assert_eq!(
+            content[0],
+            json!({ "type": "text", "text": "What is in this?\n" })
+        );
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(
+            content[1]["source"],
+            json!({
+                "type": "base64",
+                "media_type": "image/png",
+                "data": base64::engine::general_purpose::STANDARD.encode(PNG)
+            })
+        );
+        assert!(
+            !content
+                .to_string()
+                .contains(crate::attachments::TOKEN_PREFIX)
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_signing_key_a_marker_stays_plain_text() {
+        let mut server = mockito::Server::new_async().await;
+        let (_mock, seen) = capturing_mock(&mut server, "/messages", 200, anthropic_reply()).await;
+        let mut ctx = anthropic_ctx(server.url());
+        ctx.attachment_store = Arc::new(OneFile(PNG));
+
+        let turn = anthropic_turn_with_marker();
+        chat_core(
+            &ctx,
+            &anthropic_store(vec![]),
+            &auth_headers(&token()),
+            turn.clone(),
+            InboundFormat::Anthropic,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let content = &sent(&seen)["messages"][0]["content"];
+        let text = content
+            .as_str()
+            .or_else(|| content[0]["text"].as_str())
+            .unwrap();
+        assert_eq!(text, turn["messages"][0]["content"].as_str().unwrap());
     }
 
     #[tokio::test]

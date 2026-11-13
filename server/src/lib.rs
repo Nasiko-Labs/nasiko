@@ -485,6 +485,8 @@ where
         ledger: state.usage_tracker.ledger(),
         payer: state.shared_call_payer.clone(),
         ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+            .with_config_cache(state.llm_config_cache.clone())
+            .with_attachment_store(state.attachment_store.clone())
     };
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.

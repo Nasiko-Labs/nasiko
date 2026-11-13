@@ -120,6 +120,7 @@ jsonwebtoken = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 mockito = { workspace = true }
+zstd = { workspace = true }
 criterion = { workspace = true }
 nasiko-bench-support = { workspace = true }
 # The harness turn e2e runs the real shim in-process.

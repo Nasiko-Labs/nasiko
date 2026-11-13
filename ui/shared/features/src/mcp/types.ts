@@ -237,31 +237,3 @@ export type BuildLogs = z.infer<typeof buildLogsSchema>
 /** `upload` / `upload-github`: 202 `{connector_id, build_id}`. */
 export const uploadResultSchema = z.looseObject({ connector_id: z.string(), build_id: z.string() })
 export type UploadResult = z.infer<typeof uploadResultSchema>
-
-/**
- * `GET /api/mcp/connectors/my-uploads` (`list_my_uploads`): every upload attempt the caller made,
- * from `mcp_upload_status` — unlike `connectorListSchema`, still includes one whose connector was
- * deleted after a first-time build failure (`connector_id` is then `null`). This is the durable
- * tracking the catalog page's "Recent uploads" panel reads (`oss/migrations/0101_mcp_upload_status.sql`).
- */
-const uploadedConnectorSchema = z.looseObject({
-  upload_id: z.string(),
-  connector_id: z.string().nullable(),
-  connector_name: z.string(),
-  icon_url: nullableString,
-  upload_info: z.looseObject({
-    upload_type: z.string(),
-    upload_status: z.string(),
-    status_message: nullableString,
-    error_detail: nullableString,
-  }),
-  url: nullableString,
-  description: nullableString,
-  source: z.enum(['zip', 'github']),
-  created_at: z.string(),
-  updated_at: z.string(),
-})
-export type UploadedConnector = z.infer<typeof uploadedConnectorSchema>
-
-export const myUploadsSchema = z.array(uploadedConnectorSchema)
-export type MyUploads = z.infer<typeof myUploadsSchema>

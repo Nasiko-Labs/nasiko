@@ -237,6 +237,8 @@ export const copy = {
   targetInvalid: (v: string) => `'${v}' isn't an agent you can use. Pick one on Agents.`,
   targetAmbiguous: (v: string) => `Several agents are called '${v}'. Pick one:`,
   targetNotRunning: (name: string) => `${name} isn't running, so it can't reply.`,
+  stoppedByOwner: (name: string) =>
+    `${name} was stopped by its owner. You can chat with it again once they start it.`,
   targetNotRunningAction: 'Open the agent',
   agentRemoved: "This chat's agent was removed.",
   recordedReadOnly: 'Recorded from a coding harness.',

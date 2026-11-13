@@ -47,6 +47,7 @@ pub struct A2aTool {
     /// message. `None` sends the LLM's own wording unchanged. See
     /// `OrchestratorConfig::outbound_prefix`.
     outbound_prefix: Option<String>,
+    attachment_note: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,6 +97,7 @@ impl A2aTool {
             file_parts: vec![],
             policy: None,
             outbound_prefix: None,
+            attachment_note: None,
         }
     }
 
@@ -116,6 +118,11 @@ impl A2aTool {
     /// the unconfigured case is one call site fewer to get wrong.
     pub fn with_outbound_prefix(mut self, prefix: Option<String>) -> Self {
         self.outbound_prefix = prefix;
+        self
+    }
+
+    pub fn with_attachment_note(mut self, note: Option<String>) -> Self {
+        self.attachment_note = note;
         self
     }
 
@@ -248,7 +255,12 @@ impl Tool for A2aTool {
         // this platform's real `a2a-lf` agents (proto dialect) reject an unexpected `"kind"`
         // field outright — confirmed live against a real deployed agent. `build_message_body`
         // re-tags this text per attempt, exactly like the primary message part already is.
-        let extra_text_parts: Vec<String> = self.outbound_prefix.iter().cloned().collect();
+        let extra_text_parts: Vec<String> = self
+            .attachment_note
+            .iter()
+            .chain(self.outbound_prefix.iter())
+            .cloned()
+            .collect();
 
         // No per-call user credential: the invoked agent authenticates to
         // /api/mcp with its own deploy-time MCP_GATEWAY_TOKEN; the user binding
@@ -609,6 +621,44 @@ mod tests {
             .with_outbound_prefix(Some("POLICY".into()))
             .with_file_parts(vec![
                 serde_json::json!({"kind": "file", "file": {"name": "report.csv"}}),
+            ]);
+        let result = tool
+            .call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: None,
+            })
+            .await;
+
+        mock.assert_async().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn an_attachment_note_goes_out_as_its_own_part_before_the_policy() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "params": {"message": {"parts": [
+                    {"text": "hi"},
+                    {"kind": "file", "file": {"name": "fact.png"}},
+                    {"kind": "text", "text": "[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]"},
+                    {"kind": "text", "text": "POLICY"}
+                ]}}
+            })))
+            .match_request(|request| forwarded_part_count(request) == 4)
+            .with_status(200)
+            .with_body(a2a_response_body())
+            .create_async()
+            .await;
+
+        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
+            .with_outbound_prefix(Some("POLICY".into()))
+            .with_attachment_note(Some(
+                "[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]".into(),
+            ))
+            .with_file_parts(vec![
+                serde_json::json!({"kind": "file", "file": {"name": "fact.png"}}),
             ]);
         let result = tool
             .call(A2aToolArgs {

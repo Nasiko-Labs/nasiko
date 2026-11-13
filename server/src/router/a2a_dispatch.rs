@@ -25,11 +25,15 @@ use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse
 use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
+use nasiko_llm_router::attachments::{
+    AttachmentRef, MARKER_TTL_SECS, MarkerClaims, MarkerSigner, describe_file,
+};
 
 use crate::acl::CpCallGuard;
 use crate::agent_resolver::{Caller, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
+use crate::chat::turn_artifacts::Attachable;
 use crate::orchestrator_policy::TurnKind;
 use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
@@ -228,7 +232,10 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let InboundAttachments {
+        parts: file_parts,
+        files: attached_files,
+    } = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -352,6 +359,7 @@ pub async fn a2a_dispatch_handler(
             &context_id,
             user_id,
             &file_parts,
+            &attached_files,
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -370,6 +378,7 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts,
+                attached_files,
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -497,6 +506,7 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
+    pub(crate) attached_files: Vec<AttachedFile>,
     /// Whether this turn was started by the user or reports on work an earlier
     /// turn already did. The operator's policy may treat the two differently —
     /// see [`TurnKind`].
@@ -546,6 +556,7 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
+        attached_files,
         kind,
         context_report,
     } = turn;
@@ -738,7 +749,7 @@ pub(crate) async fn orchestrator_stream(
     // Whose key pays for this turn's model calls, recorded on each usage row it writes.
     let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
     let key_source = super::usage_meta::KeySource::for_saved_key(saved_key.is_some());
-    let config = OrchestratorConfig {
+    let mut config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
         // default rather than re-reading the env var here with a placeholder
@@ -753,6 +764,7 @@ pub(crate) async fn orchestrator_stream(
         policy: policy.clone(),
         preamble,
         outbound_prefix: org_context,
+        attachment_note: None,
         // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
         // deliberately inert — without this the compressor is compiled in but unreachable.
         context: nasiko_react_agent::ContextConfig {
@@ -847,6 +859,9 @@ pub(crate) async fn orchestrator_stream(
         },
     )
     .await?;
+    config.attachment_note =
+        attachment_note(state.marker_signer.as_deref(), &attached_files, &flow_id);
+    let routed_query = with_attachment_list(query, &file_parts, &attached_files);
 
     // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
     // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
@@ -917,7 +932,7 @@ pub(crate) async fn orchestrator_stream(
 
     let mut rx = {
         let _entered = dispatch_span.enter();
-        orchestrator.run_stream(query, file_parts)
+        orchestrator.run_stream(&routed_query, file_parts)
     };
     let task_id = task_id.to_string();
     let context_id = context_id.to_string();
@@ -1503,6 +1518,7 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
+    attached_files: &[AttachedFile],
     // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
     // address history by contextId alone. Threaded through purely so a HITL pause created on
     // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
@@ -1644,6 +1660,7 @@ async fn agent_stream(
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
+    let attachment_note = attachment_note(state.marker_signer.as_deref(), attached_files, &flow_id);
 
     // Minimal-code ladder injection: only what's actually FORWARDED to the
     // agent gets the addendum appended — `query` itself stays untouched, so
@@ -1700,6 +1717,7 @@ async fn agent_stream(
             file_parts,
         )
     };
+    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -1984,6 +2002,7 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
+            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2317,6 +2336,7 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
+            attached_files: Vec::new(),
             kind: TurnKind::User,
             // This path mints a fresh context id, so no history was selected and there is nothing
             // to report. A zero row here would count as a request that optimized nothing.
@@ -2335,10 +2355,10 @@ const MAX_ATTACHED_FILES: usize = 10;
 /// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
 /// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
 /// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
-/// the storage limit would be. Over it, the turn is refused with a message the user can act on
-/// rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
+/// a PDF at 32 MB, OpenAI an audio file at 25 MB). Over it, the turn is refused with a message
+/// the user can act on rather than quietly reaching the agent without the file it was about.
+const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
+const ATTACHMENT_READ_CONCURRENCY: usize = 4;
 
 /// What the caller attached to this turn, in the two forms this endpoint accepts.
 ///
@@ -2350,18 +2370,13 @@ const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
 ///   than that same 2 MiB limit can be sent at all.
 ///
 /// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
-/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
-///
-/// An id that resolves to nothing is skipped rather than failing the turn: the text still
-/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
-/// budget is the opposite — the turn is about the file, so it fails loudly.
+/// upload by guessing a UUID, and only through object storage. Order follows the caller's list.
 async fn inbound_file_parts(
     state: &AppState,
     params: &nasiko_types::a2a::SendMessageRequest,
     session_id: Option<&str>,
     user_id: Uuid,
-) -> Result<Vec<a2a::Part>, A2aDispatchError> {
+) -> Result<InboundAttachments, A2aDispatchError> {
     let mut parts: Vec<a2a::Part> = params
         .message
         .parts
@@ -2369,26 +2384,48 @@ async fn inbound_file_parts(
         .filter(|p| matches!(p.content, PartContent::Raw(_)))
         .cloned()
         .collect();
+    let inline_bytes: u64 = parts
+        .iter()
+        .map(|p| match &p.content {
+            PartContent::Raw(data) => data.len() as u64,
+            _ => 0,
+        })
+        .sum();
 
-    let ids: Vec<Uuid> = params
+    let mut ids: Vec<Uuid> = Vec::new();
+    let listed = params
         .metadata
         .as_ref()
         .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array())
-        .map(|list| {
-            list.iter()
-                .filter_map(|v| v.as_str())
-                .filter_map(|s| Uuid::parse_str(s).ok())
-                .take(MAX_ATTACHED_FILES)
-                .collect()
-        })
-        .unwrap_or_default();
+        .and_then(|v| v.as_array());
+    for value in listed.into_iter().flatten() {
+        let raw = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
+        let id = Uuid::parse_str(&raw).map_err(|_| {
+            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
+        })?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.len() + parts.len() > MAX_ATTACHED_FILES {
+        return Err(A2aDispatchError::InvalidRequest(format!(
+            "at most {MAX_ATTACHED_FILES} attachments per message"
+        )));
+    }
     if ids.is_empty() {
-        return Ok(parts);
+        check_attached_total(inline_bytes)?;
+        return Ok(InboundAttachments {
+            parts,
+            files: Vec::new(),
+        });
     }
 
-    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
-        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
+    let rows = sqlx::query_as::<_, AttachedRow>(
+        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
+                cmf.storage_uri \
            FROM chat_message_files cmf \
            JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
           WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
@@ -2401,37 +2438,232 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
-    if total > MAX_ATTACHED_BYTES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
-        )));
-    }
-
-    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
-        rows.iter().map(|r| (r.0, r)).collect();
+    let mut by_id: std::collections::HashMap<Uuid, AttachedRow> =
+        rows.into_iter().map(|row| (row.id, row)).collect();
+    let mut resolved = Vec::with_capacity(ids.len());
+    let mut stored_bytes = 0u64;
     for id in &ids {
-        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
-            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
-            continue;
+        let Some(row) = by_id.remove(id) else {
+            return Err(A2aDispatchError::InvalidRequest(format!(
+                "attachment {id} was not found"
+            )));
         };
-        if storage_uri.starts_with("workspace://") {
-            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
-            continue;
-        }
-        match state.oci_storage.get_blob(storage_uri).await {
+        let attached = if row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
+            Resolved::ChatUpload(row)
+        } else {
+            Resolved::Elsewhere(elsewhere_attachment(state, user_id, row).await?)
+        };
+        stored_bytes += attached.size_bytes();
+        resolved.push(attached);
+    }
+    check_attached_total(inline_bytes + stored_bytes)?;
+
+    let fetched: Vec<Fetched> =
+        futures::stream::iter(resolved.into_iter().map(|attached| async move {
+            match attached {
+                Resolved::ChatUpload(row) => {
+                    let read = state.oci_storage.get_blob(&row.storage_uri).await;
+                    Fetched::ChatUpload(row, read)
+                }
+                Resolved::Elsewhere(file) => Fetched::Elsewhere(file),
+            }
+        }))
+        .buffered(ATTACHMENT_READ_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut files = Vec::with_capacity(fetched.len());
+    for attached in fetched {
+        let (row, read) = match attached {
+            Fetched::ChatUpload(row, read) => (row, read),
+            Fetched::Elsewhere(file) => {
+                files.push(file);
+                continue;
+            }
+        };
+        match read {
             Ok(bytes) => parts.push(a2a::file_part(
-                bytes.to_vec(),
-                Some(filename.clone()),
-                Some(mime_type.clone()),
+                Vec::from(bytes),
+                Some(row.filename.clone()),
+                Some(row.mime_type.clone()),
             )),
+            Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
+                return Err(A2aDispatchError::InvalidRequest(format!(
+                    "attachment '{}' is no longer stored",
+                    row.filename
+                )));
+            }
             Err(e) => {
-                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
+                tracing::warn!(id = %row.id, %e, "attachment bytes unreadable");
+                return Err(A2aDispatchError::Unavailable(format!(
+                    "attachment '{}' could not be read; try again",
+                    row.filename
+                )));
             }
         }
+        files.push(AttachedFile {
+            reference: AttachmentRef::ChatUpload {
+                session_id: row.session_id,
+                file_id: row.id,
+            },
+            filename: row.filename,
+            media_type: row.mime_type,
+            size_bytes: row.size_bytes.max(0) as u64,
+        });
     }
 
-    Ok(parts)
+    Ok(InboundAttachments { parts, files })
+}
+
+enum Resolved {
+    ChatUpload(AttachedRow),
+    Elsewhere(AttachedFile),
+}
+
+enum Fetched {
+    ChatUpload(
+        AttachedRow,
+        Result<bytes::Bytes, nasiko_runtime::BlobStoreError>,
+    ),
+    Elsewhere(AttachedFile),
+}
+
+impl Resolved {
+    fn size_bytes(&self) -> u64 {
+        match self {
+            Self::ChatUpload(row) => row.size_bytes.max(0) as u64,
+            Self::Elsewhere(file) => file.size_bytes,
+        }
+    }
+}
+
+async fn elsewhere_attachment(
+    state: &AppState,
+    user_id: Uuid,
+    row: AttachedRow,
+) -> Result<AttachedFile, A2aDispatchError> {
+    let source = state.turn_artifacts.get();
+    match source
+        .attachment(&state.db, user_id, &row.storage_uri)
+        .await
+    {
+        Attachable::File(file) => Ok(AttachedFile {
+            reference: file.reference,
+            filename: row.filename,
+            media_type: file.media_type,
+            size_bytes: file.size_bytes,
+        }),
+        Attachable::Refused => Err(A2aDispatchError::InvalidRequest(format!(
+            "'{}' can't be attached to a message",
+            row.filename
+        ))),
+        Attachable::Unavailable => {
+            tracing::warn!(id = %row.id, "attachment source unavailable");
+            Err(A2aDispatchError::Unavailable(format!(
+                "attachment '{}' could not be read; try again",
+                row.filename
+            )))
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AttachedRow {
+    id: Uuid,
+    session_id: String,
+    filename: String,
+    mime_type: String,
+    size_bytes: i64,
+    storage_uri: String,
+}
+
+pub(crate) struct InboundAttachments {
+    pub(crate) parts: Vec<a2a::Part>,
+    pub(crate) files: Vec<AttachedFile>,
+}
+
+pub(crate) struct AttachedFile {
+    reference: AttachmentRef,
+    filename: String,
+    media_type: String,
+    size_bytes: u64,
+}
+
+fn attachment_note(
+    signer: Option<&MarkerSigner>,
+    files: &[AttachedFile],
+    flow_id: &str,
+) -> Option<String> {
+    let signer = signer?;
+    if files.is_empty() {
+        return None;
+    }
+    let expires_at = chrono::Utc::now().timestamp() + MARKER_TTL_SECS;
+    let lines: Vec<String> = files
+        .iter()
+        .map(|file| {
+            signer.marker_line(&MarkerClaims {
+                reference: file.reference.clone(),
+                filename: file.filename.clone(),
+                media_type: file.media_type.clone(),
+                size_bytes: file.size_bytes,
+                flow_id: flow_id.to_string(),
+                expires_at,
+            })
+        })
+        .collect();
+    Some(lines.join("\n"))
+}
+
+fn with_attachment_list<'q>(
+    query: &'q str,
+    parts: &[a2a::Part],
+    files: &[AttachedFile],
+) -> std::borrow::Cow<'q, str> {
+    let inline = parts.iter().filter_map(|part| match &part.content {
+        PartContent::Raw(data) => Some(describe_file(
+            part.filename.as_deref().unwrap_or("unnamed"),
+            part.media_type
+                .as_deref()
+                .unwrap_or("application/octet-stream"),
+            data.len() as u64,
+        )),
+        _ => None,
+    });
+    let chips = files
+        .iter()
+        .filter(|file| matches!(file.reference, AttachmentRef::Workspace { .. }))
+        .map(|file| describe_file(&file.filename, &file.media_type, file.size_bytes));
+    let listed: Vec<String> = inline.chain(chips).collect();
+    if listed.is_empty() {
+        return std::borrow::Cow::Borrowed(query);
+    }
+    std::borrow::Cow::Owned(format!(
+        "{query}\n\n[The user attached: {}]",
+        listed.join(", ")
+    ))
+}
+
+fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
+    let Some(note) = note else { return };
+    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
+    let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
+        return;
+    };
+    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
+}
+
+const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
+
+fn check_attached_total(total: u64) -> Result<(), A2aDispatchError> {
+    if total > MAX_ATTACHED_BYTES {
+        return Err(A2aDispatchError::InvalidRequest(format!(
+            "attachments total {:.1} MB, over the {} MB per-message limit",
+            total as f64 / (1024.0 * 1024.0),
+            MAX_ATTACHED_BYTES / (1024 * 1024)
+        )));
+    }
+    Ok(())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -3100,9 +3332,12 @@ async fn build_hitl_stream_event(
 }
 
 pub(crate) fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
-    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(data) else {
         return data.to_string();
     };
+    if drop_task_history(&mut parsed) {
+        return serde_json::to_string(&parsed).unwrap_or_else(|_| data.to_string());
+    }
 
     // Already in the expected format (no JSON-RPC wrapper)
     if parsed.get("statusUpdate").is_some()
@@ -3155,6 +3390,23 @@ pub(crate) fn normalize_agent_event(data: &str, task_id: &str, context_id: &str)
         }
         _ => data.to_string(),
     }
+}
+
+fn drop_task_history(frame: &mut serde_json::Value) -> bool {
+    let result_is_task = frame
+        .get("result")
+        .and_then(|r| r.get("kind"))
+        .and_then(|k| k.as_str())
+        == Some("task");
+    let task = if result_is_task {
+        frame.get_mut("result")
+    } else if frame.get("task").is_some() {
+        frame.get_mut("task")
+    } else {
+        frame.get_mut("result").and_then(|r| r.get_mut("task"))
+    };
+    task.and_then(|t| t.as_object_mut())
+        .is_some_and(|t| t.remove("history").is_some())
 }
 
 // ─── Types & Errors ──────────────────────────────────────────────────────────
@@ -3568,6 +3820,153 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod attachment_list_tests {
+    use super::*;
+
+    fn chat_file(name: &str) -> AttachedFile {
+        AttachedFile {
+            reference: AttachmentRef::ChatUpload {
+                session_id: "s".into(),
+                file_id: Uuid::nil(),
+            },
+            filename: name.into(),
+            media_type: "image/png".into(),
+            size_bytes: 64,
+        }
+    }
+
+    fn workspace_file(name: &str, media_type: &str, size_bytes: u64) -> AttachedFile {
+        AttachedFile {
+            reference: AttachmentRef::Workspace {
+                agent_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                blob_id: Uuid::nil(),
+            },
+            filename: name.into(),
+            media_type: media_type.into(),
+            size_bytes,
+        }
+    }
+
+    #[test]
+    fn a_turn_without_files_keeps_the_query_as_it_is() {
+        let listed = with_attachment_list("hello", &[], &[]);
+        assert!(matches!(listed, std::borrow::Cow::Borrowed("hello")));
+        let text_only = [a2a::text_part("hello")];
+        assert_eq!(with_attachment_list("hello", &text_only, &[]), "hello");
+    }
+
+    #[test]
+    fn every_attached_file_is_listed_once_by_name_type_and_size() {
+        let parts = [
+            a2a::text_part("ignored"),
+            a2a::file_part(
+                vec![0; 64],
+                Some("fact.png".into()),
+                Some("image/png".into()),
+            ),
+            a2a::file_part(vec![0; 2048], None, None),
+        ];
+        let files = [
+            chat_file("fact.png"),
+            workspace_file("q3.pdf", "application/pdf", 3 * 1024 * 1024),
+        ];
+        assert_eq!(
+            with_attachment_list("what is in these?", &parts, &files),
+            "what is in these?\n\n[The user attached: fact.png (image/png, 64 B), \
+             unnamed (application/octet-stream, 2.0 KB), q3.pdf (application/pdf, 3.0 MB)]"
+        );
+    }
+
+    #[test]
+    fn a_file_name_cannot_break_the_line() {
+        let files = [workspace_file("evil\nname.txt", "text/plain", 5)];
+        let listed = with_attachment_list("q", &[], &files);
+        assert_eq!(
+            listed,
+            "q\n\n[The user attached: evil name.txt (text/plain, 5 B)]"
+        );
+    }
+}
+
+#[cfg(test)]
+mod relayed_task_history_tests {
+    use super::*;
+
+    fn echoed_user_message() -> serde_json::Value {
+        json!([{
+            "messageId": "m1",
+            "role": "ROLE_USER",
+            "parts": [
+                {"text": "describe this"},
+                {"raw": "A".repeat(4096), "filename": "big.png", "mediaType": "image/png"}
+            ]
+        }])
+    }
+
+    fn relayed(frame: serde_json::Value) -> serde_json::Value {
+        serde_json::from_str(&normalize_agent_event(&frame.to_string(), "t", "c")).unwrap()
+    }
+
+    #[test]
+    fn a_wrapped_task_frame_loses_the_echoed_history_and_keeps_the_rest() {
+        let out = relayed(json!({"jsonrpc": "2.0", "id": "1", "result": {"task": {
+            "id": "inner", "contextId": "c", "status": {"state": "TASK_STATE_SUBMITTED"},
+            "history": echoed_user_message()
+        }}}));
+        let task = &out["result"]["task"];
+        assert!(task.get("history").is_none());
+        assert_eq!(task["id"], "inner");
+        assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
+        assert_eq!(out["id"], "1");
+    }
+
+    #[test]
+    fn a_bare_task_frame_loses_the_echoed_history() {
+        let out = relayed(json!({"task": {
+            "id": "inner", "status": {"state": "TASK_STATE_WORKING"},
+            "artifacts": [{"parts": [{"text": "kept"}]}],
+            "history": echoed_user_message()
+        }}));
+        assert!(out["task"].get("history").is_none());
+        assert_eq!(out["task"]["artifacts"][0]["parts"][0]["text"], "kept");
+    }
+
+    #[test]
+    fn a_v03_kind_task_result_loses_the_echoed_history() {
+        let out = relayed(json!({"jsonrpc": "2.0", "id": "1", "result": {
+            "kind": "task", "id": "inner", "status": {"state": "submitted"},
+            "history": [{"kind": "message", "role": "user", "parts": [
+                {"kind": "file", "file": {"bytes": "A".repeat(4096), "name": "big.png"}}
+            ]}]
+        }}));
+        assert!(out["result"].get("history").is_none());
+        assert_eq!(out["result"]["kind"], "task");
+        assert_eq!(out["result"]["status"]["state"], "submitted");
+    }
+
+    #[test]
+    fn frames_without_task_history_are_relayed_byte_for_byte() {
+        for frame in [
+            r#"{"result":{"task":{"id":"inner","status":{"state":"TASK_STATE_SUBMITTED"}}}}"#,
+            r#"{"statusUpdate":{"taskId":"t","status":{"state":"TASK_STATE_WORKING"}}}"#,
+            r#"{"message":{"role":"ROLE_AGENT","parts":[{"text":"history"}]}}"#,
+            "not json",
+        ] {
+            assert_eq!(normalize_agent_event(frame, "t", "c"), frame);
+        }
+    }
+
+    #[test]
+    fn a_large_echo_shrinks_to_a_small_frame() {
+        let mut history = echoed_user_message();
+        history[0]["parts"][1]["raw"] = json!("A".repeat(7 * 1024 * 1024));
+        let frame = json!({"result": {"task": {"id": "inner", "history": history}}}).to_string();
+        assert!(normalize_agent_event(&frame, "t", "c").len() < 200);
     }
 }
 

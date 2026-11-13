@@ -639,6 +639,7 @@ mod tests {
                 decision.model.clone(),
             ));
         }
+        async fn forget(&self, _conv_id: &str, _agent_id: &str) {}
     }
 
     /// A gate that always judges the turn small talk — exercises the Level 2.5 branch.

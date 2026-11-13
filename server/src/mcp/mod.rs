@@ -206,10 +206,6 @@ pub fn router() -> Router<AppState> {
             get(handlers::upload::list_my_uploads),
         )
         .route(
-            "/mcp/connectors/uploads/{upload_id}",
-            get(handlers::upload::upload_status),
-        )
-        .route(
             "/mcp/connectors/{id}",
             get(handlers::connectors::get)
                 .patch(handlers::connectors::update)

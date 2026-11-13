@@ -498,14 +498,6 @@ pub(crate) async fn create(
         }
     };
 
-    if let Err(refusal) = state
-        .agent_admission
-        .admit(&mut tx, owner_id, &body.name)
-        .await
-    {
-        return refusal.into_response();
-    }
-
     let result = sqlx
         ::query_as::<_, Agent>(
             r#"INSERT INTO agents (name, display_name, description, owner_id, url, icon_url, version, documentation_url, capabilities, skills, tags, metadata, image, minimal_code_enabled, workload_kind, hitl_enabled)

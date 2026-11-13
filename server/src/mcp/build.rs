@@ -128,25 +128,6 @@ async fn queue_upload(
     .fetch_one(&mut *tx)
     .await?;
 
-    // Independent of the connector/build rows above: survives
-    // `delete_mcp_connector_or_mark_failed` deleting both of them on a
-    // first-time build failure, so the CLI/UI can still learn why (mirrors
-    // agents' `upload_status`, keyed the same way: `upload_id` = this build's id).
-    // In the same transaction as the two inserts above (not best-effort): a
-    // mid-transaction error leaves `tx` aborted in Postgres, so swallowing it
-    // here would only surface as a confusing failure on the commit below.
-    sqlx::query(
-        "INSERT INTO mcp_upload_status (upload_id, connector_id, connector_name, owner_id, status, source) \
-         VALUES ($1, $2, $3, $4, 'pending', $5)",
-    )
-    .bind(build_id.to_string())
-    .bind(connector_id)
-    .bind(&name)
-    .bind(owner_id)
-    .bind(if github_url.is_some() { "github" } else { "zip" })
-    .execute(&mut *tx)
-    .await?;
-
     // Encrypted at rest in build_jobs.payload — decrypted only inside the
     // worker immediately before use (Step 9's decrypt_build_secrets), never
     // persisted in plaintext. Owner-scoped, same key agent LLM secrets never
@@ -216,54 +197,6 @@ pub async fn get_build_status(
         "build_status": connector.build_status,
         "error_msg": row.1,
         "image_tag": connector.container_image_tag,
-    }))
-}
-
-/// `GET /api/mcp/connectors/uploads/{upload_id}` — the durable counterpart to
-/// [`get_build_status`]: keyed by `upload_id` (the build's own id as text,
-/// same as `upload_status.upload_id` for agents), so it keeps answering after
-/// a first-time build failure deletes the connector/build rows
-/// (`delete_mcp_connector_or_mark_failed`). Ownership-checked against
-/// `mcp_upload_status.owner_id` directly, since the connector it names may no
-/// longer exist to check ownership against.
-#[derive(sqlx::FromRow)]
-struct McpUploadStatusRow {
-    connector_id: Option<Uuid>,
-    connector_name: String,
-    status: String,
-    owner_id: Uuid,
-    error_message: Option<String>,
-}
-
-pub async fn get_upload_status(
-    db: &PgPool,
-    caller: Uuid,
-    is_admin: bool,
-    upload_id: &str,
-) -> Result<serde_json::Value, McpError> {
-    let row: Option<McpUploadStatusRow> = sqlx::query_as(
-        "SELECT connector_id, connector_name, status, owner_id, error_message \
-         FROM mcp_upload_status WHERE upload_id = $1",
-    )
-    .bind(upload_id)
-    .fetch_optional(db)
-    .await?;
-
-    let Some(row) = row else {
-        return Err(McpError::NotFound(format!("upload '{upload_id}' not found")));
-    };
-    if !is_admin && row.owner_id != caller {
-        return Err(McpError::Forbidden(
-            "this upload does not belong to you".into(),
-        ));
-    }
-
-    Ok(serde_json::json!({
-        "upload_id": upload_id,
-        "connector_id": row.connector_id,
-        "connector_name": row.connector_name,
-        "status": row.status,
-        "error_message": row.error_message,
     }))
 }
 
@@ -874,24 +807,6 @@ async fn mark_building(db: &PgPool, build_id: Uuid, connector_id: Uuid) {
     {
         tracing::error!(build_id = %build_id, %e, "failed to mark build building");
     }
-    set_mcp_upload_status(db, build_id, "building", None).await;
-}
-
-/// Updates the connector-independent `mcp_upload_status` row alongside the
-/// connector/build rows at every transition — see that table's own doc
-/// comment (0101_mcp_upload_status.sql) for why it exists.
-async fn set_mcp_upload_status(db: &PgPool, build_id: Uuid, status: &str, error_message: Option<&str>) {
-    if let Err(e) = sqlx::query(
-        "UPDATE mcp_upload_status SET status = $2, error_message = $3 WHERE upload_id = $1",
-    )
-    .bind(build_id.to_string())
-    .bind(status)
-    .bind(error_message)
-    .execute(db)
-    .await
-    {
-        tracing::error!(%build_id, %e, "failed to update mcp_upload_status");
-    }
 }
 
 async fn set_detected_runtime(db: &PgPool, build_id: Uuid, detected_runtime: &str) {
@@ -945,7 +860,6 @@ async fn mark_running(db: &PgPool, build_id: Uuid, connector_id: Uuid, url: &str
     {
         tracing::error!(build_id = %build_id, %e, "failed to mark build success");
     }
-    set_mcp_upload_status(db, build_id, "success", None).await;
 }
 
 /// Marks the build row terminally failed, then defers to
@@ -963,19 +877,6 @@ pub async fn fail_mcp_connector_terminal(db: &PgPool, connector_id: Uuid) {
     {
         tracing::error!(connector_id = %connector_id, %e, "failed to mark build terminally failed");
     }
-    // No `build_id` in scope here (unlike `fail_mcp_connector`) — `mcp_upload_status`
-    // also carries `connector_id`, so update by that instead of looking one up.
-    if let Err(e) = sqlx::query(
-        "UPDATE mcp_upload_status SET status = 'failed', \
-         error_message = COALESCE(error_message, 'build job did not complete') \
-         WHERE connector_id = $1 AND status IN ('pending', 'building')",
-    )
-    .bind(connector_id)
-    .execute(db)
-    .await
-    {
-        tracing::error!(connector_id = %connector_id, %e, "failed to mark mcp_upload_status terminally failed");
-    }
     delete_mcp_connector_or_mark_failed(db, connector_id).await;
 }
 
@@ -992,7 +893,6 @@ async fn fail_mcp_connector(db: &PgPool, build_id: Uuid, connector_id: Uuid, err
     {
         tracing::error!(build_id = %build_id, %e, "failed to mark build failed");
     }
-    set_mcp_upload_status(db, build_id, "failed", Some(error_msg)).await;
     delete_mcp_connector_or_mark_failed(db, connector_id).await;
 }
 

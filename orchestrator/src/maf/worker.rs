@@ -8,13 +8,10 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-use nasiko_types::maf::STOPPED;
-
 use super::{
     executor,
     llm::LlmClient,
     runner::{MafExecutor, MafResume, MafRunContext},
-    stop,
     types::{MafDefinition, PausedStep, StepOutcome, StepResult},
 };
 
@@ -24,7 +21,7 @@ use super::{
 /// drift between the two used to mean silently orphaned jobs, no compile error and no runtime
 /// error (found in review).
 pub const STREAM_KEY: &str = "nasiko:maf:execute";
-pub(super) const GROUP_NAME: &str = "maf-workers";
+const GROUP_NAME: &str = "maf-workers";
 
 /// Recovery takes a message over once the worker running it has missed this many
 /// heartbeats in a row: a live run refreshes its message every heartbeat, so a message
@@ -208,9 +205,6 @@ pub(super) async fn run(
         .arg("MKSTREAM")
         .query_async(&mut reader)
         .await;
-
-    // Stop requests for the runs this worker holds arrive on its own channel (`stop::listen`).
-    tokio::spawn(super::stop::listen(redis.clone(), lease.consumer.clone()));
 
     // Messages whose worker stopped are reclaimed in batches the free slots can take,
     // through the same drain as new work, instead of all of them running one after
@@ -537,10 +531,6 @@ async fn process_job(
     let maf_json_str = job.maf_json;
     let is_resume = job.resume.is_some();
 
-    // Before the claim, so a stop that lands between the claim and the run starting is not
-    // missed: the run then ends as soon as it starts.
-    let run_guard = stop::register(execution_id);
-
     let (new_attempt, max_attempts) = match claim(db, execution_id, is_resume).await {
         Ok(Claim::Run {
             attempt,
@@ -624,11 +614,10 @@ async fn process_job(
         }
     })
     .catch_unwind();
-    // The run, its heartbeat and its stop signal together. `hold_message` returns only when
-    // another worker has taken the message over, and the run is then dropped where it is (an
-    // agent or LLM call in flight is cancelled with it): the new owner runs it, and this worker
-    // writes nothing more and acknowledges nothing. A stop drops the run the same way; the
-    // stop already recorded the execution's end, so only its spend is left to record.
+    // The run and its heartbeat together. `hold_message` returns only when another worker
+    // has taken the message over, and the run is then dropped where it is (an agent or LLM
+    // call in flight is cancelled with it): the new owner runs it, and this worker writes
+    // nothing more and acknowledges nothing.
     let outcome = tokio::select! {
         outcome = run => outcome.unwrap_or_else(|_| {
             error!("MAF execution {execution_id}: executor panicked");
@@ -636,12 +625,6 @@ async fn process_job(
         }),
         () = hold_message(conn.clone(), msg_id, lease) => {
             warn!("MAF execution {execution_id}: another worker took over message {msg_id}; stopping this run");
-            return;
-        }
-        () = run_guard.stopped() => {
-            info!("MAF execution {execution_id}: stopped by its owner");
-            record_stopped_spend(db, execution_id, &run_guard).await;
-            ack_if_held(conn, msg_id, lease, execution_id).await;
             return;
         }
     };
@@ -789,13 +772,11 @@ async fn finish_job(
     maf_def: &MafDefinition,
     is_resume: bool,
 ) {
-    // Every write below skips an execution its owner stopped meanwhile: the stop stands, and
-    // only the run's spend is recorded on it.
     match outcome {
         Ok(StepOutcome::Completed(result)) => {
             let step_json = serde_json::to_value(&result.step_results).unwrap_or_default();
             let step_json_str = step_json.to_string();
-            let written = sqlx::query(
+            let _ = sqlx::query(
                 r#"UPDATE maf_executions
                    SET status = 'success',
                        output = $1,
@@ -804,52 +785,32 @@ async fn finish_job(
                        cost_usd = $4,
                        completed_at = now(),
                        duration_ms = EXTRACT(EPOCH FROM (now() - started_at))::BIGINT * 1000
-                   WHERE id = $5 AND status <> $6"#,
+                   WHERE id = $5"#,
             )
             .bind(&result.output)
             .bind(&step_json_str)
             .bind(result.tokens_used)
             .bind(result.cost_usd)
             .bind(execution_id)
-            .bind(STOPPED)
             .execute(db)
             .await;
-            if skipped_as_stopped(&written) {
-                record_spend_of_stopped(db, execution_id).await;
-                info!(
-                    "MAF execution {execution_id} finished after its owner stopped it; it stays stopped"
-                );
-            } else {
-                info!("MAF execution {execution_id} succeeded");
-            }
             ack(conn, msg_id).await;
+            info!("MAF execution {execution_id} succeeded");
         }
         Ok(StepOutcome::AwaitingHuman(paused)) => {
             // `step_results`/`tokens_used` were already persisted by the executor at the moment
             // it detected the pause (`execute_step`/`continue_paused_step`'s own
             // `persist_progress` call) — only the execution-level status still needs flipping.
-            let written =
-                sqlx::query("UPDATE maf_executions SET status = $1 WHERE id = $2 AND status <> $3")
-                    .bind(nasiko_types::maf::AWAITING_HUMAN)
-                    .bind(execution_id)
-                    .bind(STOPPED)
-                    .execute(db)
-                    .await;
-            if skipped_as_stopped(&written) {
-                // No HITL request: there is nothing left to resume.
-                record_spend_of_stopped(db, execution_id).await;
-                ack(conn, msg_id).await;
-                info!(
-                    "MAF execution {execution_id} paused after its owner stopped it; it stays stopped"
-                );
-                return;
-            }
+            let _ = sqlx::query("UPDATE maf_executions SET status = $1 WHERE id = $2")
+                .bind(nasiko_types::maf::AWAITING_HUMAN)
+                .bind(execution_id)
+                .execute(db)
+                .await;
             let step_index = paused.step_index;
             match create_hitl_request(hitl_store, execution_id, user_id, maf_def, &paused).await {
                 Ok(()) => {
                     // Done for now — no retry, no re-enqueue. The row waits for
                     // `POST /api/hitl/{id}/resolve` to trigger a continuation job.
-                    withdraw_question_if_stopped(db, execution_id, user_id).await;
                     ack(conn, msg_id).await;
                     info!(
                         "MAF execution {execution_id} paused at step {step_index} awaiting a human"
@@ -889,22 +850,13 @@ async fn finish_job(
                 );
             } else {
                 // Reset to pending and re-enqueue for retry
-                let written = sqlx::query(
-                    "UPDATE maf_executions SET status = 'pending', error = $1 WHERE id = $2 AND status <> $3",
+                let _ = sqlx::query(
+                    "UPDATE maf_executions SET status = 'pending', error = $1 WHERE id = $2",
                 )
                 .bind(&e)
                 .bind(execution_id)
-                .bind(STOPPED)
                 .execute(db)
                 .await;
-                if skipped_as_stopped(&written) {
-                    record_spend_of_stopped(db, execution_id).await;
-                    ack(conn, msg_id).await;
-                    info!(
-                        "MAF execution {execution_id} failed after its owner stopped it; not retrying"
-                    );
-                    return;
-                }
                 re_enqueue(conn, execution_id, maf_json_str, user_id, content).await;
                 ack(conn, msg_id).await;
                 warn!(
@@ -964,7 +916,7 @@ async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
     // the priced rows; read them back the same way a successful run does.
     let spend = executor::platform_spend(db, execution_id).await;
 
-    let written = sqlx::query(
+    let _ = sqlx::query(
         r#"UPDATE maf_executions
            SET status = 'failed',
                error = $1,
@@ -972,92 +924,14 @@ async fn mark_failed(db: &PgPool, execution_id: Uuid, error: &str) {
                cost_usd = $3,
                completed_at = now(),
                duration_ms = EXTRACT(EPOCH FROM (now() - COALESCE(started_at, now())))::BIGINT * 1000
-           WHERE id = $4 AND status <> $5"#,
+           WHERE id = $4"#,
     )
     .bind(error)
     .bind(spend.total_tokens)
     .bind(spend.total_cost_usd)
     .bind(execution_id)
-    .bind(STOPPED)
     .execute(db)
     .await;
-    if skipped_as_stopped(&written) {
-        write_spend_of_stopped(db, execution_id, &spend).await;
-    }
-}
-
-/// Cancels the question a pause just recorded when the execution was stopped in the moment
-/// between the pause and the question: the stop canceled the questions it found, and this one
-/// did not exist yet. Nothing would ever resume it.
-async fn withdraw_question_if_stopped(db: &PgPool, execution_id: Uuid, owner: Uuid) {
-    let _ = sqlx::query(
-        "UPDATE hitl_requests
-            SET status = 'canceled', resolved_by = $2, resolved_at = now()
-          WHERE maf_execution_id = $1 AND status = 'pending'
-            AND EXISTS (SELECT 1 FROM maf_executions WHERE id = $1 AND status = $3)",
-    )
-    .bind(execution_id)
-    .bind(owner)
-    .bind(STOPPED)
-    .execute(db)
-    .await;
-}
-
-/// How long a stopped run waits for its usage writes still in flight before it reads its spend.
-const USAGE_WRITE_GRACE: Duration = Duration::from_secs(5);
-
-/// Whether a write that skips stopped executions (`... AND status <> 'stopped'`) skipped
-/// this one. A row that no longer exists reads the same, and there is nothing to write then.
-fn skipped_as_stopped(written: &Result<sqlx::postgres::PgQueryResult, sqlx::Error>) -> bool {
-    matches!(written, Ok(result) if result.rows_affected() == 0)
-}
-
-/// The spend of a run its owner stopped, once the usage writes still in flight have landed.
-async fn record_stopped_spend(db: &PgPool, execution_id: Uuid, run_guard: &stop::RunGuard) {
-    if !run_guard.usage_written(USAGE_WRITE_GRACE).await {
-        warn!(
-            "MAF execution {execution_id}: a usage write was still in flight {}s after the stop; the recorded spend may miss it",
-            USAGE_WRITE_GRACE.as_secs()
-        );
-    }
-    record_spend_of_stopped(db, execution_id).await;
-}
-
-/// A stopped execution's spend, read back from the platform's records like a failed one's
-/// (`mark_failed`): the calls made before the stop were real and billed.
-async fn record_spend_of_stopped(db: &PgPool, execution_id: Uuid) {
-    let spend = executor::platform_spend(db, execution_id).await;
-    write_spend_of_stopped(db, execution_id, &spend).await;
-}
-
-async fn write_spend_of_stopped(db: &PgPool, execution_id: Uuid, spend: &executor::PlatformSpend) {
-    let _ = sqlx::query(
-        "UPDATE maf_executions SET tokens_used = $1, cost_usd = $2 WHERE id = $3 AND status = $4",
-    )
-    .bind(spend.total_tokens)
-    .bind(spend.total_cost_usd)
-    .bind(execution_id)
-    .bind(STOPPED)
-    .execute(db)
-    .await;
-}
-
-/// Acknowledges a stopped run's message, but only while this worker still holds it: one
-/// another worker has taken over is that worker's to acknowledge (it stops too), and
-/// acknowledging it here would end its heartbeat's hold mid-run.
-async fn ack_if_held(
-    conn: &mut redis::aio::MultiplexedConnection,
-    msg_id: &str,
-    lease: &Lease,
-    execution_id: Uuid,
-) {
-    if let Ok(false) = refresh_ownership(conn, msg_id, &lease.consumer).await {
-        warn!(
-            "MAF execution {execution_id}: another worker took over message {msg_id}; leaving it to acknowledge"
-        );
-        return;
-    }
-    ack(conn, msg_id).await;
 }
 
 async fn ack(conn: &mut redis::aio::MultiplexedConnection, msg_id: &str) {

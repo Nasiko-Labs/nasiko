@@ -273,6 +273,13 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
+            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
+            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
+                1024 * 1024,
+                crate::attachments::ATTACHMENT_CACHE_TTL,
+            )),
+            marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
         }
@@ -483,7 +490,8 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert!(matches!(err, GatewayError::Upstream(_)));
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("unknown model"));
         mock.assert_async().await;
     }
 

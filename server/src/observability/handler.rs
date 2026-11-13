@@ -144,9 +144,6 @@ pub struct FinopsFilterParams {
     /// How many agents get their own series under `group_by=agent`
     /// (default 5, clamped 1-20). The rest fold into `other`.
     pub top: Option<i64>,
-    /// One user's usage only (a user UUID). An admin may name anyone; anyone else only
-    /// themselves (403 otherwise).
-    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -156,9 +153,6 @@ pub struct FinopsDayDrilldownParams {
     pub agent_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
-    /// One user's usage only (a user UUID). An admin may name anyone; anyone else only
-    /// themselves (403 otherwise).
-    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -171,9 +165,6 @@ pub struct FinopsSpendCalendarParams {
     pub provider: Option<String>,
     /// "agent" | "coding" | "acp" — restricts spend to one `trace_usage.source`.
     pub source: Option<String>,
-    /// One user's usage only (a user UUID). An admin may name anyone; anyone else only
-    /// themselves (403 otherwise).
-    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, IntoParams)]
@@ -191,9 +182,6 @@ pub struct FinopsAttributionsParams {
     pub sort_dir: Option<String>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
-    /// One user's usage only (a user UUID). An admin may name anyone; anyone else only
-    /// themselves (403 otherwise).
-    pub user_id: Option<String>,
 }
 
 /// Validates `range` is one of "24h"/"7d"/"30d" when present.
@@ -653,11 +641,7 @@ pub async fn get_finops_dashboard(
         };
 
     let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), params.my_agent).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = finops_scope(&state, &claims, user_scope, owns).await;
     let owner_id = (params.my_agent && agent_name.is_none()).then_some(claims.sub.as_str());
     match svc(&state)
         .get_finops_dashboard(
@@ -677,10 +661,7 @@ pub async fn get_finops_dashboard(
         )
         .await
     {
-        Ok(mut resp) => {
-            retain_visible_users(&state, &claims, &mut resp.data.users).await;
-            Json(resp).into_response()
-        }
+        Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
 }
@@ -768,11 +749,7 @@ pub async fn get_finops_spend_timeseries(
                 .into_response();
         }
     };
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = finops_scope(&state, &claims, user_scope, owns).await;
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_timeseries(
@@ -836,11 +813,7 @@ pub async fn get_finops_spend_calendar(
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
     let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = finops_scope(&state, &claims, user_scope, owns).await;
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar(
@@ -889,11 +862,7 @@ pub async fn get_finops_spend_calendar_day(
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
     let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = finops_scope(&state, &claims, user_scope, owns).await;
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar_day(
@@ -954,11 +923,7 @@ pub async fn get_finops_attributions(
             Err(r) => return r,
         };
     let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = finops_scope(&state, &claims, user_scope, owns).await;
     let access = scope.access();
     match svc(&state)
         .get_finops_attributions(
@@ -1068,76 +1033,23 @@ impl CallerScope {
 }
 
 /// `owns`: the caller owns the agent being filtered on, which is its own reason to see that agent's
-/// full usage, not just their own calls to it (bug found 2026-10-22). `requested_user` (the
-/// `user_id` query param) narrows to one user's calls whatever else applies; see
-/// [`authorized_user_filter`] for who may name whom.
+/// full usage, not just their own calls to it (bug found 2026-10-22).
 async fn finops_scope(
     state: &AppState,
     claims: &Claims,
     user_scope: Option<Extension<FinopsUserScope>>,
     owns: bool,
-    requested_user: Option<&str>,
-) -> Result<CallerScope, Response> {
-    let user_ids = match requested_user {
-        Some(raw) => Some(vec![authorized_user_filter(state, claims, raw).await?]),
-        None if owns => None,
-        None => user_scope.map(|Extension(s)| s.0),
-    };
-    Ok(CallerScope {
-        user_ids,
+) -> CallerScope {
+    CallerScope {
+        user_ids: if owns {
+            None
+        } else {
+            user_scope.map(|Extension(s)| s.0)
+        },
         accessible_agent_ids: accessible_agent_ids(state, claims).await,
         workflow_owner: (!claims.is_superuser)
             .then(|| claims.sub.parse().unwrap_or(uuid::Uuid::nil())),
-    })
-}
-
-/// The user a `user_id` filter names, if the caller may see that user's usage: anyone may name
-/// themselves; only a user manager (`AuthService::can_manage_users`: a superuser, or an admin)
-/// may name someone else. Not a UUID is a 400; someone else's, for anyone but an admin, a 403.
-async fn authorized_user_filter(
-    state: &AppState,
-    claims: &Claims,
-    raw: &str,
-) -> Result<uuid::Uuid, Response> {
-    let Ok(user) = raw.parse::<uuid::Uuid>() else {
-        return Err((StatusCode::BAD_REQUEST, "user_id must be a UUID").into_response());
-    };
-    if claims.sub == user.to_string() || may_see_every_user(state, claims).await {
-        return Ok(user);
     }
-    Err((
-        StatusCode::FORBIDDEN,
-        "only an admin may view another user's usage",
-    )
-        .into_response())
-}
-
-async fn may_see_every_user(state: &AppState, claims: &Claims) -> bool {
-    state.auth.can_manage_users(&claims.clone().into()).await
-}
-
-/// Keeps the dashboard's per-user rows the caller may see: every row for an admin, otherwise the
-/// users the edition lets them see (`AuthService::org_visible_user_ids`; OSS: nobody else) and
-/// themselves. A member's spend view can include other people's calls to their agents, but
-/// never who made them.
-async fn retain_visible_users(
-    state: &AppState,
-    claims: &Claims,
-    users: &mut Vec<super::service::UserFinopsRow>,
-) {
-    if may_see_every_user(state, claims).await {
-        return;
-    }
-    let visible = state
-        .auth
-        .org_visible_user_ids(&claims.clone().into())
-        .await
-        .unwrap_or_default();
-    users.retain(|row| {
-        row.user_id
-            .as_deref()
-            .is_some_and(|id| id == claims.sub || visible.iter().any(|v| v == id))
-    });
 }
 
 /// Whether the caller owns the agent named by the filter; `unfiltered` answers when there is none

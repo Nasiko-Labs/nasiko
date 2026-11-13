@@ -637,12 +637,6 @@ pub(crate) async fn upload_and_deploy(
         ports
     };
 
-    // Asked in the transaction that inserts, so a limit on agents is counted under its own lock.
-    if let Err(refusal) = state.agent_admission.admit(&mut tx, owner_id, &name).await {
-        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return refusal.into_response();
-    }
-
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
