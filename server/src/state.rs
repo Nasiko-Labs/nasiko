@@ -11,7 +11,6 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
-use crate::chat::attachment_store::{ChatUploadStore, SwappableAttachmentStore};
 use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
@@ -57,6 +56,10 @@ pub struct AppState {
     /// `AdmitEverySession`; an edition whose sessions can add an agent installs its limit check
     /// through this cell (`SwappableSessionAdmission::install`), once it has what that needs.
     pub session_admission: Arc<crate::sessions::admission::SwappableSessionAdmission>,
+    /// Asked inside the transaction that inserts a new agent row. OSS wires `AdmitEveryAgent`; an
+    /// edition with an agent limit replaces it at its composition root, before the routers take
+    /// their `AppState` clones.
+    pub agent_admission: Arc<dyn crate::agents::admission::AgentAdmission>,
     /// Where a downstream reader of hot `trace_usage` rows has read up to, so
     /// tiering never moves rows it has not seen. OSS wires `NoTieringHold` (no such
     /// reader); the EE composition root replaces it before `init`.
@@ -104,9 +107,6 @@ pub struct AppState {
     /// same reason `prompt_context` does — see that field's doc comment and the
     /// `chat::turn_artifacts` module docs.
     pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
-    pub attachment_store: Arc<SwappableAttachmentStore>,
-    pub marker_signer: Option<Arc<nasiko_llm_router::attachments::MarkerSigner>>,
-    pub llm_config_cache: Arc<nasiko_llm_router::ConfigCache>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -315,12 +315,6 @@ impl AppState {
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
         let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
-        let attachment_store = Arc::new(SwappableAttachmentStore::new(Arc::new(
-            ChatUploadStore::new(oci_storage.clone()),
-        )));
-        let marker_signer =
-            nasiko_llm_router::attachments::MarkerSigner::from_secret(&config.agent_jwt_secret)
-                .map(Arc::new);
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -452,6 +446,7 @@ impl AppState {
             spend_gate,
             shared_call_payer: Arc::new(nasiko_llm_router::payer::CallerPays),
             session_admission,
+            agent_admission: Arc::new(crate::agents::admission::AdmitEveryAgent),
             tiering_hold,
             agent_wake,
             maf_executor,
@@ -460,13 +455,6 @@ impl AppState {
             agent_deletion_hook,
             agent_scaling,
             turn_artifacts,
-            attachment_store,
-            marker_signer,
-            llm_config_cache: Arc::new(nasiko_llm_router::ConfigCache::new(
-                std::time::Duration::from_secs(
-                    nasiko_llm_router::config::GatewayConfig::llm_config_cache_ttl_secs_from_env(),
-                ),
-            )),
             history_embedding_cache,
             observability,
             github_svc,

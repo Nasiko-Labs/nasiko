@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod admission;
 pub mod build_worker;
 pub mod catalog_deploy;
 pub mod deploy_env;
