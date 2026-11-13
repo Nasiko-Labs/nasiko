@@ -964,6 +964,7 @@ impl AttemptGuard {
                 // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
                 compact_tools_metadata: None,
+                routing_metadata: routed.routing_metadata.clone(),
                 compress_bytes: routed.compression.bytes,
                 compact_tools_bytes: None,
                 // Only ever written for a failed attempt (a success disarms the guard), where it
@@ -1065,6 +1066,7 @@ fn log_response_usage(
             compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
             compact_tools_metadata: None,
+            routing_metadata: routed.routing_metadata,
             compress_bytes: routed.compression.bytes,
             // Compact tools runs in chat_core only.
             compact_tools_bytes: None,
@@ -1771,6 +1773,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
+            routing_metadata: None,
             sticky_conv_id: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
@@ -2272,6 +2275,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
+            routing_metadata: None,
             sticky_conv_id: None,
         };
         let mut guard = AttemptGuard::new(
@@ -2321,6 +2325,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
+            routing_metadata: None,
             sticky_conv_id: None,
         };
         let mut guard = AttemptGuard::new(

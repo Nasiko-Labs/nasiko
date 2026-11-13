@@ -250,9 +250,7 @@ pub async fn get_upload_status(
     .await?;
 
     let Some(row) = row else {
-        return Err(McpError::NotFound(format!(
-            "upload '{upload_id}' not found"
-        )));
+        return Err(McpError::NotFound(format!("upload '{upload_id}' not found")));
     };
     if !is_admin && row.owner_id != caller {
         return Err(McpError::Forbidden(
@@ -882,12 +880,7 @@ async fn mark_building(db: &PgPool, build_id: Uuid, connector_id: Uuid) {
 /// Updates the connector-independent `mcp_upload_status` row alongside the
 /// connector/build rows at every transition — see that table's own doc
 /// comment (0101_mcp_upload_status.sql) for why it exists.
-async fn set_mcp_upload_status(
-    db: &PgPool,
-    build_id: Uuid,
-    status: &str,
-    error_message: Option<&str>,
-) {
+async fn set_mcp_upload_status(db: &PgPool, build_id: Uuid, status: &str, error_message: Option<&str>) {
     if let Err(e) = sqlx::query(
         "UPDATE mcp_upload_status SET status = $2, error_message = $3 WHERE upload_id = $1",
     )
