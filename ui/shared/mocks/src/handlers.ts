@@ -83,6 +83,7 @@ import {
   listCustom,
   listSecrets,
   deleteSecret,
+  myChoice,
   patchRouting,
   touchSecret,
   upsertSecret,
@@ -1917,6 +1918,26 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         ),
       )
     }),
+    // agents/llm_config.rs my-llm-config: the caller's own choice on an agent they can use but do not own.
+    http.get('/api/agents/:id/my-llm-config', ({ params: prm }) =>
+      routed(() => envelope(myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID))),
+    ),
+    http.put('/api/agents/:id/my-llm-config', async ({ params: prm, request }) => {
+      const body = (await request.json().catch(() => ({}))) as { llm_config_id?: string }
+      return routed(() =>
+        envelope(
+          myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, {
+            configId: body.llm_config_id ?? null,
+          }),
+        ),
+      )
+    }),
+    http.delete('/api/agents/:id/my-llm-config', ({ params: prm }) =>
+      routed(() => {
+        myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, { configId: null })
+        return HttpResponse.json({ data: null, status_code: 200, message: 'ok' })
+      }),
+    ),
     // secrets/routes.rs list_secrets: names and timestamps only.
     http.get('/api/secrets', () =>
       routed(() => {
@@ -2172,6 +2193,17 @@ function routingAgent(ref: string): MockAgent {
   const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
   if (!a) throw new MockHttpError(404, 'agent not found')
   if (a.owner_id !== ADMIN_ID && !superuser()) throw new MockHttpError(403, 'not the agent owner')
+  return a
+}
+
+/** acl.rs `can_access_agent` (owner, public, a user grant, or a superuser): 404 `agent not found` otherwise. */
+function usableAgent(ref: string): MockAgent {
+  const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
+  if (
+    !a ||
+    !(a.owner_id === ADMIN_ID || superuser() || a.is_public || a.userGrants.includes(ADMIN_ID))
+  )
+    throw new MockHttpError(404, 'agent not found')
   return a
 }
 
