@@ -123,13 +123,14 @@ pub async fn metered_llm<T>(
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
-/// `trace_usage` row, and the ledger the call is handed to.
-#[derive(Clone, Copy)]
+/// `trace_usage` row, and the ledger the call is handed to. The ledger is shared, not
+/// borrowed, because the write runs as its own task (see [`metered_call`]).
+#[derive(Clone)]
 pub struct UsageSource<'a> {
     pub provider: &'a str,
     /// `"platform"` for the platform's own key, `"user"` for the run owner's.
     pub key_source: &'a str,
-    pub ledger: &'a dyn UsageLedger,
+    pub ledger: Arc<dyn UsageLedger>,
 }
 
 /// [`metered_llm`] for a model call that does not go through [`LlmClient`]: the same span,
@@ -177,7 +178,26 @@ pub async fn metered_call<T, E>(
         span.record("gen_ai.usage.input_tokens", usage.input_tokens);
         span.record("gen_ai.usage.output_tokens", usage.output_tokens);
         span.record("gen_ai.usage.cached_tokens", usage.cached_tokens);
-        write_trace_usage(db, execution_id, user_id, phase, step_index, source, usage).await;
+        // Awaited, so a run's spend is recorded before it reads it back (`platform_spend`), but
+        // run as its own task: a stopped run is dropped wherever it is, and a write dropped
+        // mid-transaction would roll back the record of a call that was already paid for.
+        let write = write_trace_usage(
+            db.clone(),
+            execution_id,
+            user_id,
+            phase,
+            step_index,
+            OwnedSource::from(&source),
+            usage.clone(),
+        );
+        if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
+            tracing::warn!(
+                execution_id = %execution_id,
+                phase,
+                error = %e,
+                "maf: trace_usage write task failed (non-fatal)"
+            );
+        }
     }
 
     tracing::info!(
@@ -198,13 +218,13 @@ pub async fn metered_call<T, E>(
 /// under one session, the same convention the LLM router follows by writing
 /// the flow id there.
 async fn write_trace_usage(
-    db: &PgPool,
+    db: PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     phase: &'static str,
     step_index: Option<i32>,
-    source: UsageSource<'_>,
-    usage: &LlmUsage,
+    source: OwnedSource,
+    usage: LlmUsage,
 ) {
     let metadata = serde_json::json!({
         "key_source": source.key_source,
@@ -217,13 +237,13 @@ async fn write_trace_usage(
     let session_id = execution_id.to_string();
     let agent_name: String = maf_agent_name(step_index);
     let result = insert_trace_usage(
-        db,
-        source.ledger,
+        &db,
+        source.ledger.as_ref(),
         user_id,
         Some(&session_id),
         &agent_name,
-        source.provider,
-        usage,
+        &source.provider,
+        &usage,
         metadata,
     )
     .await;
@@ -235,6 +255,23 @@ async fn write_trace_usage(
             error = %e,
             "maf: trace_usage write failed (non-fatal)"
         );
+    }
+}
+
+/// A [`UsageSource`] the write's own task can hold.
+struct OwnedSource {
+    provider: String,
+    key_source: String,
+    ledger: Arc<dyn UsageLedger>,
+}
+
+impl From<&UsageSource<'_>> for OwnedSource {
+    fn from(source: &UsageSource<'_>) -> Self {
+        Self {
+            provider: source.provider.to_string(),
+            key_source: source.key_source.to_string(),
+            ledger: source.ledger.clone(),
+        }
     }
 }
 
@@ -1757,6 +1794,10 @@ fn resume_from(steps: &[MafStep], prior: &[StepResult]) -> Vec<StepResult> {
 /// Best-effort: a transient write failure here shouldn't abort the run — the
 /// next transition will just overwrite with fresher data, and the final
 /// write in worker.rs remains the source of truth once the run completes.
+///
+/// A stopped execution is never written: the stop already recorded where it ended. Finding
+/// the row stopped also stops the run here, the backstop for a stop message that never reached
+/// this worker (`super::stop`), so the run ends at this step rather than running to completion.
 pub async fn persist_progress(
     db: &PgPool,
     execution_id: Uuid,
@@ -1765,15 +1806,26 @@ pub async fn persist_progress(
     cost_usd: f64,
 ) {
     let step_json = serde_json::to_value(step_results).unwrap_or_default();
-    let _ = sqlx::query(
-        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2, cost_usd = $3 WHERE id = $4",
+    let written = sqlx::query(
+        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2, cost_usd = $3 \
+         WHERE id = $4 AND status <> $5",
     )
     .bind(step_json.to_string())
     .bind(tokens_used)
     .bind(cost_usd)
     .bind(execution_id)
+    .bind(nasiko_types::maf::STOPPED)
     .execute(db)
     .await;
+    if let Ok(result) = written
+        && result.rows_affected() == 0
+        && super::stop::stop_local(execution_id)
+    {
+        tracing::info!(
+            execution_id = %execution_id,
+            "maf: execution found stopped at its progress write; ending this run"
+        );
+    }
 }
 
 // ─── Step plan produced by plan_execution ────────────────────────────────────
