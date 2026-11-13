@@ -38,6 +38,7 @@ import {
   useDashboard,
   useCalendar,
   useDay,
+  useModelRouting,
   useProviders,
   useSavings,
   useTimeseries,
@@ -65,6 +66,7 @@ import { scrollToSection, sectionDomId } from './sections'
 import { useSavingsTrend } from '@nasiko/features/optimization/api'
 import { MonthHero } from './components/MonthHero'
 import { copy as optimizationCopy } from '@nasiko/features/optimization/copy'
+import { ModelRoutingCard } from './components/ModelRoutingCard'
 import { OptimisationPanel } from './components/OptimisationPanel'
 import { SavingsHighlight } from './components/SavingsHighlight'
 import { summarizeOptimisation } from './optimisation'
@@ -156,6 +158,9 @@ export function TokenopsPage({
   const providers = useProviders(ready)
   // CX-V3 (proposed): history selection's savings, the /optimization lead's read under the same key.
   const history = useSavingsTrend(win, ready)
+  // NAS-1263: which precedence level and tier the LLM router served each call by. `null` on a
+  // server without the endpoint, which the card renders as nothing.
+  const routing = useModelRouting(win, filters, ready)
   const traces = useTopTraces(tracesWin, filters, ready && !!search.traces)
 
   // Agent filter options: the unfiltered dashboard (same cache entry when no filter is set).
@@ -699,6 +704,11 @@ export function TokenopsPage({
                         search={search}
                       />
                     }
+                  />
+                  <ModelRoutingCard
+                    data={routing.data}
+                    loading={routing.isPending}
+                    filtered={!noFilters}
                   />
                   {/* P3 (plans/feat-optimization-page.md): the trend, the agents and the fixes live on Optimization,
                       opened on this window (R7A: the two pages share the window keys). */}
