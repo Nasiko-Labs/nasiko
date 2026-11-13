@@ -2471,7 +2471,17 @@ fn classify_agent_response(
                 raw_data: data,
             })
         }
-        StreamDisposition::Completed | StreamDisposition::Continue | StreamDisposition::Failed => {
+        // An agent that reports its task failed has no answer to extract: passing its error text
+        // on as a reply would mark the step a success and feed the error to every later step.
+        StreamDisposition::Failed => {
+            let reason = extract_text(&json);
+            Err(if reason.is_empty() {
+                "agent reported the task failed".to_string()
+            } else {
+                format!("agent reported the task failed: {reason}")
+            })
+        }
+        StreamDisposition::Completed | StreamDisposition::Continue => {
             Ok(AgentCallOutcome::Completed(extract_text(&json)))
         }
     }
@@ -2578,6 +2588,40 @@ mod resume_tests {
         assert_eq!(mounted_a2a_url(base, None), None);
         assert_eq!(mounted_a2a_url(base, Some("/")), None);
         assert_eq!(mounted_a2a_url(base, Some("")), None);
+    }
+
+    fn task_snapshot(
+        state: &str,
+        status_text: &str,
+        artifact_text: Option<&str>,
+    ) -> serde_json::Value {
+        let mut task = serde_json::json!({
+            "id": "t1",
+            "contextId": "c1",
+            "status": {"state": state, "message": {"parts": [{"text": status_text}]}},
+        });
+        if let Some(text) = artifact_text {
+            task["artifacts"] = serde_json::json!([{"parts": [{"text": text}]}]);
+        }
+        serde_json::json!({"jsonrpc": "2.0", "id": "1", "result": {"task": task}})
+    }
+
+    #[test]
+    fn an_agent_reported_failure_fails_the_step() {
+        let failed = task_snapshot("TASK_STATE_FAILED", "Error: Error code: 502", None);
+        match classify_agent_response(failed, "c1") {
+            Err(reason) => assert!(reason.contains("Error code: 502"), "got: {reason}"),
+            Ok(_) => panic!("a failed task must not be classified as a reply"),
+        }
+    }
+
+    #[test]
+    fn a_completed_task_is_a_reply() {
+        let completed = task_snapshot("TASK_STATE_COMPLETED", "done", Some("Hola"));
+        match classify_agent_response(completed, "c1") {
+            Ok(AgentCallOutcome::Completed(text)) => assert_eq!(text, "Hola"),
+            _ => panic!("a completed task must be classified as a reply"),
+        }
     }
 
     /// Q5-1: the server's resolver returns the URL with the mount already on it; a second copy
