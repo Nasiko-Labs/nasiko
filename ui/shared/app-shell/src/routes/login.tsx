@@ -45,6 +45,7 @@ import {
   withSessionLock,
 } from '@nasiko/app-core/session'
 import { env } from '@nasiko/app-core/env'
+import { identifySignIn } from '@nasiko/app-core/analytics'
 import { opt } from '@nasiko/ui/lib/search'
 
 export const Route = createFileRoute('/login')({
@@ -95,6 +96,7 @@ function LoginPage() {
           bumpSignInGeneration()
           clearSignedOutMark()
           broadcastSession({ type: 'signed-in', sub: me.sub })
+          reportSignIn(me.username)
         })
         await resetQueryClient(queryClient)
         await navigate({ to: safeRedirect(redirect), replace: true })
@@ -152,6 +154,7 @@ function LoginPage() {
         bumpSignInGeneration()
         clearSignedOutMark()
         broadcastSession({ type: 'signed-in', sub: result.user_id })
+        reportSignIn(result.username)
       })
       // A new login may be a different account: drop every cached query so no page shows the
       // previous account's data. The _app route's beforeLoad (ensureQueryData(meQuery)) then
@@ -283,6 +286,16 @@ function LoginPage() {
       </div>
     </main>
   )
+}
+
+/**
+ * Reo's sign-in event, in the background: never delays or fails the sign-in. The address comes from `/api/users/me`
+ * (EE answers it for everyone, OSS for superusers only), else the username when it is one.
+ */
+function reportSignIn(username: string) {
+  void apiFetch<{ email: string | null; display_name: string | null }>('/api/users/me')
+    .catch(() => ({ email: null, display_name: null }))
+    .then((u) => identifySignIn(u.email ?? username, u.display_name))
 }
 
 /** The logout call didn't confirm: say so, and let the user repeat only that call. */

@@ -226,7 +226,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 /**
- * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus OSS's Reo loader) for
+ * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus the Reo loader where the page has one) for
  * the server's CSP (plan §8 Phase 9). The page has no other inline script or style attribute.
  */
 function cspHashes(): Plugin {
