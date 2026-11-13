@@ -6,10 +6,10 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fmtMoney } from '@nasiko/ui/lib/format'
 import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
@@ -18,7 +18,6 @@ import { agentWhere } from '@nasiko/testing/agents'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, recordRequests, server } from '@nasiko/testing/setup'
 import { copy as mcpCopy } from '@nasiko/features/mcp/copy'
-import { Description } from './components/bits'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -33,15 +32,6 @@ const running = agent(0)
 const url = (i: number, tab?: string) => `/agents/${agent(i).id}${tab ? `?tab=${tab}` : ''}`
 const title = () => screen.findByRole('heading', { level: 1 })
 const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
-
-// The first render in this file loads the agent page's lazy code, which on a busy runner can take
-// longer than a query waits. That cost belongs to no test, so it is paid once here, with a timeout
-// of its own; otherwise whichever test happens to run first is the one that times out.
-beforeAll(async () => {
-  renderApp(url(0))
-  await screen.findByRole('heading', { level: 1 }, { timeout: 120_000 })
-  cleanup()
-}, 150_000)
 
 describe('resolving the URL', () => {
   it('a unique name redirects to the UUID URL', async () => {
@@ -169,56 +159,6 @@ describe('overview', () => {
     expect(within(summary).getByText('Your key · OPENAI_API_KEY')).toBeInTheDocument()
     await userEvent.click(within(summary).getByRole('button', { name: /All details/ }))
     expect(await screen.findByRole('tab', { name: 'Details', selected: true })).toBeInTheDocument()
-  })
-
-  it('a description longer than its clamp gets Show more on Overview and Details; one that fits gets none (NAS-1595)', async () => {
-    // jsdom has no layout: a clamped paragraph reads as 60 px tall with 100 px of text, any other as fitting.
-    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(100)
-    const client = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (
-      this: Element,
-    ) {
-      return this.tagName === 'P' && /\bline-clamp-\d/.test(this.className) ? 60 : 100
-    })
-    onTestFinished(() => {
-      scroll.mockRestore()
-      client.mockRestore()
-    })
-    const { router } = renderApp(url(0))
-    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
-    const text = within(summary).getByText(`${running.display_name} handles`, { exact: false })
-    expect(text).toHaveClass('line-clamp-3')
-    await userEvent.click(within(summary).getByRole('button', { name: copy.showMore }))
-    expect(text).not.toHaveClass('line-clamp-3')
-    expect(within(summary).getByRole('button', { name: copy.showLess })).toHaveAttribute(
-      'aria-expanded',
-      'true',
-    )
-
-    await router.navigate({
-      to: '/agents/$agentId',
-      params: { agentId: running.id },
-      search: { tab: 'details' },
-    })
-    const what = await screen.findByRole('region', { name: copy.whatItDoes })
-    const full = within(what).getByText(`${running.display_name} handles`, { exact: false })
-    expect(full).toHaveClass('line-clamp-4')
-    const more = within(what).getAllByRole('button', { name: copy.showMore })[0]!
-    expect(more).toHaveAttribute('aria-controls', full.id)
-    await userEvent.click(more)
-    expect(full).not.toHaveClass('line-clamp-4')
-
-    // Fits: no toggle.
-    client.mockReturnValue(100)
-    await router.navigate({ to: '/agents/$agentId', params: { agentId: running.id } })
-    const fits = await screen.findByRole('region', { name: copy.overviewSummary })
-    expect(within(fits).queryByRole('button', { name: copy.showMore })).toBeNull()
-  })
-
-  it('a description keeps its line breaks but folds runs of blank lines into one paragraph break', () => {
-    const { container } = render(
-      <Description text={'\n  One.\nTwo.\n\n\n  \n\nThree.\n\n'} lines={3} />,
-    )
-    expect(container.querySelector('p')!.textContent).toBe('One.\nTwo.\n\nThree.')
   })
 
   it("someone else's summary has the description but no routing (owner or superuser only)", async () => {
@@ -541,10 +481,8 @@ describe('settings', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
     const dialog = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Stay' }))
-    // The dialog animates out, and the page behind it stays inert until it has gone.
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.search).toEqual({ tab: 'settings' })
-    expect(await screen.findByRole('textbox', { name: 'Display name' })).toHaveValue(
+    expect(screen.getByRole('textbox', { name: 'Display name' })).toHaveValue(
       `${agent(1).display_name} edited`,
     )
   })

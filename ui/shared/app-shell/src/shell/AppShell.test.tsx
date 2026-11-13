@@ -7,14 +7,14 @@
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chatRegistry } from '@nasiko/features/chat/registry'
 import { readDraft, writeDraft } from '@nasiko/features/chat/drafts'
 import { apiFetch } from '@nasiko/data-access/client'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
-import { renderApp, warmRoutes, WARM_ROUTES_TIMEOUT_MS } from '@nasiko/testing/renderApp'
+import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { SIGNED_OUT_KEY } from '@nasiko/app-core/session'
 import { copy } from '@nasiko/app-core/shell/copy'
@@ -23,13 +23,6 @@ import { LOGOUT_TIMEOUT_MS, signOut } from '@nasiko/app-shell/shell/signOut'
 import { readPrefs, resetThemeState, setAccent, setTheme } from '@nasiko/app-core/shell/theme'
 
 setupPinnedSeed()
-
-// The pages this file renders most, loaded once up front: otherwise the first test pays every module's first import
-// inside its findBy wait, and timed out there in a busy parallel run (13 Nov 2026).
-beforeAll(
-  () => warmRoutes(['/tokenops', '/agents', '/chat', '/settings', '/status', '/sessions']),
-  WARM_ROUTES_TIMEOUT_MS,
-)
 
 const nav = () => screen.getByRole('navigation', { name: 'Main' })
 const navLink = (name: string) => within(nav()).getByRole('link', { name })

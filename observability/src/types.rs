@@ -720,11 +720,6 @@ pub struct AgentFinOps {
 pub struct TraceUsageRow {
     pub trace_id: String,
     pub agent_name: String,
-    /// Which agent `agent_name` is, when the spans said: the LLM router's verified caller id, or
-    /// the workload UUID its deploy put on its resource. A name is unique only per owner, so
-    /// without this two users' same-named agents cannot be told apart. `None` when no span
-    /// said, or when spans grouped under one name named different agents.
-    pub agent_uuid: Option<uuid::Uuid>,
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
@@ -812,33 +807,9 @@ impl ToolCallSpan {
 /// classify the same trace the same way.
 const RETRY_GAP_TOLERANCE_MS: i64 = 1;
 
-/// OTLP status code 2 is `ERROR` (0 unset, 1 ok), except the A2A SDK's end of stream
-/// and an agent state read that found nothing.
+/// OTLP status code 2 is `ERROR` (0 unset, 1 ok), except the A2A SDK's end of stream.
 fn is_error(span: &Span) -> bool {
-    span.status_code == 2 && !is_a2a_queue_shutdown(span) && !is_agent_state_miss(span)
-}
-
-/// An agent's read of its own durable state (`GET /api/agent-state/...`) that answered
-/// 404: the key was never written, which is how every conversation's first turn starts
-/// (the checkpointer looks for a saved head before there is one). HTTP client
-/// instrumentation records every 4xx as an ERROR span, but here the 404 is the answer,
-/// not a failure. Only reads: a 404 on a write still counts. The UI's span nodes carry no
-/// attributes, so the trace view reports such a span's status as `UNSET` instead
-/// (`span_status_str` in `oss/server/src/observability/service.rs`).
-pub fn is_agent_state_miss(span: &Span) -> bool {
-    let attr = |keys: &[&str]| {
-        keys.iter().find_map(|k| span.attributes.get(*k)).map(|v| {
-            v.as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| v.to_string())
-        })
-    };
-    let method = attr(&["http.request.method", "http.method"]).unwrap_or_else(|| span.name.clone());
-    let status = attr(&["http.response.status_code", "http.status_code"]);
-    let url = attr(&["url.full", "http.url", "url.path", "http.target"]);
-    method.eq_ignore_ascii_case("GET")
-        && status.as_deref() == Some("404")
-        && url.is_some_and(|u| u.contains("/api/agent-state/"))
+    span.status_code == 2 && !is_a2a_queue_shutdown(span)
 }
 
 /// The a2a Python SDK ends every stream by shutting its event queue down, and its own
@@ -1265,31 +1236,6 @@ mod unrecovered_error_tests {
             ..span("b", Some("p"), name, 0, 3, true)
         };
         assert_eq!(count(&[failed]), 1);
-    }
-
-    fn http(method: &str, url: &str, status: serde_json::Value) -> Span {
-        let mut s = span("h", Some("p"), method, 0, 9, true);
-        s.attributes
-            .insert("http.url".into(), serde_json::json!(url));
-        s.attributes.insert("http.status_code".into(), status);
-        s
-    }
-
-    #[test]
-    fn an_agent_state_read_that_finds_nothing_is_not_an_error() {
-        // The checkpointer's first read in a new conversation, as httpx records it.
-        let url = "http://10.24.0.15:8080/api/agent-state/kv/lgh%3A81cc%3A";
-        assert_eq!(count(&[http("GET", url, serde_json::json!("404"))]), 0);
-        assert_eq!(count(&[http("GET", url, serde_json::json!(404))]), 0);
-    }
-
-    #[test]
-    fn other_404s_and_agent_state_failures_still_count() {
-        let state = "http://10.24.0.15:8080/api/agent-state/kv/k";
-        assert_eq!(count(&[http("PUT", state, serde_json::json!("404"))]), 1);
-        assert_eq!(count(&[http("GET", state, serde_json::json!("500"))]), 1);
-        let other = "http://10.24.0.15:8080/api/agents/x";
-        assert_eq!(count(&[http("GET", other, serde_json::json!("404"))]), 1);
     }
 
     #[test]

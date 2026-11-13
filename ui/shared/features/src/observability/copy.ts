@@ -32,7 +32,7 @@ export const copy = {
   // Sessions → Open chat (Chat v1c §5.10; never "session" for a chat, ND-12).
   openChat: 'Open chat',
   probeFailed: "Couldn't check chat availability",
-  probeFailedCause: 'Open Runtime did not answer whether this is one of your chats.',
+  probeFailedCause: 'OpenRuntime did not answer whether this is one of your chats.',
   retryProbe: 'Retry',
   copyProbeDetails: 'Copy details',
   failingChip: (n: number, checked: number) => `${n} failing · ${checked} checked`,
@@ -92,7 +92,7 @@ export const copy = {
   noAccess: "You don't have access to this.",
   noAccessFix: 'Ask an admin or the owner for access.',
   notFoundSession:
-    "This session isn't available: it doesn't exist, or it belongs to someone else. A session's content is private to the person who had it — not even an admin can open it.",
+    "This session isn't available: it doesn't exist, or it belongs to another user (non-superusers see only their own sessions).",
   serverDown: (apiUrl: string) =>
     `Is nasiko-server running at ${apiUrl}? Run \`just run-stack\` in nasiko-cloud-rs.`,
 

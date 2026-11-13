@@ -67,7 +67,7 @@ async fn seed(server: &TestServer, name: &str) -> Caller {
 fn configure(base: &str, compact_tools: bool) {
     // SAFETY: serialized by #[serial] within this test binary.
     unsafe {
-        std::env::set_var("OPENAI_BASE_URL", base);
+        std::env::set_var("OPENAI_API_BASE", base);
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
         std::env::set_var(
@@ -82,7 +82,7 @@ async fn provider(replies: Vec<Value>) -> mockito::ServerGuard {
     let seen = Arc::new(Mutex::new(0usize));
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/v1/chat/completions")
+        .mock("POST", "/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body_from_request(move |_| {
@@ -112,7 +112,7 @@ async fn streaming_provider() -> mockito::ServerGuard {
         "usage": { "prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55 }
     });
     upstream
-        .mock("POST", "/v1/chat/completions")
+        .mock("POST", "/chat/completions")
         .with_status(200)
         .with_header("content-type", "text/event-stream")
         .with_body(format!("data: {chunk}\n\ndata: [DONE]\n\n"))

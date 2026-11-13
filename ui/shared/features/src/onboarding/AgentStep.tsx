@@ -12,14 +12,13 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { Bot, ChevronRight, CircleCheck, ExternalLink, Gift } from 'lucide-react'
+import { Bot, ChevronRight, CircleCheck, ExternalLink } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { asButton, withButtonStyle } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@nasiko/ui/primitives/tabs'
 import { cn } from '@nasiko/ui/lib/utils'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { useNow } from '@nasiko/app-core/useNow'
 import { StageIcon } from '@nasiko/features/deploy/components/StageList'
 import { copy as deployCopy } from '@nasiko/features/deploy/copy'
@@ -29,11 +28,27 @@ import type { DeploySearch } from '@nasiko/features/deploy/search'
 import { fmtElapsed, type Stage } from '@nasiko/features/deploy/steps'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
-import { type SeededDeploy, useSeededDeploys, useStarterPackOffered } from './api'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
+import { type SeededDeploy, useSeededDeploys } from './api'
 import { watchGuideDeploys } from './guideDeploys'
 import { copy } from './copy'
 import { SEEDED_AGENTS } from './logic'
 import { SectionHeading } from './parts'
+/** The query a guide with no `starterPack` slot holds instead: never run (`enabled: false`). */
+const NO_SLOT_QUERY = {
+  queryKey: ['onboarding', 'starter-pack', 'no-slot'],
+  queryFn: () => Promise.resolve(null),
+}
+
+/** Whether the Starter pack tab is offered: yes without a slot, else the slot's answer, null while it's coming. */
+function useStarterPackOffered(): boolean | null {
+  const slot = useSlots().starterPack
+  const q = useQuery<unknown>({ ...(slot?.query ?? NO_SLOT_QUERY), enabled: !!slot, retry: false })
+  if (!slot) return true
+  if (q.isPending) return null
+  return slot.offered(q.isError ? undefined : q.data)
+}
+
 export function AgentStep({
   started,
   onStarted,
@@ -239,19 +254,11 @@ function RegistryHow() {
   )
 }
 
-/** The agents every new workspace is given, shown as a list: nothing to pick (user request 2026-11-12). The layer's
- *  note (MT: the Free plan's daily allowance) follows the intro, tinted so it stands out (user request 2026-11-16). */
+/** The agents every new workspace is given, shown as a list: nothing to pick (user request 2026-11-12). */
 function Giveaway() {
-  const note = useSlots().starterPack?.note
   return (
     <section aria-label={copy.agent.seededLabel} className="flex flex-col gap-3">
       <p className="text-sm text-muted-foreground">{copy.agent.giveaway(SEEDED_AGENTS.length)}</p>
-      {note ? (
-        <Alert role="note" className="border-success/40 bg-success/5 [&>svg]:text-success">
-          <Gift aria-hidden />
-          <AlertDescription className="text-foreground">{note}</AlertDescription>
-        </Alert>
-      ) : null}
       <ul className="grid gap-3 sm:grid-cols-2">
         {SEEDED_AGENTS.map((a) => (
           <li key={a.name} className="flex h-full items-start gap-3 rounded-xl border bg-card p-4">

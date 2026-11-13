@@ -12,9 +12,8 @@ use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     decomposer::DecomposerClient,
     executor,
-    llm::{LlmClient, LlmError},
+    llm::LlmClient,
     planner::{self, AgentInfo as PlannerAgentInfo},
-    stop,
     types::{MafDefinition, MafStep, StepResult},
 };
 use serde::{Deserialize, Serialize};
@@ -69,9 +68,6 @@ pub fn router(
         )
         .route("/maf/workflow/{id}/executions", get(list_executions))
         .route("/maf/executions", get(list_all_executions))
-        // A stop is a conditional row update plus one Redis call: CRUD-cheap.
-        .route("/maf/executions/stop", post(stop_executions))
-        .route("/maf/execution/{id}/stop", post(stop_execution))
         .route("/maf/execution/{id}", get(get_execution))
         .route("/maf/execution/{id}/usage", get(get_execution_usage))
         .layer(axum::middleware::from_fn_with_state(
@@ -116,37 +112,6 @@ fn err_json(status: StatusCode, message: &str) -> axum::response::Response {
         .into_response()
 }
 
-/// [`err_json`] with a machine-readable `code` the UI can choose its wording by.
-fn err_json_with_code(status: StatusCode, message: &str, code: &str) -> axum::response::Response {
-    (
-        status,
-        Json(serde_json::json!({
-            "data": serde_json::Value::Null,
-            "status_code": status.as_u16(),
-            "message": message,
-            "code": code,
-        })),
-    )
-        .into_response()
-}
-
-/// The planner's failure as a response: a missing or refused key is the provider's refusal
-/// (`502`, code `llm_key_rejected`, naming whose key), anything else is a plan the model could
-/// not produce (`422`).
-fn planning_failed(error: &LlmError) -> axum::response::Response {
-    match error {
-        LlmError::KeyRejected(_) | LlmError::NoKey => err_json_with_code(
-            StatusCode::BAD_GATEWAY,
-            &format!("AI drafting failed: {error}"),
-            "llm_key_rejected",
-        ),
-        _ => err_json(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("planning failed: {error}"),
-        ),
-    }
-}
-
 fn unauthorized() -> axum::response::Response {
     err_json(StatusCode::UNAUTHORIZED, "invalid or missing user identity")
 }
@@ -185,24 +150,9 @@ struct MafRow {
     status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    /// How many times the caller has run this workflow — COUNT(*) over their
-    /// maf_executions, computed on read rather than stored, so it can never
-    /// drift out of sync. Only the caller's runs: on a public workflow, other
-    /// users' runs are theirs.
+    /// How many times this workflow has been run — COUNT(*) over maf_executions,
+    /// computed on read rather than stored, so it can never drift out of sync.
     execution_count: i64,
-    /// Every user may see and run it, not only its owner (see [`can_use`]).
-    /// Defaulted for the `RETURNING` clauses of create and draft paths, which
-    /// only ever write private rows.
-    #[sqlx(default)]
-    is_public: bool,
-}
-
-/// Whether `user_id` may see and run this workflow: its owner always, anyone
-/// else only when it is public — the platform's seeded workflows
-/// (`crate::seed_workflows`). Editing, promoting and deleting stay with the
-/// owner, so those handlers compare `user_id` directly instead.
-fn can_use(row: &MafRow, user_id: Uuid) -> bool {
-    row.user_id == user_id || row.is_public
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -267,8 +217,6 @@ struct MafResponse {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     execution_count: i64,
-    /// Every user may run it; only its owner may edit or delete it.
-    is_public: bool,
 }
 
 #[derive(Serialize)]
@@ -388,7 +336,6 @@ fn maf_row_to_response(row: MafRow) -> MafResponse {
         created_at: row.created_at,
         updated_at: row.updated_at,
         execution_count: row.execution_count,
-        is_public: row.is_public,
     }
 }
 
@@ -688,7 +635,6 @@ struct WorkflowListRow {
     total_tokens: i64,
     last_run_at: Option<DateTime<Utc>>,
     last_run_status: Option<String>,
-    is_public: bool,
 }
 
 #[derive(Serialize)]
@@ -717,8 +663,6 @@ struct WorkflowListResponse {
     step_count: usize,
     /// The distinct agents this workflow uses, in first-use order.
     agent_names: Vec<String>,
-    /// Every user may run it; only its owner may edit or delete it.
-    is_public: bool,
 }
 
 /// The distinct agents a workflow's steps use, in first-use order.
@@ -751,18 +695,14 @@ enum ListScope {
 }
 
 impl ListScope {
-    /// This scope's `WHERE` fragment, `$1` being the caller. A closed enum, so
-    /// no caller text ever reaches the statement.
+    /// This scope's `WHERE` fragment. A closed enum, so no caller text ever
+    /// reaches the statement.
     fn predicate(self) -> &'static str {
         match self {
-            // The caller's own, plus the public ones every user may run.
-            Self::Active => "(m.user_id = $1 OR m.is_public) AND m.status = 'active'",
-            // Only the caller's own: a draft is a work in progress nobody else
-            // has a use for. Soft-deleted rows stay out: discarding a draft
-            // means discarding it, whether or not it had been deployed by then.
-            Self::Drafted => {
-                "m.user_id = $1 AND m.drafted_at IS NOT NULL AND m.status <> 'deleted'"
-            }
+            Self::Active => "m.status = 'active'",
+            // Soft-deleted rows stay out: discarding a draft means discarding
+            // it, whether or not it had been deployed by then.
+            Self::Drafted => "m.drafted_at IS NOT NULL AND m.status <> 'deleted'",
         }
     }
 }
@@ -806,25 +746,19 @@ async fn fetch_workflow_page(
     let sql = format!(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
                   m.status, m.created_at, m.updated_at,
-                  m.is_public,
                   COUNT(e.id) AS execution_count,
-                  -- A run its owner stopped never got the chance to succeed or fail.
                   ROUND(100.0 * COUNT(*) FILTER (WHERE e.status = 'success')
-                        / NULLIF(COUNT(e.id) FILTER (WHERE e.status <> 'stopped'), 0), 1)::float8 AS success_rate,
+                        / NULLIF(COUNT(e.id), 0), 1)::float8 AS success_rate,
                   COALESCE(SUM(e.tokens_used), 0)::bigint AS total_tokens,
                   MAX(e.started_at) AS last_run_at,
                   (SELECT latest.status
                      FROM maf_executions latest
-                    WHERE latest.maf_id = m.id AND latest.user_id = $1
-                      AND latest.started_at IS NOT NULL
+                    WHERE latest.maf_id = m.id AND latest.started_at IS NOT NULL
                     ORDER BY latest.started_at DESC
                     LIMIT 1) AS last_run_status
            FROM mafs m
-           -- The caller's runs only. Every run of a private workflow is its
-           -- owner's, so this changes nothing there; on a public workflow it
-           -- keeps other users' runs, spend and outcomes out of the card.
-           LEFT JOIN maf_executions e ON e.maf_id = m.id AND e.user_id = $1
-           WHERE {}
+           LEFT JOIN maf_executions e ON e.maf_id = m.id
+           WHERE m.user_id = $1 AND {}
              AND ($4::text IS NULL
                   OR m.name ILIKE '%' || $4 || '%'
                   OR COALESCE(m.description, '') ILIKE '%' || $4 || '%')
@@ -878,7 +812,6 @@ fn list_row_to_response(row: WorkflowListRow) -> WorkflowListResponse {
         last_run_status: row.last_run_status,
         step_count,
         agent_names,
-        is_public: row.is_public,
     }
 }
 
@@ -969,12 +902,7 @@ async fn route_with_access_check(
         // Relayed verbatim rather than rephrased: this crate does not know what the policy
         // checked for, so it cannot say what to do about it.
         Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => return Err(reason),
-        // The catalog fallback picks an agent instead, but a routing model that keeps failing
-        // (a refused key, say) must not go unseen.
-        Err(e) => {
-            tracing::warn!(error = %e, "maf: routing failed, falling back to the catalog");
-            None
-        }
+        Err(_) => None,
     };
     Ok(match routed {
         Some((id, name, endpoint)) if crate::acl::can_access_agent(state, claims, id).await => {
@@ -1310,7 +1238,10 @@ async fn decompose_into_steps(
                 error = %e,
                 "maf create: decomposer failed"
             );
-            return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()));
+            return Err(err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("decomposer: {e}"),
+            ));
         }
     };
     tracing::info!(
@@ -1501,7 +1432,7 @@ async fn promote_draft(
     // Read first so each way this can fail gets its own answer. The UPDATE
     // below folds "gone", "someone else's" and "not a draft" into one empty
     // result, and a caller that sees only a 404 can't tell which happened.
-    let draft = match fetch_maf(&state.db, id, user_id).await {
+    let draft = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("draft"),
@@ -1573,8 +1504,8 @@ async fn get_maf(
         None => return unauthorized(),
     };
 
-    match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(row)) if can_use(&row, user_id) => ok_json(
+    match fetch_maf(&state.db, id).await {
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
             StatusCode::OK,
             maf_row_to_response(row),
             "Workflow retrieved successfully",
@@ -1604,7 +1535,7 @@ async fn update_maf(
         None => return unauthorized(),
     };
 
-    let existing = match fetch_maf(&state.db, id, user_id).await {
+    let existing = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
@@ -1742,9 +1673,8 @@ async fn update_maf(
            SET name = $1, description = $2, maf_json = $3::jsonb, updated_at = now()
            WHERE id = $4 AND status <> 'deleted'
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                     status, created_at, updated_at, is_public,
-                     (SELECT COUNT(*) FROM maf_executions e
-                       WHERE e.maf_id = mafs.id AND e.user_id = mafs.user_id) AS execution_count"#,
+                     status, created_at, updated_at,
+                     (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id) AS execution_count"#,
     )
     .bind(new_name)
     .bind(new_description)
@@ -1778,7 +1708,7 @@ async fn delete_maf(
 
     // Ownership check before soft-delete — superuser may delete any workflow (same
     // owner-or-superuser convention as agent management elsewhere).
-    match fetch_maf(&state.db, id, user_id).await {
+    match fetch_maf(&state.db, id).await {
         Ok(Some(row)) if row.user_id != user_id && !claims.is_superuser => {
             return forbidden("not owned by caller");
         }
@@ -1850,10 +1780,8 @@ async fn run_workflow(
         }
     };
 
-    // A public workflow runs as the caller: the execution row below is theirs,
-    // and the agent check below asks about their access, not the owner's.
-    let maf = match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(r)) if can_use(&r, user_id) => r,
+    let maf = match fetch_maf(&state.db, id).await {
+        Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
@@ -1915,9 +1843,6 @@ async fn run_workflow(
     {
         return policy_refused(&refused);
     }
-    // No key check here: many runs never call the model (a step prompt without placeholders, no
-    // final-output instruction), so they must run without one. A run that does need the model
-    // and has no key fails on that step with `LlmError::NoKey`, which says how to add one.
 
     let max_attempts: i32 = std::env::var("MAF_MAX_ATTEMPTS")
         .ok()
@@ -1978,14 +1903,12 @@ async fn run_workflow(
 
     // Fresh count including the execution just created, so the caller can
     // update its UI immediately without a separate re-fetch.
-    let execution_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let execution_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
     ok_json(
         StatusCode::ACCEPTED,
@@ -2041,10 +1964,9 @@ async fn list_executions(
         None => return unauthorized(),
     };
 
-    // The caller may use the workflow; the query below then lists only their
-    // own runs of it, which on a public workflow is all they may see.
-    match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(r)) if !can_use(&r, user_id) => return forbidden("not owned by caller"),
+    // Verify ownership of the MAF first
+    match fetch_maf(&state.db, id).await {
+        Ok(Some(r)) if r.user_id != user_id => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
         Ok(Some(_)) => {}
@@ -2184,173 +2106,6 @@ async fn get_execution(
         Ok(Some(_)) => forbidden("not owned by caller"),
         Ok(None) => not_found("execution"),
         Err(e) => internal_err(e),
-    }
-}
-
-// ─── POST /maf/execution/{id}/stop · POST /maf/executions/stop ─────────────
-//
-// Stops the caller's own runs (only a workflow's owner can run it, so these are the runs of
-// the caller's workflows). The database decides: every run still in flight
-// becomes `stopped` in one transaction (`stop::stop_in_db`), which every later write by a worker
-// respects. The worker running a stopped run is then told to cut it short now
-// (`stop::notify_owners`); a run whose worker can't be told still ends, at its next step, when
-// its progress write finds the row stopped.
-
-/// At most this many ids per bulk stop.
-const MAX_STOP_IDS: usize = 1000;
-
-#[derive(Serialize)]
-struct StoppedExecution {
-    id: Uuid,
-    /// What the run was doing when it was stopped: `pending`, `running` or `awaiting_human`.
-    previous_status: String,
-}
-
-#[derive(Serialize)]
-struct FinishedExecution {
-    id: Uuid,
-    status: String,
-}
-
-#[derive(Serialize)]
-struct StopResponse {
-    stopped: Vec<StoppedExecution>,
-    /// Asked for, but already over (`success`, `failed` or `stopped`).
-    already_finished: Vec<FinishedExecution>,
-    /// Asked for, but not a run of the caller's workflows.
-    not_found: Vec<Uuid>,
-}
-
-impl From<stop::StopReport> for StopResponse {
-    fn from(report: stop::StopReport) -> Self {
-        Self {
-            stopped: report
-                .stopped
-                .into_iter()
-                .map(|(id, previous_status)| StoppedExecution {
-                    id,
-                    previous_status,
-                })
-                .collect(),
-            already_finished: report
-                .already_finished
-                .into_iter()
-                .map(|(id, status)| FinishedExecution { id, status })
-                .collect(),
-            not_found: report.not_found,
-        }
-    }
-}
-
-/// Exactly one of the two: these runs, or every unfinished run of this workflow.
-#[derive(Deserialize)]
-struct StopExecutionsRequest {
-    #[serde(default)]
-    execution_ids: Vec<Uuid>,
-    workflow_id: Option<Uuid>,
-}
-
-async fn stop_execution(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    claims: Claims,
-) -> impl IntoResponse {
-    let Some(user_id) = parse_user_id(&claims) else {
-        return unauthorized();
-    };
-    let report =
-        match stop::stop_in_db(&state.db, user_id, stop::StopScope::Executions(&[id])).await {
-            Ok(report) => report,
-            Err(e) => return internal_err(e),
-        };
-    notify_workers(&state, &report).await;
-
-    if let Some((_, previous_status)) = report.stopped.into_iter().next() {
-        return ok_json(
-            StatusCode::OK,
-            StoppedExecution {
-                id,
-                previous_status,
-            },
-            "Execution stopped",
-        );
-    }
-    match report.already_finished.first() {
-        Some((_, status)) => err_json(
-            StatusCode::CONFLICT,
-            &format!("execution already finished: {status}"),
-        ),
-        None => not_found("execution"),
-    }
-}
-
-async fn stop_executions(
-    State(state): State<AppState>,
-    claims: Claims,
-    body: axum::body::Bytes,
-) -> impl IntoResponse {
-    let Some(user_id) = parse_user_id(&claims) else {
-        return unauthorized();
-    };
-    // Parsed here rather than by the `Json` extractor, so a malformed body is answered in the
-    // same envelope as every other error (as `run_workflow` does).
-    let body: StopExecutionsRequest = match serde_json::from_slice(&body) {
-        Ok(body) => body,
-        Err(e) => return bad_request(&format!("invalid request body: {e}")),
-    };
-    let mut ids = body.execution_ids;
-    ids.sort_unstable();
-    ids.dedup();
-
-    let scope = match (body.workflow_id, ids.is_empty()) {
-        (Some(_), false) => {
-            return bad_request("give either execution_ids or workflow_id, not both");
-        }
-        (None, true) => return bad_request("execution_ids or workflow_id is required"),
-        (None, false) if ids.len() > MAX_STOP_IDS => {
-            return bad_request(&format!("at most {MAX_STOP_IDS} execution_ids per request"));
-        }
-        (None, false) => stop::StopScope::Executions(&ids),
-        (Some(workflow_id), true) => match fetch_maf(&state.db, workflow_id, user_id).await {
-            // `stop_in_db` matches the caller's own runs only, so stopping a
-            // public workflow stops what the caller started and nothing else.
-            Ok(Some(row)) if can_use(&row, user_id) => stop::StopScope::Workflow(workflow_id),
-            Ok(Some(_)) => return forbidden("not owned by caller"),
-            Ok(None) => return not_found("workflow"),
-            Err(e) => return internal_err(e),
-        },
-    };
-
-    let report = match stop::stop_in_db(&state.db, user_id, scope).await {
-        Ok(report) => report,
-        Err(e) => return internal_err(e),
-    };
-    notify_workers(&state, &report).await;
-    let count = report.stopped.len();
-    ok_json(
-        StatusCode::OK,
-        StopResponse::from(report),
-        &format!("{count} execution(s) stopped"),
-    )
-}
-
-/// Tells the workers running the stopped runs to cut them short now. Best-effort: the stop is
-/// already recorded, and a run whose worker isn't told ends at its next step instead.
-async fn notify_workers(state: &AppState, report: &stop::StopReport) {
-    let running = report.were_running();
-    if running.is_empty() {
-        return;
-    }
-    let notified = match state.redis.connection().await {
-        Ok(mut conn) => stop::notify_owners(&mut conn, &running).await,
-        Err(e) => Err(e),
-    };
-    if let Err(e) = notified {
-        tracing::warn!(
-            error = %e,
-            runs = running.len(),
-            "MAF stop: could not message the workers running the stopped runs; they stop at their next step"
-        );
     }
 }
 
@@ -2579,10 +2334,7 @@ async fn get_execution_usage(
     // "coming" on a deployment with no observability backend at all.
     let usage_available =
         state.config.observability_enabled && state.config.trace_usage_sync_secs > 0;
-    let terminal = matches!(
-        row.status.as_str(),
-        "success" | "failed" | nasiko_types::maf::STOPPED
-    );
+    let terminal = matches!(row.status.as_str(), "success" | "failed");
 
     // Two full materializer passes after the run ended is the point past
     // which anything still missing isn't arriving — most often because the
@@ -2656,28 +2408,21 @@ async fn generate_maf(
     } else {
         "platform"
     };
-    // A saved user key is spent directly; otherwise the planner call goes through the
-    // in-process router (any configured provider), which records its usage.
-    let llm = match saved_key {
-        Some(k) => LlmClient::new(
-            state.http_client.clone(),
-            k,
-            state.config.openai_base_url.clone(),
-            state.config.openai_model.clone(),
-        ),
-        None => LlmClient::new(
-            state.http_client.clone(),
-            String::new(),
-            state.config.openai_base_url.clone(),
-            crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_default(),
-        )
-        .with_backend(std::sync::Arc::clone(&state.llm_backend))
-        .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {
-            user_id,
-            component: nasiko_orchestrator::llm_backend::PlatformComponent::MafPlanner.to_string(),
-            session_id: None,
-        }),
+    let api_key = match saved_key.or_else(|| state.config.openai_api_key.clone()) {
+        Some(k) => k,
+        None => {
+            return err_json(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "No OpenAI API key: add one in the setup guide or Settings → Secrets",
+            );
+        }
     };
+    let llm = LlmClient::new(
+        state.http_client.clone(),
+        api_key,
+        state.config.openai_base_url.clone(),
+        state.config.openai_model.clone(),
+    );
 
     // Fetch all agents visible to this user
     let agent_rows = match fetch_user_agents(&state.db, user_id).await {
@@ -2701,8 +2446,7 @@ async fn generate_maf(
         .collect();
 
     let (plan, usage) = planner::plan_maf(&req.description, &planner_agents, &llm).await;
-    // Routed calls: the router already wrote `trace_usage`.
-    if let Some(usage) = usage.filter(|_| !llm.is_routed()) {
+    if let Some(usage) = usage {
         record_planner_usage(&state.db, user_id, &llm, key_source, &usage).await;
     }
     match plan {
@@ -2736,7 +2480,10 @@ async fn generate_maf(
                 "Workflow plan generated successfully",
             )
         }
-        Err(e) => planning_failed(&e),
+        Err(e) => err_json(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("planning failed: {e}"),
+        ),
     }
 }
 
@@ -2785,23 +2532,14 @@ async fn record_planner_usage(
 /// can fetch, edit, promote and discard; only the run path treats it specially.
 /// Soft-deleted rows stay excluded, so a deleted workflow is still a 404
 /// everywhere.
-///
-/// `execution_count` counts `caller`'s runs only — see [`MafRow`]. Access is
-/// the handler's to decide, from the row's `user_id` and `is_public`.
-async fn fetch_maf(
-    db: &sqlx::PgPool,
-    id: Uuid,
-    caller: Uuid,
-) -> Result<Option<MafRow>, sqlx::Error> {
+async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::Error> {
     sqlx::query_as::<_, MafRow>(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
-                  m.status, m.created_at, m.updated_at, m.is_public,
-                  (SELECT COUNT(*) FROM maf_executions e
-                    WHERE e.maf_id = m.id AND e.user_id = $2) AS execution_count
+                  m.status, m.created_at, m.updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
            FROM mafs m WHERE m.id = $1 AND m.status <> 'deleted'"#,
     )
     .bind(id)
-    .bind(caller)
     .fetch_optional(db)
     .await
 }
@@ -2854,39 +2592,6 @@ async fn fetch_user_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nasiko_orchestrator::maf::llm::KeySource;
-
-    async fn body_json(response: axum::response::Response) -> serde_json::Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        serde_json::from_slice(&bytes).expect("json body")
-    }
-
-    /// The UI picks its wording by `code`, so a refused key must carry it, as a 502.
-    #[tokio::test]
-    async fn a_refused_planner_key_is_a_502_with_the_key_rejected_code() {
-        let response = planning_failed(&LlmError::KeyRejected(KeySource::Owner));
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-        let body = body_json(response).await;
-        assert_eq!(body["code"], "llm_key_rejected");
-        assert_eq!(body["status_code"], 502);
-        assert!(body["data"].is_null());
-        let message = body["message"].as_str().expect("message");
-        assert!(message.contains("your saved API key"), "{message}");
-    }
-
-    #[tokio::test]
-    async fn any_other_planning_failure_stays_a_422_without_a_code() {
-        let response = planning_failed(&LlmError::Other("planner returned zero steps".into()));
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-        let body = body_json(response).await;
-        assert!(body.get("code").is_none());
-        assert_eq!(
-            body["message"],
-            "planning failed: planner returned zero steps"
-        );
-    }
 
     /// The create screen sends the same step shape to both saves. `step_index`
     /// was required here and ignored, so "Save as draft and test" — which is a

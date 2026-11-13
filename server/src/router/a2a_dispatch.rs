@@ -25,17 +25,13 @@ use nasiko_types::a2a::{self as a2a, JsonRpcRequest, PartContent, StreamResponse
 use nasiko_orchestrator::{AgentSelector, ContextTiers, context_selection};
 
 use nasiko_flow::FlowContext;
-use nasiko_llm_router::attachments::{
-    AttachmentRef, MARKER_TTL_SECS, MarkerClaims, MarkerSigner, describe_file,
-};
 
 use crate::acl::CpCallGuard;
 use crate::agent_resolver::{Caller, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::chat::turn_artifacts::Attachable;
 use crate::orchestrator_policy::TurnKind;
-use crate::sessions::admission::refuse_turn;
+use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
 
@@ -232,8 +228,7 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let mut attachments =
-        inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let file_parts = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -244,7 +239,7 @@ pub async fn a2a_dispatch_handler(
         // authorize on the resolved id unconditionally. Gating the authz check
         // behind "does target happen to parse as a UUID" let any name-addressed
         // request (the common case from the UI/CLI) skip the check entirely.
-        let agent = resolve_agent(&state, target, user_id).await?;
+        let agent = resolve_agent(&state, target).await?;
         // Edition-aware view access (superuser short-circuit lives inside the check).
         //
         // Deliberately returns the SAME AgentNotFound response as "no such agent"
@@ -257,12 +252,11 @@ pub async fn a2a_dispatch_handler(
         Some(agent)
     };
     // The caller picks `contextId` and `metadata.session_id`, and both are used to read history
-    // and to append messages. A session that already belongs to someone else is a `404
-    // session_not_found`, as the proxy and the harness path answer it, never a `403` that would
-    // confirm it exists; superusers keep their access.
+    // and to append messages. A session that already belongs to someone else is answered exactly
+    // like a missing agent would be, so ids cannot be probed; superusers keep their access.
     for sid in std::iter::once(context_id.as_str()).chain(session_id.as_deref()) {
         if session_owned_by_other(&state, sid, user_id, claims.is_superuser).await? {
-            return Err(A2aDispatchError::SessionNotFound);
+            return Err(A2aDispatchError::Forbidden("session not found".into()));
         }
     }
     // Whoever reads this history decides whether it is compressed: the addressed agent on a direct
@@ -302,13 +296,6 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
-    // The history below is text: a file sent on an earlier turn rides along with this one, or an
-    // agent without a memory of its own answers a follow-up about it without the file.
-    carry_earlier_attachments(&state, history_sid, user_id, &params, &mut attachments).await;
-    let InboundAttachments {
-        parts: file_parts,
-        files: attached_files,
-    } = attachments;
     let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
@@ -365,7 +352,6 @@ pub async fn a2a_dispatch_handler(
             &context_id,
             user_id,
             &file_parts,
-            &attached_files,
             session_id,
             history.user_turn_count(),
             Some(&history.report),
@@ -384,7 +370,6 @@ pub async fn a2a_dispatch_handler(
                 client_owns_transcript: session_id.is_some(),
                 transcript_role: "user",
                 file_parts,
-                attached_files,
                 kind: TurnKind::User,
                 context_report: Some(&history.report),
             },
@@ -456,9 +441,7 @@ async fn reconnect_stream(
     // dedicated `mcp_tool` resume dispatcher (`oss/hitl::dispatcher`) never touches
     // `continuation_events` at all. A standalone, never-mirrored `mcp_tool` row's id would
     // otherwise `watch()` the same kind of buffer nothing will ever terminate.
-    if row.origin == nasiko_hitl::HitlOrigin::McpTool
-        && !state.continuation_events.exists(row.id).await
-    {
+    if row.origin == nasiko_hitl::HitlOrigin::McpTool && !state.continuation_events.exists(row.id) {
         return Err(A2aDispatchError::InvalidRequest(
             "this HITL request has no agent-visible continuation to reconnect to — poll GET /api/hitl/pending instead"
                 .into(),
@@ -514,7 +497,6 @@ pub(crate) struct OrchestratorTurn<'a> {
     pub(crate) transcript_role: &'a str,
     /// File parts uploaded with the request (multipart upload path).
     pub(crate) file_parts: Vec<nasiko_types::a2a::Part>,
-    pub(crate) attached_files: Vec<AttachedFile>,
     /// Whether this turn was started by the user or reports on work an earlier
     /// turn already did. The operator's policy may treat the two differently —
     /// see [`TurnKind`].
@@ -564,7 +546,6 @@ pub(crate) async fn orchestrator_stream(
         client_owns_transcript,
         transcript_role,
         file_parts,
-        attached_files,
         kind,
         context_report,
     } = turn;
@@ -757,42 +738,21 @@ pub(crate) async fn orchestrator_stream(
     // Whose key pays for this turn's model calls, recorded on each usage row it writes.
     let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
     let key_source = super::usage_meta::KeySource::for_saved_key(saved_key.is_some());
-    let api_key_source = if saved_key.is_some() {
-        nasiko_react_agent::ApiKeySource::Saved
-    } else {
-        nasiko_react_agent::ApiKeySource::Server
-    };
-    let mut config = OrchestratorConfig {
+    let config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
         // default rather than re-reading the env var here with a placeholder
         // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
         // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
         // is unset.
-        // Unset `OPENAI_MODEL` → empty, so a router-backed turn uses the router's default
-        // model instead of the compiled `gpt-4o-mini` (unservable on e.g. Vertex-only).
-        model: crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_else(
-            || {
-                let has_openai_key: bool = saved_key.is_some();
-                if has_openai_key {
-                    state.config.openai_model.clone()
-                } else {
-                    String::new()
-                }
-            },
-        ),
+        model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        // Only the user's saved key goes direct to OpenAI; platform credentials (including
-        // `OPENAI_API_KEY`) are picked by the router via `DEFAULT_PROVIDER`.
-        api_key: saved_key,
-        api_key_source,
+        api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
         preamble,
         outbound_prefix: org_context,
-        attachment_note: None,
-        clock: state.agent_clock(),
         // IP-3. Read here rather than defaulted, because `ContextConfig::default()` is
         // deliberately inert — without this the compressor is compiled in but unreachable.
         context: nasiko_react_agent::ContextConfig {
@@ -887,9 +847,6 @@ pub(crate) async fn orchestrator_stream(
         },
     )
     .await?;
-    config.attachment_note =
-        attachment_note(state.marker_signer.as_deref(), &attached_files, &flow_id);
-    let routed_query = with_attachment_list(query, &file_parts, &attached_files);
 
     // Flow origin: this flow_id is registered in `flows` and IS the trace id inside the
     // traceparent forwarded downstream. The gateway maps an agent's forwarded trace id
@@ -960,7 +917,7 @@ pub(crate) async fn orchestrator_stream(
 
     let mut rx = {
         let _entered = dispatch_span.enter();
-        orchestrator.run_stream(&routed_query, file_parts)
+        orchestrator.run_stream(query, file_parts)
     };
     let task_id = task_id.to_string();
     let context_id = context_id.to_string();
@@ -1457,16 +1414,7 @@ fn foreign_flow_rejection(flow_id: &str, user_id: Uuid) -> A2aDispatchError {
     A2aDispatchError::Forbidden("traceparent does not belong to this user".into())
 }
 
-/// The agent `target` names for `caller`: its UUID, or a name. Names are unique per owner, not
-/// platform-wide, so a name resolves to the caller's own agent of that name when there is one,
-/// else to the oldest other; and every user's harness agent for a harness has the same name
-/// (`harness-<harness id>`), so by name only the caller's own is ever found. Another user's
-/// harness agent is reached by its UUID only, and only by whoever the access check lets through.
-async fn resolve_agent(
-    state: &AppState,
-    target: &str,
-    caller: Uuid,
-) -> Result<AgentRow, A2aDispatchError> {
+async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
     // Excludes `is_internal` agents unconditionally, including for the owning
     // superuser — this is the platform's only generic A2A entry point, and an
     // internal agent (e.g. Weave's dashboard-generator) must be reachable
@@ -1482,14 +1430,10 @@ async fn resolve_agent(
                 owner_id, workload_kind, image, url, transport_path, writable, deleted_at, \
                 is_internal, false AS keeps_session_memory \
          FROM agents \
-         WHERE (id::text = $1 OR (name = $1 AND (workload_kind <> $3 OR owner_id = $2))) \
-           AND status IN ('running', 'parked') AND NOT is_internal AND deleted_at IS NULL \
-         ORDER BY id::text = $1 DESC, owner_id = $2 DESC, created_at, id \
-         LIMIT 1",
+         WHERE (id::text = $1 OR name = $1) AND status IN ('running', 'parked') AND NOT is_internal \
+           AND deleted_at IS NULL",
     )
     .bind(target)
-    .bind(caller)
-    .bind(nasiko_auth::sharing::HARNESS_WORKLOAD_KIND)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
@@ -1516,19 +1460,6 @@ fn append_org_policy_part(req: &mut JsonRpcRequest, org_context: Option<&str>) {
     // `org_context()` already returns a complete, self-headed block ("## Organization
     // Policy\n\n..."), unlike L1A's raw facts — no extra heading to add here.
     let _ = nasiko_agent_proxy::context_part::append_context_part(message, org, tagging);
-}
-
-/// Appends the current date and time as its own part, after organization policy, on the same
-/// terms the agent proxy does (`crate::current_time`). Every request this path builds opens a
-/// task, so none is a continuation.
-fn append_current_time_part(
-    req: &mut JsonRpcRequest,
-    clock: nasiko_types::agent_clock::AgentClock,
-) {
-    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
-    if let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) {
-        crate::current_time::append_current_time(message, clock, tagging);
-    }
 }
 
 /// Orchestrator tool names of the agents whose Token optimization switch is off.
@@ -1572,7 +1503,6 @@ async fn agent_stream(
     context_id: &str,
     user_id: Uuid,
     file_parts: &[nasiko_types::a2a::Part],
-    attached_files: &[AttachedFile],
     // The web UI's chat session id (metadata.session_id) — `None` for CLI/TUI callers that
     // address history by contextId alone. Threaded through purely so a HITL pause created on
     // this turn can be tagged with `chat_session_id`, letting `chat/routes.rs::list_messages`
@@ -1714,7 +1644,6 @@ async fn agent_stream(
     // (docs/MCP_GATEWAY_AGENT_AUTH.md §2.4); same synchronous pre-forward write
     // as the flows row above.
     crate::flows::record_participant(&state.db, &flow_id, agent.id).await;
-    let attachment_note = attachment_note(state.marker_signer.as_deref(), attached_files, &flow_id);
 
     // Minimal-code ladder injection: only what's actually FORWARDED to the
     // agent gets the addendum appended — `query` itself stays untouched, so
@@ -1771,9 +1700,7 @@ async fn agent_stream(
             file_parts,
         )
     };
-    append_attachment_note(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
-    append_current_time_part(&mut req_body, state.agent_clock());
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
     // its own deploy-time MCP_GATEWAY_TOKEN; the forwarded traceparent + the
@@ -1880,13 +1807,6 @@ async fn agent_stream(
             // The task's last word, whichever way the stream ended: a pause or a dropped stream
             // leaves it open, a terminal event closes it (the reaper must not park mid-task).
             let mut last_task: Option<crate::agents::open_tasks::Observed> = None;
-            // A direct agent narrates each tool call as a free-form "{tool}: {preview}"
-            // Working-status message, never the structured tool_call data part the orchestrator
-            // emits. These track the open tool so the loop can synthesise the structured
-            // tool_call/tool_result parts the chat renders as tool rows — see
-            // `tool_from_status_text`. `(turn seq, tool name, started-at)`.
-            let mut open_tool: Option<(u64, String, Instant)> = None;
-            let mut tool_seq: u64 = 0;
 
             loop {
                 if agent_done { break; }
@@ -1936,31 +1856,6 @@ async fn agent_stream(
                                 }
                                 let normalized = normalize_agent_event(data, &task_id, &context_id);
                                 yield Ok(Event::default().data(normalized));
-                                // Translate the agent's free-form tool narration into the
-                                // structured tool_call/tool_result parts the chat renders as tool
-                                // rows, so a direct chat streams tool activity like a routed one,
-                                // with no change to the agents. The agent reports no per-tool
-                                // completion, so the next tool call (or the terminal event below)
-                                // closes the one before it.
-                                if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
-                                    for sse in a2a::classify_sse_event(&event) {
-                                        let a2a::SseEvent::StatusText(text) = &sse else { continue };
-                                        let Some((name, preview)) = tool_from_status_text(text) else { continue };
-                                        if let Some((seq, prev, started)) = open_tool.take() {
-                                            let done = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                                                "type": "tool_result", "tool": prev, "success": true,
-                                                "turn": seq, "duration_ms": started.elapsed().as_millis() as u64,
-                                            })));
-                                            yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, done))));
-                                        }
-                                        tool_seq += 1;
-                                        let call = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                                            "type": "tool_call", "tool": name, "message": preview, "turn": tool_seq,
-                                        })));
-                                        yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, call))));
-                                        open_tool = Some((tool_seq, name.to_string(), Instant::now()));
-                                    }
-                                }
                                 // The python a2a-sdk never closes its SSE stream;
                                 // end the exchange on the task's terminal (or paused) event.
                                 let disposition = a2a::classify_stream_disposition(data);
@@ -1982,16 +1877,6 @@ async fn agent_stream(
                         yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, msg))));
                     }
                 }
-            }
-
-            // Close the last tool the agent never reported finishing: its terminal event or
-            // final answer is the completion. Without this the row would hang "running".
-            if let Some((seq, prev, started)) = open_tool.take() {
-                let done = a2a::agent_message(&context_id, &task_id, a2a::data_part(json!({
-                    "type": "tool_result", "tool": prev, "success": true,
-                    "turn": seq, "duration_ms": started.elapsed().as_millis() as u64,
-                })));
-                yield Ok(to_sse(a2a::status_event(a2a::working_with_message(&task_id, &context_id, done))));
             }
 
             if let Some(observed) = &last_task {
@@ -2099,9 +1984,7 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
-            append_attachment_note(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
-            append_current_time_part(&mut retry_body, state.agent_clock());
             let retry = build_agent_req()
                 .json(&retry_body)
                 .send()
@@ -2434,7 +2317,6 @@ pub async fn a2a_upload_handler(
             client_owns_transcript: false,
             transcript_role: "user",
             file_parts: collected_files,
-            attached_files: Vec::new(),
             kind: TurnKind::User,
             // This path mints a fresh context id, so no history was selected and there is nothing
             // to report. A zero row here would count as a request that optimized nothing.
@@ -2453,10 +2335,10 @@ const MAX_ATTACHED_FILES: usize = 10;
 /// Total attachment bytes forwarded in one turn. These are base64'd into the A2A message body
 /// (`PartContent::Raw`), so the budget is what we are willing to inflate by 4/3 and push to an
 /// agent in a single request — well above what multimodal models accept per call (Anthropic caps
-/// a PDF at 32 MB, OpenAI an audio file at 25 MB). Over it, the turn is refused with a message
-/// the user can act on rather than quietly reaching the agent without the file it was about.
-const MAX_ATTACHED_BYTES: u64 = 30 * 1024 * 1024;
-const ATTACHMENT_READ_CONCURRENCY: usize = 4;
+/// a PDF at 32 MB, OpenAI an audio file at 25 MB) and far below the 500 MB that ten uploads at
+/// the storage limit would be. Over it, the turn is refused with a message the user can act on
+/// rather than quietly reaching the agent without the file it was about.
+const MAX_ATTACHED_BYTES: i64 = 50 * 1024 * 1024;
 
 /// What the caller attached to this turn, in the two forms this endpoint accepts.
 ///
@@ -2468,13 +2350,18 @@ const ATTACHMENT_READ_CONCURRENCY: usize = 4;
 ///   than that same 2 MiB limit can be sent at all.
 ///
 /// Ids resolve only through a session the caller owns, so one user can never attach another's
-/// upload by guessing a UUID, and only through object storage. Order follows the caller's list.
+/// upload by guessing a UUID, and only through object storage — a `workspace://` capture is an
+/// agent's own output, not a user attachment, and is skipped. Order follows the caller's list.
+///
+/// An id that resolves to nothing is skipped rather than failing the turn: the text still
+/// carries, which is the better outcome for a stale id in a re-sent message. Exceeding the byte
+/// budget is the opposite — the turn is about the file, so it fails loudly.
 async fn inbound_file_parts(
     state: &AppState,
     params: &nasiko_types::a2a::SendMessageRequest,
     session_id: Option<&str>,
     user_id: Uuid,
-) -> Result<InboundAttachments, A2aDispatchError> {
+) -> Result<Vec<a2a::Part>, A2aDispatchError> {
     let mut parts: Vec<a2a::Part> = params
         .message
         .parts
@@ -2482,31 +2369,26 @@ async fn inbound_file_parts(
         .filter(|p| matches!(p.content, PartContent::Raw(_)))
         .cloned()
         .collect();
-    let inline_bytes: u64 = parts
-        .iter()
-        .map(|p| match &p.content {
-            PartContent::Raw(data) => data.len() as u64,
-            _ => 0,
+
+    let ids: Vec<Uuid> = params
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("file_ids"))
+        .and_then(|v| v.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|v| v.as_str())
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .take(MAX_ATTACHED_FILES)
+                .collect()
         })
-        .sum();
-
-    let ids = listed_file_ids(params)?;
-    if ids.len() + parts.len() > MAX_ATTACHED_FILES {
-        return Err(A2aDispatchError::InvalidRequest(format!(
-            "at most {MAX_ATTACHED_FILES} attachments per message"
-        )));
-    }
+        .unwrap_or_default();
     if ids.is_empty() {
-        check_attached_total(inline_bytes)?;
-        return Ok(InboundAttachments {
-            parts,
-            files: Vec::new(),
-        });
+        return Ok(parts);
     }
 
-    let rows = sqlx::query_as::<_, AttachedRow>(
-        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
-                cmf.storage_uri \
+    let rows = sqlx::query_as::<_, (Uuid, String, String, i64, String)>(
+        "SELECT cmf.id, cmf.filename, cmf.mime_type, cmf.size_bytes, cmf.storage_uri \
            FROM chat_message_files cmf \
            JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
           WHERE cmf.id = ANY($1) AND cs.user_id = $2 \
@@ -2519,393 +2401,37 @@ async fn inbound_file_parts(
     .await
     .map_err(|e| A2aDispatchError::Internal(format!("attachment lookup failed: {e}")))?;
 
-    let mut by_id: std::collections::HashMap<Uuid, AttachedRow> =
-        rows.into_iter().map(|row| (row.id, row)).collect();
-    let mut resolved = Vec::with_capacity(ids.len());
-    let mut stored_bytes = 0u64;
-    for id in &ids {
-        let Some(row) = by_id.remove(id) else {
-            return Err(A2aDispatchError::InvalidRequest(format!(
-                "attachment {id} was not found"
-            )));
-        };
-        let attached = if row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
-            Resolved::ChatUpload(row)
-        } else {
-            Resolved::Elsewhere(elsewhere_attachment(state, user_id, row).await?)
-        };
-        stored_bytes += attached.size_bytes();
-        resolved.push(attached);
-    }
-    check_attached_total(inline_bytes + stored_bytes)?;
-
-    let fetched: Vec<Fetched> =
-        futures::stream::iter(resolved.into_iter().map(|attached| async move {
-            match attached {
-                Resolved::ChatUpload(row) => {
-                    let read = state.oci_storage.get_blob(&row.storage_uri).await;
-                    Fetched::ChatUpload(row, read)
-                }
-                Resolved::Elsewhere(file) => Fetched::Elsewhere(file),
-            }
-        }))
-        .buffered(ATTACHMENT_READ_CONCURRENCY)
-        .collect()
-        .await;
-
-    let mut files = Vec::with_capacity(fetched.len());
-    for attached in fetched {
-        let (row, read) = match attached {
-            Fetched::ChatUpload(row, read) => (row, read),
-            Fetched::Elsewhere(file) => {
-                files.push(file);
-                continue;
-            }
-        };
-        match read {
-            Ok(bytes) => parts.push(a2a::file_part(
-                Vec::from(bytes),
-                Some(row.filename.clone()),
-                Some(row.mime_type.clone()),
-            )),
-            Err(nasiko_runtime::BlobStoreError::NotFound(_)) => {
-                return Err(A2aDispatchError::InvalidRequest(format!(
-                    "attachment '{}' is no longer stored",
-                    row.filename
-                )));
-            }
-            Err(e) => {
-                tracing::warn!(id = %row.id, %e, "attachment bytes unreadable");
-                return Err(A2aDispatchError::Unavailable(format!(
-                    "attachment '{}' could not be read; try again",
-                    row.filename
-                )));
-            }
-        }
-        files.push(row.into_chat_upload());
-    }
-
-    Ok(InboundAttachments { parts, files })
-}
-
-/// The stored uploads `metadata.file_ids` names, without repeats, in the caller's order.
-fn listed_file_ids(
-    params: &nasiko_types::a2a::SendMessageRequest,
-) -> Result<Vec<Uuid>, A2aDispatchError> {
-    let mut ids: Vec<Uuid> = Vec::new();
-    let listed = params
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array());
-    for value in listed.into_iter().flatten() {
-        let raw = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        let id = Uuid::parse_str(&raw).map_err(|_| {
-            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
-        })?;
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    Ok(ids)
-}
-
-/// Put the files attached on earlier turns of `session_id` ahead of this turn's own.
-///
-/// The history a turn carries is text, so an agent that keeps no conversation of its own would
-/// otherwise meet a follow-up question about a PDF without the PDF. Only files a saved user
-/// message claimed count (an upload dropped before sending never does). They are taken newest
-/// first while they fit what this turn's own files leave of `MAX_ATTACHED_FILES` and
-/// `MAX_ATTACHED_BYTES`, and sent in the order the user sent them. Best effort: a file that can
-/// no longer be read is left out with a warning, rather than refusing every later turn of the
-/// chat over a file the user did not send with it.
-async fn carry_earlier_attachments(
-    state: &AppState,
-    session_id: &str,
-    user_id: Uuid,
-    params: &nasiko_types::a2a::SendMessageRequest,
-    turn: &mut InboundAttachments,
-) {
-    // Already validated by `inbound_file_parts`; listed here only to leave them out.
-    let this_turn = listed_file_ids(params).unwrap_or_default();
-    let rows = sqlx::query_as::<_, AttachedRow>(
-        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
-                cmf.storage_uri \
-           FROM chat_message_files cmf \
-           JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
-          WHERE cmf.session_id = $1 AND cs.user_id = $2 \
-            AND cmf.message_id IS NOT NULL AND cmf.id <> ALL($3) \
-          ORDER BY cmf.created_at DESC, cmf.id",
-    )
-    .bind(session_id)
-    .bind(user_id)
-    .bind(&this_turn)
-    .fetch_all(&state.db)
-    .await;
-    let rows = match rows {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::warn!(%e, "earlier attachments lookup failed; the turn goes without them");
-            return;
-        }
-    };
-
-    let (mut room_files, mut room_bytes) = turn.room_left();
-    let mut chosen = Vec::new();
-    for row in rows {
-        if room_files == 0 {
-            break;
-        }
-        let size = row.size_bytes.max(0) as u64;
-        if size > room_bytes {
-            continue;
-        }
-        room_files -= 1;
-        room_bytes -= size;
-        chosen.push(row);
-    }
-    chosen.reverse();
-
-    let carried: Vec<_> = futures::stream::iter(
-        chosen
-            .into_iter()
-            .map(|row| carried_attachment(state, user_id, row)),
-    )
-    .buffered(ATTACHMENT_READ_CONCURRENCY)
-    .collect()
-    .await;
-    let (parts, files): (Vec<_>, Vec<_>) = carried.into_iter().flatten().unzip();
-    turn.parts.splice(0..0, parts.into_iter().flatten());
-    turn.files.splice(0..0, files);
-}
-
-/// One earlier file read for this turn: its bytes as a part when it is a chat upload, and what
-/// the agent is told about it. `None`, with a warning, when it can no longer be read.
-async fn carried_attachment(
-    state: &AppState,
-    user_id: Uuid,
-    row: AttachedRow,
-) -> Option<(Option<a2a::Part>, AttachedFile)> {
-    let id = row.id;
-    if !row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
-        return match elsewhere_attachment(state, user_id, row).await {
-            Ok(file) => Some((None, file)),
-            Err(e) => {
-                tracing::warn!(%id, error = ?e, "an earlier attachment is left out of this turn");
-                None
-            }
-        };
-    }
-    match state.oci_storage.get_blob(&row.storage_uri).await {
-        Ok(bytes) => Some((
-            Some(a2a::file_part(
-                Vec::from(bytes),
-                Some(row.filename.clone()),
-                Some(row.mime_type.clone()),
-            )),
-            row.into_chat_upload(),
-        )),
-        Err(e) => {
-            tracing::warn!(%id, %e, "an earlier attachment is left out of this turn");
-            None
-        }
-    }
-}
-
-enum Resolved {
-    ChatUpload(AttachedRow),
-    Elsewhere(AttachedFile),
-}
-
-enum Fetched {
-    ChatUpload(
-        AttachedRow,
-        Result<bytes::Bytes, nasiko_runtime::BlobStoreError>,
-    ),
-    Elsewhere(AttachedFile),
-}
-
-impl Resolved {
-    fn size_bytes(&self) -> u64 {
-        match self {
-            Self::ChatUpload(row) => row.size_bytes.max(0) as u64,
-            Self::Elsewhere(file) => file.size_bytes,
-        }
-    }
-}
-
-async fn elsewhere_attachment(
-    state: &AppState,
-    user_id: Uuid,
-    row: AttachedRow,
-) -> Result<AttachedFile, A2aDispatchError> {
-    let source = state.turn_artifacts.get();
-    match source
-        .attachment(&state.db, user_id, &row.storage_uri)
-        .await
-    {
-        Attachable::File(file) => Ok(AttachedFile {
-            reference: file.reference,
-            filename: row.filename,
-            media_type: file.media_type,
-            size_bytes: file.size_bytes,
-        }),
-        Attachable::Refused => Err(A2aDispatchError::InvalidRequest(format!(
-            "'{}' can't be attached to a message",
-            row.filename
-        ))),
-        Attachable::Unavailable => {
-            tracing::warn!(id = %row.id, "attachment source unavailable");
-            Err(A2aDispatchError::Unavailable(format!(
-                "attachment '{}' could not be read; try again",
-                row.filename
-            )))
-        }
-    }
-}
-
-#[derive(sqlx::FromRow)]
-struct AttachedRow {
-    id: Uuid,
-    session_id: String,
-    filename: String,
-    mime_type: String,
-    size_bytes: i64,
-    storage_uri: String,
-}
-
-impl AttachedRow {
-    /// A chat upload as the agent is told about it.
-    fn into_chat_upload(self) -> AttachedFile {
-        AttachedFile {
-            reference: AttachmentRef::ChatUpload {
-                session_id: self.session_id,
-                file_id: self.id,
-            },
-            filename: self.filename,
-            media_type: self.mime_type,
-            size_bytes: self.size_bytes.max(0) as u64,
-        }
-    }
-}
-
-pub(crate) struct InboundAttachments {
-    pub(crate) parts: Vec<a2a::Part>,
-    pub(crate) files: Vec<AttachedFile>,
-}
-
-impl InboundAttachments {
-    /// What these files leave of the per-turn limits: a count, then bytes. A chat upload is in
-    /// both lists (its bytes in `parts`, its reference in `files`), an inline part only in
-    /// `parts`, and a file read from elsewhere only in `files`.
-    fn room_left(&self) -> (usize, u64) {
-        let inline_bytes: u64 = self
-            .parts
-            .iter()
-            .map(|p| match &p.content {
-                PartContent::Raw(data) => data.len() as u64,
-                _ => 0,
-            })
-            .sum();
-        let (count, bytes) = self
-            .files
-            .iter()
-            .filter(|f| !matches!(f.reference, AttachmentRef::ChatUpload { .. }))
-            .fold((self.parts.len(), inline_bytes), |(n, b), f| {
-                (n + 1, b + f.size_bytes)
-            });
-        (
-            MAX_ATTACHED_FILES.saturating_sub(count),
-            MAX_ATTACHED_BYTES.saturating_sub(bytes),
-        )
-    }
-}
-
-pub(crate) struct AttachedFile {
-    reference: AttachmentRef,
-    filename: String,
-    media_type: String,
-    size_bytes: u64,
-}
-
-fn attachment_note(
-    signer: Option<&MarkerSigner>,
-    files: &[AttachedFile],
-    flow_id: &str,
-) -> Option<String> {
-    let signer = signer?;
-    if files.is_empty() {
-        return None;
-    }
-    let expires_at = chrono::Utc::now().timestamp() + MARKER_TTL_SECS;
-    let lines: Vec<String> = files
-        .iter()
-        .map(|file| {
-            signer.marker_line(&MarkerClaims {
-                reference: file.reference.clone(),
-                filename: file.filename.clone(),
-                media_type: file.media_type.clone(),
-                size_bytes: file.size_bytes,
-                flow_id: flow_id.to_string(),
-                expires_at,
-            })
-        })
-        .collect();
-    Some(lines.join("\n"))
-}
-
-fn with_attachment_list<'q>(
-    query: &'q str,
-    parts: &[a2a::Part],
-    files: &[AttachedFile],
-) -> std::borrow::Cow<'q, str> {
-    let inline = parts.iter().filter_map(|part| match &part.content {
-        PartContent::Raw(data) => Some(describe_file(
-            part.filename.as_deref().unwrap_or("unnamed"),
-            part.media_type
-                .as_deref()
-                .unwrap_or("application/octet-stream"),
-            data.len() as u64,
-        )),
-        _ => None,
-    });
-    let chips = files
-        .iter()
-        .filter(|file| matches!(file.reference, AttachmentRef::Workspace { .. }))
-        .map(|file| describe_file(&file.filename, &file.media_type, file.size_bytes));
-    let listed: Vec<String> = inline.chain(chips).collect();
-    if listed.is_empty() {
-        return std::borrow::Cow::Borrowed(query);
-    }
-    std::borrow::Cow::Owned(format!(
-        "{query}\n\n[The user attached: {}]",
-        listed.join(", ")
-    ))
-}
-
-fn append_attachment_note(req: &mut JsonRpcRequest, note: Option<&str>) {
-    let Some(note) = note else { return };
-    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
-    let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
-        return;
-    };
-    let _ = nasiko_agent_proxy::context_part::append_user_text(message, note, tagging);
-}
-
-const CHAT_UPLOAD_PREFIX: &str = "chat-files/";
-
-fn check_attached_total(total: u64) -> Result<(), A2aDispatchError> {
+    let total: i64 = rows.iter().map(|(_, _, _, size, _)| *size).sum();
     if total > MAX_ATTACHED_BYTES {
         return Err(A2aDispatchError::InvalidRequest(format!(
-            "attachments total {:.1} MB, over the {} MB per-message limit",
-            total as f64 / (1024.0 * 1024.0),
-            MAX_ATTACHED_BYTES / (1024 * 1024)
+            "attachments total {total} bytes, over the {MAX_ATTACHED_BYTES} byte per-message limit"
         )));
     }
-    Ok(())
+
+    let by_id: std::collections::HashMap<Uuid, &(Uuid, String, String, i64, String)> =
+        rows.iter().map(|r| (r.0, r)).collect();
+    for id in &ids {
+        let Some((_, filename, mime_type, _, storage_uri)) = by_id.get(id).copied() else {
+            tracing::warn!(%id, %user_id, "attachment id not found for this caller; skipping");
+            continue;
+        };
+        if storage_uri.starts_with("workspace://") {
+            tracing::warn!(%id, "attachment is a workspace capture, not an upload; skipping");
+            continue;
+        }
+        match state.oci_storage.get_blob(storage_uri).await {
+            Ok(bytes) => parts.push(a2a::file_part(
+                bytes.to_vec(),
+                Some(filename.clone()),
+                Some(mime_type.clone()),
+            )),
+            Err(e) => {
+                tracing::warn!(%id, %e, "attachment bytes unreadable; skipping");
+            }
+        }
+    }
+
+    Ok(parts)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -3052,11 +2578,7 @@ async fn harness_task_reply(
     if target == "orchestrator" {
         return Ok(None);
     }
-    let caller = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return Ok(Some(e.into_response())),
-    };
-    let agent = resolve_agent(state, target, caller).await?;
+    let agent = resolve_agent(state, target).await?;
     // The same answer as an unknown agent when the caller may not see this one.
     if !crate::acl::can_access_agent(state, claims, agent.id).await {
         return Err(A2aDispatchError::AgentNotFound(target.to_string()));
@@ -3128,14 +2650,9 @@ async fn coding_agent_stream(
         turn.task_id,
     )
     .await
-    .map_err(|e| match e {
-        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
-            A2aDispatchError::Unavailable(message)
-        }
-        e => {
-            tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
-            A2aDispatchError::Internal(e.to_string())
-        }
+    .map_err(|e| {
+        tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
+        A2aDispatchError::Internal(e.to_string())
     })
 }
 
@@ -3150,7 +2667,7 @@ async fn harness_agent_stream(
     request_id: &a2a::JsonRpcId,
 ) -> Result<Response, A2aDispatchError> {
     // Before the session, the transcript and the flow are written: a refused turn leaves none.
-    if let Some(refusal) = refuse_turn(state) {
+    if let Some(refusal) = refuse_session(state, turn.user_id, &target.harness_id).await {
         return Err(A2aDispatchError::SessionRefused {
             refusal,
             id: serde_json::to_value(request_id).unwrap_or(serde_json::Value::Null),
@@ -3187,9 +2704,6 @@ async fn harness_agent_stream(
     .map_err(|e| match e {
         crate::coding::turn::CodingTurnError::Busy
         | crate::coding::turn::CodingTurnError::Superseded => A2aDispatchError::SessionBusy,
-        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
-            A2aDispatchError::Unavailable(message)
-        }
         e => {
             tracing::error!(error = %e, agent_id = %turn.agent.id, "harness dispatch turn failed to start");
             A2aDispatchError::Internal(e.to_string())
@@ -3586,12 +3100,9 @@ async fn build_hitl_stream_event(
 }
 
 pub(crate) fn normalize_agent_event(data: &str, task_id: &str, context_id: &str) -> String {
-    let Ok(mut parsed) = serde_json::from_str::<serde_json::Value>(data) else {
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data) else {
         return data.to_string();
     };
-    if drop_task_history(&mut parsed) {
-        return serde_json::to_string(&parsed).unwrap_or_else(|_| data.to_string());
-    }
 
     // Already in the expected format (no JSON-RPC wrapper)
     if parsed.get("statusUpdate").is_some()
@@ -3644,40 +3155,6 @@ pub(crate) fn normalize_agent_event(data: &str, task_id: &str, context_id: &str)
         }
         _ => data.to_string(),
     }
-}
-
-/// A direct agent narrates each tool call as a free-form Working-status message of the form
-/// `"{tool_name}: {preview}"` (`oss/agents/*/src/main.rs::status_working`), rather than the
-/// structured `tool_call` data part the orchestrator emits and the chat renders as a tool row.
-/// Split that convention back out — `(tool_name, preview)` — so the dispatch loop can synthesise
-/// the structured parts without any change to the agents. `None` for ordinary progress narration,
-/// which has no leading `identifier` + `": "` (e.g. "Looking up the exchange rates...").
-fn tool_from_status_text(text: &str) -> Option<(&str, &str)> {
-    let (name, preview) = text.split_once(": ")?;
-    let name = name.trim();
-    let looks_like_tool = !name.is_empty()
-        && name.len() <= 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
-    looks_like_tool.then_some((name, preview.trim()))
-}
-
-fn drop_task_history(frame: &mut serde_json::Value) -> bool {
-    let result_is_task = frame
-        .get("result")
-        .and_then(|r| r.get("kind"))
-        .and_then(|k| k.as_str())
-        == Some("task");
-    let task = if result_is_task {
-        frame.get_mut("result")
-    } else if frame.get("task").is_some() {
-        frame.get_mut("task")
-    } else {
-        frame.get_mut("result").and_then(|r| r.get_mut("task"))
-    };
-    task.and_then(|t| t.as_object_mut())
-        .is_some_and(|t| t.remove("history").is_some())
 }
 
 // ─── Types & Errors ──────────────────────────────────────────────────────────
@@ -3831,47 +3308,6 @@ mod hitl_pause_tests {
             pause_kind(AUTH_REQUIRED_PAYLOAD),
             nasiko_hitl::HitlKind::AuthRequired
         );
-    }
-}
-
-#[cfg(test)]
-mod tool_status_text_tests {
-    use super::*;
-
-    #[test]
-    fn splits_the_seed_agent_tool_convention() {
-        // `oss/agents/*/src/main.rs::status_working(Some("{name}: {preview}"))`.
-        assert_eq!(
-            tool_from_status_text("web_search: set up GitHub Actions for Rust"),
-            Some(("web_search", "set up GitHub Actions for Rust"))
-        );
-        assert_eq!(
-            tool_from_status_text("github_repo_info: tokio-rs/tokio"),
-            Some(("github_repo_info", "tokio-rs/tokio"))
-        );
-    }
-
-    #[test]
-    fn keeps_a_colon_in_the_preview() {
-        assert_eq!(
-            tool_from_status_text("web_search: how to: do a thing"),
-            Some(("web_search", "how to: do a thing"))
-        );
-    }
-
-    #[test]
-    fn ignores_ordinary_progress_narration() {
-        // A tool name is an identifier, never a sentence with spaces before the colon.
-        assert_eq!(
-            tool_from_status_text("Looking up the exchange rates..."),
-            None
-        );
-        assert_eq!(
-            tool_from_status_text("Processing the exchange rates: done"),
-            None
-        );
-        assert_eq!(tool_from_status_text("no colon here"), None);
-        assert_eq!(tool_from_status_text(": no name"), None);
     }
 }
 
@@ -4132,153 +3568,6 @@ mod org_policy_part_tests {
             !org_text.contains("Current message:"),
             "the appended part must not carry the marker: {org_text:?}"
         );
-    }
-}
-
-#[cfg(test)]
-mod attachment_list_tests {
-    use super::*;
-
-    fn chat_file(name: &str) -> AttachedFile {
-        AttachedFile {
-            reference: AttachmentRef::ChatUpload {
-                session_id: "s".into(),
-                file_id: Uuid::nil(),
-            },
-            filename: name.into(),
-            media_type: "image/png".into(),
-            size_bytes: 64,
-        }
-    }
-
-    fn workspace_file(name: &str, media_type: &str, size_bytes: u64) -> AttachedFile {
-        AttachedFile {
-            reference: AttachmentRef::Workspace {
-                agent_id: Uuid::nil(),
-                user_id: Uuid::nil(),
-                blob_id: Uuid::nil(),
-            },
-            filename: name.into(),
-            media_type: media_type.into(),
-            size_bytes,
-        }
-    }
-
-    #[test]
-    fn a_turn_without_files_keeps_the_query_as_it_is() {
-        let listed = with_attachment_list("hello", &[], &[]);
-        assert!(matches!(listed, std::borrow::Cow::Borrowed("hello")));
-        let text_only = [a2a::text_part("hello")];
-        assert_eq!(with_attachment_list("hello", &text_only, &[]), "hello");
-    }
-
-    #[test]
-    fn every_attached_file_is_listed_once_by_name_type_and_size() {
-        let parts = [
-            a2a::text_part("ignored"),
-            a2a::file_part(
-                vec![0; 64],
-                Some("fact.png".into()),
-                Some("image/png".into()),
-            ),
-            a2a::file_part(vec![0; 2048], None, None),
-        ];
-        let files = [
-            chat_file("fact.png"),
-            workspace_file("q3.pdf", "application/pdf", 3 * 1024 * 1024),
-        ];
-        assert_eq!(
-            with_attachment_list("what is in these?", &parts, &files),
-            "what is in these?\n\n[The user attached: fact.png (image/png, 64 B), \
-             unnamed (application/octet-stream, 2.0 KB), q3.pdf (application/pdf, 3.0 MB)]"
-        );
-    }
-
-    #[test]
-    fn a_file_name_cannot_break_the_line() {
-        let files = [workspace_file("evil\nname.txt", "text/plain", 5)];
-        let listed = with_attachment_list("q", &[], &files);
-        assert_eq!(
-            listed,
-            "q\n\n[The user attached: evil name.txt (text/plain, 5 B)]"
-        );
-    }
-}
-
-#[cfg(test)]
-mod relayed_task_history_tests {
-    use super::*;
-
-    fn echoed_user_message() -> serde_json::Value {
-        json!([{
-            "messageId": "m1",
-            "role": "ROLE_USER",
-            "parts": [
-                {"text": "describe this"},
-                {"raw": "A".repeat(4096), "filename": "big.png", "mediaType": "image/png"}
-            ]
-        }])
-    }
-
-    fn relayed(frame: serde_json::Value) -> serde_json::Value {
-        serde_json::from_str(&normalize_agent_event(&frame.to_string(), "t", "c")).unwrap()
-    }
-
-    #[test]
-    fn a_wrapped_task_frame_loses_the_echoed_history_and_keeps_the_rest() {
-        let out = relayed(json!({"jsonrpc": "2.0", "id": "1", "result": {"task": {
-            "id": "inner", "contextId": "c", "status": {"state": "TASK_STATE_SUBMITTED"},
-            "history": echoed_user_message()
-        }}}));
-        let task = &out["result"]["task"];
-        assert!(task.get("history").is_none());
-        assert_eq!(task["id"], "inner");
-        assert_eq!(task["status"]["state"], "TASK_STATE_SUBMITTED");
-        assert_eq!(out["id"], "1");
-    }
-
-    #[test]
-    fn a_bare_task_frame_loses_the_echoed_history() {
-        let out = relayed(json!({"task": {
-            "id": "inner", "status": {"state": "TASK_STATE_WORKING"},
-            "artifacts": [{"parts": [{"text": "kept"}]}],
-            "history": echoed_user_message()
-        }}));
-        assert!(out["task"].get("history").is_none());
-        assert_eq!(out["task"]["artifacts"][0]["parts"][0]["text"], "kept");
-    }
-
-    #[test]
-    fn a_v03_kind_task_result_loses_the_echoed_history() {
-        let out = relayed(json!({"jsonrpc": "2.0", "id": "1", "result": {
-            "kind": "task", "id": "inner", "status": {"state": "submitted"},
-            "history": [{"kind": "message", "role": "user", "parts": [
-                {"kind": "file", "file": {"bytes": "A".repeat(4096), "name": "big.png"}}
-            ]}]
-        }}));
-        assert!(out["result"].get("history").is_none());
-        assert_eq!(out["result"]["kind"], "task");
-        assert_eq!(out["result"]["status"]["state"], "submitted");
-    }
-
-    #[test]
-    fn frames_without_task_history_are_relayed_byte_for_byte() {
-        for frame in [
-            r#"{"result":{"task":{"id":"inner","status":{"state":"TASK_STATE_SUBMITTED"}}}}"#,
-            r#"{"statusUpdate":{"taskId":"t","status":{"state":"TASK_STATE_WORKING"}}}"#,
-            r#"{"message":{"role":"ROLE_AGENT","parts":[{"text":"history"}]}}"#,
-            "not json",
-        ] {
-            assert_eq!(normalize_agent_event(frame, "t", "c"), frame);
-        }
-    }
-
-    #[test]
-    fn a_large_echo_shrinks_to_a_small_frame() {
-        let mut history = echoed_user_message();
-        history[0]["parts"][1]["raw"] = json!("A".repeat(7 * 1024 * 1024));
-        let frame = json!({"result": {"task": {"id": "inner", "history": history}}}).to_string();
-        assert!(normalize_agent_event(&frame, "t", "c").len() < 200);
     }
 }
 

@@ -59,7 +59,7 @@ import { AgentMcpTab } from '@nasiko/features/mcp/components/AgentMcpTab'
 import { SharedMcpTab } from '@nasiko/features/mcp/components/SharedMcpTab'
 import { isUuid, type AgentView } from './normalize'
 import { DETAIL_TABS, type DetailTab } from './search'
-import { actionsFor, displayStatus, isDiscovered, isHarness } from './status'
+import { actionsFor, displayStatus, isHarness } from './status'
 import { shownStatus } from './watch'
 
 export function AgentDetailPage({ agentRef, tab }: { agentRef: string; tab?: string }) {
@@ -384,11 +384,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
         {allowed.includes('mcp') ? (
           <TabsContent value="mcp" className="pt-3">
             {agent.canManage ? (
-              <AgentMcpTab
-                agentId={agent.id}
-                harness={agent.isHarness}
-                local={isDiscovered(agent)}
-              />
+              <AgentMcpTab agentId={agent.id} harness={agent.isHarness} />
             ) : (
               <SharedMcpTab agentId={agent.id} />
             )}

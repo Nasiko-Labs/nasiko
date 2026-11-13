@@ -26,27 +26,6 @@ fn s3_endpoint() -> String {
     std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
-/// Rate limits are counted in Redis, which every test server shares, so without this a test
-/// would start on whatever budget the tests before it spent (30 logins a minute, run-wide).
-async fn clear_rate_limits(redis: &nasiko_redis::SharedRedis) {
-    let mut connection = redis
-        .connection()
-        .await
-        .expect("connect to redis — is it running? (set TEST_REDIS_URL to override)");
-    let keys: Vec<String> = redis::cmd("KEYS")
-        .arg("nasiko:rl:*")
-        .query_async(&mut connection)
-        .await
-        .expect("list rate-limit keys");
-    if !keys.is_empty() {
-        let () = redis::cmd("DEL")
-            .arg(keys)
-            .query_async(&mut connection)
-            .await
-            .expect("clear rate-limit keys");
-    }
-}
-
 // ─── FakeRuntime ─────────────────────────────────────────────────────────────
 
 /// No-op ContainerRuntime for integration tests.
@@ -67,9 +46,6 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
-    /// The `(code, message)` every `deploy` is refused with, as a layer that declines to run
-    /// workloads answers: not a failure of the deploy, so callers keep what they had.
-    decline_deploy: std::sync::Mutex<Option<(String, String)>>,
     /// When set, `build` fails instead of succeeding - a failed image build, which must leave
     /// the running agent untouched.
     fail_build: std::sync::atomic::AtomicBool,
@@ -168,14 +144,6 @@ impl FakeRuntime {
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Make every `deploy` answer `RuntimeError::Declined` with `code` and `message` until
-    /// cleared with `None`.
-    #[allow(dead_code)]
-    pub fn set_decline_deploy(&self, declined: Option<(&str, &str)>) {
-        *self.decline_deploy.lock().unwrap() =
-            declined.map(|(code, message)| (code.to_owned(), message.to_owned()));
-    }
-
     /// Make `build` calls fail instead of succeeding.
     #[allow(dead_code)]
     pub fn set_fail_build(&self, fail: bool) {
@@ -272,9 +240,6 @@ impl ContainerRuntime for FakeRuntime {
                 "fake deploy failure (scripted by test)".into(),
             ));
         }
-        if let Some((code, message)) = self.decline_deploy.lock().unwrap().clone() {
-            return Err(nasiko_runtime::RuntimeError::Declined { code, message });
-        }
         let status = fake_status(&spec.container_id);
         self.deployed.lock().unwrap().push(spec.clone());
         self.deployed_bounds.lock().unwrap().push((
@@ -345,11 +310,7 @@ impl ContainerRuntime for FakeRuntime {
         Ok(vec![])
     }
 
-    async fn build(
-        &self,
-        _tar_context: &[u8],
-        image_tag: &str,
-    ) -> RuntimeResult<nasiko_runtime::BuildReport> {
+    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
         self.builds_started
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let gate = self.build_gate.lock().unwrap().clone();
@@ -361,7 +322,7 @@ impl ContainerRuntime for FakeRuntime {
                 "fake build failure (scripted by test)".into(),
             ));
         }
-        Ok(nasiko_runtime::BuildReport::image_only(image_tag))
+        Ok(image_tag.to_owned())
     }
 
     async fn supports_autoscaling(&self) -> bool {
@@ -594,23 +555,6 @@ impl TestServer {
             fake_runtime,
             None,
             None,
-            None,
-            None,
-        )
-        .await
-    }
-
-    #[allow(dead_code)]
-    pub async fn start_with_storage(oci_storage: Arc<dyn nasiko_runtime::BlobStore>) -> Self {
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            |_| {},
-            fake_runtime.clone(),
-            fake_runtime,
-            Some(oci_storage),
-            None,
-            None,
-            None,
         )
         .await
     }
@@ -626,9 +570,7 @@ impl TestServer {
             fake_runtime.clone(),
             fake_runtime,
             None,
-            None,
             Some(spend_gate),
-            None,
         )
         .await
     }
@@ -643,30 +585,8 @@ impl TestServer {
             |_| {},
             fake_runtime.clone(),
             fake_runtime,
-            None,
             Some(agent_wake),
             None,
-            None,
-        )
-        .await
-    }
-
-    /// Same as [`start`](Self::start), with `entitlements` installed on the
-    /// server's MCP state - how a test plays an edition that restricts users'
-    /// tools (the OSS default is unrestricted).
-    #[allow(dead_code)]
-    pub async fn start_with_entitlements(
-        entitlements: Arc<dyn nasiko_mcp_gateway::ToolEntitlements>,
-    ) -> Self {
-        let fake_runtime = Arc::new(FakeRuntime::default());
-        Self::start_with_runtime_and_handle(
-            |_| {},
-            fake_runtime.clone(),
-            fake_runtime,
-            None,
-            None,
-            None,
-            Some(entitlements),
         )
         .await
     }
@@ -688,8 +608,6 @@ impl TestServer {
             configure,
             runtime,
             Arc::new(FakeRuntime::default()),
-            None,
-            None,
             None,
             None,
         )
@@ -768,7 +686,6 @@ impl TestServer {
             sandbox.clone(),
         )
         .await;
-        clear_rate_limits(&state.redis).await;
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -802,10 +719,8 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
-        oci_storage: Option<Arc<dyn nasiko_runtime::BlobStore>>,
         agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
         spend_gate: Option<Arc<dyn nasiko_server::spend_gate::SpendGate>>,
-        entitlements: Option<Arc<dyn nasiko_mcp_gateway::ToolEntitlements>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -847,12 +762,9 @@ impl TestServer {
 
         // Integration tests run against the S3-compatible store `just infra`
         // brings up, which is also the only backend this edition ships.
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = match oci_storage {
-            Some(storage) => storage,
-            None => Arc::new(
-                nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-            ),
-        };
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
+            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
+        );
         let sandbox = Arc::new(nasiko_runtime::sandbox_fake::FakeSandboxProvider::default());
         let agent_scaling = Arc::new(nasiko_server::agent_scaling::SingleReplica::new(
             runtime.clone(),
@@ -868,7 +780,6 @@ impl TestServer {
             sandbox.clone(),
         )
         .await;
-        clear_rate_limits(&state.redis).await;
         if let Some(spend_gate) = spend_gate {
             state.spend_gate = spend_gate;
         }
@@ -879,9 +790,6 @@ impl TestServer {
         state.agent_wake.install(
             agent_wake.unwrap_or_else(|| Arc::new(nasiko_server::agent_wake::NoAgentWake)),
         );
-        if let Some(entitlements) = entitlements {
-            state.mcp.entitlements = entitlements;
-        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -955,8 +863,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
 
     Config {
         bind: "127.0.0.1:0".into(),
-        shutdown_drain_delay_secs: 0,
-        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,
@@ -980,14 +886,12 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_registry_host: None,
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
-        agent_image_registry_aliases: Vec::new(),
         build_push_token: String::new(),
         agent_jwt_secret: String::new(),
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),
@@ -1092,7 +996,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Tests register agents at loopback mock servers. The SSRF guard's own
         // test (`agent_url_ssrf`) turns this off.
         agent_allow_private_urls: true,
-        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
@@ -1140,7 +1043,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
         database_max_connections: 10,
-        dashboard_max_concurrent: 10,
         build_concurrency: 1,
         build_push_rate_limit_per_minute: 600,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.

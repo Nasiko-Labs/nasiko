@@ -3,49 +3,12 @@ use chrono::Utc;
 use sqlx::PgPool;
 
 use crate::DelegatedIdentity;
-use crate::{AuthError, AuthService, Identity, LoginRefusal, LoginResult, TOKEN_EXPIRY_SECS};
+use crate::{AuthError, AuthService, Identity, LoginResult, TOKEN_EXPIRY_SECS};
 
 /// Lock account after this many consecutive failed login attempts.
 const LOGIN_LOCKOUT_THRESHOLD: i32 = 3;
-
-/// What a login is verified against when no account has the name, so an unknown name
-/// costs the same bcrypt work as a known one. A cost-12 hash (`hash_password`'s cost) of
-/// a random string that was thrown away when the hash was made, so no password matches
-/// it. A constant rather than a hash built at run time: hashing at cost 12 is blocking
-/// work that belongs on the blocking pool, and one built on first use would make the
-/// first unknown-name login after a start slower than the rest. The test below keeps it
-/// well formed at cost 12.
-const DUMMY_HASH: &str = "$2b$12$nUYnav7XHaAjjWOPq.UHzus3g9wflHitJOghjyswdO5LSq6fkx0xi";
-
-/// The hash to verify a login password against: the account's own, or the dummy.
-fn hash_for(stored: Option<&str>) -> &str {
-    stored.unwrap_or(DUMMY_HASH)
-}
-
-/// One line per login attempt under `nasiko::auth`, for the log pipeline. Never the name
-/// typed (people type passwords into that field), and not a hash of it either: an unknown
-/// name is only flagged.
-fn log_login_ok(user_id: &str) {
-    tracing::info!(target: "nasiko::auth", event = "login", outcome = "ok", user_id, unknown_name = false);
-}
-
-fn log_login_refused(reason: LoginRefusal, user_id: Option<&str>) {
-    tracing::info!(
-        target: "nasiko::auth",
-        event = "login",
-        outcome = "refused",
-        reason = reason.as_str(),
-        user_id,
-        unknown_name = reason == LoginRefusal::UnknownName,
-    );
-}
-
-/// The `jti` of a token this service just signed. Every token it issues
-/// carries one, so a missing `jti` is an internal fault, not a bad credential.
-fn issued_jti(token: &str) -> Result<String, AuthError> {
-    crate::jwt::extract_jti(token)
-        .ok_or_else(|| AuthError::Internal("issued token has no jti".into()))
-}
+/// Lockout duration in seconds (15 minutes).
+const LOGIN_LOCKOUT_DURATION_SECS: u64 = 15 * 60;
 
 /// DB-backed implementation of AuthService.
 /// Handles user lookup, password verification, token issuance, and revocation.
@@ -61,13 +24,14 @@ impl AuthServiceImpl {
     }
 
     /// Record a user token JTI so it can be revoked later.
-    /// A failure fails the caller: revocation only finds recorded tokens, so a
-    /// token handed out unrecorded could never be revoked.
-    async fn record_token(&self, token: &str, user_id: uuid::Uuid) -> Result<(), AuthError> {
-        let jti = issued_jti(token)?;
+    /// Fire-and-forget — a failure to record doesn't fail the login.
+    async fn record_token(&self, token: &str, user_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
-        sqlx::query(
+        let _ = sqlx::query(
             "INSERT INTO auth_tokens (user_id, token_hash, expires_at)
              VALUES ($1, $2, $3)
              ON CONFLICT (token_hash) DO NOTHING",
@@ -76,17 +40,18 @@ impl AuthServiceImpl {
         .bind(hash)
         .bind(expires)
         .execute(&self.db)
-        .await?;
-        Ok(())
+        .await;
     }
 
     /// Record an agent token JTI so it can be revoked later.
     /// Agent tokens store `agent_id` instead of `user_id` (different subject table).
-    async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) -> Result<(), AuthError> {
-        let jti = issued_jti(token)?;
+    async fn record_agent_token(&self, token: &str, agent_id: uuid::Uuid) {
+        let Some(jti) = crate::jwt::extract_jti(token) else {
+            return;
+        };
         let hash = crate::jwt::hash_jti(&jti);
         let expires = Utc::now() + chrono::Duration::seconds(TOKEN_EXPIRY_SECS as i64);
-        sqlx::query(
+        let _ = sqlx::query(
             "INSERT INTO auth_tokens (agent_id, token_hash, expires_at)
              VALUES ($1, $2, $3)
              ON CONFLICT (token_hash) DO NOTHING",
@@ -95,8 +60,7 @@ impl AuthServiceImpl {
         .bind(hash)
         .bind(expires)
         .execute(&self.db)
-        .await?;
-        Ok(())
+        .await;
     }
 
     /// Whether this `(provider, provider_id)` OAuth login resolves to a user
@@ -296,13 +260,10 @@ impl AuthService for AuthServiceImpl {
         // Record every issued token in auth_tokens so it is revocable (matches the
         // EE impl). Previously only `authenticate` recorded, so tokens minted via
         // `issue_token` directly — e.g. initialize-admin — were unrevocable.
-        // ON CONFLICT DO NOTHING, so it's safe if a caller also records. A token
-        // that cannot be recorded is not handed out: it could never be revoked.
-        let uid = identity
-            .user_id
-            .parse::<uuid::Uuid>()
-            .map_err(|_| AuthError::NotFound)?;
-        self.record_token(&token, uid).await?;
+        // Best-effort + ON CONFLICT DO NOTHING, so it's safe if a caller also records.
+        if let Ok(uid) = identity.user_id.parse::<uuid::Uuid>() {
+            self.record_token(&token, uid).await;
+        }
         Ok(token)
     }
 
@@ -329,51 +290,24 @@ impl AuthService for AuthServiceImpl {
         .fetch_optional(&self.db)
         .await?;
 
-        // One bcrypt check for every attempt, before anything is decided, so the bcrypt cost
-        // of a refusal never says whether the name exists, is deactivated or is locked. One
-        // difference in duration remains: a wrong password on a live account, and the first
-        // login after a lock ends, also write to `users` (one or two `UPDATE` round trips,
-        // small next to bcrypt), and the other refusals write nothing. No write is added to
-        // the others to match: it would make the cheapest request to send, an unknown name,
-        // cost the database a write each.
-        let password_ok = crate::verify_password_async(
-            password,
-            hash_for(row.as_ref().map(|r| r.access_secret_hash.as_str())),
-        )
-        .await;
-
-        let Some(row) = row else {
-            log_login_refused(LoginRefusal::UnknownName, None);
-            return Err(AuthError::InvalidCredentials {
-                reason: LoginRefusal::UnknownName,
-                user_id: None,
-            });
-        };
-        // Every refusal of a known account is built here, so each logs its one line.
-        let user_id = row.id.to_string();
-        let refused = |reason| {
-            log_login_refused(reason, Some(&user_id));
-            AuthError::InvalidCredentials {
-                reason,
-                user_id: Some(user_id.clone()),
-            }
-        };
+        let row = row.ok_or(AuthError::InvalidCredentials {
+            remaining_attempts: None,
+        })?;
 
         if !row.is_active {
-            return Err(refused(LoginRefusal::Deactivated));
+            return Err(AuthError::Disabled);
         }
 
-        // Check lockout: 3 consecutive failures → locked for 15 minutes. Even a correct
-        // password is refused until it ends, and a wrong one neither counts nor extends it.
-        let mut failures_before = row.failed_login_attempts;
+        // Check lockout: 3 consecutive failures → locked for 15 minutes.
         if let Some(locked_until) = row.locked_until {
-            if Utc::now() < locked_until {
-                return Err(refused(LoginRefusal::Locked));
+            let now = chrono::Utc::now();
+            if now < locked_until {
+                let remaining = (locked_until - now).num_seconds().max(0) as u64;
+                return Err(AuthError::AccountLocked {
+                    retry_after_secs: remaining,
+                });
             }
-            // Lockout expired: clear it so the attempt proceeds, and count from zero: the
-            // stored count is the one that set the lock, so a typo after the wait would
-            // otherwise lock the account again at once.
-            failures_before = 0;
+            // Lockout expired — clear it so the attempt proceeds.
             let _ = sqlx::query(
                 "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
             )
@@ -382,8 +316,8 @@ impl AuthService for AuthServiceImpl {
             .await;
         }
 
-        if !password_ok {
-            let attempts = failures_before + 1;
+        if !crate::verify_password_async(password, &row.access_secret_hash).await {
+            let attempts = row.failed_login_attempts + 1;
             if attempts >= LOGIN_LOCKOUT_THRESHOLD {
                 let _ = sqlx::query(
                     "UPDATE users SET failed_login_attempts = $2, \
@@ -393,14 +327,19 @@ impl AuthService for AuthServiceImpl {
                 .bind(attempts)
                 .execute(&self.db)
                 .await;
-                return Err(refused(LoginRefusal::Locked));
+                return Err(AuthError::AccountLocked {
+                    retry_after_secs: LOGIN_LOCKOUT_DURATION_SECS,
+                });
             }
             let _ = sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
                 .bind(row.id)
                 .bind(attempts)
                 .execute(&self.db)
                 .await;
-            return Err(refused(LoginRefusal::WrongPassword));
+            let remaining = LOGIN_LOCKOUT_THRESHOLD - attempts;
+            return Err(AuthError::InvalidCredentials {
+                remaining_attempts: Some(remaining),
+            });
         }
 
         // Successful login — reset failed attempts and update last_login.
@@ -419,7 +358,6 @@ impl AuthService for AuthServiceImpl {
 
         // issue_token now records the token itself, so no explicit record here.
         let token = self.issue_token(&identity).await?;
-        log_login_ok(&identity.user_id);
 
         Ok(LoginResult {
             token,
@@ -504,7 +442,7 @@ impl AuthService for AuthServiceImpl {
         // Use encode_agent_jwt so token_type = "agent" — prevents the token from
         // being accepted by decode_jwt as a human-user credential (AUTH-3).
         let token = crate::jwt::encode_agent_jwt(&self.jwt_secret, TOKEN_EXPIRY_SECS, &identity)?;
-        self.record_agent_token(&token, agent_uuid).await?;
+        self.record_agent_token(&token, agent_uuid).await;
         Ok(token)
     }
 
@@ -638,7 +576,7 @@ impl AuthService for AuthServiceImpl {
         };
 
         let token = self.issue_token(&identity).await?;
-        self.record_token(&token, user_id).await?;
+        self.record_token(&token, user_id).await;
 
         Ok(LoginResult {
             token,
@@ -694,7 +632,8 @@ impl AuthService for AuthServiceImpl {
         let user_uuid = user_id
             .parse::<uuid::Uuid>()
             .map_err(|_| AuthError::NotFound)?;
-        self.record_token(token, user_uuid).await
+        self.record_token(token, user_uuid).await;
+        Ok(())
     }
 
     async fn revoke_token(&self, jti: &str) -> Result<u64, AuthError> {
@@ -767,27 +706,14 @@ impl AuthService for AuthServiceImpl {
         let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else {
             return false;
         };
-        !self
-            .accessible_agents(identity, &[agent_uuid])
-            .await
-            .is_empty()
-    }
-
-    async fn accessible_agents(
-        &self,
-        identity: &Identity,
-        agent_ids: &[uuid::Uuid],
-    ) -> Vec<uuid::Uuid> {
-        if identity.is_superuser {
-            return agent_ids.to_vec();
-        }
         let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else {
-            return Vec::new();
+            return false;
         };
 
-        sqlx::query_scalar::<_, uuid::Uuid>(&format!(
-            r#"SELECT a.id FROM agents a
-                WHERE a.id = ANY($2)
+        sqlx::query_scalar::<_, bool>(&format!(
+            r#"SELECT EXISTS(
+                SELECT 1 FROM agents a
+                WHERE a.id = $2
                   AND a.deleted_at IS NULL
                   AND (
                       a.owner_id = $1
@@ -800,46 +726,14 @@ impl AuthService for AuthServiceImpl {
                              OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
                             )
                       ))
-                  )"#,
+                  )
+            )"#,
             grants_reach = crate::sharing::grants_reach_sql("a"),
         ))
         .bind(user_uuid)
-        .bind(agent_ids)
-        .fetch_all(&self.db)
+        .bind(agent_uuid)
+        .fetch_one(&self.db)
         .await
-        .unwrap_or_default()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{DUMMY_HASH, hash_for};
-
-    #[test]
-    fn hash_for_nothing_is_the_dummy_hash_and_the_dummy_hash_verifies_nothing_typed() {
-        assert_eq!(hash_for(None), DUMMY_HASH);
-        assert_eq!(hash_for(Some("$2b$12$stored")), "$2b$12$stored");
-
-        // Cost 12 and well formed, so verifying against it takes the same work as a real
-        // account's hash. An unparseable hash would answer `Err` here, and fast.
-        assert_eq!(DUMMY_HASH.split('$').nth(2), Some("12"));
-        for typed in ["", "password", "changeme", DUMMY_HASH] {
-            assert!(
-                matches!(bcrypt::verify(typed, DUMMY_HASH), Ok(false)),
-                "the dummy hash must verify no typed password"
-            );
-        }
-    }
-
-    #[test]
-    fn the_dummy_hash_has_the_cost_of_a_real_account_hash() {
-        // `hash_password` is what makes a real account's hash. If its cost changes, the dummy
-        // must follow, or an unknown name would answer faster (or slower) than a known one.
-        let real = crate::hash_password("any password").expect("a hash");
-        assert_eq!(
-            DUMMY_HASH.split('$').nth(2),
-            real.split('$').nth(2),
-            "the dummy hash's cost differs from hash_password's"
-        );
+        .unwrap_or(false)
     }
 }

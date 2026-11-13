@@ -1,29 +1,22 @@
 use crate::outbound::OutboundPrefix;
 use crate::target::{AgentTargetResolver, ForwardTarget, ResolveCaller, ResolveFailure};
-use nasiko_types::agent_clock::AgentClock;
 use std::sync::Arc;
 use std::time::Instant;
 
 use nasiko_flow::{FlowContext, FlowGuard};
 use nasiko_pricing::{LedgerEntry, UsageLedger};
-use nasiko_types::a2a::{
-    PauseReason, SseEvent, StreamDisposition, build_send_request_for_task,
-    build_stream_request_for_task, classify_sse_event,
-};
+use nasiko_types::a2a::{PauseReason, StreamDisposition, build_send_request_for_task};
 use nasiko_types::agent_call::AgentCallMeter;
 use sqlx::PgPool;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, LlmClient, LlmError, LlmUsage};
-use super::types::{
-    ExecutionResult, MafDefinition, MafStep, PausedStep, RunError, StepOutcome, StepResult,
-};
+use super::llm::{ChatMessage, LlmClient, LlmUsage};
+use super::types::{ExecutionResult, MafDefinition, MafStep, PausedStep, StepOutcome, StepResult};
 
 /// What one step's agent call produced, before extraction — a normal reply, or a pause that must
 /// stop the step (and the whole run) right there instead of being treated as an oddly-worded
 /// normal reply.
-#[derive(Debug, PartialEq)]
 enum AgentCallOutcome {
     Completed(String),
     Paused { task_id: String, raw_data: String },
@@ -35,7 +28,7 @@ enum AgentCallOutcome {
 pub enum StepLoopOutcome {
     Advance(String),
     AwaitingHuman(PausedStep),
-    Failed(RunError),
+    Failed(String),
 }
 
 /// Times an awaited step and emits it as an `info` event — visible under the
@@ -48,11 +41,11 @@ pub enum StepLoopOutcome {
 /// nothing in a deployment with no collector, which is the common local case.
 /// Count one step's agent call as in flight to `agent_id` for exactly as long as `call` runs.
 /// A pause is a reply, so only an `Err` counts as a failed call.
-async fn metered<T, E>(
+async fn metered<T>(
     agent_calls: &Arc<dyn AgentCallMeter>,
     agent_id: Uuid,
-    call: impl std::future::Future<Output = Result<T, E>>,
-) -> Result<T, E> {
+    call: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
     let mut in_flight = agent_calls.begin(agent_id);
     let result = call.await;
     in_flight.set_succeeded(result.is_ok());
@@ -112,46 +105,31 @@ async fn timed<T>(
 /// Metering must never break a run: a failed usage write is logged and
 /// swallowed, matching `write_selector_usage` and the router's
 /// `spawn_log`.
-pub async fn metered_llm<T, E>(
+pub async fn metered_llm<T>(
     phase: &'static str,
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     step_index: Option<i32>,
     llm: &LlmClient,
-    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
-) -> Result<(T, LlmUsage), E> {
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), String>>,
+) -> Result<(T, LlmUsage), String> {
     let source = UsageSource {
         provider: llm.provider(),
         key_source: "platform",
         ledger: llm.ledger(),
     };
-    // A routed call is already in `trace_usage`, written by the router; writing it here too
-    // would add its tokens to the row twice.
-    let record = !llm.is_routed();
-    let fut = super::llm::MAF_STEP.scope(step_index, fut);
-    metered_call_inner(
-        phase,
-        db,
-        execution_id,
-        user_id,
-        step_index,
-        source,
-        record,
-        fut,
-    )
-    .await
+    metered_call(phase, db, execution_id, user_id, step_index, source, fut).await
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
-/// `trace_usage` row, and the ledger the call is handed to. The ledger is shared, not
-/// borrowed, because the write runs as its own task (see [`metered_call`]).
-#[derive(Clone)]
+/// `trace_usage` row, and the ledger the call is handed to.
+#[derive(Clone, Copy)]
 pub struct UsageSource<'a> {
     pub provider: &'a str,
     /// `"platform"` for the platform's own key, `"user"` for the run owner's.
     pub key_source: &'a str,
-    pub ledger: Arc<dyn UsageLedger>,
+    pub ledger: &'a dyn UsageLedger,
 }
 
 /// [`metered_llm`] for a model call that does not go through [`LlmClient`]: the same span,
@@ -164,31 +142,6 @@ pub async fn metered_call<T, E>(
     user_id: Uuid,
     step_index: Option<i32>,
     source: UsageSource<'_>,
-    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
-) -> Result<(T, LlmUsage), E> {
-    metered_call_inner(
-        phase,
-        db,
-        execution_id,
-        user_id,
-        step_index,
-        source,
-        true,
-        fut,
-    )
-    .await
-}
-
-/// [`metered_call`]; `record` false keeps the span but skips the `trace_usage` write.
-#[allow(clippy::too_many_arguments)]
-async fn metered_call_inner<T, E>(
-    phase: &'static str,
-    db: &PgPool,
-    execution_id: Uuid,
-    user_id: Uuid,
-    step_index: Option<i32>,
-    source: UsageSource<'_>,
-    record: bool,
     fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
 ) -> Result<(T, LlmUsage), E> {
     let start = Instant::now();
@@ -224,29 +177,7 @@ async fn metered_call_inner<T, E>(
         span.record("gen_ai.usage.input_tokens", usage.input_tokens);
         span.record("gen_ai.usage.output_tokens", usage.output_tokens);
         span.record("gen_ai.usage.cached_tokens", usage.cached_tokens);
-        // Awaited, so a run's spend is recorded before it reads it back (`platform_spend`), but
-        // run as its own task: a stopped run is dropped wherever it is, and a write dropped
-        // mid-transaction would roll back the record of a call that was already paid for.
-        // Router-backed calls log usage in the router, so `record` is false for them.
-        if record {
-            let write = write_trace_usage(
-                db.clone(),
-                execution_id,
-                user_id,
-                phase,
-                step_index,
-                OwnedSource::from(&source),
-                usage.clone(),
-            );
-            if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
-                tracing::warn!(
-                    execution_id = %execution_id,
-                    phase,
-                    error = %e,
-                    "maf: trace_usage write task failed (non-fatal)"
-                );
-            }
-        }
+        write_trace_usage(db, execution_id, user_id, phase, step_index, source, usage).await;
     }
 
     tracing::info!(
@@ -267,13 +198,13 @@ async fn metered_call_inner<T, E>(
 /// under one session, the same convention the LLM router follows by writing
 /// the flow id there.
 async fn write_trace_usage(
-    db: PgPool,
+    db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     phase: &'static str,
     step_index: Option<i32>,
-    source: OwnedSource,
-    usage: LlmUsage,
+    source: UsageSource<'_>,
+    usage: &LlmUsage,
 ) {
     let metadata = serde_json::json!({
         "key_source": source.key_source,
@@ -286,13 +217,13 @@ async fn write_trace_usage(
     let session_id = execution_id.to_string();
     let agent_name: String = maf_agent_name(step_index);
     let result = insert_trace_usage(
-        &db,
-        source.ledger.as_ref(),
+        db,
+        source.ledger,
         user_id,
         Some(&session_id),
         &agent_name,
-        &source.provider,
-        &usage,
+        source.provider,
+        usage,
         metadata,
     )
     .await;
@@ -304,23 +235,6 @@ async fn write_trace_usage(
             error = %e,
             "maf: trace_usage write failed (non-fatal)"
         );
-    }
-}
-
-/// A [`UsageSource`] the write's own task can hold.
-struct OwnedSource {
-    provider: String,
-    key_source: String,
-    ledger: Arc<dyn UsageLedger>,
-}
-
-impl From<&UsageSource<'_>> for OwnedSource {
-    fn from(source: &UsageSource<'_>) -> Self {
-        Self {
-            provider: source.provider.to_string(),
-            key_source: source.key_source.to_string(),
-            ledger: source.ledger.clone(),
-        }
     }
 }
 
@@ -486,8 +400,7 @@ pub async fn run_maf(
     llm: &LlmClient,
     content: Option<&str>,
     outbound: &dyn OutboundPrefix,
-    clock: AgentClock,
-) -> Result<StepOutcome, RunError> {
+) -> Result<StepOutcome, String> {
     // A MAF run is driven by a background worker, not a request, so there is
     // no inbound traceparent to continue — this span is legitimately a root.
     let span = tracing::info_span!(
@@ -520,7 +433,6 @@ pub async fn run_maf(
         llm,
         content,
         outbound,
-        clock,
     )
     .instrument(span)
     .await
@@ -539,8 +451,7 @@ async fn run_maf_inner(
     llm: &LlmClient,
     content: Option<&str>,
     outbound: &dyn OutboundPrefix,
-    clock: AgentClock,
-) -> Result<StepOutcome, RunError> {
+) -> Result<StepOutcome, String> {
     // Resolved ONCE for the whole execution, not per step: a run is one unit of work, and a
     // change landing between step 2 and step 3 would otherwise leave a single execution governed
     // by two different prefixes — harder to reason about, and harder to audit, than either end.
@@ -649,7 +560,6 @@ async fn run_maf_inner(
             &mut total_cost,
             llm,
             outbound_prefix.as_deref(),
-            clock,
         )
         .await
         {
@@ -747,8 +657,7 @@ pub async fn run_maf_from(
     resume_context_id: String,
     injected_answer: String,
     outbound: &dyn OutboundPrefix,
-    clock: AgentClock,
-) -> Result<StepOutcome, RunError> {
+) -> Result<StepOutcome, String> {
     // Re-resolved on resume rather than carried across the pause. A paused execution can sit for
     // days, and the steps that run after a human answers should run under the policy in force
     // when they actually run — the stored `step_results[i].prompt` deliberately holds the clean
@@ -766,8 +675,7 @@ pub async fn run_maf_from(
             "resume step index {resume_index} out of range ({} steps, {} step_results)",
             maf_def.steps.len(),
             step_results.len()
-        )
-        .into());
+        ));
     }
     // `plans` below is built 1:1 from `step_results`, but the loop after it walks `i` up to
     // `maf_def.steps.len()`, not `plans.len()` — the check above only bounds `resume_index`
@@ -786,8 +694,7 @@ pub async fn run_maf_from(
              refusing to resume rather than run past the shorter one",
             step_results.len(),
             maf_def.steps.len()
-        )
-        .into());
+        ));
     }
 
     let mut total_tokens = tokens_used_so_far;
@@ -847,7 +754,6 @@ pub async fn run_maf_from(
             &mut total_cost,
             llm,
             outbound_prefix.as_deref(),
-            clock,
         )
         .await
         {
@@ -935,8 +841,6 @@ pub async fn execute_step(
     total_cost: &mut f64,
     llm: &LlmClient,
     outbound_prefix: Option<&str>,
-    // The current date and time, sent with the step's message after `outbound_prefix`.
-    clock: AgentClock,
 ) -> StepLoopOutcome {
     step_results[i].status = "running".to_string();
     persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
@@ -955,11 +859,11 @@ pub async fn execute_step(
     {
         Ok(v) => v,
         Err(e) => {
-            let err = step_llm_failure(step.step_index, "prompt generation", &e);
+            let err = format!("step {}: prompt generation failed: {e}", step.step_index);
             step_results[i].status = "failed".to_string();
             step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-            return StepLoopOutcome::Failed(err.into());
+            return StepLoopOutcome::Failed(err);
         }
     };
 
@@ -1016,20 +920,11 @@ pub async fn execute_step(
     // step, so the gateway keys its decision cache on the whole MAF run: the
     // first step writes the tier decision, later steps reuse it. Best-effort —
     // a failed insert only means this step falls back to the default model.
-    //
-    // A retried step reuses its trace id (`build_traceparent` derives it from the execution and
-    // the step), so the row its last attempt closed is already here. The gateway and the router
-    // only honour a `running` row younger than the flow timeout, so that row is reopened, fresh,
-    // with this attempt's prompt; leaving it closed refused every model and tool call the retried
-    // step's agent made. Only the run's own user's row is reopened.
     let flow_metadata = step_flow_metadata(execution_id, &actual_prompt);
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata, session_id)
            VALUES ($1, $2, $3, $4, 'running', $5, $6)
-           ON CONFLICT (flow_id) DO UPDATE
-              SET status = 'running', created_at = now(), completed_at = NULL,
-                  duration_ms = NULL, error_message = NULL, metadata = EXCLUDED.metadata
-            WHERE flows.user_id = EXCLUDED.user_id"#,
+           ON CONFLICT (flow_id) DO NOTHING"#,
     )
     .bind(&trace_id)
     .bind(user_id)
@@ -1117,7 +1012,7 @@ pub async fn execute_step(
         step_results[i].prompt = actual_prompt;
         step_results[i].error = Some(err.clone());
         persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-        return StepLoopOutcome::Failed(err.into());
+        return StepLoopOutcome::Failed(err);
     }
     if let Err(rejection) = flow_guard
         .record_invocation(&flow_ctx, &step.agent_name)
@@ -1131,7 +1026,7 @@ pub async fn execute_step(
         step_results[i].prompt = actual_prompt;
         step_results[i].error = Some(err.clone());
         persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-        return StepLoopOutcome::Failed(err.into());
+        return StepLoopOutcome::Failed(err);
     }
 
     // Resolved only now, past the cascade limits, so a step they refuse never wakes a parked agent.
@@ -1148,7 +1043,7 @@ pub async fn execute_step(
             step_results[i].prompt = actual_prompt;
             step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-            return StepLoopOutcome::Failed(err.into());
+            return StepLoopOutcome::Failed(err);
         }
     };
 
@@ -1171,7 +1066,6 @@ pub async fn execute_step(
                 &user_id.to_string(),
                 &actual_prompt,
                 outbound_prefix,
-                clock,
                 &traceparent,
             ),
         ),
@@ -1225,10 +1119,13 @@ pub async fn execute_step(
             ));
         }
         Err(e) => {
-            let err = e.into_run_error(step, "failed");
+            let err = format!(
+                "step {} (agent '{}') failed: {e}",
+                step.step_index, step.agent_name
+            );
             step_results[i].status = "failed".to_string();
             step_results[i].prompt = actual_prompt;
-            step_results[i].error = Some(err.to_string());
+            step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
             return StepLoopOutcome::Failed(err);
         }
@@ -1305,8 +1202,8 @@ pub async fn continue_paused_step(
             .to_string(),
     };
 
-    // `execute_step` stamped `created_at` when the paused attempt called the agent, and the
-    // pause closed the row. The MCP gateway's
+    // `register_flow` (execute_step's first-attempt insert) stamped `created_at` once, at the
+    // original attempt — `ON CONFLICT DO NOTHING`, never touched again. The MCP gateway's
     // liveness check (`gateway.rs::flow_user`) requires `created_at` to be within
     // `NASIKO_FLOW_TIMEOUT_SECS` (600s default) of `now()`, so a human who takes longer than that to
     // approve a paused tool call permanently strands this trace id: every retried `tools/call`
@@ -1334,7 +1231,7 @@ pub async fn continue_paused_step(
             step_results[i].status = "failed".to_string();
             step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-            return StepLoopOutcome::Failed(err.into());
+            return StepLoopOutcome::Failed(err);
         }
     };
 
@@ -1368,9 +1265,12 @@ pub async fn continue_paused_step(
             ));
         }
         Err(e) => {
-            let err = e.into_run_error(step, "resume failed");
+            let err = format!(
+                "step {} (agent '{}') resume failed: {e}",
+                step.step_index, step.agent_name
+            );
             step_results[i].status = "failed".to_string();
-            step_results[i].error = Some(err.to_string());
+            step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
             return StepLoopOutcome::Failed(err);
         }
@@ -1445,13 +1345,13 @@ async fn finish_step(
     {
         Ok(v) => v,
         Err(e) => {
-            let err = step_llm_failure(step.step_index, "extraction", &e);
+            let err = format!("step {}: extraction failed: {e}", step.step_index);
             step_results[i].status = "failed".to_string();
             step_results[i].prompt = actual_prompt;
             step_results[i].latency_ms = latency_ms;
             step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
-            return StepLoopOutcome::Failed(err.into());
+            return StepLoopOutcome::Failed(err);
         }
     };
 
@@ -1566,7 +1466,7 @@ async fn finish_run(
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
     outbound_prefix: Option<&str>,
-) -> Result<StepOutcome, RunError> {
+) -> Result<StepOutcome, String> {
     let context = build_context(&step_results);
     finish_run_with_context(
         db,
@@ -1598,7 +1498,7 @@ pub async fn finish_run_with_context(
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
     outbound_prefix: Option<&str>,
-) -> Result<StepOutcome, RunError> {
+) -> Result<StepOutcome, String> {
     // ── LLM call 4: synthesise final output ───────────────────────────────────
     // Use the guidelines generated by the planner at runtime.
     let guidelines = output_generation;
@@ -1613,7 +1513,7 @@ pub async fn finish_run_with_context(
         generate_final_output(context, guidelines, llm, outbound, outbound_prefix),
     )
     .await
-    .map_err(|e| final_output_failure(&e))?;
+    .map_err(|e| format!("final output generation failed: {e}"))?;
     total_tokens += output_usage.total_tokens;
 
     // Report what the platform recorded, not what MAF counted.
@@ -1700,8 +1600,7 @@ pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformS
     type SpendRow = (Option<i32>, Option<i64>, Option<f64>);
 
     let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT COALESCE((metadata->>'step_index')::int,
-                         (substring(agent_name from '^maf:step([0-9]+)$'))::int),
+        "SELECT (metadata->>'step_index')::int,
                 COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0)::BIGINT,
                 COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
            FROM trace_usage
@@ -1858,10 +1757,6 @@ fn resume_from(steps: &[MafStep], prior: &[StepResult]) -> Vec<StepResult> {
 /// Best-effort: a transient write failure here shouldn't abort the run — the
 /// next transition will just overwrite with fresher data, and the final
 /// write in worker.rs remains the source of truth once the run completes.
-///
-/// A stopped execution is never written: the stop already recorded where it ended. Finding
-/// the row stopped also stops the run here, the backstop for a stop message that never reached
-/// this worker (`super::stop`), so the run ends at this step rather than running to completion.
 pub async fn persist_progress(
     db: &PgPool,
     execution_id: Uuid,
@@ -1870,26 +1765,15 @@ pub async fn persist_progress(
     cost_usd: f64,
 ) {
     let step_json = serde_json::to_value(step_results).unwrap_or_default();
-    let written = sqlx::query(
-        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2, cost_usd = $3 \
-         WHERE id = $4 AND status <> $5",
+    let _ = sqlx::query(
+        "UPDATE maf_executions SET step_results = $1::jsonb, tokens_used = $2, cost_usd = $3 WHERE id = $4",
     )
     .bind(step_json.to_string())
     .bind(tokens_used)
     .bind(cost_usd)
     .bind(execution_id)
-    .bind(nasiko_types::maf::STOPPED)
     .execute(db)
     .await;
-    if let Ok(result) = written
-        && result.rows_affected() == 0
-        && super::stop::stop_local(execution_id)
-    {
-        tracing::info!(
-            execution_id = %execution_id,
-            "maf: execution found stopped at its progress write; ending this run"
-        );
-    }
 }
 
 // ─── Step plan produced by plan_execution ────────────────────────────────────
@@ -1899,26 +1783,6 @@ pub struct StepPlan {
     pub to_extract: String,
 }
 
-/// What a step whose model call failed reads as on the run page. A provider refusal
-/// (missing or refused key, error status) says the step couldn't run and why; anything
-/// else keeps naming the phase that broke.
-fn step_llm_failure(step_index: i32, phase: &str, error: &LlmError) -> String {
-    if error.is_provider_refusal() {
-        format!("Step {step_index} couldn't run: {error}")
-    } else {
-        format!("step {step_index}: {phase} failed: {error}")
-    }
-}
-
-/// [`step_llm_failure`] for the final synthesis, which belongs to no step.
-fn final_output_failure(error: &LlmError) -> String {
-    if error.is_provider_refusal() {
-        format!("The final answer couldn't be written: {error}")
-    } else {
-        format!("final output generation failed: {error}")
-    }
-}
-
 // ─── LLM call 1: runtime planner ─────────────────────────────────────────────
 
 /// `planner_note`, when given, is appended to the step list as extra guidance for the planner.
@@ -1926,7 +1790,7 @@ pub async fn plan_execution(
     steps: &[MafStep],
     llm: &LlmClient,
     planner_note: Option<&str>,
-) -> Result<((Vec<StepPlan>, String), LlmUsage), LlmError> {
+) -> Result<((Vec<StepPlan>, String), LlmUsage), String> {
     let system = "You are a MAF (Multi-Agent Flow) step planner.\n\
                   Given a list of steps (each with a task description and the agent that will \
                   handle it), generate:\n\
@@ -2010,14 +1874,14 @@ pub async fn plan_execution(
 
     let plans_json = json["steps"]
         .as_array()
-        .ok_or_else(|| LlmError::Other("planner returned no 'steps' array".into()))?;
+        .ok_or_else(|| "planner returned no 'steps' array".to_string())?;
 
     if plans_json.len() != steps.len() {
-        return Err(LlmError::Other(format!(
+        return Err(format!(
             "planner returned {} step plans but MAF has {} steps",
             plans_json.len(),
             steps.len()
-        )));
+        ));
     }
 
     let plans = plans_json
@@ -2034,8 +1898,7 @@ pub async fn plan_execution(
                 .to_string();
             Ok(StepPlan { prompt, to_extract })
         })
-        .collect::<Result<Vec<_>, String>>()
-        .map_err(LlmError::Other)?;
+        .collect::<Result<Vec<_>, String>>()?;
 
     Ok(((plans, output_generation), usage))
 }
@@ -2047,7 +1910,7 @@ async fn generate_step_prompt(
     task_description: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, LlmUsage), LlmError> {
+) -> Result<(String, LlmUsage), String> {
     // No placeholders — send the template verbatim, no LLM call needed.
     // Zeroed usage rather than a real one: nothing was spent, so no
     // `token_usage` row should be written for this step's prompt phase.
@@ -2133,9 +1996,7 @@ async fn generate_step_prompt(
     let prompt = json["prompt"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| {
-            LlmError::Other("LLM prompt generation returned no 'prompt' field".into())
-        })?;
+        .ok_or_else(|| "LLM prompt generation returned no 'prompt' field".to_string())?;
 
     Ok((prompt, usage))
 }
@@ -2149,7 +2010,7 @@ async fn extract_info(
     goal: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, LlmUsage), LlmError> {
+) -> Result<(String, LlmUsage), String> {
     // System prompt matches Python's MAFExecutor._extract_info exactly.
     let system = "You are a Multi-Agent Flow (MAF) information extractor.\n\
                   Your task is to extract specific information from an agent's response based \
@@ -2244,9 +2105,7 @@ async fn extract_info(
     let extracted = json["extracted_info"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| {
-            LlmError::Other("LLM extraction returned no 'extracted_info' field".into())
-        })?;
+        .ok_or_else(|| "LLM extraction returned no 'extracted_info' field".to_string())?;
 
     Ok((extracted, usage))
 }
@@ -2259,7 +2118,7 @@ async fn generate_final_output(
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
     outbound_prefix: Option<&str>,
-) -> Result<(String, LlmUsage), LlmError> {
+) -> Result<(String, LlmUsage), String> {
     // System prompt matches Python's MAFExecutor._create_final_output exactly.
     let system = "You are a Multi-Agent Flow (MAF) final output generator.\n\
                   Your task is to consolidate all information extracted from various agents \
@@ -2354,9 +2213,7 @@ async fn generate_final_output(
     let output = json["final_output"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| {
-            LlmError::Other("LLM final output returned no 'final_output' field".into())
-        })?;
+        .ok_or_else(|| "LLM final output returned no 'final_output' field".to_string())?;
 
     Ok((output, usage))
 }
@@ -2385,110 +2242,11 @@ fn build_traceparent(execution_id: Uuid, step_index: i32) -> (String, String) {
     (traceparent, trace_id)
 }
 
-/// Why a call to a step's agent produced no reply.
-#[derive(Debug, PartialEq)]
-enum AgentCallError {
-    /// No answer within the agent-call budget: the worker's agent client carries
-    /// `AGENT_CALL_TIMEOUT_SECS` as its total timeout, streamed reply included. Holds how long the
-    /// call had run.
-    TimedOut(std::time::Duration),
-    /// Anything else: the agent was unreachable, refused the call, broke off its stream, or
-    /// reported its task failed.
-    Failed(String),
-}
-
-impl AgentCallError {
-    fn from_http(err: reqwest::Error, started: Instant) -> Self {
-        if err.is_timeout() {
-            Self::TimedOut(started.elapsed())
-        } else {
-            Self::Failed(err.to_string())
-        }
-    }
-
-    /// The run's error for this failure, worded for `step` of a call `verb` ("failed", "resume
-    /// failed"). A timeout names its own reason, so it reads the same wherever the call was.
-    fn into_run_error(self, step: &MafStep, verb: &str) -> RunError {
-        match self {
-            Self::TimedOut(after) => RunError::TimedOut(format!(
-                "step {} (agent '{}') timed out after {}s",
-                step.step_index,
-                step.agent_name,
-                after.as_secs()
-            )),
-            Self::Failed(e) => RunError::Failed(format!(
-                "step {} (agent '{}') {verb}: {e}",
-                step.step_index, step.agent_name
-            )),
-        }
-    }
-}
-
-/// The A2A method-name and message dialects an agent may speak. MAF's agents are proto-style
-/// (`SendStreamingMessage`, `role: "ROLE_USER"`, untagged `{"text": …}` parts — a real `a2a-lf`
-/// agent rejects an unexpected `"kind"` field outright), so that is tried first; an agent that
-/// does not know it (`-32601`) is asked in the JSON-RPC dialect (`message/stream`, typed parts),
-/// the order reversed from the chat orchestrator's (`nasiko_react_agent::a2a`), whose agents
-/// lean the other way.
-#[derive(Clone, Copy)]
-enum Dialect {
-    Proto,
-    JsonRpc,
-}
-
-/// A fresh message to an agent: `texts` as its parts, the prompt first.
-fn message_request(
-    dialect: Dialect,
-    streaming: bool,
-    texts: &[&str],
-    context_id: &str,
-) -> serde_json::Value {
-    let (method, role) = match (dialect, streaming) {
-        (Dialect::Proto, true) => ("SendStreamingMessage", "ROLE_USER"),
-        (Dialect::Proto, false) => ("SendMessage", "ROLE_USER"),
-        (Dialect::JsonRpc, true) => ("message/stream", "user"),
-        (Dialect::JsonRpc, false) => ("message/send", "user"),
-    };
-    let parts: Vec<serde_json::Value> = texts
-        .iter()
-        .map(|text| match dialect {
-            Dialect::Proto => serde_json::json!({ "text": text }),
-            Dialect::JsonRpc => serde_json::json!({ "kind": "text", "text": text }),
-        })
-        .collect();
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": "1",
-        "method": method,
-        "params": {
-            "message": {
-                "messageId": uuid::Uuid::new_v4().to_string(),
-                "contextId": context_id,
-                "role": role,
-                "parts": parts
-            }
-        }
-    })
-}
-
-/// Where to send a call: the agent's address, its A2A mount, and who and what the call is for.
-struct AgentCallTarget<'a> {
-    endpoint: &'a ForwardTarget,
-    /// The agent's A2A mount from its card (`agents.transport_path`); see [`send_to_agent`].
-    a2a_path: Option<&'a str>,
-    user_id: &'a str,
-    traceparent: &'a str,
-}
-
-/// Calls the step's agent the way the chat orchestrator calls one (`nasiko_react_agent::tool`):
-/// streaming first, reading the agent's events as they arrive, and asking again without
-/// streaming only when the agent never started on the streamed request. A call cut off after it
-/// started is never sent again, since the agent may already have acted on it.
 #[allow(clippy::too_many_arguments)]
 async fn call_agent(
     client: &reqwest::Client,
     endpoint: &ForwardTarget,
-    // The agent's A2A mount from its card (`agents.transport_path`); see `send_to_agent`.
+    // The agent's A2A mount from its card (`agents.transport_path`); see `post_a2a_request`.
     a2a_path: Option<&str>,
     context_id: &str,
     user_id: &str,
@@ -2498,39 +2256,46 @@ async fn call_agent(
     // caller). Same representation `a2a_dispatch.rs`/`agent_proxy.rs`/`tool.rs` use for the exact
     // same reason: a second, independently-addressable part rather than a merged string.
     outbound_prefix: Option<&str>,
-    // The current date and time, its own part after the policy. A new step's message only: the
-    // human's answer on a resume (`call_agent_continuation`) goes out alone, like the policy.
-    clock: AgentClock,
     traceparent: &str,
-) -> Result<AgentCallOutcome, AgentCallError> {
-    let target = AgentCallTarget {
-        endpoint,
-        a2a_path,
-        user_id,
-        traceparent,
-    };
-    let now = clock.note();
-    let mut texts = vec![prompt];
-    texts.extend(outbound_prefix);
-    texts.extend(now.as_deref());
-    let started = Instant::now();
-
-    for dialect in [Dialect::Proto, Dialect::JsonRpc] {
-        let request = message_request(dialect, true, &texts, context_id);
-        match stream_call(client, &target, &request, context_id, started).await {
-            StreamAttempt::Answered(outcome) => return outcome,
-            StreamAttempt::MethodNotFound => continue,
-            StreamAttempt::NotStarted => break,
-        }
+) -> Result<AgentCallOutcome, String> {
+    // Untagged (`{"text": ...}`, no `"kind"`) — this always builds a proto-style `"SendMessage"`
+    // request (below), and this platform's real `a2a-lf` `Part` type has no `"kind"` field at all
+    // (field-presence union serialization); a real agent's strict parser rejects an unexpected
+    // one outright. See `nasiko_agent_proxy::context_part`'s module doc for the full dialect
+    // picture — this call site doesn't depend on that crate since its method name is a fixed
+    // literal, never negotiated.
+    let mut parts = vec![serde_json::json!({"text": prompt})];
+    if let Some(org) = outbound_prefix {
+        parts.push(serde_json::json!({ "text": org }));
     }
-    let request = message_request(Dialect::Proto, false, &texts, context_id);
-    unary_call(client, &target, &request, context_id, started).await
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": "1",
+        // Per the A2A spec (§5.3, §9.1): JSON-RPC method names are PascalCase,
+        // matching gRPC conventions exactly — "SendMessage", not "message/send"
+        // (that string is only the REST binding's URL path, a different
+        // transport). Confirmed both against the spec's own example request
+        // and empirically against a real deployed `oss/agents/translator`
+        // build. Matches `oss/types::build_send_request`.
+        "method": "SendMessage",
+        "params": {
+            "message": {
+                "messageId": uuid::Uuid::new_v4().to_string(),
+                "contextId": context_id,
+                "role": "ROLE_USER",
+                "parts": parts
+            }
+        }
+    });
+
+    let json = post_a2a_request(client, endpoint, a2a_path, user_id, traceparent, &body).await?;
+    classify_agent_response(json, context_id)
 }
 
-/// Resumes a specific paused task with the human's answer — streaming first, as [`call_agent`],
-/// with the same requests the direct-chat HITL resume dispatcher sends
-/// (`nasiko_types::a2a::build_stream_request_for_task`, then `build_send_request_for_task`).
-/// Unlike `call_agent`, this always targets an existing `taskId`, never starts a new one.
+/// Resumes a specific paused task with the human's answer, via
+/// `nasiko_types::a2a::build_send_request_for_task` — the same request shape the direct-chat HITL
+/// resume dispatcher sends (`oss/server/src/hitl/mod.rs`). Unlike `call_agent`, this always
+/// targets an existing `taskId`, never starts a new one.
 #[allow(clippy::too_many_arguments)]
 async fn call_agent_continuation(
     client: &reqwest::Client,
@@ -2540,22 +2305,11 @@ async fn call_agent_continuation(
     user_id: &str,
     answer: &str,
     traceparent: &str,
-) -> Result<AgentCallOutcome, AgentCallError> {
+) -> Result<AgentCallOutcome, String> {
+    let body = build_send_request_for_task(answer, context_id, task_id);
     // The resume path holds only the step's stored endpoint, not the agent's resolved mount.
-    let target = AgentCallTarget {
-        endpoint,
-        a2a_path: None,
-        user_id,
-        traceparent,
-    };
-    let started = Instant::now();
-    let request = build_stream_request_for_task(answer, context_id, task_id);
-    match stream_call(client, &target, &request, task_id, started).await {
-        StreamAttempt::Answered(outcome) => return outcome,
-        StreamAttempt::MethodNotFound | StreamAttempt::NotStarted => {}
-    }
-    let request = build_send_request_for_task(answer, context_id, task_id);
-    unary_call(client, &target, &request, task_id, started).await
+    let json = post_a2a_request(client, endpoint, None, user_id, traceparent, &body).await?;
+    classify_agent_response(json, task_id)
 }
 
 /// `{base}{path}` for an agent mounted at a non-root path, `None` for a root mount or no path.
@@ -2573,6 +2327,9 @@ fn mounted_a2a_url(base: &str, a2a_path: Option<&str>) -> Option<String> {
     Some(format!("{base}{sep}{path}"))
 }
 
+/// Shared HTTP mechanics for both a fresh `call_agent` call and `call_agent_continuation`'s
+/// resume: the `/jsonrpc`-then-`/` endpoint fallback and the top-level JSON-RPC `error` check —
+/// everything both callers previously duplicated.
 /// Attaches whatever the resolver asked to have sent with every call to this target (the EE
 /// injection proxy's own credential when memory is enabled; empty otherwise).
 fn with_target_headers(
@@ -2585,218 +2342,74 @@ fn with_target_headers(
     request
 }
 
-/// Posts `body` to the agent: at its A2A mount when its card names one, otherwise at `/jsonrpc`,
-/// falling back to `/` on a 404 (some agents expose A2A at one, some at the other). Returns the
-/// response whatever its status; the callers decide what a status means.
-async fn send_to_agent<T: serde::Serialize + ?Sized>(
+async fn post_a2a_request<T: serde::Serialize + ?Sized>(
     client: &reqwest::Client,
-    target: &AgentCallTarget<'_>,
+    endpoint: &ForwardTarget,
+    a2a_path: Option<&str>,
+    user_id: &str,
+    traceparent: &str,
     body: &T,
-    streaming: bool,
-) -> Result<reqwest::Response, reqwest::Error> {
+) -> Result<serde_json::Value, String> {
     // An agent whose card names a non-root A2A mount (OpenCode serves only `/a2a/jsonrpc`) is
-    // called there and nowhere else, exactly as direct chat calls it.
-    let base = target.endpoint.url.trim_end_matches('/');
-    let mounted = mounted_a2a_url(base, target.a2a_path);
+    // called there and nowhere else, exactly as direct chat calls it. Otherwise: some agents
+    // expose A2A at /jsonrpc, others at root /, so try /jsonrpc first and fall back to / on 404.
+    let base = endpoint.url.trim_end_matches('/');
+    let mounted = mounted_a2a_url(base, a2a_path);
     let url_jsonrpc = mounted.clone().unwrap_or_else(|| format!("{base}/jsonrpc"));
     // No trailing slash: the request line is `/` either way, and a bare `/` appended to the
     // injection proxy's address matches none of its routes.
     let url_root = base.to_string();
 
-    // No per-request MCP credential: the agent authenticates to `/api/mcp` with its own
-    // deploy-time MCP_GATEWAY_TOKEN, and the user binding rides the forwarded traceparent + the
-    // flow_participants record written before this call (docs/MCP_GATEWAY_AGENT_AUTH.md).
-    // No per-request timeout: `client` is the worker's agent client, built with the platform's
-    // agent-call budget because agent A2A calls are all it makes.
-    let post = |url: &str| {
-        let request = with_target_headers(client.post(url), target.endpoint)
-            .header("X-User-Id", target.user_id)
+    // No per-request MCP credential: the agent authenticates to `/api/mcp`
+    // with its own deploy-time MCP_GATEWAY_TOKEN, and the user binding rides
+    // the forwarded traceparent + the flow_participants record written before
+    // this call (docs/MCP_GATEWAY_AGENT_AUTH.md).
+    // No per-request timeout: `client` is the worker's agent client, built with the
+    // platform's agent-call budget because agent A2A calls are all it makes.
+    let resp = {
+        let r = with_target_headers(client.post(&url_jsonrpc), endpoint)
+            .header("X-User-Id", user_id)
             .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
-            .header("traceparent", target.traceparent);
-        let request = if streaming {
-            request.header("Accept", "text/event-stream")
+            .header("traceparent", traceparent)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if r.status() == reqwest::StatusCode::NOT_FOUND && mounted.is_none() {
+            with_target_headers(client.post(&url_root), endpoint)
+                .header("X-User-Id", user_id)
+                .header("A2A-Version", nasiko_types::a2a::A2A_VERSION_HEADER_VALUE)
+                .header("traceparent", traceparent)
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?
         } else {
-            request
-        };
-        request.json(body).send()
-    };
-    let response = post(&url_jsonrpc).await?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND && mounted.is_none() {
-        return post(&url_root).await;
-    }
-    Ok(response)
-}
-
-/// What one streamed attempt at a call came to.
-enum StreamAttempt {
-    /// The agent answered — a reply, a pause, or a failure: the call is over.
-    Answered(Result<AgentCallOutcome, AgentCallError>),
-    /// The agent does not know this streaming method (`-32601`); another dialect may work.
-    MethodNotFound,
-    /// The agent never started on the request (it refused its form with a 4xx, answered with
-    /// something that is not A2A, or said `-32004`: streaming unsupported), so asking again
-    /// without streaming repeats nothing.
-    NotStarted,
-}
-
-async fn stream_call<T: serde::Serialize + ?Sized>(
-    client: &reqwest::Client,
-    target: &AgentCallTarget<'_>,
-    body: &T,
-    fallback_task_id: &str,
-    started: Instant,
-) -> StreamAttempt {
-    let response = match send_to_agent(client, target, body, true).await {
-        Ok(response) => response,
-        Err(e) => return StreamAttempt::Answered(Err(AgentCallError::from_http(e, started))),
-    };
-    // A 4xx refuses the request's form (no such route, method or media type): another form may
-    // be accepted. A 5xx is the agent failing while it worked on it, and it may already have
-    // acted, so it is not asked again. Here MAF parts from the chat orchestrator, which retries
-    // on any HTTP status.
-    let status = response.status();
-    if status.is_client_error() {
-        return StreamAttempt::NotStarted;
-    }
-    if !status.is_success() {
-        return StreamAttempt::Answered(Err(AgentCallError::Failed(format!("HTTP {status}"))));
-    }
-    let is_event_stream = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.contains("text/event-stream"));
-    if is_event_stream {
-        return StreamAttempt::Answered(
-            read_event_stream(response, fallback_task_id, started).await,
-        );
-    }
-
-    // Answered in one piece, as an agent that does not stream does.
-    let json: serde_json::Value = match response.json().await {
-        Ok(json) => json,
-        Err(e) if e.is_timeout() => {
-            return StreamAttempt::Answered(Err(AgentCallError::TimedOut(started.elapsed())));
+            r
         }
-        Err(_) => return StreamAttempt::NotStarted,
     };
-    match json["error"]["code"].as_i64() {
-        Some(-32601) => StreamAttempt::MethodNotFound,
-        Some(-32004) => StreamAttempt::NotStarted,
-        _ => StreamAttempt::Answered(read_reply(json, fallback_task_id)),
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
     }
+
+    let json: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    if let Some(err) = json["error"]["message"].as_str() {
+        return Err(format!("A2A error: {err}"));
+    }
+
+    Ok(json)
 }
 
-/// One request, answered in one piece: the non-streaming fallback.
-async fn unary_call<T: serde::Serialize + ?Sized>(
-    client: &reqwest::Client,
-    target: &AgentCallTarget<'_>,
-    body: &T,
-    fallback_task_id: &str,
-    started: Instant,
-) -> Result<AgentCallOutcome, AgentCallError> {
-    let response = send_to_agent(client, target, body, false)
-        .await
-        .map_err(|e| AgentCallError::from_http(e, started))?;
-    if !response.status().is_success() {
-        return Err(AgentCallError::Failed(format!(
-            "HTTP {}",
-            response.status()
-        )));
-    }
-    let json: serde_json::Value = response
-        .json()
-        .await
-        .map_err(|e| AgentCallError::from_http(e, started))?;
-    read_reply(json, fallback_task_id)
-}
-
-/// Reads an agent's event stream until an event ends the call: the task completed, failed, or
-/// needs a human. Reply text arrives in pieces and is gathered as it comes; the agent's own
-/// progress narration is not kept, as nothing shows a step's progress live. A stream that just
-/// ends counts as complete with whatever text it carried, as in the chat orchestrator.
-async fn read_event_stream(
-    response: reqwest::Response,
-    fallback_task_id: &str,
-    started: Instant,
-) -> Result<AgentCallOutcome, AgentCallError> {
-    use futures::StreamExt as _;
-
-    let mut collected = String::new();
-    // Bytes, decoded per complete line: a multibyte character split across chunks must not be
-    // decoded half at a time.
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| AgentCallError::from_http(e, started))?;
-        buffer.extend_from_slice(&chunk);
-        while let Some(end) = buffer.iter().position(|&b| b == b'\n') {
-            let line: Vec<u8> = buffer.drain(..=end).collect();
-            let line = String::from_utf8_lossy(&line);
-            let Some(data) = line.trim_end_matches(['\n', '\r']).strip_prefix("data:") else {
-                continue;
-            };
-            let data = data.trim();
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
-                continue;
-            };
-            if let Some(outcome) = read_event(&event, data, &mut collected, fallback_task_id)? {
-                return Ok(outcome);
-            }
-        }
-    }
-    Ok(AgentCallOutcome::Completed(collected))
-}
-
-/// One event of an agent's stream: `Some` when it ends the call.
-fn read_event(
-    event: &serde_json::Value,
-    data: &str,
-    collected: &mut String,
-    fallback_task_id: &str,
-) -> Result<Option<AgentCallOutcome>, AgentCallError> {
-    // How the a2a SDKs end a stream whose task raised. Skipped, it would leave no text and read
-    // as an empty success.
-    if let Some(error) = event.get("error") {
-        let message = error["message"]
-            .as_str()
-            .unwrap_or("the agent's stream ended in an error");
-        return Err(AgentCallError::Failed(format!("A2A error: {message}")));
-    }
-    for item in classify_sse_event(event) {
-        match item {
-            SseEvent::ArtifactText(text) => collected.push_str(&text),
-            SseEvent::StatusText(_) | SseEvent::StatusData(_) => {}
-            SseEvent::Completed { snapshot_text } => {
-                if collected.is_empty() {
-                    *collected = snapshot_text.unwrap_or_else(|| extract_text(event));
-                }
-                return Ok(Some(AgentCallOutcome::Completed(std::mem::take(collected))));
-            }
-            SseEvent::Failed { reason } => {
-                return Err(AgentCallError::Failed(task_failed(&reason)));
-            }
-            SseEvent::AwaitingHuman { .. } => {
-                return Ok(Some(AgentCallOutcome::Paused {
-                    task_id: nasiko_types::a2a::paused_task_id(data, fallback_task_id),
-                    raw_data: data.to_string(),
-                }));
-            }
-        }
-    }
-    Ok(None)
-}
-
-/// Classifies a reply answered in one piece into a normal reply or a pause, via the same
-/// wire-shape parsing `classify_stream_disposition` uses for the streaming direct-chat path.
+/// Classifies an already-parsed A2A JSON-RPC response (top-level `error` already checked by
+/// `post_a2a_request`) into a normal reply or a pause, via the same wire-shape parsing
+/// `classify_stream_disposition` uses for the streaming direct-chat path.
 /// `fallback_task_id` is used only if the payload carries no task id of its own (§`paused_task_id`).
-fn read_reply(
+fn classify_agent_response(
     json: serde_json::Value,
     fallback_task_id: &str,
-) -> Result<AgentCallOutcome, AgentCallError> {
-    if let Some(error) = json["error"]["message"].as_str() {
-        return Err(AgentCallError::Failed(format!("A2A error: {error}")));
-    }
+) -> Result<AgentCallOutcome, String> {
     let data = json.to_string();
     match nasiko_types::a2a::classify_stream_disposition(&data) {
         StreamDisposition::Paused => {
@@ -2806,20 +2419,9 @@ fn read_reply(
                 raw_data: data,
             })
         }
-        // An agent that reports its task failed has no answer to extract: passing its error text
-        // on as a reply would mark the step a success and feed the error to every later step.
-        StreamDisposition::Failed => Err(AgentCallError::Failed(task_failed(&extract_text(&json)))),
-        StreamDisposition::Completed | StreamDisposition::Continue => {
+        StreamDisposition::Completed | StreamDisposition::Continue | StreamDisposition::Failed => {
             Ok(AgentCallOutcome::Completed(extract_text(&json)))
         }
-    }
-}
-
-fn task_failed(reason: &str) -> String {
-    if reason.is_empty() {
-        "agent reported the task failed".to_string()
-    } else {
-        format!("agent reported the task failed: {reason}")
     }
 }
 
@@ -2904,23 +2506,6 @@ pub fn build_context(step_results: &[StepResult]) -> String {
 #[cfg(test)]
 mod resume_tests {
     use super::*;
-    use crate::maf::llm::KeySource;
-
-    #[test]
-    fn a_step_refused_by_the_provider_says_it_couldnt_run_and_why() {
-        let rejected = LlmError::KeyRejected(KeySource::Owner);
-        assert_eq!(
-            step_llm_failure(2, "prompt generation", &rejected),
-            "Step 2 couldn't run: OpenAI rejected your saved API key. \
-             Update it in LLM router, then try again."
-        );
-        let malformed = LlmError::Other("LLM returned no choices".into());
-        assert_eq!(
-            step_llm_failure(2, "extraction", &malformed),
-            "step 2: extraction failed: LLM returned no choices"
-        );
-        assert!(final_output_failure(&LlmError::NoKey).starts_with("The final answer couldn't"));
-    }
 
     #[test]
     fn an_agent_mounted_below_root_is_called_at_its_mount() {
@@ -2941,43 +2526,6 @@ mod resume_tests {
         assert_eq!(mounted_a2a_url(base, None), None);
         assert_eq!(mounted_a2a_url(base, Some("/")), None);
         assert_eq!(mounted_a2a_url(base, Some("")), None);
-    }
-
-    fn task_snapshot(
-        state: &str,
-        status_text: &str,
-        artifact_text: Option<&str>,
-    ) -> serde_json::Value {
-        let mut task = serde_json::json!({
-            "id": "t1",
-            "contextId": "c1",
-            "status": {"state": state, "message": {"parts": [{"text": status_text}]}},
-        });
-        if let Some(text) = artifact_text {
-            task["artifacts"] = serde_json::json!([{"parts": [{"text": text}]}]);
-        }
-        serde_json::json!({"jsonrpc": "2.0", "id": "1", "result": {"task": task}})
-    }
-
-    #[test]
-    fn an_agent_reported_failure_fails_the_step() {
-        let failed = task_snapshot("TASK_STATE_FAILED", "Error: Error code: 502", None);
-        match read_reply(failed, "c1") {
-            Err(AgentCallError::Failed(reason)) => {
-                assert!(reason.contains("Error code: 502"), "got: {reason}")
-            }
-            Err(other) => panic!("a failed task is a failure, not {other:?}"),
-            Ok(_) => panic!("a failed task must not be classified as a reply"),
-        }
-    }
-
-    #[test]
-    fn a_completed_task_is_a_reply() {
-        let completed = task_snapshot("TASK_STATE_COMPLETED", "done", Some("Hola"));
-        match read_reply(completed, "c1") {
-            Ok(AgentCallOutcome::Completed(text)) => assert_eq!(text, "Hola"),
-            _ => panic!("a completed task must be classified as a reply"),
-        }
     }
 
     /// Q5-1: the server's resolver returns the URL with the mount already on it; a second copy
@@ -3193,7 +2741,6 @@ mod resume_tests {
             "ctx-1".into(),
             "the human's answer".into(),
             &crate::outbound::NoOutboundPrefix,
-            AgentClock::OFF,
         )
         .await;
 
@@ -3202,7 +2749,7 @@ mod resume_tests {
             Ok(_) => panic!("a length mismatch must be rejected, not silently succeed"),
         };
         assert!(
-            err.to_string().contains("does not match"),
+            err.contains("does not match"),
             "error should name the actual mismatch: {err}"
         );
     }
@@ -3396,38 +2943,6 @@ mod resume_tests {
             "user-1",
             "do the thing",
             Some("POLICY"),
-            AgentClock::OFF,
-            "00-trace-span-01",
-        )
-        .await;
-
-        mock.assert_async().await;
-        assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
-    }
-
-    /// The current date and time follows the policy as its own part. The step's prompt stays the
-    /// first part, unchanged: it is what `step_results[i].prompt` records.
-    #[tokio::test]
-    async fn call_agent_tells_the_time_after_the_policy() {
-        let mut server = mockito::Server::new_async().await;
-        let mock = server
-            .mock("POST", "/jsonrpc")
-            .match_request(|request| tells_the_time_after(request, "do the thing"))
-            .with_status(200)
-            .with_body(completed_agent_response())
-            .create_async()
-            .await;
-
-        let client = reqwest::Client::new();
-        let result = call_agent(
-            &client,
-            &ForwardTarget::from(server.url()),
-            None,
-            "ctx-1",
-            "user-1",
-            "do the thing",
-            Some("POLICY"),
-            AgentClock::ON,
             "00-trace-span-01",
         )
         .await;
@@ -3463,7 +2978,6 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
-            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3500,7 +3014,6 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
-            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3535,7 +3048,6 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
-            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3547,29 +3059,6 @@ mod resume_tests {
     /// How many message parts a forwarded request carried. `mockito::Matcher::PartialJson` accepts
     /// extra trailing array elements, so on its own it cannot say "and nothing else was sent"; a
     /// test that claims an exact list pairs it with this.
-    /// The text of each part of the forwarded message, in order.
-    fn forwarded_texts(request: &mockito::Request) -> Vec<String> {
-        request
-            .body()
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
-            .and_then(|body| body.pointer("/params/message/parts").cloned())
-            .and_then(|parts| parts.as_array().cloned())
-            .unwrap_or_default()
-            .iter()
-            .map(|part| part["text"].as_str().unwrap_or_default().to_string())
-            .collect()
-    }
-
-    /// The model's message, then the policy, then the current time, each its own part.
-    fn tells_the_time_after(request: &mockito::Request, first: &str) -> bool {
-        let texts = forwarded_texts(request);
-        texts.len() == 3
-            && texts[0] == first
-            && texts[1] == "POLICY"
-            && texts[2].starts_with(nasiko_types::agent_clock::NOTE_LEAD)
-    }
-
     fn forwarded_part_count(request: &mockito::Request) -> usize {
         request
             .body()
@@ -3673,354 +3162,5 @@ mod resume_tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 501);
-    }
-
-    // ─── Agent calls: streaming first, the chat orchestrator's fallbacks, the timeout ────────
-
-    fn sse(events: &[serde_json::Value]) -> String {
-        events.iter().map(|e| format!("data: {e}\n\n")).collect()
-    }
-
-    fn artifact_event(text: &str) -> serde_json::Value {
-        serde_json::json!({"jsonrpc": "2.0", "id": "1", "result": {"artifactUpdate": {
-            "taskId": "task-9", "artifact": {"parts": [{"text": text}]}
-        }}})
-    }
-
-    fn status_event(state: &str, text: &str) -> serde_json::Value {
-        serde_json::json!({"jsonrpc": "2.0", "id": "1", "result": {"statusUpdate": {
-            "taskId": "task-9", "contextId": "ctx-1",
-            "status": {"state": state, "message": {"parts": [{"text": text}]}}
-        }}})
-    }
-
-    fn method_not_found() -> String {
-        serde_json::json!({"jsonrpc": "2.0", "id": "1",
-            "error": {"code": -32601, "message": "Method not found"}})
-        .to_string()
-    }
-
-    fn method(name: &str) -> mockito::Matcher {
-        mockito::Matcher::PartialJson(serde_json::json!({ "method": name }))
-    }
-
-    async fn call(
-        client: &reqwest::Client,
-        url: String,
-    ) -> Result<AgentCallOutcome, AgentCallError> {
-        call_agent(
-            client,
-            &ForwardTarget::from(url),
-            None,
-            "ctx-1",
-            "user-1",
-            "do the thing",
-            None,
-            AgentClock::OFF,
-            "00-trace-span-01",
-        )
-        .await
-    }
-
-    #[tokio::test]
-    async fn a_streamed_reply_is_gathered_from_its_events() {
-        let mut server = mockito::Server::new_async().await;
-        let stream = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendStreamingMessage"))
-            .match_header("accept", "text/event-stream")
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[
-                status_event("TASK_STATE_WORKING", "thinking"),
-                artifact_event("Hel"),
-                artifact_event("lo"),
-                status_event("TASK_STATE_COMPLETED", ""),
-            ]))
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        stream.assert_async().await;
-        assert_eq!(result, Ok(AgentCallOutcome::Completed("Hello".into())));
-    }
-
-    #[tokio::test]
-    async fn a_stream_that_asks_for_input_pauses_the_step_on_the_agents_task() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/jsonrpc")
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[status_event(
-                "TASK_STATE_INPUT_REQUIRED",
-                "Which customer?",
-            )]))
-            .create_async()
-            .await;
-
-        match call(&reqwest::Client::new(), server.url()).await {
-            Ok(AgentCallOutcome::Paused { task_id, raw_data }) => {
-                assert_eq!(task_id, "task-9");
-                assert!(
-                    nasiko_types::a2a::build_pause_question(&raw_data)
-                        .to_string()
-                        .contains("Which customer?"),
-                    "the question reaches the HITL request: {raw_data}"
-                );
-            }
-            other => panic!("expected a pause, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn a_stream_reporting_its_task_failed_fails_the_step() {
-        let mut server = mockito::Server::new_async().await;
-        server
-            .mock("POST", "/jsonrpc")
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[status_event(
-                "TASK_STATE_FAILED",
-                "model call failed",
-            )]))
-            .create_async()
-            .await;
-
-        match call(&reqwest::Client::new(), server.url()).await {
-            Err(AgentCallError::Failed(reason)) => {
-                assert!(reason.contains("model call failed"), "{reason}")
-            }
-            other => panic!("expected a failure, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn an_agent_without_the_proto_streaming_method_is_asked_in_the_json_rpc_dialect() {
-        let mut server = mockito::Server::new_async().await;
-        let proto = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendStreamingMessage"))
-            .with_body(method_not_found())
-            .create_async()
-            .await;
-        let json_rpc = server
-            .mock("POST", "/jsonrpc")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "method": "message/stream",
-                "params": {"message": {"role": "user", "parts": [{"kind": "text", "text": "do the thing"}]}}
-            })))
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[
-                artifact_event("done"),
-                status_event("TASK_STATE_COMPLETED", ""),
-            ]))
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        proto.assert_async().await;
-        json_rpc.assert_async().await;
-        assert_eq!(result, Ok(AgentCallOutcome::Completed("done".into())));
-    }
-
-    #[tokio::test]
-    async fn an_agent_that_does_not_stream_is_asked_once_without_streaming() {
-        let mut server = mockito::Server::new_async().await;
-        let streams = server
-            .mock("POST", "/jsonrpc")
-            .match_body(mockito::Matcher::Any)
-            .match_request(|request| {
-                let body =
-                    String::from_utf8_lossy(request.body().unwrap_or(&Vec::new())).to_string();
-                body.contains("\"SendStreamingMessage\"") || body.contains("\"message/stream\"")
-            })
-            .with_body(method_not_found())
-            .expect(2)
-            .create_async()
-            .await;
-        let unary = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendMessage"))
-            .with_body(completed_agent_response())
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        streams.assert_async().await;
-        unary.assert_async().await;
-        assert!(
-            matches!(result, Ok(AgentCallOutcome::Completed(_))),
-            "{result:?}"
-        );
-    }
-
-    /// The agent may already have acted on a request it started: one cut off part-way is a
-    /// failed step, never sent again.
-    #[tokio::test]
-    async fn a_stream_cut_off_part_way_fails_without_being_sent_again() {
-        let mut server = mockito::Server::new_async().await;
-        let stream = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendStreamingMessage"))
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[
-                artifact_event("Sent the first email"),
-                serde_json::json!({"jsonrpc": "2.0", "id": "1",
-                    "error": {"code": -32603, "message": "worker crashed"}}),
-            ]))
-            .expect(1)
-            .create_async()
-            .await;
-        let unary = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendMessage"))
-            .expect(0)
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        stream.assert_async().await;
-        unary.assert_async().await;
-        match result {
-            Err(AgentCallError::Failed(reason)) => {
-                assert!(reason.contains("worker crashed"), "{reason}")
-            }
-            other => panic!("expected a failure, got {other:?}"),
-        }
-    }
-
-    /// A 5xx is the agent failing while it worked: asked once, never a second time.
-    #[tokio::test]
-    async fn an_agent_failing_with_a_server_error_is_not_asked_again() {
-        let mut server = mockito::Server::new_async().await;
-        let failing = server
-            .mock("POST", "/jsonrpc")
-            .with_status(500)
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        failing.assert_async().await;
-        assert!(
-            matches!(&result, Err(AgentCallError::Failed(reason)) if reason.contains("500")),
-            "{result:?}"
-        );
-    }
-
-    /// A 4xx refuses the streamed request's form, so the agent is asked again without streaming.
-    #[tokio::test]
-    async fn an_agent_refusing_the_streamed_request_is_asked_without_streaming() {
-        let mut server = mockito::Server::new_async().await;
-        let refused = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendStreamingMessage"))
-            .with_status(415)
-            .expect(1)
-            .create_async()
-            .await;
-        let unary = server
-            .mock("POST", "/jsonrpc")
-            .match_body(method("SendMessage"))
-            .with_body(completed_agent_response())
-            .expect(1)
-            .create_async()
-            .await;
-
-        let result = call(&reqwest::Client::new(), server.url()).await;
-
-        refused.assert_async().await;
-        unary.assert_async().await;
-        assert!(
-            matches!(result, Ok(AgentCallOutcome::Completed(_))),
-            "{result:?}"
-        );
-    }
-
-    /// An agent that accepts the call and never answers: the worker's agent client carries the
-    /// agent-call budget, and running out of it is a timeout, not an ordinary failure.
-    #[tokio::test]
-    async fn an_agent_that_never_answers_times_out() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let held = tokio::spawn(async move {
-            let (socket, _) = listener.accept().await.unwrap();
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            drop(socket);
-        });
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_millis(200))
-            .build()
-            .unwrap();
-
-        let result = call(&client, url).await;
-
-        held.abort();
-        assert!(
-            matches!(result, Err(AgentCallError::TimedOut(_))),
-            "{result:?}"
-        );
-    }
-
-    #[test]
-    fn a_timed_out_call_ends_the_run_without_a_retry() {
-        let step = MafStep {
-            agent_name: "task-breakdown".to_string(),
-            ..step(2)
-        };
-        let timed_out = AgentCallError::TimedOut(std::time::Duration::from_secs(600))
-            .into_run_error(&step, "failed");
-        assert_eq!(
-            timed_out,
-            RunError::TimedOut("step 2 (agent 'task-breakdown') timed out after 600s".into())
-        );
-        assert!(!timed_out.is_retryable());
-
-        let failed =
-            AgentCallError::Failed("HTTP 502 Bad Gateway".into()).into_run_error(&step, "failed");
-        assert_eq!(
-            failed,
-            RunError::Failed("step 2 (agent 'task-breakdown') failed: HTTP 502 Bad Gateway".into())
-        );
-        assert!(failed.is_retryable());
-    }
-
-    #[tokio::test]
-    async fn a_resume_streams_the_answer_to_the_paused_task() {
-        let mut server = mockito::Server::new_async().await;
-        let resume = server
-            .mock("POST", "/jsonrpc")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "method": "SendStreamingMessage",
-                "params": {"message": {"taskId": "task-9", "contextId": "ctx-1"}}
-            })))
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse(&[
-                artifact_event("Sent to Acme"),
-                status_event("TASK_STATE_COMPLETED", ""),
-            ]))
-            .create_async()
-            .await;
-
-        let result = call_agent_continuation(
-            &reqwest::Client::new(),
-            &ForwardTarget::from(server.url()),
-            "ctx-1",
-            "task-9",
-            "user-1",
-            "Acme",
-            "00-trace-span-01",
-        )
-        .await;
-
-        resume.assert_async().await;
-        assert_eq!(
-            result,
-            Ok(AgentCallOutcome::Completed("Sent to Acme".into()))
-        );
     }
 }

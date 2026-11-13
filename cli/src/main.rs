@@ -21,8 +21,8 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  up         Start Nasiko locally from a clone (Docker Compose)
-  down       Stop the local Nasiko stack
+  up         Start local Nasiko cluster (agent devs)
+  down       Stop local Nasiko cluster
   connect    Register a CP by URL, or connect local coding agents
   disconnect Disconnect local coding agents
   use        Switch active cluster
@@ -142,10 +142,10 @@ enum IntegrationCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start Nasiko locally: builds and runs this checkout's Docker Compose stack
-    #[command(after_help = "Run from a clone of the repository. Config: .env in the checkout")]
+    /// Start local Nasiko cluster (pulls CP image from DockerHub)
+    #[command(after_help = "Config: ~/.nasiko/.env")]
     Up,
-    /// Stop the local Nasiko stack (data is kept)
+    /// Stop local Nasiko cluster
     Down,
     /// Register a CP by URL, or connect local coding agents
     #[command(after_help = CONNECT_HELP)]
@@ -300,7 +300,7 @@ fn main() -> Result<()> {
         Commands::Agent(cmd) => nasiko::dispatch_agent_dev(cmd),
         Commands::Ops(cmd) => nasiko::dispatch_agent_ops(cmd),
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Up => commands::dev::start(),
+            CpCommands::Up => commands::dev::start(false),
             CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect {
                 target,
@@ -312,17 +312,6 @@ fn main() -> Result<()> {
                 let agent_target = target.as_deref().is_none_or(local_agents::is_coding_agent);
                 if agent_target && url.is_none() && name.is_none() {
                     return local_agents::connect(target.as_deref(), &coding_agent);
-                }
-                // A name that is not a coding agent may be an A2A agent running on this machine.
-                if !agent_target
-                    && url.is_none()
-                    && let Some(target) = target.as_deref()
-                    && let Some((agent, running)) = local_agents::running_a2a_agent(target)?
-                {
-                    if name.is_some() {
-                        anyhow::bail!("--name applies only when connecting a control-plane URL");
-                    }
-                    return local_agents::connect_a2a(&agent, &running, &coding_agent);
                 }
                 if coding_agent.is_set() {
                     anyhow::bail!(
@@ -529,22 +518,6 @@ mod tests {
             ])
             .is_err()
         );
-    }
-
-    #[test]
-    fn the_mcp_gateway_connects_and_disconnects_on_its_own() {
-        let cli =
-            Cli::try_parse_from(["nasiko", "connect", "claude", "--no-routing", "--mcp"]).unwrap();
-        let Commands::Cp(CpCommands::Connect { coding_agent, .. }) = cli.command else {
-            panic!("expected connect command");
-        };
-        assert!(coding_agent.no_routing && coding_agent.mcp);
-
-        let cli = Cli::try_parse_from(["nasiko", "disconnect", "claude", "--mcp"]).unwrap();
-        let Commands::Cp(CpCommands::Disconnect { options, .. }) = cli.command else {
-            panic!("expected disconnect command");
-        };
-        assert!(options.mcp && !options.routing && !options.reporting);
     }
 
     #[test]
@@ -840,9 +813,9 @@ mod tests {
             assert!(!script.contains("__claude-token"), "{shell}");
         }
 
-        // Hidden subcommands are dropped at every level, not just the top: `agents install`
-        // (hidden, renamed to `connect --reporting`) is gone while its visible siblings stay.
-        // Checked on the tree rather than the scripts, where "install" also appears elsewhere.
+        // Hidden subcommands are dropped at every level, not just the top: `agents discover`
+        // (hidden, renamed to `status`) is gone while its visible siblings stay. Checked on the
+        // tree rather than the scripts, where "discover" also appears in other commands' help.
         let tree = without_hidden_subcommands(&Cli::command());
         let agents = tree
             .get_subcommands()
@@ -850,8 +823,7 @@ mod tests {
             .expect("agents command");
         let names: Vec<&str> = agents.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"list-uploaded"), "{names:?}");
-        assert!(names.contains(&"discover"), "{names:?}");
-        assert!(!names.contains(&"install"), "{names:?}");
+        assert!(!names.contains(&"discover"), "{names:?}");
         assert!(!names.contains(&"report"), "{names:?}");
     }
 

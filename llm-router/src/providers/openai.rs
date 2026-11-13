@@ -11,22 +11,18 @@
 //! With `TOKEN_CACHE_MARKERS` on, the built-in OpenAI provider also keys the prompt cache by
 //! the agent ([`add_cache_key`]); custom endpoints get no key.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, HashSet};
 
 use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use serde::Serialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::dialect::ProviderDialect;
-use super::media::{self, DocumentKind, document_kind};
 use super::sse::sse_data_stream;
 use super::{ProviderClient, ProviderError};
 use crate::ir::{
-    CACHE_CONTROL, ChatChunk, ChatRequest, ChatResponse, ContentPart, EmbeddingsRequest,
-    EmbeddingsResponse, Message, ToolDef, UnsupportedPart,
+    ChatChunk, ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Message, ToolDef,
 };
 use crate::resolver::{ResolvedConfig, ResolvedEmbeddingConfig};
 
@@ -40,8 +36,6 @@ pub struct OpenAiProvider {
     max_tools: usize,
     /// Key the prompt cache by the agent ([`add_cache_key`]).
     cache_key: bool,
-    refuse_document_urls: bool,
-    strict_media: bool,
 }
 
 impl OpenAiProvider {
@@ -60,115 +54,7 @@ impl OpenAiProvider {
             // anywhere else keeps forwarding exactly what the caller sent.
             max_tools: 0,
             cache_key: false,
-            refuse_document_urls: false,
-            strict_media: false,
         }
-    }
-
-    pub fn with_document_urls_refused(mut self, refused: bool) -> Self {
-        self.refuse_document_urls = refused;
-        self
-    }
-
-    pub fn with_strict_media(mut self, strict: bool) -> Self {
-        self.strict_media = strict;
-        self
-    }
-
-    fn outbound<'a>(
-        &self,
-        req: &'a ChatRequest,
-        cfg: &'a ResolvedConfig,
-        stream: bool,
-    ) -> Result<Outbound<'a>, ProviderError> {
-        self.check_documents(req)?;
-        let mut messages: Vec<Cow<'a, Message>> = req
-            .messages
-            .iter()
-            .map(|message| {
-                if !message.has_cache_markers() {
-                    return Cow::Borrowed(message);
-                }
-                let mut owned = message.clone();
-                owned.strip_cache_markers();
-                Cow::Owned(owned)
-            })
-            .collect();
-        if self.strict_media {
-            prepare_media(&mut messages)?;
-        }
-        let mut extra = req.extra.clone();
-        if let Some(max_tokens) = cfg.max_tokens.or(req.max_tokens) {
-            extra.insert("max_completion_tokens".to_string(), json!(max_tokens));
-        }
-        if stream {
-            extra.insert(
-                "stream_options".to_string(),
-                json!({ "include_usage": true }),
-            );
-        }
-        if self.cache_key {
-            add_cache_key(&mut extra, cfg);
-        }
-        let tools = self.outbound_tools(req, &messages, &cfg.model);
-        Ok(Outbound {
-            model: &cfg.model,
-            messages,
-            tools,
-            tool_choice: req.tool_choice.as_ref(),
-            temperature: cfg.temperature.or(req.temperature),
-            stream,
-            extra,
-        })
-    }
-
-    fn outbound_tools<'a>(
-        &self,
-        req: &'a ChatRequest,
-        messages: &[Cow<'_, Message>],
-        model: &str,
-    ) -> Option<Cow<'a, [ToolDef]>> {
-        let tools = req.tools.as_deref()?;
-        let over_cap = self.max_tools != 0 && tools.len() > self.max_tools;
-        let marked = tools
-            .iter()
-            .any(|tool| tool.extra.contains_key(CACHE_CONTROL));
-        if !over_cap && !marked {
-            return Some(Cow::Borrowed(tools));
-        }
-        let mut owned = tools.to_vec();
-        for tool in &mut owned {
-            tool.extra.remove(CACHE_CONTROL);
-        }
-        let (kept, dropped) = fit_tools(owned, self.max_tools, &latest_user_text(messages));
-        if !dropped.is_empty() {
-            tracing::warn!(
-                target: "nasiko::llm_router::provider",
-                model, cap = self.max_tools, kept = kept.len(), dropped = dropped.len(),
-                by_server = %dropped_by_server(&dropped),
-                "tool array exceeds this endpoint's cap; forwarding the most relevant \
-                 subset — a tool trimmed here cannot be called this turn"
-            );
-        }
-        Some(Cow::Owned(kept))
-    }
-
-    fn check_documents(&self, req: &ChatRequest) -> Result<(), ProviderError> {
-        let by_url = self.refuse_document_urls
-            && req
-                .messages
-                .iter()
-                .filter_map(|m| m.content.as_ref()?.as_array())
-                .flatten()
-                .filter(|part| part["type"] == "file")
-                .filter_map(|part| part["file"]["file_data"].as_str())
-                .any(|data| data.starts_with("http://") || data.starts_with("https://"));
-        if by_url {
-            return Err(ProviderError::Rejected(
-                "OpenAI does not accept this input: a document given by URL; send its bytes as a base64 data URL in file.file_data".into(),
-            ));
-        }
-        Ok(())
     }
 
     /// Cap the tool array this endpoint will accept (`0` = uncapped).
@@ -183,6 +69,25 @@ impl OpenAiProvider {
         self
     }
 
+    /// Fit the outbound tool array into this endpoint's cap, logging what was trimmed.
+    fn apply_tool_budget(&self, out: &mut ChatRequest, model: &str) {
+        let Some(tools) = out.tools.take() else {
+            return;
+        };
+        let query = latest_user_text(&out.messages);
+        let (kept, dropped) = fit_tools(tools, self.max_tools, &query);
+        if !dropped.is_empty() {
+            tracing::warn!(
+                target: "nasiko::llm_router::provider",
+                model, cap = self.max_tools, kept = kept.len(), dropped = dropped.len(),
+                by_server = %dropped_by_server(&dropped),
+                "tool array exceeds this endpoint's cap; forwarding the most relevant \
+                 subset — a tool trimmed here cannot be called this turn"
+            );
+        }
+        out.tools = Some(kept);
+    }
+
     /// Map a non-2xx provider response to a [`ProviderError`]. 429 and 5xx are
     /// retryable (transient); other 4xx are request-shape errors and are not.
     fn status_error(status: reqwest::StatusCode, body: String) -> ProviderError {
@@ -194,170 +99,21 @@ impl OpenAiProvider {
     }
 }
 
-const OPENAI_IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const OPENAI_FILES_MAX_BYTES: u64 = 50_000_000;
-const TOOL_MEDIA_NOTE: &str = "The tool returned images; they are in the next message.";
-const TOOL_MEDIA_HEADER: &str = "Images from the tool results above:";
-
-#[derive(Serialize)]
-struct Outbound<'a> {
-    model: &'a str,
-    messages: Vec<Cow<'a, Message>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Cow<'a, [ToolDef]>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<&'a Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    temperature: Option<f64>,
-    stream: bool,
-    #[serde(flatten)]
-    extra: Map<String, Value>,
-}
-
-fn refused(err: UnsupportedPart) -> ProviderError {
-    ProviderError::Rejected(format!(
-        "OpenAI does not accept this input: {}",
-        err.into_message()
-    ))
-}
-
-fn prepare_media(messages: &mut Vec<Cow<'_, Message>>) -> Result<(), ProviderError> {
-    let mut file_bytes = 0;
-    for message in messages.iter_mut() {
-        let Some(Value::Array(parts)) = message.content.as_ref() else {
-            continue;
-        };
-        let mut rewrites = Vec::new();
-        for (index, part) in parts.iter().enumerate() {
-            if let Some(rewritten) = media_rewrite(part, &mut file_bytes)? {
-                rewrites.push((index, rewritten));
-            }
-        }
-        if rewrites.is_empty() {
-            continue;
-        }
-        if let Some(Value::Array(parts)) = message.to_mut().content.as_mut() {
-            for (index, rewritten) in rewrites {
-                parts[index] = rewritten;
-            }
-        }
-    }
-    if file_bytes > OPENAI_FILES_MAX_BYTES {
-        return Err(refused(UnsupportedPart::new(
-            "more than 50 MB of files in one request",
-        )));
-    }
-    move_tool_media(messages);
-    Ok(())
-}
-
-fn media_rewrite(part: &Value, file_bytes: &mut u64) -> Result<Option<Value>, ProviderError> {
-    match ContentPart::from_openai_part(part) {
-        Ok(ContentPart::File { source, filename }) => {
-            let Some((media_type, data)) = source.inline() else {
-                return Ok(None);
-            };
-            match document_kind(media_type) {
-                DocumentKind::TextLike => {
-                    let text =
-                        media::text_document(&source, filename.as_deref()).map_err(refused)?;
-                    Ok(Some(json!({ "type": "text", "text": text })))
-                }
-                DocumentKind::Pdf => {
-                    *file_bytes += media::decoded_len(data);
-                    Ok(None)
-                }
-                DocumentKind::Other => Err(refused(UnsupportedPart::new(format!(
-                    "'{media_type}' files (it reads PDF; text files are sent as text)"
-                )))),
-            }
-        }
-        Ok(image @ ContentPart::Image { .. }) => {
-            let ContentPart::Image { source, .. } = &image else {
-                return Ok(None);
-            };
-            let Some(media_type) = source.media_type() else {
-                return Ok(None);
-            };
-            if !OPENAI_IMAGE_TYPES.contains(&media_type) {
-                return Err(refused(UnsupportedPart::new(format!(
-                    "'{media_type}' images (it reads png, jpeg, gif and webp)"
-                ))));
-            }
-            let rendered = image.to_openai_part();
-            Ok((rendered != *part).then_some(rendered))
-        }
-        _ => Ok(None),
-    }
-}
-
-fn is_text_part(part: &Value) -> bool {
-    part.get("type").and_then(Value::as_str) == Some("text")
-}
-
-fn move_tool_media(messages: &mut Vec<Cow<'_, Message>>) {
-    let mut i = 0;
-    while i < messages.len() {
-        if messages[i].role != "tool" {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < messages.len() && messages[i].role == "tool" {
-            i += 1;
-        }
-        let mut moved = Vec::new();
-        for message in &mut messages[start..i] {
-            let has_media = matches!(message.content.as_ref(), Some(Value::Array(parts))
-                if parts.iter().any(|part| !is_text_part(part)));
-            if !has_media {
-                continue;
-            }
-            let Some(Value::Array(parts)) = message.to_mut().content.as_mut() else {
-                continue;
-            };
-            let (text, media): (Vec<Value>, Vec<Value>) = parts.drain(..).partition(is_text_part);
-            moved.extend(media);
-            *parts = if text.is_empty() {
-                vec![json!({ "type": "text", "text": TOOL_MEDIA_NOTE })]
-            } else {
-                text
-            };
-        }
-        if moved.is_empty() {
-            continue;
-        }
-        let mut content = vec![json!({ "type": "text", "text": TOOL_MEDIA_HEADER })];
-        content.extend(moved);
-        messages.insert(
-            i,
-            Cow::Owned(Message {
-                role: "user".into(),
-                content: Some(Value::Array(content)),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-                extra: serde_json::Map::new(),
-            }),
-        );
-        i += 1;
-    }
-}
-
 /// The field an OpenAI request keys its prompt cache with.
 const PROMPT_CACHE_KEY: &str = "prompt_cache_key";
 
 /// Key the prompt cache by the agent unless the agent set its own key. Before GPT-5.6, OpenAI
 /// routes requests with the same key and prefix to the same cache; from GPT-5.6 it needs no
 /// key, so those models get none. OpenAI's docs suggest about 15 requests a minute per key.
-fn add_cache_key(extra: &mut Map<String, Value>, cfg: &ResolvedConfig) {
+fn add_cache_key(out: &mut ChatRequest, cfg: &ResolvedConfig) {
     if cfg.agent_id.is_empty()
         || !routes_by_cache_key(&cfg.model)
-        || extra.contains_key(PROMPT_CACHE_KEY)
+        || out.extra.contains_key(PROMPT_CACHE_KEY)
     {
         return;
     }
-    extra.insert(PROMPT_CACHE_KEY.to_string(), json!(cfg.agent_id));
+    out.extra
+        .insert(PROMPT_CACHE_KEY.to_string(), json!(cfg.agent_id));
 }
 
 /// Whether OpenAI routes `model` to its cache by `prompt_cache_key`: the models before GPT-5.6,
@@ -591,13 +347,12 @@ fn tokenize(text: &str) -> Vec<String> {
 }
 
 /// The latest user turn — what the tools for *this* request should be relevant to.
-pub(crate) fn latest_user_text<M: std::borrow::Borrow<Message>>(messages: &[M]) -> String {
+pub(crate) fn latest_user_text(messages: &[Message]) -> String {
     messages
         .iter()
-        .map(|m| m.borrow())
         .rev()
         .find(|m| m.role == "user")
-        .and_then(|m| m.text())
+        .and_then(Message::text)
         .unwrap_or_default()
 }
 
@@ -633,7 +388,24 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
-        let out = self.outbound(req, cfg, false)?;
+        let mut out = req.clone();
+        out.model = Some(cfg.model.clone()); // C4: resolved model is authoritative
+        out.temperature = cfg.temperature.or(req.temperature); // resolved wins when set
+        // OpenAI deprecated `max_tokens`; newer models reject it. Emit the current
+        // `max_completion_tokens` param instead (via passthrough; the named field is
+        // cleared so it doesn't also serialize).
+        out.max_tokens = None;
+        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
+            out.extra
+                .insert("max_completion_tokens".to_string(), json!(mt));
+        }
+        out.stream = Some(false);
+        // OpenAI caches without markers; an Anthropic-SDK agent's `cache_control` is not its API.
+        out.strip_cache_markers();
+        if self.cache_key {
+            add_cache_key(&mut out, cfg);
+        }
+        self.apply_tool_budget(&mut out, &cfg.model);
 
         let resp = self
             .dialect
@@ -666,7 +438,26 @@ impl ProviderClient for OpenAiProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
-        let out = self.outbound(req, cfg, true)?;
+        let mut out = req.clone();
+        out.model = Some(cfg.model.clone());
+        out.temperature = cfg.temperature.or(req.temperature);
+        // See `chat` — OpenAI wants `max_completion_tokens`, not the deprecated `max_tokens`.
+        out.max_tokens = None;
+        if let Some(mt) = cfg.max_tokens.or(req.max_tokens) {
+            out.extra
+                .insert("max_completion_tokens".to_string(), json!(mt));
+        }
+        out.stream = Some(true);
+        // Ask OpenAI to emit a final usage chunk (off by default when streaming).
+        out.extra.insert(
+            "stream_options".to_string(),
+            json!({ "include_usage": true }),
+        );
+        out.strip_cache_markers(); // see `chat`
+        if self.cache_key {
+            add_cache_key(&mut out, cfg);
+        }
+        self.apply_tool_budget(&mut out, &cfg.model);
 
         let resp = self
             .dialect
@@ -815,252 +606,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
         }
-    }
-
-    fn ok_reply() -> String {
-        json!({
-            "id": "c1", "object": "chat.completion", "model": "gpt-4o",
-            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
-            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
-        })
-        .to_string()
-    }
-
-    async fn builtin_openai(
-        server: &mut mockito::ServerGuard,
-        expected_messages: Value,
-        hits: usize,
-    ) -> (Box<dyn ProviderClient>, mockito::Mock) {
-        let mock = server
-            .mock("POST", "/chat/completions")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({ "messages": expected_messages }),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(ok_reply())
-            .expect(hits)
-            .create_async()
-            .await;
-        let cfg = crate::config::GatewayConfig {
-            openai_api_base: server.url(),
-            ..Default::default()
-        };
-        let provider =
-            super::super::provider_for("openai", None, &reqwest::Client::new(), &cfg).unwrap();
-        (provider, mock)
-    }
-
-    fn b64(bytes: &[u8]) -> String {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD.encode(bytes)
-    }
-
-    fn ask_with(part: Value) -> ChatRequest {
-        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
-            { "type": "text", "text": "what does it say?" }, part
-        ]}]}))
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn a_text_document_reaches_openai_as_a_text_part() {
-        let mut server = mockito::Server::new_async().await;
-        let (provider, mock) = builtin_openai(
-            &mut server,
-            json!([{ "role": "user", "content": [
-                { "type": "text", "text": "what does it say?" },
-                { "type": "text", "text": "File: data.csv\n\nregion,q2\nEMEA,913" }
-            ]}]),
-            1,
-        )
-        .await;
-        let req = ask_with(json!({ "type": "file", "file": {
-            "file_data": format!("data:text/csv;base64,{}", b64(b"region,q2\nEMEA,913")),
-            "filename": "data.csv"
-        }}));
-
-        provider
-            .chat(&req, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn a_word_document_reaches_openai_as_the_text_it_holds() {
-        use std::io::Write;
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        zip.start_file(
-            "word/document.xml",
-            zip::write::SimpleFileOptions::default(),
-        )
-        .unwrap();
-        zip.write_all(
-            br#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>Contract CN-58213</w:t></w:r></w:p></w:body></w:document>"#,
-        )
-        .unwrap();
-        let docx = zip.finish().unwrap().into_inner();
-
-        let mut server = mockito::Server::new_async().await;
-        let (provider, mock) = builtin_openai(
-            &mut server,
-            json!([{ "role": "user", "content": [
-                { "type": "text", "text": "what does it say?" },
-                { "type": "text", "text": "File: contract.docx\n\nContract CN-58213" }
-            ]}]),
-            1,
-        )
-        .await;
-        let req = ask_with(json!({ "type": "file", "file": {
-            "file_data": format!(
-                "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{}",
-                b64(&docx)
-            ),
-            "filename": "contract.docx"
-        }}));
-
-        provider
-            .chat(&req, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn an_anthropic_text_document_reaches_openai_as_a_text_part() {
-        use crate::inbound::InboundParser;
-        let mut server = mockito::Server::new_async().await;
-        let (provider, mock) = builtin_openai(
-            &mut server,
-            json!([{ "role": "user", "content": [
-                { "type": "text", "text": "File: sales.csv\n\nregion,q2\nEMEA,913" }
-            ]}]),
-            1,
-        )
-        .await;
-        let req = crate::inbound::anthropic::AnthropicInbound
-            .parse_chat(json!({
-                "model": "claude-haiku-5-5",
-                "max_tokens": 64,
-                "messages": [{ "role": "user", "content": [
-                    { "type": "document", "title": "sales.csv",
-                      "source": { "type": "text", "data": "region,q2\nEMEA,913" } }
-                ] }]
-            }))
-            .unwrap();
-
-        provider
-            .chat(&req, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn a_file_or_image_type_openai_cannot_read_is_refused_before_sending() {
-        let doc = "application/msword";
-        let cases = [
-            (
-                json!({ "type": "file", "file": {
-                    "file_data": format!("data:{doc};base64,0M8R4A=="), "filename": "r.doc"
-                }}),
-                doc,
-            ),
-            (
-                json!({ "type": "image_url", "image_url": { "url": "data:image/tiff;base64,SUkqAA==" } }),
-                "image/tiff",
-            ),
-        ];
-        for (part, named) in cases {
-            let mut server = mockito::Server::new_async().await;
-            let (provider, mock) = builtin_openai(&mut server, json!([]), 0).await;
-
-            let err = provider
-                .chat(&ask_with(part), &resolved("gpt-4o", None))
-                .await
-                .unwrap_err();
-
-            let ProviderError::Rejected(message) = err else {
-                panic!("expected a by-name refusal, got {err:?}");
-            };
-            assert!(
-                message.starts_with("OpenAI does not accept this input"),
-                "{message}"
-            );
-            assert!(message.contains(named), "{message}");
-            mock.assert_async().await;
-        }
-    }
-
-    fn tool_call(id: &str) -> Value {
-        json!({ "id": id, "type": "function", "function": { "name": "read_file", "arguments": "{}" } })
-    }
-
-    fn image(data: &str) -> Value {
-        json!({ "type": "image_url", "image_url": { "url": format!("data:image/png;base64,{data}") } })
-    }
-
-    #[tokio::test]
-    async fn images_in_tool_results_follow_the_tool_run_as_one_user_message() {
-        let mut server = mockito::Server::new_async().await;
-        let (provider, mock) = builtin_openai(
-            &mut server,
-            json!([
-                { "role": "user", "content": "compare the two files" },
-                { "role": "assistant", "tool_calls": [tool_call("c1"), tool_call("c2")] },
-                { "role": "tool", "tool_call_id": "c1", "content": [{ "type": "text", "text": "first" }] },
-                { "role": "tool", "tool_call_id": "c2", "content": [
-                    { "type": "text", "text": "The tool returned images; they are in the next message." }
-                ]},
-                { "role": "user", "content": [
-                    { "type": "text", "text": "Images from the tool results above:" },
-                    image("AAAA"), image("BBBB"), image("CCCC")
-                ]}
-            ]),
-            1,
-        )
-        .await;
-        let req: ChatRequest = serde_json::from_value(json!({ "messages": [
-            { "role": "user", "content": "compare the two files" },
-            { "role": "assistant", "tool_calls": [tool_call("c1"), tool_call("c2")] },
-            { "role": "tool", "tool_call_id": "c1", "content": [
-                { "type": "text", "text": "first" }, image("AAAA")
-            ]},
-            { "role": "tool", "tool_call_id": "c2", "content": [image("BBBB"), image("CCCC")] }
-        ]}))
-        .unwrap();
-
-        provider
-            .chat(&req, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        mock.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn a_tool_run_without_images_is_sent_unchanged() {
-        let mut server = mockito::Server::new_async().await;
-        let messages = json!([
-            { "role": "user", "content": "hi" },
-            { "role": "assistant", "tool_calls": [tool_call("c1")] },
-            { "role": "tool", "tool_call_id": "c1", "content": "plain result" }
-        ]);
-        let (provider, mock) = builtin_openai(&mut server, messages.clone(), 1).await;
-        let req: ChatRequest = serde_json::from_value(json!({ "messages": messages })).unwrap();
-
-        provider
-            .chat(&req, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        mock.assert_async().await;
     }
 
     #[test]
@@ -1526,102 +1072,6 @@ mod tests {
         m.assert_async().await;
     }
 
-    fn document_request(file_data: &str) -> ChatRequest {
-        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
-            { "type": "text", "text": "What does it say?" },
-            { "type": "file", "file": { "file_data": file_data, "filename": "q3.pdf" } }
-        ]}]}))
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn openai_refuses_a_document_given_by_url_by_name_before_any_call() {
-        let mut server = mockito::Server::new_async().await;
-        let upstream = server
-            .mock("POST", "/chat/completions")
-            .expect(0)
-            .create_async()
-            .await;
-        let provider = OpenAiProvider::new(reqwest::Client::new(), server.url())
-            .with_document_urls_refused(true);
-
-        for url in ["https://example.com/q3.pdf", "http://example.com/q3.pdf"] {
-            let chat = provider
-                .chat(&document_request(url), &resolved("gpt-4o", None))
-                .await
-                .unwrap_err();
-            let stream = provider
-                .chat_stream(&document_request(url), &resolved("gpt-4o", None))
-                .await
-                .err()
-                .unwrap();
-
-            for err in [chat, stream] {
-                assert!(
-                    matches!(&err, ProviderError::Rejected(msg) if msg.contains("a document given by URL")),
-                    "{err:?}"
-                );
-            }
-        }
-        upstream.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn openai_still_takes_inline_documents_and_image_urls() {
-        let mut server = mockito::Server::new_async().await;
-        let upstream = server
-            .mock("POST", "/chat/completions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(ok_completion())
-            .expect(2)
-            .create_async()
-            .await;
-        let provider = OpenAiProvider::new(reqwest::Client::new(), server.url())
-            .with_document_urls_refused(true);
-        let image_by_url: ChatRequest =
-            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": [
-                { "type": "image_url", "image_url": { "url": "https://example.com/cat.png" } }
-            ]}]}))
-            .unwrap();
-
-        provider
-            .chat(
-                &document_request("data:application/pdf;base64,JVBERi0="),
-                &resolved("gpt-4o", None),
-            )
-            .await
-            .unwrap();
-        provider
-            .chat(&image_by_url, &resolved("gpt-4o", None))
-            .await
-            .unwrap();
-
-        upstream.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn an_openai_compatible_endpoint_that_was_not_told_to_refuse_forwards_document_urls() {
-        let mut server = mockito::Server::new_async().await;
-        let upstream = server
-            .mock("POST", "/chat/completions")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(ok_completion())
-            .create_async()
-            .await;
-
-        OpenAiProvider::new(reqwest::Client::new(), server.url())
-            .chat(
-                &document_request("https://example.com/q3.pdf"),
-                &resolved("gpt-4o", None),
-            )
-            .await
-            .unwrap();
-
-        upstream.assert_async().await;
-    }
-
     #[tokio::test]
     async fn an_anthropic_agents_cache_markers_never_reach_openai_when_streaming() {
         let mut server = mockito::Server::new_async().await;
@@ -2054,7 +1504,6 @@ mod tests {
         let endpoint = crate::resolver::CustomEndpoint {
             base_url: server.url(),
             dialect: ProviderDialect::OpenAi,
-            public_only: false,
         };
         let (name, endpoint) = if custom {
             ("self-hosted", Some(&endpoint))
@@ -2109,7 +1558,7 @@ mod tests {
     #[test]
     fn the_router_keys_the_prompt_cache_by_agent_unless_the_agent_did() {
         let mut out = plain_request();
-        add_cache_key(&mut out.extra, &agent_call("gpt-5.5"));
+        add_cache_key(&mut out, &agent_call("gpt-5.5"));
         assert_eq!(out.extra[PROMPT_CACHE_KEY], AGENT);
 
         let mut own: ChatRequest = serde_json::from_value(json!({
@@ -2117,69 +1566,16 @@ mod tests {
             "prompt_cache_key": "user-7"
         }))
         .unwrap();
-        add_cache_key(&mut own.extra, &agent_call("gpt-5.5"));
+        add_cache_key(&mut own, &agent_call("gpt-5.5"));
         assert_eq!(own.extra[PROMPT_CACHE_KEY], "user-7");
-    }
-
-    #[test]
-    fn only_the_messages_and_tools_that_change_are_copied_for_openai() {
-        let provider = OpenAiProvider::new(reqwest::Client::new(), "http://unused".into())
-            .with_strict_media(true)
-            .with_max_tools(2);
-        let png = "iVBORw0KGgo=";
-        let req: ChatRequest = serde_json::from_value(json!({
-            "messages": [
-                { "role": "system", "content": "be brief" },
-                { "role": "user", "content": [{ "type": "text", "text": "old turn" }, image(png)] },
-                { "role": "user", "content": [{ "type": "text", "text": "marked", "cache_control": { "type": "ephemeral" } }] },
-                { "role": "user", "content": [{ "type": "image_url", "image_url": { "url": format!("data:IMAGE/PNG;base64,{png}") } }] },
-                { "role": "user", "content": "plain" }
-            ],
-            "tools": [
-                { "type": "function", "function": { "name": "a", "parameters": {} } },
-                { "type": "function", "function": { "name": "b", "parameters": {} } }
-            ]
-        }))
-        .unwrap();
-        let cfg = resolved("gpt-4o", None);
-
-        let out = provider.outbound(&req, &cfg, false).unwrap();
-        let copied: Vec<bool> = out
-            .messages
-            .iter()
-            .map(|m| matches!(m, Cow::Owned(_)))
-            .collect();
-        assert_eq!(copied, [false, false, true, true, false]);
-        assert!(matches!(out.tools, Some(Cow::Borrowed(_))));
-        let body = serde_json::to_value(&out).unwrap();
-        assert!(
-            body["messages"][2]["content"][0]
-                .get("cache_control")
-                .is_none()
-        );
-        assert_eq!(
-            body["messages"][3]["content"][0]["image_url"]["url"],
-            format!("data:image/png;base64,{png}")
-        );
-
-        let mut over_cap = req.clone();
-        over_cap.messages.truncate(1);
-        over_cap.tools.as_mut().unwrap().push(
-            serde_json::from_value(
-                json!({ "type": "function", "function": { "name": "c", "parameters": {} } }),
-            )
-            .unwrap(),
-        );
-        let out = provider.outbound(&over_cap, &cfg, false).unwrap();
-        assert!(matches!(out.tools, Some(Cow::Owned(ref kept)) if kept.len() == 2));
     }
 
     #[test]
     fn gpt_5_6_and_a_call_without_an_agent_get_no_cache_key() {
         let mut newer = plain_request();
-        add_cache_key(&mut newer.extra, &agent_call("gpt-5.6"));
+        add_cache_key(&mut newer, &agent_call("gpt-5.6"));
         let mut no_agent = plain_request();
-        add_cache_key(&mut no_agent.extra, &resolved("gpt-5.5", None));
+        add_cache_key(&mut no_agent, &resolved("gpt-5.5", None));
 
         assert!(!newer.extra.contains_key(PROMPT_CACHE_KEY));
         assert!(!no_agent.extra.contains_key(PROMPT_CACHE_KEY));

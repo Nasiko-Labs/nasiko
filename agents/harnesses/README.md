@@ -2,7 +2,7 @@
 
 Coding-agent harnesses (OpenCode, Claude Code, Codex) speak ACP: newline-delimited JSON-RPC over
 stdio. Sandboxes are reached only over the network, so each image runs `harness-shim`
-(`harness-shim/`), which starts the harness's ACP command and exposes its stdio as a WebSocket.
+(`oss/harness-shim`), which starts the harness's ACP command and exposes its stdio as a WebSocket.
 
 ## Contract
 
@@ -36,14 +36,15 @@ stdio. Sandboxes are reached only over the network, so each image runs `harness-
 ## The supervisor
 
 Every harness image also carries `harness-supervisor` (same crate), for providers that run
-many sessions of one image in a single pod (one user's sessions of that harness). It starts one
-`harness-shim` per session, in handshake mode, in the session's own directory `<root>/<id>` (named
-by the session id; it is the shim's workspace and holds its `HOME`), on the port the platform tells
-it: the platform owns port placement, the supervisor never picks one. Requests for one session are
-handled one at a time; different sessions proceed in parallel. With `HARNESS_SCRATCH_ROOT` set, each
-session also gets a scratch directory `<scratch root>/<id>`, and its `TMPDIR` is that directory's
-`tmp/`. The supervisor confines no session: the pod holds one user's sessions, so the pod is the
-boundary.
+many sessions of one image in a single shared pod. It starts one `harness-shim` per session, in
+handshake mode, in the session's own directory `<root>/<id>` (named by the session id; it is the
+shim's workspace and holds its `HOME`), on the port the platform tells it: the platform owns port
+placement, the supervisor never picks one. Requests for one session are handled one at a time;
+different sessions proceed in parallel. Each
+session's process tree is confined to its own directory (with a private `TMPDIR` inside it) and
+a tightened syscall policy, switchable per layer (`HARNESS_SUPERVISOR_CONFINE_FS`,
+`HARNESS_SUPERVISOR_CONFINE_SYSCALLS`, both on by default), and a kernel that cannot enforce a
+layer that is on fails the supervisor's startup rather than running sessions unconfined.
 
 - `GET /healthz`: `200 {"sessions": n}` (running sessions); the only route without the bearer.
 - `PUT /sessions/{id}` `{"port": p, "shim_token"?: "<bearer>"}`: start the session's shim on port
@@ -69,14 +70,15 @@ boundary.
 Env: `HARNESS_SUPERVISOR_TOKEN` (required: the bearer, kept out of the shims' environment),
 `HARNESS_SUPERVISOR_LISTEN` (`0.0.0.0:7001`), `HARNESS_SUPERVISOR_MAX_SESSIONS` (`8`),
 `HARNESS_SHIM_BINARY` (`/usr/local/bin/harness-shim`), `HARNESS_WORKSPACE_ROOT` (`/workspace`),
-`HARNESS_SCRATCH_ROOT` (unset: no scratch directories).
+`HARNESS_SUPERVISOR_CONFINE_FS` and `HARNESS_SUPERVISOR_CONFINE_SYSCALLS` (`1`; `0` turns a
+layer off).
 On SIGTERM or SIGINT it stops every session the same way before exiting.
 
 ## What the images do not contain
 
 No model, provider, endpoint or permission setting is baked in. The server renders those per
 session from the user's default LLM config and the HITL toggle (the *harness profile*,
-`server/src/sessions/profile.rs`): `OPENCODE_CONFIG_CONTENT` for OpenCode, `CODEX_HOME` plus
+`oss/server/src/sessions/profile.rs`): `OPENCODE_CONFIG_CONTENT` for OpenCode, `CODEX_HOME` plus
 a written `config.toml` for Codex, `ANTHROPIC_MODEL` for Claude Code. The images only pin the
 harness and turn off what an immutable, egress-restricted sandbox cannot do (self-update, catalog
 fetches).

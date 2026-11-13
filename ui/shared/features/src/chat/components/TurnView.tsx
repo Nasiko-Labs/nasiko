@@ -29,7 +29,6 @@ import { LINK, LINK_BUTTON, STEP_CHIP, TOUCH } from './turnStyles'
 import { RecordedCallsFor } from './RecordedCalls'
 import { StepIcon } from './StepIcon'
 import { RequestCard, type RequestActions } from './RequestCard'
-import { ReplyConnect } from './AgentApps'
 import { useNow } from '../hooks'
 
 export interface TurnHandlers {
@@ -363,7 +362,7 @@ function TurnViewBody({
     !saved.length &&
     !!turn.user &&
     routed.endFor(turn.user.id)?.kind === 'empty'
-  // A routed request is asked by the agent Open Runtime called (its execution's agent), not Open Runtime.
+  // A routed request is asked by the agent OpenRuntime called (its execution's agent), not OpenRuntime.
   const requestAgent = (r: HitlDto) => {
     const a =
       routed && r.execution.agent_id
@@ -514,9 +513,6 @@ function TurnViewBody({
               <p className="text-xs text-muted-foreground">{copy.receivingStopped}</p>
             ) : null}
             <FileChips files={Array.isArray(m.file_parts) ? m.file_parts : []} />
-            {latest && agentId && m.role === 'assistant' ? (
-              <ReplyConnect agentId={agentId} text={text} />
-            ) : null}
             {(() => {
               const steps = handlers.stepsFor?.(m.id)
               return steps?.length ? <StepChips steps={steps} live={false} /> : null

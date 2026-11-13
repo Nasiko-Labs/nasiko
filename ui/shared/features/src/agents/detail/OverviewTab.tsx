@@ -13,7 +13,7 @@ import { useAgentRouting } from '@nasiko/features/router/api'
 import { copy as routerCopy } from '@nasiko/features/router/copy'
 import { keySource, routingSentence, sourceLabel } from '@nasiko/features/router/routing'
 import { isUnavailable, useDeployment, useErrorLogs } from '../api'
-import { Description, Section } from '../components/bits'
+import { Section } from '../components/bits'
 import { copy } from '../copy'
 import { relTime } from '../format'
 import type { AgentView } from '../normalize'
@@ -109,7 +109,7 @@ export function OverviewTab({
   )
 }
 
-/** What the agent does (its description, three lines until Show more) and, when it has one, how its model calls are routed. */
+/** What the agent does (its description, trimmed; Details has it all) and, when it has one, how its model calls are routed. */
 function Summary({ agent, onViewDetails }: { agent: AgentView; onViewDetails: () => void }) {
   return (
     <Section
@@ -120,7 +120,9 @@ function Summary({ agent, onViewDetails }: { agent: AgentView; onViewDetails: ()
         </Button>
       }
     >
-      <Description text={agent.description || copy.noDescription} lines={3} />
+      <p className="line-clamp-3 max-w-prose text-sm whitespace-pre-wrap">
+        {agent.description || copy.noDescription}
+      </p>
       {/* The Routing layer card's rule: a harness's routing lives on its own page. */}
       {agent.isHarness ? null : <RoutingFacts agent={agent} />}
     </Section>

@@ -71,18 +71,12 @@ export const copy = {
   spendTip: `Metered by the router for the last ${SPEND_DAYS} days, calls billed to you. Calls billed to someone else don’t show here.`,
   colActions: 'Actions',
   changeRouting: 'Change routing',
-  /** Beside a disabled Change routing on a Cursor agent (the CLI's `llm-config attach` refuses it the same way). */
-  routingUnsupported:
-    "The LLM router doesn't support Cursor. Claude Code, Codex and OpenCode can be routed.",
   codingHarness: 'Coding harness',
   readingRouting: 'Reading routing…',
   couldntRead: 'Couldn’t read routing',
   retry: 'Retry',
   noAgents: 'You don’t own any agents yet',
-  // Says why shared agents are missing (user feedback, 2026-11-18: "All 0" beside Home's "6 of 6
-  // running" read as a contradiction). Not who pays for them: that is the payer's call (payer.rs).
-  noAgentsText:
-    'Only agents you own are listed here. Agents shared with you, like the workspace agents on Home, are not.',
+  noAgentsText: 'Other users’ agents show their routing on their agent page.',
   toAgents: 'Go to Agents',
   noneInFilter: 'No agents match this filter',
   noneInFilterText: 'None of your agents has this kind of routing.',
@@ -138,13 +132,6 @@ export const copy = {
   cliTiered: 'Tier models can’t be set from the CLI yet.',
   cliNoModel: 'This config has no model, so the CLI can’t create it yet.',
   copyCli: 'Copy CLI command',
-  // The routing sheet's CLI block (user request 2026-11-13): both commands, and what a change reaches.
-  cliAttachLabel: 'To attach a config from the CLI:',
-  cliDetachLabel: 'To detach it (back to your default config):',
-  copyCliAttach: 'Copy the attach command',
-  copyCliDetach: 'Copy the detach command',
-  cliAppliesTo: (seconds: number) =>
-    `Attaching or detaching applies to all of this agent's sessions, existing and new: its next model call uses it, within about ${seconds} seconds.`,
 
   // Providers
   providersTitle: 'Providers',
@@ -180,11 +167,8 @@ export const copy = {
   editorEdit: (name: string) => `Edit ${name}`,
   editorDuplicate: (name: string) => `Duplicate of ${name}`,
   fieldName: 'Name',
-  fieldNamePlaceholder: 'e.g. Team default',
   fieldProvider: 'Provider',
   fieldModel: 'Model',
-  modelPlaceholder: 'Pick or type a model',
-  tierPlaceholder: 'Optional, else the model above',
   modelHint: 'Required unless you set a tier model; with tiers it is the fallback model.',
   fieldKey: 'Key',
   keyUseSaved: 'Use a saved key',
@@ -194,9 +178,7 @@ export const copy = {
   secretsFailed: 'Couldn’t load your saved keys. You can still add a key or use the platform key.',
   secretName: 'Secret name',
   secretNameHint: 'Uppercase letters, digits and _ only.',
-  secretNamePlaceholder: 'OPENAI_API_KEY',
   keyValue: 'API key',
-  keyValuePlaceholder: 'Paste the API key',
   keyReplaces: (name: string) =>
     `Replaces the saved key ${name} for every config and agent that uses it.`,
   keyContainers: 'Saved keys are also available to all your agents’ containers.',
@@ -213,14 +195,12 @@ export const copy = {
   notInCatalog: 'Not in the catalog',
   advanced: 'Advanced',
   temperature: 'Temperature',
-  temperaturePlaceholder: 'e.g. 0.7',
   maxTokens: 'Max tokens',
-  maxTokensPlaceholder: 'e.g. 4096',
   pinModel: 'Pin model',
   pinModelHint: 'A pinned model turns tier routing and fallbacks off.',
   pinModelRequired: 'Choose the model to pin.',
   cantClear:
-    'Open Runtime can’t clear this field yet. Duplicate without this field, or use the CLI.',
+    'OpenRuntime can’t clear this field yet. Duplicate without this field, or use the CLI.',
   duplicateWithout: 'Duplicate without this field',
   missingKey: (name: string) => `Saved key ${name} not found: add it again`,
   providerGone: 'Provider no longer registered',
@@ -295,13 +275,9 @@ export const copy = {
 
   // Custom provider sheet
   cpNew: 'Add custom provider',
-  cpDescription: (shared: boolean) =>
-    shared
-      ? 'An endpoint the router can call, for your configs and other superusers’, so the platform’s own agents can use it.'
-      : 'An endpoint the router can call, for your own configs only. No one else sees it or spends its key.',
+  cpDescription: 'An endpoint the router can call, for every user’s configs.',
   cpEdit: (name: string) => `Edit ${name}`,
   cpName: 'Name',
-  cpNamePlaceholder: 'e.g. my-vllm',
   cpKind: 'Endpoint type',
   cpKinds: {
     openai: 'OpenAI-compatible',
@@ -311,7 +287,7 @@ export const copy = {
   cpKindHint: {
     openai: 'Speaks the OpenAI chat completions format.',
     'azure-openai':
-      'An Azure OpenAI resource. Open Runtime adds the deployment path and api-version.',
+      'An Azure OpenAI resource. OpenRuntime adds the deployment path and api-version.',
     'bedrock-converse': 'Bedrock Runtime’s Converse API, with a Bedrock API key.',
   },
   cpKindLocked: 'The endpoint type can’t change after registering. Add a new provider instead.',
@@ -327,7 +303,6 @@ export const copy = {
   cpKeyKeep: 'Leave empty to keep the saved key.',
   cpKeyNewHost: 'New host: enter the key again. The saved key isn’t sent to a different host.',
   cpDefaultModel: 'Default model',
-  cpDefaultModelPlaceholder: 'e.g. llama-3.1-70b-instruct',
   cpSavedNoModel: (name: string) =>
     `Saved ${name}, but its default model wasn’t set. Edit the provider to set it.`,
   cpSync: 'Sync the model catalog',
@@ -341,8 +316,8 @@ export const copy = {
     `Still used by: ${names}. Some may belong to other users; their owners must repoint them first.`,
 
   // Errors (errors.ts builds the entries)
-  errUnmapped: (text: string, status: number) => `Open Runtime said: ${text} (HTTP ${status})`,
-  errDown: 'Open Runtime isn’t answering.',
+  errUnmapped: (text: string, status: number) => `OpenRuntime said: ${text} (HTTP ${status})`,
+  errDown: 'OpenRuntime isn’t answering.',
   errDownFix: 'Check that nasiko-server is running, then retry.',
 } as const
 

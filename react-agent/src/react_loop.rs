@@ -1,9 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use nasiko_types::agent_clock::AgentClock;
-
-use crate::completion::{CompletionEvent, UsageModel, failure_text};
+use crate::completion::{CompletionEvent, UsageModel};
 use futures::StreamExt;
 use rig::completion::message::ToolCall;
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
@@ -386,16 +384,6 @@ fn finalize_answer(
     }
 }
 
-/// Whose key pays for the orchestrator's own model calls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ApiKeySource {
-    /// The user's own key, saved with an OpenAI config in LLM router.
-    Saved,
-    /// The server's `OPENAI_API_KEY`.
-    #[default]
-    Server,
-}
-
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -406,10 +394,8 @@ pub struct OrchestratorConfig {
     pub temperature: Option<f64>,
     /// OpenAI-compatible base URL. If None, uses OPENAI_BASE_URL env var.
     pub base_url: Option<String>,
-    /// The user's saved OpenAI key. If None, the router's platform provider is used.
+    /// API key. If None, uses OPENAI_API_KEY env var.
     pub api_key: Option<String>,
-    /// Whose key `api_key` is, which decides what a refused key tells the user to do.
-    pub api_key_source: ApiKeySource,
     /// Operator policy governing what this orchestration is allowed to do —
     /// see [`DelegationPolicy`]. `None` imposes nothing, which is what an
     /// unconfigured deployment runs with.
@@ -430,10 +416,6 @@ pub struct OrchestratorConfig {
     /// the same for every leg — resolving it once per turn is what keeps a
     /// fan-out from paying for it N times.
     pub outbound_prefix: Option<String>,
-    pub attachment_note: Option<String>,
-    /// Whether each agent call carries the current date and time as its own part, after
-    /// `outbound_prefix` (`nasiko_types::agent_clock`). Off by default: the server switches it on.
-    pub clock: AgentClock,
 }
 
 impl Default for OrchestratorConfig {
@@ -446,11 +428,8 @@ impl Default for OrchestratorConfig {
             temperature: Some(0.2),
             base_url: None,
             api_key: None,
-            api_key_source: ApiKeySource::Server,
             policy: None,
             outbound_prefix: None,
-            attachment_note: None,
-            clock: AgentClock::OFF,
         }
     }
 }
@@ -614,7 +593,7 @@ impl Orchestrator {
             let response = req
                 .send()
                 .await
-                .map_err(|e| OrchestratorError::Completion(failure_text(&e)))?;
+                .map_err(|e| OrchestratorError::Completion(e.to_string()))?;
 
             // This completion's total token cost, attributed evenly across
             // however many tool calls it produced (best available granularity
@@ -910,9 +889,7 @@ impl Orchestrator {
         for agent in agents {
             let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
                 .with_policy(self.config.policy.clone())
-                .with_outbound_prefix(self.config.outbound_prefix.clone())
-                .with_clock(self.config.clock)
-                .with_attachment_note(self.config.attachment_note.clone());
+                .with_outbound_prefix(self.config.outbound_prefix.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -978,9 +955,7 @@ async fn run_stream_inner(
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec())
             .with_policy(config.policy.clone())
-            .with_outbound_prefix(config.outbound_prefix.clone())
-            .with_clock(config.clock)
-            .with_attachment_note(config.attachment_note.clone());
+            .with_outbound_prefix(config.outbound_prefix.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
@@ -1076,10 +1051,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: failure_text(&e),
+                            message: e.to_string(),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(failure_text(&e)));
+                    return Err(OrchestratorError::Completion(e.to_string()));
                 }
             };
 
@@ -1339,10 +1314,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: failure_text(&e),
+                            message: e.to_string(),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(failure_text(&e)));
+                    return Err(OrchestratorError::Completion(e.to_string()));
                 }
             };
 
@@ -1364,10 +1339,10 @@ async fn run_stream_inner(
                     Err(e) => {
                         let _ = tx
                             .send(OrchestratorEvent::Error {
-                                message: failure_text(&e),
+                                message: e.to_string(),
                             })
                             .await;
-                        return Err(OrchestratorError::Completion(failure_text(&e)));
+                        return Err(OrchestratorError::Completion(e.to_string()));
                     }
                 }
             }

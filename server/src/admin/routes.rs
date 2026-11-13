@@ -225,7 +225,6 @@ async fn deploy(
             match crate::agents::canonicalize_and_validate_image_ref(
                 &state.db,
                 &state.config.agent_image_registry,
-                &state.config.agent_image_registry_aliases,
                 &req.image,
                 owner_id,
                 claims.is_superuser,
@@ -309,7 +308,6 @@ async fn deploy(
                     state.db.clone(),
                     state.http_client.clone(),
                     state.runtime.clone(),
-                    state.llm_backend.clone(),
                     agent_id,
                     endpoint.clone(),
                 ));
@@ -589,7 +587,7 @@ async fn start(
     };
     // A parked agent is woken as its next call would wake it: its address and idle clock come back
     // and the answer waits until it serves, or it stays parked. Before the lifecycle lock, which
-    // the wake takes itself; inline, so a wake seam that refuses the wake can still answer.
+    // the wake takes itself; inline, so EE's credit gate can still answer a refused wake.
     if is_parked(&state, agent_id).await {
         if let Err(message) = state.agent_wake.before_forward(agent_id, None).await {
             return (StatusCode::SERVICE_UNAVAILABLE, message).into_response();
@@ -847,7 +845,6 @@ async fn restart(
                 state.db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
-                state.llm_backend.clone(),
                 agent_id,
                 agent_url,
             ));

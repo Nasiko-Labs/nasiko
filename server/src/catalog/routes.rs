@@ -471,7 +471,6 @@ pub(crate) async fn create(
         match crate::agents::canonicalize_and_validate_image_ref(
             &state.db,
             &state.config.agent_image_registry,
-            &state.config.agent_image_registry_aliases,
             image,
             owner_id,
             claims.is_superuser,
@@ -498,14 +497,6 @@ pub(crate) async fn create(
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
         }
     };
-
-    if let Err(refusal) = state
-        .agent_admission
-        .admit(&mut tx, owner_id, &body.name)
-        .await
-    {
-        return refusal.into_response();
-    }
 
     let result = sqlx
         ::query_as::<_, Agent>(
@@ -620,54 +611,12 @@ pub(crate) async fn list(
     claims: Claims,
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
+    let limit = q.limit.clamp(1, 100);
+    let offset = q.offset.max(0);
 
-    match list_agents(
-        &state,
-        user_id,
-        claims.is_superuser,
-        q.owner,
-        q.status.as_deref(),
-        q.limit,
-        q.offset,
-    )
-    .await
-    {
-        Ok(list) => Json(list).into_response(),
-        Err(e) => {
-            tracing::error!(%e, "list agents: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
-        }
-    }
-}
-
-pub async fn list_agents(
-    state: &AppState,
-    user_id: Uuid,
-    is_superuser: bool,
-    owner: Option<Uuid>,
-    status: Option<&str>,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<Agent>, sqlx::Error> {
-    let limit = limit.clamp(1, 100);
-    let offset = offset.max(0);
-
-    let (scope_user, org_granted): (Option<Uuid>, Vec<String>) = if is_superuser {
-        (None, Vec::new())
-    } else {
-        let identity = nasiko_auth::Identity {
-            user_id: user_id.to_string(),
-            username: String::new(),
-            is_superuser: false,
-        };
-        (
-            Some(user_id),
-            state.auth.org_granted_agent_ids(&identity).await,
-        )
+    let scope = match listing_scope(&state, &claims).await {
+        Ok(s) => s,
+        Err(resp) => return resp,
     };
 
     let sql = format!(
@@ -682,18 +631,26 @@ pub async fn list_agents(
         access = agent_access_predicate("$3", "$6", "agents")
     );
 
-    let mut agents = sqlx::query_as::<_, Agent>(&sql)
-        .bind(owner)
-        .bind(status)
-        .bind(scope_user)
+    let agents = sqlx::query_as::<_, Agent>(&sql)
+        .bind(q.owner)
+        .bind(&q.status)
+        .bind(scope.user)
         .bind(limit)
         .bind(offset)
-        .bind(&org_granted)
+        .bind(&scope.org_granted)
         .fetch_all(&state.db)
-        .await?;
+        .await;
 
-    reconcile_running_status(state, &mut agents).await;
-    Ok(agents)
+    match agents {
+        Ok(mut list) => {
+            reconcile_running_status(&state, &mut list).await;
+            Json(list).into_response()
+        }
+        Err(e) => {
+            tracing::error!(%e, "list agents: db error");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
 }
 
 /// A container that crashed after its last deploy/restart call still reads
@@ -722,14 +679,11 @@ pub(crate) async fn live_status(state: &AppState, agent_id: Uuid, status: &str) 
     if status != "running" {
         return None;
     }
-    let container = ContainerId::from_uuid(agent_id);
-    // A serving agent is running: `is_serving` is answered from the runtime's own view (the
-    // Kubernetes pod watch) where `status` asks the cluster's API, once per agent per listing.
-    // Only an agent that isn't serving pays for the full `status`.
-    if state.runtime.is_serving(&container).await.unwrap_or(false) {
-        return None;
-    }
-    let live = state.runtime.status(&container).await.ok()?;
+    let live = state
+        .runtime
+        .status(&ContainerId::from_uuid(agent_id))
+        .await
+        .ok()?;
     use nasiko_runtime::RuntimeState;
     matches!(
         live.state,
@@ -1268,7 +1222,6 @@ pub(crate) async fn update(
         match crate::agents::canonicalize_and_validate_image_ref(
             &state.db,
             &state.config.agent_image_registry,
-            &state.config.agent_image_registry_aliases,
             &image,
             owner_id,
             claims.is_superuser,
@@ -1363,33 +1316,35 @@ pub(crate) async fn update(
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct DeletedAgent {
+pub(crate) struct DeletedAgent {
     deleted: bool,
     agent_id: Uuid,
     containers_stopped: usize,
     runtime_errors: Vec<String>,
 }
 
-pub enum DeleteAgentOutcome {
-    Deleted(DeletedAgent),
-    Forbidden,
-    NotFound,
-    Error(sqlx::Error),
-}
-
-pub async fn delete_agent(
-    state: &AppState,
-    user_id: Uuid,
-    is_superuser: bool,
-    agent_id: Uuid,
-) -> DeleteAgentOutcome {
-    let claims = Claims {
-        sub: user_id.to_string(),
-        username: String::new(),
-        is_superuser,
-    };
-    if !crate::acl::can_manage_agent(state, &claims, agent_id).await {
-        return DeleteAgentOutcome::Forbidden;
+/// Delete an agent and tear down its running containers (best-effort).
+/// Owner-or-superuser only.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}",
+    tag = "catalog",
+    params(
+        ("id" = Uuid, Path, description = "Agent id"),
+    ),
+    responses(
+        (status = 200, description = "Deleted", body = DeletedAgent),
+        (status = 403, description = "Caller cannot manage this agent"),
+        (status = 404, description = "No agent with this id"),
+    ),
+)]
+pub(crate) async fn delete(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    if !crate::acl::can_manage_agent(&state, &claims, id).await {
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     // Claim the delete up front: one statement is both the existence check and
@@ -1417,13 +1372,18 @@ pub async fn delete_agent(
          WHERE id = $1 AND deleted_at IS NULL \
          RETURNING name",
     )
-    .bind(agent_id)
+    .bind(id)
     .fetch_optional(&state.db)
     .await
     {
         Ok(Some(n)) => n,
-        Ok(None) => return DeleteAgentOutcome::NotFound,
-        Err(e) => return DeleteAgentOutcome::Error(e),
+        Ok(None) => {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+        Err(e) => {
+            tracing::error!(%e, %id, "delete agent: claim soft delete");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response();
+        }
     };
 
     // Tombstone the agent's credentials - a destroyed agent's leaked env must not
@@ -1431,22 +1391,22 @@ pub async fn delete_agent(
     // delete above already stands (both lookups also refuse a deleted agent), and the
     // gateway's flow-participant check still bounds any residual credential to flows
     // actively routed here.
-    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, agent_id).await {
-        tracing::warn!(%e, %agent_id, "delete agent: gateway token revoke failed");
+    if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke(&state.db, id).await {
+        tracing::warn!(%e, %id, "delete agent: gateway token revoke failed");
     }
     if let Err(e) = nasiko_mcp_gateway::agent_tokens::revoke_scoped(
         &state.db,
-        agent_id,
+        id,
         nasiko_mcp_gateway::agent_tokens::TokenScope::State,
     )
     .await
     {
-        tracing::warn!(%e, %agent_id, "delete agent: state token revoke failed");
+        tracing::warn!(%e, %id, "delete agent: state token revoke failed");
     }
 
     // Let enterprise-only, agent-keyed state clean itself up (e.g. a reserved name that has no
     // FK a soft delete could cascade through) — see `agent_lifecycle` module docs.
-    state.agent_deletion_hook.on_agent_deleted(agent_id).await;
+    state.agent_deletion_hook.on_agent_deleted(id).await;
 
     // Every real deploy path keys the running container on the agent's UUID, never the
     // display name (see build_agent_spec's doc comment) — so the UUID-keyed id must always
@@ -1464,12 +1424,12 @@ pub async fn delete_agent(
         "SELECT DISTINCT k8s_deployment_name FROM agent_deployments
          WHERE agent_id = $1 AND status != 'stopped' AND k8s_deployment_name IS NOT NULL",
     )
-    .bind(agent_id)
+    .bind(id)
     .fetch_all(&state.db)
     .await
     .unwrap_or_default();
 
-    let mut containers_to_stop: Vec<String> = vec![agent_id.to_string(), name.clone()];
+    let mut containers_to_stop: Vec<String> = vec![id.to_string(), name.clone()];
     for kn in k8s_names {
         if !containers_to_stop.contains(&kn) {
             containers_to_stop.push(kn);
@@ -1490,7 +1450,7 @@ pub async fn delete_agent(
             }
             Err(e) => {
                 // Absent/already-stopped containers are expected; log but don't fail.
-                tracing::debug!(%e, %agent_id, container_name, "delete agent: runtime.destroy — absent or already stopped");
+                tracing::debug!(%e, %id, container_name, "delete agent: runtime.destroy — absent or already stopped");
                 runtime_errors.push(format!("{container_name}: {e}"));
             }
         }
@@ -1506,57 +1466,25 @@ pub async fn delete_agent(
         "UPDATE agent_deployments SET status = 'stopped', updated_at = now()
          WHERE agent_id = $1 AND status != 'stopped'",
     )
-    .bind(agent_id)
+    .bind(id)
     .execute(&state.db)
     .await
     {
-        tracing::error!(%e, %agent_id, "delete agent: mark deployments stopped");
+        tracing::error!(%e, %id, "delete agent: mark deployments stopped");
     }
 
     // The row was already marked by the claiming UPDATE above, so reaching here
     // means this caller owns the delete — nothing left to decide.
-    DeleteAgentOutcome::Deleted(DeletedAgent {
-        deleted: true,
-        agent_id,
-        containers_stopped,
-        runtime_errors,
-    })
-}
-
-/// Delete an agent and tear down its running containers (best-effort).
-/// Owner-or-superuser only.
-#[utoipa::path(
-    delete,
-    path = "/api/agents/{id}",
-    tag = "catalog",
-    params(
-        ("id" = Uuid, Path, description = "Agent id"),
-    ),
-    responses(
-        (status = 200, description = "Deleted", body = DeletedAgent),
-        (status = 403, description = "Caller cannot manage this agent"),
-        (status = 404, description = "No agent with this id"),
-    ),
-)]
-pub(crate) async fn delete(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(id): Path<Uuid>,
-) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-
-    match delete_agent(&state, user_id, claims.is_superuser, id).await {
-        DeleteAgentOutcome::Deleted(deleted) => (StatusCode::OK, Json(deleted)).into_response(),
-        DeleteAgentOutcome::Forbidden => StatusCode::FORBIDDEN.into_response(),
-        DeleteAgentOutcome::NotFound => StatusCode::NOT_FOUND.into_response(),
-        DeleteAgentOutcome::Error(e) => {
-            tracing::error!(%e, %id, "delete agent: claim soft delete");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
-        }
-    }
+    (
+        StatusCode::OK,
+        Json(DeletedAgent {
+            deleted: true,
+            agent_id: id,
+            containers_stopped,
+            runtime_errors,
+        }),
+    )
+        .into_response()
 }
 
 /// List an agent's build/version history.

@@ -51,8 +51,6 @@ const PUBLIC = {
     'AgentBuildsTab',
     'components/DeployAgentButton',
     'components/BuildToasts',
-    // The Marketplace install panel shows build logs with the same renderer as the Builds tab.
-    'components/BuildLogView',
     'copy',
     'follower',
     // The onboarding guide's Bring an agent step hosts the Deploy tabs themselves.
@@ -86,19 +84,9 @@ const PUBLIC = {
   // The home's last change links a marker on the hub inside the hub's default window (PR2b).
   hub: ['components/HubTimeline', 'events', 'search'],
   // The agent hub's Tools card counts connectors and blocked tools (plans/feat-agent-centric.md PR1c).
-  mcp: [
-    'components/AgentMcpTab',
-    'components/SharedMcpTab',
-    'api',
-    // Chat's "Works with" row and reply Connect (chat/components/AgentApps.tsx) connect an app in place.
-    'components/ConnectControl',
-    'oauth',
-    'logic',
-    'types',
-  ],
+  mcp: ['components/AgentMcpTab', 'components/SharedMcpTab', 'api'],
   narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
-  // Coding harnesses' empty state shows the guide's own harness step.
-  onboarding: ['api', 'GuideCard', 'GuideHost', 'HarnessSetup', 'index', 'logic', 'types'],
+  onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
   // The product tour (shared/features/src/tour): the shell's `_app` route mounts its host.
   tour: ['TourHost'],
   // Context optimization (plans/feat-context-optimization.md eng D1): its rules, copy, the trace's Optimization block
@@ -239,7 +227,7 @@ const banned = [
   },
   {
     selector:
-      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD|NASIKO_[A-Z]+_COMPILED_IN)$/]",
+      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD)$/]",
     message: 'Read configuration through src/lib/env.ts, not import.meta.env.',
   },
   {
@@ -467,6 +455,8 @@ export default tseslint.config(
       'scripts/**',
       '*/scripts/**',
       '*/*/scripts/**',
+      // The desktop shell's build script (its .js sources are ignored above; this is .mjs).
+      'desktop/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
       '**/vite.config.ts',

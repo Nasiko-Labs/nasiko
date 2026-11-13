@@ -53,8 +53,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
 
     Config {
         bind: "127.0.0.1:0".into(),
-        shutdown_drain_delay_secs: 0,
-        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,
@@ -100,7 +98,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
         database_max_connections: 10,
-        dashboard_max_concurrent: 10,
         build_concurrency: 1,
         build_push_rate_limit_per_minute: 600,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
@@ -126,14 +123,12 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         agent_registry_host: None,
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
-        agent_image_registry_aliases: Vec::new(),
         build_push_token: String::new(),
         agent_jwt_secret: String::new(),
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),
@@ -225,7 +220,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         cors_allowed_origins: vec![],
         // Bench agents are loopback mock servers.
         agent_allow_private_urls: true,
-        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,

@@ -21,19 +21,15 @@ import { useNow } from '@nasiko/app-core/useNow'
 import { ELAPSED_TICK_MS } from './tuning'
 import { openRegistryView } from './follower'
 import { dismissImport, importFor, startImport, subscribeUploads } from './uploads'
-import { ModelKeyNotice } from './components/ModelKeyNotice'
 import { StageList } from './components/StageList'
 import type { DeployStarted } from './UploadTab'
 
 export function RegistryTab({
   userId,
   onStarted,
-  keyNotice = false,
 }: {
   userId: string
   onStarted?: (to: DeployStarted) => void
-  /** The Deploy page's model-key notice atop the side column. */
-  keyNotice?: boolean
 }) {
   const ids = useId()
   const qc = useQueryClient()
@@ -190,20 +186,17 @@ export function RegistryTab({
             ) : null}
           </form>
         </Card>
-        <div className="flex flex-col gap-4 @max-[768px]/registry:order-first">
-          {keyNotice ? <ModelKeyNotice /> : null}
-          <Card className="gap-2 p-4">
-            <h2 className="text-sm font-semibold">{copy.registry.needs}</h2>
-            <ul className="divide-y">
-              {copy.registry.items.map((t) => (
-                <li key={t} className="flex gap-3 py-2 text-sm">
-                  <Dot aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-                  {t}
-                </li>
-              ))}
-            </ul>
-          </Card>
-        </div>
+        <Card className="gap-2 p-4 @max-[768px]/registry:order-first">
+          <h2 className="text-sm font-semibold">{copy.registry.needs}</h2>
+          <ul className="divide-y">
+            {copy.registry.items.map((t) => (
+              <li key={t} className="flex gap-3 py-2 text-sm">
+                <Dot aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                {t}
+              </li>
+            ))}
+          </ul>
+        </Card>
       </div>
     </div>
   )

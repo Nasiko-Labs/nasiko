@@ -360,7 +360,6 @@ function TiersForm({
                   inputMode="numeric"
                   min={1}
                   step={1}
-                  placeholder={String(read(SERVER_DEFAULT_TIERS, r.field))}
                   aria-invalid={!!problems[r.field]}
                   aria-describedby={`${fid}-hint`}
                   {...form.register(keyOf(r.field), {

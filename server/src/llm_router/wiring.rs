@@ -31,13 +31,7 @@ pub fn inject_agent_llm_env(
     match nasiko_llm_router::inject_llm_env(env_vars, &ctx, &cfg) {
         Ok(()) => tracing::info!(%agent_id, "injected LLM gateway wiring"),
         Err(e) => {
-            // `e` names the missing setting (AGENT_JWT_SECRET or LLM_GATEWAY_BASE_URL).
-            tracing::warn!(
-                %agent_id,
-                error = %e,
-                "skipped LLM gateway wiring: this agent's model calls won't go through the LLM \
-                 router, so it needs its own provider key"
-            )
+            tracing::warn!(%agent_id, error = %e, "skipped LLM gateway wiring (not configured)")
         }
     }
 }

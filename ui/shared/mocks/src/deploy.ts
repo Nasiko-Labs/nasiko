@@ -559,7 +559,7 @@ export function registerImport(
 }
 
 /**
- * A finished synchronous import: the agent row (new, or the existing one updated) and, for an Open Runtime agent package
+ * A finished synchronous import: the agent row (new, or the existing one updated) and, for an OpenRuntime agent package
  * (anything under `<host>/nasiko/`), a successful build; a plain image is pulled and has no build. `running: false` is the
  * server's 201 with `container_name: null` (the deploy failed, D-7).
  */

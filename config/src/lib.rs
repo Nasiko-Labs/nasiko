@@ -1,51 +1,11 @@
 use std::collections::BTreeMap;
 
-use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
+use nasiko_utils::{env_bool, env_or, env_parse, required_env};
 
 mod coding_agent_ingest;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
-
-/// Model for a platform task call (selector, titles, capability generation, MCP
-/// descriptions): its own env var, else `DEFAULT_MODEL`, else empty. Empty lets the
-/// LLM router pick its resolved provider's default model, so no deployment ever
-/// sends a hard-coded model to a provider that cannot serve it.
-fn task_model(var: &str) -> String {
-    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
-}
-
-/// Pure core of [`task_model`]; blank values count as unset.
-fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
-    [own, default_model]
-        .into_iter()
-        .flatten()
-        .map(|m: String| m.trim().to_string())
-        .find(|m: &String| !m.is_empty())
-        .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod task_model_tests {
-    use super::pick_task_model;
-
-    #[test]
-    fn own_var_wins() {
-        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
-        assert_eq!(m, "a");
-    }
-
-    #[test]
-    fn falls_back_to_default_model() {
-        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
-        assert_eq!(m, "gemini-3.8-flash");
-    }
-
-    #[test]
-    fn empty_when_nothing_set_so_the_router_picks() {
-        assert_eq!(pick_task_model(None, None), "");
-    }
-}
 
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
@@ -86,14 +46,6 @@ fn delegation_audience_from_env() -> String {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
-    /// How long a stopping server keeps serving after it starts answering `/ready` with 503, from
-    /// `SERVER_DRAIN_DELAY_SECS`, default `5`, clamped 0..=60: time for the load balancer to stop
-    /// sending it requests before it stops accepting them.
-    pub shutdown_drain_delay_secs: u64,
-    /// Then how long requests already in flight get to finish before the process exits, from
-    /// `SERVER_SHUTDOWN_GRACE_SECS`, default `60`, clamped 0..=3600. Keep the pod's termination
-    /// grace period above this plus the drain delay, or the kubelet kills it first.
-    pub shutdown_grace_secs: u64,
     pub domain: Option<String>,
     /// Audience string this control plane stamps into, and requires on,
     /// delegated tokens (ui/docs/adr/0001a). It is this deployment's public
@@ -138,12 +90,6 @@ pub struct Config {
     /// Work that bakes the address into deployed agents, such as seeding,
     /// waits while the two are equal.
     pub agent_image_registry_placeholder: Option<String>,
-    /// Other hosts this control plane's registry answers on
-    /// (`AGENT_IMAGE_REGISTRY_ALIASES`, comma-separated): its names before a
-    /// rename. An image naming one of them is this registry's, so it is held to
-    /// the namespace rules, and at startup every stored reference to one is
-    /// moved to `agent_image_registry` (`agents::rehost`).
-    pub agent_image_registry_aliases: Vec<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -184,10 +130,6 @@ pub struct Config {
     /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
     /// agent name. Empty when unset; an invalid value fails startup.
     pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
-    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
-    /// after `SEED_AGENTS`, as public workflows every user can run
-    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
-    pub seed_workflows: String,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -297,12 +239,11 @@ pub struct Config {
     /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
     /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod` or `harness-agent`. Docker is the OSS default and
+    /// (default), `pod`, `shared-pod` or `harness-agent`. Docker is the OSS default and
     /// needs no cluster; the others are implemented by enterprise crates and
     /// selected at cluster create. An unknown value fails startup rather than
     /// silently falling back, because running sessions on the wrong provider
-    /// changes isolation and cost. So does a retired one (`shared-pod`), with a
-    /// message naming its replacement.
+    /// changes isolation and cost.
     pub sandbox_provider: SandboxProviderSetting,
     /// Whether users can open coding sessions on this server, from `HARNESS_SESSIONS_ENABLED`
     /// (**default `false`**). Off, startup creates no harness agents and hides (soft-deletes)
@@ -492,7 +433,7 @@ pub struct Config {
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.com"
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
     pub registry_import_allowed_hosts: Vec<String>,
     /// Browser origins allowed to make cross-origin requests (comma-separated,
     /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
@@ -508,10 +449,6 @@ pub struct Config {
     /// Turn it on only where every such user is trusted, e.g. an on-prem
     /// install whose external agents live on internal hosts.
     pub agent_allow_private_urls: bool,
-    /// Whether every new message the platform hands an agent carries the current date and time
-    /// as its own text part (`AGENT_CONTEXT_CURRENT_TIME`, default on;
-    /// `nasiko_types::agent_clock`). Off sends agent messages exactly as before.
-    pub agent_current_time: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -613,12 +550,6 @@ pub struct Config {
     /// so at 50 turns a second the pool carries about 2,500 a second. Keep it under Postgres's
     /// own `max_connections` (100 by default), less what other clients use.
     pub database_max_connections: u32,
-    /// Dashboard reads (the Overview, the spend pages, the session list) one server serves at
-    /// once; the rest wait up to a few seconds for a turn and are then answered `503`.
-    /// DASHBOARD_MAX_CONCURRENT, default an eighth of `database_max_connections` (at least 1),
-    /// clamped to 1..=500. One such read holds up to six connections at a time, so a burst of
-    /// them can no longer take the pool from chat (`dashboard_limit`).
-    pub dashboard_max_concurrent: u32,
     /// Number of agent/connector image builds the build worker runs
     /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=256: each
     /// in-flight build is a `docker build` on this host (OSS) or a build on the
@@ -694,8 +625,7 @@ pub struct Config {
     /// since users without a key would silently run on that shared one.
     /// Holds API keys — deliver it as a secret. Example:
     /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart's default seeds these plus Tavily, also
-    /// `oauth2`).
+    /// (both per-user; the Helm chart seeds exactly these by default).
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
@@ -790,17 +720,6 @@ fn coding_agent_otlp_fallback() -> Option<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
-        // Checked together first, so a first start names every missing variable at once.
-        let mut required = vec![
-            "DATABASE_URL",
-            "REDIS_URL",
-            "SECRETS_ENCRYPTION_KEY",
-            "ADMIN_PASSWORD",
-        ];
-        if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
-            required.push("S3_SECRET_KEY");
-        }
-        require_all(&required)?;
         let tiering_enabled = env_bool("NASIKO_TIERING_ENABLED", false);
         let tiering_interval_secs = std::env::var("NASIKO_TIERING_INTERVAL_SECS")
             .ok()
@@ -821,11 +740,8 @@ impl Config {
         )
         .map_err(anyhow::Error::msg)?;
         let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
-        let database_max_connections = env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
-            shutdown_drain_delay_secs: env_parse("SERVER_DRAIN_DELAY_SECS", 5).clamp(0, 60),
-            shutdown_grace_secs: env_parse("SERVER_SHUTDOWN_GRACE_SECS", 60).clamp(0, 3600),
             domain: std::env::var("CP_DOMAIN").ok(),
             delegation_audience: delegation_audience_from_env(),
             delegation_enabled: std::env::var("DELEGATION_ENABLED")
@@ -861,10 +777,6 @@ impl Config {
                 .ok()
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty()),
-            agent_image_registry_aliases: registry_aliases(
-                &std::env::var("AGENT_IMAGE_REGISTRY_ALIASES").unwrap_or_default(),
-                &env_or("AGENT_IMAGE_REGISTRY", ""),
-            ),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -885,19 +797,18 @@ impl Config {
                 std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
             )
             .map_err(anyhow::Error::msg)?,
-            seed_workflows: env_or("SEED_WORKFLOWS", ""),
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: task_model("OPENAI_MODEL"),
+            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: task_model("ROUTER_MODEL"),
-            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
-            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
+            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
+            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
+            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
@@ -1057,7 +968,6 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
-            agent_current_time: env_bool("AGENT_CONTEXT_CURRENT_TIME", true),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1110,12 +1020,7 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            database_max_connections,
-            dashboard_max_concurrent: env_parse(
-                "DASHBOARD_MAX_CONCURRENT",
-                (database_max_connections / 8).max(1),
-            )
-            .clamp(1, 500),
+            database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
             build_concurrency,
             build_push_rate_limit_per_minute: env_parse(
                 "BUILD_PUSH_RATE_LIMIT_PER_MINUTE",
@@ -1177,37 +1082,6 @@ impl Config {
         )
     }
 
-    /// Optional settings left unset that switch a feature off, each with what stops working.
-    /// Logged once at startup ([`Self::warn_unset_optional_keys`]) so the cause is on record
-    /// before the first request that needs it.
-    pub fn unset_optional_keys(&self) -> Vec<&'static str> {
-        let mut unset = Vec::new();
-        if self.agent_jwt_secret.trim().is_empty() {
-            unset.push("AGENT_JWT_SECRET unset: LLM gateway and coding sessions are disabled");
-        }
-        if self.agent_runtime == "kubernetes" && self.build_push_token.trim().is_empty() {
-            unset.push("BUILD_PUSH_TOKEN unset: in-cluster builds cannot push agent images");
-        }
-        if self
-            .openai_api_key
-            .as_deref()
-            .is_none_or(|k| k.trim().is_empty())
-        {
-            unset.push(
-                "OPENAI_API_KEY unset: no server LLM key, so routing and agent runs fail \
-                 until a user saves their own key",
-            );
-        }
-        unset
-    }
-
-    /// Log [`Self::unset_optional_keys`], one warning each.
-    pub fn warn_unset_optional_keys(&self) {
-        for problem in self.unset_optional_keys() {
-            tracing::warn!("{problem}");
-        }
-    }
-
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
     /// a `SecretsCrypto` (base64-decodes to exactly 32 bytes). Both the OSS
     /// HKDF-per-scope crypto and EE's `nasiko-secrets::SecretsCrypto::from_key`
@@ -1229,19 +1103,6 @@ impl Config {
     pub fn agent_wake_budget_secs(&self) -> u64 {
         wake_budget_secs(self.agent_startup_budget_secs, self.agent_call_timeout_secs)
     }
-}
-
-/// Stop startup over a configuration problem: one plain line per problem on stderr, then exit 1.
-/// A panic would print a thread name and a backtrace hint and read as a crash, not as a setting
-/// to fix.
-pub fn exit_invalid_config(problem: impl std::fmt::Display) -> ! {
-    let problem = problem.to_string();
-    tracing::error!(%problem, "configuration invalid");
-    eprintln!("error: configuration invalid:");
-    for line in problem.lines() {
-        eprintln!("  {line}");
-    }
-    std::process::exit(1)
 }
 
 /// Default `AGENT_STARTUP_BUDGET_SECS`.
@@ -1300,7 +1161,7 @@ fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.app.nasiko.com` and typical deployment env files have it — so appending `/v1/whatever`
+/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
@@ -1317,13 +1178,10 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
 pub enum SandboxProviderSetting {
     Docker,
     Pod,
+    SharedPod,
     /// Each user's own harness agent runs every session of that user and harness.
     HarnessAgent,
 }
-
-/// Providers that were once accepted and are no longer: an install still naming one is refused
-/// with the replacement, not with the generic list of allowed values.
-const RETIRED_SANDBOX_PROVIDERS: [&str; 2] = ["shared-pod", "substrate"];
 
 impl std::str::FromStr for SandboxProviderSetting {
     type Err = String;
@@ -1332,13 +1190,10 @@ impl std::str::FromStr for SandboxProviderSetting {
         match raw.trim().to_ascii_lowercase().as_str() {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
+            "shared-pod" => Ok(Self::SharedPod),
             "harness-agent" => Ok(Self::HarnessAgent),
-            retired if RETIRED_SANDBOX_PROVIDERS.contains(&retired) => Err(format!(
-                "SANDBOX_PROVIDER {raw:?} was retired: set harness-agent (each user's sessions in \
-                 their own harness agent) or pod (a pod per session)"
-            )),
             _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, harness-agent, got {raw:?}"
+                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, harness-agent, got {raw:?}"
             )),
         }
     }
@@ -1496,34 +1351,6 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `AGENT_IMAGE_REGISTRY_ALIASES`: comma-separated, trimmed, empty entries and
-/// the registry's own host dropped (an image naming it is already this
-/// registry's, and rehosting it onto itself would be a pointless rewrite).
-fn registry_aliases(raw: &str, registry: &str) -> Vec<String> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|alias| !alias.is_empty() && *alias != registry.trim())
-        .map(str::to_owned)
-        .collect()
-}
-
-#[cfg(test)]
-mod registry_alias_tests {
-    use super::registry_aliases;
-
-    #[test]
-    fn aliases_drop_blanks_and_the_registry_itself() {
-        assert_eq!(
-            registry_aliases(
-                " free.old.example , ,free.app.nasiko.com",
-                "free.app.nasiko.com"
-            ),
-            vec!["free.old.example"]
-        );
-        assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
-    }
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1546,10 +1373,10 @@ mod tests {
     #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(
-            super::origin_of("https://acme.app.nasiko.com/app?x=1"),
-            Some("https://acme.app.nasiko.com".to_string())
+            super::origin_of("https://acme.nasiko.dev/app?x=1"),
+            Some("https://acme.nasiko.dev".to_string())
         );
-        assert_eq!(super::origin_of("acme.app.nasiko.com"), None);
+        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
         assert_eq!(super::origin_of("https:///app"), None);
     }
 
@@ -1599,7 +1426,8 @@ mod tests {
         for (raw, want) in [
             ("docker", SandboxProviderSetting::Docker),
             ("Pod", SandboxProviderSetting::Pod),
-            (" Harness-Agent ", SandboxProviderSetting::HarnessAgent),
+            (" Shared-Pod ", SandboxProviderSetting::SharedPod),
+            ("harness-agent", SandboxProviderSetting::HarnessAgent),
         ] {
             assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
         }
@@ -1609,16 +1437,10 @@ mod tests {
     fn unknown_sandbox_provider_names_key_and_allowed_values() {
         let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
         assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(err.contains("docker, pod, harness-agent"), "{err}");
-    }
-
-    #[test]
-    fn a_retired_sandbox_provider_names_its_replacement() {
-        for retired in ["shared-pod", " Shared-Pod ", "substrate"] {
-            let err = retired.parse::<SandboxProviderSetting>().unwrap_err();
-            assert!(err.contains("was retired"), "{err}");
-            assert!(err.contains("harness-agent"), "{err}");
-        }
+        assert!(
+            err.contains("docker, pod, shared-pod, harness-agent"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1708,7 +1530,7 @@ mod tests {
 
     #[test]
     fn base_url_written_with_v1_is_stripped() {
-        // The cp.app.nasiko.com form — appending `/v1/audio/transcriptions` to the
+        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
         // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
         assert_eq!(
             openai_base_url_without_v1("https://api.openai.com/v1"),

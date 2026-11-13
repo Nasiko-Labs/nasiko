@@ -7,7 +7,6 @@
  *   can't abandon step 2. Results are always re-read, never written into the cache optimistically.
  * - Key-bearing mutations keep nothing: gcTime 0 and reset after settle (eng #5).
  */
-import { productEvent } from '@nasiko/app-core/analytics'
 import {
   useMutation,
   useQueries,
@@ -272,9 +271,6 @@ export function useSaveConfig() {
             body: JSON.stringify(v.body),
           }),
     gcTime: 0,
-    onSuccess: (_data, v) => {
-      if (v.body.secret_value) productEvent('llm_key_saved', { mode: v.mode })
-    },
     onSettled: (data, _err, v) => {
       const hadKey = !!v.body.secret_value
       afterConfigWrite(

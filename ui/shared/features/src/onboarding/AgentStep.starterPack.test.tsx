@@ -4,7 +4,7 @@
  * the Registry tab; a slot still answering holds the tabs back, so the pack never flashes in and out.
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 import {
   createMemoryHistory,
   createRootRoute,
@@ -19,7 +19,7 @@ import { AgentStep } from './AgentStep'
 import { copy } from './copy'
 
 /** An edition whose one layer answers the Starter pack with `answer` (a never-settling promise keeps it pending). */
-const editionAnswering = (answer: () => Promise<boolean>, note?: string): Edition => ({
+const editionAnswering = (answer: () => Promise<boolean>): Edition => ({
   id: 'test',
   layers: [
     {
@@ -28,7 +28,6 @@ const editionAnswering = (answer: () => Promise<boolean>, note?: string): Editio
         starterPack: starterPack({
           query: { queryKey: ['test', 'starter-pack'], queryFn: answer },
           offered: (free) => free !== false,
-          note,
         }),
       },
     },
@@ -76,14 +75,6 @@ describe('AgentStep Starter pack', () => {
     )
     expect(screen.getByRole('region', { name: copy.agent.seededLabel })).toBeInTheDocument()
     expect(screen.getByText(copy.agent.intro)).toBeInTheDocument()
-    // No layer note, and the Deploy page's key notice stays out of the guide (its next step takes the key).
-    expect(screen.queryByRole('note')).toBeNull()
-  })
-
-  it("heads the pack with the layer's note", async () => {
-    renderStep(editionAnswering(() => Promise.resolve(true), 'Up to 50 model calls a day.'))
-    const pack = await screen.findByRole('region', { name: copy.agent.seededLabel })
-    expect(within(pack).getByRole('note')).toHaveTextContent('Up to 50 model calls a day.')
   })
 
   it('holds the tabs back until the plan is known', async () => {

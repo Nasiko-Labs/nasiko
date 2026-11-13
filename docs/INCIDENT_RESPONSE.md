@@ -13,8 +13,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 | Tech Lead | Nasiko development lead | Technical decisions, containment execution |
 | Comms | IC designates | All external messaging — **no one else communicates externally** |
 
-- Vulnerability intake: GitHub Private Vulnerability Reporting, or a private Discord channel with a
-  maintainer (see [`SECURITY.md`](../SECURITY.md)).
+- Vulnerability intake: **security@nasiko.com** and GitHub Private Vulnerability Reporting.
 - Declare an incident when in doubt — a stood-down false alarm costs an hour; a late declaration
   costs a breach.
 
@@ -31,7 +30,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 
 ### 2.1 Preparation (maintainers: do these now)
 
-- [ ] GitHub PVR enabled and triaged; private Discord requests answered.
+- [ ] `security@nasiko.com` monitored; GitHub PVR enabled and triaged.
 - [ ] Maintainers have break-glass access to reference deployments, CI, and the package/registry accounts.
 - [ ] Alerts wired on reference deployments: `GuardUnavailable` spikes, LLM-router 403 storms, OCI 401 bursts.
 - [ ] Postgres backups with point-in-time recovery; restore tested quarterly.
@@ -39,7 +38,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 
 ### 2.2 Detection & analysis
 
-Sources: alerts, user reports, vulnerability reports, GitHub advisories, Tempo/Loki anomalies.
+Sources: alerts, user reports, security@ intake, GitHub advisories, Tempo/Loki anomalies.
 
 1. **Declare** (IC) with a severity guess — refine later.
 2. **Start the timeline** — every action timestamped, one shared doc.
@@ -52,7 +51,7 @@ Sources: alerts, user reports, vulnerability reports, GitHub advisories, Tempo/L
 
 | Lever | Action | Kills |
 |---|---|---|
-| Revoke one agent's gateway credential | `DELETE /api/agents/{id}/mcp-token` (immediate; a redeploy also rotates it, but the old credential keeps working for a 15-minute grace) | That agent's MCP and LLM-router access and its calls to peer agents |
+| Revoke one agent's gateway credential | Tombstone its `agent_gateway_tokens` row | That agent's MCP access |
 | Complete a flow | Mark the `flows` row completed | All MCP/LLM calls bound to it (both fail closed) |
 | Scale agent to 0 / destroy | `nasiko rm` | The agent container |
 | Rotate `BUILD_PUSH_TOKEN` | Env change + restart | Registry push access cluster-wide |
@@ -61,11 +60,9 @@ Sources: alerts, user reports, vulnerability reports, GitHub advisories, Tempo/L
 
 ### 2.4 Eradication
 
-- Rotate every credential in the blast radius: `JWT_SECRET`, `AGENT_JWT_SECRET` (signs agents'
-  LLM-router JWTs), `MCP_IDENTITY_SIGNING_KEY`, `SECRETS_ENCRYPTION_KEY` (arrange the re-encryption of
-  stored secrets), `BUILD_PUSH_TOKEN`, DB passwords, OAuth client secrets, LLM provider keys;
-  revoke agents' gateway credentials (`DELETE /api/agents/{id}/mcp-token`) and redeploy them to
-  mint new ones — a redeploy alone leaves the old credential valid for 15 minutes.
+- Rotate every credential in the blast radius: `JWT_SECRET`, `SECRETS_ENCRYPTION_KEY` (plan the
+  re-encryption of stored secrets), `BUILD_PUSH_TOKEN`, DB passwords, OAuth client secrets, LLM
+  provider keys; redeploy agents to rotate their per-agent tokens.
 - Patch the hole, deploy, and verify the exploit path now fails.
 
 ### 2.5 Recovery
@@ -83,8 +80,7 @@ Sources: alerts, user reports, vulnerability reports, GitHub advisories, Tempo/L
 
 ### S1 — Compromised/malicious agent (T1, T6)
 Detect: flow-guard rejections, 403 storms, anomalous FinOps token usage.
-Contain: complete the flow → revoke the agent's gateway credential
-(`DELETE /api/agents/{id}/mcp-token`) → scale to 0.
+Contain: complete the flow → tombstone the agent's gateway token → scale to 0.
 Scope for notification: the participant check confines blast radius to users whose flows routed
 through the agent — pull that list from `flow_participants`.
 
@@ -111,8 +107,8 @@ Contain: disable the affected sign-in provider or route; revoke sessions of adop
 freeze pushes to the affected repositories.
 Eradicate: fix the linking/claim rule; redeploy agents from known-good digests.
 
-### S7 — Tokens in logs (T21)
-Contain: restrict log/trace access.
+### S7 — GenUI frame abuse or tokens in logs (T21, T22)
+Contain: disable GenUI Custom; restrict log/trace access.
 Eradicate: rotate tokens found in logs; ship the fix as a security release.
 
 ## 4. Communication

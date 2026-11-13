@@ -1,6 +1,6 @@
 /**
  * Every onboarding string. The flow and wording follow the user's prototype ("Nasiko Console", screen "02 Onboarding"),
- * with the lab's naming: the platform is Open Runtime, never a "control plane". The Welcome opens with Open Runtime's
+ * with the lab's naming: the platform is OpenRuntime, never a "control plane". The Welcome opens with OpenRuntime's
  * narrative, then what it gets you (user review 2026-11-05).
  */
 import type { StepId } from './logic'
@@ -30,11 +30,9 @@ export const copy = {
   } satisfies Record<StepId, { title: string; sub: string }>,
   welcome: {
     title: 'Welcome to Nasiko',
-    // Open Runtime's narrative comes back ahead of the capabilities (user review 2026-11-05). It meters spend, never
-    // "pays for" agents: that read as Nasiko covering the user's model costs (NAS-1592). No lead-in to the stages
-    // below: "work flows through it in four stages" was unclear, and the row stands on its own.
+    // OpenRuntime's narrative comes back ahead of the capabilities (user review 2026-11-05).
     intro:
-      'Open Runtime runs, observes and secures AI agents on any framework, and meters what they spend.',
+      'OpenRuntime runs, observes, secures and pays for AI agents on any framework. Work flows through it in four stages.',
     // The four stages as they were before 2026-11-04 (user review 2026-11-05).
     stages: [
       { title: 'Connect', line: 'Models, MCP tools and channels' },
@@ -42,7 +40,7 @@ export const copy = {
       { title: 'Run', line: 'Orchestrate tasks end to end' },
       { title: 'Govern', line: 'Budgets, guardrails and traces' },
     ],
-    stagesLabel: 'How work flows through Open Runtime',
+    stagesLabel: 'How work flows through OpenRuntime',
     does: 'What Nasiko does',
     get: 'What you get',
     // One row per category (user review 2026-11-05: six rows repeated each other): run, measure, cut, harnesses.
@@ -67,17 +65,12 @@ export const copy = {
   },
   start: {
     title: 'Bring an agent, then add your key',
-    intro: 'Every model call goes through the gateway that meters every token.',
+    intro:
+      'Every agent calls the model with your own provider key, through the gateway that meters every token, so the key is the one thing you need.',
   },
   model: {
     title: '2. Your model key',
-    // Starter pack agents run on the platform's model (Free plane: the seed agents' daily allowance); only a
-    // user's own agents need their key (user request 2026-11-13).
-    intro:
-      'Starter pack agents are free to use. For your own agents, bring your own model key: it becomes your default model, and you can add more providers later in the LLM router.',
-    /** Without the Starter pack (an upgraded workspace): every agent is the user's own. */
-    introOwn:
-      'Your agents call the model with your own key. It becomes your default model; add more providers later in the LLM router.',
+    intro: 'It becomes your default model. Add more providers later in the LLM router.',
     label: 'Model provider',
     models: (n: number) => `${n} model${n === 1 ? '' : 's'}`,
     key: (provider: string) => `${provider} API key`,
@@ -160,13 +153,13 @@ export const copy = {
     // How to bring an agent from the public registry (user request 2026-11-09), above the Deploy page's own form.
     registryHow: {
       title: 'Copy an agent from the Nasiko registry',
-      site: 'registry.nasiko.com',
-      siteUrl: 'https://registry.nasiko.com',
+      site: 'registry.nasiko.dev',
+      siteUrl: 'https://registry.nasiko.dev',
       open: 'Open',
       openRest: 'and pick an agent.',
       copyStep: 'In its Install section, copy the reference after',
       pull: 'docker pull',
-      example: 'registry.nasiko.com/acme/support-bot:1.2.0',
+      example: 'registry.nasiko.dev/acme/support-bot:1.2.0',
       paste: 'Paste it below and press Import and deploy.',
       label: 'How to copy from the registry',
     },
@@ -183,11 +176,11 @@ export const copy = {
     steps: {
       install: 'Install the CLI',
       connect: 'Connect it to this server',
+      signIn: 'Sign in',
+      signInSso: 'Sign in with your company account',
     },
     copy: (what: string) => `Copy: ${what}`,
-    // `nasiko connect` signs in and asks about the coding agents itself (user request 2026-11-15): no sign-in step.
-    after:
-      'Connecting signs you in, then asks which coding agents to connect; one connected to another server is offered to move here. Your next session in any of them shows up in Coding harnesses, next to your agents.',
+    after: 'Your next session in any of them shows up in Coding harnesses, next to your agents.',
     // Ways on from the guide's end (user request 2026-11-05): more than the harnesses.
     next: 'Or jump straight in',
     choices: {
@@ -201,12 +194,12 @@ export const copy = {
     // for and why, and the first one not done says it is next, never "not yet" (NAS-1448).
     model: {
       title: 'Add your model key',
-      sub: 'For your own agents: an API key from OpenAI, Anthropic or another provider',
+      sub: 'An API key from OpenAI, Anthropic or another provider',
     },
     agent: { title: 'Deploy an agent', sub: 'Pick a prebuilt one, or bring your own' },
     title: 'Setup guide',
     intro:
-      'Two steps to your first agent run. Starter pack agents are free; your own agents call their model with your own API key.',
+      "Two steps to your first agent run. Agents call their LLM with your own API key, so that one can't be skipped.",
     start: 'Start guide',
     resume: 'Resume guide',
     done: 'Done',

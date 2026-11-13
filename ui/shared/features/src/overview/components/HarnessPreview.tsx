@@ -12,11 +12,12 @@ import { Link } from '@tanstack/react-router'
 import { Pause, Play, X } from 'lucide-react'
 import { useReducedMotion } from 'motion/react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { useCopy } from '@nasiko/ui/lib/useCopy'
 import { cn } from '@nasiko/ui/lib/utils'
-import { connectCommand } from '@nasiko/features/cli/commands'
+import { connectWithoutLogin } from '@nasiko/features/cli/commands'
 import { copy as cliCopy } from '@nasiko/features/cli/copy'
 import { copy } from '../copy'
 import {
@@ -103,7 +104,12 @@ function Bar({ state, reduced, set }: PreviewControl) {
   const stop = p.stops[f.step] ?? p.stops[0]
   const exit = () => set(PREVIEW_OFF)
   // Every developer runs these on their own machine. Copying keeps the preview, so a blocked clipboard's fallback stays.
-  const commands = [cliCopy.install.unixCommand, connectCommand()].join('\n')
+  const sso = !!useSlots().loginMethods
+  const commands = [
+    cliCopy.install.unixCommand,
+    connectWithoutLogin(),
+    sso ? 'nasiko auth login --sso' : 'nasiko auth login',
+  ].join('\n')
   const [copied, runCopy] = useCopy(commands)
   // Keyed, so Stay's switch from the countdown keeps these (and the focus on them).
   const copyButton = (
@@ -339,10 +345,11 @@ export function Sampled({ children, className }: { children: ReactNode; classNam
 }
 
 /** The "no coding harnesses" tile's body: its own (`children`) until the preview plays, then Today's command, its
- *  answers appearing in turn. From Day 1 the tile is Home's own Harnesses tile (SummaryCard). Connecting signs in, then
- *  connects and imports (`nasiko connect`). The tile is `relative`. */
+ *  answers appearing in turn. From Day 1 the tile is Home's own Harnesses tile (SummaryCard). Signing in connects and
+ *  imports (`nasiko auth login`). The tile is `relative`. */
 export function PreviewSlot({ children }: { children: ReactNode }) {
   const pv = usePreview()
+  const sso = !!useSlots().loginMethods
   if (!pv?.state.on) return children
   const f = previewFrame(pv.state.elapsed)
   const lines = revealed(f.progress, p.terminal.length + 1) - 1
@@ -354,7 +361,7 @@ export function PreviewSlot({ children }: { children: ReactNode }) {
           <span aria-hidden className="text-muted-foreground select-none">
             ${' '}
           </span>
-          {connectCommand()}
+          {sso ? 'nasiko auth login --sso' : 'nasiko auth login'}
         </p>
         {p.terminal.slice(0, lines).map((line) => (
           <p key={line} className="text-success">

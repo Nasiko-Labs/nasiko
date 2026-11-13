@@ -3,18 +3,16 @@
  * (tryRunApi.ts) and plays the run on the button (Starting your agent → Running your agent → Your agent completed),
  * never leaving Home; a line under it then says what the run cost, from the run itself, and links to what the agent
  * did. Home refreshes its spend and tokens through `onRan`. Then "Run it optimized" becomes the call: it turns the
- * agent's Token optimization on, runs the same task, and says how much less it cost than the first run. With no LLM
- * router config it can't, so the card asks for one first and offers the run again once one exists.
+ * agent's Token optimization on, runs the same task, and says how much less it cost than the first run.
  */
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Loader2, Play, RotateCw, Sparkles, Waypoints } from 'lucide-react'
+import { CheckCircle2, Loader2, Play, RotateCw, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import { Button, asButton } from '@nasiko/ui/primitives/button'
+import { Button } from '@nasiko/ui/primitives/button'
 import { fmtCostPerOp, fmtInt } from '@nasiko/ui/lib/format'
 import { cn, uuid } from '@nasiko/ui/lib/utils'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { useSeededDeploys } from '@nasiko/features/onboarding/api'
-import { useConfigs } from '@nasiko/features/router/api'
 import { copy } from '../copy'
 import {
   readDone,
@@ -178,10 +176,6 @@ export function TryAgentRun({
   // Once the agent has run as it is, the optimized run is the call to action.
   const ranBaseline = done.includes('baseline')
   const next: TryRunKind = ranBaseline && active?.kind !== 'baseline' ? 'optimized' : 'baseline'
-  // Home's own "LLM router" setup rule (api.ts useSetupSteps): no config yet. A config saved on /router (or in another
-  // tab, refetched on focus) brings the button back. Unknown while loading, so the button waits; a failed read lets it run.
-  const configs = useConfigs()
-  const needsRouter = next === 'optimized' && configs.data?.length === 0
 
   return (
     // A mild gradient border to draw the eye to the button: a thin frame glowing from the bottom-left corner, fading into
@@ -219,9 +213,7 @@ export function TryAgentRun({
           ) : !agentId ? (
             <p className="text-sm text-muted-foreground">{t.notDeployed(TRY_RUN_AGENT)}</p>
           ) : null}
-          {needsRouter ? (
-            <p className="text-sm font-medium">{t.needsRouter}</p>
-          ) : ranBaseline && !done.includes('optimized') && !active ? (
+          {ranBaseline && !done.includes('optimized') && !active ? (
             <p className="text-sm font-medium">{t.nextStep}</p>
           ) : null}
           <div className="flex flex-wrap gap-2">
@@ -230,16 +222,11 @@ export function TryAgentRun({
                 <Loader2 className="animate-spin motion-reduce:animate-none" aria-hidden />
                 {t.deploying}
               </Button>
-            ) : needsRouter ? (
-              <Link to="/router" {...asButton({ className: `justify-start ${TOUCH}` })}>
-                <Waypoints aria-hidden />
-                {t.setUpRouter}
-              </Link>
             ) : (
               <RunButton
                 kind={next}
                 phase={phaseOf(next)}
-                disabled={!agentId || !!active || (next === 'optimized' && configs.isPending)}
+                disabled={!agentId || !!active}
                 onRun={() => void run(next)}
               />
             )}

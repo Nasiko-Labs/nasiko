@@ -44,7 +44,6 @@ import { sourceLabel } from '../format'
 import {
   catalogIndex,
   cliAttach,
-  cliAttachTemplate,
   cliDetach,
   keepOverrideCheck,
   keySource,
@@ -509,16 +508,20 @@ function Body({
                 ) : null}
               </div>
             </FieldSet>
-            <div className="space-y-1.5 text-xs text-muted-foreground">
-              <p>{copy.cliAttachLabel}</p>
-              <CopyButton
-                text={attachCommand(target.name, desiredConfig, routing, ownerConfigs)}
-                label={copy.copyCliAttach}
-                showText
-              />
-              <p>{copy.cliDetachLabel}</p>
-              <CopyButton text={cliDetach(target.name)} label={copy.copyCliDetach} showText />
-              <p>{copy.cliAppliesTo(CONFIG_CACHE_SECONDS)}</p>
+            <div className="space-y-1 text-xs text-muted-foreground">
+              <p>{copy.cliEquivalent}</p>
+              {desiredConfig ? (
+                <CopyButton
+                  text={cliAttach(
+                    target.name,
+                    ownerConfigs.find((c) => c.id === desiredConfig)?.name ?? desiredConfig,
+                  )}
+                  label={copy.copyCli}
+                  showText
+                />
+              ) : (
+                <CopyButton text={cliDetach(target.name)} label={copy.copyCli} showText />
+              )}
             </div>
           </>
         )}
@@ -548,23 +551,6 @@ function Body({
       </SheetFooter>
     </>
   )
-}
-
-/**
- * The attach command for the sheet's CLI block: the config chosen in the form, else the one attached now, else the
- * caller's first; with none at all, a placeholder to fill in.
- */
-function attachCommand(
-  agent: string,
-  desired: string | null,
-  routing: AgentRouting,
-  configs: readonly LlmConfig[],
-): string {
-  const name =
-    (desired && (configs.find((c) => c.id === desired)?.name ?? desired)) ||
-    routing.llm_config?.name ||
-    configs[0]?.name
-  return name ? cliAttach(agent, name) : cliAttachTemplate(agent)
 }
 
 function Outcome({

@@ -66,13 +66,7 @@ export function AppShell({
   const [target, setTarget] = useState<HTMLElement | null>(null)
   const [panels, setPanels] = useState(0)
   const inset = (
-    // min-w-0: a flex item never shrinks below its content, so one wide row (the trace switcher's toggles) pushed
-    // the whole page, top bar included, past the window by the sidebar's width; that row scrolls on its own (NAS-1609).
-    <SidebarInset
-      id="main"
-      tabIndex={-1}
-      className={cn('min-w-0 outline-none', fullHeight && 'min-h-0')}
-    >
+    <SidebarInset id="main" tabIndex={-1} className={cn('outline-none', fullHeight && 'min-h-0')}>
       <StaleBuildNotice />
       {Notice ? <Notice /> : null}
       {/* One bar above every page (TopBar.tsx); on phones it also holds the menu button (§4.2). */}

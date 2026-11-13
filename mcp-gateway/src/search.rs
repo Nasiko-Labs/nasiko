@@ -1,8 +1,7 @@
 //! Flat tool search — the query-aware discovery layer for `tools/list`.
 //!
 //! Two implementations behind a shared [`ToolSearchIndex`] trait:
-//! - [`SemanticSearchIndex`]: embedding cosine similarity via the in-process LLM router
-//!   (default; model from `EMBEDDING_MODEL`)
+//! - [`SemanticSearchIndex`]: embedding cosine similarity (default, requires `EMBEDDING_MODEL`)
 //! - [`Bm25SearchIndex`]: keyword BM25 scoring (fallback, zero external deps)
 //!
 //! Both search the full `mcp_connector_tools` table in a single pass (flat search).
@@ -17,10 +16,8 @@ use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use nasiko_orchestrator::llm_backend::{LlmCallContext, SharedLlmBackend};
-
 use crate::error::Result;
-use crate::permissions::EffectiveAccess;
+use crate::permissions::PermissionContext;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -37,21 +34,19 @@ pub struct ToolMatch {
 #[async_trait]
 pub trait ToolSearchIndex: Send + Sync {
     /// Search all tools matching `query`, filtered by accessible connectors and
-    /// agent permissions and the user's entitlement. Returns up to `limit` results ordered by relevance.
+    /// agent permissions. Returns up to `limit` results ordered by relevance.
     async fn search_tools(
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        access: &EffectiveAccess<'_>,
+        perms: &PermissionContext,
         limit: usize,
     ) -> Vec<ToolMatch>;
 
-    /// Every indexed tool of `connector_ids` the agent's permissions and the user's entitlement
-    /// do not deny, unranked
+    /// Every indexed tool of `connector_ids` the agent's permissions do not deny, unranked
     /// (`score` 0): what a listing without search is built from, measured against the search
     /// result by the savings ledger. Required, so an index cannot silently report no baseline.
-    fn granted_tools(&self, connector_ids: &[Uuid], access: &EffectiveAccess<'_>)
-    -> Vec<ToolMatch>;
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch>;
 
     /// Rebuild the in-memory index from current DB state.
     async fn rebuild(&self, db: &PgPool) -> Result<()>;
@@ -91,13 +86,13 @@ async fn load_all_tools(db: &PgPool) -> Result<Vec<ToolEntry>> {
 fn granted(
     tools: &[ToolEntry],
     connector_ids: &[Uuid],
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
 ) -> Vec<ToolMatch> {
     tools
         .iter()
         .filter(|t| connector_ids.contains(&t.connector_id))
         .filter(|t| {
-            access.decide(t.connector_id, &t.tool_name) != crate::permissions::ToolAccess::Denied
+            perms.decide(t.connector_id, &t.tool_name) != crate::permissions::ToolAccess::Denied
         })
         .map(|t| ToolMatch {
             connector_id: t.connector_id,
@@ -216,7 +211,7 @@ impl ToolSearchIndex for Bm25SearchIndex {
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        access: &EffectiveAccess<'_>,
+        perms: &PermissionContext,
         limit: usize,
     ) -> Vec<ToolMatch> {
         let qtokens = tokenize(query);
@@ -235,7 +230,7 @@ impl ToolSearchIndex for Bm25SearchIndex {
             .enumerate()
             .filter(|(_, (tool, _))| accessible.contains(&tool.connector_id))
             .filter(|(_, (tool, _))| {
-                access.decide(tool.connector_id, &tool.tool_name)
+                perms.decide(tool.connector_id, &tool.tool_name)
                     != crate::permissions::ToolAccess::Denied
             })
             .map(|(i, (_, doc_tokens))| {
@@ -263,12 +258,8 @@ impl ToolSearchIndex for Bm25SearchIndex {
             .collect()
     }
 
-    fn granted_tools(
-        &self,
-        connector_ids: &[Uuid],
-        access: &EffectiveAccess<'_>,
-    ) -> Vec<ToolMatch> {
-        granted(&self.inner.read().unwrap().tools, connector_ids, access)
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -285,10 +276,6 @@ impl ToolSearchIndex for Bm25SearchIndex {
 // ── Semantic ───────────────────────────────────────────────────────────────────
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    // Vectors from different embedding models are not comparable.
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -296,23 +283,6 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (na * nb)
-}
-
-/// Persisted vectors whose recorded identity matches `identity`.
-fn reusable_vectors(
-    existing: HashMap<(Uuid, String), Vec<f32>>,
-    models: &HashMap<(Uuid, String), String>,
-    identity: &str,
-) -> HashMap<(Uuid, String), Vec<f32>> {
-    existing
-        .into_iter()
-        .filter(|(key, _)| models.get(key).is_some_and(|m| m == identity))
-        .collect()
-}
-
-/// Whether any tool has a usable (non-empty) semantic vector.
-fn has_semantic_vectors(embeddings: &[Vec<f32>]) -> bool {
-    embeddings.iter().any(|e| !e.is_empty())
 }
 
 fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
@@ -328,51 +298,69 @@ fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// `trace_usage.agent_name` for gateway embedding calls.
-pub const EMBEDDING_COMPONENT: &str = "mcp_tool_embedding";
+const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
 
-/// Texts per router call; keeps request bodies bounded for every provider.
-const EMBED_CHUNK: usize = 256;
-
-/// Embeds through the in-process LLM router, so whichever provider serves
-/// `EMBEDDING_MODEL` (OpenAI, Gemini, Vertex, …) is used and usage is billed
-/// to the platform (`Uuid::nil()`), labelled [`EMBEDDING_COMPONENT`].
+/// OpenAI-compatible embedding API client.
 struct EmbeddingClient {
-    backend: SharedLlmBackend,
+    http: reqwest::Client,
+    base_url: String,
+    api_key: String,
     model: String,
 }
 
-impl EmbeddingClient {
-    fn call() -> LlmCallContext {
-        LlmCallContext {
-            user_id: Uuid::nil(),
-            component: EMBEDDING_COMPONENT.to_string(),
-            session_id: None,
-        }
-    }
+#[derive(serde::Deserialize)]
+struct EmbeddingResponse {
+    data: Vec<EmbeddingData>,
+}
 
+#[derive(serde::Deserialize)]
+struct EmbeddingData {
+    embedding: Vec<f32>,
+}
+
+impl EmbeddingClient {
     async fn embed_batch(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, String> {
-        let call: LlmCallContext = Self::call();
-        let mut all: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
-        for chunk in texts.chunks(EMBED_CHUNK) {
-            let vectors: Vec<Vec<f32>> = self.backend.embed(&call, &self.model, chunk).await?;
-            if vectors.len() != chunk.len() {
-                return Err(format!(
-                    "embedding backend returned {} vectors for {} inputs",
-                    vectors.len(),
-                    chunk.len()
-                ));
+        const CHUNK: usize = 512;
+        let mut all = Vec::with_capacity(texts.len());
+
+        for chunk in texts.chunks(CHUNK) {
+            let body = serde_json::json!({
+                "model": &self.model,
+                "input": chunk,
+            });
+
+            let resp = self
+                .http
+                .post(format!("{}/embeddings", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| format!("embedding API request failed: {e}"))?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(format!("embedding API {status}: {text}"));
             }
-            all.extend(vectors);
+
+            let parsed: EmbeddingResponse = resp
+                .json()
+                .await
+                .map_err(|e| format!("embedding API response parse error: {e}"))?;
+            for d in parsed.data {
+                all.push(d.embedding);
+            }
         }
+
         Ok(all)
     }
 
     async fn embed_one(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
-        let mut results: Vec<Vec<f32>> = self.embed_batch(&[text.to_string()]).await?;
+        let mut results = self.embed_batch(&[text.to_string()]).await?;
         results
             .pop()
-            .ok_or_else(|| "embedding backend returned empty result".to_string())
+            .ok_or_else(|| "embedding API returned empty result".to_string())
     }
 }
 
@@ -392,8 +380,12 @@ pub struct SemanticSearchIndex {
 }
 
 impl SemanticSearchIndex {
-    /// `backend` embeds both tool texts and queries with `model`.
-    pub fn new(redis: nasiko_redis::SharedRedis, backend: SharedLlmBackend, model: String) -> Self {
+    pub fn new(
+        http: reqwest::Client,
+        redis: nasiko_redis::SharedRedis,
+        api_key: String,
+        model: String,
+    ) -> Self {
         Self {
             inner: RwLock::new(SemanticInner {
                 tools: Vec::new(),
@@ -401,7 +393,12 @@ impl SemanticSearchIndex {
             }),
             rebuild_lock: tokio::sync::Mutex::new(()),
             bm25: Bm25SearchIndex::new(),
-            client: EmbeddingClient { backend, model },
+            client: EmbeddingClient {
+                http,
+                base_url: DEFAULT_EMBEDDING_BASE_URL.to_string(),
+                api_key,
+                model,
+            },
             redis,
         }
     }
@@ -415,10 +412,7 @@ impl SemanticSearchIndex {
             "{:x}",
             Sha256::new().chain_update(query.as_bytes()).finalize()
         );
-        // Key by the provider/model that actually serves the embedding, so a
-        // provider switch never reuses vectors from another embedding space.
-        let identity: String = self.client.backend.embedding_identity(&self.client.model);
-        let cache_key = format!("mcp:qemb:{}:{}", identity, &hash[..16]);
+        let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
 
         // Check Redis cache.
         if let Ok(mut conn) = self.redis.connection().await
@@ -451,24 +445,16 @@ impl ToolSearchIndex for SemanticSearchIndex {
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        access: &EffectiveAccess<'_>,
+        perms: &PermissionContext,
         limit: usize,
     ) -> Vec<ToolMatch> {
-        // No vectors for the current embedding identity: semantic ranking is meaningless.
-        let has_vectors: bool = has_semantic_vectors(&self.inner.read().unwrap().embeddings);
-        if !has_vectors {
-            return self
-                .bm25
-                .search_tools(query, accessible_connector_ids, access, limit)
-                .await;
-        }
         let query_emb = match self.embed_query(query).await {
             Ok(emb) => emb,
             Err(e) => {
                 tracing::warn!(error = %e, "semantic search: query embedding failed, falling back to BM25");
                 return self
                     .bm25
-                    .search_tools(query, accessible_connector_ids, access, limit)
+                    .search_tools(query, accessible_connector_ids, perms, limit)
                     .await;
             }
         };
@@ -483,7 +469,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
             .enumerate()
             .filter(|(_, (tool, _))| accessible.contains(&tool.connector_id))
             .filter(|(_, (tool, _))| {
-                access.decide(tool.connector_id, &tool.tool_name)
+                perms.decide(tool.connector_id, &tool.tool_name)
                     != crate::permissions::ToolAccess::Denied
             })
             .map(|(i, (_, emb))| (i, cosine_similarity(&query_emb, emb) as f64))
@@ -507,12 +493,8 @@ impl ToolSearchIndex for SemanticSearchIndex {
             .collect()
     }
 
-    fn granted_tools(
-        &self,
-        connector_ids: &[Uuid],
-        access: &EffectiveAccess<'_>,
-    ) -> Vec<ToolMatch> {
-        granted(&self.inner.read().unwrap().tools, connector_ids, access)
+    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -530,18 +512,16 @@ impl ToolSearchIndex for SemanticSearchIndex {
             return Ok(());
         }
 
-        // Stored rows record the provider/model that served them; a switch re-embeds.
-        let identity: String = self.client.backend.embedding_identity(&self.client.model);
+        // Load existing embeddings from DB.
+        let existing: HashMap<(Uuid, String), Vec<f32>> = load_embeddings(db).await?;
 
-        // Load existing embeddings from DB, keeping only vectors from the current identity
-        // so a failed re-embed never ranks new-model queries against old-model vectors.
+        // Find tools that need (re-)embedding: no embedding or model mismatch.
         let existing_model: HashMap<(Uuid, String), String> = load_embedding_models(db).await?;
-        let existing: HashMap<(Uuid, String), Vec<f32>> =
-            reusable_vectors(load_embeddings(db).await?, &existing_model, &identity);
+
         let mut texts_to_embed: Vec<(usize, String)> = Vec::new();
         for (i, tool) in tools.iter().enumerate() {
             let key = (tool.connector_id, tool.tool_name.clone());
-            let needs_embed = !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &identity);
+            let needs_embed = !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &self.client.model);
             if needs_embed {
                 texts_to_embed.push((
                     i,
@@ -564,7 +544,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
                             tool.connector_id,
                             tool.tool_name.clone(),
                             f32_vec_to_bytes(&emb),
-                            identity.clone(),
+                            self.client.model.clone(),
                         ));
                         new_embeddings.insert(*idx, emb);
                     }
@@ -621,18 +601,14 @@ impl ToolSearchIndex for NoopSearchIndex {
         &self,
         _query: &str,
         _accessible_connector_ids: &[Uuid],
-        _access: &EffectiveAccess<'_>,
+        _perms: &PermissionContext,
         _limit: usize,
     ) -> Vec<ToolMatch> {
         Vec::new()
     }
 
     /// Search is off, so no listing is measured against a baseline.
-    fn granted_tools(
-        &self,
-        _connector_ids: &[Uuid],
-        _access: &EffectiveAccess<'_>,
-    ) -> Vec<ToolMatch> {
+    fn granted_tools(&self, _connector_ids: &[Uuid], _perms: &PermissionContext) -> Vec<ToolMatch> {
         Vec::new()
     }
 
@@ -694,39 +670,7 @@ async fn upsert_embeddings(db: &PgPool, rows: &[(Uuid, String, Vec<u8>, String)]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::PermissionContext;
     use std::collections::HashSet;
-
-    #[test]
-    fn cosine_similarity_is_zero_for_mismatched_or_empty_vectors() {
-        // 3072-dim Gemini vs 1536-dim OpenAI vectors must not be compared.
-        assert_eq!(cosine_similarity(&[1.0, 0.0, 0.0], &[1.0, 0.0]), 0.0);
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
-        assert!((cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]) - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn reusable_vectors_drops_other_identity_and_falls_back_when_none_left() {
-        let a: (Uuid, String) = (connector_id("a"), "t1".to_string());
-        let b: (Uuid, String) = (connector_id("b"), "t2".to_string());
-        let existing: HashMap<(Uuid, String), Vec<f32>> =
-            HashMap::from([(a.clone(), vec![1.0]), (b.clone(), vec![2.0])]);
-        let models: HashMap<(Uuid, String), String> = HashMap::from([
-            (a.clone(), "openai/text-embedding-3-small".to_string()),
-            (b.clone(), "gemini/gemini-embedding-001".to_string()),
-        ]);
-        let kept: HashMap<(Uuid, String), Vec<f32>> =
-            reusable_vectors(existing.clone(), &models, "gemini/gemini-embedding-001");
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept.get(&b), Some(&vec![2.0]));
-
-        let none: HashMap<(Uuid, String), Vec<f32>> =
-            reusable_vectors(existing, &models, "vertex/text-embedding-005");
-        assert!(none.is_empty());
-        let rebuilt: Vec<Vec<f32>> = vec![Vec::new(), Vec::new()];
-        assert!(!has_semantic_vectors(&rebuilt));
-        assert!(has_semantic_vectors(&[Vec::new(), vec![1.0]]));
-    }
 
     fn tool(connector: &str, name: &str, desc: &str) -> ToolEntry {
         ToolEntry {
@@ -841,7 +785,7 @@ mod tests {
             .search_tools(
                 "send an email",
                 &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&permissive_perms()),
+                &permissive_perms(),
                 5,
             )
             .await;
@@ -886,7 +830,7 @@ mod tests {
             .search_tools(
                 "send an email",
                 &[connector_id("slack")],
-                &EffectiveAccess::unrestricted(&permissive_perms()),
+                &permissive_perms(),
                 5,
             )
             .await;
@@ -938,12 +882,7 @@ mod tests {
         };
 
         let results = index
-            .search_tools(
-                "send an email",
-                &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&perms),
-                5,
-            )
+            .search_tools("send an email", &all_connector_ids(), &perms, 5)
             .await;
 
         for r in &results {
@@ -953,52 +892,6 @@ mod tests {
                 "gmail tools should be filtered by agent perms"
             );
         }
-    }
-
-    #[tokio::test]
-    async fn bm25_hides_tools_outside_the_user_entitlement() {
-        use crate::entitlements::{ToolSet, UserEntitlement};
-        let index = Bm25SearchIndex::new();
-        {
-            let tools = sample_tools();
-            let tokens: Vec<Vec<String>> = tools
-                .iter()
-                .map(|t| tokenize(&tool_search_text(&t.tool_name, t.description.as_deref())))
-                .collect();
-            let mut df: HashMap<String, usize> = HashMap::new();
-            for doc_tokens in &tokens {
-                let unique: HashSet<&str> = doc_tokens.iter().map(|s| s.as_str()).collect();
-                for t in unique {
-                    *df.entry(t.to_string()).or_default() += 1;
-                }
-            }
-            let total_len: usize = tokens.iter().map(|t| t.len()).sum();
-            let avgdl = total_len as f64 / tools.len() as f64;
-            let mut inner = index.inner.write().unwrap();
-            inner.tools = tools;
-            inner.tokens = tokens;
-            inner.df = df;
-            inner.avgdl = avgdl;
-        }
-        let perms = permissive_perms();
-        // Entitled to nothing on gmail (no entry) and to Slack tools only.
-        let ent =
-            UserEntitlement::Restricted(HashMap::from([(connector_id("slack"), ToolSet::All)]));
-        let results = index
-            .search_tools(
-                "send an email message",
-                &all_connector_ids(),
-                &EffectiveAccess::new(&perms, &ent),
-                10,
-            )
-            .await;
-        assert!(!results.is_empty());
-        assert!(
-            results
-                .iter()
-                .all(|r| r.connector_id == connector_id("slack")),
-            "only entitled connectors may surface"
-        );
     }
 
     #[tokio::test]
@@ -1027,12 +920,7 @@ mod tests {
         }
 
         let results = index
-            .search_tools(
-                "email",
-                &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&permissive_perms()),
-                2,
-            )
+            .search_tools("email", &all_connector_ids(), &permissive_perms(), 2)
             .await;
 
         assert!(results.len() <= 2, "should respect limit of 2");
@@ -1042,12 +930,7 @@ mod tests {
     async fn bm25_empty_query_returns_empty() {
         let index = Bm25SearchIndex::new();
         let results = index
-            .search_tools(
-                "",
-                &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&permissive_perms()),
-                5,
-            )
+            .search_tools("", &all_connector_ids(), &permissive_perms(), 5)
             .await;
         assert!(results.is_empty(), "empty query should return empty");
     }
@@ -1065,10 +948,7 @@ mod tests {
             ..permissive_perms()
         };
 
-        let granted = index.granted_tools(
-            &[connector_id("gmail"), connector_id("slack")],
-            &EffectiveAccess::unrestricted(&perms),
-        );
+        let granted = index.granted_tools(&[connector_id("gmail"), connector_id("slack")], &perms);
 
         let names: HashSet<&str> = granted.iter().map(|m| m.tool_name.as_str()).collect();
         // gmail is asked for but not enabled; github is enabled but not asked for.
@@ -1079,10 +959,7 @@ mod tests {
         assert!(granted.iter().all(|m| m.score == 0.0));
         assert!(
             NoopSearchIndex
-                .granted_tools(
-                    &all_connector_ids(),
-                    &EffectiveAccess::unrestricted(&permissive_perms()),
-                )
+                .granted_tools(&all_connector_ids(), &permissive_perms())
                 .is_empty()
         );
     }
@@ -1091,104 +968,31 @@ mod tests {
     async fn noop_always_returns_empty() {
         let index = NoopSearchIndex;
         let results = index
-            .search_tools(
-                "anything",
-                &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&permissive_perms()),
-                10,
-            )
+            .search_tools("anything", &all_connector_ids(), &permissive_perms(), 10)
             .await;
         assert!(results.is_empty());
     }
 
     // ─── Semantic fallback tests ───────────────────────────────────────────
 
-    /// Router stand-in whose every call fails.
-    struct FailingBackend;
-
-    #[async_trait]
-    impl nasiko_orchestrator::llm_backend::LlmBackend for FailingBackend {
-        async fn chat(
-            &self,
-            _call: &LlmCallContext,
-            _body: serde_json::Value,
-        ) -> std::result::Result<serde_json::Value, nasiko_orchestrator::llm_backend::LlmError>
-        {
-            Err(nasiko_orchestrator::llm_backend::LlmError {
-                status: None,
-                message: "unavailable".into(),
-            })
-        }
-        async fn embed(
-            &self,
-            _call: &LlmCallContext,
-            _model: &str,
-            _texts: &[String],
-        ) -> std::result::Result<Vec<Vec<f32>>, String> {
-            Err("unavailable".into())
-        }
-        fn provider(&self) -> String {
-            "test".into()
-        }
-    }
-
-    #[tokio::test]
-    async fn embed_batch_rejects_vector_count_mismatch() {
-        struct ShortBackend;
-        #[async_trait]
-        impl nasiko_orchestrator::llm_backend::LlmBackend for ShortBackend {
-            async fn chat(
-                &self,
-                _call: &LlmCallContext,
-                _body: serde_json::Value,
-            ) -> std::result::Result<serde_json::Value, nasiko_orchestrator::llm_backend::LlmError>
-            {
-                Err(nasiko_orchestrator::llm_backend::LlmError {
-                    status: None,
-                    message: "unused".into(),
-                })
-            }
-            async fn embed(
-                &self,
-                call: &LlmCallContext,
-                _model: &str,
-                _texts: &[String],
-            ) -> std::result::Result<Vec<Vec<f32>>, String> {
-                assert_eq!(call.component, EMBEDDING_COMPONENT);
-                assert_eq!(call.user_id, Uuid::nil());
-                Ok(vec![vec![1.0]])
-            }
-            fn provider(&self) -> String {
-                "test".into()
-            }
-        }
-        let client = EmbeddingClient {
-            backend: std::sync::Arc::new(ShortBackend),
-            model: "m".into(),
-        };
-        let err: String = client
-            .embed_batch(&["a".to_string(), "b".to_string()])
-            .await
-            .unwrap_err();
-        assert!(err.contains("1 vectors for 2 inputs"), "{err}");
-    }
-
     #[tokio::test]
     async fn semantic_falls_back_to_bm25_when_query_embedding_fails() {
         // Nothing listens on port 1, so the Redis cache and the embedding call
         // both fail at once without leaving the machine.
-        let index = SemanticSearchIndex::new(
+        let mut index = SemanticSearchIndex::new(
+            reqwest::Client::new(),
             nasiko_redis::SharedRedis::new(redis::Client::open("redis://127.0.0.1:1").unwrap()),
-            std::sync::Arc::new(FailingBackend),
+            "test-key".to_string(),
             "test-model".to_string(),
         );
+        index.client.base_url = "http://127.0.0.1:1".to_string();
         index.bm25.index(sample_tools());
 
         let results = index
             .search_tools(
                 "send an email",
                 &all_connector_ids(),
-                &EffectiveAccess::unrestricted(&permissive_perms()),
+                &permissive_perms(),
                 5,
             )
             .await;

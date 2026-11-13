@@ -8,10 +8,8 @@
  *   `is_default` and answers a plain-text 409 while live agents are attached.
  * - agent routing (`server/src/agents/llm_config.rs`): owner or superuser; an attach or a detach clears the agent
  *   pin; `pinned_model` applies only when `llm_config_id` is absent; `inbound_format` is checked after the writes.
- * - custom providers (`server/src/llm_router/custom_providers.rs`): anyone registers; a provider is its creator's
- *   (listed, in the catalog and nameable in a config only for them), except that superusers share theirs among
- *   themselves; edit, delete and sync are its creator's or a superuser's (403 otherwise); delete answers a JSON 409
- *   `{message, referencing_configs}`.
+ * - custom providers (`server/src/llm_router/custom_providers.rs`): writes are superuser-only; delete answers a
+ *   JSON 409 `{message, referencing_configs}`.
  * Ids are `5eed0007-*` (configs) and `5eed0008-*` (custom providers), so the live seed can use the same ones.
  */
 import type {
@@ -47,20 +45,7 @@ interface MockRouting {
 interface MockCustomProvider extends CustomProvider {
   deleted: boolean
   models: string[]
-  /** A superuser registered it, so other superusers may use it too (the server reads the flags live). */
-  shared: boolean
 }
-
-/** The caller as `custom_providers::usable_by` sees them. */
-export interface ProviderViewer {
-  id: string
-  superuser: boolean
-}
-
-/** `custom_providers::usable_by`: its creator may see and route through it; so may another superuser when a
- *  superuser registered it. No one else. */
-const usable = (p: MockCustomProvider, viewer: ProviderViewer) =>
-  !p.deleted && (p.created_by === viewer.id || (p.shared && viewer.superuser))
 
 export interface RouterState {
   configs: MockConfig[]
@@ -72,7 +57,7 @@ export interface RouterState {
   registry: ModelMapping[]
 }
 
-const SUPPORTED_PROVIDERS = ['openai', 'anthropic', 'gemini', 'openrouter', 'vertex']
+const SUPPORTED_PROVIDERS = ['openai', 'anthropic', 'gemini', 'openrouter']
 const INBOUND = ['openai', 'anthropic', 'gemini']
 const pad = (n: number) => String(n).padStart(12, '0')
 export const configId = (n: number) => `5eed0007-0000-4000-8000-${pad(n)}`
@@ -82,8 +67,7 @@ const customId = (n: number) => `5eed0008-0000-4000-8000-${pad(n)}`
 export function buildRouterState(
   agents: readonly MockAgent[],
   now: number,
-  /** `registrar`: the superuser who registered the seed's custom provider (the seed admin when unset). */
-  opts: { empty?: boolean; legacy?: boolean; registrar?: string } = {},
+  opts: { empty?: boolean; legacy?: boolean } = {},
 ): RouterState {
   const iso = new Date(now - 7 * 86_400_000).toISOString()
   const mk = (
@@ -228,9 +212,6 @@ export function buildRouterState(
         last_sync_status: 'ok',
         last_sync_error: null,
         created_at: iso,
-        // Another superuser's (shared), so the admin sees it as a superuser and not at all as a member.
-        created_by: opts.registrar ?? ADMIN_ID,
-        shared: true,
         deleted: false,
         models: ['custom-local'],
       },
@@ -275,13 +256,9 @@ function findConfig(s: RouterState, id: string, user: string): MockConfig {
   return c
 }
 
-/** `resolve_provider_label`: a built-in name, a custom label, or a custom provider UUID → its label. A provider
- *  the caller may not use reads as unknown, as does a name no one registered. */
-function providerLabel(s: RouterState, provider: string, viewer: ProviderViewer): string {
-  const custom = s.custom.find(
-    (p) =>
-      usable(p, viewer) && (p.id.toLowerCase() === provider.toLowerCase() || p.label === provider),
-  )
+/** `resolve_provider_label`: a built-in name, a custom label, or a custom provider UUID → its label. */
+function providerLabel(s: RouterState, provider: string): string {
+  const custom = s.custom.find((p) => !p.deleted && (p.id === provider || p.label === provider))
   if (custom) return custom.label
   if (SUPPORTED_PROVIDERS.includes(provider)) return provider
   throw new MockHttpError(
@@ -341,13 +318,12 @@ function validateModel(
 
 export function createConfig(
   s: RouterState,
-  viewer: ProviderViewer,
+  user: string,
   body: CreateConfigBody,
   now: number,
 ): LlmConfig {
-  const user = viewer.id
   if (!body.name?.trim()) throw new MockHttpError(400, 'name must not be empty')
-  const provider = providerLabel(s, body.provider, viewer)
+  const provider = providerLabel(s, body.provider)
   validateModel(
     body.model,
     !!(body.tier1_model || body.tier2_model || body.tier3_model),
@@ -386,13 +362,12 @@ export function createConfig(
 export function updateConfig(
   s: RouterState,
   id: string,
-  viewer: ProviderViewer,
+  user: string,
   body: UpdateConfigBody,
   now: number,
 ): LlmConfig {
-  const user = viewer.id
   const c = findConfig(s, id, user)
-  const provider = body.provider ? providerLabel(s, body.provider, viewer) : null
+  const provider = body.provider ? providerLabel(s, body.provider) : null
   if (body.model !== undefined && body.model !== null && !body.model.trim())
     throw new MockHttpError(400, 'model must not be empty when provided')
   if (body.pinned_model !== undefined && body.pinned_model !== null && !body.pinned_model.trim())
@@ -577,15 +552,8 @@ export function deleteSecret(s: RouterState, user: string, name: string): boolea
 export const listSecrets = (s: RouterState, user: string): SecretEntry[] =>
   [...(s.secrets.get(user) ?? [])].sort((a, b) => a.name.localeCompare(b.name))
 
-/** The custom providers `viewer` may use (`custom_providers.rs` `list`). */
-export const listCustom = (s: RouterState, viewer: ProviderViewer): CustomProvider[] =>
-  s.custom
-    .filter((p) => usable(p, viewer))
-    .map(({ deleted: _d, models: _m, shared: _s, ...wire }) => wire)
-
-/** Labels of the providers `viewer` may not use: the catalog drops their models (`list_providers`). */
-export const hiddenCustomLabels = (s: RouterState, viewer: ProviderViewer): Set<string> =>
-  new Set(s.custom.filter((p) => !p.deleted && !usable(p, viewer)).map((p) => p.label))
+export const listCustom = (s: RouterState): CustomProvider[] =>
+  s.custom.filter((p) => !p.deleted).map(({ deleted: _d, models: _m, ...wire }) => wire)
 
 function slugify(name: string): string {
   return name
@@ -621,22 +589,7 @@ const normalizeBase = (kind: string, base: string) => {
   return kind === 'azure-openai' ? b.replace(/\/openai$/, '').replace(/\/+$/, '') : b
 }
 
-/** `custom_providers.rs` `managed`: 404 unknown, 403 unless the caller registered it or is a superuser. */
-export function managedCustom(s: RouterState, id: string, user: string, superuser: boolean) {
-  const p = s.custom.find((x) => x.id === id && !x.deleted)
-  if (!p) throw new MockHttpError(404, 'no such custom provider')
-  if (!superuser && p.created_by !== user)
-    throw new MockHttpError(403, "only the provider's creator or a superuser can change it")
-  return p
-}
-
-export function createCustom(
-  s: RouterState,
-  body: CreateCustomProviderBody,
-  now: number,
-  user: string,
-  superuser: boolean,
-) {
+export function createCustom(s: RouterState, body: CreateCustomProviderBody, now: number) {
   const dialect = validateDialect(body.kind, body.api_version)
   const display = body.display_name?.trim()
   const base = normalizeBase(dialect.kind, body.base_url ?? '')
@@ -662,8 +615,6 @@ export function createCustom(
     last_sync_status: null,
     last_sync_error: null,
     created_at: new Date(now).toISOString(),
-    created_by: user,
-    shared: superuser,
     deleted: false,
     models: [],
   }

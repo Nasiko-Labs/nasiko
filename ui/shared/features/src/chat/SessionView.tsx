@@ -569,9 +569,7 @@ function SessionView({
         </div>
       ) : null}
 
-      {/* A live turn renders without history (mergeTurns), so a first send's turn stays put while its new chat's
-          history loads, instead of giving way to the loader. */}
-      {history.isPending && !live ? (
+      {history.isPending ? (
         <PageLoader label={copy.loadingChat} inline className="min-h-0" />
       ) : (
         <Transcript

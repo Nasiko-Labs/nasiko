@@ -85,7 +85,7 @@ describe('follow the money', () => {
         // The failing attempt is selected by default.
         const tree = screen.getByRole('tree', { name: 'Spans' })
         expect(within(tree).getByRole('treeitem', { selected: true })).toHaveAccessibleName(
-          /^tool\.get_diff attempt 6 of 6, execute_tool, Tool, starts .*, lasts 30\.0 s, 0 tokens, error$/,
+          /^tool\.get_diff attempt 6 of 6, Tool, starts .*, lasts 30\.0 s, 0 tokens, error$/,
         )
 
         // Requests: bounded (status checks cap at 25 sessions × 3 traces).

@@ -1,5 +1,4 @@
 pub mod acl;
-pub mod admission;
 pub mod build_worker;
 pub mod catalog_deploy;
 pub mod deploy_env;
@@ -9,7 +8,6 @@ pub mod hours_meter;
 pub mod llm_config;
 pub mod open_tasks;
 pub mod reconcile;
-pub mod rehost;
 pub mod sandbox_smoke;
 pub mod sharing;
 pub mod update;
@@ -200,21 +198,12 @@ fn parse_owner_namespace(repo: &str) -> Result<Option<(Uuid, &str)>, String> {
 pub(crate) async fn canonicalize_and_validate_image_ref(
     pool: &sqlx::PgPool,
     registry: &str,
-    aliases: &[String],
     image: &str,
     caller_id: Uuid,
     is_superuser: bool,
 ) -> Result<String, (axum::http::StatusCode, String)> {
     let qualified_image = qualify_deploy_image(registry, image);
-    validate_image_ref(
-        pool,
-        registry,
-        aliases,
-        &qualified_image,
-        caller_id,
-        is_superuser,
-    )
-    .await?;
+    validate_image_ref(pool, registry, &qualified_image, caller_id, is_superuser).await?;
     Ok(qualified_image)
 }
 
@@ -230,7 +219,6 @@ pub(crate) async fn canonicalize_and_validate_image_ref(
 pub(crate) async fn validate_image_ref(
     pool: &sqlx::PgPool,
     registry: &str,
-    aliases: &[String],
     image: &str,
     caller_id: Uuid,
     is_superuser: bool,
@@ -261,15 +249,10 @@ pub(crate) async fn validate_image_ref(
         Some(registry)
     };
 
-    // A host this registry also answers on (its name before a rename) is this
-    // registry: an image naming it is held to the same namespace rules, or any
-    // caller could deploy someone else's image by spelling the old host.
-    let ours = image_host == our_registry
-        || image_host.is_some_and(|host| aliases.iter().any(|alias| alias == host));
-
     // If hosts differ, it's external - allow it. With no registry configured, a
     // hostless reference outside the platform namespaces names a Docker Hub image.
-    if !ours || (our_registry.is_none() && !repo.starts_with("u-") && !repo.starts_with("nasiko/"))
+    if image_host != our_registry
+        || (our_registry.is_none() && !repo.starts_with("u-") && !repo.starts_with("nasiko/"))
     {
         return Ok(());
     }
@@ -1011,37 +994,4 @@ fn slug_vs_name_mismatch() {
     let tag = build_image_tag("", owner_id, "Code Reviewer", "1.0");
     assert!(tag.contains("/code-reviewer:"));
     assert!(!tag.contains("/Code Reviewer:"));
-}
-
-#[cfg(test)]
-mod registry_alias_tests {
-    use super::validate_image_ref;
-    use uuid::Uuid;
-
-    /// An image naming the registry's former host is this registry's: someone else's namespace
-    /// under it is refused, as under the current host, instead of passing as an outside image.
-    #[tokio::test]
-    async fn an_image_on_a_former_registry_host_is_held_to_the_namespace_rules() {
-        let db = sqlx::PgPool::connect_lazy("postgres://hermetic.invalid/none").unwrap();
-        let (caller, other) = (Uuid::new_v4(), Uuid::new_v4());
-        let image = format!("free.old.example/u-{}/agent:1", other.as_simple());
-        let aliases = vec!["free.old.example".to_string()];
-
-        let refused =
-            validate_image_ref(&db, "free.app.nasiko.com", &aliases, &image, caller, false).await;
-        assert_eq!(refused.unwrap_err().0, axum::http::StatusCode::FORBIDDEN);
-
-        let own = format!("free.old.example/u-{}/agent:1", caller.as_simple());
-        assert!(
-            validate_image_ref(&db, "free.app.nasiko.com", &aliases, &own, caller, false)
-                .await
-                .is_ok()
-        );
-        // Without the alias it is an outside image, which is what the alias closes.
-        assert!(
-            validate_image_ref(&db, "free.app.nasiko.com", &[], &image, caller, false)
-                .await
-                .is_ok()
-        );
-    }
 }

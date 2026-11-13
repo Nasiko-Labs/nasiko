@@ -109,21 +109,6 @@ describe('TokenOps page', () => {
     expect(within(panel).getByText('Measured')).toHaveTextContent(/^Measured$/)
   })
 
-  it('shows how the router chose each call\u2019s model, and hides the card on a server without it', async () => {
-    renderApp('/tokenops?open=optimize')
-    const panel = await section('How models were chosen')
-    expect(within(panel).getByRole('row', { name: /Small talk/ })).toHaveTextContent('12.9%')
-  })
-
-  /** NAS-1263 ships the record with the endpoint, so a server without the route has nothing to
-   *  show either: the card goes away rather than reporting a window of zeros. */
-  it('hides the routing card on a server without the endpoint', async () => {
-    server.use(http.get(`*${FINOPS}/model-routing`, () => new HttpResponse(null, { status: 404 })))
-    renderApp('/tokenops?open=optimize')
-    await section('Token optimization savings')
-    expect(screen.queryByRole('heading', { name: 'How models were chosen' })).toBeNull()
-  })
-
   it('shows one page loader under the header on a cold load; a window change keeps the panels', async () => {
     server.use(
       http.get(`*${FINOPS}/dashboard`, async () => {
@@ -377,6 +362,23 @@ describe('TokenOps page', () => {
     server.use(http.post('/api/auth/login', () => HttpResponse.json({}, { status: 429 })))
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByText(/Too many attempts/)).toBeInTheDocument()
+    // ea233d20: a locked account (3 failures) is a 429 with code account_locked and the real wait.
+    server.use(
+      http.post('/api/auth/login', () =>
+        HttpResponse.json(
+          {
+            error: 'account temporarily locked due to too many failed login attempts',
+            code: 'account_locked',
+            retry_after_secs: 840,
+          },
+          { status: 429 },
+        ),
+      ),
+    )
+    await user.click(screen.getByRole('button', { name: 'Sign in' }))
+    expect(
+      await screen.findByText('Too many failed sign-ins. Try again in 14 minutes.'),
+    ).toBeInTheDocument()
     server.resetHandlers()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))

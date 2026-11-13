@@ -123,12 +123,7 @@ export function EditFace({
       </h1>
       <div className="flex flex-col gap-2">
         <Label htmlFor="wf-name">{copy.nameLabel}</Label>
-        <Input
-          id="wf-name"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={copy.namePlaceholder}
-        />
+        <Input id="wf-name" value={name} onChange={(e) => setName(e.target.value)} />
       </div>
       <PlanComposer
         value={desc}

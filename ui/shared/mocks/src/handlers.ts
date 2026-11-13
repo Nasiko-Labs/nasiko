@@ -19,7 +19,6 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
-  modelRouting,
   savings,
   spendCalendar,
   spendTimeseries,
@@ -82,10 +81,8 @@ import {
   deleteCustom,
   listConfigs,
   listCustom,
-  hiddenCustomLabels,
   listSecrets,
   deleteSecret,
-  managedCustom,
   myChoice,
   patchRouting,
   touchSecret,
@@ -96,7 +93,6 @@ import {
   updateConfig,
   updateCustom,
   usageByAgent,
-  type ProviderViewer,
   type RouterState,
 } from './router'
 import {
@@ -171,7 +167,6 @@ const setLoggedIn = (value: boolean) => {
  * - `probe-500`: the Sessions → Open chat probe fails with a 500 (§5.10).
  * - `waiting`: the opt-in pending requests (§5.11); `pending-fail` fails every poll, `pending-flaky` answers
  *   once, fails the next 3 polls, then works again (DX3).
- * - `transcribe-unconfigured`: dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does.
  */
 /** `/api/agents/<segment>` routes that aren't an agent id (`agents/mod.rs` router). */
 const AGENTS_STATIC = new Set(['uploads', 'deployments'])
@@ -184,7 +179,6 @@ export const CHAT_PAGE_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
-  'transcribe-unconfigured',
 ] as const
 
 /**
@@ -299,17 +293,16 @@ export const MOCK_VARIANTS = [
   'mcp-toolkits-fail',
   'mcp-upload-fails',
   // Workflows (plans/feat-workflows.md §8): no workflows or runs; answers as OSS `main` (no drafts, promote, metrics);
-  // the planner has no API key (503), the provider rejects it (502 `llm_key_rejected`) or planning fails (422).
+  // the planner has no API key (503) or fails (422).
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
-  'workflows-key-rejected',
   'workflows-planner-fails',
   // Onboarding (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §5): a server without
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
   'onboarding-absent',
   'onboarding-done',
-  // The free assessment: a server with no ASSESSMENT_INTAKE_URL (503), so the form's answers aren't saved.
+  // The free assessment: a server with no ASSESSMENT_S3_BUCKET (503), so the form's answers aren't saved.
   'assessment-unconfigured',
   // Context optimization (plans/feat-context-optimization.md §3): answers as today's server (no off switch, no tier
   // values, no last-chat preview: the proposed CX-5, CX-T1 and CX-6 are bare 404s or absent).
@@ -441,15 +434,6 @@ function sessionUser(): SessionUser {
     is_superuser: v.id === ADMIN_ID ? superuser() : v.is_superuser,
   }
 }
-
-/** The signed-in user as `custom_providers::usable_by` sees them. */
-function providerViewer(): ProviderViewer {
-  const u = sessionUser()
-  return { id: u.id, superuser: u.is_superuser }
-}
-
-/** The seed admin, whose configs the config routes read and write, as `usable_by` sees them. */
-const configViewer = (): ProviderViewer => ({ id: ADMIN_ID, superuser: superuser() })
 
 /** The onboarding card's states (`?mock=agents-*`, but not `agents-absent`) are a viewer with no registered harness
  *  yet: their usage counts none (their activity stays, as for a deleted registration). Memoised per viewer. */
@@ -630,19 +614,16 @@ let settingsRow: Record<string, unknown> | null = null
 // Secret values the mock was sent (the router state keeps names only); a seed secret reads as a fake key.
 let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
-/** settings.rs `get_settings` with no row: nothing stored. */
-const SETTINGS_DEFAULTS = { registry_url: null, catalog_tabs: null }
-/** `SettingsResponse`'s running values, from the server's environment and never stored: `OPENAI_MODEL`, `ROUTER_MODEL`
- * (distinct so tests can tell the two rows apart; a cloud workspace runs `gpt-4o-mini` for both), `DEFAULT_PROVIDER`
- * and the `NASIKO_FLOW_*` defaults. */
-const SETTINGS_RUNNING = {
-  orchestrator_model: 'gpt-4o-mini',
-  router_model: 'gpt-4.1-mini',
+/** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
+const SETTINGS_DEFAULTS = {
+  router_model: 'deepseek-v4-pro',
   default_provider: 'openai',
   max_flow_depth: 5,
   max_flow_fan_out: 20,
   max_flow_tokens: 100_000,
-  flow_timeout_secs: 600,
+  flow_timeout_secs: 120,
+  registry_url: null,
+  catalog_tabs: null,
 }
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
 // scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
@@ -656,7 +637,6 @@ function getRouter(): RouterState {
     routerState = buildRouterState(getAgents().agents, nowFn(), {
       empty: hasVariant('router-empty'),
       legacy: hasVariant('router-legacy'),
-      registrar: getHarnessSeed().users.find((u) => u.is_superuser && u.id !== ADMIN_ID)?.id,
     })
     routerKey = key
   }
@@ -693,10 +673,6 @@ let persistOnboarding: ((row: MockOnboarding) => void) | null = null
 /** Bodies `POST /api/assessments` accepted, oldest first. */
 let assessments: unknown[] = []
 export const assessmentsMockState = (): readonly unknown[] => assessments
-/** Bookings `POST /api/assessments/{id}/booking` accepted, oldest first. */
-let assessmentBookings: { id: string; body: unknown }[] = []
-export const assessmentBookingsMockState = (): readonly { id: string; body: unknown }[] =>
-  assessmentBookings
 
 /** An edition's own mock state, dropped with the core's (EE: the SSO settings and SCIM tokens). */
 const editionResets = new Set<() => void>()
@@ -717,7 +693,6 @@ export function resetAgentsMock() {
   mockPassword = null
   onboardingRow = ONBOARDED
   assessments = []
-  assessmentBookings = []
   codingAgentsState = null
   resetOptimizationMock()
   resetChatMock()
@@ -1053,7 +1028,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return HttpResponse.json({ is_first_time_user: false, persona })
     }),
   ],
-  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without an intake; the booking, 200.
+  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without a bucket.
   assessment: [
     http.post('/api/assessments', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -1064,12 +1039,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         )
       assessments.push(await request.json())
       return HttpResponse.json({ data: { id: crypto.randomUUID() } }, { status: 201 })
-    }),
-    http.post('/api/assessments/:id/booking', async ({ params, request }) => {
-      if (!loggedIn) return unauthorized()
-      const id = String(params.id)
-      assessmentBookings.push({ id, body: await request.json() })
-      return HttpResponse.json({ data: { id } })
     }),
   ],
   auth: [
@@ -1582,12 +1551,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         if (m.model === 'gemini-2.0-flash') rows.push(row('boot seed (static list)', 12))
         byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), ...rows])
       }
-      const me = providerViewer()
-      const custom = new Map(listCustom(getRouter(), me).map((c) => [c.label, c]))
-      const hidden = hiddenCustomLabels(getRouter(), me)
+      const custom = new Map(listCustom(getRouter()).map((c) => [c.label, c]))
       return HttpResponse.json({
-        data: [...byProvider.entries()].flatMap(([provider, models]) => {
-          if (hidden.has(provider)) return []
+        data: [...byProvider.entries()].map(([provider, models]) => {
           const c = custom.get(provider)
           return c
             ? { provider, provider_id: c.id, display_name: c.display_name, models }
@@ -1604,9 +1570,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     ),
   ],
   savings: [
-    // NAS-1263 (`model_routing.rs`): how the router chose each call's model. In the savings group
-    // because the card that reads it sits in TokenOps' Optimization section, beside /finops/savings.
-    http.get(`${FINOPS}/model-routing`, () => respond(() => modelRouting())),
     http.get(`${FINOPS}/savings`, ({ request }) =>
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
@@ -1897,7 +1860,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return routed(() =>
         HttpResponse.json(
           {
-            data: createConfig(getRouter(), configViewer(), body as never, nowFn()),
+            data: createConfig(getRouter(), ADMIN_ID, body as never, nowFn()),
             status_code: 201,
             message: 'LLM config created successfully',
           },
@@ -1908,7 +1871,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     http.patch('/api/llm-configs/:id', async ({ params: prm, request }) => {
       const body = await request.json().catch(() => ({}))
       return routed(() =>
-        envelope(updateConfig(getRouter(), String(prm.id), configViewer(), body as never, nowFn())),
+        envelope(updateConfig(getRouter(), String(prm.id), ADMIN_ID, body as never, nowFn())),
       )
     }),
     http.delete('/api/llm-configs/:id', ({ params: prm }) =>
@@ -2068,31 +2031,22 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return HttpResponse.json({ data: page, total: page.length })
       }),
     ),
-    // custom_providers.rs: register and test for anyone (a non-superuser's URL must be public); the list (never
-    // the key) holds the caller's own, and for a superuser other superusers' (`usable_by`); edit, delete and sync
-    // for its creator or a superuser (`managed`: 403).
-    http.get('/api/custom-providers', () =>
-      routed(() => envelope(listCustom(getRouter(), providerViewer()))),
-    ),
+    // custom_providers.rs: list for anyone (never the key), writes superuser-only (require_superuser: 403).
+    http.get('/api/custom-providers', () => routed(() => envelope(listCustom(getRouter())))),
     http.post('/api/custom-providers', async ({ request }) => {
-      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
-      return routed(() => {
-        publicEndpoint(body.base_url)
-        return HttpResponse.json(
-          {
-            data: createCustom(
-              getRouter(),
-              body as never,
-              nowFn(),
-              sessionUser().id,
-              sessionUser().is_superuser,
-            ),
-            status_code: 201,
-            message: 'Custom provider created',
-          },
-          { status: 201 },
-        )
-      })
+      const body = await request.json().catch(() => ({}))
+      return routed(
+        () =>
+          HttpResponse.json(
+            {
+              data: createCustom(getRouter(), body as never, nowFn()),
+              status_code: 201,
+              message: 'Custom provider created',
+            },
+            { status: 201 },
+          ),
+        true,
+      )
     }),
     http.post('/api/custom-providers/test', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as {
@@ -2106,33 +2060,26 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         validateDialect(body.kind, body.api_version)
         if (!body.base_url?.trim() || !body.api_key?.trim())
           throw new MockHttpError(400, 'base_url and api_key are required')
-        publicEndpoint(body.base_url)
         if (hasVariant('router-custom-down'))
           return envelope({ chat_ok: false, chat_error: 'connection refused', models: [] })
         return envelope({ chat_ok: !!body.model, models: ['custom-local', 'custom-large'] })
-      })
+      }, true)
     }),
     http.patch('/api/custom-providers/:id', async ({ params: prm, request }) => {
-      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
-      return routed(() => {
-        manageCustom(String(prm.id))
-        publicEndpoint(body.base_url)
-        return envelope(updateCustom(getRouter(), String(prm.id), body as never))
-      })
+      const body = await request.json().catch(() => ({}))
+      return routed(() => envelope(updateCustom(getRouter(), String(prm.id), body as never)), true)
     }),
     http.delete('/api/custom-providers/:id', ({ params: prm }) =>
-      routed(() => {
-        manageCustom(String(prm.id))
-        return envelope(deleteCustom(getRouter(), String(prm.id)))
-      }),
+      routed(() => envelope(deleteCustom(getRouter(), String(prm.id))), true),
     ),
     http.post('/api/custom-providers/:id/sync', ({ params: prm }) =>
-      routed(() => {
-        manageCustom(String(prm.id))
-        return envelope(
-          syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
-        )
-      }),
+      routed(
+        () =>
+          envelope(
+            syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
+          ),
+        true,
+      ),
     ),
   ],
   // Filled in below: chatHandlers() needs the seed getters defined in this file.
@@ -2176,12 +2123,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   settings: [
     // settings.rs at 43833316: a bare object; with no row yet, its hard-coded defaults.
     http.get('/api/settings', () =>
-      loggedIn
-        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_RUNNING })
-        : unauthorized(),
+      loggedIn ? HttpResponse.json(settingsRow ?? SETTINGS_DEFAULTS) : unauthorized(),
     ),
-    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). The
-    // running values in a body (models, provider, flow limits) are ignored: they come from the server's environment.
+    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2).
     http.put('/api/settings', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (!sessionUser().is_superuser) return text('requires superuser', 403)
@@ -2189,7 +2133,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       settingsRow = Object.fromEntries(
         Object.keys(SETTINGS_DEFAULTS).map((k) => [k, body[k] ?? null]),
       )
-      return HttpResponse.json({ ...settingsRow, ...SETTINGS_RUNNING })
+      return HttpResponse.json(settingsRow)
     }),
     ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],
@@ -2242,28 +2186,6 @@ function routed(fn: () => Response, superuserOnly = false): Response {
     if (err instanceof Response) return err
     return text('internal error', 500)
   }
-}
-
-function manageCustom(id: string) {
-  const me = sessionUser()
-  managedCustom(getRouter(), id, me.id, me.is_superuser)
-}
-
-/** custom_providers.rs `check_endpoint`: a non-superuser's base URL must be public. The server resolves the host;
- *  the mock only reads literal ones. */
-function publicEndpoint(url: string | undefined) {
-  if (!url || sessionUser().is_superuser) return
-  let host = ''
-  try {
-    host = new URL(url).hostname
-  } catch {
-    return
-  }
-  if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[::1\])/.test(host))
-    throw new MockHttpError(
-      400,
-      'base_url refused: url resolves to a disallowed (private/internal) address. A private endpoint needs a superuser.',
-    )
 }
 
 /** agents/llm_config.rs `agent_owner_or_reject`: 404 unknown, 403 "not the agent owner" unless owner or superuser. */
@@ -2682,12 +2604,7 @@ function deployHandlers(): HttpHandler[] {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
         return HttpResponse.json(
-          {
-            success: false,
-            message:
-              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
-            status: 'disconnected',
-          },
+          { success: false, message: 'GitHub OAuth not configured', status: 'disconnected' },
           { status: 503 },
         )
       return githubConnected()
@@ -2706,13 +2623,7 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/login', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return HttpResponse.json(
-          {
-            error:
-              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
-          },
-          { status: 503 },
-        )
+        return HttpResponse.json({ error: 'GitHub OAuth not configured' }, { status: 503 })
       const d = getDeploy()
       // Tests complete the popup themselves (`deployMockState().setGithubConnected`).
       if (import.meta.env.MODE !== 'test')
@@ -2724,10 +2635,7 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/repositories', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text(
-          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
-          503,
-        )
+        return text('GitHub OAuth not configured', 404)
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const repos =
@@ -2747,10 +2655,7 @@ function deployHandlers(): HttpHandler[] {
     http.post('/api/github/clone', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text(
-          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
-          503,
-        )
+        return text('GitHub OAuth not configured', 503)
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const body = (await request.json().catch(() => ({}))) as {
@@ -2802,7 +2707,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -2908,21 +2813,6 @@ function deployHandlers(): HttpHandler[] {
       const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
       const r = b ? recordAt(b, nowFn()) : null
       return r ? HttpResponse.json(r) : new HttpResponse(null, { status: 404 })
-    }),
-    // The captured build output (build/routes.rs get_build_logs): plain text, or 404 when none was
-    // kept. The source-build install path persists it on the row (catalog/import.rs).
-    http.get('/api/builds/:id/logs', ({ params: p }) => {
-      if (!loggedIn) return unauthorized()
-      if (variant() === 'deploy-no-rights') return noRights()
-      const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
-      const r = b ? recordAt(b, nowFn()) : null
-      if (!r) return text('no logs available', 404)
-      return text(
-        r.status === 'failed'
-          ? `Step 3/4 : RUN pip install -r requirements.txt\nERROR: Could not find a version that satisfies the requirement nasiko-sdk\nThe command '/bin/sh -c pip install -r requirements.txt' returned a non-zero code: 1`
-          : `Step 1/4 : FROM python:3.12-slim\nStep 2/4 : COPY . /app\nStep 3/4 : RUN pip install -r requirements.txt\nStep 4/4 : CMD ["python", "main.py"]\nSuccessfully tagged ${r.image_reference}`,
-        200,
-      )
     }),
     http.get('/api/agents/uploads', ({ request }) => {
       if (!loggedIn) return unauthorized()

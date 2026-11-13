@@ -76,13 +76,13 @@ const seeded = (
   name,
   title,
   line,
-  reference: `registry.nasiko.com/nasiko/${name}:1.0.0`,
+  reference: `registry.nasiko.dev/nasiko/${name}:1.0.0`,
   runs,
   success,
 })
 
 /**
- * The prebuilt agents (user request 2026-11-09), Nasiko's packages on registry.nasiko.com. ponytail: the run and
+ * The prebuilt agents (user request 2026-11-09), Nasiko's packages on registry.nasiko.dev. ponytail: the run and
  * success figures are demo values; a server list of seeded agents with their real metrics replaces them.
  */
 export const SEEDED_AGENTS: readonly SeededAgent[] = [

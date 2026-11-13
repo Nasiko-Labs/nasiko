@@ -41,7 +41,7 @@ interface Stop {
   tools: readonly number[]
 }
 
-/** The past sessions `nasiko connect` imported: where Day 1 starts. */
+/** The past sessions `nasiko auth login` imported: where Day 1 starts. */
 const IMPORTED: Stop = {
   cost: [2.18, 0, 0],
   devs: 1,

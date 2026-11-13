@@ -17,20 +17,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use attachments::{
-    ATTACHMENT_CACHE_TTL, AttachmentCache, AttachmentStore, MarkerSigner, NoAttachmentStore,
-};
 use axum::{
     Json, Router,
-    http::{Method, StatusCode, Uri},
-    routing::{any, get, post},
+    routing::{get, post},
 };
 use nasiko_pricing::{NoUsageLedger, PricingEngine, UsageLedger};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tower_http::decompression::RequestDecompressionLayer;
 
-pub mod attachments;
 pub mod auth;
 mod brevity;
 mod compact_tools;
@@ -41,16 +36,13 @@ pub mod handlers;
 pub mod inbound;
 pub mod inject;
 pub mod ir;
-pub mod openai_model;
 pub mod payer;
-pub mod platform;
 pub mod providers;
 mod range_view;
 pub mod recovery;
 pub mod resolver;
 pub mod routing;
 mod savings;
-pub mod turns;
 pub mod usage;
 
 pub use config::GatewayConfig;
@@ -101,20 +93,12 @@ pub struct LlmRouterCtx {
     /// through this — the DB trigger that used to do it returned NULL for any
     /// model missing from `model_pricing`, which booked 92.8% of calls at $0.
     pub pricing: Arc<PricingEngine>,
-    pub body_permits: Arc<tokio::sync::Semaphore>,
-    pub attachment_store: Arc<dyn AttachmentStore>,
-    pub attachment_cache: Arc<AttachmentCache>,
-    pub marker_signer: Option<Arc<MarkerSigner>>,
-
     /// Receives each priced call on the transaction of its `trace_usage` write.
     /// [`NoUsageLedger`] unless the host supplies its own.
     pub ledger: Arc<dyn UsageLedger>,
     /// Who pays for a call another user makes through an agent. [`payer::CallerPays`] unless the host
     /// supplies its own.
     pub payer: Arc<dyn payer::SharedCallPayer>,
-    /// Where a discovered A2A agent's calls go as conversation turns. [`turns::NoTurnRecorder`]
-    /// by default; the server swaps in one that keeps them as a chat session.
-    pub turn_recorder: Arc<dyn turns::TurnRecorder>,
 }
 
 impl LlmRouterCtx {
@@ -164,12 +148,6 @@ impl LlmRouterCtx {
         let salience_gate = build_salience_gate(&cfg);
         let classifier = build_classifier(&cfg, http.clone());
         let pricing = Arc::new(PricingEngine::new(db.clone()));
-        let body_permits = handlers::auth_layer::body_permit_pool(cfg.max_inflight_body_bytes);
-        let attachment_cache = Arc::new(AttachmentCache::new(
-            cfg.attachment_cache_bytes,
-            ATTACHMENT_CACHE_TTL,
-        ));
-        let marker_signer = MarkerSigner::from_secret(&cfg.agent_jwt_secret).map(Arc::new);
         Self {
             db,
             http,
@@ -181,25 +159,9 @@ impl LlmRouterCtx {
             salience_gate,
             classifier,
             pricing,
-
-            body_permits,
-            attachment_store: Arc::new(NoAttachmentStore),
-            attachment_cache,
-            marker_signer,
             ledger: Arc::new(NoUsageLedger),
             payer: Arc::new(payer::CallerPays),
-            turn_recorder: Arc::new(turns::NoTurnRecorder),
         }
-    }
-
-    pub fn with_config_cache(mut self, cache: Arc<ConfigCache>) -> Self {
-        self.cache = cache;
-        self
-    }
-
-    pub fn with_attachment_store(mut self, store: Arc<dyn AttachmentStore>) -> Self {
-        self.attachment_store = store;
-        self
     }
 }
 
@@ -215,51 +177,6 @@ pub fn provider_client(read_timeout: Duration) -> reqwest::Client {
         .read_timeout(read_timeout)
         .build()
         .expect("failed to build provider http client")
-}
-
-/// The client for custom providers a member registered (`CustomEndpoint::public_only`).
-/// Their base URL is user input, so every call, catalog sync included, must reach public
-/// addresses only. The host installs a client whose DNS resolver refuses private ones,
-/// with redirects off (a redirect to an IP literal skips the resolver); this crate cannot
-/// build one itself, because the guard lives in a crate that depends on this one.
-static PUBLIC_ONLY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-
-/// Install [`provider_client`]'s settings over `guarded`, a builder whose DNS resolver
-/// refuses private addresses, with redirects off, as the client [`public_only_client`]
-/// returns. First call wins.
-pub fn install_public_only_client(guarded: reqwest::ClientBuilder, read_timeout: Duration) {
-    let client = guarded
-        .pool_max_idle_per_host(20)
-        .connect_timeout(Duration::from_secs(10))
-        .read_timeout(read_timeout)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("failed to build public-only provider http client");
-    let _ = PUBLIC_ONLY_CLIENT.set(client);
-}
-
-/// The installed public-only client, or, when the host installed none, one that refuses
-/// every host: a member's endpoint fails closed rather than going out unguarded.
-pub fn public_only_client() -> reqwest::Client {
-    PUBLIC_ONLY_CLIENT.get().cloned().unwrap_or_else(|| {
-        reqwest::Client::builder()
-            .dns_resolver(Arc::new(RefuseAll))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("failed to build refusing http client")
-    })
-}
-
-/// A resolver that resolves nothing, behind [`public_only_client`]'s default.
-struct RefuseAll;
-
-impl reqwest::dns::Resolve for RefuseAll {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_owned();
-        Box::pin(async move {
-            Err(format!("no public-only http client installed; refusing '{host}'").into())
-        })
-    }
 }
 
 /// Build the request classifier from config. The only place backend selection happens, shared by
@@ -435,7 +352,10 @@ fn build_router_cache(cfg: &GatewayConfig) -> Arc<dyn DecisionCache> {
 /// server: the OpenAI-compatible surface lives under `/v1`, and Gemini under `/v1beta`
 /// (each path mirrors what that provider's stock SDK appends to its base URL).
 pub fn router(ctx: LlmRouterCtx) -> Router {
-    let llm_routes = Router::new()
+    Router::new()
+        // Liveness probe owned by this router. The host server keeps its own
+        // top-level `/health`; a future standalone binary will also map `/health`.
+        .route("/v1/health", get(health))
         .route(
             "/v1/chat/completions",
             post(handlers::chat::chat_completions),
@@ -444,10 +364,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
         // Anthropic Messages surface — an Anthropic-SDK agent (`ANTHROPIC_BASE_URL`)
         // POSTs here; the inbound parser normalizes to the same IR (P2.3).
         .route("/v1/messages", post(handlers::chat::messages))
-        .route(
-            "/v1/messages/count_tokens",
-            post(handlers::chat::count_tokens),
-        )
         // Gemini `generateContent` surface — a Gemini-SDK agent (`GOOGLE_GEMINI_BASE_URL`)
         // POSTs to `…/v1beta/models/{model}:generateContent` (or `:streamGenerateContent`);
         // the `{model}:{method}` segment is captured and the method picks (non-)streaming (P2.4).
@@ -455,20 +371,8 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
             "/v1beta/models/{model_method}",
             post(handlers::chat::gemini_generate),
         )
-        .route_layer(axum::middleware::from_fn_with_state(
-            ctx.clone(),
-            handlers::auth_layer::authenticate_first,
-        ))
-        .layer(axum::extract::DefaultBodyLimit::max(ctx.cfg.max_body_bytes));
-    Router::new()
-        // Liveness probe owned by this router. The host server keeps its own
-        // top-level `/health`; a future standalone binary will also map `/health`.
-        .route("/v1/health", get(health))
-        .merge(llm_routes)
         .route("/v1/embeddings", post(handlers::embeddings::embeddings))
         .route("/v1/models", get(handlers::models::models))
-        .route("/v1/{*rest}", any(unknown_endpoint))
-        .route("/v1beta/{*rest}", any(unknown_endpoint))
         .with_state(ctx)
         .layer(RequestDecompressionLayer::new())
 }
@@ -476,16 +380,6 @@ pub fn router(ctx: LlmRouterCtx) -> Router {
 /// `GET /v1/health` → `{"status":"ok"}`.
 async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
-}
-
-async fn unknown_endpoint(method: Method, uri: Uri) -> (StatusCode, Json<Value>) {
-    (
-        StatusCode::NOT_FOUND,
-        crate::error::error_body(
-            StatusCode::NOT_FOUND,
-            &format!("no such router endpoint: {method} {}", uri.path()),
-        ),
-    )
 }
 
 #[cfg(test)]
@@ -585,20 +479,6 @@ mod provider_client_tests {
             .await
             .unwrap();
         assert_eq!(body, "x".repeat(8));
-    }
-
-    #[tokio::test]
-    async fn a_member_endpoint_fails_closed_when_the_host_installed_no_guarded_client() {
-        // Nothing in this crate's tests installs one, so the default answers.
-        let url = serve_once(|s| reply_after(Duration::ZERO, s))
-            .await
-            .replace("127.0.0.1", "localhost");
-        let err = super::public_only_client()
-            .get(url)
-            .send()
-            .await
-            .unwrap_err();
-        assert!(err.is_connect(), "expected a refused lookup, got {err}");
     }
 }
 

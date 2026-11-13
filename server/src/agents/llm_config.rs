@@ -8,7 +8,7 @@ use axum::{
 use chrono::{Duration, Utc};
 use nasiko_llm_router::{
     GatewayConfig,
-    auth::{DEFAULT_TTL_SECONDS, mint_agent_token, parse_algorithm},
+    auth::{mint_agent_token, parse_algorithm},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -49,10 +49,7 @@ pub fn router() -> Router<AppState> {
                 .put(set_my_llm_config)
                 .delete(delete_my_llm_config),
         )
-        .route(
-            "/{id}/llm-token",
-            post(issue_llm_token).delete(revoke_llm_tokens),
-        )
+        .route("/{id}/llm-token", post(issue_llm_token))
         .route(
             "/{id}/mcp-token",
             post(issue_mcp_token).delete(revoke_mcp_token),
@@ -121,20 +118,15 @@ pub(crate) struct LlmTokenEnvelope {
     message: String,
 }
 
-/// Issue an agent identity token for a local SDK process. The caller must own the agent;
-/// the signing secret never leaves the control plane.
-///
-/// Short-lived (10 minutes) for coding agents, whose credential helper re-mints it on
-/// demand. An A2A agent the CLI discovered (`discovered_on` set) reads its key once from its
-/// environment at startup, so it gets the lifetime a deployed agent's key has
-/// ([`DEFAULT_TTL_SECONDS`], one year).
+/// Issue a short-lived agent identity token for a local SDK process. The caller
+/// must own the agent; the signing secret never leaves the control plane.
 #[utoipa::path(
     post,
     path = "/api/agents/{id}/llm-token",
     tag = "agents",
     params(("id" = Uuid, Path, description = "Agent id")),
     responses(
-        (status = 200, description = "LLM routing token", body = LlmTokenEnvelope),
+        (status = 200, description = "Short-lived LLM routing token", body = LlmTokenEnvelope),
         (status = 403, description = "Caller is not the agent owner"),
         (status = 404, description = "No such agent"),
         (status = 503, description = "LLM router authentication is not configured"),
@@ -161,16 +153,11 @@ pub(crate) async fn issue_llm_token(
         )
             .into_response();
     }
-    let ttl_seconds = match is_discovered_agent(&state.db, agent_id).await {
-        Ok(true) => DEFAULT_TTL_SECONDS,
-        Ok(false) => LOCAL_ROUTING_TOKEN_TTL_SECONDS,
-        Err(resp) => return resp,
-    };
     let token = match mint_agent_token(
         &agent_id.to_string(),
         &user_id.to_string(),
         &cfg.agent_jwt_secret,
-        ttl_seconds,
+        LOCAL_ROUTING_TOKEN_TTL_SECONDS,
         parse_algorithm(&cfg.agent_jwt_algorithm),
     ) {
         Ok(token) => token,
@@ -183,7 +170,7 @@ pub(crate) async fn issue_llm_token(
                 .into_response();
         }
     };
-    let expires_at = Utc::now() + Duration::seconds(ttl_seconds as i64);
+    let expires_at = Utc::now() + Duration::seconds(LOCAL_ROUTING_TOKEN_TTL_SECONDS as i64);
     (
         [(header::CACHE_CONTROL, "no-store")],
         ApiResponse::ok(
@@ -220,9 +207,8 @@ pub(crate) struct McpTokenEnvelope {
 /// The same credential a deployed container receives as `MCP_GATEWAY_TOKEN`
 /// at deploy time (`mcp::wiring::inject_agent_gateway_token`), minted here on
 /// demand for a local coding agent (Claude Code / Codex / OpenCode, bound via
-/// `nasiko connect`) or an A2A agent the CLI discovered on the user's machine
-/// (`discovered_on` set), neither of which is ever deployed and so never
-/// receives one automatically. Owner-only, and restricted to those rows
+/// `nasiko connect`), which is never deployed and so never receives one
+/// automatically. Owner-only, and restricted to CLI-bound rows
 /// (`coding_agent_integration_id` set): minting for a deployed agent would
 /// leave its running container(s) holding a token the row stops recognizing
 /// once the rotation grace window lapses, with no way to hand them the new
@@ -239,7 +225,7 @@ pub(crate) struct McpTokenEnvelope {
         (status = 200, description = "MCP gateway credential (plaintext, shown once)", body = McpTokenEnvelope),
         (status = 403, description = "Caller is not the agent owner"),
         (status = 404, description = "No such agent"),
-        (status = 409, description = "Neither a CLI-bound coding-agent row nor a discovered A2A agent — a deployed agent's credential rotates on redeploy instead"),
+        (status = 409, description = "Not a CLI-bound coding-agent row — a deployed agent's credential rotates on redeploy instead"),
     ),
 )]
 pub(crate) async fn issue_mcp_token(
@@ -255,20 +241,16 @@ pub(crate) async fn issue_mcp_token(
         return resp;
     }
 
-    let local = match is_coding_agent(&state.db, agent_id).await {
-        Ok(true) => true,
-        Ok(false) => match is_discovered_agent(&state.db, agent_id).await {
-            Ok(discovered) => discovered,
-            Err(resp) => return resp,
-        },
+    match is_coding_agent(&state.db, agent_id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                StatusCode::CONFLICT,
+                "not a local coding agent: a deployed agent's credential rotates on redeploy",
+            )
+                .into_response();
+        }
         Err(resp) => return resp,
-    };
-    if !local {
-        return (
-            StatusCode::CONFLICT,
-            "not a local coding agent or a discovered A2A agent: a deployed agent's credential rotates on redeploy",
-        )
-            .into_response();
     }
 
     let token = match nasiko_mcp_gateway::agent_tokens::mint(&state.db, agent_id).await {
@@ -331,26 +313,6 @@ async fn is_coding_agent(
     })
 }
 
-/// Whether the (already ownership-checked) agent is one the CLI discovered running on a
-/// user's machine; `Err` is a ready-to-return 500 on a lookup failure.
-async fn is_discovered_agent(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-) -> Result<bool, axum::response::Response> {
-    sqlx::query_scalar::<_, bool>("SELECT discovered_on IS NOT NULL FROM agents WHERE id = $1")
-        .bind(agent_id)
-        .fetch_one(db)
-        .await
-        .map_err(|error| {
-            tracing::error!(%error, %agent_id, "discovered-agent lookup failed");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to check agent type",
-            )
-                .into_response()
-        })
-}
-
 /// Revoke the agent's MCP gateway credential.
 ///
 /// Kills every gateway credential of the agent — the live one and any
@@ -394,59 +356,6 @@ pub(crate) async fn revoke_mcp_token(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to revoke MCP gateway token",
-            )
-                .into_response()
-        }
-    }
-}
-
-/// Revoke every LLM routing token issued for the agent so far. `nasiko disconnect <coding-agent>`
-/// calls this so a session still holding a cached token stops spending through the router at
-/// once instead of when its token expires: the router refuses agent tokens issued before
-/// `agents.llm_tokens_revoked_at`. Tokens issued afterwards work, so reconnecting needs nothing
-/// more. Owner or superuser, like the MCP-token DELETE; idempotent. The time comes from this
-/// process's clock, the clock that stamps a token's `iat`, not the database's. For a deployed
-/// agent this also refuses its deploy-time token until its next redeploy re-mints one.
-#[utoipa::path(
-    delete,
-    path = "/api/agents/{id}/llm-token",
-    tag = "agents",
-    params(("id" = Uuid, Path, description = "Agent id")),
-    responses(
-        (status = 204, description = "LLM routing tokens revoked"),
-        (status = 403, description = "Caller is neither the agent owner nor a superuser"),
-        (status = 404, description = "No such agent"),
-    ),
-)]
-pub(crate) async fn revoke_llm_tokens(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(resp) =
-        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
-    {
-        return resp;
-    }
-
-    let revoked = sqlx::query(
-        "UPDATE agents SET llm_tokens_revoked_at = $2 WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .bind(Utc::now())
-    .execute(&state.db)
-    .await;
-    match revoked {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => {
-            tracing::error!(%error, %agent_id, "failed to revoke LLM routing tokens");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to revoke LLM routing tokens",
             )
                 .into_response()
         }
@@ -650,17 +559,6 @@ pub(crate) async fn update_llm_config(
     Path(agent_id): Path<Uuid>,
     Json(req): Json<AttachLlmConfigRequest>,
 ) -> impl IntoResponse {
-    let response = apply_llm_config_update(&state, claims, agent_id, req).await;
-    state.agent_llm_config_changed(agent_id);
-    response
-}
-
-async fn apply_llm_config_update(
-    state: &AppState,
-    claims: Claims,
-    agent_id: Uuid,
-    req: AttachLlmConfigRequest,
-) -> axum::response::Response {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -839,7 +737,6 @@ pub(crate) async fn delete_llm_config(
     {
         return db_error("delete", e);
     }
-    state.agent_llm_config_changed(agent_id);
     ApiResponse::ok(json!(null), "Agent LLM config removed successfully").into_response()
 }
 

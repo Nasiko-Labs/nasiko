@@ -78,21 +78,16 @@ export function DeployPage({
                 version: search.version,
                 locked: lockedName(search) !== null,
               }}
-              keyNotice
             />
           ) : (
             <Skeleton className="h-80 w-full" />
           )}
         </TabsContent>
         <TabsContent value="github">
-          <GithubTab search={search} setSearch={setSearch} keyNotice />
+          <GithubTab search={search} setSearch={setSearch} />
         </TabsContent>
         <TabsContent value="registry">
-          {me.data ? (
-            <RegistryTab userId={me.data.sub} keyNotice />
-          ) : (
-            <Skeleton className="h-48 w-full" />
-          )}
+          {me.data ? <RegistryTab userId={me.data.sub} /> : <Skeleton className="h-48 w-full" />}
         </TabsContent>
       </Tabs>
     </div>
