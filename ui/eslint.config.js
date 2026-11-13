@@ -227,7 +227,7 @@ const banned = [
   },
   {
     selector:
-      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD)$/]",
+      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD|NASIKO_[A-Z]+_COMPILED_IN)$/]",
     message: 'Read configuration through src/lib/env.ts, not import.meta.env.',
   },
   {
