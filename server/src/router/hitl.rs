@@ -586,24 +586,15 @@ async fn resolve(
     // it, but nothing ever wrote it into the table the web UI's session view (and `nasiko
     // sessions`/`history`) actually renders from, so a session with an answered pause silently
     // jumped from the agent's question straight to whatever it said after resuming, with the
-    // human's own reply invisible. Only on a real resolution (`!already_resolved`), so a
-    // duplicate/idempotent resolve of an already-answered row can't append it twice. Guarded the
-    // same way `agent_proxy.rs`'s own user-message insert is (a short dedup window, not a plain
-    // unconditional insert): defensive here too, since a client could in principle retry this
-    // same POST. Fire-and-forget and silently a no-op for any origin with no
-    // `chat_sessions`-registered session at all (e.g. MAF) — this is specifically for the chat
-    // experience, not a correctness-critical write. Tagged `hitl_request_id`, so the web UI shows
-    // it as the answer on that request's card rather than as a new message opening its own turn
-    // (NAS-1540); history readers filter on `turn_error` only, so the agent still sees it.
+    // human's own reply invisible. Only on a real resolution (`!already_resolved`): the store's
+    // resolve is a conditional `UPDATE ... WHERE status = 'pending'`, so exactly one caller sees
+    // `Applied`, and a retried or concurrent POST for the same request can't append it twice.
+    // Fire-and-forget, for any origin with a chat session (MAF has none) — this is specifically
+    // for the chat experience, not a correctness-critical write.
     if !already_resolved && let Some(session_id) = crate::hitl::stable_session_id(&row) {
         let answer = crate::hitl::answer_text(&row);
         if !answer.is_empty() {
-            crate::chat::spawn_dedup_user_message_insert(
-                state.db.clone(),
-                session_id.to_string(),
-                answer,
-                json!({ "hitl_request_id": row.id }),
-            );
+            spawn_answer_message_insert(state.db.clone(), session_id.to_string(), answer, row.id);
         }
     }
 
@@ -612,6 +603,41 @@ async fn resolve(
         obj.insert("already_resolved".to_string(), json!(already_resolved));
     }
     Json(body).into_response()
+}
+
+/// Fire-and-forget insert of a resolved request's answer as a `chat_messages` user row, tagged
+/// `{"hitl_request_id": <id>}` so the web UI shows it as the answer on that request's card
+/// rather than as a new message opening its own turn (NAS-1540). History readers filter on
+/// `turn_error` only, so the agent still sees it as context on later turns.
+///
+/// No dedup on `(session_id, content)`: the caller runs only on the one `Applied` resolve of a
+/// request, so this is never a retry, and two different requests answered with the same text
+/// must each keep their own row.
+fn spawn_answer_message_insert(
+    db: sqlx::PgPool,
+    session_id: String,
+    answer: String,
+    request_id: Uuid,
+) {
+    tokio::spawn(async move {
+        if let Err(e) = sqlx::query(
+            "INSERT INTO chat_messages (session_id, role, content, metadata) \
+             VALUES ($1, 'user', $2, jsonb_build_object('hitl_request_id', $3::uuid))",
+        )
+        .bind(&session_id)
+        .bind(&answer)
+        .bind(request_id)
+        .execute(&db)
+        .await
+        {
+            // Not critical (the request still resolved), but logged so a missing answer in
+            // history stays diagnosable.
+            tracing::warn!(
+                error = %e, %session_id, %request_id,
+                "resolve: failed to persist the answer as a chat message"
+            );
+        }
+    });
 }
 
 /// Best-effort: record the `mcp_session_tool_grants` row an approved `scope=session` decision

@@ -1021,8 +1021,7 @@ async fn custom_input_is_rejected_when_the_question_disallows_it() {
 /// `hitl_requests.human_response` — nothing ever appended it to `chat_messages`, so a session
 /// with an answered pause showed the agent's question, then jumped straight to whatever it said
 /// after resuming, with the human's own reply invisible in both the CLI and the web UI's session
-/// view. `router::hitl::resolve` now does this itself (fire-and-forget, dedup-guarded like
-/// `agent_proxy.rs`'s own user-message insert).
+/// view. `router::hitl::resolve` now does this itself (fire-and-forget, once per resolution).
 #[tokio::test]
 #[serial]
 async fn resolving_input_required_persists_the_answer_as_a_chat_message() {
@@ -1070,6 +1069,75 @@ async fn resolving_input_required_persists_the_answer_as_a_chat_message() {
     .await
     .unwrap();
     assert_eq!(tagged, Some(request_id.to_string()));
+
+    server.cleanup().await;
+}
+
+/// Two different requests in one chat, answered with the same text in quick succession, each keep
+/// their own answer row: an earlier text-based dedup window dropped the second one.
+#[tokio::test]
+#[serial]
+async fn same_answer_to_two_requests_persists_both_answers() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "hitl-history-2").await;
+    // Two agents: pending requests are unique per (owner, agent, task), and the seed uses the
+    // context id as the task id.
+    let first_agent = seed_agent(&server, owner, "hitl-history-agent-2a").await;
+    let second_agent = seed_agent(&server, owner, "hitl-history-agent-2b").await;
+    let context_id = "ses_history_2";
+    seed_chat_session(&server, context_id, owner, first_agent).await;
+    let first = seed_pending_input_required(
+        &server,
+        first_agent,
+        owner,
+        context_id,
+        json!({"message": "Deploy now?"}),
+    )
+    .await;
+    let second = seed_pending_input_required(
+        &server,
+        second_agent,
+        owner,
+        context_id,
+        json!({"message": "Notify the team?"}),
+    )
+    .await;
+
+    for id in [first, second] {
+        let res = common::as_member(
+            server
+                .client
+                .post(server.url(&format!("/api/hitl/{id}/resolve"))),
+            &owner.to_string(),
+            "hitl-history-2",
+        )
+        .json(&json!({"answer": "yes"}))
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    // Fire-and-forget inserts: poll until both have landed.
+    let mut tags: Vec<String> = Vec::new();
+    for _ in 0..20 {
+        tags = sqlx::query_scalar(
+            "SELECT metadata->>'hitl_request_id' FROM chat_messages \
+             WHERE session_id = $1 AND role = 'user' AND content = 'yes'",
+        )
+        .bind(context_id)
+        .fetch_all(&server.db)
+        .await
+        .unwrap();
+        if tags.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    tags.sort();
+    let mut expected = vec![first.to_string(), second.to_string()];
+    expected.sort();
+    assert_eq!(tags, expected, "each request keeps its own answer row");
 
     server.cleanup().await;
 }
