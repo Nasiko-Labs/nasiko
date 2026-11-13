@@ -65,12 +65,17 @@ export const copy = {
   },
   start: {
     title: 'Bring an agent, then add your key',
-    intro:
-      'Every agent calls the model with your own provider key, through the gateway that meters every token, so the key is the one thing you need.',
+    intro: 'Every model call goes through the gateway that meters every token.',
   },
   model: {
     title: '2. Your model key',
-    intro: 'It becomes your default model. Add more providers later in the LLM router.',
+    // Starter pack agents run on the platform's model (Free plane: the seed agents' daily allowance); only a
+    // user's own agents need their key (user request 2026-11-13).
+    intro:
+      'Starter pack agents are free to use. For your own agents, bring your own model key: it becomes your default model, and you can add more providers later in the LLM router.',
+    /** Without the Starter pack (an upgraded workspace): every agent is the user's own. */
+    introOwn:
+      'Your agents call the model with your own key. It becomes your default model; add more providers later in the LLM router.',
     label: 'Model provider',
     models: (n: number) => `${n} model${n === 1 ? '' : 's'}`,
     key: (provider: string) => `${provider} API key`,
@@ -194,12 +199,12 @@ export const copy = {
     // for and why, and the first one not done says it is next, never "not yet" (NAS-1448).
     model: {
       title: 'Add your model key',
-      sub: 'An API key from OpenAI, Anthropic or another provider',
+      sub: 'For your own agents: an API key from OpenAI, Anthropic or another provider',
     },
     agent: { title: 'Deploy an agent', sub: 'Pick a prebuilt one, or bring your own' },
     title: 'Setup guide',
     intro:
-      "Two steps to your first agent run. Agents call their LLM with your own API key, so that one can't be skipped.",
+      'Two steps to your first agent run. Starter pack agents are free; your own agents call their model with your own API key.',
     start: 'Start guide',
     resume: 'Resume guide',
     done: 'Done',
