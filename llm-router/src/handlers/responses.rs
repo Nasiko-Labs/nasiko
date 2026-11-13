@@ -6,19 +6,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
-use axum::extract::rejection::JsonRejection;
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{Extension, Json};
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::auth_layer::rejected_body;
 use super::chat::{
-    AuthedCaller, RequestSignals, RoutedRequest, lookup_agent_owner, resolve_routed_request,
+    AuthedCaller, RequestSignals, RoutedRequest, authenticate_caller, lookup_agent_owner,
+    resolve_routed_request,
 };
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
@@ -66,24 +65,17 @@ const RESPONSE_HEADERS: &[&str] = &[
 
 pub async fn responses(
     State(ctx): State<LlmRouterCtx>,
-    Extension(caller): Extension<AuthedCaller>,
     headers: HeaderMap,
-    body: Result<Json<Value>, JsonRejection>,
+    Json(body): Json<Value>,
 ) -> Response {
-    let body = match body {
-        Ok(Json(body)) => body,
-        Err(rejection) => {
-            return rejected_body(rejection, ctx.cfg.max_body_bytes, gateway_error_response);
-        }
-    };
     let store = PgRegistry::new(ctx.db.clone());
-    match responses_core_as(&ctx, &store, caller, &headers, body).await {
+    match responses_core(&ctx, &store, &headers, body).await {
         Ok(response) => response,
         Err(error) => gateway_error_response(error),
     }
 }
 
-pub(crate) fn gateway_error_response(error: GatewayError) -> Response {
+fn gateway_error_response(error: GatewayError) -> Response {
     let status = error.status();
     let code = error_code(&error);
     let retry_after = match &error {
@@ -105,25 +97,13 @@ pub(crate) fn gateway_error_response(error: GatewayError) -> Response {
     response
 }
 
-#[cfg(test)]
 async fn responses_core(
     ctx: &LlmRouterCtx,
     store: &dyn RegistryStore,
     headers: &HeaderMap,
-    body: Value,
-) -> Result<Response, GatewayError> {
-    let caller = super::chat::authenticate_caller(ctx, store, headers).await?;
-    responses_core_as(ctx, store, caller, headers, body).await
-}
-
-async fn responses_core_as(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    caller: AuthedCaller,
-    headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match caller {
+    let (agent_id, owner_id, session) = match authenticate_caller(ctx, store, headers).await? {
         AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
@@ -187,10 +167,7 @@ async fn responses_core_as(
             };
             let started = Instant::now();
             match translated_attempt(ctx, &routed, &attempt, parsed, started).await {
-                Ok(response) => {
-                    forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
-                    return Ok(response);
-                }
+                Ok(response) => return Ok(response),
                 Err(TranslatedAttemptError::Terminal(response)) => return Ok(*response),
                 Err(TranslatedAttemptError::Configuration(error)) => return Err(error),
                 Err(TranslatedAttemptError::Retry(error)) => {
@@ -237,13 +214,12 @@ async fn responses_core_as(
         if !status.is_success() {
             guard.fail_status(status.as_u16());
             let response = passthrough_error(upstream).await?;
-            if matches!(status.as_u16(), 404 | 429) || status.is_server_error() {
+            if status.as_u16() == 429 || status.is_server_error() {
                 last_response = Some(response);
                 continue;
             }
             return Ok(response);
         }
-        forget_unless_routed_model_answered(ctx, &routed, &attempt).await;
         let status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::OK);
         return if stream {
             guard.disarm();
@@ -465,23 +441,8 @@ async fn translated_attempt(
     }
 }
 
-async fn forget_unless_routed_model_answered(
-    ctx: &LlmRouterCtx,
-    routed: &RoutedRequest,
-    attempt: &crate::resolver::ResolvedConfig,
-) {
-    super::chat::forget_route_that_did_not_answer(
-        ctx,
-        &routed.agent_id,
-        routed.sticky_conv_id.as_deref(),
-        &routed.resolved,
-        (&attempt.provider, &attempt.model),
-    )
-    .await;
-}
-
 fn classify_translated_error(error: ProviderError) -> TranslatedAttemptError {
-    if error.retryable() || matches!(error, ProviderError::Status { status: 404, .. }) {
+    if error.retryable() {
         return TranslatedAttemptError::Retry(error);
     }
     let (status, message) = match &error {
@@ -964,6 +925,7 @@ impl AttemptGuard {
                 // /v1/responses does not share chat_core, so IP-2 never runs here (PRD §9).
                 brevity_metadata: None,
                 compact_tools_metadata: None,
+                routing_metadata: routed.routing_metadata.clone(),
                 compress_bytes: routed.compression.bytes,
                 compact_tools_bytes: None,
                 // Only ever written for a failed attempt (a success disarms the guard), where it
@@ -1065,6 +1027,7 @@ fn log_response_usage(
             compress_metadata: routed.compression.metadata,
             brevity_metadata: None,
             compact_tools_metadata: None,
+            routing_metadata: routed.routing_metadata,
             compress_bytes: routed.compression.bytes,
             // Compact tools runs in chat_core only.
             compact_tools_bytes: None,
@@ -1144,12 +1107,6 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::NoSharedUserConfig => "routing_configuration_error",
         GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
         GatewayError::Upstream(_) => "upstream_error",
-        GatewayError::Provider { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
-            "rate_limit_exceeded"
-        }
-        GatewayError::Provider { .. } => "invalid_request_error",
-        GatewayError::PayloadTooLarge { .. } => "request_too_large",
-        GatewayError::StorageUnavailable | GatewayError::Busy => "service_unavailable",
         GatewayError::Internal(_) => "internal_error",
     }
 }
@@ -1194,7 +1151,6 @@ mod tests {
     struct Store {
         provider: &'static str,
         fallback_models: Vec<String>,
-        tier1_model: Option<&'static str>,
     }
 
     struct NoTiers;
@@ -1211,14 +1167,6 @@ mod tests {
             Self {
                 provider,
                 fallback_models: Vec::new(),
-                tier1_model: None,
-            }
-        }
-
-        fn tiered(provider: &'static str, tier1_model: &'static str) -> Self {
-            Self {
-                tier1_model: Some(tier1_model),
-                ..Self::new(provider)
             }
         }
     }
@@ -1240,7 +1188,7 @@ mod tests {
                     api_key_secret_name: None,
                     pinned: false,
                     pinned_model: None,
-                    tier1_model: self.tier1_model.map(str::to_string),
+                    tier1_model: None,
                     tier2_model: None,
                     tier3_model: None,
                     embedding_provider: None,
@@ -1307,13 +1255,6 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
-            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
-            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
-            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
-                1024 * 1024,
-                crate::attachments::ATTACHMENT_CACHE_TTL,
-            )),
-            marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
         }
@@ -1336,14 +1277,12 @@ mod tests {
 
     #[tokio::test]
     async fn auth_is_required_before_upstream() {
-        let ctx = ctx("http://unused".into());
-        let request = axum::http::Request::post("/v1/responses")
-            .header("content-type", "application/json")
-            .body(Body::from("{}"))
-            .unwrap();
-        let response = tower::ServiceExt::oneshot(crate::router(ctx), request)
-            .await
-            .unwrap();
+        let response = responses(
+            State(ctx("http://unused".into())),
+            HeaderMap::new(),
+            Json(json!({})),
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["error"]["code"], "invalid_api_key");
@@ -1771,7 +1710,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
-            sticky_conv_id: None,
+            routing_metadata: None,
         };
         let parsed = parse_request(&json!({"input":"hi"})).unwrap();
         let result = translated_attempt(&context, &routed, &attempt, &parsed, Instant::now()).await;
@@ -1895,7 +1834,6 @@ mod tests {
             &Store {
                 provider: "openai",
                 fallback_models: vec!["openai/gpt-fallback".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"model":"requested","input":[]}),
@@ -1929,7 +1867,6 @@ mod tests {
             &Store {
                 provider: "openai",
                 fallback_models: vec!["anthropic/claude-opus-4".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"model":"requested","input":[{"role":"user","content":"hello"}]}),
@@ -1940,97 +1877,6 @@ mod tests {
         assert_eq!(value["model"], "claude-opus-4");
         assert_eq!(value["output"][0]["content"][0]["text"], "from claude");
         anthropic.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn a_missing_tier_model_falls_back_to_the_configured_model_and_drops_the_sticky_choice() {
-        let mut server = mockito::Server::new_async().await;
-        for model in ["gpt-5.5", "gpt-5.4", "gpt-4o-mini"] {
-            server
-                .mock("POST", "/responses")
-                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
-                .with_status(404)
-                .with_header("content-type", "application/json")
-                .with_body(
-                    r#"{"error":{"message":"The model does not exist","code":"model_not_found"}}"#,
-                )
-                .create_async()
-                .await;
-        }
-        let configured = server
-            .mock("POST", "/responses")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({"model":"resolved-model"}),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(r#"{"id":"resp_configured","usage":{}}"#)
-            .expect(1)
-            .create_async()
-            .await;
-        let mut context = ctx(server.url());
-        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
-        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
-        context.router_cache = log.clone();
-        let response = responses_core(
-            &context,
-            &Store::tiered("openai", "gpt-5.5"),
-            &headers(),
-            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        configured.assert_async().await;
-        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_missing_translated_tier_model_falls_back_to_the_configured_model() {
-        let mut server = mockito::Server::new_async().await;
-        for model in ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"] {
-            server
-                .mock("POST", "/messages")
-                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
-                .with_status(404)
-                .with_header("content-type", "application/json")
-                .with_body(r#"{"type":"error","error":{"type":"not_found_error","message":"model: not found"}}"#)
-                .create_async()
-                .await;
-        }
-        let configured = server
-            .mock("POST", "/messages")
-            .match_body(mockito::Matcher::PartialJson(
-                json!({"model":"resolved-model"}),
-            ))
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                json!({
-                    "id":"msg_configured","type":"message","role":"assistant",
-                    "content":[{"type":"text","text":"ok"}],
-                    "stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":2}
-                })
-                .to_string(),
-            )
-            .expect(1)
-            .create_async()
-            .await;
-        let mut context = ctx(server.url());
-        context.tier_registry = Arc::new(crate::routing::registry::test_support::StubRegistry);
-        let log = Arc::new(crate::routing::cache::test_support::ForgetLog::default());
-        context.router_cache = log.clone();
-        let response = responses_core(
-            &context,
-            &Store::tiered("anthropic", "claude-opus-4-8"),
-            &headers(),
-            json!({"model":"requested","input":[{"role":"user","content":"write a function that reverses a string"}]}),
-        )
-        .await
-        .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        configured.assert_async().await;
-        assert_eq!(log.forgotten.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -2057,7 +1903,6 @@ mod tests {
         let store = Store {
             provider: "openai",
             fallback_models: vec!["openai/gpt-fallback".into()],
-            tier1_model: None,
         };
         let response = responses_core(
             &ctx(server.url()),
@@ -2127,7 +1972,6 @@ mod tests {
             &Store {
                 provider: "anthropic",
                 fallback_models: vec!["gemini/gemini-fallback".into()],
-                tier1_model: None,
             },
             &headers(),
             json!({"input":"hello"}),
@@ -2272,7 +2116,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
-            sticky_conv_id: None,
+            routing_metadata: None,
         };
         let mut guard = AttemptGuard::new(
             &context,
@@ -2321,7 +2165,7 @@ mod tests {
             flow_id: None,
             attribution_source: None,
             compression: crate::compress::Ledger::default(),
-            sticky_conv_id: None,
+            routing_metadata: None,
         };
         let mut guard = AttemptGuard::new(
             &context,
