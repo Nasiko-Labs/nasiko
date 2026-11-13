@@ -155,7 +155,7 @@ export function GithubTab({
   return (
     <div className="@container/github flex flex-col gap-4">
       <div className="grid grid-cols-1 gap-4 @[768px]/github:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @[768px]/github:items-start">
-        <Card className="gap-4 p-4">
+        <Card data-tour="deploy-github" className="gap-4 p-4">
           {connection}
           {connected ? (
             <RepoPicker

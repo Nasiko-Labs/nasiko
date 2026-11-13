@@ -187,9 +187,11 @@ export function MyAgentsPage({
       {deletedNote}
       {rows.length === 0 ? (
         <>
-          <EmptyState icon={Bot} title={copy.noAgentsMine} action={<DeployAgentButton />}>
-            {copy.noAgentsMineHint}
-          </EmptyState>
+          <div data-tour="agents-empty">
+            <EmptyState icon={Bot} title={copy.noAgentsMine} action={<DeployAgentButton />}>
+              {copy.noAgentsMineHint}
+            </EmptyState>
+          </div>
           <div>
             <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
             <FirstRunSteps />
@@ -199,6 +201,7 @@ export function MyAgentsPage({
         <>
           {attention.length ? (
             <section
+              data-tour="mine-needs"
               aria-label={copy.needsAttention}
               className="rounded-lg border border-warning/40 bg-warning/5"
             >

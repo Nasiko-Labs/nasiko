@@ -166,7 +166,7 @@ function Header({
   const version = c.version ?? c.upload_info?.version
   const owner = c.is_owner ? copy.you : (c.owner_username ?? meName ?? '—')
   return (
-    <div data-tour="mcp-detail-header" className="flex items-start gap-3">
+    <div className="flex items-start gap-3">
       <TopBar trail={[label]} />
       <AgentMark name={label} iconUrl={c.logo_url} size={40} />
       <PageHeader

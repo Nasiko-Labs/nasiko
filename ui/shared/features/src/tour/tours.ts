@@ -3,6 +3,9 @@
  * is on screen when the tour opens, so one tour serves a page's states (empty, member, phone) by dropping the steps
  * that don't apply. A step without one is a centred card: each tour opens with one, so it never comes out empty.
  *
+ * Written for someone on the page for the first time: each step says what they can do there, not only what the area
+ * is. Name only what the page really has (labels, tabs, keys), in every edition: a layer's own items are its tours'.
+ *
  * Shared targets: `page-actions` and `page-stepper` are the shell top bar's slots (TopBar.tsx), `tour-button` its
  * help button (`TourButton`), `section-nav` the shared sub-nav (SectionNav). `tours.test.tsx` renders each page and
  * checks its targets still exist.
@@ -11,47 +14,59 @@ import type { TourStep } from '@nasiko/app-core/tour'
 import type { TourId } from './logic'
 
 export const TOURS: Record<TourId, readonly TourStep[]> = {
-  // Compact (user 2026-10-22): one line per group, opened from the account menu's Tour the sidebar.
+  // Compact (user 2026-10-22): one line per group, opened from the account menu's Tour the sidebar. Titles are the
+  // groups' own headings (`shell/copy.ts` `nav`); the first group has none.
   app: [
     {
       title: 'The sidebar',
-      body: 'Every page, grouped by what you do there.',
+      body: 'Every page, grouped by what you do there. ⌘B (Ctrl+B) folds it to icons.',
     },
     {
       target: 'app-menu',
       title: 'Every page is in the menu',
       body: 'Open it to move between pages.',
     },
-    { target: 'nav-work', side: 'right', title: 'Start', body: 'Overview and Chat.' },
+    {
+      target: 'nav-work',
+      side: 'right',
+      title: 'Home and Chat',
+      body: 'Home is your fleet at a glance. Chat talks to one agent, or to the Orchestrator, which picks one for you.',
+    },
     {
       target: 'nav-fleet',
       side: 'right',
       title: 'Fleet',
-      body: 'Your agents, coding harnesses and workflows.',
+      body: 'Your agents, coding harnesses and workflows: deploy, start and stop agents, and chain them into workflows.',
     },
     {
       target: 'nav-observe',
       side: 'right',
       title: 'Observe',
-      body: 'What happened, step by step.',
+      body: 'Sessions and flows: what each request did, step by step, and what it cost.',
     },
     {
       target: 'nav-tokenops',
       side: 'right',
-      title: 'Spend',
-      body: 'What it cost, and how to cut it.',
+      title: 'TokenOps',
+      body: 'What your agents cost, what drives it, and what optimization saves.',
     },
     {
       target: 'nav-connect',
       side: 'right',
       title: 'Connect',
-      body: 'Models and tools agents can call.',
+      body: 'The models (LLM router) and tools (MCP servers) your agents can call.',
+    },
+    {
+      target: 'nav-views',
+      side: 'right',
+      title: 'Views',
+      body: 'Views you saved, ready to open again.',
     },
     {
       target: 'nav-org',
       side: 'right',
-      title: 'Settings',
-      body: 'Workspace defaults and secrets.',
+      title: 'Organization',
+      body: 'Settings for the whole workspace, and the secrets your agents use.',
     },
   ],
 
@@ -60,7 +75,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   overview: [
     {
       title: 'Home',
-      body: 'Your fleet at a glance: what it costs, what needs your attention and how healthy each agent is.',
+      body: 'Your fleet at a glance: what it costs, what needs you and how healthy each agent is. Each card links to the page that owns it.',
     },
     {
       target: 'overview-views',
@@ -68,19 +83,25 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Overview is the cards. The other views draw the same fleet as a place you can explore. Your choice is remembered.',
     },
     {
+      // Only the summary, Spend, harness and savings cards take `range` (OverviewPage.tsx).
       target: 'overview-range',
       title: 'Pick the window',
-      body: 'Switch between 7, 30 and 90 days. Every figure on the page follows it.',
+      body: 'Switch between 7, 30 and 90 days. The summary, Spend, harness and savings cards follow it; the others keep their own windows.',
     },
     {
       target: 'overview-summary',
-      title: 'The headline',
-      body: 'Fleet spend in one sentence, with tokens, agent runs, coding harnesses and what token optimization saved.',
+      title: 'The summary',
+      body: 'Fleet spend in one sentence, then tokens, agent runs, coding harnesses and what token optimization saved.',
     },
     {
       target: 'overview-canvas',
       title: 'Your estate',
       body: 'Agents, harnesses and spend, laid out as one place. Select anything to see its details and what to do about it.',
+    },
+    {
+      target: 'overview-try-run',
+      title: 'Try your agent',
+      body: 'Give the agent you picked during setup a real task here, then run it again with Token optimization on and compare what it costs.',
     },
     {
       target: 'overview-setup-guide',
@@ -103,9 +124,15 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Each agent rated Healthy, Watch or Needs action. Click a count to see those agents.',
     },
     {
+      // The chart itself isn't clickable: only the spike line links to sessions (Spend.tsx).
       target: 'overview-spend',
       title: 'Spend',
-      body: 'Spend per day and the agents behind it, against the period before. Pick a day to see its sessions.',
+      body: 'Spend per day, stacked by the agents behind it, against the period before. A spike links to the sessions that caused it.',
+    },
+    {
+      target: 'overview-harness-activity',
+      title: 'Coding harness activity',
+      body: 'What your coding harnesses did and cost in the window, by model. Its link opens Coding harnesses.',
     },
     {
       target: 'overview-sessions',
@@ -126,7 +153,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       // The empty fleet's panel (SetUpNow.tsx); the summary has no Quick actions since 2026-11-06.
       target: 'overview-actions',
       title: 'Works before your first agent',
-      body: 'Start a chat, ask the Orchestrator or set up what agents need, from here.',
+      body: 'Ask the Orchestrator, add your model key, connect an MCP server or a coding harness. None of it needs an agent yet.',
     },
   ],
 
@@ -139,7 +166,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'chat-rail',
       side: 'right',
       title: 'Your chats',
-      body: 'History grouped by day. Waiting lists the requests agents are holding for your answer.',
+      body: 'Search them or start a New chat. Chats is your history by day, Waiting holds requests agents need you to answer, and Recorded your coding harness sessions.',
     },
     {
       target: 'chat-target',
@@ -150,7 +177,13 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'chat-composer',
       side: 'top',
       title: 'Write here',
-      body: 'Enter sends, Shift+Enter adds a line.',
+      body: 'Enter sends, Shift+Enter adds a line. Attach files to send them with the message.',
+    },
+    {
+      // An open chat's header (SessionHeader.tsx); New chat has none, so the step drops there.
+      target: 'page-actions',
+      title: 'This chat',
+      body: 'View session opens its full trace. The ⋯ menu shows what it used, and renames, exports or deletes the chat.',
     },
     {
       target: 'page-stepper',
@@ -162,7 +195,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   agents: [
     {
       title: 'Agents',
-      body: 'Every agent you can use, and the ones you own and run.',
+      body: 'Every agent you can use, and the ones you run. Open one to chat with it, see what it costs or change it.',
     },
     {
       target: 'section-nav',
@@ -172,29 +205,39 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'page-actions',
       title: 'Deploy an agent',
-      body: 'Upload a zip, build from GitHub or import from a registry.',
+      body: 'Upload a zip, build from a GitHub repository or import from a registry.',
+    },
+    {
+      target: 'agents-empty',
+      title: 'No agents yet',
+      body: 'Deploy your first agent from a zip, a GitHub repository or a registry. It shows up here once it runs.',
     },
     {
       target: 'agents-toolbar',
       title: 'Find an agent',
-      body: 'Search by name, description, tag or skill, and filter by owner or tag.',
+      body: 'Search by name, description, tag or skill (press /), filter by owner or tag, and switch between a grid and a list.',
     },
     {
       target: 'agents-grid',
       side: 'top',
       title: 'The catalog',
-      body: 'Each card shows the status, what it does and who owns it. Open one for its details and activity.',
+      body: 'Each agent with its status, what it does and whether it is yours. Open one for its details and activity.',
+    },
+    {
+      target: 'mine-needs',
+      title: 'Needs attention',
+      body: 'Your agents that crashed or failed, with their logs one click away.',
     },
     {
       target: 'mine-status-tabs',
       title: 'Filter by status',
-      body: 'Running, stopped or needing attention, with counts.',
+      body: 'All, Running, Parked, Deploying, Needs attention, Stopped and Coding harnesses, each with its count. A parked agent sat idle, so its container was released; the next message starts it again.',
     },
     {
       target: 'mine-table',
       side: 'top',
       title: 'Run your agents',
-      body: 'Each row has its version, 24-hour turns and cost. The ⋯ menu starts, stops, restarts or rolls back the agent.',
+      body: "Each row has its version, 24-hour turns and cost. The ⋯ menu starts, stops or restarts it and shows its logs; roll back from the agent's Versions tab.",
     },
   ],
 
@@ -215,10 +258,18 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     },
     {
       target: 'agent-tabs',
-      title: 'Everything else',
-      body: 'Activity, versions, builds, MCP tools, access and settings each have a tab.',
+      title: 'Tabs',
+      body: 'Overview is how it is doing; Activity, Versions (where you roll back), MCP and Details follow. Whoever manages it also gets Builds, Access and Settings.',
     },
     {
+      // The Overview tab (HubTimeline.tsx), where the page opens.
+      target: 'agent-overview',
+      side: 'top',
+      title: 'How it is doing',
+      body: 'What needs you first, then its spend, requests and latency over the window you pick. Click a bar for that slice, or Compare with the window before.',
+    },
+    {
+      // Only on the Details tab (DetailsTab.tsx).
       target: 'agent-facts',
       side: 'left',
       title: 'How it is wired',
@@ -258,6 +309,16 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       title: 'Prefer the terminal?',
       body: 'Copy the nasiko upload command and deploy from your shell instead.',
     },
+    {
+      target: 'deploy-github',
+      title: 'From GitHub',
+      body: 'Connect GitHub, pick a repository, check the branch and name, then Deploy. Nasiko clones it and builds it.',
+    },
+    {
+      target: 'deploy-registry',
+      title: 'From a registry',
+      body: 'Paste an image reference (host/owner/name:tag), then Import and deploy. It can take a few minutes.',
+    },
   ],
 
   builds: [
@@ -266,15 +327,21 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Every deploy and how it went, newest first.',
     },
     {
+      target: 'page-actions',
+      title: 'Deploy an agent',
+      body: 'Start a new deploy from a zip, GitHub or a registry.',
+    },
+    {
       target: 'builds-filters',
       title: 'Filter builds',
       body: 'Show one status at a time, or search by agent.',
     },
     {
+      // The Build page has no logs yet ("Build logs need a newer OpenRuntime server").
       target: 'builds-panel',
       side: 'top',
       title: 'Build history',
-      body: 'Agent, version, status, source and duration. A failed build says why; open one for its stages and logs.',
+      body: 'Agent, version, status, source and duration. A failed build says why; open one for its stages and how to fix it.',
     },
   ],
 
@@ -289,14 +356,16 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Describe what you want and Nasiko drafts the steps, or add them yourself.',
     },
     {
+      // Runs reads one page of 50 (workflows/tuning.ts RUNS_LIMIT).
       target: 'section-nav',
       title: 'Deployed, drafts and runs',
-      body: 'Deployed workflows are ready to run, drafts are still being shaped, and Runs is every run so far.',
+      body: 'Deployed workflows are ready to run, drafts are still being shaped, and Runs lists the 50 most recent runs.',
     },
     {
+      // Sort shows only where the server reports run metrics, so it isn't promised.
       target: 'workflows-toolbar',
       title: 'Find a workflow',
-      body: 'Search by name or description, and sort.',
+      body: 'Search by name or description.',
     },
     {
       target: 'workflows-list',
@@ -307,13 +376,13 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'runs-filters',
       title: 'Filter runs',
-      body: 'Search runs, or show the ones that need attention, are running, completed or failed.',
+      body: 'Search runs, and filter by status or by when they started.',
     },
     {
       target: 'runs-list',
       side: 'top',
       title: 'Every run',
-      body: 'Open a run for its steps and tokens. Failed runs can be run again.',
+      body: 'Expand a run for its steps and tokens, answer a paused step right here, or View trace. Failed or stopped runs can be run again.',
     },
   ],
 
@@ -325,17 +394,17 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'router-how',
       title: 'How routing works',
-      body: 'A five-step explainer of how a call finds its model.',
+      body: 'Opens a five-step explainer of how a call finds its model.',
     },
     {
       target: 'router-tabs',
-      title: 'Agents, configs and providers',
-      body: 'A config is a saved model, provider and key. One of them is the default.',
+      title: 'Tabs',
+      body: 'Agents shows what each agent uses. A config is a saved model, provider and key: add one with New config and set one as the default. Providers lists where calls can go.',
     },
     {
       target: 'router-agent-filters',
       title: 'Filter agents',
-      body: 'By routing source (default, attached or none), with counts, or by name.',
+      body: 'By routing source (default, attached or none), with counts. A large fleet also gets a search by name.',
     },
     {
       target: 'router-agents',
@@ -364,7 +433,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'mcp-grid',
       side: 'top',
       title: 'Connect',
-      body: 'Each card shows its tools and owner. Connect signs you in; open a server to choose which agents may use it.',
+      body: 'Each card shows its tools and owner. Connect signs you in or asks for your key. Open a server you added, or one shared with you, to choose which agents may use it.',
     },
   ],
 
@@ -376,7 +445,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'page-actions',
       title: 'Pick the window',
-      body: 'Presets or a custom UTC range. The list follows it.',
+      body: 'Presets or a custom UTC range; the list follows it. Arriving from a TokenOps day, Clear day goes back to the window.',
     },
     {
       target: 'sessions-toolbar',
@@ -387,7 +456,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'sessions-list',
       side: 'top',
       title: 'The sessions',
-      body: 'Start, agent, first input, cost and status. Expand a row, or open it for the full trace.',
+      body: 'Start, agent, first input, duration, cost and status. Expand a row to open its agent, chat or flow, or open the session for its full trace.',
     },
   ],
 
@@ -395,6 +464,11 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       title: 'A session',
       body: 'What happened in one conversation, from the question to every model and tool call.',
+    },
+    {
+      target: 'session-actions',
+      title: 'Go further',
+      body: 'Open the chat or the flow it belongs to, see its day in TokenOps, or copy a link to it.',
     },
     {
       target: 'session-narrative',
@@ -411,7 +485,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'session-span-panel',
       side: 'left',
       title: 'Span details',
-      body: 'Inputs, outputs, tokens and timing for the selected span. Use ↑ and ↓ to move between spans.',
+      body: 'Inputs, outputs, tokens and timing for the selected span. Its ↑ and ↓ buttons move to the previous or next span.',
     },
     {
       target: 'page-stepper',
@@ -423,12 +497,17 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   flows: [
     {
       title: 'Flows',
-      body: 'Every request to your agents, including the ones agents make to each other.',
+      body: 'Every request to your agents, and every agent it reached on the way.',
     },
     {
       target: 'page-actions',
       title: 'Pick the window',
-      body: 'Flows keep their own window, 7 days to start.',
+      body: 'Presets or a custom UTC range, 7 days to start. The charts and the table follow it.',
+    },
+    {
+      target: 'flows-filters',
+      title: 'Narrow it down',
+      body: 'Search requests, and filter by kind or status.',
     },
     {
       target: 'flows-charts',
@@ -446,7 +525,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
   tokenops: [
     {
       title: 'TokenOps',
-      body: 'Where your spend goes: by day, by agent, provider and model, and against the month so far.',
+      body: 'Where your spend goes: by day, by agent or workflow, and against the month so far.',
     },
     {
       target: 'page-actions',
@@ -467,14 +546,14 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'tokenops-sections',
       side: 'top',
       title: 'Dig in',
-      body: 'Every section is on the page: spend and this month, who drives cost, and savings. The bar above jumps between them.',
+      body: 'Spend, Drivers and Optimization, all on this page; the bar above jumps between them. Click a day for its sessions. In Drivers, switch between agents and workflows, export a CSV or view traces.',
     },
   ],
 
   optimization: [
     {
       title: 'Optimization',
-      body: 'How much history Nasiko trims before it reaches the model, and what that saves.',
+      body: 'How Nasiko cuts the tokens each chat sends to the model, what that saves, and where to turn more of it on.',
     },
     {
       target: 'optimization-header',
@@ -484,7 +563,24 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'optimization-lead',
       title: 'The answer',
-      body: 'How much is being saved and what the numbers cover. Click a bar to narrow the biggest senders to that day.',
+      body: 'How much is being saved and what the numbers cover. Click a bar to narrow the biggest senders to it.',
+    },
+    {
+      target: 'optimization-attention',
+      title: 'Turn it on',
+      body: 'Agents with Token optimization off. Turn it on for all of them at once from here.',
+    },
+    {
+      target: 'optimization-by-agent',
+      side: 'top',
+      title: 'By agent',
+      body: 'What each agent sends and saves, and whether optimization is on for it. Sort by any column, or Show all.',
+    },
+    {
+      target: 'optimization-senders',
+      side: 'top',
+      title: 'Biggest senders',
+      body: 'The largest requests in the window. Open one of your chats to see its trace.',
     },
     {
       target: 'optimization-settings',
@@ -513,44 +609,64 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'harnesses-cards',
       side: 'top',
       title: 'Each harness',
-      body: 'Sessions and cost per harness. Pick one to filter the page to it.',
+      body: "Sessions and cost per harness. A card's filter button narrows the page to it.",
+    },
+    {
+      target: 'harnesses-sessions',
+      side: 'top',
+      title: 'Recent sessions',
+      body: 'Your latest harness sessions. Open one for its turns, tools and cost.',
+    },
+    {
+      target: 'harnesses-connect',
+      side: 'top',
+      title: 'Connect a harness',
+      body: 'Run these in the Nasiko CLI on the machine where the harness runs. Its sessions show up here after that.',
     },
   ],
 
+  // Every /settings page: the workspace form, Secrets, Optimization tiers, MCP toolkits and any layer's section.
   settings: [
     {
       title: 'Settings',
-      body: "Your workspace's defaults and its secrets. Your own appearance and password are in Account settings.",
+      body: 'How this workspace runs, and the secrets your agents use. Your own appearance and password are in Account settings, in the account menu.',
     },
     {
       target: 'settings-sections',
       side: 'right',
       title: 'Sections',
-      body: 'General, flow limits, optimization tiers and the registry, then Secrets.',
+      body: 'Workspace sections first, then Security with Secrets. Everyone has Secrets; the workspace sections are for admins.',
     },
     {
+      // MCP toolkits, Optimization tiers and a layer's sections each save on their own (SettingsPage.tsx).
       target: 'settings-form',
       side: 'top',
-      title: 'One form',
-      body: 'Every workspace section is one form.',
+      title: 'One Save',
+      body: 'General, Flow limits and Registry are one form: change any of them, then Save once. Other sections save on their own.',
     },
     {
-      target: 'settings-save',
+      target: 'settings-mcp',
       side: 'top',
-      title: 'One Save',
-      body: 'Saves every section at once. It says when you have unsaved changes.',
+      title: 'MCP toolkits',
+      body: 'Your Composio key, and which toolkits people can connect. Unticking one hides it; nothing is deleted.',
+    },
+    {
+      target: 'settings-tiers',
+      side: 'top',
+      title: 'Optimization tiers',
+      body: "What Low, Medium and High mean for everyone's chats. People pick their tier on the Optimization page.",
     },
     {
       target: 'secrets-list',
       side: 'top',
       title: 'Your secrets',
-      body: 'API keys, stored encrypted and masked. Show and Copy read the value only when you click.',
+      body: 'API keys, stored encrypted and masked. Show and Copy read a value only when you click; Delete names the router configs that use it.',
     },
     {
       target: 'secrets-add',
       side: 'top',
       title: 'Add a secret',
-      body: 'A name and a value. The router can then use it as a key.',
+      body: 'A name and a value. Every agent you own gets it as an environment variable (restart the agent to apply a change), and router configs can use it as a key.',
     },
   ],
 
@@ -560,14 +676,15 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'One deploy, from the upload or clone to a running agent.',
     },
     {
+      // In the top bar only while it builds or after it failed; a running agent's links are in the outcome card.
       target: 'page-actions',
       title: 'Open the agent',
-      body: 'Once the build is done, go straight to the agent it made.',
+      body: 'Jump to the agent while it builds, or after it failed.',
     },
     {
       target: 'build-outcome',
       title: 'How it went',
-      body: 'Running, not started, or failed. A failed build says what went wrong and offers to deploy again.',
+      body: 'Running, built but not running, or failed. A running agent can be chatted with or opened from here; a failed build says what went wrong and how to deploy again.',
     },
     {
       target: 'build-stages',
@@ -577,10 +694,16 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     },
   ],
 
+  // One workflow (deployed or draft) and one of its runs (`?run=`): each step shows only where its part is drawn.
   workflow: [
     {
       title: 'A workflow',
-      body: 'Its steps, which agent runs each one, and its runs.',
+      body: 'Its steps and which agent runs each one. Run it or edit it here; a run shows what each step did.',
+    },
+    {
+      target: 'wf-plan',
+      title: 'Describe it instead',
+      body: 'Say what the workflow should do and Generate plan drafts the steps for you.',
     },
     {
       target: 'wf-steps',
@@ -589,15 +712,28 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: "Each step is a task for one agent, run in order. Each one gets the previous step's result.",
     },
     {
-      target: 'wf-plan',
-      title: 'Describe it instead',
-      body: 'Say what the workflow should do and Generate plan drafts the steps for you.',
-    },
-    {
       target: 'wf-run',
       side: 'top',
       title: 'Run or edit',
       body: 'Run starts it now and opens the run. Edit changes its steps.',
+    },
+    {
+      target: 'wf-save',
+      side: 'top',
+      title: 'Save and run',
+      body: 'Save & run saves your changes and starts a run. A draft also has Deploy, which makes it ready to run from the list.',
+    },
+    {
+      target: 'wf-run-steps',
+      side: 'top',
+      title: 'Each step',
+      body: 'What each agent did, with its tokens. Open flow follows a step through every agent, and a paused step asks for your answer here.',
+    },
+    {
+      target: 'wf-run-output',
+      side: 'top',
+      title: 'The result',
+      body: "The workflow's final answer.",
     },
     {
       target: 'wf-danger',
@@ -620,7 +756,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'wf-name',
       title: 'Name it',
-      body: 'A name your team will recognise in the list and in runs.',
+      body: 'A name your team will recognize in the list and in runs.',
     },
     {
       target: 'wf-plan',
@@ -647,20 +783,15 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'One server: its tools, your connection to it, and which agents may use it.',
     },
     {
-      target: 'mcp-detail-header',
-      title: 'At a glance',
-      body: 'Name, status, id, version and owner.',
-    },
-    {
       target: 'mcp-detail-actions',
       side: 'left',
       title: 'Connect',
-      body: 'Connect or disconnect your account. The ⋯ menu copies its id or link.',
+      body: 'Connect or disconnect your account. The ⋯ menu copies its id or link, and deletes the server if it is yours.',
     },
     {
       target: 'mcp-detail-tabs',
       title: 'Tabs',
-      body: 'Agents is where you choose which agents may call its tools, and whether each tool is allowed, asks first or is blocked.',
+      body: 'Agents is where you choose which agents may call its tools, and whether each tool is allowed, asks first or is blocked. Its owner also gets Access to share it, Settings, and Logs for an uploaded server.',
     },
     {
       target: 'mcp-detail-overview',
@@ -678,7 +809,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'flow-narrative',
       title: 'What happened',
-      body: 'The flow in one paragraph.',
+      body: 'The flow in plain words. When it is waiting on you, Answer the request is right below.',
     },
     {
       target: 'flow-kpis',
@@ -688,7 +819,13 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'flow-view',
       title: 'Timeline or table',
-      body: 'See every call on a swimlane, or as a table. Critical path shows what set the total time.',
+      body: 'The timeline draws each call by agent over time; the table lists them. Critical path marks the calls that set the total time.',
+    },
+    {
+      target: 'flow-steps',
+      side: 'top',
+      title: 'Steps',
+      body: 'Every agent call in the order it started: its input, output, timing and what went wrong. Select one on the timeline to jump to it.',
     },
     {
       target: 'page-stepper',
@@ -717,13 +854,19 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       target: 'appearance-theme',
       side: 'top',
       title: 'Theme',
-      body: 'The color theme. The account menu has a quick switch too.',
+      body: 'Carbon, Teal, Indigo or Plum. The account menu has a quick switch too.',
     },
     {
       target: 'password-form',
       side: 'top',
       title: 'Change your password',
       body: 'Your current password, then the new one twice. Changing it signs you out.',
+    },
+    {
+      target: 'shortcuts-list',
+      side: 'top',
+      title: 'Keyboard shortcuts',
+      body: 'Every key Nasiko answers, by where it works. Press ? on any page for its tour.',
     },
   ],
 

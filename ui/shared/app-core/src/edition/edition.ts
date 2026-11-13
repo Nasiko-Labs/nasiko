@@ -163,7 +163,7 @@ export interface OrgUnitFilterProps {
 }
 
 /**
- * The product tour of a layer's own pages (EE: Access control). Matched after the core's pages; its steps load only
+ * The product tour of a layer's own pages (EE: Access control). Matched before the core's pages; its steps load only
  * when it opens, so a layer's tour text stays out of its shell.
  */
 export interface LayerTour {

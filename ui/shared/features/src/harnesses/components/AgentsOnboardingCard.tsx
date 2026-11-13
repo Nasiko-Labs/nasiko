@@ -25,6 +25,7 @@ export function AgentsOnboardingCard({ onboarding }: { onboarding: AgentsOnboard
   return (
     <Announcer>
       <Card
+        data-tour="harnesses-connect"
         className="gap-5 p-5 md:p-6"
         render={
           <section aria-labelledby="agents-onboarding-title" data-testid="agents-onboarding" />

@@ -13,7 +13,7 @@ const label = (key: string) => (key === 'Mod' ? (IS_MAC ? '⌘' : 'Ctrl') : key)
 
 export function ShortcutsPage() {
   return (
-    <div className="flex flex-col">
+    <div data-tour="shortcuts-list" className="flex flex-col">
       <PageHeader title={copy.shortcuts.label} description={copy.shortcuts.sub} />
       {copy.shortcuts.groups.map((g) => (
         <section key={g.title}>

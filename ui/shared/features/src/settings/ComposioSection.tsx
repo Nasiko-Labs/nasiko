@@ -103,7 +103,7 @@ function ComposioForm({ settings, onSaved }: { settings: ComposioSettings; onSav
 
   const keyId = `${id}-key`
   return (
-    <form onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
+    <form data-tour="settings-mcp" onSubmit={onSubmit} noValidate className="flex flex-col gap-4">
       {settings.failed.length > 0 ? (
         <Alert variant="destructive">
           <AlertTitle>{c.failedTitle}</AlertTitle>

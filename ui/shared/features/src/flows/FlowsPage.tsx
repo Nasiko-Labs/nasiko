@@ -182,16 +182,16 @@ export function FlowsPage({
         description={copy.list.description}
         actions={
           isMd ? (
-            <>
+            <div data-tour="flows-filters" className="flex flex-wrap items-center gap-2">
               {filters}
               {searchBox}
-            </>
+            </div>
           ) : null
         }
         className="mb-2"
       />
       {isMd ? null : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div data-tour="flows-filters" className="flex flex-wrap items-center gap-2">
           <CustomRange {...time} />
           <div className="w-full">{searchBox}</div>
           {filters}

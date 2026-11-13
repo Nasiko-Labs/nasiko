@@ -141,7 +141,7 @@ export function EditFace({
         <StepEditor steps={steps} onChange={setSteps} agents={agentOptions(agents.data ?? [])} />
       )}
       {children}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div data-tour="wf-save" className="flex flex-wrap justify-end gap-2">
         {live ? (
           <>
             <Button variant="ghost" disabled={busy} onClick={onCancel}>

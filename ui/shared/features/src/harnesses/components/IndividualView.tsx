@@ -62,7 +62,7 @@ export function SessionsList({
       {!items.length ? (
         <PanelEmpty title={emptyText} />
       ) : (
-        <ul className="divide-y divide-border text-sm">
+        <ul data-tour="harnesses-sessions" className="divide-y divide-border text-sm">
           {shown.map((s) => {
             const label = (
               <>
@@ -125,7 +125,9 @@ export function ConnectPanel({
       title={`${copy.notConnected}: ${unconnected.map((h) => harnessStyle(h).name).join(', ')}`}
       labelledBy="connect-title"
     >
-      <ConnectHelp self={self} name={name} harness={first} server={server} />
+      <div data-tour="harnesses-connect">
+        <ConnectHelp self={self} name={name} harness={first} server={server} />
+      </div>
     </Panel>
   )
 }

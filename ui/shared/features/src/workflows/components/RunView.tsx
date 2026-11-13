@@ -71,17 +71,23 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
             ))}
           </ul>
         </div>
-        <RunSteps
-          steps={steps}
-          labels={labels}
-          totalTokens={e.tokens_used ?? 0}
-          hitl={e.hitl}
-          onHitlChange={() =>
-            void queryClient.invalidateQueries({ queryKey: executionQuery(exec).queryKey })
-          }
-        />
+        <div data-tour="wf-run-steps">
+          <RunSteps
+            steps={steps}
+            labels={labels}
+            totalTokens={e.tokens_used ?? 0}
+            hitl={e.hitl}
+            onHitlChange={() =>
+              void queryClient.invalidateQueries({ queryKey: executionQuery(exec).queryKey })
+            }
+          />
+        </div>
         {e.output ? (
-          <section aria-labelledby="run-output" className="flex flex-col gap-2">
+          <section
+            data-tour="wf-run-output"
+            aria-labelledby="run-output"
+            className="flex flex-col gap-2"
+          >
             <h2 id="run-output" className="text-base font-medium">
               {copy.output}
             </h2>

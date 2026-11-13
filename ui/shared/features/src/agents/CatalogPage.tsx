@@ -311,9 +311,11 @@ export function CatalogPage({
       ) : null}
       {all.length === 0 ? (
         <>
-          <EmptyState icon={Bot} title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
-            {copy.noAgentsCatalogHint}
-          </EmptyState>
+          <div data-tour="agents-empty">
+            <EmptyState icon={Bot} title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
+              {copy.noAgentsCatalogHint}
+            </EmptyState>
+          </div>
           <div>
             <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
             <FirstRunSteps />

@@ -101,7 +101,7 @@ export function RegistryTab({
   return (
     <div className="@container/registry">
       <div className="grid grid-cols-1 gap-4 @[768px]/registry:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @[768px]/registry:items-start">
-        <Card className="gap-4 p-4">
+        <Card data-tour="deploy-registry" className="gap-4 p-4">
           <form
             noValidate
             className="flex flex-col gap-4"
