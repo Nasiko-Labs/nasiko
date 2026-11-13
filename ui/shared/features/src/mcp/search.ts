@@ -17,6 +17,15 @@ export const catalogSearchSchema = z.object({
 })
 export type CatalogSearch = z.infer<typeof catalogSearchSchema>
 
+/** `/mcp/builds`'s `?status=`: `building` covers both `pending` and `building` upload_status. */
+export const MCP_BUILDS_FILTERS = ['all', 'building', 'failed', 'success'] as const
+export type McpBuildsFilter = (typeof MCP_BUILDS_FILTERS)[number]
+export const mcpBuildsSearchSchema = z.object({
+  q: opt(z.string().check(z.maxLength(200))),
+  status: opt(z.enum(MCP_BUILDS_FILTERS)),
+})
+export type McpBuildsSearch = z.infer<typeof mcpBuildsSearchSchema>
+
 export type DetailTab = 'overview' | 'agents' | 'access' | 'logs' | 'settings'
 /** Unknown tabs stay strings so the page can fall back to Overview with replace (as Agents does). */
 export const detailSearchSchema = z.object({

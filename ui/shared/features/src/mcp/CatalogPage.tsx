@@ -27,6 +27,7 @@ import { AgentMark } from '@nasiko/features/agents/components/bits'
 import { useConnectors, useToolkits } from './api'
 import { ServerStatusBadge } from './components/bits'
 import { ConnectControl } from './components/ConnectControl'
+import { McpNav } from './components/McpNav'
 import { RegisterDialog } from './components/RegisterDialog'
 import { UploadDialog } from './components/UploadDialog'
 import { copy, reason } from './copy'
@@ -109,7 +110,8 @@ export function CatalogPage({
   const header = (
     <>
       <TopBar actions={scopeEmpty ? null : actions} />
-      <PageHeader title={copy.title} description={copy.sub} className="mb-2" />
+      <PageHeader title={copy.title} description={copy.sub} />
+      <McpNav current="/mcp" />
     </>
   )
 

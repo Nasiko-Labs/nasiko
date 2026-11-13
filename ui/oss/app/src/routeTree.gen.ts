@@ -34,6 +34,7 @@ import { Route as AppFlowsIndexRouteImport } from './../../../shared/app-shell/s
 import { Route as AppFlowsFlowIdRouteImport } from './../../../shared/app-shell/src/routes/_app/flows.$flowId'
 import { Route as AppMcpIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/mcp.index'
 import { Route as AppMcpConnectorIdRouteImport } from './../../../shared/app-shell/src/routes/_app/mcp.$connectorId'
+import { Route as AppMcpBuildsRouteImport } from './../../../shared/app-shell/src/routes/_app/mcp.builds'
 import { Route as AppSessionsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/sessions.index'
 import { Route as AppSessionsSessionIdRouteImport } from './../../../shared/app-shell/src/routes/_app/sessions.$sessionId'
 import { Route as AppSettingsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/settings.index'
@@ -173,6 +174,11 @@ const AppMcpConnectorIdRoute = AppMcpConnectorIdRouteImport.update({
   path: '/mcp/$connectorId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppMcpBuildsRoute = AppMcpBuildsRouteImport.update({
+  id: '/mcp/builds',
+  path: '/mcp/builds',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppSessionsIndexRoute = AppSessionsIndexRouteImport.update({
   id: '/sessions/',
   path: '/sessions/',
@@ -265,6 +271,7 @@ export interface FileRoutesByFullPath {
   '/chat/$sessionId': typeof AppChatSessionIdRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
+  '/mcp/builds': typeof AppMcpBuildsRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/chat-context': typeof AppSettingsChatContextRoute
@@ -305,6 +312,7 @@ export interface FileRoutesByTo {
   '/chat/$sessionId': typeof AppChatSessionIdRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
+  '/mcp/builds': typeof AppMcpBuildsRoute
   '/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/settings/appearance': typeof AppSettingsAppearanceRoute
   '/settings/chat-context': typeof AppSettingsChatContextRoute
@@ -347,6 +355,7 @@ export interface FileRoutesById {
   '/_app/chat/$sessionId': typeof AppChatSessionIdRoute
   '/_app/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/_app/mcp/$connectorId': typeof AppMcpConnectorIdRoute
+  '/_app/mcp/builds': typeof AppMcpBuildsRoute
   '/_app/sessions/$sessionId': typeof AppSessionsSessionIdRoute
   '/_app/settings/appearance': typeof AppSettingsAppearanceRoute
   '/_app/settings/chat-context': typeof AppSettingsChatContextRoute
@@ -389,6 +398,7 @@ export interface FileRouteTypes {
     | '/chat/$sessionId'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
+    | '/mcp/builds'
     | '/sessions/$sessionId'
     | '/settings/appearance'
     | '/settings/chat-context'
@@ -429,6 +439,7 @@ export interface FileRouteTypes {
     | '/chat/$sessionId'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
+    | '/mcp/builds'
     | '/sessions/$sessionId'
     | '/settings/appearance'
     | '/settings/chat-context'
@@ -470,6 +481,7 @@ export interface FileRouteTypes {
     | '/_app/chat/$sessionId'
     | '/_app/flows/$flowId'
     | '/_app/mcp/$connectorId'
+    | '/_app/mcp/builds'
     | '/_app/sessions/$sessionId'
     | '/_app/settings/appearance'
     | '/_app/settings/chat-context'
@@ -673,6 +685,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMcpConnectorIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/mcp/builds': {
+      id: '/_app/mcp/builds'
+      path: '/mcp/builds'
+      fullPath: '/mcp/builds'
+      preLoaderRoute: typeof AppMcpBuildsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/sessions/': {
       id: '/_app/sessions/'
       path: '/sessions'
@@ -793,6 +812,7 @@ interface AppRouteChildren {
   AppChatSessionIdRoute: typeof AppChatSessionIdRoute
   AppFlowsFlowIdRoute: typeof AppFlowsFlowIdRoute
   AppMcpConnectorIdRoute: typeof AppMcpConnectorIdRoute
+  AppMcpBuildsRoute: typeof AppMcpBuildsRoute
   AppSessionsSessionIdRoute: typeof AppSessionsSessionIdRoute
   AppSettingsAppearanceRoute: typeof AppSettingsAppearanceRoute
   AppSettingsChatContextRoute: typeof AppSettingsChatContextRoute
@@ -833,6 +853,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppChatSessionIdRoute: AppChatSessionIdRoute,
   AppFlowsFlowIdRoute: AppFlowsFlowIdRoute,
   AppMcpConnectorIdRoute: AppMcpConnectorIdRoute,
+  AppMcpBuildsRoute: AppMcpBuildsRoute,
   AppSessionsSessionIdRoute: AppSessionsSessionIdRoute,
   AppSettingsAppearanceRoute: AppSettingsAppearanceRoute,
   AppSettingsChatContextRoute: AppSettingsChatContextRoute,
