@@ -145,9 +145,11 @@ async fn totals(db: &PgPool, q: &ModelRoutingQuery<'_>) -> Result<TotalsRow, sql
              COALESCE(SUM((metadata->'routing'->>'calls')::BIGINT), 0)::BIGINT AS calls,
              COALESCE(SUM((metadata->'routing'->>'model_overridden')::BIGINT), 0)::BIGINT
                  AS model_overridden,
-             COALESCE(SUM((input_tokens + output_tokens + cache_read_tokens
-                           + cache_creation_tokens)
-                          FILTER (WHERE metadata ? 'routing')), 0)::BIGINT AS tokens,
+             -- `FILTER` belongs to the aggregate, so it goes after `SUM(...)`'s closing paren:
+             -- inside the argument list it is a syntax error, not a narrower sum.
+             COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens
+                          + cache_creation_tokens)
+                      FILTER (WHERE metadata ? 'routing'), 0)::BIGINT AS tokens,
              COALESCE(SUM(cost_usd) FILTER (WHERE metadata ? 'routing'), 0)::FLOAT8 AS cost_usd
          FROM trace_usage",
     );
