@@ -429,7 +429,7 @@ export function SessionTracePage({
           ) : undefined
         }
         actions={
-          <>
+          <div data-tour="session-actions" className="flex flex-wrap items-center gap-2">
             {agentIsHarness && ownChat ? (
               <Link
                 to="/sessions/$sessionId"
@@ -467,7 +467,7 @@ export function SessionTracePage({
             <span role="status" className="text-xs text-muted-foreground">
               {copied === 'copied' ? copy.linkCopied : copied === 'failed' ? copy.copyFailed : ''}
             </span>
-          </>
+          </div>
         }
       />
 

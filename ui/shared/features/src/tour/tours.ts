@@ -101,7 +101,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'overview-try-run',
       title: 'Try your agent',
-      body: 'Give the agent you picked during setup a real task here, then run it again with Token optimization on and compare what it costs.',
+      body: 'Give this agent a real task here, then run the same task with Token optimization on and compare what it costs.',
     },
     {
       target: 'overview-setup-guide',
@@ -259,7 +259,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
     {
       target: 'agent-tabs',
       title: 'Tabs',
-      body: 'Overview is how it is doing; Activity, Versions (where you roll back), MCP and Details follow. Whoever manages it also gets Builds, Access and Settings.',
+      body: 'Overview says what it does and how it is doing; Activity, Versions (where you roll back), MCP and Details follow. Whoever manages it also gets Builds, Access and Settings.',
     },
     {
       // The Overview tab (HubTimeline.tsx), where the page opens.
