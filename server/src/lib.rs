@@ -483,6 +483,7 @@ where
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
     let llm_ctx = nasiko_llm_router::LlmRouterCtx {
         ledger: state.usage_tracker.ledger(),
+        payer: state.shared_call_payer.clone(),
         ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
     };
     // Both sync loops below read the router's effective config, resolved once here
