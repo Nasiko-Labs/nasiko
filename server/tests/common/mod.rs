@@ -891,6 +891,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
+        seed_agent_settings: Default::default(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),
