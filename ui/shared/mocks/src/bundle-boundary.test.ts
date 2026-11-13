@@ -1,7 +1,8 @@
 // @vitest-environment node
 /**
- * N18: a live build must not carry the harness seed in any eagerly loaded chunk: it may exist only as a lazy chunk
- * reached through mock-mode dynamic imports. And an OSS build carries no EE layer code at all, mocks and personas
+ * N18: a live build must not carry the harness seed in any eagerly loaded chunk. Since the mock paths are compiled
+ * out of a live build (MOCKS_COMPILED_IN), it carries no seed at all, lazy or not. And an OSS build carries no EE
+ * layer code at all, mocks and personas
  * included (docs/lab-vs-react-migration-review.md §10.5; the EE build's own check is the layer's test).
  */
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
@@ -47,18 +48,14 @@ const carriers = (re: RegExp) =>
   js().filter((f) => re.test(readFileSync(join(assets(), f), 'utf8')))
 
 describe('live bundle boundary', () => {
-  it('keeps seed code out of every chunk but its own lazy one', () => {
-    // The seed id prefix exists only in seed-harness.ts, which only the mock bootstrap (browser.ts) reaches.
-    const seedChunks = carriers(/5eed0002/)
-    expect(seedChunks).toHaveLength(1)
-    expect(seedChunks[0]).toMatch(/^(seed-harness|browser)-/)
-    const entry = /src="\/assets\/([^"]+\.js)"/.exec(
-      readFileSync(join(outDir, 'index.html'), 'utf8'),
-    )![1]!
-    // The entry names the chunk only in Vite's preload map for a dynamic import, never as a static import.
-    expect(readFileSync(join(assets(), entry), 'utf8')).not.toMatch(
-      /from\s*["']\.\/(seed-harness|browser)-/,
+  it('carries no seed code: the mock paths are compiled out of a live build', () => {
+    // The seed id prefix exists only in seed-harness.ts, which only the mock bootstrap (browser.ts) reaches, and a
+    // live build compiles the mock paths out (MOCKS_COMPILED_IN). The marker is checked in the source first (the code
+    // that builds the ids, not a comment), so a renamed prefix fails here instead of passing on nothing.
+    expect(readFileSync(new URL('./seed-harness.ts', import.meta.url), 'utf8')).toMatch(
+      /`5eed0002-\$\{/,
     )
+    expect(carriers(/5eed0002/)).toEqual([])
   })
 
   it('carries no EE layer code: no personas, org-level copy, EE grant or crash-guardian mocks', () => {
