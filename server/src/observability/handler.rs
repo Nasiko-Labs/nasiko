@@ -1296,6 +1296,102 @@ pub async fn get_finops_savings(
     }
 }
 
+// ─── 6b. GET /finops/model-routing ───────────────────────────────────────────
+
+/// Query params for `/finops/model-routing`: the dashboard's window and dimension filters,
+/// spelled the same way, so a client carries its filter state across without translating it.
+#[derive(Debug, Deserialize)]
+pub struct ModelRoutingParams {
+    pub start_time: Option<String>,
+    pub end_time: Option<String>,
+    pub range: Option<String>,
+    pub agent_id: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+}
+
+/// How the LLM router chose the model over the window: calls per precedence level and per tier
+/// (NAS-1263). Scoped exactly as `/finops/savings` is — the caller's accessible agents, and their
+/// own calls unless they own the agent being filtered on.
+#[utoipa::path(
+    get,
+    path = "/api/observability/finops/model-routing",
+    tag = "observability",
+    responses(
+        (status = 200, description = "Model-routing breakdown", body = crate::observability::model_routing::ModelRoutingResponse),
+        (status = 400, description = "Malformed range"),
+        (status = 401, description = "Missing or invalid session"),
+        (status = 404, description = "Agent filter names an agent the caller cannot see"),
+    ),
+)]
+#[instrument(skip(state, user_scope))]
+pub async fn get_model_routing(
+    State(state): State<AppState>,
+    claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
+    Query(params): Query<ModelRoutingParams>,
+) -> Response {
+    if let Err(r) = validate_range(params.range.as_deref()) {
+        return r;
+    }
+    let (start_time, end_time) =
+        match resolve_range_params(&params.start_time, &params.end_time, &params.range) {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+    let start = parse_iso_or_default(start_time.as_deref(), 30);
+    let end = end_time
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|d| d.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+
+    let agent_uuid = match resolve_agent_uuid(&state.db, params.agent_id.as_deref()).await {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if let Some(id) = agent_uuid
+        && !crate::acl::can_access_agent(&state, &claims, id).await
+    {
+        return (StatusCode::NOT_FOUND, "agent not found").into_response();
+    }
+
+    // Owning the filtered agent is its own reason to see all of its routing, not just your own
+    // calls to it — the same exemption `/finops/savings` makes.
+    let owns_filtered_agent = match agent_uuid {
+        Some(id) => super::routes::agent_id_owned_by_caller(&state, &claims, id).await,
+        None => false,
+    };
+    let user_ids = if owns_filtered_agent {
+        None
+    } else {
+        user_scope.map(|Extension(s)| s.0)
+    };
+    let accessible = accessible_agent_ids(&state, &claims).await;
+    let query = super::model_routing::ModelRoutingQuery {
+        start,
+        end,
+        agent_id: agent_uuid,
+        provider: params.provider.as_deref(),
+        model: params.model.as_deref(),
+        accessible_agent_ids: accessible.as_deref(),
+        user_ids: user_ids.as_deref(),
+    };
+
+    match super::model_routing::get_model_routing(&state.db, &query).await {
+        Ok(data) => Json(super::model_routing::ModelRoutingResponse {
+            data,
+            status_code: 200,
+            message: "ok".into(),
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!(%e, "finops model-routing query failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "internal server error").into_response()
+        }
+    }
+}
+
 /// Resolve an `agent_id` param that may be a UUID or a name to the UUID the ledger is keyed on.
 #[allow(clippy::result_large_err)]
 async fn resolve_agent_uuid(

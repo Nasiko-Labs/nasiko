@@ -2,6 +2,7 @@ pub mod coding_agents;
 pub mod context_savings;
 pub mod handler;
 pub mod logs;
+pub mod model_routing;
 pub mod receipt_materializer;
 pub mod resources;
 pub(crate) mod routes;
