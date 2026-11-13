@@ -2,7 +2,7 @@
 //!
 //! Try the primary resolved config, then each `fallback_models` entry in order; the
 //! first success wins, and only after all are exhausted — or the chain's shared
-//! `provider_timeout_secs` deadline passes — do we surface a 502. Each
+//! `provider_timeout_secs` deadline passes (a 504) — do we surface an error. Each
 //! call returns the **effective** provider/model actually used, so usage logging
 //! records the fallback when one fires.
 //!
@@ -123,8 +123,9 @@ async fn within_provider_deadline<T>(
     attempts: impl Future<Output = Result<T, GatewayError>>,
 ) -> Result<T, GatewayError> {
     let timed_out = || {
-        GatewayError::Upstream(format!(
-            "no provider answered within {}s across all attempts",
+        GatewayError::UpstreamTimeout(format!(
+            "no provider answered within the {}s chain deadline \
+             (LLM_PROVIDER_TIMEOUT_SECS) across all attempts",
             cfg.provider_timeout_secs
         ))
     };
@@ -1295,10 +1296,10 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(
-            err.to_string().contains("across all attempts"),
+            err.to_string().contains("LLM_PROVIDER_TIMEOUT_SECS"),
             "expected the chain deadline, got {err}"
         );
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(err.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
         assert!(
             elapsed < std::time::Duration::from_millis(1600),
             "{elapsed:?}"

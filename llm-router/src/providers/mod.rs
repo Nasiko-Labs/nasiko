@@ -4,7 +4,7 @@
 //! provider, returning IR. Per-provider impls (OpenAI / Anthropic / Gemini) land in
 //! steps 4–6 and own the OpenAI⇄provider translation; the ordered fallback executor
 //! lands in step 8. Errors are [`ProviderError`] (carrying retryability) and convert
-//! to `GatewayError::Upstream` once fallbacks are exhausted.
+//! to a `GatewayError` once fallbacks are exhausted (see `From<ProviderError>`).
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -255,10 +255,27 @@ impl ProviderError {
     }
 }
 
+/// Provider statuses the caller can act on, passed through instead of a 502: a bad request
+/// (400, 413, 415, 422), an unknown model (404), a conflict (409) or a rate limit (429).
+/// A 401 or 403 is not among them: it means the owner's stored provider key is bad, not the
+/// caller's token, and passing it on would send SDKs into a token-refresh loop.
+const CALLER_STATUSES: [u16; 7] = [400, 404, 409, 413, 415, 422, 429];
+
+/// Whether a provider 400 is Gemini refusing the API key. Gemini answers a bad key with 400
+/// `API_KEY_INVALID` where other providers send 401, so it is a key fault, not a bad request.
+fn is_bad_key_400(status: u16, message: &str) -> bool {
+    status == 400 && (message.contains("API_KEY_INVALID") || message.contains("API key not valid"))
+}
+
 impl From<ProviderError> for GatewayError {
     fn from(e: ProviderError) -> Self {
         match e {
             ProviderError::Rejected(message) => GatewayError::BadRequest(message),
+            ProviderError::Status {
+                status, message, ..
+            } if CALLER_STATUSES.contains(&status) && !is_bad_key_400(status, &message) => {
+                GatewayError::UpstreamStatus { status, message }
+            }
             other => GatewayError::Upstream(other.to_string()),
         }
     }
@@ -345,6 +362,40 @@ mod tests {
         let g: GatewayError = ProviderError::Transport("boom".into()).into();
         assert!(matches!(g, GatewayError::Upstream(_)));
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+    }
+
+    fn status(code: u16, message: &str) -> ProviderError {
+        ProviderError::Status {
+            status: code,
+            message: message.into(),
+            retryable: false,
+        }
+    }
+
+    #[test]
+    fn caller_actionable_statuses_pass_through() {
+        for code in [400, 404, 409, 413, 415, 422, 429] {
+            let g: GatewayError = status(code, "refused").into();
+            assert!(matches!(g, GatewayError::UpstreamStatus { .. }), "{code}");
+            assert_eq!(g.status().as_u16(), code);
+        }
+    }
+
+    #[test]
+    fn key_and_server_faults_stay_502_with_the_provider_message() {
+        let gemini_bad_key = r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"#;
+        for (code, message) in [
+            (401, "Incorrect API key provided"),
+            (403, "The security token included in the request is invalid"),
+            (400, gemini_bad_key),
+            (500, "boom"),
+            (503, "overloaded"),
+        ] {
+            let g: GatewayError = status(code, message).into();
+            assert!(matches!(g, GatewayError::Upstream(_)), "{code}");
+            assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
+            assert!(g.to_string().contains(message), "{g}");
+        }
     }
 
     #[test]

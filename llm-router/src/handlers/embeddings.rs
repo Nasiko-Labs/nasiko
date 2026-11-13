@@ -483,7 +483,11 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert!(matches!(err, GatewayError::Upstream(_)));
+        // The provider's 400 reaches the caller as a 400, not a 502.
+        assert!(matches!(
+            err,
+            GatewayError::UpstreamStatus { status: 400, .. }
+        ));
         mock.assert_async().await;
     }
 
