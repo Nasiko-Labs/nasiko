@@ -5,7 +5,7 @@
  * follows each one until it runs or fails (NAS-1450); it saves a default config; skipping lasts the session; Finish
  * lands on the homepage.
  */
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -94,14 +94,13 @@ describe('first-run guide', () => {
     // Welcome doesn't hold.
     on(screen.getByRole('button', { name: /get started/i }))
     fireEvent.click(screen.getByRole('button', { name: /get started/i }))
-    // The seed user has a key, so only the hold keeps it off; then it deploys the prebuilt pick.
+    // The seed user has a key, so only the hold keeps it off; then it is a plain Continue, on every tab.
     const held = await screen.findByRole('button', { name: /^Continue \(\d\)$/ })
     off(held)
-    await waitFor(() => expect(held).toHaveAccessibleName('Deploy 1 agent and continue'))
+    await waitFor(() => expect(held).toHaveAccessibleName('Continue'))
     on(held)
-    // Any other tab still deploys the meeting notes processor, so one agent is always up.
     await user.click(screen.getByRole('tab', { name: 'Registry' }))
-    expect(held).toHaveAccessibleName('Deploy 1 agent and continue')
+    expect(held).toHaveAccessibleName('Continue')
   })
 
   it('has no role step: Get started opens the Agent and key step', async () => {
@@ -273,99 +272,52 @@ describe('first-run guide', () => {
     expect(await agents.findAllByText('onboard-bot')).not.toHaveLength(0)
   })
 
-  it('deploys up to two prebuilt agents on Continue, the meeting notes processor always included', async () => {
+  it('lists the six agents it gives away, with no picking, and Continue deploys nothing', async () => {
     firstTime()
     const user = userEvent.setup()
     const rec = recordRequestBodies()
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    const picks = await screen.findByRole('group', { name: 'Prebuilt agents to deploy' })
-    const box = (name: RegExp) => within(picks).getByRole('checkbox', { name })
-    // The meeting notes processor leads, checked and locked.
-    expect(box(/Meeting Notes Processor/)).toBeChecked()
-    expect(box(/Meeting Notes Processor/)).toBeDisabled()
-    expect(within(picks).getAllByRole('checkbox')).toHaveLength(6)
+    const given = await screen.findByRole('region', { name: 'Your starter pack' })
     expect(
-      screen.getByText(/Pick up to 2\. The one with the best record is always included\./),
-    ).toBeInTheDocument()
-    await user.click(box(/Summarizer/))
-    expect(within(picks).getByText(/2 of 2 picked/)).toBeInTheDocument()
-    // Full: picking another swaps it in rather than being locked out.
-    expect(box(/Translator/)).toBeEnabled()
-    await user.click(box(/Translator/))
-    expect(box(/Translator/)).toBeChecked()
-    expect(box(/Summarizer/)).not.toBeChecked()
-    await user.click(box(/Summarizer/))
-    // No Deploy button on the tab: the guide's Continue deploys the picks and moves on.
-    expect(within(picks).queryByRole('button')).toBeNull()
-    await continueAs(user, 'Deploy 2 agents and continue')
-    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // One toast says they started (NAS-1450).
-    expect(
-      await screen.findByText(
-        "Deploying Meeting Notes Processor and Summarizer. We'll let you know when each one finishes.",
+      within(given).getByText(
+        "Here's your starter pack: 6 agents, ready to go. When you want more, the Marketplace has plenty to install.",
       ),
     ).toBeInTheDocument()
-    // The guide follows each one across steps, and Continue is plain once they're on their way.
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
     expect(
-      within(rows)
+      within(given)
         .getAllByRole('listitem')
         .map((li) => li.textContent),
     ).toEqual([
       expect.stringMatching(/^Meeting Notes Processor/),
       expect.stringMatching(/^Summarizer/),
+      expect.stringMatching(/^Reply Drafter/),
+      expect.stringMatching(/^Task Breakdown/),
+      expect.stringMatching(/^Humanizer/),
+      expect.stringMatching(/^Translator/),
     ])
-    expect(screen.getByRole('button', { name: /^Continue( \(\d\))?$/ })).toBeInTheDocument()
-    // Each one imported from the registry, once.
-    await rec.flush()
-    expect(
-      rec.requests
-        .filter((r) => r.method === 'POST' && r.url.pathname === '/api/import/registry')
-        .map((r) => r.body),
-    ).toEqual([
-      { reference: 'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0' },
-      { reference: 'registry.nasiko.dev/nasiko/summarizer:1.0.0' },
-    ])
-  })
-
-  it('never deploys the meeting notes processor again once it exists', async () => {
-    firstTime()
-    const user = userEvent.setup()
-    const rec = recordRequestBodies()
-    renderApp('/')
-    await guide()
-    await advance(user, /get started/i)
-    const picks = await screen.findByRole('group', { name: 'Prebuilt agents to deploy' })
-    await continueAs(user, 'Deploy 1 agent and continue')
-    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    await user.click(screen.getByRole('button', { name: /finish/i }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    // A reload forgets this page's deploys: then only the agents list knows it exists.
-    act(() => clearSeededDeploys())
-    // Back through the Setup guide: it now exists, so it shows as deployed and Continue deploys nothing.
-    await user.click(await screen.findByRole('button', { name: 'Setup guide' }))
-    // Key and agent both done: it reopens on the last step.
-    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    const again = await screen.findByRole('group', { name: 'Prebuilt agents to deploy' })
-    expect(picks).not.toBe(again)
-    await waitFor(() =>
-      expect(
-        within(again).getByRole('checkbox', { name: /Meeting Notes Processor.*Already deployed/ }),
-      ).toBeInTheDocument(),
-    )
-    await user.click(screen.getByRole('tab', { name: 'Registry' }))
+    // Shown, not picked: no checkboxes and no button of their own.
+    expect(within(given).queryByRole('checkbox')).toBeNull()
+    expect(within(given).queryByRole('button')).toBeNull()
+    // Continue only moves on.
     await continueAs(user, 'Continue')
+    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
     await rec.flush()
-    expect(
-      rec.requests.filter((r) => r.method === 'POST' && r.url.pathname === '/api/import/registry'),
-    ).toHaveLength(1)
+    expect(rec.requests.filter((r) => r.url.pathname === '/api/import/registry')).toEqual([])
   })
 
-  it('follows a prebuilt deploy on every step until it runs (NAS-1450)', async () => {
+  /** Starts a registry import from the guide's Registry tab, as a user does. */
+  async function importFromRegistry(user: UserEvent, reference: string) {
+    await user.click(await screen.findByRole('tab', { name: 'Registry' }))
+    await user.type(
+      await screen.findByRole('textbox', { name: deployCopy.registry.reference }),
+      reference,
+    )
+    await user.click(screen.getByRole('button', { name: deployCopy.registry.submit }))
+  }
+
+  it('follows a deploy started from its tabs on every step until it runs (NAS-1450)', async () => {
     firstTime()
     const agentId = '5eed000c-0000-4000-8000-000000001450'
     // The import answers only once its build and deploy are done, minutes in: here, when the test says so.
@@ -384,32 +336,27 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    await continueAs(user, 'Deploy 1 agent and continue')
-    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // A toast says it started, and the next step keeps it in view, beside Back and Finish.
-    expect(
-      await screen.findByText(
-        "Deploying Meeting Notes Processor. We'll let you know when it finishes.",
-      ),
-    ).toBeInTheDocument()
-    expect(await screen.findByText('Deploying 1 agent…')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
-    expect(within(rows).getByText('Meeting Notes Processor')).toBeInTheDocument()
+    await importFromRegistry(user, 'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0')
+    // Under the tabs, a row follows it with a clock.
+    const rows = await screen.findByRole('list', { name: 'Your deploys' })
+    expect(within(rows).getByText('meeting-notes-processor')).toBeInTheDocument()
     expect(within(rows).getByText(/^Deploying · \d+ s · usually 1–5 min$/)).toBeInTheDocument()
-    // Here the row says it: the footer line is for the steps after.
-    expect(screen.queryByText('Deploying 1 agent…')).toBeNull()
+    // The next step keeps it in view, beside Back and Finish.
+    await continueAs(user, 'Continue')
+    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
+    expect(await screen.findByText('Deploying 1 agent…')).toBeInTheDocument()
     answer()
-    expect(await within(rows).findByText('Running')).toBeInTheDocument()
-    expect(within(rows).getByRole('link', { name: 'Open the agent' })).toHaveAttribute(
+    expect(await screen.findByText('1 agent running')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Back' }))
+    const done = await screen.findByRole('list', { name: 'Your deploys' })
+    expect(within(done).getByText('Running')).toBeInTheDocument()
+    expect(within(done).getByRole('link', { name: 'Open the agent' })).toHaveAttribute(
       'href',
       `/agents/${agentId}`,
     )
-    await continueAs(user, 'Continue')
-    expect(await screen.findByText('1 agent running')).toBeInTheDocument()
   })
 
-  it('says why a prebuilt deploy failed (NAS-1450)', async () => {
+  it('says why a deploy started from its tabs failed (NAS-1450)', async () => {
     firstTime()
     server.use(
       http.post(
@@ -421,17 +368,18 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    await continueAs(user, 'Deploy 1 agent and continue')
-    await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    expect(await screen.findByText("Your agent didn't start")).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Back' }))
-    const rows = await screen.findByRole('list', { name: 'Prebuilt agents' })
+    await importFromRegistry(user, 'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0')
+    const rows = await screen.findByRole('list', { name: 'Your deploys' })
     // The server's own reason, not the request's status line.
-    expect(within(rows).getByText('Failed: registry returned 404: not found')).toBeInTheDocument()
+    expect(
+      await within(rows).findByText('Failed: registry returned 404: not found'),
+    ).toBeInTheDocument()
     expect(within(rows).getByRole('link', { name: 'Open Agents' })).toHaveAttribute(
       'href',
       '/agents',
     )
+    await continueAs(user, 'Continue')
+    expect(await screen.findByText("Your agent didn't start")).toBeInTheDocument()
   })
 
   it('turns Continue on after the hold with no key yet', async () => {
@@ -471,6 +419,11 @@ describe('first-run guide', () => {
       await screen.findByRole('link', { name: "Open Anthropic's API keys page" }),
     ).toHaveAttribute('href', 'https://platform.claude.com/settings/keys')
     expect(screen.getByText(/billed to the account that owns the key/)).toBeInTheDocument()
+    // Where the saved key can be managed afterwards: said, not linked, so nothing leads out of the guide.
+    expect(
+      screen.getByText(/You can manage it any time in Settings → Secrets\./),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /Settings → Secrets/ })).toBeNull()
   })
 
   it('opens on the prebuilt agents, then the deploy tabs', async () => {
@@ -479,13 +432,13 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    // Prebuilt, then Registry, GitHub and Upload a zip; the first is open.
-    expect(await screen.findByRole('tab', { name: 'Prebuilt' })).toHaveAttribute(
+    // Starter pack, then Registry, GitHub and Upload a zip; the first is open.
+    expect(await screen.findByRole('tab', { name: 'Starter pack' })).toHaveAttribute(
       'aria-selected',
       'true',
     )
     expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
-      'Prebuilt',
+      'Starter pack',
       'Registry',
       'GitHub',
       'Upload a zip',

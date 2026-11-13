@@ -223,9 +223,11 @@ export function ModelStep({
               </AlertDescription>
             </Alert>
           ) : null}
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Lock aria-hidden className="size-3.5" />
-            {copy.model.vault}
+          <p className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Lock aria-hidden className="mt-px size-3.5 shrink-0" />
+            <span>
+              {copy.model.vault} {copy.model.manageSecrets}
+            </span>
           </p>
         </>
       )}
