@@ -591,6 +591,12 @@ function Overview({
         <VillageLoading view={view === 'map' ? 'map' : 'village'} />
       )}
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
+        {/* The coding harness preview's sample card (HarnessPreview.tsx), right under the summary it plays in (user
+            2026-11-06; the real card sits below the inbox), above the try-a-run card too (user 2026-11-13). Renders
+            nothing outside a preview. */}
+        {harnesses.ownOnly || harnesses.notVisible ? null : (
+          <PreviewActivity days={days} className={PLACE.harness} />
+        )}
         {/* Right after setup, before anything has run: the call to run the agent they picked, first in line. */}
         {tryRun ? (
           <TryAgentRun
@@ -599,11 +605,6 @@ function Overview({
             onRan={() => setRanTick((n) => n + 1)}
           />
         ) : null}
-        {/* The coding harness preview's sample card (HarnessPreview.tsx), right under the summary it plays in (user
-            2026-11-06; the real card sits below the inbox). Shown where the real one would be. */}
-        {harnesses.ownOnly || harnesses.notVisible ? null : (
-          <PreviewActivity days={days} className={PLACE.harness} />
-        )}
         <NeedsYou
           data={needsYou}
           now={now.getTime()}
