@@ -49,6 +49,11 @@ pub enum ValidationError {
     MissingDockerfile,
     #[error("Dockerfile has no FROM line")]
     InvalidDockerfile,
+    #[error(
+        "Dockerfile uses BuildKit-only syntax ({0}), which this platform's build backend \
+         does not support — remove it and rewrite without BuildKit features"
+    )]
+    BuildkitOnlySyntax(&'static str),
 }
 
 /// Validates an extracted MCP-server upload directory.
@@ -68,6 +73,9 @@ pub fn validate_mcp_server_zip(extracted_dir: &Path) -> Result<DetectedRuntime, 
     {
         return Err(ValidationError::InvalidDockerfile);
     }
+    if let Some(feature) = detect_buildkit_only_syntax(&contents) {
+        return Err(ValidationError::BuildkitOnlySyntax(feature));
+    }
 
     if detect_python(extracted_dir) {
         return Ok(DetectedRuntime::Python);
@@ -76,6 +84,37 @@ pub fn validate_mcp_server_zip(extracted_dir: &Path) -> Result<DetectedRuntime, 
         return Ok(DetectedRuntime::Node);
     }
     Ok(DetectedRuntime::Unknown)
+}
+
+/// A hard rejection, unlike the hints below: our build backend
+/// (`DockerRuntime::build`, `oss/runtime/src/docker/mod.rs`) always builds with
+/// bollard's classic (non-BuildKit) builder, so any of these fail the build with
+/// a raw daemon error ("the --mount option requires BuildKit") instead of a
+/// readable one. Catching them here turns that into a clear, actionable message.
+fn detect_buildkit_only_syntax(dockerfile: &str) -> Option<&'static str> {
+    if dockerfile
+        .lines()
+        .any(|l| l.trim_start().starts_with('#') && l.contains("syntax="))
+    {
+        return Some("a `# syntax=` frontend directive");
+    }
+    if dockerfile.contains("--mount=") {
+        return Some("`--mount`");
+    }
+    if dockerfile.contains("--secret=") {
+        return Some("`--secret`");
+    }
+    if dockerfile
+        .lines()
+        .any(|l| {
+            let l = l.trim_start();
+            (l.starts_with("RUN ") || l.starts_with("COPY ") || l.starts_with("ADD "))
+                && l.contains("<<")
+        })
+    {
+        return Some("a heredoc (`<<`) instruction");
+    }
+    None
 }
 
 /// Hint only, never a rejection: `pyproject.toml` exists and either declares an
@@ -204,5 +243,80 @@ mod tests {
             validate_mcp_server_zip(dir.path()),
             Err(ValidationError::InvalidDockerfile)
         ));
+    }
+
+    #[test]
+    fn dockerfile_with_mount_flag_is_rejected_before_a_real_build_attempt() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dockerfile",
+            "FROM python:3.12\nRUN --mount=type=cache,target=/root/.cache pip install mcp\n",
+        );
+        assert!(matches!(
+            validate_mcp_server_zip(dir.path()),
+            Err(ValidationError::BuildkitOnlySyntax("`--mount`"))
+        ));
+    }
+
+    #[test]
+    fn dockerfile_with_secret_flag_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dockerfile",
+            "FROM node:20\nRUN --secret=id=npm,target=/root/.npmrc npm install\n",
+        );
+        assert!(matches!(
+            validate_mcp_server_zip(dir.path()),
+            Err(ValidationError::BuildkitOnlySyntax("`--secret`"))
+        ));
+    }
+
+    #[test]
+    fn dockerfile_with_syntax_directive_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dockerfile",
+            "# syntax=docker/dockerfile:1\nFROM alpine:3.20\n",
+        );
+        assert!(matches!(
+            validate_mcp_server_zip(dir.path()),
+            Err(ValidationError::BuildkitOnlySyntax(
+                "a `# syntax=` frontend directive"
+            ))
+        ));
+    }
+
+    #[test]
+    fn dockerfile_with_heredoc_run_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dockerfile",
+            "FROM alpine:3.20\nRUN <<EOF\necho hi\nEOF\n",
+        );
+        assert!(matches!(
+            validate_mcp_server_zip(dir.path()),
+            Err(ValidationError::BuildkitOnlySyntax(
+                "a heredoc (`<<`) instruction"
+            ))
+        ));
+    }
+
+    #[test]
+    fn ordinary_multi_stage_copy_from_is_not_mistaken_for_buildkit_only_syntax() {
+        // `COPY --from=` is a classic-builder feature (multi-stage builds), not BuildKit-only.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "Dockerfile",
+            "FROM golang:1.22 AS build\nFROM alpine:3.20\nCOPY --from=build /bin/app /bin/app\n",
+        );
+        assert_eq!(
+            validate_mcp_server_zip(dir.path()).unwrap(),
+            DetectedRuntime::Unknown
+        );
     }
 }
