@@ -342,6 +342,13 @@ export function nasikoApp(o: AppOptions): UserConfig {
     envDir: ROOT,
     publicDir: join(SHARED, 'ui/public'),
     cacheDir: join(ROOT, 'node_modules/.vite', o.id),
+    define: {
+      // A boolean literal, so every `if (… NASIKO_MOCKS_COMPILED_IN)` folds before bundling and a live production build
+      // drops every mock-only path, MSW's ~280 KB gz loader included (shared/app-core/src/env.ts MOCKS_COMPILED_IN).
+      'import.meta.env.NASIKO_MOCKS_COMPILED_IN': JSON.stringify(
+        o.mode !== 'production' || env.VITE_NASIKO_ALLOW_MOCK_BUILD === 'true',
+      ),
+    },
     plugins: [
       leakGuard(o),
       // Must run before react(): it generates the edition's src/routeTree.gen.ts from the core's routes.
@@ -388,7 +395,8 @@ export function nasikoApp(o: AppOptions): UserConfig {
       }),
       tailwindcss(),
       routesManifest(routes),
-      precompressed(),
+      // NASIKO_PRECOMPRESS=0: a bundle no server negotiates encodings for (the desktop app embeds it compressed).
+      ...(env.NASIKO_PRECOMPRESS === '0' ? [] : [precompressed()]),
       apiMode(),
       analyticsInBuildsOnly(),
       zodJitless(),
@@ -423,6 +431,19 @@ export function nasikoApp(o: AppOptions): UserConfig {
       // the bundle is embedded (the servers' build.rs refuses a release build that still has one).
       sourcemap: env.NASIKO_SOURCEMAPS === 'hidden' ? 'hidden' : false,
       rolldownOptions: {
+        // `"use no memo"` is the React Compiler's opt-out. The compiler (a Babel transform) has already read it by the
+        // time Rolldown bundles the module, so the directive being dropped from the bundle changes nothing. Any other
+        // directive still warns.
+        onwarn(warning, warn) {
+          if (
+            warning.code === 'MODULE_LEVEL_DIRECTIVE' &&
+            warning.message.includes('"use no memo"')
+          )
+            return
+          warn(warning)
+        },
+        // The per-plugin timing report prints on every build; profile with `node --cpu-prof` when it matters.
+        checks: { pluginTimings: false },
         output: {
           // visx (+ d3) is most of the chart pages' weight; its own chunk keeps it cacheable across page changes.
           // Shared deps (React) must not be dragged in, or the entry would import the charts chunk. So @visx/text's own

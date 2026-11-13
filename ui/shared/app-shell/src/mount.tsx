@@ -37,14 +37,19 @@ export async function mount(
   installStaleBuildDetection()
 
   initTheme()
-  const mocking = env.mode === 'mock' || env.partialMocks.length > 0
+  // MOCKS_COMPILED_IN (app-core/env.ts), written out here: Rolldown folds a build-time literal only within its own
+  // module before it makes chunks, so an imported constant would leave MSW's loader chunk in a live bundle.
+  const mocking =
+    // eslint-disable-next-line no-restricted-syntax -- a build-time literal (vite.shared.ts `define`), not runtime config
+    (import.meta.env.DEV || import.meta.env.NASIKO_MOCKS_COMPILED_IN === true) &&
+    (env.mode === 'mock' || env.partialMocks.length > 0)
   // eslint-disable-next-line no-console -- documented boot log (CLAUDE.md: startup logs the mode)
   console.info(
     `[ui-lab] mode=${env.mode}${env.partialMocks.length ? ` mocked=${env.partialMocks.join(',')}` : ''} · API via Vite proxy (NASIKO_API_URL)`,
   )
   if (mocking) {
     try {
-      // Dynamic import: MSW never ships in a live-only bundle (A22).
+      // Dynamic import, behind a build-time constant: MSW never ships in a live-only bundle (A22).
       const { startMocks } = await import('@nasiko/mocks/browser')
       await startMocks(env)
     } catch (err) {
