@@ -104,14 +104,11 @@ fn detect_buildkit_only_syntax(dockerfile: &str) -> Option<&'static str> {
     if dockerfile.contains("--secret=") {
         return Some("`--secret`");
     }
-    if dockerfile
-        .lines()
-        .any(|l| {
-            let l = l.trim_start();
-            (l.starts_with("RUN ") || l.starts_with("COPY ") || l.starts_with("ADD "))
-                && l.contains("<<")
-        })
-    {
+    if dockerfile.lines().any(|l| {
+        let l = l.trim_start();
+        (l.starts_with("RUN ") || l.starts_with("COPY ") || l.starts_with("ADD "))
+            && l.contains("<<")
+    }) {
         return Some("a heredoc (`<<`) instruction");
     }
     None
