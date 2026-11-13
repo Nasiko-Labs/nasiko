@@ -96,7 +96,16 @@ export function check(dist: string, log: (line: string) => void = console.log): 
       log(`FAIL ${copies} copies of ${name} in the bundle`)
     }
   }
+  // A build an app's config left out on purpose (it writes .vite/omitted-builds.json) has no budget to meet.
+  const omittedFile = join(dist, '.vite/omitted-builds.json')
+  const omitted = new Set<string>(
+    existsSync(omittedFile) ? (JSON.parse(readFileSync(omittedFile, 'utf8')) as string[]) : [],
+  )
   for (const [dir, kb] of Object.entries(builds)) {
+    if (omitted.has(dir)) {
+      log(`skip ${dir}: not in this build`)
+      continue
+    }
     const files = existsSync(join(dist, dir))
       ? readdirSync(join(dist, dir), { recursive: true, encoding: 'utf8' }).filter((f) =>
           f.endsWith('.js'),
