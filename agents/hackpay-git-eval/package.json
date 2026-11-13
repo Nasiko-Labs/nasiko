@@ -1,0 +1,18 @@
+{
+  "name": "hackpay-git-eval",
+  "version": "1.0.4",
+  "private": true,
+  "description": "HackPay Git Eval agent — Nasiko-deployable; Anakin surfs GitHub URLs",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pg": "^8.16.0"
+  }
+}
