@@ -68,14 +68,10 @@ pub struct GatewayConfig {
     /// that keeps arriving is never cut, while a non-streaming call (silent until its
     /// reply is ready) is bounded by it. It is also the deadline for the whole fallback
     /// chain — every attempt and parameter-fix retry together, up to the first streamed
-    /// chunk — so fallbacks never multiply it. Default 300. Keep it below the calling
-    /// agent's own LLM-client timeout, or the agent retries while the router still waits.
+    /// chunk — so fallbacks never multiply it. Unset, it sits just below the calling agent's
+    /// own timeout (`AGENT_CALL_TIMEOUT_SECS` less a small margin), so the agent never
+    /// retries while the router still waits; 300 when that is unset too.
     pub provider_timeout_secs: u64,
-
-    pub max_body_bytes: usize,
-    pub max_inflight_body_bytes: usize,
-    pub attachment_cache_bytes: usize,
-    pub attachment_max_bytes: usize,
 
     /// Interval between provider model-catalog syncs (`GET /models` →
     /// `provider_models`). Provider model lists move slowly — default 86400 (24 h).
@@ -251,10 +247,6 @@ impl Default for GatewayConfig {
             router_decision_ttl_secs: 3600,
             attribution_window_secs: 600,
             provider_timeout_secs: 300,
-            max_body_bytes: 48 * 1024 * 1024,
-            max_inflight_body_bytes: 256 * 1024 * 1024,
-            attachment_cache_bytes: 256 * 1024 * 1024,
-            attachment_max_bytes: 30 * 1024 * 1024,
             model_catalog_sync_interval_secs: 86_400,
             pricing_sync_interval_secs: 86_400,
             openai_api_base: "https://api.openai.com/v1".into(),
@@ -295,13 +287,6 @@ impl Default for GatewayConfig {
 }
 
 impl GatewayConfig {
-    pub fn llm_config_cache_ttl_secs_from_env() -> u64 {
-        std::env::var("LLM_CONFIG_CACHE_TTL")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(Self::default().llm_config_cache_ttl_secs)
-    }
-
     /// Load configuration from the process environment, falling back to [`Default`]
     /// per key.
     pub fn from_env() -> Self {
@@ -359,7 +344,10 @@ impl GatewayConfig {
                 &d.platform_openrouter_api_key,
             ),
             generic_key_fallback,
-            llm_config_cache_ttl_secs: Self::llm_config_cache_ttl_secs_from_env(),
+            llm_config_cache_ttl_secs: std::env::var("LLM_CONFIG_CACHE_TTL")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d.llm_config_cache_ttl_secs),
             redis_url: env_or("REDIS_URL", &d.redis_url),
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
                 .ok()
@@ -378,20 +366,7 @@ impl GatewayConfig {
                     Ok(secs) => Ok(secs),
                     Err(e) => Err(e.to_string()),
                 },
-                d.provider_timeout_secs,
-            ),
-            max_body_bytes: env_usize("LLM_ROUTER_MAX_BODY_BYTES", d.max_body_bytes),
-            max_inflight_body_bytes: env_usize(
-                "LLM_ROUTER_MAX_INFLIGHT_BODY_BYTES",
-                d.max_inflight_body_bytes,
-            ),
-            attachment_cache_bytes: env_usize(
-                "LLM_ROUTER_ATTACHMENT_CACHE_BYTES",
-                d.attachment_cache_bytes,
-            ),
-            attachment_max_bytes: env_usize(
-                "LLM_ROUTER_ATTACHMENT_MAX_BYTES",
-                d.attachment_max_bytes,
+                provider_timeout_below_agent(d.provider_timeout_secs),
             ),
             model_catalog_sync_interval_secs: std::env::var("MODEL_CATALOG_SYNC_INTERVAL_SECS")
                 .ok()
@@ -526,6 +501,31 @@ fn env_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
+}
+
+/// How far below the calling agent's timeout the provider timeout sits, so the router's 504
+/// reaches the agent before the agent gives up on its own.
+const PROVIDER_TIMEOUT_MARGIN_SECS: u64 = 10;
+
+/// The shortest provider timeout derived from the agent's: below it, a healthy but slow
+/// model would fail on every non-streaming call.
+const MIN_PROVIDER_TIMEOUT_SECS: u64 = 30;
+
+/// The provider timeout when `LLM_PROVIDER_TIMEOUT_SECS` is unset: the calling agent's
+/// timeout (`AGENT_CALL_TIMEOUT_SECS`, or the former `ROUTER_AGENT_TIMEOUT_SECS`, read as
+/// the server reads it) less [`PROVIDER_TIMEOUT_MARGIN_SECS`], never under
+/// [`MIN_PROVIDER_TIMEOUT_SECS`]. `fallback` when neither is set — the same way the
+/// attribution window falls back to `NASIKO_FLOW_TIMEOUT_SECS`.
+fn provider_timeout_below_agent(fallback: u64) -> u64 {
+    std::env::var("AGENT_CALL_TIMEOUT_SECS")
+        .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(fallback, |agent| {
+            agent
+                .saturating_sub(PROVIDER_TIMEOUT_MARGIN_SECS)
+                .max(MIN_PROVIDER_TIMEOUT_SECS)
+        })
 }
 
 /// Parse an env var with `f`, warning loudly and falling back on a bad value.
@@ -703,11 +703,32 @@ mod tests {
     fn provider_timeout_defaults_to_300_and_rejects_zero() {
         const KEY: &str = "LLM_PROVIDER_TIMEOUT_SECS";
         unsafe { std::env::remove_var(KEY) };
+        unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
+        unsafe { std::env::remove_var("ROUTER_AGENT_TIMEOUT_SECS") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
         unsafe { std::env::set_var(KEY, "45") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 45);
         unsafe { std::env::set_var(KEY, "0") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
         unsafe { std::env::remove_var(KEY) };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provider_timeout_unset_sits_below_the_agent_timeout() {
+        const AGENT: &str = "AGENT_CALL_TIMEOUT_SECS";
+        unsafe { std::env::remove_var("LLM_PROVIDER_TIMEOUT_SECS") };
+        unsafe { std::env::set_var(AGENT, "180") };
+        let derived = GatewayConfig::from_env().provider_timeout_secs;
+        assert!(derived < 180, "{derived}");
+        assert_eq!(derived, 170);
+        // A very short agent timeout still leaves a slow model a usable floor.
+        unsafe { std::env::set_var(AGENT, "20") };
+        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 30);
+        // An explicit setting wins over the derived one.
+        unsafe { std::env::set_var("LLM_PROVIDER_TIMEOUT_SECS", "90") };
+        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 90);
+        unsafe { std::env::remove_var("LLM_PROVIDER_TIMEOUT_SECS") };
+        unsafe { std::env::remove_var(AGENT) };
     }
 }
