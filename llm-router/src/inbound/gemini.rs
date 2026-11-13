@@ -109,38 +109,15 @@ impl InboundParser for GeminiInbound {
                             .get(name)
                             .cloned()
                             .unwrap_or_else(|| name.to_string());
-                        oa_messages.push(json!({
-                            "role": "tool",
-                            "tool_call_id": id,
-                            "content": function_response_text(fr.get("response")),
-                        }));
+                        oa_messages.push(function_response_message(fr, &id)?);
                     } else if let Some(t) = part.get("text").and_then(Value::as_str) {
                         if !t.is_empty() {
                             user_parts.push(ContentPart::Text(t.to_string()));
                         }
                     } else if let Some(inline) = part.get("inlineData") {
-                        let mime_type =
-                            inline
-                                .get("mimeType")
-                                .and_then(Value::as_str)
-                                .ok_or_else(|| {
-                                    GatewayError::BadRequest(
-                                        "inlineData missing mimeType".to_string(),
-                                    )
-                                })?;
-                        let data = inline.get("data").and_then(Value::as_str).ok_or_else(|| {
-                            GatewayError::BadRequest("inlineData missing data".to_string())
-                        })?;
-                        let source = DataSource::Inline {
-                            media_type: mime_type.to_string(),
-                            data: data.to_string(),
-                        };
-
-                        user_parts.push(gemini_inline_part(mime_type, source)?);
+                        user_parts.push(inline_data_part(inline)?);
                     } else if part.get("fileData").is_some() {
-                        return Err(GatewayError::BadRequest(
-                            "unsupported content part type: 'fileData'".to_string(),
-                        ));
+                        return Err(file_data_refused());
                     } else {
                         return Err(GatewayError::BadRequest(format!(
                             "unsupported gemini content part: {part}"
@@ -151,9 +128,7 @@ impl InboundParser for GeminiInbound {
                     let content = parts_to_content_value(&user_parts);
                     oa_messages.push(json!({ "role": "user", "content": content }));
                 } else if !had_fr {
-                    return Err(GatewayError::BadRequest(
-                        "user message cannot be empty".to_string(),
-                    ));
+                    oa_messages.push(json!({ "role": "user", "content": "" }));
                 }
             }
         }
@@ -235,7 +210,7 @@ impl InboundParser for GeminiInbound {
         if let Some(u) = usage {
             out["usageMetadata"] = usage_metadata(&u);
         }
-        out
+        with_identity(out, &resp.id, &resp.model)
     }
 
     fn chat_stream_renderer(&self) -> Box<dyn ChatStreamRenderer> {
@@ -310,6 +285,59 @@ fn gemini_inline_part(mime_type: &str, source: DataSource) -> Result<ContentPart
     }
 }
 
+fn inline_data_part(inline: &Value) -> Result<ContentPart, GatewayError> {
+    let mime_type = inline
+        .get("mimeType")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::BadRequest("inlineData missing mimeType".to_string()))?;
+    let data = inline
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GatewayError::BadRequest("inlineData missing data".to_string()))?;
+    let source = DataSource::from_inline(mime_type, data);
+    let mime_type = source.media_type().unwrap_or_default().to_owned();
+    gemini_inline_part(&mime_type, source)
+}
+
+fn file_data_refused() -> GatewayError {
+    GatewayError::BadRequest(
+        "unsupported content part type: 'fileData'; send the file's bytes as inlineData"
+            .to_string(),
+    )
+}
+
+fn function_response_message(fr: &Value, tool_call_id: &str) -> Result<Value, GatewayError> {
+    let text = function_response_text(fr.get("response"));
+    let media = fr
+        .get("parts")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if media.is_empty() {
+        return Ok(json!({ "role": "tool", "tool_call_id": tool_call_id, "content": text }));
+    }
+    let mut parts = Vec::with_capacity(media.len() + 1);
+    if !text.is_empty() {
+        parts.push(ContentPart::Text(text));
+    }
+    for part in media {
+        if let Some(inline) = part.get("inlineData") {
+            parts.push(inline_data_part(inline)?);
+        } else if part.get("fileData").is_some() {
+            return Err(file_data_refused());
+        } else {
+            return Err(GatewayError::BadRequest(format!(
+                "unsupported gemini functionResponse part: {part}"
+            )));
+        }
+    }
+    Ok(json!({
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": parts_to_content_value(&parts),
+    }))
+}
+
 fn parts_text(parts: Option<&Value>) -> String {
     parts
         .and_then(Value::as_array)
@@ -362,11 +390,30 @@ fn gemini_finish_reason(finish_reason: &str) -> &'static str {
 }
 
 fn usage_metadata(u: &Usage) -> Value {
-    json!({
+    let u = u.clone().into_cache_inclusive();
+    let mut metadata = json!({
         "promptTokenCount": u.prompt_tokens.unwrap_or(0),
         "candidatesTokenCount": u.completion_tokens.unwrap_or(0),
         "totalTokenCount": u.total_tokens.unwrap_or(0),
-    })
+    });
+    if let Some(cached) = u
+        .prompt_tokens_details
+        .and_then(|d| d.cached_tokens)
+        .filter(|&n| n > 0)
+    {
+        metadata["cachedContentTokenCount"] = json!(cached);
+    }
+    metadata
+}
+
+fn with_identity(mut event: Value, id: &str, model: &str) -> Value {
+    if !model.is_empty() {
+        event["modelVersion"] = json!(model);
+    }
+    if !id.is_empty() {
+        event["responseId"] = json!(id);
+    }
+    event
 }
 
 // ── IR stream → Gemini SSE (stateful for tool accumulation) ──────────────────
@@ -386,6 +433,8 @@ struct GeminiStreamRenderer {
     tool_pos: HashMap<i64, usize>,
     finish_reason: Option<String>,
     usage: Option<Usage>,
+    id: String,
+    model: String,
 }
 
 impl ChatStreamRenderer for GeminiStreamRenderer {
@@ -395,6 +444,12 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
         if let Some(u) = &chunk.usage {
             self.usage = Some(u.clone());
         }
+        if !chunk.id.is_empty() {
+            self.id = chunk.id;
+        }
+        if !chunk.model.is_empty() {
+            self.model = chunk.model;
+        }
 
         if let Some(choice) = chunk.choices.first() {
             let delta = &choice.delta;
@@ -402,9 +457,13 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
             if let Some(text) = &delta.content
                 && !text.is_empty()
             {
-                let event = json!({
-                    "candidates": [{ "content": { "role": "model", "parts": [{ "text": text }] } }]
-                });
+                let event = with_identity(
+                    json!({
+                        "candidates": [{ "content": { "role": "model", "parts": [{ "text": text }] } }]
+                    }),
+                    &self.id,
+                    &self.model,
+                );
                 out.push(format!("data: {event}\n\n"));
             }
 
@@ -460,6 +519,7 @@ impl ChatStreamRenderer for GeminiStreamRenderer {
         if let Some(u) = &self.usage {
             event["usageMetadata"] = usage_metadata(u);
         }
+        let event = with_identity(event, &self.id, &self.model);
         vec![format!("data: {event}\n\n")]
     }
 }
@@ -569,6 +629,33 @@ mod tests {
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
         assert_eq!(v["usageMetadata"]["promptTokenCount"], 5);
         assert_eq!(v["usageMetadata"]["totalTokenCount"], 7);
+        assert!(v["usageMetadata"].get("cachedContentTokenCount").is_none());
+    }
+
+    #[test]
+    fn a_reply_served_from_cache_reports_gemini_usage_with_the_cached_count() {
+        for usage in [
+            json!({ "prompt_tokens": 4, "completion_tokens": 75, "total_tokens": 79,
+                    "cache_read_input_tokens": 10431 }),
+            json!({ "prompt_tokens": 10435, "completion_tokens": 75, "total_tokens": 10510,
+                    "prompt_tokens_details": { "cached_tokens": 10431 } }),
+        ] {
+            let resp: ChatResponse = serde_json::from_value(json!({
+                "id": "chatcmpl-1", "object": "chat.completion", "model": "m",
+                "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                "usage": usage.clone()
+            }))
+            .unwrap();
+
+            let v = GeminiInbound.render_chat_response(resp);
+
+            assert_eq!(
+                v["usageMetadata"],
+                json!({ "promptTokenCount": 10435, "candidatesTokenCount": 75,
+                        "totalTokenCount": 10510, "cachedContentTokenCount": 10431 }),
+                "{usage}"
+            );
+        }
     }
 
     #[test]
@@ -587,6 +674,63 @@ mod tests {
         assert_eq!(fc["args"]["text"], "hi");
         // Gemini reports STOP even for tool calls.
         assert_eq!(v["candidates"][0]["finishReason"], "STOP");
+    }
+
+    #[test]
+    fn a_reply_names_the_model_that_answered_and_its_response_id() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "id": "msg_01abc", "object": "chat.completion", "model": "claude-haiku-5-5",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+
+        let v = GeminiInbound.render_chat_response(resp);
+
+        assert_eq!(v["modelVersion"], "claude-haiku-5-5");
+        assert_eq!(v["responseId"], "msg_01abc");
+    }
+
+    #[test]
+    fn a_reply_without_an_id_or_model_carries_neither_field() {
+        let resp: ChatResponse = serde_json::from_value(json!({
+            "id": "", "object": "chat.completion", "model": "",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "hi" }, "finish_reason": "stop" }]
+        }))
+        .unwrap();
+
+        let v = GeminiInbound.render_chat_response(resp);
+
+        assert!(v.get("modelVersion").is_none(), "{v}");
+        assert!(v.get("responseId").is_none(), "{v}");
+    }
+
+    #[test]
+    fn every_stream_event_names_the_model_and_response_id() {
+        let mut r = GeminiInbound.chat_stream_renderer();
+        let mut blank = text_chunk("");
+        blank.id = String::new();
+        blank.model = String::new();
+
+        let events: Vec<Value> = [
+            r.render(text_chunk("Hel")),
+            r.render(blank.clone()),
+            r.render({
+                let mut later = blank;
+                later.choices[0].delta.content = Some("lo".into());
+                later
+            }),
+            r.finish(),
+        ]
+        .concat()
+        .iter()
+        .map(|frame| serde_json::from_str(frame.trim().strip_prefix("data: ").unwrap()).unwrap())
+        .collect();
+
+        assert_eq!(events.len(), 3, "{events:?}");
+        for event in &events {
+            assert_eq!(event["modelVersion"], "gemini-1.5-pro", "{event}");
+            assert_eq!(event["responseId"], "chatcmpl-s", "{event}");
+        }
     }
 
     // ── streaming renderer (IR chunks → Gemini SSE) ───────────────────────────
@@ -730,6 +874,64 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_user_turn_is_forwarded_for_the_provider_to_judge() {
+        for turn in [
+            json!({ "role": "user", "parts": [] }),
+            json!({ "role": "user" }),
+            json!({ "role": "user", "parts": [{ "text": "" }] }),
+        ] {
+            let req = GeminiInbound
+                .parse_chat(json!({ "contents": [turn.clone()] }))
+                .unwrap();
+
+            assert_eq!(req.messages.len(), 1, "{turn}");
+            assert_eq!(req.messages[0].role, "user", "{turn}");
+            assert_eq!(req.messages[0].content, Some(json!("")), "{turn}");
+        }
+    }
+
+    #[test]
+    fn a_turn_of_only_function_responses_adds_no_empty_user_message() {
+        let req = GeminiInbound
+            .parse_chat(json!({ "contents": [
+                { "role": "user", "parts": [{ "text": "Read it." }] },
+                { "role": "model", "parts": [{ "functionCall": { "name": "read_file", "args": {} } }] },
+                { "role": "user", "parts": [{ "functionResponse": { "name": "read_file", "response": { "text": "7781" } } }] }
+            ]}))
+            .unwrap();
+
+        let roles: Vec<&str> = req.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool"]);
+    }
+
+    #[test]
+    fn an_inline_data_mime_type_is_normalized_before_it_is_mapped() {
+        let req = GeminiInbound
+            .parse_chat(json!({
+                "contents": [{
+                    "role": "user",
+                    "parts": [
+                        { "inlineData": { "mimeType": "Image/PNG", "data": "QUJD" } },
+                        { "inlineData": { "mimeType": "application/pdf; name=q3.pdf", "data": "QUJD" } }
+                    ]
+                }]
+            }))
+            .unwrap();
+
+        let parts = req.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(parts[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(
+            parts[1]["file"]["file_data"],
+            "data:application/pdf;base64,QUJD"
+        );
+    }
+
+    #[test]
     fn parse_chat_with_inline_data_pdf() {
         let req = GeminiInbound
             .parse_chat(json!({
@@ -837,16 +1039,105 @@ mod tests {
             }))
             .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+        assert!(err.to_string().contains("inlineData"), "{err}");
+    }
 
-        // empty user message
-        let err_empty = GeminiInbound
-            .parse_chat(json!({
-                "contents": [{
-                    "role": "user",
-                    "parts": []
-                }]
-            }))
-            .unwrap_err();
-        assert!(matches!(err_empty, GatewayError::BadRequest(_)));
+    fn tool_turn(function_response: Value) -> Value {
+        json!({ "contents": [
+            { "role": "user", "parts": [{ "text": "What colours are in the picture?" }] },
+            { "role": "model", "parts": [{ "functionCall": { "name": "read_file", "args": { "path": "img/fact.png" } } }] },
+            { "role": "user", "parts": [{ "functionResponse": function_response }] }
+        ]})
+    }
+
+    #[test]
+    fn media_in_a_function_response_reaches_the_tool_message() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "response": { "result": "image img/fact.png" },
+                "parts": [
+                    { "inlineData": { "mimeType": "image/png", "data": "QUJD", "displayName": "fact.png" } },
+                    { "inlineData": { "mimeType": "application/pdf", "data": "JVBERi0=" } }
+                ]
+            })))
+            .unwrap();
+
+        let roles: Vec<&str> = req.messages.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool"]);
+        let tool = &req.messages[2];
+        assert_eq!(
+            tool.tool_call_id.as_deref(),
+            req.messages[1]
+                .tool_calls
+                .as_ref()
+                .map(|c| c[0].id.as_str())
+        );
+        let parts = tool.content.as_ref().unwrap().as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0]["text"], "image img/fact.png");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,QUJD");
+        assert_eq!(
+            parts[2]["file"]["file_data"],
+            "data:application/pdf;base64,JVBERi0="
+        );
+    }
+
+    #[test]
+    fn a_function_response_of_only_media_carries_no_empty_text() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "parts": [{ "inlineData": { "mimeType": "image/png", "data": "QUJD" } }]
+            })))
+            .unwrap();
+
+        let tool = req.messages[2]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(tool.len(), 1);
+        assert_eq!(tool[0]["image_url"]["url"], "data:image/png;base64,QUJD");
+    }
+
+    #[test]
+    fn a_function_response_without_parts_stays_plain_text() {
+        let req = GeminiInbound
+            .parse_chat(tool_turn(json!({
+                "name": "read_file",
+                "response": { "result": "7781" },
+                "parts": []
+            })))
+            .unwrap();
+
+        assert_eq!(req.messages[2].content, Some(json!("7781")));
+    }
+
+    #[test]
+    fn a_function_response_part_the_router_cannot_carry_is_refused_by_name() {
+        for (part, named) in [
+            (
+                json!({ "fileData": { "fileUri": "https://generativelanguage.googleapis.com/v1beta/files/abc", "mimeType": "image/png" } }),
+                "fileData",
+            ),
+            (
+                json!({ "inlineData": { "mimeType": "application/x-tar", "data": "QUJD" } }),
+                "application/x-tar",
+            ),
+            (json!({ "inlineData": { "data": "QUJD" } }), "mimeType"),
+            (json!({ "text": "a caption" }), "functionResponse part"),
+        ] {
+            let err = GeminiInbound
+                .parse_chat(tool_turn(json!({
+                    "name": "read_file",
+                    "response": { "result": "x" },
+                    "parts": [part.clone()]
+                })))
+                .unwrap_err();
+            assert!(matches!(err, GatewayError::BadRequest(_)), "{part}");
+            assert!(err.to_string().contains(named), "{part}: {err}");
+        }
     }
 }

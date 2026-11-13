@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::agent_scaling::{AgentScaling, SingleReplica};
+use crate::chat::attachment_store::{ChatUploadStore, SwappableAttachmentStore};
 use crate::chat::turn_artifacts::{NoTurnArtifacts, SwappableTurnArtifactSource};
 use crate::prompt_context::SwappablePromptContext;
 use crate::telemetry::GenAiMetrics;
@@ -107,6 +108,9 @@ pub struct AppState {
     /// same reason `prompt_context` does — see that field's doc comment and the
     /// `chat::turn_artifacts` module docs.
     pub turn_artifacts: Arc<SwappableTurnArtifactSource>,
+    pub attachment_store: Arc<SwappableAttachmentStore>,
+    pub marker_signer: Option<Arc<nasiko_llm_router::attachments::MarkerSigner>>,
+    pub llm_config_cache: Arc<nasiko_llm_router::ConfigCache>,
     /// PACMS candidate/query embedding cache for the history enrichment done
     /// directly in `a2a_dispatch.rs` (shared across requests, like the one
     /// `OssRoutingEngine` holds internally for its own `fetch_pacms` call —
@@ -315,6 +319,12 @@ impl AppState {
                 Arc::new(crate::agent_lifecycle::NoopAgentDeletionHook),
             ));
         let turn_artifacts = Arc::new(SwappableTurnArtifactSource::new(Arc::new(NoTurnArtifacts)));
+        let attachment_store = Arc::new(SwappableAttachmentStore::new(Arc::new(
+            ChatUploadStore::new(oci_storage.clone()),
+        )));
+        let marker_signer =
+            nasiko_llm_router::attachments::MarkerSigner::from_secret(&config.agent_jwt_secret)
+                .map(Arc::new);
         let history_embedding_cache: TextEmbeddingCache = Arc::new(DashMap::new());
 
         let flow_config = FlowConfig {
@@ -455,6 +465,13 @@ impl AppState {
             agent_deletion_hook,
             agent_scaling,
             turn_artifacts,
+            attachment_store,
+            marker_signer,
+            llm_config_cache: Arc::new(nasiko_llm_router::ConfigCache::new(
+                std::time::Duration::from_secs(
+                    nasiko_llm_router::config::GatewayConfig::llm_config_cache_ttl_secs_from_env(),
+                ),
+            )),
             history_embedding_cache,
             observability,
             github_svc,

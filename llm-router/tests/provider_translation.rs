@@ -1,4 +1,4 @@
-//! Cross-provider translation comparison harness — **live, report-only**.
+//! Cross-provider translation comparison harness — **live**.
 //!
 //! The hub-and-spoke router lets an agent write against one provider's SDK (the
 //! *client format*, X) while the LLM call is actually served by a different provider
@@ -29,7 +29,9 @@
 //! cargo test -p nasiko-llm-router --test provider_translation -- --ignored --nocapture
 //! ```
 //!
-//! A pair whose keys are absent prints a SKIP line and passes. Each pair also dumps a
+//! A pair whose keys are absent fails as NOT RUN, and a pair fails when any translated call
+//! errors or a translated media answer lacks the fact only the attachment holds; every
+//! other answer is only reported. Each pair also dumps a
 //! JSON report to `target/provider_translation_report/{x}_to_{y}.json` (override the
 //! directory with `NASIKO_TRANSLATION_REPORT_DIR`).
 //!
@@ -48,21 +50,19 @@
 //!
 //! ## What this harness does not cover
 //!
-//! * **Bedrock.** [`Provider`] has no Bedrock arm — it uses SigV4-style auth and a
-//!   different request envelope, so adding it is more than another enum variant. The
-//!   Converse spoke therefore has unit coverage only, and no live confirmation that it
-//!   carries image or document blocks. Stated here rather than left to be discovered.
+//! * **Bedrock as a client format.** Bedrock has no SDK dialect of its own, so it is
+//!   only a backend: `media_reaches_bedrock` sends the media scenarios in OpenAI shape
+//!   through the Converse spoke (`BEDROCK_API_KEY`, `BEDROCK_BASE_URL`, `BEDROCK_MODEL`).
 //! * **Streaming.** Non-streaming responses only; the SSE renderers are unit-tested.
-//! * **Pass/fail.** Report-only by design, and deliberately not a CI gate: it costs
-//!   money per run, needs three real keys, and its output is judged by a human.
+//! * **CI.** Deliberately not a CI gate: it costs money per run and needs real keys.
 
 use std::fs;
 use std::path::PathBuf;
 
 use nasiko_llm_router::config::GatewayConfig;
 use nasiko_llm_router::inbound::{InboundFormat, inbound_for};
-use nasiko_llm_router::providers::provider_for;
-use nasiko_llm_router::resolver::ResolvedConfig;
+use nasiko_llm_router::providers::{ProviderDialect, provider_for};
+use nasiko_llm_router::resolver::{CustomEndpoint, ResolvedConfig};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -189,6 +189,7 @@ struct Scenario {
     /// What a correct answer contains. Printed with every result so the human reading
     /// the report can tell "the model saw it" from "the model guessed".
     expect: Option<&'static str>,
+    facts: &'static [&'static str],
 }
 
 fn scenarios() -> Vec<Scenario> {
@@ -201,6 +202,7 @@ fn scenarios() -> Vec<Scenario> {
             tool: None,
             media: None,
             expect: Some("Paris"),
+            facts: &[],
         },
         // Tool call — structure (name + args) stays stable even when wording drifts,
         // and exercises the hardest parts of the translation (tool schema + tool_use).
@@ -223,6 +225,7 @@ fn scenarios() -> Vec<Scenario> {
             }),
             media: None,
             expect: Some("a translate_text call with target_language = Hindi"),
+            facts: &[],
         },
         // Image → the attachment must survive the whole round trip. Two colours in a
         // fixed order: a model that never received the image cannot land both.
@@ -237,6 +240,7 @@ fn scenarios() -> Vec<Scenario> {
                 b64: IMAGE_PNG_B64,
             }),
             expect: Some("blue yellow"),
+            facts: &["blue", "yellow"],
         },
         // Document → same idea, and the figure appears nowhere but inside the PDF.
         Scenario {
@@ -251,6 +255,7 @@ fn scenarios() -> Vec<Scenario> {
                 filename: "report.pdf",
             }),
             expect: Some("47 million"),
+            facts: &["47"],
         },
     ]
 }
@@ -421,14 +426,19 @@ async fn direct_call(
 
 /// The router's translation path via direct composition: parse the client's X-shaped
 /// body into IR, run it through provider Y, render the IR response back into X's shape.
+struct Backend<'a> {
+    name: &'a str,
+    endpoint: Option<CustomEndpoint>,
+    model: &'a str,
+    key: &'a str,
+}
+
 async fn translated_call(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     client: Provider,
-    backend: Provider,
+    backend: &Backend<'_>,
     x_body: Value,
-    backend_model: &str,
-    backend_key: &str,
 ) -> Result<Value, String> {
     let inbound = inbound_for(client.format());
     let ir_req = inbound
@@ -438,10 +448,10 @@ async fn translated_call(
     let resolved = ResolvedConfig {
         agent_id: String::new(),
         compress_enabled: false,
-        provider: backend.label().to_string(),
-        model: backend_model.to_string(),
-        litellm_model: format!("{}/{}", backend.label(), backend_model),
-        api_key: backend_key.to_string(),
+        provider: backend.name.to_string(),
+        model: backend.model.to_string(),
+        litellm_model: format!("{}/{}", backend.name, backend.model),
+        api_key: backend.key.to_string(),
         fallback_models: Vec::new(),
         temperature: Some(TEMPERATURE),
         max_tokens: Some(MAX_TOKENS),
@@ -451,7 +461,7 @@ async fn translated_call(
         tier2_model: None,
         tier3_model: None,
         platform_paid: true,
-        custom_endpoint: None,
+        custom_endpoint: backend.endpoint.clone(),
         is_coding_agent: false,
     };
 
@@ -461,11 +471,11 @@ async fn translated_call(
         http,
         cfg,
     )
-    .map_err(|e| format!("provider_for({}): {e}", backend.label()))?;
+    .map_err(|e| format!("provider_for({}): {e}", backend.name))?;
     let ir_resp = provider
         .chat(&ir_req, &resolved)
         .await
-        .map_err(|e| format!("backend chat ({}): {e}", backend.label()))?;
+        .map_err(|e| format!("backend chat ({}): {e}", backend.name))?;
 
     Ok(inbound.render_chat_response(ir_resp))
 }
@@ -758,7 +768,7 @@ fn dump_json(client: Provider, backend: Provider, cases: &[CaseReport]) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// For one directed pair (client X ≠ backend Y): over every scenario, produce the
-/// three results, print them, and dump the JSON report. Report-only — always passes.
+/// three results, print them, and dump the JSON report. Fails when a translated call errors.
 async fn run_pair(client: Provider, backend: Provider) {
     assert!(
         client != backend,
@@ -766,14 +776,13 @@ async fn run_pair(client: Provider, backend: Provider) {
     );
 
     let (Some(x_key), Some(y_key)) = (client.api_key(), backend.api_key()) else {
-        eprintln!(
-            "SKIP {} → {}: set both {} and {} to run this comparison",
+        panic!(
+            "NOT RUN {} → {}: set both {} and {} to run this comparison",
             client.label(),
             backend.label(),
             client.key_env(),
             backend.key_env(),
         );
-        return;
     };
 
     let cfg = GatewayConfig::from_env();
@@ -790,6 +799,7 @@ async fn run_pair(client: Provider, backend: Provider) {
     );
 
     let mut cases = Vec::new();
+    let mut failed = Vec::new();
     for s in scenarios() {
         let pure_x = ResultRecord::from_call(
             format!("pure_{}", client.label()),
@@ -826,13 +836,17 @@ async fn run_pair(client: Provider, backend: Provider) {
                 &http,
                 &cfg,
                 client,
-                backend,
+                &Backend {
+                    name: backend.label(),
+                    endpoint: None,
+                    model: &y_model,
+                    key: &y_key,
+                },
                 native_request(client, &s, &x_model),
-                &y_model,
-                &y_key,
             )
             .await,
         );
+        failed.extend(translated_failure(&s, &translated));
 
         let case = CaseReport {
             scenario: s.name.to_string(),
@@ -854,10 +868,47 @@ async fn run_pair(client: Provider, backend: Provider) {
     }
 
     dump_json(client, backend, &cases);
+
+    assert!(
+        failed.is_empty(),
+        "{} → {} translated calls failed:\n{}",
+        client.label(),
+        backend.label(),
+        failed.join("\n")
+    );
+}
+
+fn translated_failure(s: &Scenario, r: &ResultRecord) -> Option<String> {
+    if !r.ok {
+        return Some(format!(
+            "{}: {}",
+            s.name,
+            r.error.as_deref().unwrap_or("<unknown>")
+        ));
+    }
+    let text = r.summary.as_ref().map_or("", |summary| &summary.text);
+    missing_fact(text, s.facts)
+        .map(|fact| format!("{}: the answer {text:?} does not contain {fact:?}", s.name))
+}
+
+fn missing_fact(text: &str, facts: &[&'static str]) -> Option<&'static str> {
+    let text = text.to_lowercase();
+    let mut rest = text.as_str();
+    for &fact in facts {
+        let Some(at) = rest.find(fact) else {
+            return Some(fact);
+        };
+        rest = &rest[at + fact.len()..];
+    }
+    None
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
+}
+
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -898,6 +949,61 @@ async fn gemini_to_openai() {
 #[ignore = "live: needs GEMINI_API_KEY + ANTHROPIC_API_KEY"]
 async fn gemini_to_anthropic() {
     run_pair(Provider::Gemini, Provider::Anthropic).await;
+}
+
+#[tokio::test]
+#[ignore = "live: needs BEDROCK_API_KEY + BEDROCK_BASE_URL"]
+async fn media_reaches_bedrock() {
+    let (Some(key), Some(base_url)) = (
+        non_empty_env("BEDROCK_API_KEY"),
+        non_empty_env("BEDROCK_BASE_URL"),
+    ) else {
+        panic!(
+            "NOT RUN openai → bedrock: set BEDROCK_API_KEY and BEDROCK_BASE_URL \
+             (and optionally BEDROCK_MODEL) to run this check"
+        );
+    };
+    let model = env_or(
+        "BEDROCK_MODEL",
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    );
+    let backend = Backend {
+        name: "bedrock",
+        endpoint: Some(CustomEndpoint {
+            base_url,
+            dialect: ProviderDialect::BedrockConverse,
+        }),
+        model: &model,
+        key: &key,
+    };
+    let cfg = GatewayConfig::from_env();
+    let http = reqwest::Client::new();
+
+    let mut failed = Vec::new();
+    for s in scenarios().into_iter().filter(|s| s.media.is_some()) {
+        let translated = ResultRecord::from_call(
+            "translated_openai_to_bedrock".to_string(),
+            Provider::OpenAi,
+            translated_call(
+                &http,
+                &cfg,
+                Provider::OpenAi,
+                &backend,
+                openai_request(&s, &model),
+            )
+            .await,
+        );
+        print_result(
+            &format!("{} — openai → bedrock ({model})", s.name),
+            &translated,
+        );
+        failed.extend(translated_failure(&s, &translated));
+    }
+    assert!(
+        failed.is_empty(),
+        "openai → bedrock translated calls failed:\n{}",
+        failed.join("\n")
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1001,5 +1107,62 @@ fn media_fixtures_are_well_formed() {
     assert!(
         String::from_utf8_lossy(&pdf).contains("47 million"),
         "pdf fixture no longer states the expected figure"
+    );
+}
+
+#[test]
+fn a_media_answer_must_state_the_facts_only_the_attachment_holds() {
+    let scenarios = scenarios();
+    let by_name = |name: &str| {
+        scenarios
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("no {name} scenario"))
+    };
+    let answered = |text: &str| {
+        ResultRecord::from_call(
+            "translated".to_string(),
+            Provider::OpenAi,
+            Ok(json!({ "choices": [{ "message": { "content": text } }] })),
+        )
+    };
+    let image = by_name("image_describe");
+    let pdf = by_name("pdf_describe");
+
+    assert_eq!(translated_failure(image, &answered("Blue, yellow.")), None);
+    assert_eq!(translated_failure(pdf, &answered("$47 million")), None);
+    assert_eq!(
+        translated_failure(image, &answered("Yellow blue")),
+        Some(r#"image_describe: the answer "Yellow blue" does not contain "yellow""#.to_string())
+    );
+    assert_eq!(
+        translated_failure(image, &answered("I can't see any image.")),
+        Some(
+            r#"image_describe: the answer "I can't see any image." does not contain "blue""#
+                .to_string()
+        )
+    );
+    assert_eq!(
+        translated_failure(pdf, &answered("Revenue was strong this quarter.")),
+        Some(
+            r#"pdf_describe: the answer "Revenue was strong this quarter." does not contain "47""#
+                .to_string()
+        )
+    );
+    assert_eq!(
+        translated_failure(
+            pdf,
+            &ResultRecord::from_call(
+                "translated".to_string(),
+                Provider::OpenAi,
+                Err("http 400".to_string()),
+            ),
+        ),
+        Some("pdf_describe: http 400".to_string())
+    );
+    assert_eq!(
+        translated_failure(by_name("text_qa"), &answered("Lyon")),
+        None,
+        "a scenario without facts is report-only"
     );
 }
