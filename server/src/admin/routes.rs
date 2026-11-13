@@ -9,6 +9,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::agent_scaling::{AgentDeploy, DeployPlan, ReplicaBounds};
+use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::catalog::agent_secrets;
 use crate::state::AppState;
@@ -584,6 +585,18 @@ async fn start(
         Ok(agent_id) => agent_id,
         Err(resp) => return resp,
     };
+    // A parked agent is woken as its next call would wake it: its address and idle clock come back
+    // and the answer waits until it serves, or it stays parked. Before the lifecycle lock, which
+    // the wake takes itself; inline, so EE's credit gate can still answer a refused wake.
+    if is_parked(&state, agent_id).await {
+        if let Err(message) = state.agent_wake.before_forward(agent_id, None).await {
+            return (StatusCode::SERVICE_UNAVAILABLE, message).into_response();
+        }
+        // Still parked: no wake applies to it (a harness agent's); it is started below as before.
+        if !is_parked(&state, agent_id).await {
+            return StatusCode::OK.into_response();
+        }
+    }
     let _lock = match lock_for_lifecycle(&state, agent_id, &name).await {
         Ok(lock) => lock,
         Err(resp) => return resp,
