@@ -690,7 +690,9 @@ an agent (name or UUID) to that step, or \"-\" to auto-assign it; omit --agent e
 auto-assign every step via the routing engine.\n\n\
 --instruction is mutually exclusive with --step/--agent: it sends the whole sentence to the \
 MAF planner (the same one the web UI uses), which splits it into steps and picks each step's \
-agent. --name/--description, when given, replace the planner's own."
+agent. --name/--description, when given, replace the planner's own.\n\n\
+--draft saves the result as a draft instead of deploying it live — review it with `workflow \
+get`, change it with `workflow update`, then `workflow promote` when it's ready."
     )]
     Create {
         #[arg(long)]
@@ -706,6 +708,9 @@ agent. --name/--description, when given, replace the planner's own."
         /// One compound instruction to split into steps via the MAF planner
         #[arg(long, conflicts_with_all = ["steps", "agents"])]
         instruction: Option<String>,
+        /// Save as a draft instead of deploying it live
+        #[arg(long)]
+        draft: bool,
     },
     /// Show a workflow's steps and metadata
     Get {
@@ -760,6 +765,16 @@ server-side patch API, so behind the scenes this still sends the full step list.
         workflow: String,
         #[arg(short, long)]
         force: bool,
+    },
+    /// List your MAF drafts (unfinished or unpromoted workflows)
+    Drafts {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Deploy a draft: flips it live with no other change
+    Promote {
+        /// Draft name or UUID
+        workflow: String,
     },
     /// Queue a run of a workflow
     Run {
@@ -1709,12 +1724,14 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     steps,
                     agents,
                     instruction,
+                    draft,
                 } => commands::maf::workflow_create(
                     name.as_deref(),
                     description.as_deref(),
                     &steps,
                     &agents,
                     instruction.as_deref(),
+                    draft,
                 ),
                 MafWorkflowCommands::Get { workflow, json } => {
                     commands::maf::workflow_get(&workflow, json)
@@ -1746,6 +1763,10 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 ),
                 MafWorkflowCommands::Delete { workflow, force } => {
                     commands::maf::workflow_delete(&workflow, force)
+                }
+                MafWorkflowCommands::Drafts { json } => commands::maf::workflow_drafts(json),
+                MafWorkflowCommands::Promote { workflow } => {
+                    commands::maf::workflow_promote(&workflow)
                 }
                 MafWorkflowCommands::Run {
                     workflow,

@@ -9,7 +9,7 @@ use anyhow::Result;
 use nasiko_utils::term;
 use serde_json::{Value, json};
 
-use crate::api::{Client, unwrap_data};
+use crate::api::{Attempt, Client, unwrap_data};
 use crate::commands::agents::resolve_agent_id;
 use crate::commands::local_agents::maf_hint;
 
@@ -139,6 +139,61 @@ fn plan_and_create(
         "steps": steps,
     });
     unwrap_data(client.post_json("/maf/workflows", &body)?)
+}
+
+/// `POST /maf/workflow/draft` — the bare-sentence row `save_generated_as_draft`/
+/// `save_steps_as_draft` then fill in with `PUT`. Returns the new draft's id.
+fn save_bare_draft(client: &Client, instruction: &str) -> Result<String> {
+    let draft: Value = unwrap_data(client.post_json(
+        "/maf/workflow/draft",
+        &json!({ "instruction": instruction }),
+    )?)?;
+    draft
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("draft response did not include an id"))
+}
+
+/// Plans `instruction` like [`plan_and_create`], but saves the result as a draft instead of a
+/// live workflow — the CLI counterpart of the web UI's Generate-then-"Save draft" action.
+/// `nasiko maf workflow promote` deploys it once it's ready.
+fn save_generated_as_draft(
+    client: &Client,
+    instruction: &str,
+    name: Option<&str>,
+    description: Option<&str>,
+) -> Result<Value> {
+    let draft_id = save_bare_draft(client, instruction)?;
+    let (steps, plan_name, plan_description) = plan_steps(client, instruction)?;
+    let body = json!({
+        "name": name.or(plan_name.as_deref()),
+        "description": description.or(plan_description.as_deref()),
+        "steps": steps,
+    });
+    unwrap_data(client.put_json(&format!("/maf/workflow/{draft_id}"), &body)?)
+}
+
+/// Saves caller-given steps as a draft instead of a live workflow — the CLI counterpart of the
+/// web UI's "Save draft" action on hand-typed steps.
+fn save_steps_as_draft(
+    client: &Client,
+    name: Option<&str>,
+    description: Option<&str>,
+    step_bodies: Vec<Value>,
+) -> Result<Value> {
+    // The draft needs some text before it has steps (`save_bare_draft`'s `instruction`); the
+    // name or description stands in for it when given, else the steps themselves.
+    let working_title = name.or(description).map(str::to_string).unwrap_or_else(|| {
+        step_bodies
+            .iter()
+            .filter_map(|s| s.get("task_description").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("; ")
+    });
+    let draft_id = save_bare_draft(client, &working_title)?;
+    let body = json!({ "name": name, "description": description, "steps": step_bodies });
+    unwrap_data(client.put_json(&format!("/maf/workflow/{draft_id}"), &body)?)
 }
 
 /// One step of the plan, as stored in the workflow definition.
@@ -422,13 +477,46 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
     }
     if workflows.is_empty() {
         term::print_info(&format!(
-            "No MAF workflows. Create one with `{}`.",
-            term::cyan(&format!("{} workflow create", maf_hint()))
+            "No MAF workflows. Create one with `{}`, or check `{}` for unfinished ones.",
+            term::cyan(&format!("{} workflow create", maf_hint())),
+            term::cyan(&format!("{} workflow drafts", maf_hint()))
         ));
         return Ok(());
     }
     println!("Your MAF workflows:");
-    for w in &workflows {
+    print_workflow_rows(&workflows);
+    print_truncation_note(workflows.len(), total);
+    Ok(())
+}
+
+/// `nasiko maf workflow drafts` — list your MAF drafts (NAS-697): a bare sentence not yet split
+/// into steps, or a decomposed-but-unpromoted plan, either way. A promoted draft stays listed
+/// here too (`status` tells the two apart) — the drafts view follows an idea from the sentence
+/// typed for it through to deployment, rather than losing it the moment it goes live.
+pub fn workflow_drafts(json_out: bool) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let (drafts, total) = list_paginated(&client, "/maf/workflow/drafts")?;
+
+    if json_out {
+        println!("{}", serde_json::to_string_pretty(&drafts)?);
+        return Ok(());
+    }
+    if drafts.is_empty() {
+        term::print_info(&format!(
+            "No MAF drafts. Save one with `{}`.",
+            term::cyan(&format!("{} workflow create --draft", maf_hint()))
+        ));
+        return Ok(());
+    }
+    println!("Your MAF drafts:");
+    print_workflow_rows(&drafts);
+    print_truncation_note(drafts.len(), total);
+    Ok(())
+}
+
+/// Shared row format for `workflow list` and `workflow drafts`.
+fn print_workflow_rows(workflows: &[Value]) {
+    for w in workflows {
         let id = w.get("id").and_then(Value::as_str).unwrap_or("?");
         let name = w.get("name").and_then(Value::as_str).unwrap_or("?");
         let status = w.get("status").and_then(Value::as_str).unwrap_or("?");
@@ -447,8 +535,6 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
             colored_status(status)
         );
     }
-    print_truncation_note(workflows.len(), total);
-    Ok(())
 }
 
 /// `nasiko maf workflow create --step "..." [--step "..."] [--agent ...]` — define a new
@@ -457,39 +543,51 @@ pub fn workflow_list(json_out: bool) -> Result<()> {
 ///
 /// `--instruction "..."` is the alternative, mutually-exclusive form: the server's MAF planner
 /// splits one compound sentence into steps and picks each step's agent ([`plan_and_create`]).
+///
+/// `--draft` saves the result as a draft instead of a live workflow — the CLI counterpart of the
+/// web UI's "Save draft" action. A draft holds the same steps and runs the same way a live
+/// workflow does; `nasiko maf workflow promote` is what deploys it.
 pub fn workflow_create(
     name: Option<&str>,
     description: Option<&str>,
     steps: &[String],
     agents: &[String],
     instruction: Option<&str>,
+    draft: bool,
 ) -> Result<()> {
     let client = Client::from_active_cluster()?;
 
     if let Some(instruction) = instruction {
-        let resp = plan_and_create(&client, instruction, name, description)?;
-        return print_created(&resp, None);
+        let resp = if draft {
+            save_generated_as_draft(&client, instruction, name, description)?
+        } else {
+            plan_and_create(&client, instruction, name, description)?
+        };
+        return print_created(&resp, None, draft);
     }
 
     if steps.is_empty() {
         anyhow::bail!("at least one --step or --instruction is required");
     }
     let step_bodies = build_step_bodies(steps, agents)?;
-    let body = json!({
-        "name": name,
-        "description": description,
-        "steps": step_bodies,
-    });
-
-    let resp: Value = unwrap_data(client.post_json("/maf/workflows", &body)?)?;
-    print_created(&resp, Some(steps.len()))
+    let resp = if draft {
+        save_steps_as_draft(&client, name, description, step_bodies)?
+    } else {
+        let body = json!({
+            "name": name,
+            "description": description,
+            "steps": step_bodies,
+        });
+        unwrap_data(client.post_json("/maf/workflows", &body)?)?
+    };
+    print_created(&resp, Some(steps.len()), draft)
 }
 
-/// Prints the `Created workflow '<name>' (<id>) with N step(s)` confirmation line.
-/// `known_step_count` is `None` when the step count isn't known client-side (the
-/// `--instruction` path — the planner decides it server-side), so it's read back
-/// from the response's `maf_json.steps` instead.
-fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
+/// Prints the `Created workflow '<name>' (<id>) with N step(s)` confirmation line
+/// (`Created draft ...` when `draft` is set). `known_step_count` is `None` when the step count
+/// isn't known client-side (the `--instruction` path — the planner decides it server-side), so
+/// it's read back from the response's `maf_json.steps` instead.
+fn print_created(resp: &Value, known_step_count: Option<usize>, draft: bool) -> Result<()> {
     let id = resp.get("id").and_then(Value::as_str).unwrap_or("?");
     let created_name = resp.get("name").and_then(Value::as_str).unwrap_or("?");
     let step_count = known_step_count.unwrap_or_else(|| {
@@ -499,8 +597,9 @@ fn print_created(resp: &Value, known_step_count: Option<usize>) -> Result<()> {
             .map(Vec::len)
             .unwrap_or(0)
     });
+    let kind = if draft { "draft" } else { "workflow" };
     term::print_success(&format!(
-        "Created workflow '{created_name}' ({id}) with {step_count} step(s)"
+        "Created {kind} '{created_name}' ({id}) with {step_count} step(s)"
     ));
     Ok(())
 }
@@ -658,6 +757,25 @@ pub fn workflow_delete(workflow: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
+/// `nasiko maf workflow promote <name|id>` — deploy a draft: flips its `status` to `active` and
+/// changes nothing else, since the steps and agents were already resolved when the draft was
+/// made. The server refuses a workflow that isn't a draft, or a draft with no steps yet (add
+/// some first with `workflow update --step`/`--add-step`).
+pub fn workflow_promote(workflow: &str) -> Result<()> {
+    let client = Client::from_active_cluster()?;
+    let id = resolve_workflow_id(&client, workflow)?;
+    match client
+        .post_json_attempt::<Value, _>(&format!("/maf/workflow/{id}/promote"), &json!({}))?
+    {
+        Attempt::Ok(resp) => {
+            let name = resp.get("name").and_then(Value::as_str).unwrap_or(workflow);
+            term::print_success(&format!("Promoted draft '{name}' ({id}) — it's live"));
+            Ok(())
+        }
+        Attempt::Rejected(failure) => Err(failure.into_error()),
+    }
+}
+
 /// `nasiko maf workflow run <name|id> [--wait] [--content "..."]` — queue a run; with `--wait`,
 /// poll until it finishes and print the result. `--content` is run-time data folded into step
 /// 0's task description before planning, so the same saved workflow can be re-run against
@@ -764,39 +882,59 @@ fn print_truncation_note(shown: usize, total: usize) {
 }
 
 /// Resolve a workflow reference (name or UUID) to its id. Fast-paths a syntactically valid UUID
-/// (mirrors [`resolve_agent_id`]); otherwise scans the caller's workflows for a name match.
-/// Requests a larger page than the default (mirrors [`resolve_agent_id`]'s `?limit=100`) since a
-/// name lookup needs every workflow, not just the first page.
+/// (mirrors [`resolve_agent_id`]); otherwise scans the caller's workflows for a name match, then
+/// — since a draft is addressed through the same commands as a live workflow, just not listed
+/// among them — the caller's drafts. Requests a larger page than the default (mirrors
+/// [`resolve_agent_id`]'s `?limit=100`) since a name lookup needs every row, not just the first page.
 fn resolve_workflow_id(client: &Client, workflow: &str) -> Result<String> {
     if uuid::Uuid::parse_str(workflow).is_ok() {
         return Ok(workflow.to_string());
     }
-    let (workflows, _total) = list_paginated(client, "/maf/workflows?limit=100")?;
-    let matches: Vec<&Value> = workflows
+    let (active, _total) = list_paginated(client, "/maf/workflows?limit=100")?;
+    match find_by_name(&active, workflow) {
+        NameLookup::One(id) => return Ok(id),
+        NameLookup::Many(ids) => anyhow::bail!(
+            "multiple workflows named '{workflow}': {} — use an ID instead",
+            ids.join(", ")
+        ),
+        NameLookup::None => {}
+    }
+    let (drafts, _total) = list_paginated(client, "/maf/workflow/drafts?limit=100")?;
+    match find_by_name(&drafts, workflow) {
+        NameLookup::One(id) => Ok(id),
+        NameLookup::Many(ids) => anyhow::bail!(
+            "multiple drafts named '{workflow}': {} — use an ID instead",
+            ids.join(", ")
+        ),
+        NameLookup::None => anyhow::bail!(
+            "no MAF workflow or draft named '{workflow}' found (run `{m} workflow list` or `{m} workflow drafts`)",
+            m = maf_hint()
+        ),
+    }
+}
+
+/// How many of `rows` have `name` (case-insensitive): none, exactly one (its id), or several
+/// (their ids) — the three outcomes [`resolve_workflow_id`] acts on for each list it searches.
+enum NameLookup {
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+fn find_by_name(rows: &[Value], name: &str) -> NameLookup {
+    let ids: Vec<String> = rows
         .iter()
         .filter(|w| {
             w.get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|n| n.eq_ignore_ascii_case(workflow))
+                .is_some_and(|n| n.eq_ignore_ascii_case(name))
         })
+        .filter_map(|w| w.get("id").and_then(Value::as_str).map(str::to_string))
         .collect();
-    match matches.as_slice() {
-        [one] => Ok(one
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()),
-        [] => anyhow::bail!(
-            "no MAF workflow named '{workflow}' found (run `{} workflow list`)",
-            maf_hint()
-        ),
-        many => anyhow::bail!(
-            "multiple workflows named '{workflow}': {} — use an ID instead",
-            many.iter()
-                .filter_map(|w| w.get("id").and_then(Value::as_str))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+    match ids.len() {
+        0 => NameLookup::None,
+        1 => NameLookup::One(ids.into_iter().next().unwrap()),
+        _ => NameLookup::Many(ids),
     }
 }
 
