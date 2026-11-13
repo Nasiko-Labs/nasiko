@@ -323,6 +323,14 @@ export interface BudgetsSurface {
     /** The page's other reads have settled, so `#router-budgets` can scroll to its final position. */
     pageReady: boolean
   }> | null
+  /**
+   * Whether this viewer is refused the whole budgets surface outright — a plan decision, not a role one (MT: the
+   * shared Free plane, where nobody is ever an org admin, so nobody could ever satisfy the owner-budget write rule).
+   * `/budgets` shows `BlockedPage` instead of the real page when this is true; EE and OSS never block.
+   */
+  useBlocked: () => boolean
+  /** What `/budgets` shows instead, while `useBlocked` is true. `null` where nothing ever blocks (EE, OSS). */
+  BlockedPage: ComponentType | null
 }
 
 const NO_BUDGET_SOURCE = { state: 'absent' } as const
@@ -350,6 +358,8 @@ export const NO_BUDGETS: BudgetsSurface = {
   useRouterTab: () => false,
   RouterTab: null,
   FirstRunStrip: null,
+  useBlocked: () => false,
+  BlockedPage: null,
 }
 
 /** Every slot has an OSS fallback in the core; a slot is added in the PR whose layer first fills it. */
