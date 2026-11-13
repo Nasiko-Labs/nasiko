@@ -612,20 +612,9 @@ async fn spend_path(server: &common::TestServer, endpoint: &str) -> String {
 }
 
 async fn spend_seen(server: &common::TestServer, endpoint: &str, token: &str) -> (f64, String) {
-    spend_seen_with(server, endpoint, "", token).await
-}
-
-/// `spend_seen` with `extra` (e.g. `&user_id=...`) appended to the endpoint's query.
-async fn spend_seen_with(
-    server: &common::TestServer,
-    endpoint: &str,
-    extra: &str,
-    token: &str,
-) -> (f64, String) {
-    let path = format!("{}{extra}", spend_path(server, endpoint).await);
     let response = server
         .client
-        .get(server.url(&path))
+        .get(server.url(&spend_path(server, endpoint).await))
         .bearer_auth(token)
         .send()
         .await
@@ -2796,177 +2785,98 @@ async fn coding_agent_usage_requires_auth() {
     server.cleanup().await;
 }
 
-// ─── TokenOps per user ───────────────────────────────────────────────────────
-
-/// Three users who spent 30, 40 and 50 on one public agent, one call each (110 tokens).
-struct PerUserWorld {
-    users: [Uuid; 3],
-    superuser_token: String,
-    admin_token: String,
-    member_token: String,
-}
-
-async fn per_user_world(server: &common::TestServer) -> PerUserWorld {
-    let owner = seed_user(server, "per-user-owner").await;
-    let agent = seed_agent(server, owner, "per-user-agent").await;
-    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+/// Q1-3: the orchestrator's and MAF's own rows carry the routed agent's id, yet they are platform
+/// spend. The dashboard totals must count them, and agree with the spend calendar.
+#[tokio::test]
+#[serial]
+async fn finops_dashboard_totals_count_orchestrator_and_maf_rows() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let admin = seed_user(&server, "platform-rows-admin").await;
+    let agent = seed_agent(&server, admin, "platform-rows-agent").await;
+    spend_row(&server, "platform-rows-agent", admin, 1.0).await;
+    // Both store the agent they ran for; the orchestrator's latency is never recorded (0).
+    for (name, cost) in [("orchestrator", 2.0), ("maf:step0", 0.5)] {
+        sqlx::query(
+            "INSERT INTO trace_usage \
+               (trace_id, agent_name, agent_id, user_id, model, provider, input_tokens, \
+                output_tokens, cost_usd, latency_ms, started_at) \
+             VALUES ($1, $2, $3, $4, 'gpt-4o', 'openai', 100, 10, $5, 0, now())",
+        )
+        .bind(format!("trace-{}", Uuid::new_v4()))
+        .bind(name)
         .bind(agent)
-        .execute(&server.db)
-        .await
-        .unwrap();
-    let mut users = [Uuid::nil(); 3];
-    for (i, cost) in [30.0, 40.0, 50.0].into_iter().enumerate() {
-        users[i] = seed_user(server, &format!("per-user-{}", i + 1)).await;
-        spend_row(server, "per-user-agent", users[i], cost).await;
-    }
-    let admin = seed_user(server, "per-user-admin").await;
-    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
         .bind(admin)
+        .bind(cost)
         .execute(&server.db)
         .await
-        .unwrap();
-    let superuser = seed_user(server, "per-user-superuser").await;
-    PerUserWorld {
-        users,
-        superuser_token: common::sign_token(&superuser.to_string(), "su", true, "admin"),
-        admin_token: common::sign_token(&admin.to_string(), "per-user-admin", false, "admin"),
-        member_token: common::sign_token(&users[0].to_string(), "per-user-1", false, "member"),
+        .expect("seed platform row");
     }
-}
+    let token = common::sign_token(&admin.to_string(), "platform-rows-admin", true, "admin");
 
-async fn dashboard(server: &common::TestServer, query: &str, token: &str) -> (u16, Value) {
-    let response = server
+    let body: Value = server
         .client
-        .get(server.url(&format!(
-            "/api/observability/finops/dashboard?range=7d{query}"
-        )))
-        .bearer_auth(token)
+        .get(server.url("/api/observability/finops/dashboard?range=7d"))
+        .bearer_auth(&token)
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    let status = response.status().as_u16();
-    (status, response.json().await.unwrap_or(Value::Null))
+    let total = body["data"]["summary"]["total_cost"].as_f64().unwrap();
+    assert!(
+        (total - 3.5).abs() < 1e-6,
+        "agent 1.0 + orchestrator 2.0 + MAF step 0.5: {body}"
+    );
+    assert_eq!(
+        body["data"]["kpis"]["avg_latency_ms"]["current"].as_f64(),
+        Some(500.0),
+        "the platform rows' zero latency must not pull the KPI down: {body}"
+    );
+
+    let (calendar, text) = spend_seen(&server, "calendar", &token).await;
+    assert!(
+        (calendar - total).abs() < 1e-6,
+        "the calendar must match the dashboard: {text}"
+    );
+    server.cleanup().await;
 }
 
-fn user_costs(body: &Value) -> Vec<(String, f64)> {
-    body["data"]["users"]
-        .as_array()
+/// Q1-2 (count half): a call on a model with no price is costed at the default rate, so it is
+/// never free; it must still count as unpriced.
+#[tokio::test]
+#[serial]
+async fn finops_dashboard_counts_default_priced_calls_as_unpriced() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let admin = seed_user(&server, "unpriced-admin").await;
+    seed_agent(&server, admin, "unpriced-agent").await;
+    spend_row(&server, "unpriced-agent", admin, 1.0).await;
+    sqlx::query(
+        "INSERT INTO trace_usage \
+           (trace_id, agent_name, user_id, model, provider, input_tokens, output_tokens, \
+            cost_usd, latency_ms, started_at, metadata) \
+         VALUES ($1, 'unpriced-agent', $2, 'custom-model', 'custom', 100, 10, 0.00035, 500, now(), \
+                 '{\"pricing\": {\"source\": \"Default\", \"estimated\": true}}'::jsonb)",
+    )
+    .bind(format!("trace-{}", Uuid::new_v4()))
+    .bind(admin)
+    .execute(&server.db)
+    .await
+    .expect("seed default-priced row");
+    let token = common::sign_token(&admin.to_string(), "unpriced-admin", true, "admin");
+
+    let body: Value = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard?range=7d"))
+        .bearer_auth(&token)
+        .send()
+        .await
         .unwrap()
-        .iter()
-        .map(|u| {
-            (
-                u["user_id"].as_str().unwrap_or("").to_string(),
-                u["total_cost"].as_f64().unwrap(),
-            )
-        })
-        .collect()
-}
-
-#[tokio::test]
-#[serial]
-async fn finops_dashboard_breaks_spend_down_per_user_for_an_admin() {
-    let server = common::TestServer::start().await;
-    let _admin = init_admin(&server).await;
-    let world = per_user_world(&server).await;
-    let [u1, u2, u3] = world.users;
-
-    for token in [&world.superuser_token, &world.admin_token] {
-        let (status, body) = dashboard(&server, "", token).await;
-        assert_eq!(status, 200);
-        assert_eq!(
-            user_costs(&body),
-            vec![
-                (u3.to_string(), 50.0),
-                (u2.to_string(), 40.0),
-                (u1.to_string(), 30.0)
-            ]
-        );
-        let top = &body["data"]["users"][0];
-        assert_eq!(top["username"], "per-user-3");
-        assert_eq!(top["prompt_tokens"], 100);
-        assert_eq!(top["completion_tokens"], 10);
-        assert_eq!(top["total_tokens"], 110);
-        assert_eq!(top["operations"], 1);
-        assert_eq!(top["agents"], 1);
-    }
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn finops_user_filter_narrows_every_spend_view_to_that_user() {
-    let server = common::TestServer::start().await;
-    let _admin = init_admin(&server).await;
-    let world = per_user_world(&server).await;
-    let u3 = world.users[2];
-    let filter = format!("&user_id={u3}");
-
-    let (status, body) = dashboard(&server, &filter, &world.admin_token).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["data"]["summary"]["total_cost"], 50.0);
-    assert_eq!(body["data"]["token_usage"]["total_tokens"], 110);
-    assert_eq!(user_costs(&body), vec![(u3.to_string(), 50.0)]);
-    let agent_cost: f64 = body["data"]["agents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|a| a["total_cost"].as_f64())
-        .sum();
-    assert_eq!(agent_cost, 50.0, "the agent rows show only user 3's spend");
-
-    for endpoint in SPEND_ENDPOINTS {
-        let (total, _) = spend_seen_with(&server, endpoint, &filter, &world.admin_token).await;
-        assert!((total - 50.0).abs() < 1e-6, "{endpoint}: got {total}");
-    }
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn a_member_sees_and_filters_only_their_own_usage() {
-    let server = common::TestServer::start().await;
-    let _admin = init_admin(&server).await;
-    let world = per_user_world(&server).await;
-    let [u1, u2, _] = world.users;
-
-    // Unfiltered, the member's view covers the public agent's calls, but the per-user rows
-    // never name anyone else.
-    let (status, body) = dashboard(&server, "", &world.member_token).await;
-    assert_eq!(status, 200);
-    assert_eq!(user_costs(&body), vec![(u1.to_string(), 30.0)]);
-
-    let (status, body) = dashboard(&server, &format!("&user_id={u1}"), &world.member_token).await;
-    assert_eq!(status, 200);
-    assert_eq!(body["data"]["summary"]["total_cost"], 30.0);
-
-    let (status, _) = dashboard(&server, &format!("&user_id={u2}"), &world.member_token).await;
-    assert_eq!(status, 403);
-    for endpoint in SPEND_ENDPOINTS {
-        let path = format!("{}&user_id={u2}", spend_path(&server, endpoint).await);
-        let response = server
-            .client
-            .get(server.url(&path))
-            .bearer_auth(&world.member_token)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 403, "{endpoint}");
-    }
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn a_user_filter_that_is_not_a_uuid_is_a_400() {
-    let server = common::TestServer::start().await;
-    let _admin = init_admin(&server).await;
-    let world = per_user_world(&server).await;
-
-    let (status, _) = dashboard(&server, "&user_id=not-a-uuid", &world.admin_token).await;
-    assert_eq!(status, 400);
-
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["data"]["summary"]["unpriced_calls"], 1, "{body}");
     server.cleanup().await;
 }

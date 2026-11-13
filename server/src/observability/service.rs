@@ -899,10 +899,6 @@ pub struct FinopsDashboardData {
     /// plus an "Others" catchall, ready to feed a pie/donut chart without any
     /// client-side aggregation.
     pub spend_by_agent: SpendByAgentBreakdown,
-    /// Who spent it: one row per user in the window, largest spender first, under the same
-    /// filters as everything above. A caller who may not see other users gets only their own
-    /// row (`handler::get_finops_dashboard`).
-    pub users: Vec<UserFinopsRow>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -921,10 +917,11 @@ pub struct FinopsSummary {
     /// only and is not part of `total_cost`. `finops/insights` does not carry it: that endpoint
     /// only relays client-supplied figures to the model.
     pub total_sandbox_minutes: f64,
-    /// Calls in the window that consumed tokens but carry no cost (no price row
-    /// for the model — e.g. a custom provider with no price book). `SUM(cost_usd)`
-    /// silently skips these, so `total_cost` under-reports; this surfaces the gap
-    /// as a known number rather than a smaller one.
+    /// Calls in the window that consumed tokens with no price row for the model
+    /// (e.g. a custom provider with no price book): they carry no cost, or a cost
+    /// at the default rate (`metadata.pricing.source = 'Default'`). Either way
+    /// `total_cost` is not a looked-up figure for them; this surfaces the gap as a
+    /// known number.
     pub unpriced_calls: usize,
     /// Sum of rows explicitly priced using inferred rates or usage evidence.
     pub estimated_cost: f64,
@@ -1164,26 +1161,6 @@ pub struct SpendByAgentBreakdown {
     /// more than 5 agents. Empty when there is no spend in the window.
     pub slices: Vec<SpendPieSlice>,
     pub total_spend_usd: f64,
-}
-
-/// One user's usage in the dashboard window.
-#[derive(Serialize, Clone, Debug, ToSchema, sqlx::FromRow)]
-pub struct UserFinopsRow {
-    /// `None` for calls no user made: the platform's own routing and planning.
-    pub user_id: Option<String>,
-    pub username: Option<String>,
-    pub email: Option<String>,
-    pub total_cost: f64,
-    pub operations: i64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub cache_creation_tokens: i64,
-    /// Prompt, completion and both cache counts, as the dashboard's `token_usage` counts them.
-    pub total_tokens: i64,
-    pub tool_call_count: i64,
-    /// How many agents the user's calls went to.
-    pub agents: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2694,9 +2671,9 @@ impl ObservabilityService {
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
-        // 4. Unpriced calls in the window: ran (had tokens) but recorded no cost,
-        //    because no price row backs the model. `SUM(cost_usd)` skips them, so
-        //    surface the count as a known gap. Same filters as the main aggregation.
+        // 4. Unpriced calls in the window: ran (had tokens) but no price row backs the
+        //    model, so they recorded no cost or a cost at the default rate. Surface the
+        //    count as a known gap. Same filters as the main aggregation.
         let unpriced_calls: i64 = sqlx::query_scalar(
             r#"SELECT COUNT(*)::BIGINT
                FROM trace_usage
@@ -2705,7 +2682,8 @@ impl ObservabilityService {
                  AND ($4::TEXT IS NULL OR model = $4)
                  AND ($5::TEXT IS NULL OR provider = $5)
                  AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
-                 AND COALESCE(cost_usd, 0) = 0
+                 AND (COALESCE(cost_usd, 0) = 0
+                      OR metadata->'pricing'->>'source' = 'Default')
                  AND (COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)) > 0
                  AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
                       OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))"#,
@@ -2722,46 +2700,6 @@ impl ObservabilityService {
         .bind(&PLATFORM_ROW_NAMES[..])
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        // 5. Per user, under the same filters: who spent what.
-        let users: Vec<UserFinopsRow> = sqlx::query_as(
-            r#"SELECT s.user_id::TEXT AS user_id, u.username, u.email,
-                      COALESCE(SUM(s.cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(s.traces), 0)::BIGINT AS operations,
-                      COALESCE(SUM(s.input_tokens), 0)::BIGINT AS prompt_tokens,
-                      COALESCE(SUM(s.output_tokens), 0)::BIGINT AS completion_tokens,
-                      COALESCE(SUM(s.cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                      COALESCE(SUM(s.cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                      COALESCE(SUM(s.input_tokens + s.output_tokens + s.cache_read_tokens
-                                   + s.cache_creation_tokens), 0)::BIGINT AS total_tokens,
-                      COALESCE(SUM(s.tool_call_count), 0)::BIGINT AS tool_call_count,
-                      COUNT(DISTINCT s.agent_name)::BIGINT AS agents
-               FROM trace_spend s
-               LEFT JOIN users u ON u.id = s.user_id
-               WHERE s.ts >= $1 AND s.ts < $2
-                 AND ($3::TEXT IS NULL OR s.agent_name = $3)
-                 AND ($4::TEXT IS NULL OR s.model = $4)
-                 AND ($5::TEXT IS NULL OR s.provider = $5)
-                 AND (NOT $6::BOOL OR s.user_id = ANY($7::UUID[]))
-                 AND ($8::TEXT[] IS NULL OR s.agent_name = ANY($8)
-                      OR (s.user_id = $9 AND (s.agent_name = ANY($10) OR s.agent_name LIKE $11)))
-               GROUP BY s.user_id, u.username, u.email
-               ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
-        )
-        .bind(start)
-        .bind(now)
-        .bind(agent_filter)
-        .bind(model_filter)
-        .bind(provider_filter)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
-        .bind(&scoped_names)
-        .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
-        .bind(PLATFORM_STEP_ROW_PATTERN)
-        .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
@@ -2909,8 +2847,14 @@ impl ObservabilityService {
         if fleet_view || own_platform_user.is_some() {
             let registered: HashSet<&str> =
                 agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
-            let is_platform =
-                |r: &&TraceUsageAgg| r.platform && !registered.contains(r.agent_name.as_str());
+            // The orchestrator's and MAF's rows carry the routed agent's id (other views name the
+            // agent a session ran from it), so they are recognised by name, not by a NULL id.
+            let is_platform = |r: &&TraceUsageAgg| {
+                (r.platform || is_platform_row_name(&r.agent_name))
+                    && !registered.contains(r.agent_name.as_str())
+            };
+            // Orchestrator rows store `latency_ms = 0`; a zero would drag the KPI latency down.
+            let measured = |latency: Option<f64>| latency.filter(|l| *l > 0.0);
             for r in current_rows.iter().filter(is_platform) {
                 grand_input += r.input_tokens as u64;
                 grand_output += r.output_tokens as u64;
@@ -2919,9 +2863,9 @@ impl ObservabilityService {
                 grand_cost += r.total_cost;
                 grand_tool_calls += r.tool_call_count as u64;
                 total_ops += r.operations as usize;
-                latency_samples.extend(r.p50_latency);
-                latency_samples_p95.extend(r.p95_latency);
-                latency_samples_p99.extend(r.p99_latency);
+                latency_samples.extend(measured(r.p50_latency));
+                latency_samples_p95.extend(measured(r.p95_latency));
+                latency_samples_p99.extend(measured(r.p99_latency));
                 platform_cost += r.total_cost;
             }
             for r in prev_rows.iter().filter(is_platform) {
@@ -2929,9 +2873,9 @@ impl ObservabilityService {
                 prev_grand_total_tokens += (r.input_tokens + r.output_tokens) as u64;
                 prev_total_ops += r.operations as usize;
                 prev_grand_tool_calls += r.tool_call_count as u64;
-                prev_latency_samples.extend(r.p50_latency);
-                prev_latency_samples_p95.extend(r.p95_latency);
-                prev_latency_samples_p99.extend(r.p99_latency);
+                prev_latency_samples.extend(measured(r.p50_latency));
+                prev_latency_samples_p95.extend(measured(r.p95_latency));
+                prev_latency_samples_p99.extend(measured(r.p99_latency));
             }
         }
 
@@ -3074,7 +3018,6 @@ impl ObservabilityService {
                 kpis,
                 attributions,
                 spend_by_agent,
-                users,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -3597,9 +3540,10 @@ impl ObservabilityService {
 
     // ── 6e. finops/attributions ───────────────────────────────────────────────
 
-    /// Single Postgres GROUP BY, no Tempo calls — MAF already persists
-    /// per-step cost/tokens (see `oss/orchestrator/src/maf`), so workflow
-    /// attribution is naturally fast without any live trace aggregation.
+    /// Postgres only, no Tempo calls. A run's cost is MAF's own calls
+    /// (`maf_executions.cost_usd`) plus every agent step's usage, read from
+    /// `trace_usage` by the trace id each step recorded — the same lookup as
+    /// `GET /api/maf/execution/{id}/usage`.
     async fn get_workflow_finops_rows(
         &self,
         start: DateTime<Utc>,
@@ -3659,21 +3603,27 @@ impl ObservabilityService {
             latencies: Vec<f64>,
         }
 
-        let get_step_i64 = |step: &serde_json::Value, key: &str| -> u64 {
-            step.get(key).and_then(|v| v.as_i64()).unwrap_or(0).max(0) as u64
+        // Each run's step traces. A retried step reuses its trace id, so dedupe per run.
+        let step_traces = |row: &ExecRow| -> HashSet<String> {
+            row.step_results
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(|step| step.get("trace_id")?.as_str().map(str::to_string))
+                .collect()
         };
+        let trace_ids: Vec<String> = rows.iter().flat_map(step_traces).collect();
+        let step_usage = self.step_trace_usage(&trace_ids).await?;
 
         let mut by_workflow: HashMap<String, Acc> = HashMap::new();
         for row in rows {
             let Some(maf_id) = row.maf_id else { continue };
             let key = maf_id.to_string();
-            let (mut input, mut output, mut cr, mut cc) = (0u64, 0u64, 0u64, 0u64);
-            if let Some(steps) = row.step_results.as_ref().and_then(|v| v.as_array()) {
-                for step in steps {
-                    input += get_step_i64(step, "input_tokens");
-                    output += get_step_i64(step, "output_tokens");
-                    cr += get_step_i64(step, "cache_read_tokens");
-                    cc += get_step_i64(step, "cache_creation_tokens");
+            let mut steps = StepTraceUsage::default();
+            for trace in step_traces(&row) {
+                if let Some(usage) = step_usage.get(&trace) {
+                    steps.add(usage);
                 }
             }
             let acc = by_workflow.entry(key).or_insert_with(|| Acc {
@@ -3684,11 +3634,11 @@ impl ObservabilityService {
                 ..Default::default()
             });
             acc.executions += 1;
-            acc.cost += row.cost_usd;
-            acc.input_tokens += input;
-            acc.output_tokens += output;
-            acc.cache_read_tokens += cr;
-            acc.cache_creation_tokens += cc;
+            acc.cost += row.cost_usd + steps.cost_usd;
+            acc.input_tokens += steps.input_tokens.max(0) as u64;
+            acc.output_tokens += steps.output_tokens.max(0) as u64;
+            acc.cache_read_tokens += steps.cache_read_tokens.max(0) as u64;
+            acc.cache_creation_tokens += steps.cache_creation_tokens.max(0) as u64;
             if let Some(d) = row.duration_ms {
                 acc.latencies.push(d as f64);
             }
@@ -3724,6 +3674,42 @@ impl ObservabilityService {
             .collect();
         out.sort_by(|a, b| b.total_cost.total_cmp(&a.total_cost));
         Ok(out)
+    }
+
+    /// Agent usage per MAF step trace, hot rows plus tiered totals. MAF's own rows are left out:
+    /// their cost is already `maf_executions.cost_usd`.
+    async fn step_trace_usage(
+        &self,
+        trace_ids: &[String],
+    ) -> Result<HashMap<String, StepTraceUsage>, ObservabilityError> {
+        if trace_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let rows: Vec<StepTraceUsage> = sqlx::query_as(
+            r#"SELECT trace_id,
+                      COALESCE(SUM(input_tokens), 0)::BIGINT          AS input_tokens,
+                      COALESCE(SUM(output_tokens), 0)::BIGINT         AS output_tokens,
+                      COALESCE(SUM(cache_read_tokens), 0)::BIGINT     AS cache_read_tokens,
+                      COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(cost_usd), 0)::FLOAT8              AS cost_usd
+               FROM (SELECT trace_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens,
+                            cache_read_tokens::bigint AS cache_read_tokens,
+                            cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd
+                       FROM trace_usage
+                      WHERE agent_name <> 'maf' AND agent_name NOT LIKE $2
+                     UNION ALL
+                     SELECT trace_id, input_tokens, output_tokens, cache_read_tokens,
+                            cache_creation_tokens, cost_usd
+                       FROM trace_totals) u
+               WHERE trace_id = ANY($1)
+               GROUP BY trace_id"#,
+        )
+        .bind(trace_ids)
+        .bind(PLATFORM_STEP_ROW_PATTERN)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| (r.trace_id.clone(), r)).collect())
     }
 
     /// Standalone attributions endpoint — same per-view row sources as
@@ -4052,6 +4038,36 @@ const PLATFORM_ROW_NAMES: [&str; 3] = ["orchestrator", "router_selection", "maf"
 /// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
 const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
 
+/// Whether `agent_name` is one of the platform's own rows: [`PLATFORM_ROW_NAMES`], or a MAF
+/// per-step row matching [`PLATFORM_STEP_ROW_PATTERN`].
+fn is_platform_row_name(agent_name: &str) -> bool {
+    PLATFORM_ROW_NAMES.contains(&agent_name)
+        || PLATFORM_STEP_ROW_PATTERN
+            .strip_suffix('%')
+            .is_some_and(|prefix| agent_name.starts_with(prefix))
+}
+
+/// The agent usage booked on one MAF step's trace (`step_trace_usage`), or a run's sum of them.
+#[derive(sqlx::FromRow, Default)]
+struct StepTraceUsage {
+    trace_id: String,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_read_tokens: i64,
+    cache_creation_tokens: i64,
+    cost_usd: f64,
+}
+
+impl StepTraceUsage {
+    fn add(&mut self, other: &Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_creation_tokens += other.cache_creation_tokens;
+        self.cost_usd += other.cost_usd;
+    }
+}
+
 /// The caller whose own platform rows a scoped FinOps view keeps, or `None` when it keeps none.
 ///
 /// A scoped caller sees only the agents they may access, which a filter on agent name enforces;
@@ -4112,7 +4128,6 @@ fn empty_finops_response(
                 slices: vec![],
                 total_spend_usd: 0.0,
             },
-            users: vec![],
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
@@ -4156,6 +4171,21 @@ mod tests {
         assert!(PLATFORM_ROW_NAMES.contains(&maf_agent_name(None).as_str()));
         let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
         assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
+    }
+
+    /// Q1-3: the orchestrator's and MAF's rows carry an agent id, so the dashboard totals find
+    /// them by name. An agent's own name must not match.
+    #[test]
+    fn platform_rows_are_recognised_by_name() {
+        use nasiko_orchestrator::maf::executor::maf_agent_name;
+        assert!(is_platform_row_name(
+            nasiko_observability::types::ORCHESTRATOR_USAGE_AGENT
+        ));
+        assert!(is_platform_row_name("router_selection"));
+        assert!(is_platform_row_name(&maf_agent_name(None)));
+        assert!(is_platform_row_name(&maf_agent_name(Some(3))));
+        assert!(!is_platform_row_name("crm-agent"));
+        assert!(!is_platform_row_name("mafia-agent"));
     }
 
     #[test]
