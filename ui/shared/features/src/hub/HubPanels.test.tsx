@@ -24,10 +24,11 @@ const panel = async (name: string) =>
   (await screen.findByRole('heading', { name })).closest('section') as HTMLElement
 
 describe('section order', () => {
-  it('Needs you, the sentence, the window bar, the lanes, recent runs, then the layer cards', async () => {
+  it('the summary, Needs you, the sentence, the window bar, the lanes, recent runs, then the layer cards', async () => {
     renderApp(url())
     await screen.findByText(copy.lanes.peakP95)
     const order = [
+      await panel('Summary'),
       await panel(copy.needs.title),
       screen.getByText(/^Spent |^No spend/),
       screen.getByRole('group', { name: copy.keyboard }),

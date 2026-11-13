@@ -148,6 +148,29 @@ describe('tabs', () => {
 })
 
 describe('overview', () => {
+  it('opens with a summary: what the agent does, its routing, and a link to Details (NAS-1451)', async () => {
+    renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(
+      within(summary).getByText(`${running.display_name} handles`, { exact: false }),
+    ).toBeInTheDocument()
+    expect(await within(summary).findByText('research-tiers · Attached')).toBeInTheDocument()
+    expect(within(summary).getByText(/^Tiered: gpt-4o \/ /)).toBeInTheDocument()
+    expect(within(summary).getByText('Your key · OPENAI_API_KEY')).toBeInTheDocument()
+    await userEvent.click(within(summary).getByRole('button', { name: /All details/ }))
+    expect(await screen.findByRole('tab', { name: 'Details', selected: true })).toBeInTheDocument()
+  })
+
+  it("someone else's summary has the description but no routing (owner or superuser only)", async () => {
+    configureMocks({ persona: 'sam' })
+    renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(
+      within(summary).getByText(`${running.display_name} handles`, { exact: false }),
+    ).toBeInTheDocument()
+    expect(within(summary).queryByText('LLM routing')).toBeNull()
+  })
+
   it('a crashed agent with no recorded reason falls back to recent error lines (OSS writes no crash fields)', async () => {
     renderApp(url(2))
     const card = await screen.findByRole('region', { name: 'This agent crashed' })

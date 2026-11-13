@@ -351,6 +351,7 @@ function AgentDetail({ id, tab }: { id: string; tab?: string }) {
               setTab('activity')
               setTailOpen(true)
             }}
+            onViewDetails={() => setTab('details')}
           />
           {agent.isHarness ? (
             <p className="pt-3 text-sm">

@@ -11,6 +11,9 @@
 import { copy } from './copy'
 import type { AgentRouting, AttachBody, LlmConfig, ProviderCatalog, RoutingConfig } from './types'
 
+// Public so other features label a routing source the router's way (format.ts is internal).
+export { sourceLabel } from './format'
+
 /** Providers the router speaks natively (llm-router resolver `is_builtin_provider`). */
 const BUILTIN_PROVIDERS = ['openai', 'anthropic', 'gemini', 'openrouter'] as const
 
