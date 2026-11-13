@@ -204,6 +204,34 @@ pub async fn build_status(
     ))
 }
 
+/// `GET /api/mcp/connectors/uploads/{upload_id}` — the durable counterpart to
+/// `build_status` above: keeps answering after a first-time build failure
+/// deletes the connector (see `mcp_upload_status`'s own doc comment,
+/// `oss/migrations/0101_mcp_upload_status.sql`). `upload_id` is the build's id
+/// as text, exactly as the CLI/UI already receive it in the 202 response.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/connectors/uploads/{upload_id}",
+    tag = "mcp",
+    params(("upload_id" = String, Path, description = "The build id returned when the upload was queued")),
+    responses(
+        (status = 200, description = "This upload's durable status — survives connector deletion on failure", body = McpEnvelope),
+        (status = 404, description = "No such upload", body = McpEnvelope),
+    ),
+)]
+pub async fn upload_status(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath(upload_id): AppPath<String>,
+) -> Result<ApiResponse, ApiError> {
+    let caller = parse_user(&claims)?;
+    Ok(ApiResponse::ok(
+        crate::mcp::build::get_upload_status(&state.db, caller, claims.is_superuser, &upload_id)
+            .await?,
+        "upload status retrieved successfully",
+    ))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct LogsQuery {
     #[serde(default = "default_tail")]
@@ -254,23 +282,33 @@ pub async fn build_logs(
 
 #[derive(Debug, serde::Serialize, sqlx::FromRow)]
 struct UploadedConnectorRow {
-    connector_id: Uuid,
+    upload_id: String,
+    // NULL once a first-time build failure deletes the connector
+    // (`delete_mcp_connector_or_mark_failed`) — the row below survives that
+    // independently (`mcp_upload_status`), which is the whole point: a failed
+    // upload still shows up here, with its real error, instead of vanishing.
+    connector_id: Option<Uuid>,
     connector_name: String,
-    build_status: Option<String>,
-    error_msg: Option<String>,
+    status: String,
+    error_message: Option<String>,
     url: Option<String>,
-    version_tag: Option<String>,
+    source: String,
     created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
 pub(crate) struct UploadedConnectorResponse {
-    connector_id: String,
+    upload_id: String,
+    connector_id: Option<String>,
     connector_name: String,
     icon_url: Option<String>,
     upload_info: UploadInfoMcp,
     url: Option<String>,
     description: Option<String>,
+    source: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(serde::Serialize, ToSchema)]
@@ -288,21 +326,18 @@ pub(crate) struct UploadedConnectorsListResponse {
     message: String,
 }
 
-fn mcp_display_status(build_status: Option<&str>) -> &'static str {
-    match build_status {
-        Some("running") | Some("success") => "Active",
-        Some("pending") | Some("building") => "Deploying",
-        Some("failed") => "Failed",
+fn mcp_display_status(status: &str) -> &'static str {
+    match status {
+        "running" | "success" => "Active",
+        "pending" | "building" => "Deploying",
+        "failed" => "Failed",
         _ => "Unknown",
     }
 }
 
-fn mcp_status_message(display_status: &str, version: Option<&str>) -> Option<String> {
+fn mcp_status_message(display_status: &str) -> Option<String> {
     match display_status {
-        "Active" => Some(format!(
-            "MCP server v{} deployed successfully",
-            version.unwrap_or("1"),
-        )),
+        "Active" => Some("MCP server deployed successfully".to_string()),
         "Deploying" => Some("MCP server is being built...".to_string()),
         "Failed" => Some("Build failed".to_string()),
         _ => None,
@@ -329,38 +364,43 @@ pub async fn list_my_uploads(
         Err(e) => return e.into_response(),
     };
 
+    // FROM mcp_upload_status, not mcp_connectors: this table survives a first-time
+    // build failure deleting the connector (`delete_mcp_connector_or_mark_failed`),
+    // so a failed upload still shows up here with its real error instead of
+    // silently disappearing — see 0101_mcp_upload_status.sql's doc comment.
     let rows: Result<Vec<UploadedConnectorRow>, _> = if claims.is_superuser {
         sqlx::query_as(
-            r#"SELECT DISTINCT ON (c.id)
-                   c.id           AS connector_id,
-                   c.name         AS connector_name,
-                   c.build_status,
-                   b.error_msg,
+            r#"SELECT us.upload_id,
+                   us.connector_id,
+                   us.connector_name,
+                   us.status,
+                   us.error_message,
                    c.url,
-                   b.version_tag,
-                   c.created_at
-               FROM mcp_connectors c
-               LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id
-               WHERE c.source_kind = 'uploaded_build'
-               ORDER BY c.id, b.created_at DESC
+                   us.source,
+                   us.created_at,
+                   us.updated_at
+               FROM mcp_upload_status us
+               LEFT JOIN mcp_connectors c ON c.id = us.connector_id
+               ORDER BY us.created_at DESC
                LIMIT 50"#,
         )
         .fetch_all(&state.db)
         .await
     } else {
         sqlx::query_as(
-            r#"SELECT DISTINCT ON (c.id)
-                   c.id           AS connector_id,
-                   c.name         AS connector_name,
-                   c.build_status,
-                   b.error_msg,
+            r#"SELECT us.upload_id,
+                   us.connector_id,
+                   us.connector_name,
+                   us.status,
+                   us.error_message,
                    c.url,
-                   b.version_tag,
-                   c.created_at
-               FROM mcp_connectors c
-               LEFT JOIN mcp_connector_builds b ON b.connector_id = c.id
-               WHERE c.source_kind = 'uploaded_build' AND c.owner_id = $1
-               ORDER BY c.id, b.created_at DESC
+                   us.source,
+                   us.created_at,
+                   us.updated_at
+               FROM mcp_upload_status us
+               LEFT JOIN mcp_connectors c ON c.id = us.connector_id
+               WHERE us.owner_id = $1
+               ORDER BY us.created_at DESC
                LIMIT 50"#,
         )
         .bind(user_id)
@@ -374,21 +414,24 @@ pub async fn list_my_uploads(
             let data = rows
                 .into_iter()
                 .map(|r| {
-                    let display_status = mcp_display_status(r.build_status.as_deref());
-                    let status_message =
-                        mcp_status_message(display_status, r.version_tag.as_deref());
+                    let display_status = mcp_display_status(&r.status);
+                    let status_message = mcp_status_message(display_status);
                     UploadedConnectorResponse {
-                        connector_id: r.connector_id.to_string(),
+                        upload_id: r.upload_id,
+                        connector_id: r.connector_id.map(|id| id.to_string()),
                         connector_name: r.connector_name,
                         icon_url: None,
                         upload_info: UploadInfoMcp {
                             upload_type: "mcp_server",
                             upload_status: display_status.to_string(),
                             status_message,
-                            error_detail: r.error_msg,
+                            error_detail: r.error_message,
                         },
                         url: r.url,
                         description: None,
+                        source: r.source,
+                        created_at: r.created_at,
+                        updated_at: r.updated_at,
                     }
                 })
                 .collect();

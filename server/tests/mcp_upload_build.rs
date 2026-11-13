@@ -144,6 +144,20 @@ async fn insert_pending_upload(db: &sqlx::PgPool, owner_id: Uuid, name: &str) ->
     .await
     .unwrap();
 
+    // Mirrors what `queue_upload` seeds in production — this is the row that
+    // must survive `delete_mcp_connector_or_mark_failed` deleting the two above.
+    sqlx::query(
+        "INSERT INTO mcp_upload_status (upload_id, connector_id, connector_name, owner_id, status, source) \
+         VALUES ($1, $2, $3, $4, 'pending', 'zip')",
+    )
+    .bind(build_id.to_string())
+    .bind(connector_id)
+    .bind(name)
+    .bind(owner_id)
+    .execute(db)
+    .await
+    .unwrap();
+
     (connector_id, build_id)
 }
 
@@ -370,6 +384,28 @@ async fn corrupt_upload_fails_cleanly_with_no_orphaned_container() {
     assert!(
         list.iter().all(|s| s.container_id != expected_id),
         "a corrupt upload must never leave a container running"
+    );
+
+    // Unlike the connector/build rows above, mcp_upload_status must survive —
+    // this is the whole point: the real failure reason stays discoverable by
+    // upload_id (the build_id) even after the connector it named is gone.
+    let upload_status: Option<(Option<Uuid>, String, Option<String>)> = sqlx::query_as(
+        "SELECT connector_id, status, error_message FROM mcp_upload_status WHERE upload_id = $1",
+    )
+    .bind(build_id.to_string())
+    .fetch_optional(&server.db)
+    .await
+    .unwrap();
+    let (surviving_connector_id, status, error_message) =
+        upload_status.expect("mcp_upload_status must survive the connector's deletion");
+    assert_eq!(
+        surviving_connector_id, None,
+        "connector_id goes NULL (ON DELETE SET NULL) once the connector is gone"
+    );
+    assert_eq!(status, "failed");
+    assert!(
+        error_message.is_some_and(|m| m.contains("Dockerfile")),
+        "the real build error must be preserved, not just a deletion side effect"
     );
 
     server.cleanup().await;
