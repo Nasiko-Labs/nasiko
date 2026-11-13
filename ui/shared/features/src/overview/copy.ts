@@ -581,7 +581,7 @@ export const copy = {
     failed: (reason: string) => `The run didn't finish: ${reason}`,
     retry: 'Try again',
     notDeployed: (agent: string) =>
-      `${agent} isn't deployed yet. Deploy it from the Setup guide, then run it here.`,
+      `${agent} isn't running in your workspace yet. Once it is, you can run it here.`,
     // While the Setup guide's deploy of it runs, and when it didn't start (NAS-1450).
     deployingTitle: (agent: string) => `Your ${agent} is deploying`,
     deploying: 'Deploying your agent…',
