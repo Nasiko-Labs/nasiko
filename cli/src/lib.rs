@@ -655,14 +655,14 @@ pub enum MafCommands {
     /// Run one instruction end to end and report every stage
     #[command(
         after_help = "Does in one command what `workflow create --instruction`, \
-`workflow run --wait` and `execution get` do in three: sends the sentence to the MAF planner, \
-shows how it was split and which agent each step was given, runs it while reporting each \
+`workflow run --wait` and `execution get` do in three: sends the sentence to the decomposer, \
+shows how it was split and which agent each step was routed to, runs it while reporting each \
 step as it finishes, then prints the result with its token breakdown.\n\n\
 The workflow is kept by default so it can be re-run or inspected; pass --cleanup to delete it \
 once the run finishes."
     )]
     Trace {
-        /// The compound instruction to plan into a workflow and run
+        /// The compound instruction to decompose into a workflow and run
         instruction: String,
         /// Run-time data folded into step 0's task before planning
         #[arg(long)]
@@ -689,10 +689,8 @@ pub enum MafWorkflowCommands {
 an agent (name or UUID) to that step, or \"-\" to auto-assign it; omit --agent entirely to \
 auto-assign every step via the routing engine.\n\n\
 --instruction is mutually exclusive with --step/--agent: it sends the whole sentence to the \
-MAF planner (the same one the web UI uses), which splits it into steps and picks each step's \
-agent. --name/--description, when given, replace the planner's own.\n\n\
---draft saves the result as a draft instead of deploying it live — review it with `workflow \
-get`, change it with `workflow update`, then `workflow promote` when it's ready."
+decomposer service (MODEL_API_URL), which splits it into atomic steps; each is then \
+auto-assigned an agent exactly like an auto-assigned --step."
     )]
     Create {
         #[arg(long)]
@@ -705,12 +703,9 @@ get`, change it with `workflow update`, then `workflow promote` when it's ready.
         /// Agent (name or UUID) for the step at the same position, or "-" to auto-assign
         #[arg(long = "agent", conflicts_with = "instruction")]
         agents: Vec<String>,
-        /// One compound instruction to split into steps via the MAF planner
+        /// One compound instruction to split into atomic steps via the decomposer service
         #[arg(long, conflicts_with_all = ["steps", "agents"])]
         instruction: Option<String>,
-        /// Save as a draft instead of deploying it live
-        #[arg(long)]
-        draft: bool,
     },
     /// Show a workflow's steps and metadata
     Get {
@@ -766,16 +761,6 @@ server-side patch API, so behind the scenes this still sends the full step list.
         #[arg(short, long)]
         force: bool,
     },
-    /// List your MAF drafts (unfinished or unpromoted workflows)
-    Drafts {
-        #[arg(long)]
-        json: bool,
-    },
-    /// Deploy a draft: flips it live with no other change
-    Promote {
-        /// Draft name or UUID
-        workflow: String,
-    },
     /// Queue a run of a workflow
     Run {
         /// Workflow name or UUID
@@ -815,6 +800,22 @@ pub enum MafExecutionCommands {
     /// Show one execution's result by its UUID
     Result {
         execution_id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Stop executions that haven't finished, by UUID or every one of a workflow
+    #[command(
+        after_help = "A queued run never starts, a running one is cut short where it is (its \
+spend so far is still recorded), and a paused one's open question is withdrawn. Runs that \
+already finished are left as they are and listed. Only runs of your own workflows can be stopped."
+    )]
+    Stop {
+        /// Execution UUIDs
+        #[arg(conflicts_with = "workflow")]
+        execution_ids: Vec<String>,
+        /// Stop every unfinished run of this workflow (name or UUID)
+        #[arg(long)]
+        workflow: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -1724,14 +1725,12 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                     steps,
                     agents,
                     instruction,
-                    draft,
                 } => commands::maf::workflow_create(
                     name.as_deref(),
                     description.as_deref(),
                     &steps,
                     &agents,
                     instruction.as_deref(),
-                    draft,
                 ),
                 MafWorkflowCommands::Get { workflow, json } => {
                     commands::maf::workflow_get(&workflow, json)
@@ -1764,10 +1763,6 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 MafWorkflowCommands::Delete { workflow, force } => {
                     commands::maf::workflow_delete(&workflow, force)
                 }
-                MafWorkflowCommands::Drafts { json } => commands::maf::workflow_drafts(json),
-                MafWorkflowCommands::Promote { workflow } => {
-                    commands::maf::workflow_promote(&workflow)
-                }
                 MafWorkflowCommands::Run {
                     workflow,
                     wait,
@@ -1782,6 +1777,11 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 MafExecutionCommands::Get { execution_id, json } => {
                     commands::maf::execution_get(&execution_id, json)
                 }
+                MafExecutionCommands::Stop {
+                    execution_ids,
+                    workflow,
+                    json,
+                } => commands::maf::execution_stop(&execution_ids, workflow.as_deref(), json),
                 MafExecutionCommands::Result { execution_id, json } => {
                     commands::maf::execution_result(&execution_id, json)
                 }
