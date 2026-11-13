@@ -51,6 +51,8 @@ const PUBLIC = {
     'AgentBuildsTab',
     'components/DeployAgentButton',
     'components/BuildToasts',
+    // The Marketplace install panel shows build logs with the same renderer as the Builds tab.
+    'components/BuildLogView',
     'copy',
     'follower',
     // The onboarding guide's Bring an agent step hosts the Deploy tabs themselves.
@@ -60,8 +62,6 @@ const PUBLIC = {
     'search',
     // Its prebuilt deploys show progress as the Registry tab's import does: stage icons and clock (NAS-1450).
     'components/StageList',
-    // The guide follows the deploys its own tabs start, from the same in-flight state they show (NAS-1450).
-    'uploads',
     'steps',
     // The agent hub's deploy markers (plans/feat-agent-centric.md eng): the agent's builds read and its record type.
     'api',

@@ -32,8 +32,8 @@ use crate::{
     ContainerRuntime, ImageSource, SessionAttach, StdioHandle,
     error::{Result, RuntimeError},
     types::{
-        ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, RuntimeState, WorkspaceEntry,
-        WorkspaceFile, WorkspaceRef, validate_build_inputs,
+        BuildReport, ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, RuntimeState,
+        WorkspaceEntry, WorkspaceFile, WorkspaceRef, validate_build_inputs,
     },
 };
 
@@ -329,6 +329,27 @@ fn is_conflict(err: &bollard::errors::Error) -> bool {
             ..
         }
     )
+}
+
+/// Prepend the build steps that ran before a mid-stream failure to the error, keeping its variant,
+/// so a failed build's log is the whole story (steps + reason), not just the final line. A no-op when
+/// nothing was captured yet.
+fn prepend_build_steps(logs: &str, err: RuntimeError) -> RuntimeError {
+    let steps = logs.trim_end();
+    if steps.is_empty() {
+        return err;
+    }
+    match err {
+        RuntimeError::Internal(m) => RuntimeError::Internal(format!("{steps}\n{m}")),
+        RuntimeError::ImageNotFound(m) => RuntimeError::ImageNotFound(format!("{steps}\n{m}")),
+        RuntimeError::BackendUnreachable(m) => {
+            RuntimeError::BackendUnreachable(format!("{steps}\n{m}"))
+        }
+        RuntimeError::ResourceConflict(m) => {
+            RuntimeError::ResourceConflict(format!("{steps}\n{m}"))
+        }
+        other => RuntimeError::Internal(format!("{steps}\n{other}")),
+    }
 }
 
 fn map_bollard_err(err: bollard::errors::Error) -> RuntimeError {
@@ -2291,7 +2312,7 @@ impl ContainerRuntime for DockerRuntime {
     }
 
     #[instrument(skip(self, tar_context), fields(image_tag))]
-    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String> {
+    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<BuildReport> {
         validate_build_inputs(tar_context, image_tag)?;
 
         let options = BuildImageOptions {
@@ -2304,33 +2325,62 @@ impl ContainerRuntime for DockerRuntime {
         let body = tar_context.to_vec().into();
 
         let build_fut = async {
+            // Accumulate the daemon's step output so the control plane can show the
+            // user what the build did (success) or where it stopped (failure); every
+            // line is still traced for operators.
+            let mut logs = String::new();
             let mut stream = self.client.build_image(options, None, Some(body));
             while let Some(msg) = stream.next().await {
-                let info = msg.map_err(map_bollard_err)?;
-                if let Some(err) = info.error {
-                    let detail = info
-                        .error_detail
-                        .and_then(|d| d.message)
-                        .unwrap_or_default();
-                    let full = if detail.is_empty() {
-                        err
-                    } else {
-                        format!("{err}: {detail}")
-                    };
-                    return if full.contains("pull access denied")
-                        || full.contains("not found")
-                        || full.contains("does not exist")
-                    {
-                        Err(RuntimeError::ImageNotFound(full))
-                    } else {
-                        Err(RuntimeError::Internal(full))
-                    };
-                }
-                if let Some(line) = info.stream {
-                    tracing::debug!(target: "agent_runtime::build", "{}", line.trim_end());
+                match msg {
+                    Ok(info) => {
+                        if let Some(err) = info.error {
+                            let detail = info
+                                .error_detail
+                                .and_then(|d| d.message)
+                                .unwrap_or_default();
+                            let reason = if detail.is_empty() {
+                                err
+                            } else {
+                                format!("{err}: {detail}")
+                            };
+                            // Classify on the error text only, never on the step output below it:
+                            // a step that prints "not found" must not relabel an unrelated failure
+                            // as ImageNotFound (the reported summary is wrong, the log is fine).
+                            let not_found = reason.contains("pull access denied")
+                                || reason.contains("not found")
+                                || reason.contains("does not exist");
+                            // Carry the steps that ran before the failure alongside the reason, so
+                            // the error message is the whole build log (steps + reason), not just
+                            // the final line.
+                            let full = if logs.trim().is_empty() {
+                                reason
+                            } else {
+                                format!("{}\n{reason}", logs.trim_end())
+                            };
+                            return if not_found {
+                                Err(RuntimeError::ImageNotFound(full))
+                            } else {
+                                Err(RuntimeError::Internal(full))
+                            };
+                        }
+                        if let Some(line) = info.stream {
+                            let line = line.trim_end();
+                            tracing::debug!(target: "agent_runtime::build", "{line}");
+                            logs.push_str(line);
+                            logs.push('\n');
+                        }
+                    }
+                    // A mid-stream daemon failure (e.g. "COPY failed: …") arrives as a
+                    // stream Error, *not* in `info.error`. Carry the steps that already ran,
+                    // the same as the `info.error` path, or the user sees only the final
+                    // line with no build context (the whole point of capturing logs).
+                    Err(e) => return Err(prepend_build_steps(&logs, map_bollard_err(e))),
                 }
             }
-            Ok(image_tag.to_owned())
+            Ok(BuildReport {
+                image_tag: image_tag.to_owned(),
+                logs,
+            })
         };
 
         tokio::time::timeout(self.config.build_timeout, build_fut)

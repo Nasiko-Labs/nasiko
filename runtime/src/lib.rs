@@ -33,8 +33,9 @@ pub use stats::{
 pub use stdio::{SessionAttach, StdioHandle};
 pub use types::validate_build_inputs;
 pub use types::{
-    ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits, RuntimeState,
-    Shutdown, WorkloadKind, WorkloadOverrides, WorkspaceEntry, WorkspaceFile, WorkspaceRef,
+    BuildReport, ContainerId, DeploymentSpec, DeploymentStatus, InstanceInfo, ResourceLimits,
+    RuntimeState, Shutdown, WorkloadKind, WorkloadOverrides, WorkspaceEntry, WorkspaceFile,
+    WorkspaceRef,
 };
 pub use types::{
     WORKSPACE_CAT_SCRIPT, WORKSPACE_LIST_SCRIPT, WORKSPACE_SETUP_SCRIPT, WORKSPACE_STAT_SCRIPT,
@@ -272,16 +273,22 @@ pub trait ContainerRuntime: Send + Sync {
     /// return Response::new(StatusCode::ACCEPTED, json!({ "build_id": build_id }));
     /// ```
     ///
-    /// Returns `image_tag` verbatim on success so the caller can pass it directly to `deploy()`.
+    /// Returns a [`BuildReport`] on success — `image_tag` verbatim (so the caller
+    /// can pass it directly to `deploy()`) plus whatever build-time log output the
+    /// runtime retained. The logs are best-effort: a backend that cannot capture
+    /// its builder's output returns them empty rather than failing the build. On a
+    /// failed build the diagnostic log travels the error channel (`RuntimeError`)
+    /// instead, so the caller can record build output for success and failure alike.
     ///
-    /// - Docker: streams tar to the Docker daemon via bollard, drains `BuildInfo` output.
+    /// - Docker: streams tar to the Docker daemon via bollard, draining `BuildInfo`
+    ///   output into the report's `logs`.
     ///   Timeout is `DockerRuntimeConfig::build_timeout` (default 30 min), separate from
     ///   `operation_timeout`.
     /// - K8s: uploads the tar context to object storage and runs a BuildKit build
     ///   Job (`buildctl` against a shared `buildkitd`), polling the Job to completion
-    ///   and pushing the image to the registry. Timeout is
-    ///   `KubeRuntimeConfig::build_timeout` (default 30 min).
-    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String>;
+    ///   and pushing the image to the registry. The build pod's log is returned in
+    ///   `logs`. Timeout is `KubeRuntimeConfig::build_timeout` (default 30 min).
+    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<BuildReport>;
 
     /// Whether this runtime can scale an agent between replica bounds on its own.
     ///

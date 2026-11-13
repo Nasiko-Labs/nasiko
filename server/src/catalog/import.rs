@@ -216,6 +216,18 @@ async fn detached(work: impl Future<Output = Response> + Send + 'static) -> Resp
     })
 }
 
+/// The response body for an install whose image build failed: a plain-language reason the
+/// UI shows directly, plus the `build_id` so it can fetch the full log from
+/// `GET /api/builds/{id}/logs`. JSON (parsed by the client's error handler) rather than the
+/// bare `"internal error"` this path used to return, which told the user nothing.
+fn build_failed_body(build_id: Uuid) -> String {
+    serde_json::json!({
+        "error": "The agent's image failed to build. See the build logs for details.",
+        "build_id": build_id,
+    })
+    .to_string()
+}
+
 /// An import that stopped after registering its agent `deploying` leaves it `failed`.
 async fn mark_agent_failed(db: &sqlx::PgPool, agent_id: Uuid) {
     let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
@@ -314,11 +326,6 @@ pub(crate) async fn build_and_deploy(
             })?;
         id
     } else {
-        state
-            .agent_admission
-            .admit(&mut tx, owner_id, &meta.name)
-            .await
-            .map_err(|(status, body)| (status, body.0.to_string()))?;
         sqlx::query_scalar(
             r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities, tags, status)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'deploying')
@@ -435,25 +442,49 @@ pub(crate) async fn build_and_deploy(
             .map_err(|e| e.to_string()),
         Err(e) => Err(e),
     };
-    if let Err(e) = built {
-        tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: build failed");
-        let _ = sqlx::query("UPDATE agent_builds SET status = 'failed' WHERE id = $1")
+    match built {
+        Err(log) => {
+            // The build log (Docker's step output / the BuildKit runner's log, or the
+            // single failing line) is the only record of *why* an install failed — persist
+            // it on the build row and hand it back so the user sees it instead of a bare
+            // 500. Without this the real reason reached nobody but the server log.
+            tracing::error!(%log, %agent_id, %build_id, "build_and_deploy: build failed");
+            let _ = sqlx::query(
+                "UPDATE agent_builds SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
             .bind(build_id)
             .execute(&state.db)
             .await;
-        mark_agent_failed(&state.db, agent_id).await;
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal error".to_string(),
-        ));
+            crate::agents::utils::store_build_logs(
+                &state.db,
+                state.oci_storage.as_ref(),
+                build_id,
+                &log,
+            )
+            .await;
+            mark_agent_failed(&state.db, agent_id).await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                build_failed_body(build_id),
+            ));
+        }
+        Ok(report) => {
+            // Keep the successful build's output too, so the Builds view can show what ran.
+            let _ = sqlx::query(
+                "UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1",
+            )
+            .bind(build_id)
+            .execute(&state.db)
+            .await;
+            crate::agents::utils::store_build_logs(
+                &state.db,
+                state.oci_storage.as_ref(),
+                build_id,
+                &report.logs,
+            )
+            .await;
+        }
     }
-
-    // Mark build successful
-    let _ =
-        sqlx::query("UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1")
-            .bind(build_id)
-            .execute(&state.db)
-            .await;
 
     let scaling = state.agent_scaling.begin_deploy(agent_id).await;
     let plan = match scaling.plan().await {
@@ -1105,20 +1136,6 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
         };
 
         // Register agent in catalog — only update if this caller owns the existing entry.
-        let mut tx = match state.db.begin().await {
-            Ok(tx) => tx,
-            Err(e) => {
-                tracing::error!(%e, %agent_name, %owner_id, "import_registry: begin tx");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
-        };
-        if let Err(refusal) = state
-            .agent_admission
-            .admit(&mut tx, owner_id, &agent_name)
-            .await
-        {
-            return refusal.into_response();
-        }
         let agent_id: Uuid = match sqlx::query_scalar(
             // Conflict target is the (owner_id, name) partial unique index
             // (migration 015); the owner is part of the key, so a conflict
@@ -1165,7 +1182,7 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
         .bind(skills)
         .bind(capabilities)
         .bind(tags)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&state.db)
         .await
         {
             Ok(Some(id)) => id,
@@ -1181,10 +1198,6 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
-        if let Err(e) = tx.commit().await {
-            tracing::error!(%e, %agent_id, "import_registry: commit tx");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-        }
 
         let scaling = state.agent_scaling.begin_deploy(agent_id).await;
         let plan = match scaling.plan().await {

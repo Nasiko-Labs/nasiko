@@ -6,7 +6,10 @@ use async_trait::async_trait;
 use crate::{
     ContainerRuntime,
     error::{Result, RuntimeError},
-    types::{ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState, validate_build_inputs},
+    types::{
+        BuildReport, ContainerId, DeploymentSpec, DeploymentStatus, RuntimeState,
+        validate_build_inputs,
+    },
 };
 
 /// `ContainerRuntime` backend for benchmarking control-plane throughput without
@@ -153,9 +156,9 @@ impl ContainerRuntime for SimulatedRuntime {
         ])
     }
 
-    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String> {
+    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<BuildReport> {
         validate_build_inputs(tar_context, image_tag)?;
-        Ok(image_tag.to_owned())
+        Ok(BuildReport::image_only(image_tag))
     }
 }
 

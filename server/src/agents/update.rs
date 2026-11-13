@@ -18,7 +18,7 @@ use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip
 use crate::github::load_github_token;
 use crate::state::AppState;
 
-use super::utils::{set_build_status, set_upload_status};
+use super::utils::{set_build_status, set_upload_status, store_build_logs};
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
@@ -494,6 +494,9 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
+    // The image build's captured output, filled once the build runs so the Builds tab can show it.
+    let mut build_logs = String::new();
+
     let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
@@ -542,11 +545,12 @@ pub async fn execute_agent_update(
         let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
             .await
             .map_err(|e| format!("tar task failed: {e}"))??;
-        state
+        build_logs = state
             .runtime
             .build(&tar_bytes, &image_tag)
             .await
-            .map_err(|e| format!("build: {e}"))?;
+            .map_err(|e| format!("build: {e}"))?
+            .logs;
 
         set_upload_status(
             db,
@@ -685,6 +689,7 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Success).await;
+            store_build_logs(db, state.oci_storage.as_ref(), build_id, &build_logs).await;
             set_upload_status(
                 db,
                 &upload_id,
@@ -712,10 +717,21 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Failed).await;
-            // `e` is a detailed internal string (may contain raw docker/tar/IO error
-            // text) — log it, but the `upload_status.error_message` column is read
-            // back by clients via GET /agents/uploads, so store a generic reason there
-            // instead of leaking internals through the status-polling API.
+            // Persist what explains the failure on the build row: the build output when the image
+            // built, otherwise the error text, which carries the builder's own log for a build
+            // failure. The `upload_status.error_message` column stays a generic reason because
+            // clients read it via GET /agents/uploads; the detail lives in the build logs.
+            store_build_logs(
+                db,
+                state.oci_storage.as_ref(),
+                build_id,
+                if build_logs.trim().is_empty() {
+                    &e
+                } else {
+                    &build_logs
+                },
+            )
+            .await;
             set_upload_status(
                 db,
                 &upload_id,

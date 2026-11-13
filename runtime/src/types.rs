@@ -257,6 +257,33 @@ impl ResourceLimits {
     }
 }
 
+/// The outcome of a successful image build.
+///
+/// `build()` returns the image reference it built (so the caller can pass it
+/// straight to `deploy()`) together with whatever build-time log output the
+/// runtime retained. `logs` is best-effort: a backend that cannot capture its
+/// builder's output leaves it empty, never fails the build for it. On a *failed*
+/// build the diagnostic log travels the error channel instead (`RuntimeError`),
+/// so callers can persist a record for success and failure alike.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildReport {
+    /// The image reference that was built — `image_tag` verbatim.
+    pub image_tag: String,
+    /// Captured build-time output (empty when the runtime does not retain it).
+    pub logs: String,
+}
+
+impl BuildReport {
+    /// A report carrying only the image reference, for runtimes (or the
+    /// simulated backend) that keep no build log.
+    pub fn image_only(image_tag: impl Into<String>) -> Self {
+        Self {
+            image_tag: image_tag.into(),
+            logs: String::new(),
+        }
+    }
+}
+
 /// Full specification for an agent deployment.
 ///
 /// The caller constructs this from a build record and passes it to

@@ -355,6 +355,80 @@ pub(crate) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: 
     }
 }
 
+/// Persist a build's captured output on its `agent_builds` row, so the Builds tab and
+/// `GET /api/builds/{id}/logs` can show what the build did (success) or why it failed. Best effort:
+/// a write failure is logged, never fatal — the build result stands on its own. Empty logs are
+/// skipped so a runtime that keeps none leaves the column untouched rather than blanking it.
+pub(crate) async fn set_build_logs(db: &sqlx::PgPool, build_id: Uuid, logs: &str) {
+    if logs.trim().is_empty() {
+        return;
+    }
+    if let Err(e) =
+        sqlx::query("UPDATE agent_builds SET logs = $2, updated_at = now() WHERE id = $1")
+            .bind(build_id)
+            .bind(logs)
+            .execute(db)
+            .await
+    {
+        tracing::error!(build_id = %build_id, %e, "failed to persist build logs");
+    }
+}
+
+/// The object-storage key a build's logs live under. One object per build attempt,
+/// keyed by the build id (so a retry of the same build overwrites, never piles up).
+pub(crate) fn build_logs_key(build_id: Uuid) -> String {
+    format!("build-logs/{build_id}")
+}
+
+/// Persists build logs to object storage and records only the pointer in
+/// `agent_builds.logs_url` (`blob:<key>`), keeping the log bytes out of Postgres.
+///
+/// The same path serves Docker (S3) and Kubernetes (S3/Azure) builds — `storage`
+/// is the shared [`BlobStore`](nasiko_runtime::BlobStore) seam the OCI registry
+/// already uses. The object is uploaded **first**; the row is pointed at it only
+/// after the upload succeeds, so the database never references an object that was
+/// not written. If the upload fails, it falls back to the `logs` column, so a
+/// storage hiccup never loses the only record of why a build failed.
+/// `get_build_logs` reads either shape back.
+pub(crate) async fn store_build_logs(
+    db: &sqlx::PgPool,
+    storage: &dyn nasiko_runtime::BlobStore,
+    build_id: Uuid,
+    logs: &str,
+) {
+    if logs.trim().is_empty() {
+        return;
+    }
+    let key = build_logs_key(build_id);
+    match storage
+        .put_blob(&key, bytes::Bytes::copy_from_slice(logs.as_bytes()))
+        .await
+    {
+        Ok(_) => {
+            // Upload succeeded: point the row at the object and clear any text a
+            // fallback left behind, so the reader never serves a stale DB copy.
+            if let Err(e) = sqlx::query(
+                "UPDATE agent_builds SET logs_url = $2, logs = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(build_id)
+            .bind(format!("blob:{key}"))
+            .execute(db)
+            .await
+            {
+                tracing::error!(build_id = %build_id, %e, "failed to record build log pointer");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                build_id = %build_id,
+                %e,
+                "build log upload to object storage failed; falling back to the logs column"
+            );
+            set_build_logs(db, build_id, logs).await;
+        }
+    }
+}
+
 pub(crate) async fn set_upload_status(
     db: &sqlx::PgPool,
     upload_id: &str,
@@ -382,5 +456,24 @@ pub(crate) async fn set_upload_status(
     .await
     {
         tracing::warn!(%e, upload_id, "failed to update upload_status");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_logs_key_is_stable_and_namespaced() {
+        let id = Uuid::parse_str("279f0b99-c789-405b-bd4f-a4ae0bc249a8").unwrap();
+        // The key must stay `build-logs/<id>`: it is the object-storage path a build's
+        // logs live under, and `get_build_logs` resolves `blob:<key>` back to it, so a
+        // change here would orphan every already-stored log.
+        assert_eq!(
+            build_logs_key(id),
+            "build-logs/279f0b99-c789-405b-bd4f-a4ae0bc249a8"
+        );
+        // Namespaced away from image blobs, and one object per build id.
+        assert!(build_logs_key(id).starts_with("build-logs/"));
     }
 }

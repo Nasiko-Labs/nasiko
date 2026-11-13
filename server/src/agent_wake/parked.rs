@@ -511,8 +511,12 @@ mod tests {
             Ok(Vec::new())
         }
 
-        async fn build(&self, _tar: &[u8], tag: &str) -> nasiko_runtime::Result<String> {
-            Ok(tag.to_owned())
+        async fn build(
+            &self,
+            _tar: &[u8],
+            tag: &str,
+        ) -> nasiko_runtime::Result<nasiko_runtime::BuildReport> {
+            Ok(nasiko_runtime::BuildReport::image_only(tag))
         }
     }
 

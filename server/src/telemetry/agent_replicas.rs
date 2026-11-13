@@ -186,7 +186,11 @@ mod tests {
         async fn logs(&self, _id: &ContainerId, _tail: u32) -> nasiko_runtime::Result<Vec<String>> {
             unused()
         }
-        async fn build(&self, _context: &[u8], _tag: &str) -> nasiko_runtime::Result<String> {
+        async fn build(
+            &self,
+            _context: &[u8],
+            _tag: &str,
+        ) -> nasiko_runtime::Result<nasiko_runtime::BuildReport> {
             unused()
         }
     }

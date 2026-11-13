@@ -10,10 +10,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nasiko_runtime::{
-    ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo, Result,
-    SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider, SandboxProviderKind, SandboxSpec,
-    SandboxState, SandboxStats, SandboxTransport, SessionAttach, StdioHandle, WorkspaceEntry,
-    WorkspaceFile, WorkspaceRef,
+    BuildReport, ContainerId, ContainerRuntime, DeploymentSpec, DeploymentStatus, InstanceInfo,
+    Result, SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider, SandboxProviderKind,
+    SandboxSpec, SandboxState, SandboxStats, SandboxTransport, SessionAttach, StdioHandle,
+    WorkspaceEntry, WorkspaceFile, WorkspaceRef,
 };
 
 use crate::injector::{AgentContext, InstrumentationInjector, OtelInjector};
@@ -124,7 +124,7 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         self.inner.logs(container_id, tail).await
     }
 
-    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<String> {
+    async fn build(&self, tar_context: &[u8], image_tag: &str) -> Result<BuildReport> {
         self.inner.build(tar_context, image_tag).await
     }
 
@@ -457,8 +457,8 @@ mod tests {
         async fn logs(&self, _id: &ContainerId, _t: u32) -> Result<Vec<String>> {
             Ok(vec![])
         }
-        async fn build(&self, _c: &[u8], _t: &str) -> Result<String> {
-            Ok(String::new())
+        async fn build(&self, _c: &[u8], t: &str) -> Result<BuildReport> {
+            Ok(BuildReport::image_only(t))
         }
         async fn refresh_secrets(
             &self,

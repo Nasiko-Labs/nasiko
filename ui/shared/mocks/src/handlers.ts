@@ -19,7 +19,6 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
-  modelRouting,
   savings,
   spendCalendar,
   spendTimeseries,
@@ -84,7 +83,6 @@ import {
   listCustom,
   listSecrets,
   deleteSecret,
-  myChoice,
   patchRouting,
   touchSecret,
   upsertSecret,
@@ -1571,9 +1569,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     ),
   ],
   savings: [
-    // NAS-1263 (`model_routing.rs`): how the router chose each call's model. In the savings group
-    // because the card that reads it sits in TokenOps' Optimization section, beside /finops/savings.
-    http.get(`${FINOPS}/model-routing`, () => respond(() => modelRouting())),
     http.get(`${FINOPS}/savings`, ({ request }) =>
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
@@ -1922,26 +1917,6 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         ),
       )
     }),
-    // agents/llm_config.rs my-llm-config: the caller's own choice on an agent they can use but do not own.
-    http.get('/api/agents/:id/my-llm-config', ({ params: prm }) =>
-      routed(() => envelope(myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID))),
-    ),
-    http.put('/api/agents/:id/my-llm-config', async ({ params: prm, request }) => {
-      const body = (await request.json().catch(() => ({}))) as { llm_config_id?: string }
-      return routed(() =>
-        envelope(
-          myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, {
-            configId: body.llm_config_id ?? null,
-          }),
-        ),
-      )
-    }),
-    http.delete('/api/agents/:id/my-llm-config', ({ params: prm }) =>
-      routed(() => {
-        myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, { configId: null })
-        return HttpResponse.json({ data: null, status_code: 200, message: 'ok' })
-      }),
-    ),
     // secrets/routes.rs list_secrets: names and timestamps only.
     http.get('/api/secrets', () =>
       routed(() => {
@@ -2197,17 +2172,6 @@ function routingAgent(ref: string): MockAgent {
   const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
   if (!a) throw new MockHttpError(404, 'agent not found')
   if (a.owner_id !== ADMIN_ID && !superuser()) throw new MockHttpError(403, 'not the agent owner')
-  return a
-}
-
-/** acl.rs `can_access_agent` (owner, public, a user grant, or a superuser): 404 `agent not found` otherwise. */
-function usableAgent(ref: string): MockAgent {
-  const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
-  if (
-    !a ||
-    !(a.owner_id === ADMIN_ID || superuser() || a.is_public || a.userGrants.includes(ADMIN_ID))
-  )
-    throw new MockHttpError(404, 'agent not found')
   return a
 }
 
@@ -2817,6 +2781,21 @@ function deployHandlers(): HttpHandler[] {
       const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
       const r = b ? recordAt(b, nowFn()) : null
       return r ? HttpResponse.json(r) : new HttpResponse(null, { status: 404 })
+    }),
+    // The captured build output (build/routes.rs get_build_logs): plain text, or 404 when none was
+    // kept. The source-build install path persists it on the row (catalog/import.rs).
+    http.get('/api/builds/:id/logs', ({ params: p }) => {
+      if (!loggedIn) return unauthorized()
+      if (variant() === 'deploy-no-rights') return noRights()
+      const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
+      const r = b ? recordAt(b, nowFn()) : null
+      if (!r) return text('no logs available', 404)
+      return text(
+        r.status === 'failed'
+          ? `Step 3/4 : RUN pip install -r requirements.txt\nERROR: Could not find a version that satisfies the requirement nasiko-sdk\nThe command '/bin/sh -c pip install -r requirements.txt' returned a non-zero code: 1`
+          : `Step 1/4 : FROM python:3.12-slim\nStep 2/4 : COPY . /app\nStep 3/4 : RUN pip install -r requirements.txt\nStep 4/4 : CMD ["python", "main.py"]\nSuccessfully tagged ${r.image_reference}`,
+        200,
+      )
     }),
     http.get('/api/agents/uploads', ({ request }) => {
       if (!loggedIn) return unauthorized()

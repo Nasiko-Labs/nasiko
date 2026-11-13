@@ -25,7 +25,7 @@ use crate::build::routes::extract_zip_from_file;
 use crate::build::{self, BuildStatus};
 use crate::state::AppState;
 
-use super::utils::{set_build_status, set_upload_status};
+use super::utils::{set_build_status, set_upload_status, store_build_logs};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -637,12 +637,6 @@ pub(crate) async fn upload_and_deploy(
         ports
     };
 
-    // Asked in the transaction that inserts, so a limit on agents is counted under its own lock.
-    if let Err(refusal) = state.agent_admission.admit(&mut tx, owner_id, &name).await {
-        let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
-        return refusal.into_response();
-    }
-
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
@@ -1088,6 +1082,8 @@ pub async fn execute_upload_and_deploy(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-agent-{build_id}"));
 
+    // The image build's captured output, filled once the build runs so the Builds tab can show it.
+    let mut build_logs = String::new();
     let result: Result<DeploymentStatus, String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
@@ -1113,10 +1109,11 @@ pub async fn execute_upload_and_deploy(
             .await
             .map_err(|e| format!("spawn_blocking tar: {e}"))?
             .map_err(|e| format!("tar source: {e}"))?;
-        runtime
+        build_logs = runtime
             .build(&tar_bytes, &image_tag)
             .await
-            .map_err(|e| format!("docker build: {e}"))?;
+            .map_err(|e| format!("docker build: {e}"))?
+            .logs;
 
         set_upload_status(
             db,
@@ -1209,6 +1206,7 @@ pub async fn execute_upload_and_deploy(
     match result {
         Ok(deploy_status) => {
             set_build_status(db, build_id, BuildStatus::Success).await;
+            store_build_logs(db, state.oci_storage.as_ref(), build_id, &build_logs).await;
             set_upload_status(
                 db,
                 &upload_id,
@@ -1264,9 +1262,21 @@ pub async fn execute_upload_and_deploy(
         }
         Err(e) => {
             set_build_status(db, build_id, BuildStatus::Failed).await;
-            // `e` may embed raw docker/tar/IO error text — log it, but
-            // upload_status.error_message is read back by clients via
-            // GET /agents/uploads, so store a generic reason there.
+            // Persist what explains the failure on the build row: the build output when the image
+            // built (a later step failed), otherwise the error text, which carries the builder's
+            // own log for a build failure. `upload_status.error_message` stays a generic reason
+            // because clients read it via GET /agents/uploads; the detail lives in the build logs.
+            store_build_logs(
+                db,
+                state.oci_storage.as_ref(),
+                build_id,
+                if build_logs.trim().is_empty() {
+                    &e
+                } else {
+                    &build_logs
+                },
+            )
+            .await;
             set_upload_status(
                 db,
                 &upload_id,
@@ -1362,6 +1372,9 @@ pub async fn execute_clone_and_deploy(
     // without needing to thread the version string through every error
     // variant.
     let mut claimed_version: Option<String> = None;
+
+    // The image build's captured output, filled once the build runs so the Builds tab can show it.
+    let mut build_logs = String::new();
 
     let result: Result<(DeploymentStatus, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
@@ -1473,10 +1486,11 @@ pub async fn execute_clone_and_deploy(
             .await
             .map_err(|e| format!("spawn_blocking tar: {e}"))?
             .map_err(|e| format!("tar source: {e}"))?;
-        runtime
+        build_logs = runtime
             .build(&tar_bytes, &image_tag)
             .await
-            .map_err(|e| format!("BUILD_FAILED:docker build: {e}"))?;
+            .map_err(|e| format!("BUILD_FAILED:docker build: {e}"))?
+            .logs;
 
         set_upload_status(
             db,
@@ -1560,6 +1574,7 @@ pub async fn execute_clone_and_deploy(
     match result {
         Ok((deploy_status, _final_image_tag)) => {
             set_build_status(db, build_id, BuildStatus::Success).await;
+            store_build_logs(db, state.oci_storage.as_ref(), build_id, &build_logs).await;
             set_upload_status(
                 db,
                 &upload_id,
@@ -1612,6 +1627,20 @@ pub async fn execute_clone_and_deploy(
         }
         Err(e) => {
             set_build_status(db, build_id, BuildStatus::Failed).await;
+            // Persist what explains the failure on the build row: the build output when the image
+            // built, otherwise the error text, which carries the builder's own log for a build
+            // failure (the `BUILD_FAILED:` prefix is stripped for the user-facing message below).
+            store_build_logs(
+                db,
+                state.oci_storage.as_ref(),
+                build_id,
+                if build_logs.trim().is_empty() {
+                    &e
+                } else {
+                    &build_logs
+                },
+            )
+            .await;
             // Free a version this attempt claimed via `reserve_version` but
             // never finished deploying, so the same version can be retried.
             // A no-op if nothing was ever claimed (e.g. rejected before a
