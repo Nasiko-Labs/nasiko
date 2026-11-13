@@ -226,7 +226,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 /**
- * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus OSS's Reo loader) for
+ * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus the Reo loader where the page has one) for
  * the server's CSP (plan §8 Phase 9). The page has no other inline script or style attribute.
  */
 function cspHashes(): Plugin {
@@ -326,22 +326,6 @@ function defaultRelease(): string {
   }
 }
 
-/**
- * Whether Weave (the EE assistant, its generated views and the GenUI frame) is in this build. Weave is not part of
- * the current release (Satya, 13 Nov 2026): production builds, web and desktop, leave it out unless
- * `NASIKO_WEAVE=on`; dev servers and tests keep it unless `NASIKO_WEAVE=off`. When Weave ships, flip
- * `WEAVE_IN_RELEASES`. Read in the code as `import.meta.env.NASIKO_WEAVE_COMPILED_IN`, a boolean literal, so a build
- * without it drops the code instead of hiding it.
- */
-const WEAVE_IN_RELEASES = false
-
-export function weaveCompiledIn(mode: string): boolean {
-  const flag = loadEnv(mode, ROOT, '').NASIKO_WEAVE?.trim()
-  if (flag === 'on') return true
-  if (flag === 'off') return false
-  return mode !== 'production' || WEAVE_IN_RELEASES
-}
-
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
   const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
@@ -364,7 +348,6 @@ export function nasikoApp(o: AppOptions): UserConfig {
       'import.meta.env.NASIKO_MOCKS_COMPILED_IN': JSON.stringify(
         o.mode !== 'production' || env.VITE_NASIKO_ALLOW_MOCK_BUILD === 'true',
       ),
-      'import.meta.env.NASIKO_WEAVE_COMPILED_IN': JSON.stringify(weaveCompiledIn(o.mode)),
     },
     plugins: [
       leakGuard(o),
