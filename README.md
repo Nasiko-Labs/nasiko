@@ -135,7 +135,6 @@ flowchart LR
         direction TB
         API["REST API (agents, builds, uploads)"]
         AUTH["Auth (session JWT, TLS, rate-limit, ACLs)"]
-        OIDC["OIDC client (SSO)"]
         ROUTE["Routing engine (shortlist, rerank, select)"]
         PROXY["A2A Proxy (generic agent reverse-proxy)"]
         MCP["MCP Gateway (tools/list, tools/call, OAuth)"]
@@ -143,7 +142,7 @@ flowchart LR
         OCI["Embedded OCI registry (/v2/*)"]
         FLOW["Flow guards (depth, fan-out, token budget, cycles)"]
         SECRETS["Secrets engine (AES-256-GCM)"]
-        GITHUB["GitHub App integration"]
+        GITHUB["GitHub integration (OAuth)"]
     end
 
     subgraph Infra["Backing services (Docker)"]
@@ -168,7 +167,6 @@ flowchart LR
     API --> ROUTE
     API --> GITHUB
     ROUTE --> FLOW
-    OIDC --> AUTH
     SECRETS --> API
 
     AUTH -. gates .-> API
@@ -416,7 +414,7 @@ artifact registry.
 | `nasiko logs <agent> -f`                          | Stream (and follow) agent logs                                        |
 | `nasiko stop` / `start` / `restart` / `scale <n>` | Agent lifecycle                                                       |
 | `nasiko rm --name <agent>`                        | Terminate + deregister an agent (positional `id` only accepts a UUID) |
-| `nasiko chat <agent>`                             | Interactive or one-shot A2A chat                                      |
+| `nasiko chat --agent <agent> [message]`          | Interactive or one-shot A2A chat                                      |
 | `nasiko secrets set`                              | Configure encrypted per-agent secrets                                 |
 | `nasiko mcp`                                      | Manage MCP Gateway connectors and tool permissions                    |
 | `nasiko observe`                                  | Observability: sessions, traces, spans, stats, FinOps                 |

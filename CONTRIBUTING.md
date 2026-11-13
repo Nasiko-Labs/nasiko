@@ -160,7 +160,7 @@ utils/          Shared helpers
 cli/            nasiko binary (agent developer CLI, sync HTTP via ureq)
 agents/         Example and seed agents (each a standalone A2A container)
 migrations/     Postgres migrations (sqlx, run automatically at startup)
-ui/             Frontend (vanilla JS web components, embedded in the server binary)
+ui/             Frontend (React 19 + Vite, TanStack Router; pnpm workspace), embedded in the server binary
 docs/           Design docs (architecture, protocol, conventions)
 ```
 
