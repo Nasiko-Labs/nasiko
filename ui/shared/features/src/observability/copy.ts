@@ -119,6 +119,13 @@ export const copy = {
   spanCount: (shown: number, total: number, filtered: boolean) =>
     filtered ? `${shown} of ${total} spans` : `${total} spans`,
   noSpansMatch: 'No spans match this filter.',
+  // The session page's figures (NAS-1453): the traces' figures add up to the session total. The server leaves a trace
+  // out of both only when it couldn't read it, and then marks the session incomplete (`metrics_complete`).
+  sessionTotal: 'Session total:',
+  acrossTraces: (n: number) => `across ${n} trace${n === 1 ? '' : 's'}`,
+  traceTotal: (n: number) => `Trace ${n}:`,
+  totalsPartial:
+    "Some of this session's traces couldn't be read, so the session total covers only the traces listed.",
   rollup: (c: { spans: number; llm: number; tool: number; agent: number }) =>
     [
       `${c.spans} spans`,

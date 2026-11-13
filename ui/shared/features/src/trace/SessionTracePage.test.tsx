@@ -11,7 +11,10 @@ import {
   sessionDetail,
   SHOWCASE_SESSION,
   spanDetail,
+  traceDetail,
 } from '@nasiko/mocks/observability'
+import { entryCost } from '@nasiko/features/observability/sessions'
+import { fmtMoney, fmtMoneyFine, fmtTokens } from '@nasiko/ui/lib/format'
 import { seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { server } from '@nasiko/testing/setup'
@@ -208,6 +211,73 @@ describe('Session trace', () => {
       await screen.findByRole('tab', { name: 'Prompt & response' }, { timeout: 8000 }),
     )
     expect((await screen.findAllByText(copy.captureOff)).length).toBe(2)
+  })
+})
+
+// NAS-1453: which figure is the session's, which is a trace's, and why they would ever not add up.
+describe('Session trace: totals', () => {
+  const s = data.sessions.find((x) => x.traces.length > 1 && x.traces.length <= 6)!
+  const d = sessionDetail(seed, s)
+  const picked = d.traces[1]
+  const line = (label: string) => screen.getByText(label).parentElement!
+
+  it('labels the session total and each trace; the header and narrative use the figure that adds up', async () => {
+    // The trace read re-prices its spans live; that figure must not stand in for the trace's share of the total.
+    server.use(
+      http.get('/api/observability/trace/:traceId', ({ params }) => {
+        const t = traceDetail(seed, String(params.traceId))
+        if (!t) return undefined
+        return HttpResponse.json({
+          data: { trace: { ...t, cost_summary: { ...t.cost_summary, total: { cost: 99 } } } },
+        })
+      }),
+    )
+    renderApp(`/sessions/${s.session_id}?trace=${picked.trace_id}`)
+    await screen.findByText(copy.traceTotal(2), {}, { timeout: 8000 })
+
+    const tokens = (i: number, o: number) => `${fmtTokens(i)} in · ${fmtTokens(o)} out tokens`
+    const total = line(copy.sessionTotal)
+    expect(total).toHaveTextContent(fmtMoneyFine(d.cost_summary.total.cost))
+    expect(total).toHaveTextContent(
+      tokens(d.cost_summary.prompt.tokens, d.cost_summary.completion.tokens),
+    )
+    expect(total).toHaveTextContent(copy.acrossTraces(d.traces.length))
+    expect(screen.queryByText(copy.totalsPartial)).toBeNull()
+
+    const traceLine = line(copy.traceTotal(2))
+    expect(traceLine).toHaveTextContent(fmtMoneyFine(entryCost(picked)))
+    expect(traceLine).toHaveTextContent(
+      tokens(picked.root_span.input_tokens, picked.root_span.output_tokens),
+    )
+    expect(traceLine).not.toHaveTextContent('$99')
+    expect(screen.getByLabelText('What happened')).toHaveTextContent(
+      `This trace cost ${fmtMoney(entryCost(picked))}`,
+    )
+
+    // Each trace's chip says the same figures, and they add up to the session total.
+    const chips = within(
+      screen.getByRole('group', { name: 'Traces in this session' }),
+    ).getAllByRole('button')
+    d.traces.forEach((t, i) =>
+      expect(chips[i]).toHaveTextContent(
+        `${fmtMoneyFine(entryCost(t))} · ${tokens(t.root_span.input_tokens, t.root_span.output_tokens)}`,
+      ),
+    )
+    const sum = (f: (t: (typeof d.traces)[number]) => number) =>
+      d.traces.reduce((acc, t) => acc + f(t), 0)
+    expect(sum((t) => entryCost(t)!)).toBeCloseTo(d.cost_summary.total.cost, 6)
+    expect(sum((t) => t.root_span.input_tokens)).toBe(d.cost_summary.prompt.tokens)
+    expect(sum((t) => t.root_span.output_tokens)).toBe(d.cost_summary.completion.tokens)
+  })
+
+  it('an incomplete session total says it covers only the traces listed', async () => {
+    server.use(
+      http.get('/api/observability/session/:sessionId', () =>
+        HttpResponse.json({ data: { session: { ...d, metrics_complete: false } } }),
+      ),
+    )
+    renderApp(`/sessions/${s.session_id}`)
+    expect(await screen.findByText(copy.totalsPartial, {}, { timeout: 8000 })).toBeInTheDocument()
   })
 })
 

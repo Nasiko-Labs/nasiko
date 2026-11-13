@@ -58,19 +58,17 @@ describe('follow the money', () => {
           expect(router.state.location.pathname).toBe(`/sessions/${SHOWCASE_SESSION}`),
         )
 
-        // 3. Trace: the session line repeats the row's cost; the narrative explains the trace.
+        // 3. Trace: the session total repeats the row's cost; the narrative explains the trace.
         expect(
           await screen.findByRole(
             'heading',
-            {
-              level: 1,
-              name: new RegExp(
-                `^Session · Code Reviewer · Mar 11 .* · \\${rowCost} · \\d+ traces · ✕ failed$`,
-              ),
-            },
+            { level: 1, name: /^Session · Code Reviewer · Mar 11 .* · ✕ failed$/ },
             { timeout: 8000 },
           ),
         ).toBeInTheDocument()
+        expect(screen.getByText('Session total:').parentElement).toHaveTextContent(
+          new RegExp(`^Session total: \\${rowCost} · .* · across \\d+ traces$`),
+        )
         const story = await screen
           .findByRole('region', { name: 'What happened' })
           .catch(() => screen.getByLabelText('What happened'))
