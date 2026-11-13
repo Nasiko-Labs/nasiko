@@ -85,10 +85,19 @@ impl StopReport {
 /// [`STOPPED`] (with `completed_at`, and every step that hadn't finished marked stopped too),
 /// and the open HITL requests of the paused ones are canceled.
 ///
-/// The owner is the workflow's owner. Each row is locked before it is changed, so a worker
-/// claiming or finishing it at the same moment is ordered before or after the stop, never
-/// interleaved: either the stop sees `running` (and the worker is notified) or the worker's
-/// claim finds the row stopped.
+/// The owner is the user who ran the execution, which is always the workflow's owner: only the
+/// owner can run a workflow (`run_workflow`). Checked on the execution itself, like every other
+/// execution endpoint, so a run whose workflow is gone can still be stopped.
+///
+/// Each row is locked before it is changed, so a worker claiming or finishing it at the same
+/// moment is ordered before or after the stop, never interleaved: either the stop sees
+/// `running` (and the worker is notified) or the worker's claim finds the row stopped. Rows are
+/// locked in id order, so two stops over the same runs never deadlock.
+///
+/// The run's spend so far is read back from the platform's records (`trace_usage`, the same
+/// source as `executor::platform_spend`) and written on the row: a run's progress writes carry
+/// no cost, and a stopped run that no worker holds (queued, paused, or its worker gone) has no
+/// one else to record it. A running run's worker overwrites it once its last usage writes land.
 pub async fn stop_in_db(
     db: &PgPool,
     owner: Uuid,
@@ -104,16 +113,29 @@ pub async fn stop_in_db(
         r#"WITH target AS (
                SELECT e.id, e.status
                  FROM maf_executions e
-                 JOIN mafs m ON m.id = e.maf_id
-                WHERE m.user_id = $1
+                WHERE e.user_id = $1
                   AND (e.id = ANY($2) OR e.maf_id = $3)
                   AND e.status = ANY($4)
+                ORDER BY e.id
                   FOR UPDATE OF e
+           ),
+           spend AS (
+               SELECT t.id,
+                      COUNT(u.trace_id) AS calls,
+                      COALESCE(SUM(u.input_tokens + u.output_tokens + u.cache_read_tokens), 0)::BIGINT AS tokens,
+                      COALESCE(SUM(u.cost_usd), 0)::DOUBLE PRECISION AS cost
+                 FROM target t
+                 LEFT JOIN trace_usage u
+                   ON u.trace_id = t.id::text
+                  AND (u.agent_name = 'maf' OR u.agent_name LIKE 'maf:step%')
+                GROUP BY t.id
            )
            UPDATE maf_executions e
               SET status = $5,
                   completed_at = now(),
                   duration_ms = EXTRACT(EPOCH FROM (now() - COALESCE(e.started_at, now())))::BIGINT * 1000,
+                  tokens_used = CASE WHEN s.calls > 0 THEN s.tokens ELSE e.tokens_used END,
+                  cost_usd = CASE WHEN s.calls > 0 THEN s.cost ELSE e.cost_usd END,
                   step_results = CASE
                       WHEN jsonb_typeof(e.step_results) = 'array' THEN (
                           SELECT COALESCE(jsonb_agg(
@@ -125,6 +147,7 @@ pub async fn stop_in_db(
                       ELSE e.step_results
                   END
              FROM target t
+             JOIN spend s ON s.id = t.id
             WHERE e.id = t.id
         RETURNING e.id, t.status"#,
     )
@@ -159,10 +182,7 @@ pub async fn stop_in_db(
         .collect();
     if !unmatched.is_empty() {
         let finished: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT e.id, e.status
-               FROM maf_executions e
-               JOIN mafs m ON m.id = e.maf_id
-              WHERE m.user_id = $1 AND e.id = ANY($2)",
+            "SELECT id, status FROM maf_executions WHERE user_id = $1 AND id = ANY($2)",
         )
         .bind(owner)
         .bind(&unmatched)

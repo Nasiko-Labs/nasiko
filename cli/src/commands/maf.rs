@@ -730,14 +730,29 @@ pub fn execution_stop(
     let report: Value = unwrap_data(client.post_json("/maf/executions/stop", &body)?)?;
     if json_out {
         println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+    } else {
+        print_stop_report(&report);
     }
-    print_stop_report(&report)
+    // A typo shouldn't read as a stop that worked, in either output.
+    if found_nothing(&report) {
+        anyhow::bail!("no such execution among your workflows' runs");
+    }
+    Ok(())
 }
 
-/// Prints what a stop did. Fails when ids were given and none of them was found, so a typo
-/// doesn't read as a stop that worked.
-fn print_stop_report(report: &Value) -> Result<()> {
+/// Ids were given and not one of them is the caller's run.
+fn found_nothing(report: &Value) -> bool {
+    let count = |key: &str| {
+        report
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    count("not_found") > 0 && count("stopped") == 0 && count("already_finished") == 0
+}
+
+/// Prints what a stop did.
+fn print_stop_report(report: &Value) {
     let list = |key: &str| {
         report
             .get(key)
@@ -774,11 +789,7 @@ fn print_stop_report(report: &Value) -> Result<()> {
         for id in &not_found {
             println!("  {}", id.as_str().unwrap_or("?"));
         }
-        if stopped.is_empty() && finished.is_empty() {
-            anyhow::bail!("no such execution among your workflows' runs");
-        }
     }
-    Ok(())
 }
 
 // ─── Shared helpers ─────────────────────────────────────────────────────────
@@ -1148,6 +1159,27 @@ fn print_field(label: &str, value: Option<&Value>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stop_that_found_none_of_its_ids_fails() {
+        let report = |stopped: usize, finished: usize, missing: usize| {
+            json!({
+                "stopped": vec![json!({}); stopped],
+                "already_finished": vec![json!({}); finished],
+                "not_found": vec![json!("x"); missing],
+            })
+        };
+        assert!(found_nothing(&report(0, 0, 2)));
+        assert!(!found_nothing(&report(1, 0, 1)), "something was stopped");
+        assert!(
+            !found_nothing(&report(0, 1, 1)),
+            "something was found, already over"
+        );
+        assert!(
+            !found_nothing(&report(0, 0, 0)),
+            "a workflow with nothing running"
+        );
+    }
 
     #[test]
     fn validate_agent_count_allows_zero_agents() {

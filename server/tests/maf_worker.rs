@@ -1018,11 +1018,45 @@ async fn stopping_a_paused_run_withdraws_its_question_and_its_waiting_step() {
     .await
     .expect("insert hitl request");
 
+    // What the run spent before it paused: MAF's own calls, and an agent's call under the same
+    // trace that is not MAF's spend. The row itself says 0, as a paused run's row does.
+    for (agent_name, input, output, cached, cost) in [
+        ("maf", 100, 20, 0, 0.01),
+        ("maf:step0", 50, 5, 5, 0.002),
+        ("some-agent", 1000, 1000, 0, 1.0),
+    ] {
+        sqlx::query(
+            "INSERT INTO trace_usage (trace_id, agent_name, started_at, input_tokens, output_tokens, \
+                                      cache_read_tokens, cost_usd) \
+             VALUES ($1, $2, now(), $3, $4, $5, $6)",
+        )
+        .bind(run.to_string())
+        .bind(agent_name)
+        .bind(input as i64)
+        .bind(output as i64)
+        .bind(cached as i64)
+        .bind(cost)
+        .execute(&server.db)
+        .await
+        .expect("insert usage");
+    }
+
     let report = stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
         .await
         .expect("stop");
 
     assert_eq!(report.stopped, [(run, "awaiting_human".to_string())]);
+    let (tokens, cost): (i64, f64) =
+        sqlx::query_as("SELECT tokens_used, cost_usd FROM maf_executions WHERE id = $1")
+            .bind(run)
+            .fetch_one(&server.db)
+            .await
+            .expect("read spend");
+    assert_eq!(
+        tokens, 180,
+        "MAF's own calls, as the platform recorded them"
+    );
+    assert!((cost - 0.012).abs() < 1e-9, "MAF's own cost, got {cost}");
     assert!(report.were_running().is_empty(), "no worker to tell");
     assert_eq!(status_of(&server.db, run).await, "stopped");
     let question_status: String =
@@ -1059,16 +1093,25 @@ async fn only_the_callers_unfinished_runs_are_stopped() {
     let theirs_workflow = insert_workflow(&server.db, someone).await;
     let theirs = insert_run(&server.db, someone, theirs_workflow, "pending").await;
     let unknown = Uuid::new_v4();
+    // A run whose workflow row is gone (`maf_id` NULL): still the owner's run.
+    let orphan = insert_execution(&server.db, owner, "pending").await;
 
     let report = stop::stop_in_db(
         &server.db,
         owner,
-        StopScope::Executions(&[queued, done, theirs, unknown]),
+        StopScope::Executions(&[queued, done, theirs, unknown, orphan]),
     )
     .await
     .expect("stop");
 
-    assert_eq!(report.stopped, [(queued, "pending".to_string())]);
+    let mut stopped = report.stopped.clone();
+    stopped.sort();
+    let mut expected = vec![
+        (queued, "pending".to_string()),
+        (orphan, "pending".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(stopped, expected);
     assert_eq!(report.already_finished, [(done, "success".to_string())]);
     let mut not_found = report.not_found.clone();
     not_found.sort();
@@ -1128,5 +1171,36 @@ async fn acknowledged_messages_are_deleted_from_the_stream() {
         "neither the finished run's entry nor the discarded one is left in the stream"
     );
     assert_eq!(pending_count(&mut conn).await, 0);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn overlapping_stops_of_the_same_runs_never_deadlock() {
+    let server = common::TestServer::start().await;
+    let owner = insert_user(&server.db).await;
+    let workflow = insert_workflow(&server.db, owner).await;
+    for round in 0..5 {
+        let mut runs = Vec::new();
+        for _ in 0..40 {
+            runs.push(insert_run(&server.db, owner, workflow, "pending").await);
+        }
+        let mut reversed = runs.clone();
+        reversed.reverse();
+        // The same runs, asked for in opposite orders and by workflow, all at once.
+        let (by_ids, by_reversed_ids, by_workflow) = tokio::join!(
+            stop::stop_in_db(&server.db, owner, StopScope::Executions(&runs)),
+            stop::stop_in_db(&server.db, owner, StopScope::Executions(&reversed)),
+            stop::stop_in_db(&server.db, owner, StopScope::Workflow(workflow)),
+        );
+        let stopped = by_ids.expect("stop by ids").stopped.len()
+            + by_reversed_ids.expect("stop by reversed ids").stopped.len()
+            + by_workflow.expect("stop by workflow").stopped.len();
+        assert_eq!(
+            stopped,
+            runs.len(),
+            "round {round}: each run stopped exactly once"
+        );
+    }
     server.cleanup().await;
 }
