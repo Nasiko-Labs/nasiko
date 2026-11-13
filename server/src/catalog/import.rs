@@ -326,6 +326,11 @@ pub(crate) async fn build_and_deploy(
             })?;
         id
     } else {
+        state
+            .agent_admission
+            .admit(&mut tx, owner_id, &meta.name)
+            .await
+            .map_err(|(status, body)| (status, body.0.to_string()))?;
         sqlx::query_scalar(
             r#"INSERT INTO agents (name, display_name, description, owner_id, version, image, skills, capabilities, tags, status)
                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'deploying')
@@ -1136,6 +1141,20 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
         };
 
         // Register agent in catalog — only update if this caller owns the existing entry.
+        let mut tx = match state.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                tracing::error!(%e, %agent_name, %owner_id, "import_registry: begin tx");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
+        if let Err(refusal) = state
+            .agent_admission
+            .admit(&mut tx, owner_id, &agent_name)
+            .await
+        {
+            return refusal.into_response();
+        }
         let agent_id: Uuid = match sqlx::query_scalar(
             // Conflict target is the (owner_id, name) partial unique index
             // (migration 015); the owner is part of the key, so a conflict
@@ -1182,7 +1201,7 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
         .bind(skills)
         .bind(capabilities)
         .bind(tags)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await
         {
             Ok(Some(id)) => id,
@@ -1198,6 +1217,10 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
                 return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
             }
         };
+        if let Err(e) = tx.commit().await {
+            tracing::error!(%e, %agent_id, "import_registry: commit tx");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
 
         let scaling = state.agent_scaling.begin_deploy(agent_id).await;
         let plan = match scaling.plan().await {
