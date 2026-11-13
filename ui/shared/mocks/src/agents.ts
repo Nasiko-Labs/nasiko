@@ -55,6 +55,8 @@ export interface MockAgent {
   metadata?: Record<string, unknown>
   // Token optimization is `compress` above (seeded, read by the savings mocks), not a second optional copy.
   minimal_code_enabled?: boolean
+  /** `agents.parking_policy` (column default `auto`); written by `PUT /api/agents/{id}`. */
+  parking_policy?: 'auto' | 'resident'
 }
 
 export interface AgentsState {
@@ -406,6 +408,9 @@ export function detailBody(a: MockAgent, canManage: boolean) {
     coding_agent_integration_id: a.harness,
     compress_enabled: a.compress,
     minimal_code_enabled: a.minimal_code_enabled ?? false,
+    parking_policy: a.parking_policy ?? 'auto',
+    // AgentScaling::honours_resident_policy: true off the Free plane.
+    resident_available: true,
     has_coding_skills: a.skills.some((k) =>
       [k.id, k.name, ...(k.tags ?? [])].some((t) => mentionsCoding(t)),
     ),

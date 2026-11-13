@@ -1154,7 +1154,14 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         metadata?: Record<string, unknown>
         compress_enabled?: boolean
         minimal_code_enabled?: boolean
+        parking_policy?: string
       }
+      if (
+        body.parking_policy !== undefined &&
+        body.parking_policy !== 'auto' &&
+        body.parking_policy !== 'resident'
+      )
+        return text('parking_policy must be one of: auto, resident', 400)
       // COALESCE per field (catalog/routes.rs update); `metadata` replaces the whole column.
       if (typeof body.display_name === 'string') a.display_name = body.display_name
       if (typeof body.description === 'string') a.description = body.description
@@ -1162,6 +1169,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       if (typeof body.compress_enabled === 'boolean') a.compress = body.compress_enabled
       if (typeof body.minimal_code_enabled === 'boolean')
         a.minimal_code_enabled = body.minimal_code_enabled
+      if (body.parking_policy) a.parking_policy = body.parking_policy
       a.updated_at = new Date(nowFn()).toISOString()
       return HttpResponse.json(listRow(a, nowFn()))
     }),
