@@ -208,6 +208,7 @@ export const copy = {
     body: "Point a coding harness on this computer at Nasiko's LLM router, with the LLM config you choose. Nothing is routed until you connect it.",
     listLabel: 'Coding harnesses on this computer',
     configLabel: (harness: string) => `LLM config for ${harness}`,
+    configPlaceholder: 'Pick an LLM config',
     configOption: (name: string, provider: string, model: string | null, isDefault: boolean) =>
       `${name}${isDefault ? ' (your default)' : ''} · ${provider}${model ? `/${model}` : ''}`,
     noConfigs: 'Add an LLM config on the LLM router page before routing a harness.',

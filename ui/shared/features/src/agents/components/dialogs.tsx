@@ -117,6 +117,7 @@ function DeleteDialog({
       </label>
       <Input
         id={id}
+        placeholder={name}
         value={typed}
         onChange={(e) => setTyped(e.target.value)}
         autoComplete="off"
@@ -162,7 +163,13 @@ export function RollbackDialog({
       <label htmlFor={id} className="text-sm">
         {copy.rollBackReason}
       </label>
-      <Textarea id={id} value={reason} onChange={(e) => setReason(e.target.value)} rows={2} />
+      <Textarea
+        id={id}
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder={copy.rollBackReasonPlaceholder}
+        rows={2}
+      />
     </ConfirmDialog>
   )
 }

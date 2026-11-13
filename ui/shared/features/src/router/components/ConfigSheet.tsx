@@ -453,6 +453,7 @@ function EditorForm({
           <FormField id={`${ids}-name`} label={copy.fieldName}>
             <Input
               id={`${ids}-name`}
+              placeholder={copy.fieldNamePlaceholder}
               {...register('name')}
               maxLength={200}
               aria-invalid={(!!touchedFields.name && !!errs.name) || error?.field === 'name'}
@@ -489,6 +490,7 @@ function EditorForm({
               render={({ field }) => (
                 <SuggestInput
                   id={`${ids}-model`}
+                  placeholder={copy.modelPlaceholder}
                   suggestions={modelsFor(form.provider)}
                   value={field.value}
                   onValueChange={field.onChange}
@@ -531,6 +533,7 @@ function EditorForm({
                   render={({ field }) => (
                     <SuggestInput
                       id={`${ids}-t${i}`}
+                      placeholder={copy.tierPlaceholder}
                       suggestions={modelsFor(form.provider)}
                       value={field.value}
                       onValueChange={field.onChange}
@@ -568,12 +571,20 @@ function EditorForm({
                 step="0.1"
                 min="0"
                 max="2"
+                placeholder={copy.temperaturePlaceholder}
                 {...register('temperature')}
               />
               {blockedNote('temperature')}
             </FormField>
             <FormField id={`${ids}-max`} label={copy.maxTokens}>
-              <Input id={`${ids}-max`} type="number" step="1" min="1" {...register('maxTokens')} />
+              <Input
+                id={`${ids}-max`}
+                type="number"
+                step="1"
+                min="1"
+                placeholder={copy.maxTokensPlaceholder}
+                {...register('maxTokens')}
+              />
               {blockedNote('max_tokens')}
             </FormField>
             <CheckField
@@ -839,6 +850,7 @@ function KeyField({
               id={`${ids}-sname`}
               value={form.newKeyName}
               onChange={(e) => setKeyName(e.target.value.toUpperCase())}
+              placeholder={copy.secretNamePlaceholder}
               autoComplete="off"
               spellCheck={false}
             />
@@ -851,6 +863,7 @@ function KeyField({
             <Input
               id={`${ids}-svalue`}
               type="password"
+              placeholder={copy.keyValuePlaceholder}
               autoComplete="new-password"
               {...register('newKeyValue')}
               spellCheck={false}

@@ -185,6 +185,7 @@ export const copy = {
   rollBackTitle: (v: string) => `Roll back to ${v}?`,
   rollBackBody: 'The agent redeploys this version. Callers may see errors while it restarts.',
   rollBackReason: 'Reason (optional)',
+  rollBackReasonPlaceholder: 'e.g. The new version fails on long inputs',
   rollBackQueued: (build: string) => `Roll back queued (build ${build}).`,
   stillRollingBack: (build: string) => `Still rolling back (build ${build}). Check the logs:`,
   keepWatching: 'Keep watching',
@@ -219,13 +220,17 @@ export const copy = {
 
   settings: 'Settings',
   displayName: 'Display name',
+  displayNamePlaceholder: 'e.g. Support bot',
   description: 'Description',
+  descriptionPlaceholder: 'What this agent does, in a sentence or two',
   save: 'Save',
   saved: 'Saved',
   secrets: 'Secrets',
   noSecrets: 'No secrets set.',
   secretName: 'Name',
+  secretNamePlaceholder: 'API_KEY',
   secretValue: 'Value',
+  secretValuePlaceholder: 'Paste the value',
   addSecret: 'Add or replace',
   // Verified live (QA 2026-09-27): Restart redeploys and injects the new value; the running container doesn't see it before.
   // NAS-1489: say the agent uses them at runtime. Agent secrets list names only (agent_secrets.rs `list_secrets`).

@@ -84,23 +84,44 @@ function SettingsForm({
         <FieldGroup className="gap-4">
           <Field className="gap-1.5">
             <FieldLabel htmlFor={`${id}-dn`}>{copy.fields.display_name.label}</FieldLabel>
-            <Input id={`${id}-dn`} autoComplete="off" {...form.register('display_name')} />
+            <Input
+              id={`${id}-dn`}
+              autoComplete="off"
+              placeholder={copy.fields.display_name.placeholder}
+              {...form.register('display_name')}
+            />
           </Field>
           <Field className="gap-1.5">
             <FieldLabel htmlFor={`${id}-desc`}>{copy.fields.description.label}</FieldLabel>
-            <Textarea id={`${id}-desc`} rows={3} {...form.register('description')} />
+            <Textarea
+              id={`${id}-desc`}
+              rows={3}
+              placeholder={copy.fields.description.placeholder}
+              {...form.register('description')}
+            />
           </Field>
           {uploaded ? null : (
             <Field className="gap-1.5">
               <FieldLabel htmlFor={`${id}-url`}>{copy.fields.url.label}</FieldLabel>
-              <Input id={`${id}-url`} type="url" autoComplete="off" {...form.register('url')} />
+              <Input
+                id={`${id}-url`}
+                type="url"
+                autoComplete="off"
+                placeholder={copy.fields.url.placeholder}
+                {...form.register('url')}
+              />
             </Field>
           )}
           {oauth ? (
             <>
               <Field className="gap-1.5">
                 <FieldLabel htmlFor={`${id}-scopes`}>{copy.fields.oauth_scopes.label}</FieldLabel>
-                <Input id={`${id}-scopes`} autoComplete="off" {...form.register('oauth_scopes')} />
+                <Input
+                  id={`${id}-scopes`}
+                  autoComplete="off"
+                  placeholder={copy.fields.oauth_scopes.placeholder}
+                  {...form.register('oauth_scopes')}
+                />
                 <FieldDescription>{copy.fields.oauth_scopes.hint}</FieldDescription>
               </Field>
               <SendResourceField control={form.control} id={`${id}-resource`} />

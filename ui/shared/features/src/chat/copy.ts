@@ -196,17 +196,15 @@ export const copy = {
   receivingStopped: 'Receiving stopped. The agent may still be running tools.',
   // Attachments (§7.7). `attach` names the control; the rejection lines each say which file and why.
   attach: 'Attach files',
-  attachHint: (max: number, media: string, text: string, other: string) =>
-    `Up to ${max} files: images and PDFs ${media}, text files ${text}, other files ${other} each`,
-  attachKinds: { image: 'images', pdf: 'PDFs', text: 'text files', other: 'other files' },
+  attachHint: (max: number, size: string) => `Up to ${max} files, ${size} each`,
   attachedCount: (n: number) => `${n} attachment${n === 1 ? '' : 's'}`,
   removeAttachment: (name: string) => `Remove ${name}`,
   attachDrop: 'Drop files to attach',
   uploading: 'Uploading attachments…',
   attachTooMany: (name: string, max: number) =>
     `${name} wasn't attached: a message can carry ${max} files.`,
-  attachTooLarge: (name: string, kind: string, size: string) =>
-    `${name} wasn't attached: ${kind} must be under ${size}.`,
+  attachTooLarge: (name: string, size: string) =>
+    `${name} wasn't attached: files must be under ${size}.`,
   attachOverBudget: (name: string, size: string) =>
     `${name} wasn't attached: one message can carry ${size} of files in total.`,
   attachEmpty: (name: string) => `${name} wasn't attached: it is empty, or it is a folder.`,
@@ -261,6 +259,7 @@ export const copy = {
   deleteFailed: "Couldn't delete this chat.",
   cancel: 'Cancel',
   titleLabel: 'Chat title',
+  titlePlaceholder: 'Name this chat',
   titleEmpty: 'A title needs at least one character.',
   titleCounter: (n: number, max: number) => `${n}/${max}`,
   composerLabel: (agent?: string) => (agent ? `Message ${agent}` : 'Message'),
