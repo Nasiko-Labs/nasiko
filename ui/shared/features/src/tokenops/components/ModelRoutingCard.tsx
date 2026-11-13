@@ -15,13 +15,7 @@
  * claiming that nothing was routed.
  */
 import { Panel, PanelSkeleton } from '@nasiko/ui/composites/panel'
-import {
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@nasiko/ui/primitives/table'
+import { TableBody, TableCell, TableHead, TableHeader, TableRow } from '@nasiko/ui/primitives/table'
 import { fmtInt, fmtMoney, fmtPct } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { ModelRoutingData, RoutingBucket } from '../types'

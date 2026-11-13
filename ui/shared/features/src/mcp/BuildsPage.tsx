@@ -73,16 +73,18 @@ export function BuildsPage({
   const all = useMemo(() => uploads.data ?? [], [uploads.data])
   const shown = useMemo(() => {
     const query = q.trim().toLowerCase()
-    return all
-      .filter((u) => filter === 'all' || bucketOf(u) === filter)
-      .filter((u) => !query || u.connector_name.toLowerCase().includes(query))
-      .slice()
-      // In-progress first, then newest.
-      .sort((a, b) => {
-        const ap = bucketOf(a) === 'building' ? 0 : 1
-        const bp = bucketOf(b) === 'building' ? 0 : 1
-        return ap !== bp ? ap - bp : b.created_at.localeCompare(a.created_at)
-      })
+    return (
+      all
+        .filter((u) => filter === 'all' || bucketOf(u) === filter)
+        .filter((u) => !query || u.connector_name.toLowerCase().includes(query))
+        .slice()
+        // In-progress first, then newest.
+        .sort((a, b) => {
+          const ap = bucketOf(a) === 'building' ? 0 : 1
+          const bp = bucketOf(b) === 'building' ? 0 : 1
+          return ap !== bp ? ap - bp : b.created_at.localeCompare(a.created_at)
+        })
+    )
   }, [all, filter, q])
 
   const nothingYet = !uploads.isPending && !uploads.error && !all.length
@@ -127,7 +129,11 @@ export function BuildsPage({
   if (uploads.isError && !all.length)
     body = (
       <div className="p-2">
-        <PanelError error={uploads.error} onRetry={() => void uploads.refetch()} what={copy.builds.what} />
+        <PanelError
+          error={uploads.error}
+          onRetry={() => void uploads.refetch()}
+          what={copy.builds.what}
+        />
       </div>
     )
   else if (uploads.isPending) body = <PageLoader label={copy.builds.loading} />
@@ -204,7 +210,10 @@ export function BuildsPage({
                     </span>
                   )}
                   {u.upload_info.error_detail ? (
-                    <p className="truncate text-xs text-muted-foreground" data-testid="build-reason">
+                    <p
+                      className="truncate text-xs text-muted-foreground"
+                      data-testid="build-reason"
+                    >
                       {u.upload_info.error_detail}
                     </p>
                   ) : !u.connector_id && u.upload_info.upload_status === 'Failed' ? (

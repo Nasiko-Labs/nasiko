@@ -69,8 +69,7 @@ export function UploadDialog({ onClose }: { onClose: () => void }) {
               // (`delete_mcp_connector_or_mark_failed`), and the outcome isn't known yet at this
               // point — linking there would 404 the moment it fails. The Builds page reads the
               // durable `mcp_upload_status` record instead, so it resolves either way.
-              onClick: () =>
-                void navigate({ to: '/mcp/builds', search: { q: common.name } }),
+              onClick: () => void navigate({ to: '/mcp/builds', search: { q: common.name } }),
             },
           })
         },

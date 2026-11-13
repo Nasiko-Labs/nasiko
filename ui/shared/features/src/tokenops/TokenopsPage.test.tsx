@@ -113,7 +113,6 @@ describe('TokenOps page', () => {
     renderApp('/tokenops?open=optimize')
     const panel = await section('How models were chosen')
     expect(within(panel).getByRole('row', { name: /Small talk/ })).toHaveTextContent('12.9%')
-
   })
 
   /** NAS-1263 ships the record with the endpoint, so a server without the route has nothing to

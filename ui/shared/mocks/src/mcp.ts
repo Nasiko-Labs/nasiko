@@ -426,7 +426,8 @@ export function mcpHandlers(ctx: McpCtx): HttpHandler[] {
           .slice(0, 50)
         const data = rows.map((u) => {
           const build = buildState(u.build, ctx.now())
-          const displayStatus = build === 'running' ? 'Active' : build === 'failed' ? 'Failed' : 'Deploying'
+          const displayStatus =
+            build === 'running' ? 'Active' : build === 'failed' ? 'Failed' : 'Deploying'
           const statusMessage =
             displayStatus === 'Active'
               ? 'MCP server deployed successfully'

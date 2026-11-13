@@ -121,7 +121,10 @@ describe('MCP Builds (a dedicated section, mirroring the Agents Builds page)', (
     await screen.findByText('alpha-broken', {}, T)
     await userEvent.click(screen.getByRole('radio', { name: copy.buildFilter.failed }))
     expect(await screen.findByText('alpha-broken')).toBeInTheDocument()
-    await userEvent.type(screen.getByRole('searchbox', { name: copy.builds.searchLabel }), 'zzz-no-match')
+    await userEvent.type(
+      screen.getByRole('searchbox', { name: copy.builds.searchLabel }),
+      'zzz-no-match',
+    )
     expect(await screen.findByText(copy.builds.noMatch)).toBeInTheDocument()
   })
 

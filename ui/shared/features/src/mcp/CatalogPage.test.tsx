@@ -211,7 +211,7 @@ describe('MCP catalog (plans/feat-mcp.md §2)', () => {
     expect(mcpMockState().connectors.some((x) => x.name === 'repo-tools')).toBe(true)
   })
 
-  it('the upload toast\'s Open goes to the Builds page, not the connector page — a first-time failure would 404 there', async () => {
+  it("the upload toast's Open goes to the Builds page, not the connector page — a first-time failure would 404 there", async () => {
     renderApp('/mcp')
     await userEvent.click(await screen.findByRole('button', { name: copy.upload }, T))
     await userEvent.click(await screen.findByRole('button', { name: new RegExp(copy.zipTitle) }))
