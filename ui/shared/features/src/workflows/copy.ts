@@ -219,6 +219,22 @@ export const copy = {
   viewTrace: 'View trace',
   couldNotStart: 'Could not start the run.',
   runsList: 'Workflow runs',
+  stop: 'Stop',
+  stopRun: 'Stop run',
+  stopRunTitle: (title: string) => `Stop ${title}?`,
+  stopRunText:
+    'The run ends where it is. Finished steps keep their results and the rest are marked stopped. What it has spent so far stays on record. A stopped run can be rerun, not resumed.',
+  stopRuns: (n: number) => `Stop ${n} unfinished ${n === 1 ? 'run' : 'runs'}`,
+  stopRunsTitle: (name: string) => `Stop the unfinished runs of ${name || 'this workflow'}?`,
+  stopRunsText:
+    "Every run of this workflow that hasn't finished ends where it is, queued and paused ones included. Finished runs aren't touched.",
+  keepRunning: 'Keep running',
+  confirmStop: 'Stop',
+  runStopped: 'Run stopped',
+  runsStopped: (n: number) =>
+    n ? `${n} ${n === 1 ? 'run' : 'runs'} stopped` : 'Nothing was left to stop',
+  runAlreadyFinished: 'The run had already finished.',
+  stopFailed: (why: string) => `Stop failed: ${why}`,
   thisAgent: 'This agent',
 }
 

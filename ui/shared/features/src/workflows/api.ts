@@ -17,6 +17,7 @@ import {
   executionSchema,
   planSchema,
   runStartedSchema,
+  stopReportSchema,
   workflowListSchema,
   workflowSchema,
   type Execution,
@@ -24,6 +25,7 @@ import {
   type GeneratedPlan,
   type RunStarted,
   type StepInput,
+  type StopReport,
   type Workflow,
   type WorkflowRow,
 } from './types'
@@ -121,6 +123,17 @@ export const deleteWorkflow = (id: string) => apiFetch<unknown>(W(id), { method:
 /** 202: queues a run of the stored row. */
 export const runWorkflow = (id: string) =>
   apiData<RunStarted>(`${W(id)}/run`, { ...json('POST'), schema: runStartedSchema })
+
+/** Stops one run (owner only). A run already over is a 409 naming its status; another user's run is a 404. */
+export const stopExecution = (id: string) =>
+  apiFetch<unknown>(`/api/maf/execution/${enc(id)}/stop`, json('POST'))
+
+/** Stops every unfinished run of a workflow (owner only), queued and paused ones included. */
+export const stopWorkflowRuns = (workflowId: string) =>
+  apiData<StopReport>('/api/maf/executions/stop', {
+    ...json('POST', { workflow_id: workflowId }),
+    schema: stopReportSchema,
+  })
 
 /** The planner's proposal (never stored); callers branch on 503 / 400 / 422 (`planFailure`). */
 export const generateWorkflow = (description: string) =>
