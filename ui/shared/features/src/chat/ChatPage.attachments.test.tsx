@@ -86,6 +86,30 @@ describe('attaching media to a chat', () => {
     expect(named).toEqual(claimed)
   })
 
+  it('names the uploaded files on an Orchestrator dispatch too', async () => {
+    const rec = recordRequestBodies()
+    renderApp('/chat?auto=1')
+    const box = await screen.findByRole('textbox')
+    await userEvent.upload(screen.getByTestId('attach-input'), png())
+    await userEvent.type(box, 'read the attached picture')
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }))
+
+    await waitFor(() =>
+      expect(rec.requests.some((r) => r.url.pathname === '/api/orchestrator/a2a')).toBe(true),
+    )
+    await rec.flush()
+
+    const save = rec.requests.find((r) => r.method === 'POST' && /\/messages$/.test(r.url.pathname))
+    const dispatch = rec.requests.find((r) => r.url.pathname === '/api/orchestrator/a2a')
+    const metadata = (
+      dispatch?.body as { params: { metadata: { agent_id?: string; file_ids?: string[] } } }
+    ).params.metadata
+    const claimed = (save?.body as { file_ids?: string[] }).file_ids
+    expect(claimed).toHaveLength(1)
+    expect(metadata.file_ids).toEqual(claimed)
+    expect(metadata.agent_id).toBeUndefined()
+  })
+
   it('shows an image back as a picture, from the authenticated file route', async () => {
     await openChat()
     await userEvent.upload(screen.getByTestId('attach-input'), png())

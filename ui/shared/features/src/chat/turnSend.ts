@@ -12,6 +12,7 @@ import type { SaveMessageBody } from './types'
 import type { Core } from './turnCore'
 import {
   attemptKeyOf,
+  fileIdsOf,
   isLivePhase,
   type LiveTurn,
   type RerunFrom,
@@ -20,13 +21,6 @@ import {
 import type { createRouted } from './turnRouted'
 
 class Unreadable extends Error {}
-
-/**
- * This turn's attachment ids, or none while they are still local (§7.7). Run again re-sends the
- * same ids: the dispatch only reads those files, the user row that claimed them is already saved.
- */
-const fileIdsOf = (t: LiveTurn): string[] | undefined =>
-  t.userFilesPending || !t.userFiles?.length ? undefined : t.userFiles.map((f) => f.id)
 
 export function createSend(core: Core, routed: ReturnType<typeof createRouted>) {
   const { deps, turns, controllers, unknown, transcripts, directEnds, capped, capTimers, saving } =
