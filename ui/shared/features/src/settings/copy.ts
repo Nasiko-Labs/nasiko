@@ -246,13 +246,34 @@ export const copy = {
 
   secrets: {
     title: 'Secrets',
-    sub: 'API credentials stored in this workspace. Router configs and agents reference secrets by name.',
-    // NAS-1458. agent_secrets.rs `resolve_secret_env`: these first, an agent's own secrets on top.
-    precedence:
-      'Every agent you own gets these as environment variables. A secret set on an agent’s Settings tab overrides one of the same name here, for that agent only. Restart an agent to apply a change.',
+    sub: 'Your own API keys and other credentials. Your agents and router configs use them at runtime.',
+    // NAS-1489: who uses them, how to change them, when a change applies.
+    howTitle: 'How secrets work',
+    howHint: 'Who uses them, how to change one, when a change applies',
+    how: {
+      // NAS-1458. agent_secrets.rs `resolve_secret_env`: these first, an agent's own secrets on top.
+      agents: {
+        title: 'Your agents get them',
+        detail:
+          'Every agent you own gets these as environment variables. A secret of the same name on an agent’s Settings tab overrides one here, for that agent only; that tab lists which of these the agent gets.',
+      },
+      // secrets/routes.rs `create_secret` upserts (ON CONFLICT … DO UPDATE).
+      change: {
+        title: 'Add, change or remove',
+        detail:
+          'Add a secret with the row below. To change a value, add it again under the same name. Show, Copy and Delete are on each row.',
+      },
+      // llm-router resolver: the config is TTL-cached, the key (`resolve_api_key`) is read on every call. An agent's env
+      // is built only on restart or deploy; a parked agent's wake is scale(1), which keeps the env it had.
+      apply: {
+        title: 'When a change applies',
+        detail:
+          'Router configs use it on their next model call. Agents read secrets when they start, so restart or redeploy an agent to apply a change.',
+      },
+    },
     agentsLink: 'Your agents',
     // Legacy: "Keys are write only … never read back", beside a list that reveals them. The owner can read their own.
-    note: 'Values are encrypted at rest. Configs reference a secret by name; only you can read your own secrets back, one at a time.',
+    note: 'Values are encrypted at rest. Only you can read your own secrets back, one at a time.',
     empty: 'No secrets yet',
     emptyText: 'Add one below; agents and router configs reference secrets by name.',
     loadWhat: 'your secrets',
