@@ -1143,7 +1143,7 @@ fn error_code(error: &GatewayError) -> &'static str {
         | GatewayError::NoApiKey
         | GatewayError::NoSharedUserConfig => "routing_configuration_error",
         GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
-        GatewayError::Upstream(_) | GatewayError::UpstreamTimeout(_) => "upstream_error",
+        GatewayError::Upstream(_) => "upstream_error",
         GatewayError::Provider { status, .. } if *status == StatusCode::TOO_MANY_REQUESTS => {
             "rate_limit_exceeded"
         }

@@ -68,9 +68,8 @@ pub struct GatewayConfig {
     /// that keeps arriving is never cut, while a non-streaming call (silent until its
     /// reply is ready) is bounded by it. It is also the deadline for the whole fallback
     /// chain — every attempt and parameter-fix retry together, up to the first streamed
-    /// chunk — so fallbacks never multiply it. Unset, it sits just below the calling agent's
-    /// own timeout (`AGENT_CALL_TIMEOUT_SECS` less a small margin), so the agent never
-    /// retries while the router still waits; 300 when that is unset too.
+    /// chunk — so fallbacks never multiply it. Default 300. Keep it below the calling
+    /// agent's own LLM-client timeout, or the agent retries while the router still waits.
     pub provider_timeout_secs: u64,
 
     pub max_body_bytes: usize,
@@ -379,7 +378,7 @@ impl GatewayConfig {
                     Ok(secs) => Ok(secs),
                     Err(e) => Err(e.to_string()),
                 },
-                provider_timeout_below_agent(d.provider_timeout_secs),
+                d.provider_timeout_secs,
             ),
             max_body_bytes: env_usize("LLM_ROUTER_MAX_BODY_BYTES", d.max_body_bytes),
             max_inflight_body_bytes: env_usize(
@@ -527,31 +526,6 @@ fn env_usize(key: &str, default: usize) -> usize {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(default)
-}
-
-/// How far below the calling agent's timeout the provider timeout sits, so the router's 504
-/// reaches the agent before the agent gives up on its own.
-const PROVIDER_TIMEOUT_MARGIN_SECS: u64 = 10;
-
-/// The shortest provider timeout derived from the agent's: below it, a healthy but slow
-/// model would fail on every non-streaming call.
-const MIN_PROVIDER_TIMEOUT_SECS: u64 = 30;
-
-/// The provider timeout when `LLM_PROVIDER_TIMEOUT_SECS` is unset: the calling agent's
-/// timeout (`AGENT_CALL_TIMEOUT_SECS`, or the former `ROUTER_AGENT_TIMEOUT_SECS`, read as
-/// the server reads it) less [`PROVIDER_TIMEOUT_MARGIN_SECS`], never under
-/// [`MIN_PROVIDER_TIMEOUT_SECS`]. `fallback` when neither is set — the same way the
-/// attribution window falls back to `NASIKO_FLOW_TIMEOUT_SECS`.
-fn provider_timeout_below_agent(fallback: u64) -> u64 {
-    std::env::var("AGENT_CALL_TIMEOUT_SECS")
-        .or_else(|_| std::env::var("ROUTER_AGENT_TIMEOUT_SECS"))
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .map_or(fallback, |agent| {
-            agent
-                .saturating_sub(PROVIDER_TIMEOUT_MARGIN_SECS)
-                .max(MIN_PROVIDER_TIMEOUT_SECS)
-        })
 }
 
 /// Parse an env var with `f`, warning loudly and falling back on a bad value.
@@ -729,32 +703,11 @@ mod tests {
     fn provider_timeout_defaults_to_300_and_rejects_zero() {
         const KEY: &str = "LLM_PROVIDER_TIMEOUT_SECS";
         unsafe { std::env::remove_var(KEY) };
-        unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
-        unsafe { std::env::remove_var("ROUTER_AGENT_TIMEOUT_SECS") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
         unsafe { std::env::set_var(KEY, "45") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 45);
         unsafe { std::env::set_var(KEY, "0") };
         assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 300);
         unsafe { std::env::remove_var(KEY) };
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn provider_timeout_unset_sits_below_the_agent_timeout() {
-        const AGENT: &str = "AGENT_CALL_TIMEOUT_SECS";
-        unsafe { std::env::remove_var("LLM_PROVIDER_TIMEOUT_SECS") };
-        unsafe { std::env::set_var(AGENT, "180") };
-        let derived = GatewayConfig::from_env().provider_timeout_secs;
-        assert!(derived < 180, "{derived}");
-        assert_eq!(derived, 170);
-        // A very short agent timeout still leaves a slow model a usable floor.
-        unsafe { std::env::set_var(AGENT, "20") };
-        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 30);
-        // An explicit setting wins over the derived one.
-        unsafe { std::env::set_var("LLM_PROVIDER_TIMEOUT_SECS", "90") };
-        assert_eq!(GatewayConfig::from_env().provider_timeout_secs, 90);
-        unsafe { std::env::remove_var("LLM_PROVIDER_TIMEOUT_SECS") };
-        unsafe { std::env::remove_var(AGENT) };
     }
 }
