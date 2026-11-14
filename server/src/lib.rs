@@ -62,6 +62,7 @@ pub mod seed;
 pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
+pub mod seed_workflows;
 pub mod serve;
 pub mod sessions;
 pub mod settings;
