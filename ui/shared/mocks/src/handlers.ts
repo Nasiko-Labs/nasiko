@@ -2820,6 +2820,21 @@ function deployHandlers(): HttpHandler[] {
       const r = b ? recordAt(b, nowFn()) : null
       return r ? HttpResponse.json(r) : new HttpResponse(null, { status: 404 })
     }),
+    // The captured build output (build/routes.rs get_build_logs): plain text, or 404 when none was
+    // kept. The source-build install path persists it on the row (catalog/import.rs).
+    http.get('/api/builds/:id/logs', ({ params: p }) => {
+      if (!loggedIn) return unauthorized()
+      if (variant() === 'deploy-no-rights') return noRights()
+      const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
+      const r = b ? recordAt(b, nowFn()) : null
+      if (!r) return text('no logs available', 404)
+      return text(
+        r.status === 'failed'
+          ? `Step 3/4 : RUN pip install -r requirements.txt\nERROR: Could not find a version that satisfies the requirement nasiko-sdk\nThe command '/bin/sh -c pip install -r requirements.txt' returned a non-zero code: 1`
+          : `Step 1/4 : FROM python:3.12-slim\nStep 2/4 : COPY . /app\nStep 3/4 : RUN pip install -r requirements.txt\nStep 4/4 : CMD ["python", "main.py"]\nSuccessfully tagged ${r.image_reference}`,
+        200,
+      )
+    }),
     http.get('/api/agents/uploads', ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-no-rights') return noRights()
