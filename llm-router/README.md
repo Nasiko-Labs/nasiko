@@ -62,8 +62,10 @@ examples/mint_token.rs   dev/test JWT minter
 
 `AGENT_JWT_SECRET` (required; fail-closed if empty), `AGENT_JWT_ALGORITHM` (HS256),
 `DEFAULT_PROVIDER` (openai), `DEFAULT_MODEL` (gpt-4o-mini), `PLATFORM_OPENAI_API_KEY`,
-`LLM_ROUTER_GENERIC_KEY_FALLBACK` (true; when false, platform keys come only from
-`PLATFORM_*` names, not the generic provider vars like `OPENAI_API_KEY`),
+`LLM_ROUTER_GENERIC_KEY_FALLBACK` (true; when false, the platform key an agent's call may
+fall back to comes only from `PLATFORM_*` names, not the generic provider vars like
+`OPENAI_API_KEY`; the platform's own calls and the calls a payer sponsors still use the
+generic vars),
 `LLM_CONFIG_CACHE_TTL` (30s), `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, `GOOGLE_GEMINI_BASE_URL`, `OPENROUTER_BASE_URL` (upstream overrides), `GOOGLE_CLOUD_PROJECT` / `GOOGLE_CLOUD_LOCATION` / `VERTEX_CREDENTIALS_JSON` (Vertex).
 Reuses the platform's `SECRETS_ENCRYPTION_KEY` (per-user HKDF AES-256-GCM) and
 `DATABASE_URL`.

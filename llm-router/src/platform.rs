@@ -128,7 +128,7 @@ impl PlatformLlm {
         let model: String = route.model;
         let mut req = req;
         req.model = Some(model.clone());
-        let api_key = self.ctx.cfg.platform_key_for(&provider).to_string();
+        let api_key = self.ctx.cfg.service_key_for(&provider).to_string();
         if api_key.is_empty() {
             return Err(GatewayError::BadRequest(format!(
                 "no platform credentials for provider '{provider}'"
@@ -193,7 +193,7 @@ impl PlatformLlm {
             )));
         }
         let provider: &str = self.default_provider();
-        let has_openai_key: bool = !self.ctx.cfg.platform_key_for("openai").is_empty();
+        let has_openai_key: bool = !self.ctx.cfg.service_key_for("openai").is_empty();
         match transcription_route_for(provider, has_openai_key) {
             Some(TranscriptionRoute::Whisper) => self.transcribe_whisper(call, req).await,
             Some(TranscriptionRoute::ChatAudio) => {
@@ -219,7 +219,7 @@ impl PlatformLlm {
         call: &PlatformCall,
         req: TranscribeRequest,
     ) -> Result<Transcript, GatewayError> {
-        let api_key: String = self.ctx.cfg.platform_key_for("openai").to_string();
+        let api_key: String = self.ctx.cfg.service_key_for("openai").to_string();
         if api_key.is_empty() {
             return Err(GatewayError::BadRequest(
                 "no platform credentials for provider 'openai'".into(),
@@ -515,7 +515,7 @@ mod transcribe_tests {
 }
 
 /// Platform-default destination for a chat call: `model` when given, else `DEFAULT_MODEL`,
-/// on `DEFAULT_PROVIDER` with the platform key.
+/// on `DEFAULT_PROVIDER` with the platform's own key (`GatewayConfig::service_key_for`).
 fn platform_chat_config(
     ctx: &LlmRouterCtx,
     model: Option<&str>,
@@ -525,7 +525,7 @@ fn platform_chat_config(
         .filter(|m| !m.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| ctx.cfg.default_model.clone());
-    let api_key = ctx.cfg.platform_key_for(&provider).to_string();
+    let api_key = ctx.cfg.service_key_for(&provider).to_string();
     if api_key.is_empty() {
         return Err(GatewayError::BadRequest(format!(
             "no platform credentials for provider '{provider}'"
@@ -604,7 +604,7 @@ pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> Embedding
         };
     }
     for p in EMBEDDING_PROVIDERS {
-        if p != default && embedding_model_fits(requested, p) && !cfg.platform_key_for(p).is_empty()
+        if p != default && embedding_model_fits(requested, p) && !cfg.service_key_for(p).is_empty()
         {
             return EmbeddingRoute {
                 provider: p.to_string(),
@@ -625,7 +625,7 @@ pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> Embedding
         };
     }
     for p in EMBEDDING_PROVIDERS {
-        if !cfg.platform_key_for(p).is_empty()
+        if !cfg.service_key_for(p).is_empty()
             && let Some(model) = default_embedding_model(p)
         {
             tracing::info!(
@@ -688,6 +688,26 @@ mod embedding_route_tests {
     fn keyed_openai_serves_openai_model_when_chat_is_gemini() {
         let r: EmbeddingRoute =
             embedding_route(&cfg("gemini", "sk", "g"), "text-embedding-3-small");
+        assert_eq!(
+            r,
+            EmbeddingRoute {
+                provider: "openai".into(),
+                model: "text-embedding-3-small".into()
+            }
+        );
+    }
+
+    /// Agents' platform key off (the Free plane): the platform still embeds on its own keys.
+    #[test]
+    fn routes_on_the_platforms_own_keys_when_agents_have_none() {
+        let c: GatewayConfig = GatewayConfig {
+            default_provider: "gemini".into(),
+            generic_key_fallback: false,
+            service_openai_api_key: "sk".into(),
+            service_gemini_api_key: "g".into(),
+            ..Default::default()
+        };
+        let r: EmbeddingRoute = embedding_route(&c, "text-embedding-3-small");
         assert_eq!(
             r,
             EmbeddingRoute {

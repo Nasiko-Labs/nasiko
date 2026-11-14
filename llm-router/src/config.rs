@@ -34,10 +34,20 @@ pub struct GatewayConfig {
     /// Whether platform keys fall back to the generic provider env var (e.g.
     /// `OPENAI_API_KEY`) when the `PLATFORM_*` name is unset. Default `true`
     /// (today's behaviour: a single provider key works for both orchestrator
-    /// and agents). When `false`, platform keys come only from the `PLATFORM_*`
-    /// names, so a deployment can give the orchestrator `OPENAI_API_KEY` while
-    /// agents get no platform key.
+    /// and agents). When `false`, the keys an agent's call may fall back to
+    /// come only from the `PLATFORM_*` names, so a deployment can give the
+    /// platform `OPENAI_API_KEY` while agents get no platform key. The
+    /// platform's own calls are not affected: see [`GatewayConfig::service_key_for`].
     pub generic_key_fallback: bool,
+    /// The platform's own OpenAI key: `PLATFORM_OPENAI_API_KEY`, else `OPENAI_API_KEY`,
+    /// whatever `generic_key_fallback` says. Select via [`GatewayConfig::service_key_for`].
+    pub service_openai_api_key: String,
+    /// The platform's own Anthropic key, read as `service_openai_api_key` is.
+    pub service_anthropic_api_key: String,
+    /// The platform's own Gemini key, read as `service_openai_api_key` is.
+    pub service_gemini_api_key: String,
+    /// The platform's own OpenRouter key, read as `service_openai_api_key` is.
+    pub service_openrouter_api_key: String,
 
     /// TTL (seconds) for the in-process per-agent `llm_config` cache. Default 30.
     pub llm_config_cache_ttl_secs: u64,
@@ -252,6 +262,10 @@ impl Default for GatewayConfig {
             platform_gemini_api_key: String::new(),
             platform_openrouter_api_key: String::new(),
             generic_key_fallback: true,
+            service_openai_api_key: String::new(),
+            service_anthropic_api_key: String::new(),
+            service_gemini_api_key: String::new(),
+            service_openrouter_api_key: String::new(),
             llm_config_cache_ttl_secs: 30,
             redis_url: String::new(),
             router_decision_ttl_secs: 3600,
@@ -340,8 +354,9 @@ impl GatewayConfig {
             // prefer the explicit `PLATFORM_*` name, then fall back to the generic provider
             // key env var (which agents/orchestrator already set), so a single provider key
             // "just works" without duplication. When false, platform keys come only from the
-            // `PLATFORM_*` names, so a deployment can give the orchestrator OPENAI_API_KEY
-            // while agents get no platform key.
+            // `PLATFORM_*` names, so a deployment can give the platform OPENAI_API_KEY
+            // while agents get no platform key. These are the keys an agent's call may
+            // fall back to; the platform's own calls use the `service_*` keys below.
             platform_openai_api_key: env_platform_key(
                 "PLATFORM_OPENAI_API_KEY",
                 "OPENAI_API_KEY",
@@ -367,6 +382,32 @@ impl GatewayConfig {
                 &d.platform_openrouter_api_key,
             ),
             generic_key_fallback,
+            // The platform's own keys always take the generic name too: turning agents' platform
+            // key off must not take the platform's own model calls down with it.
+            service_openai_api_key: env_platform_key(
+                "PLATFORM_OPENAI_API_KEY",
+                "OPENAI_API_KEY",
+                true,
+                &d.service_openai_api_key,
+            ),
+            service_anthropic_api_key: env_platform_key(
+                "PLATFORM_ANTHROPIC_API_KEY",
+                "ANTHROPIC_API_KEY",
+                true,
+                &d.service_anthropic_api_key,
+            ),
+            service_gemini_api_key: env_platform_key(
+                "PLATFORM_GEMINI_API_KEY",
+                "GEMINI_API_KEY",
+                true,
+                &d.service_gemini_api_key,
+            ),
+            service_openrouter_api_key: env_platform_key(
+                "PLATFORM_OPENROUTER_API_KEY",
+                "OPENROUTER_API_KEY",
+                true,
+                &d.service_openrouter_api_key,
+            ),
             llm_config_cache_ttl_secs: Self::llm_config_cache_ttl_secs_from_env(),
             redis_url: env_or("REDIS_URL", &d.redis_url),
             router_decision_ttl_secs: std::env::var("ROUTER_DECISION_TTL_SECS")
@@ -520,10 +561,12 @@ impl GatewayConfig {
     /// First built-in provider with platform credentials, plus a sensible default model
     /// for it. Order: openai, anthropic, gemini, vertex, openrouter. `None` when nothing
     /// is configured (keeps the static default; requests then fail with `NoApiKey`).
+    /// Reads the platform's own keys: the default is the platform's choice, also where
+    /// agents' platform key is off.
     pub fn detect_default_provider(&self) -> Option<(&'static str, &'static str)> {
         BUILTIN_DEFAULT_MODELS
             .into_iter()
-            .find(|(p, _)| !self.platform_key_for(p).is_empty())
+            .find(|(p, _)| !self.service_key_for(p).is_empty())
     }
 
     /// Vertex AI base URL up to `/publishers/google`; the Gemini spoke appends
@@ -563,6 +606,25 @@ impl GatewayConfig {
             // Vertex authenticates with ADC, not a key; a non-empty marker means "configured".
             "vertex" if !self.vertex_project.is_empty() => "adc",
             "openrouter" => &self.platform_openrouter_api_key,
+            _ => "",
+        }
+    }
+
+    /// The platform's own key for a built-in `provider`: what the platform's own model calls
+    /// ([`crate::platform::PlatformLlm`]) and the agent calls it sponsors run on. The key an
+    /// agent's call may fall back to ([`Self::platform_key_for`]) when one is configured, else
+    /// the generic provider key `generic_key_fallback=false` keeps from agents. Unknown
+    /// providers return `""`, as there.
+    pub fn service_key_for(&self, provider: &str) -> &str {
+        let agent_key: &str = self.platform_key_for(provider);
+        if !agent_key.is_empty() {
+            return agent_key;
+        }
+        match provider {
+            "openai" => &self.service_openai_api_key,
+            "anthropic" => &self.service_anthropic_api_key,
+            "gemini" => &self.service_gemini_api_key,
+            "openrouter" => &self.service_openrouter_api_key,
             _ => "",
         }
     }
@@ -826,6 +888,53 @@ mod tests {
         assert_eq!(cfg.platform_key_for("openai"), "sk-openai");
         assert_eq!(cfg.platform_key_for("anthropic"), "sk-ant");
         assert_eq!(cfg.platform_key_for("gemini"), "sk-gem");
+    }
+
+    #[test]
+    fn service_key_for_takes_the_generic_key_agents_are_refused() {
+        // generic_key_fallback=false: agents get no key, the platform still has its own.
+        let cfg = GatewayConfig {
+            generic_key_fallback: false,
+            service_gemini_api_key: "sk-gem-generic".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.platform_key_for("gemini"), "");
+        assert_eq!(cfg.service_key_for("gemini"), "sk-gem-generic");
+    }
+
+    #[test]
+    fn service_key_for_prefers_the_agent_key() {
+        let cfg = GatewayConfig {
+            platform_openai_api_key: "sk-platform".into(),
+            service_openai_api_key: "sk-generic".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.service_key_for("openai"), "sk-platform");
+    }
+
+    #[test]
+    fn service_key_for_unknown_and_vertex() {
+        let mut cfg = GatewayConfig {
+            service_openai_api_key: "sk-generic".into(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.service_key_for("my-gateway"), "");
+        assert_eq!(cfg.service_key_for("vertex"), "");
+        cfg.vertex_project = "p1".into();
+        assert_eq!(cfg.service_key_for("vertex"), "adc");
+    }
+
+    #[test]
+    fn detect_default_provider_reads_the_platforms_own_keys() {
+        let cfg = GatewayConfig {
+            generic_key_fallback: false,
+            service_gemini_api_key: "sk-gem".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.detect_default_provider(),
+            Some(("gemini", "gemini-4-hydrogen"))
+        );
     }
 
     #[test]
