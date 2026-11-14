@@ -210,8 +210,9 @@ pub async fn list_connector_tools(
 /// Agent-wide (every connector's rules at once), so a non-agent-manager never
 /// gets the unfiltered view: if they can't manage the whole agent, the result
 /// is narrowed to only the connector(s) they themselves can manage
-/// (`can_manage_agent_connector` — reachable, and either already granted to
-/// this agent or the caller has at least ordinary access to it), e.g. so
+/// (`can_manage_agent_connector` — reachable, and either owned by the caller
+/// and already granted to this agent, or the caller has at least ordinary
+/// access to it), e.g. so
 /// `agent-tools set-rule`'s read-modify-write can find that connector's
 /// existing rules. This works with zero relationship to the agent itself,
 /// e.g. a connector owner whose connector was granted to someone else's agent.

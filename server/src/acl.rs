@@ -69,29 +69,23 @@ pub async fn can_manage_agent(
 /// True if the caller can manage `connector_id`'s per-agent state on
 /// `agent_id` — either full agent management ([`can_manage_agent`]), or the
 /// caller can reach `connector_id` at all (Layer 1: owner, composio,
-/// user/public grant — EE additionally: team/department) AND either it has
-/// already been granted directly to this agent (`grant_type = 'agent'`, see
-/// `connector grant-agent`) OR the caller has at least ordinary,
-/// non-managing access to the agent itself ([`can_access_agent`] — owner,
-/// public, or a plain `agent_grants` share).
+/// user/public grant — EE additionally: team/department) AND either they
+/// **own** the connector and it is attached to this live agent
+/// (`grant_type = 'agent'`, see `connector grant-agent`) OR they have at
+/// least ordinary, non-managing access to the agent itself
+/// ([`can_access_agent`] — owner, public, or a plain `agent_grants` share).
 ///
-/// This lets anyone with reachability to a connector — its owner, or someone
-/// it was merely shared with — enable/disable/configure it on an agent they
-/// have SOME legitimate relationship to (own it, it's public, or it was
-/// shared to them), including attaching it there for the very first time —
-/// not just once someone else has already granted it. Before this second
-/// fallback, a connector-reachable caller who was ALSO given the agent
-/// itself via a plain share could never be the one to attach their own
-/// connector to it: `agent_has_connector_grant` only turns true after the
-/// attach has already happened, so the very first attach had nowhere to
-/// succeed from. It still refuses a caller with literally no relationship to
-/// the agent at all — that's still `can_manage_agent`-or-nothing, mirroring
-/// [`reachable_shareable`]'s own agent-side check
-/// (`oss/mcp-gateway/src/connectors.rs`). It grants no control over the
-/// agent's other connectors or its agent-wide settings (reset, full
-/// connector/rule listing stay [`can_manage_agent`]-only).
-///
-/// [`reachable_shareable`]: nasiko_mcp_gateway::connectors
+/// The first branch lets a connector's owner manage their own connector on
+/// an agent they don't otherwise have access to, once it is attached there
+/// (the owner may attach it to any agent). It is owner-only: someone the
+/// connector was merely shared with — every user, for a public connector —
+/// gets nothing from the attachment and must pass [`can_access_agent`].
+/// The second branch lets a caller given both the connector and the agent
+/// attach the connector for the very first time, before any attachment
+/// exists. A caller with no relationship to the agent, who doesn't own the
+/// connector, is refused, as is anyone acting on a deleted agent. It grants
+/// no control over the agent's other connectors or its agent-wide settings
+/// (reset, full connector/rule listing stay [`can_manage_agent`]-only).
 pub async fn can_manage_agent_connector(
     state: &crate::state::AppState,
     claims: &crate::auth::Claims,
@@ -113,14 +107,43 @@ pub async fn can_manage_agent_connector(
     if !can_reach_connector {
         return false;
     }
-    let already_granted =
-        nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)
-            .await
-            .unwrap_or(false);
-    if already_granted {
+    if owns_connector_attached_to_live_agent(state, user_id, agent_id, connector_id).await {
         return true;
     }
     can_access_agent(state, claims, agent_id).await
+}
+
+/// True if `user_id` owns `connector_id`, it is attached to `agent_id`
+/// (`grant_type = 'agent'`), and the agent is not deleted. A database error
+/// reads as `false`.
+async fn owns_connector_attached_to_live_agent(
+    state: &crate::state::AppState,
+    user_id: Uuid,
+    agent_id: Uuid,
+    connector_id: Uuid,
+) -> bool {
+    let owns_connector = nasiko_mcp_gateway::repo::get_connector_by_id(&state.mcp.db, connector_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|connector| connector.owner_id == Some(user_id));
+    if !owns_connector {
+        return false;
+    }
+    let attached =
+        nasiko_mcp_gateway::repo::agent_has_connector_grant(&state.db, agent_id, connector_id)
+            .await
+            .unwrap_or(false);
+    if !attached {
+        return false;
+    }
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM agents WHERE id = $1 AND deleted_at IS NULL)",
+    )
+    .bind(agent_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false)
 }
 
 /// Check whether `caller_agent_id` is permitted to invoke `target_agent_id`.

@@ -1492,3 +1492,126 @@ async fn public_connector_cannot_be_attached_to_an_unrelated_agent() {
 
     server.cleanup().await;
 }
+
+/// Status of `method` on `path` as `member`, with an optional JSON body.
+async fn member_status(
+    server: &common::TestServer,
+    method: reqwest::Method,
+    path: &str,
+    member_id: &str,
+    member_name: &str,
+    body: Option<Value>,
+) -> reqwest::StatusCode {
+    let mut req = common::as_member(
+        server.client.request(method, server.url(path)),
+        member_id,
+        member_name,
+    );
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    req.send().await.unwrap().status()
+}
+
+/// A connector attached to someone else's agent gives its management on that
+/// agent to the connector's OWNER only. A user who reaches the connector just
+/// because it is public — and has no access to the agent — must not toggle it,
+/// read its tools, rewrite its rules or list it there. Once the agent is
+/// deleted, even the owner loses that access.
+#[tokio::test]
+#[serial]
+async fn public_connector_on_someone_elses_agent_is_managed_by_its_owner_only() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let (owner_id, owner_uuid) = create_user(&server, &admin, "po-owner").await;
+    let (_agent_owner_id, agent_owner_uuid) = create_user(&server, &admin, "po-agent-owner").await;
+    let (stranger_id, _stranger_uuid) = create_user(&server, &admin, "po-stranger").await;
+
+    let cid = seed_connector(&server, owner_uuid, "po-tool").await;
+    let agent_id = seed_agent(&server, agent_owner_uuid, "po-agent").await;
+
+    let grants_public = format!("/api/mcp/connectors/{cid}/grants/public");
+    let grants_agent = format!("/api/mcp/connectors/{cid}/grants/agents/{agent_id}");
+    for path in [&grants_public, &grants_agent] {
+        let status = member_status(
+            &server,
+            reqwest::Method::POST,
+            path,
+            &owner_id,
+            "po-owner",
+            None,
+        )
+        .await;
+        assert_eq!(status, 201, "owner POST {path}");
+    }
+
+    let toggle = format!("/api/mcp/agents/{agent_id}/connectors/{cid}");
+    let tools = format!("/api/mcp/agents/{agent_id}/connectors/{cid}/tools");
+    let rules = format!("/api/mcp/agents/{agent_id}/tools");
+    let listing = format!("/api/mcp/agents/{agent_id}/connectors");
+    let stranger_calls = [
+        (
+            reqwest::Method::PUT,
+            &toggle,
+            Some(json!({"enabled": true})),
+        ),
+        (reqwest::Method::GET, &tools, None),
+        (
+            reqwest::Method::PUT,
+            &rules,
+            Some(json!({"rules": [{"connector_id": cid, "tool_pattern": "*", "stance": "block"}]})),
+        ),
+        (reqwest::Method::GET, &listing, None),
+    ];
+    for (method, path, body) in stranger_calls {
+        let status = member_status(
+            &server,
+            method.clone(),
+            path,
+            &stranger_id,
+            "po-stranger",
+            body,
+        )
+        .await;
+        assert_eq!(
+            status, 403,
+            "a public-connector user with no access to the agent must be refused {method} {path}"
+        );
+    }
+
+    let toggle_body = || Some(json!({"enabled": false}));
+    let status = member_status(
+        &server,
+        reqwest::Method::PUT,
+        &toggle,
+        &owner_id,
+        "po-owner",
+        toggle_body(),
+    )
+    .await;
+    assert_eq!(
+        status, 200,
+        "the connector's owner still manages it on the agent"
+    );
+
+    sqlx::query("UPDATE agents SET deleted_at = now() WHERE id = $1")
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let status = member_status(
+        &server,
+        reqwest::Method::PUT,
+        &toggle,
+        &owner_id,
+        "po-owner",
+        toggle_body(),
+    )
+    .await;
+    assert_eq!(
+        status, 403,
+        "nobody but the agent's manager acts on a deleted agent"
+    );
+
+    server.cleanup().await;
+}
