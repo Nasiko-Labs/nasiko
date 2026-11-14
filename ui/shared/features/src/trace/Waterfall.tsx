@@ -293,10 +293,7 @@ export function Waterfall({
                       // the index kept as a muted suffix so repeats stay distinguishable.
                       <>
                         {r.attempt.route}
-                        <span className="text-muted-foreground">
-                          {' '}
-                          · #{r.attempt.index}
-                        </span>
+                        <span className="text-muted-foreground"> · #{r.attempt.index}</span>
                       </>
                     ) : (
                       <>
