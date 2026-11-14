@@ -15,6 +15,9 @@ use crate::commands::coding_agent_router::{
 };
 
 const DEFAULT_AGENT_NAME: &str = "claude-code";
+/// Claude Code's own default API endpoint — what `disconnect` writes when there was no
+/// `ANTHROPIC_BASE_URL` before `connect`.
+const ANTHROPIC_DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct SavedValue {
@@ -360,7 +363,9 @@ fn disconnect_internal(print: bool, force: bool) -> Result<()> {
     fs::remove_file(state_path()).context("failed to remove Claude connection state")?;
     if print {
         term::print_success("Disconnected Claude Code from Nasiko.");
-        println!("Restart Claude Code so the restored API settings take effect.");
+        println!(
+            "Open Claude Code sessions switch back with their next message; run /login in any that asks."
+        );
     }
     Ok(())
 }
@@ -381,7 +386,6 @@ fn restore_settings(state: &ConnectionState) -> Result<()> {
         "ANTHROPIC_BASE_URL",
         &Value::String(state.binding.cluster_url.trim_end_matches('/').to_string()),
         &state.original_base_url,
-        state.original_env_present,
     )?;
     write_json_atomic(&state.settings_path, &Value::Object(settings))
 }
@@ -596,12 +600,15 @@ fn restore_top_level(
     }
 }
 
+/// Restores `env.{key}` to its pre-connect value. When there was none, it writes
+/// `ANTHROPIC_DEFAULT_BASE_URL` instead of removing the key: a running Claude Code session
+/// applies an `env` key it sees set but keeps one that was deleted, so removing it would leave
+/// every open session still sending requests to the cluster after the disconnect.
 fn restore_env(
     settings: &mut Map<String, Value>,
     key: &str,
     installed: &Value,
     original: &SavedValue,
-    original_env_present: bool,
 ) -> Result<()> {
     let Some(env) = settings.get_mut("env").and_then(Value::as_object_mut) else {
         term::print_warning(&format!(
@@ -615,14 +622,12 @@ fn restore_env(
         ));
         return Ok(());
     }
-    if original.present {
-        env.insert(key.into(), original.value.clone());
+    let restored = if original.present {
+        original.value.clone()
     } else {
-        env.remove(key);
-    }
-    if env.is_empty() && !original_env_present {
-        settings.remove("env");
-    }
+        Value::String(ANTHROPIC_DEFAULT_BASE_URL.into())
+    };
+    env.insert(key.into(), restored);
     Ok(())
 }
 
@@ -696,13 +701,59 @@ mod tests {
                 present: false,
                 value: Value::Null,
             },
-            true,
         )
         .unwrap();
         assert_eq!(settings["theme"], "dark");
         assert_eq!(settings["env"]["OTHER"], "keep");
         assert!(!settings.contains_key("apiKeyHelper"));
-        assert!(settings["env"].get("ANTHROPIC_BASE_URL").is_none());
+        assert_eq!(
+            settings["env"]["ANTHROPIC_BASE_URL"],
+            ANTHROPIC_DEFAULT_BASE_URL
+        );
+    }
+
+    #[test]
+    fn restore_writes_back_a_url_the_user_had_before_connect() {
+        let mut settings = json!({"env": {"ANTHROPIC_BASE_URL": "https://nasiko"}})
+            .as_object()
+            .unwrap()
+            .clone();
+        restore_env(
+            &mut settings,
+            "ANTHROPIC_BASE_URL",
+            &json!("https://nasiko"),
+            &SavedValue {
+                present: true,
+                value: json!("https://corp-proxy"),
+            },
+        )
+        .unwrap();
+        assert_eq!(settings["env"]["ANTHROPIC_BASE_URL"], "https://corp-proxy");
+    }
+
+    /// A running Claude Code session applies an `env` key it sees set, but keeps an `env` key
+    /// that was deleted, so `disconnect` overwrites the URL instead of removing it — even when
+    /// `connect` created the `env` object itself.
+    #[test]
+    fn restore_overwrites_the_url_even_when_connect_created_env() {
+        let mut settings = json!({"env": {"ANTHROPIC_BASE_URL": "https://nasiko"}})
+            .as_object()
+            .unwrap()
+            .clone();
+        restore_env(
+            &mut settings,
+            "ANTHROPIC_BASE_URL",
+            &json!("https://nasiko"),
+            &SavedValue {
+                present: false,
+                value: Value::Null,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            settings["env"],
+            json!({"ANTHROPIC_BASE_URL": ANTHROPIC_DEFAULT_BASE_URL})
+        );
     }
 
     #[test]
@@ -775,7 +826,10 @@ mod tests {
         let restored: Value = serde_json::from_slice(&fs::read(&settings_path).unwrap()).unwrap();
         assert!(!restored.as_object().unwrap().contains_key("apiKeyHelper"));
         assert_eq!(restored["env"]["OTHER"], "keep");
-        assert!(restored["env"].get("ANTHROPIC_BASE_URL").is_none());
+        assert_eq!(
+            restored["env"]["ANTHROPIC_BASE_URL"],
+            ANTHROPIC_DEFAULT_BASE_URL
+        );
     }
 
     fn mcp_credential() -> coding_agent_router::McpCredential {
