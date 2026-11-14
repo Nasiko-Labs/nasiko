@@ -65,6 +65,8 @@ export const copy = {
           { action: 'Focus the message box', where: 'Chat', keys: [['/']] },
           { action: 'Send the message', where: 'Chat', keys: [['Enter']] },
           { action: 'New line', where: 'Chat', keys: [['Shift', 'Enter']] },
+          { action: 'Start or stop dictation', where: 'Chat', keys: [['F8'], ['Alt', 'R']] },
+          { action: 'Discard the recording', where: 'Chat, while dictating', keys: [['Esc']] },
           { action: 'Close the chat filter', where: 'Chat history, when empty', keys: [['Esc']] },
         ],
       },

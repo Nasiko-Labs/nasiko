@@ -180,6 +180,17 @@ The one-running-agent preselect can't be set up from the URL; `ChatPage.v1c.test
 | `waiting` | the opt-in pending requests: c006-c008, a `maf` step and (for a superuser) someone else's request; c060 too under `many-chats` |
 | `pending-fail` | every pending poll fails with a 500 |
 | `pending-flaky` | the first poll works, the next 3 fail, then it works again |
+| `transcribe-unconfigured` | dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does |
+
+### Dictation
+
+Where the browser has `MediaRecorder`, the composer has a mic beside the paperclip (`components/DictateButton.tsx`,
+spec `docs/superpowers/specs/2026-11-13-chat-dictation-design.md`). Click it, or press F8 or Alt+R (⌥R on a Mac), to
+record; again to stop. The audio goes to `POST /api/transcribe` (OpenAI Whisper on the user's saved OpenAI key, else the
+server's `OPENAI_API_KEY`) and the text lands at the cursor. It never sends. Esc discards a recording, and recording
+stops by itself at 5 minutes (`DICTATION_MAX_MS`, under the route's 2 MiB body limit at 32 kbps). Failures show under
+the composer and leave the draft alone. The mock answers "Hello from the mock microphone."; the microphone needs
+HTTPS or localhost, so the dev server on `localhost:3000` works.
 
 ### Reset recipe (browser)
 

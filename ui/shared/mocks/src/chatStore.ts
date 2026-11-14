@@ -1334,6 +1334,16 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       return HttpResponse.json(rows, { status: 201 })
     }),
 
+    // POST /api/transcribe (transcribe.rs): one multipart `file` → `{text}`; plain-text errors, 503 without a key.
+    http.post('/api/transcribe', async ({ request }) => {
+      const denied = guard()
+      if (denied) return denied
+      if (ctx.hasVariant?.('transcribe-unconfigured'))
+        return text('Transcription not configured', 503)
+      if (!(await readUploadedFiles(request)).length) return text('No audio file provided', 400)
+      return HttpResponse.json({ text: 'Hello from the mock microphone.' })
+    }),
+
     // GET /api/chat/files/{id}/download: the real route redirects to presigned storage; a
     // mock has no bytes, so this only proves the id resolves and is the caller's.
     http.get('/api/chat/files/:fileId/download', ({ params }) => {

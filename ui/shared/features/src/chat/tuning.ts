@@ -69,6 +69,13 @@ const DEFAULTS = {
   },
   /** Every attachment on one message, together (`a2a_dispatch.rs::MAX_ATTACHED_BYTES`). */
   ATTACHMENTS_MAX_TOTAL_BYTES: 30 * 1024 * 1024,
+  /**
+   * Dictation stops by itself after this long. At DICTATION_BITS_PER_SECOND that is about 1.2 MB, under
+   * `/api/transcribe`'s 2 MiB body limit (axum's default; over it the route answers 400 "failed to read file").
+   */
+  DICTATION_MAX_MS: 5 * 60_000,
+  /** The recorder's target bitrate: plenty for speech, and what keeps DICTATION_MAX_MS under the body limit. */
+  DICTATION_BITS_PER_SECOND: 32_000,
   /** Live turns per tab before a new routed send is refused (HTTP/1.1: 6 connections per origin, G-10). */
   MAX_LIVE_TURNS: 3,
   /** Characters of an agent's excerpt in expanded Activity (NC-4). */

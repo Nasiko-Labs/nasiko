@@ -168,6 +168,7 @@ const setLoggedIn = (value: boolean) => {
  * - `probe-500`: the Sessions → Open chat probe fails with a 500 (§5.10).
  * - `waiting`: the opt-in pending requests (§5.11); `pending-fail` fails every poll, `pending-flaky` answers
  *   once, fails the next 3 polls, then works again (DX3).
+ * - `transcribe-unconfigured`: dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does.
  */
 /** `/api/agents/<segment>` routes that aren't an agent id (`agents/mod.rs` router). */
 const AGENTS_STATIC = new Set(['uploads', 'deployments'])
@@ -180,6 +181,7 @@ export const CHAT_PAGE_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
+  'transcribe-unconfigured',
 ] as const
 
 /**

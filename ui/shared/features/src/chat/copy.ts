@@ -174,6 +174,50 @@ export const errorCopy = {
     cause: 'OpenRuntime refused or lost the upload, so nothing was sent to the agent.',
     action: 'Try again, or remove the attachment and send the message without it.',
   },
+  // Dictation (docs/superpowers/specs/2026-11-13-chat-dictation-design.md). The draft is never touched.
+  // `navigator.mediaDevices` is undefined on an insecure origin, usually OpenRuntime served over plain HTTP on an IP.
+  micInsecure: {
+    problem: "Couldn't use the microphone.",
+    cause: 'Browsers allow microphones only on HTTPS pages and localhost.',
+    action: 'Open OpenRuntime over HTTPS, or ask your admin to set it up.',
+  },
+  micDenied: {
+    problem: "Couldn't use the microphone.",
+    cause: 'Microphone access is blocked for this site.',
+    action: 'Allow it in your browser’s site settings, then try again.',
+  },
+  micMissing: {
+    problem: "Couldn't use the microphone.",
+    cause: 'No microphone was found on this device.',
+    action: 'Connect one, then try again.',
+  },
+  micFailed: {
+    problem: "Couldn't start recording.",
+    cause: 'The browser refused to record from the microphone.',
+    action: 'Try again, or try another browser.',
+  },
+  transcribeUnconfigured: {
+    problem: "Couldn't transcribe your recording.",
+    cause: 'Speech-to-text needs an OpenAI API key, and this OpenRuntime has none.',
+    action: 'Save an OpenAI key in the LLM router, or ask your admin to set OPENAI_API_KEY.',
+  },
+  // quirk: the server sends a provider failure as a 502 with a body; apiFetch's network error is a 502 without one.
+  transcribeRejected: {
+    problem: "Couldn't transcribe your recording.",
+    cause: 'The transcription provider refused it.',
+    action:
+      'Try again. If it keeps failing, ask your admin to check OPENAI_BASE_URL supports audio.',
+  },
+  transcribeUnreadable: {
+    problem: "Couldn't transcribe your recording.",
+    cause: "OpenRuntime couldn't read it. It may be too long.",
+    action: 'Record a shorter message.',
+  },
+  transcribeFailed: {
+    problem: "Couldn't transcribe your recording.",
+    cause: "OpenRuntime didn't answer.",
+    action: 'Try again.',
+  },
 } satisfies Record<string, ErrorCopy>
 
 /** `policy_rejected` copy per FlowGuard limit (v1b §5.6). */
@@ -210,6 +254,16 @@ export const copy = {
   attachOverBudget: (name: string, size: string) =>
     `${name} wasn't attached: one message can carry ${size} of files in total.`,
   attachEmpty: (name: string) => `${name} wasn't attached: it is empty, or it is a folder.`,
+  // Dictation: the mic's names per state, and what the live region says.
+  startDictation: 'Start dictation',
+  // Fixed, so a screen reader doesn't re-read the button every second; the elapsed time beside it is visual only.
+  stopDictation: 'Stop dictation',
+  transcribing: 'Transcribing…',
+  dictationHint: (altR: string) => `Dictate (F8 or ${altR}). Esc discards.`,
+  dictationListening: 'Recording. Press F8 to stop, Esc to discard.',
+  dictationDiscarded: 'Recording discarded.',
+  dictationInserted: 'Transcript added to the message box.',
+  dictationEmpty: 'No speech was heard.',
   checkingForReply: 'Checking for a reply…',
   runAgainConfirmTitle: 'Run this message again?',
   runAgainConfirmBody:

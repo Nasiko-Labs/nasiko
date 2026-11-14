@@ -75,6 +75,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
+  'transcribe-unconfigured',
   // LLM router page variants; same reason.
   'router-empty',
   'router-409',

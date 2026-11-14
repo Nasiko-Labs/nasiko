@@ -68,7 +68,7 @@ const HARDENING: [(&str, &str); 5] = [
     ("x-frame-options", "DENY"),
     (
         "permissions-policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
     ),
     ("cross-origin-opener-policy", "same-origin-allow-popups"),
 ];
@@ -735,6 +735,13 @@ mod tests {
             for (name, value) in HARDENING {
                 assert_eq!(res.headers()[name], value, "{name} on {path}");
             }
+            // Chat dictation records from the page itself, so only `self` may use the microphone.
+            let policy: &str = res.headers()["permissions-policy"].to_str().expect("ascii");
+            assert!(
+                policy.contains("microphone=(self)"),
+                "microphone on {path}: {policy}"
+            );
+            assert!(policy.contains("camera=()"), "camera on {path}: {policy}");
         }
     }
 
