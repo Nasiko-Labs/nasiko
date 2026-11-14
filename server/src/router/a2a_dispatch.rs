@@ -756,22 +756,9 @@ pub(crate) async fn orchestrator_stream(
         // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
         // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
         // is unset.
-        // Unset `OPENAI_MODEL` → empty, so a router-backed turn uses the router's default
-        // model instead of the compiled `gpt-4o-mini` (unservable on e.g. Vertex-only).
-        model: crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_else(
-            || {
-                let has_openai_key: bool = saved_key.is_some();
-                if has_openai_key {
-                    state.config.openai_model.clone()
-                } else {
-                    String::new()
-                }
-            },
-        ),
+        model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        // Only the user's saved key goes direct to OpenAI; platform credentials (including
-        // `OPENAI_API_KEY`) are picked by the router via `DEFAULT_PROVIDER`.
-        api_key: saved_key,
+        api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -1730,7 +1717,7 @@ async fn agent_stream(
             file_parts,
         )
     };
-    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
+    append_attachment_note(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -2057,7 +2044,7 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
-            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
+            append_attachment_note(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2699,13 +2686,13 @@ fn with_attachment_list<'q>(
     ))
 }
 
-fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
+fn append_attachment_note(req: &mut JsonRpcRequest, note: Option<&str>) {
     let Some(note) = note else { return };
     let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
     let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
         return;
     };
-    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
+    let _ = nasiko_agent_proxy::context_part::append_user_text(message, note, tagging);
 }
 
 const CHAT_UPLOAD_PREFIX: &str = "chat-files/";

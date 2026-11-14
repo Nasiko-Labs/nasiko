@@ -642,19 +642,15 @@ async fn a_workspace_chip_reaches_the_agent_as_a_signed_workspace_line() {
     assert_eq!(status, 200, "{body}");
 
     let texts = text_parts_seen(&agent);
-    let note = texts
-        .iter()
-        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
-        .expect("the agent got no attachment line");
-    let lines: Vec<&str> = note.lines().collect();
-    assert_eq!(lines.len(), 2, "{note}");
+    let lines = user_text_attachment_lines(&texts);
+    assert_eq!(lines.len(), 2, "{texts:?}");
     assert!(
         lines[0].starts_with("[Attached file: chart.png (image/png, 1.5 KB) "),
-        "{note}"
+        "{texts:?}"
     );
     assert!(
         lines[1].starts_with("[Attached file: fact.png (image/png, 64 B) "),
-        "{note}"
+        "{texts:?}"
     );
     assert_eq!(raw_parts_seen(&agent).len(), 1);
 
@@ -723,6 +719,21 @@ fn text_parts_seen(agent: &StubAgent) -> Vec<String> {
         .collect()
 }
 
+fn user_text_attachment_lines(texts: &[String]) -> Vec<&str> {
+    let token = nasiko_llm_router::attachments::TOKEN_PREFIX;
+    assert!(
+        texts[1..].iter().all(|t| !t.contains(token)),
+        "an attachment line rode outside the user's text part: {texts:?}"
+    );
+    let mut lines = texts[0].lines();
+    assert_eq!(
+        lines.next(),
+        Some("what is in the attachment?"),
+        "{texts:?}"
+    );
+    lines.collect()
+}
+
 fn flow_id_seen(agent: &StubAgent) -> String {
     let traceparents = agent.traceparents.lock().unwrap();
     traceparents[0].split('-').nth(1).unwrap().to_string()
@@ -753,19 +764,15 @@ async fn a_direct_turn_gives_the_agent_one_signed_line_per_file_for_this_flow() 
     assert_eq!(status, 200, "{body}");
 
     let texts = text_parts_seen(&agent);
-    let note = texts
-        .iter()
-        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
-        .expect("the agent got no attachment line");
-    assert!(texts[0].contains("what is in the attachment?"));
-    let lines: Vec<&str> = note.lines().collect();
-    assert_eq!(lines.len(), 2, "{note}");
+    let lines = user_text_attachment_lines(&texts);
+    assert_eq!(lines.len(), 2, "{texts:?}");
     assert!(lines[0].starts_with("[Attached file: fact.png (image/png, 64 B) "));
     assert!(lines[1].starts_with(&format!(
         "[Attached file: q3.pdf (application/pdf, {pdf_len} B) "
     )));
     assert_eq!(raw_parts_seen(&agent).len(), 2);
 
+    let note = texts[0].as_str();
     let signer = nasiko_llm_router::attachments::MarkerSigner::from_secret(JWT_SECRET).unwrap();
     let flow_id = flow_id_seen(&agent);
     let now = chrono::Utc::now().timestamp();
@@ -922,11 +929,17 @@ async fn a_routed_turn_gives_the_chosen_agent_the_signed_line_for_its_flow() {
         .iter()
         .filter_map(|p| p.get("text").and_then(Value::as_str))
         .collect();
-    assert_eq!(texts[0], "describe the picture");
-    let note = texts
-        .iter()
-        .find(|t| t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX))
-        .expect("the routed agent got no attachment line");
+    let note = texts[0];
+    assert!(
+        note.starts_with("describe the picture\n[Attached file: fact.png (image/png, 64 B) "),
+        "{texts:?}"
+    );
+    assert!(
+        texts[1..]
+            .iter()
+            .all(|t| !t.contains(nasiko_llm_router::attachments::TOKEN_PREFIX)),
+        "an attachment line rode outside the routed message text: {texts:?}"
+    );
     let spans = nasiko_llm_router::attachments::token_spans(note);
     assert_eq!(spans.len(), 1);
     let signer = nasiko_llm_router::attachments::MarkerSigner::from_secret(JWT_SECRET).unwrap();
@@ -1086,7 +1099,7 @@ async fn an_agent_with_no_media_code_gets_the_image_to_its_model_through_the_rou
     let seen_by_provider = Arc::new(Mutex::new(Vec::<Value>::new()));
     let capture = Arc::clone(&seen_by_provider);
     let _provider_mock = provider
-        .mock("POST", "/v1/chat/completions")
+        .mock("POST", "/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body_from_request(move |request| {
