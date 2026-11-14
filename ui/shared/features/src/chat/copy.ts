@@ -493,12 +493,6 @@ export const copy = {
   discardReply: 'Discard reply',
   details: 'Details',
   serverSaid: (t: string) => `Server said: ${t}`,
-  // A 503 whose own words say why OpenRuntime can't run the turn (errors.ts `unavailableWithReason`);
-  // the cause is the server's sentence.
-  unavailableWithReason: {
-    problem: "OpenRuntime can't run this turn right now.",
-    action: 'Fix the setting it names, or ask your admin, then run it again.',
-  },
   viewTrace: 'View trace',
   traceTitle: 'Trace for this reply',
   openFullTrace: 'Open full trace',

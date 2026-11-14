@@ -7,7 +7,7 @@
  */
 import { ApiError } from '@nasiko/data-access/client'
 import type { ChatRefusal, Slots } from '@nasiko/app-core/edition/edition'
-import { copy, errorCopy, type ErrorKey } from './copy'
+import { errorCopy, type ErrorKey } from './copy'
 
 export type ChatErrorPhase =
   'create' | 'save-user' | 'upload' | 'dispatch' | 'stream' | 'save-assistant'
@@ -172,32 +172,10 @@ export const failedTurnError = (
  * failed, or a 503 whose words say why the agent couldn't take the turn.
  */
 export function refusalOf(error: ChatError, read: Slots['chatRefusal']): ChatRefusal | null {
-  if (!error.serverDetail) return null
-  if (
-    read &&
-    (error.key === 'agentFailed' || error.key === 'routedFailed' || error.key === 'noAgents')
-  ) {
-    const layer = read(error.serverDetail)
-    if (layer) return layer
-  }
-  return unavailableWithReason(error)
-}
-
-/** The server's stock words when it has no agent at all (a2a_dispatch.rs `NoAgents`). */
-const NO_AGENTS_DETAIL = 'no agents available'
-
-/**
- * A 503 that names its own reason (the server isn't set up for this turn, e.g. "Coding sessions
- * are not configured on this server (AGENT_JWT_SECRET is not set)", or the agent can't take it
- * yet) shows that reason as the card's cause, instead of the generic "the agent is stopped" copy.
- * The server only puts caller-safe text on a 503 (a2a_dispatch.rs `Unavailable`).
- */
-function unavailableWithReason(error: ChatError): ChatRefusal | null {
-  const detail = error.serverDetail?.trim()
-  if (error.status !== 503 || !detail) return null
-  if (error.key !== 'noAgents' && error.key !== 'routedNoAgents') return null
-  if (detail.toLowerCase() === NO_AGENTS_DETAIL) return null
-  return { ...copy.unavailableWithReason, cause: detail, detail, retry: true }
+  if (!read || !error.serverDetail) return null
+  if (error.key !== 'agentFailed' && error.key !== 'routedFailed' && error.key !== 'noAgents')
+    return null
+  return read(error.serverDetail)
 }
 
 /**

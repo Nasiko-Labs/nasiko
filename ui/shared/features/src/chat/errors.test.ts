@@ -56,28 +56,6 @@ describe('refusals a layer recognises', () => {
     expect(refusalOf(cut, read)).toBeNull()
   })
 
-  it('a 503 that names its reason shows that reason, with or without a layer', () => {
-    const message =
-      'Coding sessions are not configured on this server (AGENT_JWT_SECRET is not set)'
-    const direct = dispatchError(503, { error: { code: -32603, message } })
-    const routed = dispatchError(
-      503,
-      { error: { code: -32603, message } },
-      { chatMode: 'routed', operation: 'send' },
-    )
-    for (const error of [direct, routed]) {
-      for (const reader of [null, read]) {
-        expect(refusalOf(error, reader)).toMatchObject({ cause: message, detail: message })
-      }
-    }
-  })
-
-  it('the stock no-agents 503 keeps the generic copy', () => {
-    const none = dispatchError(503, { error: { code: -32603, message: 'no agents available' } })
-    expect(refusalOf(none, null)).toBeNull()
-    expect(refusalOf(dispatchError(503, ''), null)).toBeNull()
-  })
-
   it('an OSS build has no reader, so every failure is the generic one', () => {
     expect(refusalOf(failedTurnError('agentFailed', 'E: quota_hit'), null)).toBeNull()
     expect(failedTurnError('agentFailed', 'upstream timeout')).toMatchObject({

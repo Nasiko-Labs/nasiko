@@ -262,7 +262,7 @@ async fn make_generator(
     ))
 }
 
-const NO_OPENAI_KEY: &str = "No OpenAI API key: add one in Settings → Secrets.";
+const NO_OPENAI_KEY: &str = "No OpenAI API key: add one in the setup guide or Settings → Secrets.";
 
 fn error_response(e: GeneratorError) -> axum::response::Response {
     let (status, message) = match &e {

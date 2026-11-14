@@ -22,7 +22,7 @@ async fn transcribe(
         .filter(|k| !k.trim().is_empty())
         .ok_or((
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "Transcription needs an OpenAI API key: add one in Settings → Secrets.".into(),
+            "Transcription needs an OpenAI API key: add one in the setup guide or Settings → Secrets.".into(),
         ))?;
 
     let base_url = state
