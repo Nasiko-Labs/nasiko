@@ -364,15 +364,33 @@ impl ProviderClient for GeminiProvider {
             })
             .unwrap_or_default();
 
-        // Gemini's batch embed API returns no token counts.
+        // Gemini's batch embed API returns no token counts; estimate so usage
+        // rows are billed instead of recording zero input tokens.
+        let estimated: i64 = estimate_embedding_tokens(&inputs);
         Ok(EmbeddingsResponse {
             object: "list".to_string(),
             data,
             model: cfg.model.clone(),
-            usage: None,
+            usage: Some(Usage {
+                prompt_tokens: Some(estimated),
+                total_tokens: Some(estimated),
+                ..Usage::default()
+            }),
             extra: Map::new(),
         })
     }
+}
+
+/// Approximate token count for embedding inputs (~4 chars per token, at least
+/// one token per non-empty text). Used when the provider reports no usage.
+fn estimate_embedding_tokens(inputs: &[String]) -> i64 {
+    inputs
+        .iter()
+        .map(|text| {
+            let chars: i64 = text.chars().count() as i64;
+            if chars == 0 { 0 } else { (chars + 3) / 4 }
+        })
+        .sum()
 }
 
 impl GeminiProvider {
@@ -830,6 +848,23 @@ fn translate(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<GeminiRequest, P
     };
     if !stop.is_empty() {
         gen_cfg.insert("stopSequences".into(), json!(stop));
+    }
+    // OpenAI `response_format` → Gemini JSON mode. `json_schema` carries a standard JSON
+    // Schema, which `responseJsonSchema` accepts as is (unlike the OpenAPI-subset
+    // `responseSchema`).
+    if let Some(rf) = req.extra.get("response_format") {
+        match rf.get("type").and_then(Value::as_str) {
+            Some("json_object") => {
+                gen_cfg.insert("responseMimeType".into(), json!("application/json"));
+            }
+            Some("json_schema") => {
+                gen_cfg.insert("responseMimeType".into(), json!("application/json"));
+                if let Some(schema) = rf.pointer("/json_schema/schema") {
+                    gen_cfg.insert("responseJsonSchema".into(), schema.clone());
+                }
+            }
+            _ => {}
+        }
     }
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
@@ -1502,6 +1537,12 @@ mod tests {
         }
     }
 
+    #[test]
+    fn estimate_embedding_tokens_rounds_up_per_text() {
+        let inputs: Vec<String> = vec!["abcde".into(), String::new(), "abcd".into()];
+        assert_eq!(estimate_embedding_tokens(&inputs), 3);
+    }
+
     #[tokio::test]
     async fn embeddings_via_batch_embed_contents() {
         let mut server = mockito::Server::new_async().await;
@@ -1720,6 +1761,30 @@ mod tests {
             }
             other => panic!("expected a 400, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn response_format_maps_to_json_mode() {
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-4-hydrogen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_object"}
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        assert_eq!(body["generationConfig"]["responseMimeType"], "application/json");
+
+        let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+        let req: ChatRequest = serde_json::from_value(json!({
+            "model": "gemini-4-hydrogen",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}}
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved()).unwrap();
+        assert_eq!(body["generationConfig"]["responseMimeType"], "application/json");
+        assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
+        assert!(body.get("response_format").is_none());
     }
 
     #[test]

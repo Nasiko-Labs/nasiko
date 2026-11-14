@@ -66,6 +66,20 @@ impl VertexProvider {
     }
 }
 
+/// Vertex authenticates only with the platform's ADC identity. A user-secret config would
+/// spend platform GCP credentials while skipping credit charging, so it is refused.
+fn require_platform_paid(platform_paid: bool) -> Result<(), ProviderError> {
+    if platform_paid {
+        Ok(())
+    } else {
+        Err(ProviderError::Status {
+            status: 400,
+            message: "vertex uses platform ADC credentials only; per-user API key secrets are not supported for provider 'vertex'".into(),
+            retryable: false,
+        })
+    }
+}
+
 #[async_trait]
 impl ProviderClient for VertexProvider {
     async fn chat(
@@ -73,6 +87,7 @@ impl ProviderClient for VertexProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<ChatResponse, ProviderError> {
+        require_platform_paid(cfg.platform_paid)?;
         match wire_for(&cfg.model) {
             VertexWire::GeminiNative => self.gemini.chat(req, cfg).await,
             VertexWire::OpenApi => self.openapi.chat(req, &self.with_token(cfg).await?).await,
@@ -84,6 +99,7 @@ impl ProviderClient for VertexProvider {
         req: &ChatRequest,
         cfg: &ResolvedConfig,
     ) -> Result<BoxStream<'static, Result<ChatChunk, ProviderError>>, ProviderError> {
+        require_platform_paid(cfg.platform_paid)?;
         match wire_for(&cfg.model) {
             VertexWire::GeminiNative => self.gemini.chat_stream(req, cfg).await,
             VertexWire::OpenApi => {
@@ -99,6 +115,7 @@ impl ProviderClient for VertexProvider {
         req: &EmbeddingsRequest,
         cfg: &ResolvedEmbeddingConfig,
     ) -> Result<EmbeddingsResponse, ProviderError> {
+        require_platform_paid(cfg.platform_paid)?;
         self.gemini.embeddings(req, cfg).await
     }
 
@@ -112,6 +129,15 @@ impl ProviderClient for VertexProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_secret_configs_are_refused() {
+        assert!(require_platform_paid(true).is_ok());
+        assert!(matches!(
+            require_platform_paid(false),
+            Err(ProviderError::Status { status: 400, retryable: false, .. })
+        ));
+    }
 
     #[test]
     fn bare_gemini_ids_use_native_wire() {

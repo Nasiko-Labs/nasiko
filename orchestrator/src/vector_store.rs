@@ -58,6 +58,11 @@ pub type TextEmbeddingCache = Arc<DashMap<i64, CachedTextEmbedding>>;
 
 const EMBEDDING_CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// `TextEmbeddingCache` key: hash of the resolved `provider/model` and the text.
+fn text_cache_key(identity: &str, text: &str) -> i64 {
+    hash_prompt(&format!("{identity}\n{text}"))
+}
+
 pub fn hash_prompt(prompt: &str) -> i64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -352,7 +357,7 @@ impl VectorStore {
     /// the server log without instrumenting the call sites themselves.
     fn cached_embedding(&self, text: &str) -> Option<Vec<f32>> {
         let cache = self.text_cache.as_ref()?;
-        let key = hash_prompt(text);
+        let key: i64 = self.text_cache_key(text);
         let hit = cache
             .get(&key)
             .filter(|entry| entry.cached_at.elapsed() < EMBEDDING_CACHE_TTL)
@@ -367,10 +372,25 @@ impl VectorStore {
         hit
     }
 
+    /// Provider/model the embedding actually runs on: the router's resolved route, or
+    /// the configured model on the direct OpenAI path.
+    fn embedding_identity(&self) -> String {
+        match &self.routed {
+            Some(r) => r.backend.embedding_identity(&self.model),
+            None => format!("direct/{}", self.model),
+        }
+    }
+
+    /// Cache key for `text`: content plus resolved provider/model, so a provider or model
+    /// switch (e.g. Vertex 768-dim -> Gemini 3072-dim) never returns a stale vector.
+    fn text_cache_key(&self, text: &str) -> i64 {
+        text_cache_key(&self.embedding_identity(), text)
+    }
+
     fn store_embedding(&self, text: &str, embedding: &[f32]) {
         if let Some(cache) = &self.text_cache {
             cache.insert(
-                hash_prompt(text),
+                self.text_cache_key(text),
                 CachedTextEmbedding {
                     embedding: embedding.to_vec(),
                     cached_at: Instant::now(),
@@ -638,6 +658,19 @@ mod tests {
         let h1 = hash_prompt("agent-1 does engineering things");
         let h2 = hash_prompt("agent-1 does completely different things");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn text_cache_key_depends_on_resolved_route() {
+        let text = "same message";
+        assert_ne!(
+            text_cache_key("vertex/text-embedding-005", text),
+            text_cache_key("gemini/gemini-embedding-001", text)
+        );
+        assert_eq!(
+            text_cache_key("gemini/gemini-embedding-001", text),
+            text_cache_key("gemini/gemini-embedding-001", text)
+        );
     }
 
     #[test]

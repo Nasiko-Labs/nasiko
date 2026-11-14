@@ -79,6 +79,11 @@ impl LlmBackend for RouterBackend {
         vectors(resp, texts.len())
     }
 
+    fn embedding_identity(&self, model: &str) -> String {
+        let route = self.llm.resolve_embedding(model);
+        format!("{}/{}", route.provider, route.model)
+    }
+
     async fn transcribe(
         &self,
         call: &LlmCallContext,

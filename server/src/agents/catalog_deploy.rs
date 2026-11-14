@@ -250,6 +250,7 @@ async fn deploy_missing_workload(state: &AppState, agent_id: Uuid) -> DeployOutc
         state.db.clone(),
         state.http_client.clone(),
         state.runtime.clone(),
+        state.llm_backend.clone(),
         agent_id,
         deployed.url,
     ));

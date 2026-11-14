@@ -41,6 +41,7 @@ pub(crate) async fn answers_http(http: &reqwest::Client, agent_url: &str) -> boo
 pub(crate) async fn fetch_and_apply_agent_card(
     db: &sqlx::PgPool,
     http: &reqwest::Client,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
     agent_id: Uuid,
     agent_url: &str,
 ) -> bool {
@@ -117,7 +118,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
         crate::catalog::skills::sync_agent_skills_json(db, agent_id, skills_json).await;
     }
 
-    embed_updated_agent(db, agent_id).await;
+    embed_updated_agent(db, backend, agent_id).await;
 
     true
 }
@@ -132,22 +133,14 @@ pub(crate) async fn fetch_and_apply_agent_card(
 /// update / rollback) that reaches this function — same env-driven approach
 /// `nasiko_config::Config` itself uses for these fields. The key is the
 /// owner's saved one, else `OPENAI_API_KEY`.
-/// In-process router used for platform-key agent embeddings. Set once at state
-/// construction; deploy paths here only carry a pool, not `AppState`.
-static EMBED_BACKEND: std::sync::OnceLock<nasiko_orchestrator::llm_backend::SharedLlmBackend> =
-    std::sync::OnceLock::new();
-
-/// Register the router backend for [`embed_updated_agent`]. First call wins.
-pub(crate) fn set_embed_backend(backend: nasiko_orchestrator::llm_backend::SharedLlmBackend) {
-    let _ = EMBED_BACKEND.set(backend);
-}
-
-/// The registered router backend, for deploy/build paths that carry no `AppState`.
-pub(crate) fn platform_backend() -> Option<&'static nasiko_orchestrator::llm_backend::SharedLlmBackend> {
-    EMBED_BACKEND.get()
-}
-
-async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
+///
+/// `backend` is the caller's `AppState::llm_backend` (the in-process router); it is
+/// passed explicitly so each server instance (and each test) uses its own router.
+async fn embed_updated_agent(
+    db: &sqlx::PgPool,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
+    agent_id: Uuid,
+) {
     let base_url =
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model =
@@ -177,7 +170,7 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
         embedding_content_hash: None,
     };
 
-    let result = match (saved_key, EMBED_BACKEND.get()) {
+    let result = match (saved_key, backend) {
         (Some(key), _) => {
             nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model).await
         }
@@ -290,6 +283,7 @@ pub(crate) async fn fetch_agent_card_with_retry(
     db: sqlx::PgPool,
     http: reqwest::Client,
     runtime: Arc<dyn nasiko_runtime::ContainerRuntime>,
+    backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
     agent_id: Uuid,
     agent_url: String,
 ) {
@@ -310,7 +304,7 @@ pub(crate) async fn fetch_agent_card_with_retry(
     };
     for attempt in 1..=30u32 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if fetch_and_apply_agent_card(&db, &http, agent_id, &agent_url).await {
+        if fetch_and_apply_agent_card(&db, &http, Some(&backend), agent_id, &agent_url).await {
             return;
         }
         tracing::debug!(%agent_id, attempt, "agent card fetch attempt failed");

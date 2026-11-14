@@ -1260,10 +1260,16 @@ fn usable_hint<'a>(cfg: &'a GatewayConfig, hint: RequestHint<'a>) -> RequestHint
         return hint;
     };
     let default_provider: &str = cfg.default_provider.as_str();
+    let default_keyed: bool = !cfg.platform_key_for(default_provider).is_empty();
+    // Injected default model (e.g. Gemini) arriving via the OpenAI SDK hint: the hinted
+    // provider cannot serve it even when it has a key, so follow the model to the default.
+    let model_belongs_to_default: bool = hint.model.is_some_and(|m| {
+        model_fits_provider(m, default_provider) && !model_fits_provider(m, provider)
+    });
     let unusable: bool = is_builtin_provider(provider)
         && provider != default_provider
-        && cfg.platform_key_for(provider).is_empty()
-        && !cfg.platform_key_for(default_provider).is_empty();
+        && default_keyed
+        && (cfg.platform_key_for(provider).is_empty() || model_belongs_to_default);
     if !unusable {
         return hint;
     }
@@ -2531,6 +2537,22 @@ mod shared_user_tests {
         let h = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-4o-mini") });
         assert_eq!(h.provider, Some("openai"));
         assert_eq!(h.model, Some("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn keyed_openai_hint_with_injected_gemini_model_goes_to_default() {
+        let cfg = GatewayConfig {
+            default_provider: "gemini".into(),
+            default_model: "gemini-4-hydrogen".into(),
+            platform_gemini_api_key: "g-key".into(),
+            platform_openai_api_key: "sk".into(),
+            ..GatewayConfig::default()
+        };
+        let h = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gemini-4-hydrogen") });
+        assert_eq!(h.provider, Some("gemini"));
+        assert_eq!(h.model, Some("gemini-4-hydrogen"));
+        let kept = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-6.1-sol") });
+        assert_eq!(kept.provider, Some("openai"));
     }
 
     fn gateway() -> GatewayConfig {

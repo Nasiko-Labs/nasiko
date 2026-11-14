@@ -379,6 +379,7 @@ pub async fn execute_build(
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
     capability_generator_model: String,
+    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
 
@@ -512,6 +513,7 @@ pub async fn execute_build(
                     key,
                     &agent_name,
                     &capability_generator_model,
+                    &llm_backend,
                 )
                 .await;
             }
@@ -792,6 +794,7 @@ pub async fn auto_generate_capabilities_pub(
     source_key: &str,
     agent_name: &str,
     capability_generator_model: &str,
+    llm_backend: &nasiko_orchestrator::llm_backend::SharedLlmBackend,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
     use nasiko_orchestrator::providers::LLMProvider;
@@ -825,22 +828,19 @@ pub async fn auto_generate_capabilities_pub(
                 db,
                 http_client.clone(),
                 owner,
-                crate::agents::utils::platform_backend(),
+                Some(llm_backend),
                 "capability_generation",
             )
             .await
         }
-        None => match crate::agents::utils::platform_backend() {
-            Some(backend) => LLMProvider::from_env(http_client.clone()).with_backend(
-                std::sync::Arc::clone(backend),
-                nasiko_orchestrator::llm_backend::LlmCallContext {
-                    user_id: Uuid::nil(),
-                    component: "capability_generation".to_string(),
-                    session_id: None,
-                },
-            ),
-            None => LLMProvider::from_env(http_client.clone()),
-        },
+        None => LLMProvider::from_env(http_client.clone()).with_backend(
+            std::sync::Arc::clone(llm_backend),
+            nasiko_orchestrator::llm_backend::LlmCallContext {
+                user_id: Uuid::nil(),
+                component: "capability_generation".to_string(),
+                session_id: None,
+            },
+        ),
     };
     // Caller passes `state.config.capability_generator_model` (already
     // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —

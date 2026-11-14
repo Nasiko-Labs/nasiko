@@ -41,6 +41,13 @@ pub trait LlmBackend: Send + Sync {
         texts: &[String],
     ) -> Result<Vec<Vec<f32>>, String>;
 
+    /// `provider/model` an [`LlmBackend::embed`] call for `model` actually runs on. Embedding
+    /// caches key by it, so vectors from different providers or models (different
+    /// dimensions) never mix. Default: `model` unchanged.
+    fn embedding_identity(&self, model: &str) -> String {
+        model.to_string()
+    }
+
     /// Speech to text. `mime_type` is the upload content type (e.g. `audio/webm`).
     /// The default rejects, so backends without audio support need no change.
     async fn transcribe(

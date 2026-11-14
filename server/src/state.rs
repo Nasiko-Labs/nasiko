@@ -324,7 +324,6 @@ impl AppState {
                     ..nasiko_llm_router::LlmRouterCtx::from_shared(db.clone())
                 }),
             ));
-        crate::agents::utils::set_embed_backend(Arc::clone(&routing_backend));
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
             nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone())
                 .with_backend(Arc::clone(&routing_backend)),

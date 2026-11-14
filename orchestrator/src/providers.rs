@@ -18,6 +18,13 @@ pub struct LLMProvider {
     /// Model sent on the direct OpenAI path when the requested one belongs to another
     /// provider (task models resolve from `DEFAULT_MODEL` before the backend is known).
     openai_model: String,
+    /// True when `base_url` is `api.openai.com`; custom compatible endpoints keep the requested model.
+    official_openai: bool,
+}
+
+/// True when `base_url` points at the official OpenAI API.
+pub fn is_official_openai(base_url: &str) -> bool {
+    base_url.to_ascii_lowercase().contains("api.openai.com")
 }
 
 /// True when `model` is clearly another provider's name and OpenAI would reject it.
@@ -49,6 +56,7 @@ impl LLMProvider {
         Self {
             client,
             api_key,
+            official_openai: is_official_openai(&base_url),
             base_url: nasiko_config::openai_base_url_without_v1(&base_url).to_string(),
             routed: None,
             openai_model: std::env::var("OPENAI_MODEL")
@@ -62,6 +70,9 @@ impl LLMProvider {
     /// The request as sent to OpenAI directly, with a foreign model swapped out.
     fn direct_request(&self, request: &ChatCompletionRequest) -> ChatCompletionRequest {
         let mut req: ChatCompletionRequest = request.clone();
+        if !self.official_openai {
+            return req;
+        }
         let model: String = direct_openai_model(&req.model, &self.openai_model);
         if model != req.model {
             tracing::info!(requested = %req.model, sent = %model, "non-OpenAI model on direct OpenAI path; substituted");
@@ -285,6 +296,14 @@ pub enum ProviderError {
 #[cfg(test)]
 mod model_tests {
     use super::*;
+
+    #[test]
+    fn only_official_openai_endpoint_swaps_models() {
+        assert!(is_official_openai("https://api.openai.com/v1"));
+        assert!(is_official_openai("https://API.openai.com"));
+        assert!(!is_official_openai("https://api.deepseek.com/v1"));
+        assert!(!is_official_openai("http://localhost:4000"));
+    }
 
     #[test]
     fn openai_models_pass_through() {

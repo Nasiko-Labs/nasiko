@@ -585,6 +585,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.http_client.clone(),
                 state.config.git_clone_allowed_hosts.clone(),
                 state.config.capability_generator_model.clone(),
+                state.llm_backend.clone(),
             )
             .await;
         }

@@ -290,6 +290,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                     state.db.clone(),
                     state.http_client.clone(),
                     state.runtime.clone(),
+                    state.llm_backend.clone(),
                     agent.id,
                     agent_url.clone(),
                 ));
@@ -635,6 +636,7 @@ async fn deploy_internal_agent(
         state.db.clone(),
         state.http_client.clone(),
         state.runtime.clone(),
+        state.llm_backend.clone(),
         agent_id,
         agent_url,
     ));

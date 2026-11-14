@@ -47,6 +47,11 @@ impl PlatformLlm {
         &self.ctx.cfg.default_model
     }
 
+    /// Provider and model an [`PlatformLlm::embed`] call for `requested` resolves to.
+    pub fn resolve_embedding(&self, requested: &str) -> EmbeddingRoute {
+        embedding_route(&self.ctx.cfg, requested)
+    }
+
     /// The provider platform calls go to.
     pub fn default_provider(&self) -> &str {
         &self.ctx.cfg.default_provider
