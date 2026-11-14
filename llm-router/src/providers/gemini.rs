@@ -509,8 +509,11 @@ mod vertex_predict_tests {
         println!("project {project}, location {loc}");
         let http = reqwest::Client::new();
         let tokens = std::sync::Arc::new(
-            crate::providers::vertex_auth::TokenSource::from_credentials_json(http.clone(), &json_text)
-                .unwrap(),
+            crate::providers::vertex_auth::TokenSource::from_credentials_json(
+                http.clone(),
+                &json_text,
+            )
+            .unwrap(),
         );
         let token: String = tokens.token().await.expect("ADC token");
         println!("token ok ({} chars)", token.len());
@@ -526,10 +529,15 @@ mod vertex_predict_tests {
             .post(format!("{base}/models/gemini-2.5-flash:generateContent"))
             .bearer_auth(&token)
             .json(&json!({"contents":[{"role":"user","parts":[{"text":"Say ok"}]}]}))
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
         let chat_status = chat.status();
         let chat_body: String = chat.text().await.unwrap();
-        println!("gemini chat {chat_status}: {}", &chat_body[..chat_body.len().min(300)]);
+        println!(
+            "gemini chat {chat_status}: {}",
+            &chat_body[..chat_body.len().min(300)]
+        );
         let _ = chat_status;
 
         let provider = GeminiProvider::new(http.clone(), base.clone()).with_adc(tokens.clone());
@@ -537,12 +545,17 @@ mod vertex_predict_tests {
             .vertex_predict_embeddings(&["hello".into(), "world".into()], &live_emb_cfg())
             .await
             .expect("embeddings");
-        let dims: usize = emb.data[0].embedding.as_array().map(|a| a.len()).unwrap_or(0);
+        let dims: usize = emb.data[0]
+            .embedding
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
         println!("embeddings: {} vectors, {dims} dims", emb.data.len());
         assert_eq!(emb.data.len(), 2);
         assert!(dims > 0);
 
-        let ds_loc: String = std::env::var("VERTEX_LIVE_DEEPSEEK_LOCATION").unwrap_or("us-central1".into());
+        let ds_loc: String =
+            std::env::var("VERTEX_LIVE_DEEPSEEK_LOCATION").unwrap_or("us-central1".into());
         let ds: reqwest::Response = http
             .post(format!(
                 "https://{ds_loc}-aiplatform.googleapis.com/v1/projects/{project}/locations/{ds_loc}/endpoints/openapi/chat/completions"
@@ -552,7 +565,10 @@ mod vertex_predict_tests {
             .send().await.unwrap();
         let ds_status = ds.status();
         let ds_body: String = ds.text().await.unwrap();
-        println!("deepseek (openapi) {ds_status}: {}", &ds_body[..ds_body.len().min(300)]);
+        println!(
+            "deepseek (openapi) {ds_status}: {}",
+            &ds_body[..ds_body.len().min(300)]
+        );
     }
 
     fn live_emb_cfg() -> ResolvedEmbeddingConfig {
@@ -562,7 +578,10 @@ mod vertex_predict_tests {
     #[test]
     fn missing_values_is_parse_error() {
         let v: Value = json!({"predictions":[{"embeddings":{}}]});
-        assert!(matches!(parse_vertex_predict(&v, "m"), Err(ProviderError::Parse(_))));
+        assert!(matches!(
+            parse_vertex_predict(&v, "m"),
+            Err(ProviderError::Parse(_))
+        ));
         assert!(parse_vertex_predict(&json!({}), "m").is_err());
     }
 }
@@ -1772,7 +1791,10 @@ mod tests {
         }))
         .unwrap();
         let body = to_gemini_request(&req, &resolved()).unwrap();
-        assert_eq!(body["generationConfig"]["responseMimeType"], "application/json");
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
 
         let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
         let req: ChatRequest = serde_json::from_value(json!({
@@ -1782,7 +1804,10 @@ mod tests {
         }))
         .unwrap();
         let body = to_gemini_request(&req, &resolved()).unwrap();
-        assert_eq!(body["generationConfig"]["responseMimeType"], "application/json");
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
         assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
         assert!(body.get("response_format").is_none());
     }

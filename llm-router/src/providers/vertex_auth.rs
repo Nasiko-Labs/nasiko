@@ -111,7 +111,10 @@ impl TokenSource {
 
     async fn fetch(&self) -> Result<TokenResponse, ProviderError> {
         let request: reqwest::RequestBuilder = match &self.origin {
-            Origin::Metadata => self.http.get(METADATA_URL).header("Metadata-Flavor", "Google"),
+            Origin::Metadata => self
+                .http
+                .get(METADATA_URL)
+                .header("Metadata-Flavor", "Google"),
             Origin::File(creds) => {
                 let (uri, body): (String, String) = token_request(creds, now_secs())?;
                 self.http
@@ -160,7 +163,8 @@ fn read_adc_text() -> Result<Option<String>, ProviderError> {
             ProviderError::Parse(format!("GOOGLE_APPLICATION_CREDENTIALS={path}: {e}"))
         });
     }
-    let well_known: Option<String> = well_known_adc_path(env("CLOUDSDK_CONFIG").as_deref(), home.as_deref());
+    let well_known: Option<String> =
+        well_known_adc_path(env("CLOUDSDK_CONFIG").as_deref(), home.as_deref());
     Ok(well_known.and_then(|p| std::fs::read_to_string(p).ok()))
 }
 
@@ -311,7 +315,13 @@ mod tests {
             r#"{"type":"service_account","client_email":"a@b","private_key":"k"}"#,
         )
         .unwrap();
-        assert!(matches!(c, Credentials::ServiceAccount { token_uri: None, .. }));
+        assert!(matches!(
+            c,
+            Credentials::ServiceAccount {
+                token_uri: None,
+                ..
+            }
+        ));
     }
 
     #[test]

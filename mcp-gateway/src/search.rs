@@ -388,7 +388,10 @@ impl SemanticSearchIndex {
             "{:x}",
             Sha256::new().chain_update(query.as_bytes()).finalize()
         );
-        let cache_key = format!("mcp:qemb:{}:{}", self.client.model, &hash[..16]);
+        // Key by the provider/model that actually serves the embedding, so a
+        // provider switch never reuses vectors from another embedding space.
+        let identity: String = self.client.backend.embedding_identity(&self.client.model);
+        let cache_key = format!("mcp:qemb:{}:{}", identity, &hash[..16]);
 
         // Check Redis cache.
         if let Ok(mut conn) = self.redis.connection().await

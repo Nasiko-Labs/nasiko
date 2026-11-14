@@ -267,11 +267,14 @@ impl LlmClient {
         }
 
         if let Some(backend) = &self.backend {
-            let mut call = self.call.clone().unwrap_or(crate::llm_backend::LlmCallContext {
-                user_id: uuid::Uuid::nil(),
-                component: "maf".into(),
-                session_id: None,
-            });
+            let mut call = self
+                .call
+                .clone()
+                .unwrap_or(crate::llm_backend::LlmCallContext {
+                    user_id: uuid::Uuid::nil(),
+                    component: "maf".into(),
+                    session_id: None,
+                });
             // A step phase runs inside `MAF_STEP.scope`; label its row `maf:step<i>` so
             // `platform_spend` keeps the per-step split for router-recorded calls.
             let step: Option<i32> = MAF_STEP.try_with(|s| *s).ok().flatten();

@@ -254,8 +254,7 @@ pub async fn log_usage(
     let agent = Uuid::parse_str(&record.agent_id).ok();
     // A non-UUID agent id is a platform component label (`maf`, `titling`, ...): keep it as
     // the row's `agent_name` instead of collapsing every component into one empty name.
-    let component_label: Option<String> =
-        component_label(agent, &record.agent_id);
+    let component_label: Option<String> = component_label(agent, &record.agent_id);
     let estimated_input_tokens =
         estimated_prompt_tokens(record.failure, record.usage.as_ref(), record.request_bytes);
     let reported_usage = record.usage.is_some();

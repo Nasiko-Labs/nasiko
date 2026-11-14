@@ -291,7 +291,11 @@ mod tar_directory_tests {
             .find(|e| e.path().unwrap().ends_with("__main__.py"))
             .map(|e| e.header().mode().unwrap())
             .unwrap();
-        assert_eq!(mode & 0o044, 0o044, "mode {mode:o} not group/other readable");
+        assert_eq!(
+            mode & 0o044,
+            0o044,
+            "mode {mode:o} not group/other readable"
+        );
     }
 
     #[test]

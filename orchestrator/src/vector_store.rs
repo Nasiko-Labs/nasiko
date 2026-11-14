@@ -200,7 +200,15 @@ impl VectorStore {
         model: String,
         pool: &PgPool,
     ) -> Self {
-        Self::build_with(agents, String::new(), String::new(), model, Some(routed), pool).await
+        Self::build_with(
+            agents,
+            String::new(),
+            String::new(),
+            model,
+            Some(routed),
+            pool,
+        )
+        .await
     }
 
     async fn build_with(
@@ -678,6 +686,9 @@ mod tests {
         let a = agent_content_hash("agent-1 does things", "text-embedding-3-small");
         let b = agent_content_hash("agent-1 does things", "text-embedding-005");
         assert_ne!(a, b);
-        assert_eq!(a, agent_content_hash("agent-1 does things", "text-embedding-3-small"));
+        assert_eq!(
+            a,
+            agent_content_hash("agent-1 does things", "text-embedding-3-small")
+        );
     }
 }

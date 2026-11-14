@@ -273,7 +273,8 @@ impl RoutingEngine for OssRoutingEngine {
             })
             .collect();
 
-        let mut provider = LLMProvider::new(self.http_client.clone(), api_key, self.base_url.clone());
+        let mut provider =
+            LLMProvider::new(self.http_client.clone(), api_key, self.base_url.clone());
         if let Some(r) = &routed {
             provider = provider.with_backend(Arc::clone(&r.backend), r.call.clone());
         }

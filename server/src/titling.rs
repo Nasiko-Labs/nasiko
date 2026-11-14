@@ -42,10 +42,11 @@ async fn generate_title(
 ) -> Result<String, ProviderError> {
     // A user's saved OpenAI key is spent directly; otherwise the platform call goes
     // through the in-process router, which picks the provider and records usage.
-    let provider = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await
-    {
-        Some(key) => nasiko_orchestrator::providers::LLMProvider::from_env(state.http_client.clone())
-            .with_api_key(key),
+    let provider = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await {
+        Some(key) => {
+            nasiko_orchestrator::providers::LLMProvider::from_env(state.http_client.clone())
+                .with_api_key(key)
+        }
         None => nasiko_orchestrator::providers::LLMProvider::from_env(state.http_client.clone())
             .with_backend(
                 std::sync::Arc::clone(&state.llm_backend),

@@ -337,7 +337,10 @@ mod tests {
             default_model: "gemini-3.8-flash".into(),
             ..cfg()
         };
-        for start in [HashMap::new(), HashMap::from([("OPENAI_MODEL".to_owned(), " ".to_owned())])] {
+        for start in [
+            HashMap::new(),
+            HashMap::from([("OPENAI_MODEL".to_owned(), " ".to_owned())]),
+        ] {
             let mut env = start;
             inject_llm_env(&mut env, &ctx(), &c).unwrap();
             assert_eq!(env["OPENAI_MODEL"], "gemini-3.8-flash");
@@ -350,7 +353,10 @@ mod tests {
             default_model: "gemini-3.8-flash".into(),
             ..cfg()
         };
-        let mut env = HashMap::from([("OPENAI_MODEL".to_owned(), "deepseek-ai/deepseek-v4.1-flash-maas".to_owned())]);
+        let mut env = HashMap::from([(
+            "OPENAI_MODEL".to_owned(),
+            "deepseek-ai/deepseek-v4.1-flash-maas".to_owned(),
+        )]);
         inject_llm_env(&mut env, &ctx(), &c).unwrap();
         assert_eq!(env["OPENAI_MODEL"], "deepseek-ai/deepseek-v4.1-flash-maas");
     }

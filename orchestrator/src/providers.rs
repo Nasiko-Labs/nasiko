@@ -32,9 +32,17 @@ pub fn is_foreign_model(model: &str) -> bool {
     let m: String = model.trim().to_ascii_lowercase();
     m.is_empty()
         || m.contains('/')
-        || ["gemini", "claude", "deepseek", "text-embedding-0", "llama", "mistral", "qwen"]
-            .iter()
-            .any(|p| m.starts_with(p))
+        || [
+            "gemini",
+            "claude",
+            "deepseek",
+            "text-embedding-0",
+            "llama",
+            "mistral",
+            "qwen",
+        ]
+        .iter()
+        .any(|p| m.starts_with(p))
 }
 
 /// The model to send OpenAI directly: `requested` unless it is foreign, else `openai_model`.
@@ -187,14 +195,14 @@ impl LLMProvider {
         let start = Instant::now();
 
         if let Some((backend, call)) = &self.routed {
-            let body: serde_json::Value = serde_json::to_value(request)
-                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            let body: serde_json::Value =
+                serde_json::to_value(request).map_err(|e| ProviderError::Parse(e.to_string()))?;
             let reply: serde_json::Value = backend
                 .chat(call, body)
                 .await
                 .map_err(ProviderError::Network)?;
-            let resp: ChatCompletionResponse = serde_json::from_value(reply)
-                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            let resp: ChatCompletionResponse =
+                serde_json::from_value(reply).map_err(|e| ProviderError::Parse(e.to_string()))?;
             return Ok(completion_result(
                 resp,
                 start,
@@ -313,7 +321,13 @@ mod model_tests {
 
     #[test]
     fn foreign_models_are_swapped() {
-        for m in ["gemini-2.5-flash", "claude-haiku-4-5", "openai/gpt-4o", "deepseek-v4-pro", ""] {
+        for m in [
+            "gemini-2.5-flash",
+            "claude-haiku-4-5",
+            "openai/gpt-4o",
+            "deepseek-v4-pro",
+            "",
+        ] {
             assert_eq!(direct_openai_model(m, "gpt-6-luna"), "gpt-6-luna", "{m}");
         }
     }

@@ -123,7 +123,17 @@ pub async fn metered_llm<T>(
     // would add its tokens to the row twice.
     let record = !llm.is_routed();
     let fut = super::llm::MAF_STEP.scope(step_index, fut);
-    metered_call_inner(phase, db, execution_id, user_id, step_index, source, record, fut).await
+    metered_call_inner(
+        phase,
+        db,
+        execution_id,
+        user_id,
+        step_index,
+        source,
+        record,
+        fut,
+    )
+    .await
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
@@ -149,7 +159,17 @@ pub async fn metered_call<T, E>(
     source: UsageSource<'_>,
     fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
 ) -> Result<(T, LlmUsage), E> {
-    metered_call_inner(phase, db, execution_id, user_id, step_index, source, true, fut).await
+    metered_call_inner(
+        phase,
+        db,
+        execution_id,
+        user_id,
+        step_index,
+        source,
+        true,
+        fut,
+    )
+    .await
 }
 
 /// [`metered_call`]; `record` false keeps the span but skips the `trace_usage` write.

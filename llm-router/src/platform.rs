@@ -11,9 +11,7 @@ use std::time::Instant;
 
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
-use crate::ir::{
-    ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Message,
-};
+use crate::ir::{ChatRequest, ChatResponse, EmbeddingsRequest, EmbeddingsResponse, Message};
 use crate::providers::attempts::AttemptLog;
 use crate::providers::execute_embeddings_once;
 use crate::providers::fallback::{execute_chat_by, provider_deadline};
@@ -114,7 +112,10 @@ impl PlatformLlm {
             .clone()
             .ok_or_else(|| GatewayError::BadRequest("embedding model required".into()))?;
         let route: EmbeddingRoute = match provider {
-            Some(p) => EmbeddingRoute { provider: p.to_string(), model: requested },
+            Some(p) => EmbeddingRoute {
+                provider: p.to_string(),
+                model: requested,
+            },
             None => embedding_route(&self.ctx.cfg, &requested),
         };
         let provider: String = route.provider;
@@ -136,9 +137,14 @@ impl PlatformLlm {
         };
         let started = Instant::now();
         let mut attempts = AttemptLog::default();
-        let result =
-            execute_embeddings_once(&self.ctx.http, &self.ctx.cfg, &resolved, &req, &mut attempts)
-                .await;
+        let result = execute_embeddings_once(
+            &self.ctx.http,
+            &self.ctx.cfg,
+            &resolved,
+            &req,
+            &mut attempts,
+        )
+        .await;
         let scope = self.scope(call, "embedding");
         usage::spawn_log_failed(
             &self.ctx.db,
@@ -148,8 +154,16 @@ impl PlatformLlm {
             attempts.take_failed(),
         );
         let resp = result?;
-        self.log(call, "embedding", provider, model, resp.usage.clone(), started, None)
-            .await;
+        self.log(
+            call,
+            "embedding",
+            provider,
+            model,
+            resp.usage.clone(),
+            started,
+            None,
+        )
+        .await;
         Ok(resp)
     }
 
@@ -295,28 +309,28 @@ impl PlatformLlm {
         let pricing = self.ctx.pricing.clone();
         let ledger = self.ctx.ledger.clone();
         let record = UsageRecord {
-                owner_id: call.user_id.clone(),
-                agent_id: call.component.clone(),
-                operation_type,
-                provider,
-                model,
-                usage,
-                cached_tokens,
-                reasoning_tokens: None,
-                latency_ms: started.elapsed().as_millis() as i64,
-                streaming: false,
-                finish_reason,
-                flow_id: call.session_id.clone(),
-                attribution_source: None,
-                platform_paid: true,
-                routing_metadata: None,
-                compress_metadata: None,
-                brevity_metadata: None,
-                compact_tools_metadata: None,
-                compress_bytes: None,
-                compact_tools_bytes: None,
-                request_bytes: None,
-                failure: None,
+            owner_id: call.user_id.clone(),
+            agent_id: call.component.clone(),
+            operation_type,
+            provider,
+            model,
+            usage,
+            cached_tokens,
+            reasoning_tokens: None,
+            latency_ms: started.elapsed().as_millis() as i64,
+            streaming: false,
+            finish_reason,
+            flow_id: call.session_id.clone(),
+            attribution_source: None,
+            platform_paid: true,
+            routing_metadata: None,
+            compress_metadata: None,
+            brevity_metadata: None,
+            compact_tools_metadata: None,
+            compress_bytes: None,
+            compact_tools_bytes: None,
+            request_bytes: None,
+            failure: None,
         };
         let write = tokio::spawn(async move {
             usage::log_usage(db, pricing.as_ref(), ledger.as_ref(), record).await
@@ -436,9 +450,18 @@ mod transcribe_tests {
 
     #[test]
     fn route_per_provider() {
-        assert_eq!(transcription_route("openai"), Some(TranscriptionRoute::Whisper));
-        assert_eq!(transcription_route("vertex"), Some(TranscriptionRoute::ChatAudio));
-        assert_eq!(transcription_route("gemini"), Some(TranscriptionRoute::ChatAudio));
+        assert_eq!(
+            transcription_route("openai"),
+            Some(TranscriptionRoute::Whisper)
+        );
+        assert_eq!(
+            transcription_route("vertex"),
+            Some(TranscriptionRoute::ChatAudio)
+        );
+        assert_eq!(
+            transcription_route("gemini"),
+            Some(TranscriptionRoute::ChatAudio)
+        );
         assert_eq!(transcription_route("anthropic"), None);
         assert_eq!(transcription_route("openrouter"), None);
     }
@@ -458,7 +481,12 @@ mod transcribe_tests {
         let chat = transcription_chat_request(&req("audio/ogg"));
         assert_eq!(chat.temperature, Some(0.0));
         assert!(chat.model.is_none(), "no override leaves DEFAULT_MODEL");
-        let parts = chat.messages[0].content.as_ref().unwrap().as_array().unwrap();
+        let parts = chat.messages[0]
+            .content
+            .as_ref()
+            .unwrap()
+            .as_array()
+            .unwrap();
         assert_eq!(parts[0]["text"], TRANSCRIBE_PROMPT);
         assert_eq!(parts[1]["input_audio"]["data"], "AQID");
         assert_eq!(parts[1]["input_audio"]["format"], "ogg");
@@ -551,21 +579,28 @@ fn embedding_model_fits(model: &str, provider: &str) -> bool {
 pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> EmbeddingRoute {
     let default: &str = cfg.default_provider.as_str();
     if embedding_model_fits(requested, default) {
-        return EmbeddingRoute { provider: default.to_string(), model: requested.to_string() };
+        return EmbeddingRoute {
+            provider: default.to_string(),
+            model: requested.to_string(),
+        };
     }
     for p in ["openai", "gemini", "vertex"] {
-        if p != default
-            && embedding_model_fits(requested, p)
-            && !cfg.platform_key_for(p).is_empty()
+        if p != default && embedding_model_fits(requested, p) && !cfg.platform_key_for(p).is_empty()
         {
-            return EmbeddingRoute { provider: p.to_string(), model: requested.to_string() };
+            return EmbeddingRoute {
+                provider: p.to_string(),
+                model: requested.to_string(),
+            };
         }
     }
     let model: String = default_embedding_model(default)
         .map(str::to_string)
         .unwrap_or_else(|| requested.to_string());
     tracing::info!(requested, provider = default, model = %model, "embedding model swapped to provider default");
-    EmbeddingRoute { provider: default.to_string(), model }
+    EmbeddingRoute {
+        provider: default.to_string(),
+        model,
+    }
 }
 
 #[cfg(test)]
@@ -585,7 +620,13 @@ mod embedding_route_tests {
     #[test]
     fn gemini_only_swaps_openai_embedding_model() {
         let r: EmbeddingRoute = embedding_route(&cfg("gemini", "", "g"), "text-embedding-3-small");
-        assert_eq!(r, EmbeddingRoute { provider: "gemini".into(), model: "gemini-embedding-001".into() });
+        assert_eq!(
+            r,
+            EmbeddingRoute {
+                provider: "gemini".into(),
+                model: "gemini-embedding-001".into()
+            }
+        );
     }
 
     #[test]
@@ -597,7 +638,14 @@ mod embedding_route_tests {
 
     #[test]
     fn keyed_openai_serves_openai_model_when_chat_is_gemini() {
-        let r: EmbeddingRoute = embedding_route(&cfg("gemini", "sk", "g"), "text-embedding-3-small");
-        assert_eq!(r, EmbeddingRoute { provider: "openai".into(), model: "text-embedding-3-small".into() });
+        let r: EmbeddingRoute =
+            embedding_route(&cfg("gemini", "sk", "g"), "text-embedding-3-small");
+        assert_eq!(
+            r,
+            EmbeddingRoute {
+                provider: "openai".into(),
+                model: "text-embedding-3-small".into()
+            }
+        );
     }
 }

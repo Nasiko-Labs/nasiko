@@ -1302,9 +1302,7 @@ fn model_fits_provider(model: &str, provider: &str) -> bool {
         "vertex" => m.starts_with("gemini") || m.starts_with("gemma") || m.contains('/'),
         "anthropic" => m.starts_with("claude"),
         "openrouter" => m.contains('/'),
-        "openai" => {
-            m.starts_with("gpt") || m.starts_with('o') || m.starts_with("text-embedding-3")
-        }
+        "openai" => m.starts_with("gpt") || m.starts_with('o') || m.starts_with("text-embedding-3"),
         _ => false,
     }
 }
@@ -1318,7 +1316,10 @@ fn model_fits_provider(model: &str, provider: &str) -> bool {
 /// here while present in both of those, so a config naming it resolved to
 /// "not a registered custom provider" despite the rest of the stack supporting it.
 fn is_builtin_provider(provider: &str) -> bool {
-    matches!(provider, "openai" | "anthropic" | "gemini" | "vertex" | "openrouter")
+    matches!(
+        provider,
+        "openai" | "anthropic" | "gemini" | "vertex" | "openrouter"
+    )
 }
 
 /// The destination provider name, decided exactly as [`plan_config`] decides it:
@@ -2518,10 +2519,22 @@ mod shared_user_tests {
             platform_gemini_api_key: "g-key".into(),
             ..GatewayConfig::default()
         };
-        let old = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-4o-mini") });
+        let old = super::usable_hint(
+            &cfg,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("gpt-4o-mini"),
+            },
+        );
         assert_eq!(old.provider, Some("gemini"));
         assert_eq!(old.model, Some("gemini-2.5-flash"));
-        let injected = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gemini-2.0-flash") });
+        let injected = super::usable_hint(
+            &cfg,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("gemini-2.0-flash"),
+            },
+        );
         assert_eq!(injected.model, Some("gemini-2.0-flash"));
     }
 
@@ -2534,7 +2547,13 @@ mod shared_user_tests {
             platform_openai_api_key: "sk".into(),
             ..GatewayConfig::default()
         };
-        let h = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-4o-mini") });
+        let h = super::usable_hint(
+            &cfg,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("gpt-4o-mini"),
+            },
+        );
         assert_eq!(h.provider, Some("openai"));
         assert_eq!(h.model, Some("gpt-4o-mini"));
     }
@@ -2548,10 +2567,22 @@ mod shared_user_tests {
             platform_openai_api_key: "sk".into(),
             ..GatewayConfig::default()
         };
-        let h = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gemini-4-hydrogen") });
+        let h = super::usable_hint(
+            &cfg,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("gemini-4-hydrogen"),
+            },
+        );
         assert_eq!(h.provider, Some("gemini"));
         assert_eq!(h.model, Some("gemini-4-hydrogen"));
-        let kept = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-6.1-sol") });
+        let kept = super::usable_hint(
+            &cfg,
+            RequestHint {
+                provider: Some("openai"),
+                model: Some("gpt-6.1-sol"),
+            },
+        );
         assert_eq!(kept.provider, Some("openai"));
     }
 

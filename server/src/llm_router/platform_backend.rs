@@ -33,7 +33,10 @@ pub(crate) fn vectors(resp: EmbeddingsResponse, expected: usize) -> Result<Vec<V
     let mut data = resp.data;
     data.sort_by_key(|d| d.index);
     if data.len() != expected {
-        return Err(format!("expected {expected} embeddings, got {}", data.len()));
+        return Err(format!(
+            "expected {expected} embeddings, got {}",
+            data.len()
+        ));
     }
     data.into_iter()
         .map(|d| {
@@ -93,7 +96,9 @@ impl LlmBackend for RouterBackend {
         let req = TranscribeRequest {
             audio,
             mime_type: mime_type.to_string(),
-            model: std::env::var("TRANSCRIPTION_MODEL").ok().filter(|m| !m.trim().is_empty()),
+            model: std::env::var("TRANSCRIPTION_MODEL")
+                .ok()
+                .filter(|m| !m.trim().is_empty()),
         };
         let transcript: Transcript = self
             .llm

@@ -502,19 +502,17 @@ impl GatewayConfig {
         };
         // No explicit DEFAULT_PROVIDER: pick the first provider that has credentials, so a
         // Vertex-only (ADC) deployment never silently routes to an unkeyed `openai`.
-        if std::env::var("DEFAULT_PROVIDER").map_or(true, |v| v.trim().is_empty()) {
-            if let Some((provider, _)) = c.detect_default_provider() {
-                c.default_provider = provider.to_string();
-            }
+        if std::env::var("DEFAULT_PROVIDER").map_or(true, |v| v.trim().is_empty())
+            && let Some((provider, _)) = c.detect_default_provider()
+        {
+            c.default_provider = provider.to_string();
         }
         // DEFAULT_MODEL unset: use the chosen provider's built-in model, whether the
         // provider was explicit or detected, so `vertex` never receives an OpenAI model.
         let explicit_model: bool =
             std::env::var("DEFAULT_MODEL").is_ok_and(|v| !v.trim().is_empty());
-        if !explicit_model {
-            if let Some(model) = builtin_default_model(&c.default_provider) {
-                c.default_model = model.to_string();
-            }
+        if !explicit_model && let Some(model) = builtin_default_model(&c.default_provider) {
+            c.default_model = model.to_string();
         }
         c
     }
@@ -735,10 +733,22 @@ mod tests {
 
     #[test]
     fn normalize_openai_base_adds_v1_to_bare_origin() {
-        assert_eq!(normalize_openai_base("https://api.openai.com"), "https://api.openai.com/v1");
-        assert_eq!(normalize_openai_base("https://api.openai.com/"), "https://api.openai.com/v1");
-        assert_eq!(normalize_openai_base("https://api.openai.com/v1/"), "https://api.openai.com/v1");
-        assert_eq!(normalize_openai_base("http://127.0.0.1:1234/x/v1"), "http://127.0.0.1:1234/x/v1");
+        assert_eq!(
+            normalize_openai_base("https://api.openai.com"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            normalize_openai_base("https://api.openai.com/"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            normalize_openai_base("https://api.openai.com/v1/"),
+            "https://api.openai.com/v1"
+        );
+        assert_eq!(
+            normalize_openai_base("http://127.0.0.1:1234/x/v1"),
+            "http://127.0.0.1:1234/x/v1"
+        );
     }
 
     #[test]
@@ -779,9 +789,15 @@ mod tests {
         let mut cfg = GatewayConfig::default();
         assert_eq!(cfg.detect_default_provider(), None);
         cfg.vertex_project = "p1".into();
-        assert_eq!(cfg.detect_default_provider(), Some(("vertex", "gemini-4-hydrogen")));
+        assert_eq!(
+            cfg.detect_default_provider(),
+            Some(("vertex", "gemini-4-hydrogen"))
+        );
         cfg.platform_openai_api_key = "sk".into();
-        assert_eq!(cfg.detect_default_provider(), Some(("openai", "gpt-6.1-sol")));
+        assert_eq!(
+            cfg.detect_default_provider(),
+            Some(("openai", "gpt-6.1-sol"))
+        );
     }
 
     #[test]

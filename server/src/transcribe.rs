@@ -4,8 +4,10 @@
 //! else goes through the in-process LLM router, which picks the platform provider
 //! (OpenAI Whisper, or Gemini/Vertex with inline audio) and writes `trace_usage`.
 
-use axum::{Json, Router, extract::DefaultBodyLimit, extract::Multipart, extract::State, routing::post};
 use axum::http::StatusCode;
+use axum::{
+    Json, Router, extract::DefaultBodyLimit, extract::Multipart, extract::State, routing::post,
+};
 use serde::Serialize;
 
 use nasiko_llm_router::platform::MAX_TRANSCRIBE_BYTES;
@@ -49,7 +51,10 @@ fn check_size(len: usize) -> Result<(), ApiError> {
     if len > MAX_TRANSCRIBE_BYTES {
         return Err((
             StatusCode::PAYLOAD_TOO_LARGE,
-            format!("audio is larger than {} MB", MAX_TRANSCRIBE_BYTES / (1024 * 1024)),
+            format!(
+                "audio is larger than {} MB",
+                MAX_TRANSCRIBE_BYTES / (1024 * 1024)
+            ),
         ));
     }
     Ok(())
@@ -58,7 +63,10 @@ fn check_size(len: usize) -> Result<(), ApiError> {
 async fn read_upload(mut multipart: Multipart) -> Result<Upload, ApiError> {
     while let Some(field) = multipart.next_field().await.map_err(|e| {
         tracing::warn!(%e, "invalid multipart body");
-        (StatusCode::BAD_REQUEST, "invalid multipart body".to_string())
+        (
+            StatusCode::BAD_REQUEST,
+            "invalid multipart body".to_string(),
+        )
     })? {
         if field.name() != Some("file") {
             continue;
@@ -74,7 +82,11 @@ async fn read_upload(mut multipart: Multipart) -> Result<Upload, ApiError> {
             })?
             .to_vec();
         check_size(audio.len())?;
-        return Ok(Upload { audio, filename, mime_type });
+        return Ok(Upload {
+            audio,
+            filename,
+            mime_type,
+        });
     }
     Err((StatusCode::BAD_REQUEST, "No audio file provided".into()))
 }
@@ -89,24 +101,25 @@ async fn transcribe(
         .map_err(|(status, msg)| (status, msg.to_string()))?;
     let upload: Upload = read_upload(multipart).await?;
 
-    let text: String = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await {
-        Some(key) => whisper_with_user_key(&state, &key, upload).await?,
-        None => {
-            let call = LlmCallContext {
-                user_id,
-                component: COMPONENT.to_string(),
-                session_id: None,
-            };
-            state
-                .llm_backend
-                .transcribe(&call, upload.audio, &upload.mime_type)
-                .await
-                .map_err(|e| {
-                    tracing::error!(error = %e, "routed transcription failed");
-                    (StatusCode::BAD_GATEWAY, "transcription failed".to_string())
-                })?
-        }
-    };
+    let text: String =
+        match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await {
+            Some(key) => whisper_with_user_key(&state, &key, upload).await?,
+            None => {
+                let call = LlmCallContext {
+                    user_id,
+                    component: COMPONENT.to_string(),
+                    session_id: None,
+                };
+                state
+                    .llm_backend
+                    .transcribe(&call, upload.audio, &upload.mime_type)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!(error = %e, "routed transcription failed");
+                        (StatusCode::BAD_GATEWAY, "transcription failed".to_string())
+                    })?
+            }
+        };
     Ok(Json(TranscriptionResponse { text }))
 }
 
@@ -143,17 +156,26 @@ async fn whisper_with_user_key(
         .await
         .map_err(|e| {
             tracing::error!(%e, "transcription request failed");
-            (StatusCode::BAD_GATEWAY, "transcription request failed".to_string())
+            (
+                StatusCode::BAD_GATEWAY,
+                "transcription request failed".to_string(),
+            )
         })?;
     if !res.status().is_success() {
         let status = res.status();
         let body: String = res.text().await.unwrap_or_default();
         tracing::error!(%status, %body, "transcription API returned an error");
-        return Err((StatusCode::BAD_GATEWAY, "transcription API error".to_string()));
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "transcription API error".to_string(),
+        ));
     }
     let result: serde_json::Value = res.json().await.map_err(|e| {
         tracing::error!(%e, "invalid transcription response");
-        (StatusCode::BAD_GATEWAY, "invalid transcription response".to_string())
+        (
+            StatusCode::BAD_GATEWAY,
+            "invalid transcription response".to_string(),
+        )
     })?;
     Ok(result
         .get("text")
@@ -177,7 +199,10 @@ mod tests {
     #[test]
     fn upload_mime_keeps_audio_types() {
         assert_eq!(upload_mime(Some("audio/ogg")), "audio/ogg");
-        assert_eq!(upload_mime(Some("audio/webm;codecs=opus")), "audio/webm;codecs=opus");
+        assert_eq!(
+            upload_mime(Some("audio/webm;codecs=opus")),
+            "audio/webm;codecs=opus"
+        );
     }
 
     #[test]

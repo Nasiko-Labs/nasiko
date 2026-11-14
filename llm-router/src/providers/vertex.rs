@@ -135,7 +135,11 @@ mod tests {
         assert!(require_platform_paid(true).is_ok());
         assert!(matches!(
             require_platform_paid(false),
-            Err(ProviderError::Status { status: 400, retryable: false, .. })
+            Err(ProviderError::Status {
+                status: 400,
+                retryable: false,
+                ..
+            })
         ));
     }
 
@@ -147,7 +151,10 @@ mod tests {
 
     #[test]
     fn publisher_prefixed_ids_use_openapi_wire() {
-        assert_eq!(wire_for("deepseek-ai/deepseek-v4.1-flash-maas"), VertexWire::OpenApi);
+        assert_eq!(
+            wire_for("deepseek-ai/deepseek-v4.1-flash-maas"),
+            VertexWire::OpenApi
+        );
         assert_eq!(wire_for("openai/gpt-oss-120b-maas"), VertexWire::OpenApi);
         assert_eq!(wire_for("google/gemini-4-carbon"), VertexWire::OpenApi);
     }
