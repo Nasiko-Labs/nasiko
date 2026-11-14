@@ -193,7 +193,8 @@ async fn a_stream_the_provider_refuses_with_429_is_booked() {
     let caller = seed(&server, "failed-stream").await;
 
     let res = post(&server, "/v1/chat/completions", &caller, chat_body(true)).await;
-    assert_eq!(res.status(), 502);
+    // The router passes a provider 429 through so clients can back off and retry.
+    assert_eq!(res.status(), 429);
 
     assert_estimated_failure(
         &wait_for_failure(&server, caller.agent).await,
@@ -211,7 +212,8 @@ async fn an_anthropic_messages_call_that_fails_is_booked() {
     let caller = seed(&server, "failed-messages").await;
 
     let body = serde_json::json!({
-        "model": "claude-sonnet-4-5",
+        // The surface sets only the wire format; the prefix picks the provider.
+        "model": "anthropic/claude-sonnet-4-5",
         "max_tokens": 64,
         "messages": [{"role": "user", "content": "hello there"}]
     });
