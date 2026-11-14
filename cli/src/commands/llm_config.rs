@@ -5,7 +5,7 @@
 //! `GET`/`PATCH /api/agents/{id}/llm-config` (attach/detach + resolved view), plus
 //! `GET /api/llm-router/providers` (the catalog of valid provider/model values).
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use nasiko_utils::term;
 use serde_json::{Value, json};
 
@@ -461,10 +461,35 @@ pub fn set_default(config: &str) -> Result<()> {
     Ok(())
 }
 
+/// Said when an LLM config is attached to a coding agent the LLM router can't route.
+pub(crate) const ROUTING_UNSUPPORTED: &str = "Sorry, the LLM router doesn't support Cursor. \
+     You can try Claude Code, Codex or OpenCode instead (nasiko connect claude|codex|opencode).";
+
+/// Why `agent` (its `GET /agents/{id}` record) can't take an LLM config, if it can't: Cursor's model
+/// calls never pass through the LLM router (it reports sessions only), so a config attached to its
+/// agent would be saved and never used.
+fn routing_refusal(agent: &Value) -> Option<&'static str> {
+    // The server's own field first (catalog `coding_agent_integration_id`), then the registration's metadata.
+    let integration = agent
+        .get("coding_agent_integration_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            agent
+                .get("metadata")
+                .and_then(|m| m.get("integration_id"))
+                .and_then(Value::as_str)
+        });
+    (integration == Some("cursor")).then_some(ROUTING_UNSUPPORTED)
+}
+
 /// `nasiko llm-config attach <agent> <name|id>` — attach one of your configs to your agent.
 pub fn attach(agent: &str, config: &str, inbound_format: Option<String>) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(agent)?;
+    let record: Value = unwrap_data(client.get_json(&format!("/agents/{agent_id}"))?)?;
+    if let Some(reason) = routing_refusal(&record) {
+        bail!(reason);
+    }
     let id = resolve_config_id(&client, config)?;
     let body = json!({ "llm_config_id": id, "inbound_format": inbound_format });
     let _: Value = client.patch_json(&format!("/agents/{agent_id}/llm-config"), &body)?;
@@ -619,6 +644,34 @@ fn print_field(label: &str, value: Option<&Value>) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn cursor_agents_cannot_take_an_llm_config() {
+        let field = json!({"coding_agent_integration_id": "cursor", "metadata": {}});
+        let metadata =
+            json!({"metadata": {"source": "nasiko-cli-integration", "integration_id": "cursor"}});
+        for agent in [field, metadata] {
+            let reason = routing_refusal(&agent).expect("Cursor is refused");
+            assert!(reason.contains("doesn't support Cursor"), "{reason}");
+            assert!(
+                reason.contains("Claude Code, Codex or OpenCode"),
+                "{reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn routable_agents_take_an_llm_config() {
+        for id in ["claude", "codex", "opencode"] {
+            assert_eq!(
+                routing_refusal(&json!({"coding_agent_integration_id": id})),
+                None
+            );
+        }
+        // An ordinary agent: no integration at all.
+        assert_eq!(routing_refusal(&json!({"metadata": {}})), None);
+        assert_eq!(routing_refusal(&json!({})), None);
+    }
     use super::*;
 
     fn sample() -> Value {

@@ -685,7 +685,9 @@ fn refuse_routing_flags_without_routing(
     if options.mentions_routing() && targets.iter().all(|view| view.router.is_none()) {
         let names: Vec<&str> = targets.iter().map(|view| view.local.display_name).collect();
         bail!(
-            "{} supports session reporting only; --agent, --config and --no-mcp don't apply",
+            "Sorry, the LLM router doesn't support {0}: {0} supports session reporting only, so \
+             --agent, --config and --no-mcp don't apply. You can try Claude Code, Codex or OpenCode \
+             instead (nasiko connect claude|codex|opencode).",
             names.join(" and ")
         );
     }
@@ -4202,6 +4204,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("session reporting only"), "{error}");
+        // The test view's display name is its id; the real one is "Cursor".
+        assert!(
+            error.to_lowercase().contains("doesn't support cursor"),
+            "{error}"
+        );
+        assert!(error.contains("Claude Code, Codex or OpenCode"), "{error}");
         // Mixed with an agent that routes, they apply to that one.
         assert!(
             refuse_routing_flags_without_routing(

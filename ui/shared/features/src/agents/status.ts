@@ -84,6 +84,18 @@ interface HarnessMarkers {
   is_coding_agent?: boolean | null
 }
 
+/**
+ * The coding harness behind an agent (`claude`, `codex`, `opencode`, `cursor`): the detail's own field, else the
+ * registration's metadata (the list has only that); null for an ordinary agent.
+ */
+export function harnessIntegration(
+  a: HarnessMarkers & { coding_agent_integration_id?: string | null },
+): string | null {
+  if (a.coding_agent_integration_id) return a.coding_agent_integration_id
+  const meta = a.metadata as { integration_id?: unknown } | null | undefined
+  return isHarness(a) && typeof meta?.integration_id === 'string' ? meta.integration_id : null
+}
+
 /** A coding harness row: the list has only tags/metadata; the detail says so outright. */
 export function isHarness(a: HarnessMarkers): boolean {
   if (a.is_coding_agent) return true

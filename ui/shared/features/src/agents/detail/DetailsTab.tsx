@@ -63,6 +63,7 @@ export function DetailsTab({
               name: agent.name,
               displayName: agent.displayName,
               ownerId: agent.ownerId,
+              integrationId: agent.integrationId,
             }}
           />
           <Card className="gap-0 p-0">

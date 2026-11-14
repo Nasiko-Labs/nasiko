@@ -145,6 +145,25 @@ describe('choices', () => {
     expect(routingPatches(rec)).toEqual([{ llm_config_id: configId(2) }])
   })
 
+  it('gives both CLI commands, following the config chosen, and says a change reaches every session', async () => {
+    renderApp('/router')
+    await ready()
+    const sheet = await openSheet('Claude Code (admin@example.com)')
+    expect(within(sheet).getByText(copy.cliAttachLabel)).toBeInTheDocument()
+    expect(within(sheet).getByText(copy.cliDetachLabel)).toBeInTheDocument()
+    // The agent's own name (the harness seed's, not its display name), as the CLI resolves it.
+    expect(within(sheet).getByRole('button', { name: copy.copyCliDetach })).toBeInTheDocument()
+    const detach = within(sheet).getByText(/^nasiko llm-config detach /)
+    const raw = /^nasiko llm-config detach (\S+)$/.exec(detach.textContent ?? '')?.[1]
+    expect(raw).toMatch(/claude/)
+    await choose(within(sheet).getByRole('combobox', { name: copy.chooseConfig }), 'research-tiers')
+    expect(within(sheet).getByRole('button', { name: copy.copyCliAttach })).toBeInTheDocument()
+    expect(
+      within(sheet).getByText(`nasiko llm-config attach ${raw} research-tiers`),
+    ).toBeInTheDocument()
+    expect(within(sheet).getByText(copy.cliAppliesTo(30))).toBeInTheDocument()
+  })
+
   it('closing the sheet returns focus to its opener', async () => {
     renderApp('/router')
     await ready()
