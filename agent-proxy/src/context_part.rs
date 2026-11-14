@@ -75,12 +75,34 @@ pub fn tagging_for_method(method: &str) -> PartTagging {
 /// unmodified, so this composes with the existing fail-open posture without any special casing.
 pub fn append_context_part(message: &mut Value, text: &str, tagging: PartTagging) -> Option<()> {
     let parts = message.get_mut("parts")?.as_array_mut()?;
-    let part = match tagging {
+    parts.push(text_part(text, tagging));
+    Some(())
+}
+
+pub fn append_user_text(message: &mut Value, text: &str, tagging: PartTagging) -> Option<()> {
+    let parts = message.get_mut("parts")?.as_array_mut()?;
+    let user = parts
+        .iter_mut()
+        .find_map(|part| match part.get_mut("text") {
+            Some(Value::String(user)) => Some(user),
+            _ => None,
+        });
+    match user {
+        Some(user) if user.is_empty() => user.push_str(text),
+        Some(user) => {
+            user.push('\n');
+            user.push_str(text);
+        }
+        None => parts.insert(0, text_part(text, tagging)),
+    }
+    Some(())
+}
+
+fn text_part(text: &str, tagging: PartTagging) -> Value {
+    match tagging {
         PartTagging::Untagged => serde_json::json!({ "text": text }),
         PartTagging::Tagged => serde_json::json!({ "kind": "text", "text": text }),
-    };
-    parts.push(part);
-    Some(())
+    }
 }
 
 #[cfg(test)]
@@ -228,5 +250,121 @@ mod tests {
             parts[2]["text"],
             "## Known facts about this agent\nfact one"
         );
+    }
+
+    #[test]
+    fn user_text_goes_on_its_own_line_at_the_end_of_the_users_text_part() {
+        let mut message = serde_json::json!({
+            "parts": [{"text": "summarise it"}, {"raw": "AAAA", "filename": "q3.pdf"}]
+        });
+        append_user_text(
+            &mut message,
+            "[Attached file: q3.pdf]",
+            PartTagging::Untagged,
+        )
+        .unwrap();
+
+        let parts = message["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "summarise it\n[Attached file: q3.pdf]");
+        assert_eq!(
+            parts[1],
+            serde_json::json!({"raw": "AAAA", "filename": "q3.pdf"})
+        );
+    }
+
+    #[test]
+    fn user_text_stays_inside_the_current_message_of_a_history_glued_part() {
+        let mut message = serde_json::json!({
+            "parts": [{"kind": "text", "text": "old turn\n\nCurrent message: translate this"}]
+        });
+        append_user_text(&mut message, "[Attached file: a.pdf]", PartTagging::Tagged).unwrap();
+
+        let text = message["parts"][0]["text"].as_str().unwrap();
+        let current = &text[text.rfind("\n\nCurrent message: ").unwrap()..];
+        assert_eq!(
+            current,
+            "\n\nCurrent message: translate this\n[Attached file: a.pdf]"
+        );
+    }
+
+    #[test]
+    fn user_text_lands_in_the_first_text_part_and_leaves_context_parts_alone() {
+        let mut message = serde_json::json!({
+            "parts": [
+                {"raw": "AAAA", "filename": "a.png"},
+                {"text": "what is this?"},
+                {"text": "## Organization policy\nrule one"}
+            ]
+        });
+        append_user_text(
+            &mut message,
+            "[Attached file: a.png]",
+            PartTagging::Untagged,
+        )
+        .unwrap();
+
+        let parts = message["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[1]["text"], "what is this?\n[Attached file: a.png]");
+        assert_eq!(parts[2]["text"], "## Organization policy\nrule one");
+    }
+
+    #[test]
+    fn a_file_only_message_gets_the_user_text_as_its_first_part_in_the_messages_shape() {
+        for (tagging, expected) in [
+            (
+                PartTagging::Untagged,
+                serde_json::json!({"text": "[Attached file: a.png]"}),
+            ),
+            (
+                PartTagging::Tagged,
+                serde_json::json!({"kind": "text", "text": "[Attached file: a.png]"}),
+            ),
+        ] {
+            let mut message = serde_json::json!({
+                "parts": [{"raw": "AAAA", "filename": "a.png"}]
+            });
+            append_user_text(&mut message, "[Attached file: a.png]", tagging).unwrap();
+
+            let parts = message["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0], expected);
+        }
+    }
+
+    #[test]
+    fn an_empty_user_text_part_becomes_the_user_text_without_a_leading_newline() {
+        let mut message = serde_json::json!({"parts": [{"text": ""}]});
+        append_user_text(
+            &mut message,
+            "[Attached file: a.png]",
+            PartTagging::Untagged,
+        )
+        .unwrap();
+
+        assert_eq!(message["parts"][0]["text"], "[Attached file: a.png]");
+    }
+
+    #[test]
+    fn a_non_string_text_field_is_not_the_users_text_part() {
+        let mut message = serde_json::json!({"parts": [{"text": {"nested": true}}]});
+        append_user_text(
+            &mut message,
+            "[Attached file: a.png]",
+            PartTagging::Untagged,
+        )
+        .unwrap();
+
+        let parts = message["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["text"], "[Attached file: a.png]");
+    }
+
+    #[test]
+    fn user_text_with_no_parts_array_is_a_clean_miss() {
+        let mut message = serde_json::json!({"contextId": "ctx-1"});
+        assert!(append_user_text(&mut message, "x", PartTagging::Untagged).is_none());
+        assert_eq!(message, serde_json::json!({"contextId": "ctx-1"}));
     }
 }

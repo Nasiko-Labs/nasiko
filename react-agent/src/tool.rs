@@ -255,12 +255,11 @@ impl Tool for A2aTool {
         // this platform's real `a2a-lf` agents (proto dialect) reject an unexpected `"kind"`
         // field outright — confirmed live against a real deployed agent. `build_message_body`
         // re-tags this text per attempt, exactly like the primary message part already is.
-        let extra_text_parts: Vec<String> = self
-            .attachment_note
-            .iter()
-            .chain(self.outbound_prefix.iter())
-            .cloned()
-            .collect();
+        let extra_text_parts: Vec<String> = self.outbound_prefix.iter().cloned().collect();
+        let args = A2aToolArgs {
+            message: with_attachment_note(args.message, self.attachment_note.as_deref()),
+            context_id: args.context_id,
+        };
 
         // No per-call user credential: the invoked agent authenticates to
         // /api/mcp with its own deploy-time MCP_GATEWAY_TOKEN; the user binding
@@ -405,6 +404,14 @@ impl Tool for A2aTool {
         } else {
             Ok(text)
         }
+    }
+}
+
+fn with_attachment_note(message: String, note: Option<&str>) -> String {
+    match note {
+        None => message,
+        Some(note) if message.is_empty() => note.to_string(),
+        Some(note) => format!("{message}\n{note}"),
     }
 }
 
@@ -633,20 +640,33 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn the_attachment_note_joins_the_message_on_its_own_line_and_never_alone_with_a_newline() {
+        assert_eq!(with_attachment_note("hi".into(), None), "hi");
+        assert_eq!(
+            with_attachment_note("hi".into(), Some("[Attached file: a.png]")),
+            "hi\n[Attached file: a.png]"
+        );
+        assert_eq!(
+            with_attachment_note(String::new(), Some("[Attached file: a.png]")),
+            "[Attached file: a.png]"
+        );
+    }
+
     #[tokio::test]
-    async fn an_attachment_note_goes_out_as_its_own_part_before_the_policy() {
+    async fn an_attachment_note_goes_out_inside_the_message_text_and_the_policy_stays_its_own_part()
+    {
         let mut server = mockito::Server::new_async().await;
         let mock = server
             .mock("POST", "/")
             .match_body(mockito::Matcher::PartialJson(serde_json::json!({
                 "params": {"message": {"parts": [
-                    {"text": "hi"},
+                    {"text": "hi\n[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]"},
                     {"kind": "file", "file": {"name": "fact.png"}},
-                    {"kind": "text", "text": "[Attached file: fact.png (image/png, 64 B) nasiko-file://v1.x.y]"},
                     {"kind": "text", "text": "POLICY"}
                 ]}}
             })))
-            .match_request(|request| forwarded_part_count(request) == 4)
+            .match_request(|request| forwarded_part_count(request) == 3)
             .with_status(200)
             .with_body(a2a_response_body())
             .create_async()
