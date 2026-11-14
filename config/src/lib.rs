@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nasiko_utils::{env_bool, env_or, env_parse, required_env};
+use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
 mod seed_agents;
@@ -726,6 +726,17 @@ fn coding_agent_otlp_fallback() -> Option<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        // Checked together first, so a first start names every missing variable at once.
+        let mut required = vec![
+            "DATABASE_URL",
+            "REDIS_URL",
+            "SECRETS_ENCRYPTION_KEY",
+            "ADMIN_PASSWORD",
+        ];
+        if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
+            required.push("S3_SECRET_KEY");
+        }
+        require_all(&required)?;
         let tiering_enabled = env_bool("NASIKO_TIERING_ENABLED", false);
         let tiering_interval_secs = std::env::var("NASIKO_TIERING_INTERVAL_SECS")
             .ok()
@@ -1092,6 +1103,37 @@ impl Config {
         )
     }
 
+    /// Optional settings left unset that switch a feature off, each with what stops working.
+    /// Logged once at startup ([`Self::warn_unset_optional_keys`]) so the cause is on record
+    /// before the first request that needs it.
+    pub fn unset_optional_keys(&self) -> Vec<&'static str> {
+        let mut unset = Vec::new();
+        if self.agent_jwt_secret.trim().is_empty() {
+            unset.push("AGENT_JWT_SECRET unset: LLM gateway and coding sessions are disabled");
+        }
+        if self.agent_runtime == "kubernetes" && self.build_push_token.trim().is_empty() {
+            unset.push("BUILD_PUSH_TOKEN unset: in-cluster builds cannot push agent images");
+        }
+        if self
+            .openai_api_key
+            .as_deref()
+            .is_none_or(|k| k.trim().is_empty())
+        {
+            unset.push(
+                "OPENAI_API_KEY unset: no server LLM key, so routing and agent runs fail \
+                 until a user saves their own key",
+            );
+        }
+        unset
+    }
+
+    /// Log [`Self::unset_optional_keys`], one warning each.
+    pub fn warn_unset_optional_keys(&self) {
+        for problem in self.unset_optional_keys() {
+            tracing::warn!("{problem}");
+        }
+    }
+
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
     /// a `SecretsCrypto` (base64-decodes to exactly 32 bytes). Both the OSS
     /// HKDF-per-scope crypto and EE's `nasiko-secrets::SecretsCrypto::from_key`
@@ -1113,6 +1155,19 @@ impl Config {
     pub fn agent_wake_budget_secs(&self) -> u64 {
         wake_budget_secs(self.agent_startup_budget_secs, self.agent_call_timeout_secs)
     }
+}
+
+/// Stop startup over a configuration problem: one plain line per problem on stderr, then exit 1.
+/// A panic would print a thread name and a backtrace hint and read as a crash, not as a setting
+/// to fix.
+pub fn exit_invalid_config(problem: impl std::fmt::Display) -> ! {
+    let problem = problem.to_string();
+    tracing::error!(%problem, "configuration invalid");
+    eprintln!("error: configuration invalid:");
+    for line in problem.lines() {
+        eprintln!("  {line}");
+    }
+    std::process::exit(1)
 }
 
 /// Default `AGENT_STARTUP_BUDGET_SECS`.

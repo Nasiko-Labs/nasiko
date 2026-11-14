@@ -2610,7 +2610,12 @@ function deployHandlers(): HttpHandler[] {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
         return HttpResponse.json(
-          { success: false, message: 'GitHub OAuth not configured', status: 'disconnected' },
+          {
+            success: false,
+            message:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+            status: 'disconnected',
+          },
           { status: 503 },
         )
       return githubConnected()
@@ -2629,7 +2634,13 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/login', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return HttpResponse.json({ error: 'GitHub OAuth not configured' }, { status: 503 })
+        return HttpResponse.json(
+          {
+            error:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          },
+          { status: 503 },
+        )
       const d = getDeploy()
       // Tests complete the popup themselves (`deployMockState().setGithubConnected`).
       if (import.meta.env.MODE !== 'test')
@@ -2641,7 +2652,10 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/repositories', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 404)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const repos =
@@ -2661,7 +2675,10 @@ function deployHandlers(): HttpHandler[] {
     http.post('/api/github/clone', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 503)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const body = (await request.json().catch(() => ({}))) as {

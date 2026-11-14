@@ -2924,9 +2924,14 @@ async fn coding_agent_stream(
         turn.task_id,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
-        A2aDispatchError::Internal(e.to_string())
+    .map_err(|e| match e {
+        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
+            A2aDispatchError::Unavailable(message)
+        }
+        e => {
+            tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
+            A2aDispatchError::Internal(e.to_string())
+        }
     })
 }
 
@@ -2978,6 +2983,9 @@ async fn harness_agent_stream(
     .map_err(|e| match e {
         crate::coding::turn::CodingTurnError::Busy
         | crate::coding::turn::CodingTurnError::Superseded => A2aDispatchError::SessionBusy,
+        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
+            A2aDispatchError::Unavailable(message)
+        }
         e => {
             tracing::error!(error = %e, agent_id = %turn.agent.id, "harness dispatch turn failed to start");
             A2aDispatchError::Internal(e.to_string())
