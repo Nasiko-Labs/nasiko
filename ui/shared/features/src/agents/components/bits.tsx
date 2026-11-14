@@ -5,7 +5,7 @@
  */
 import { Link, type HistoryState } from '@tanstack/react-router'
 import { ChevronRight, ExternalLink, MessagesSquare, RotateCw } from 'lucide-react'
-import { useId, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button, asButton } from '@nasiko/ui/primitives/button'
 import {
@@ -207,6 +207,49 @@ export function Section({
     <Panel title={title} subtitle={subtitle} labelledBy={id} actions={action} className={className}>
       {children}
     </Panel>
+  )
+}
+
+const CLAMP = { 3: 'line-clamp-3', 4: 'line-clamp-4' } as const
+
+/**
+ * An agent's description, clamped to `lines` with Show more while it runs past them (NAS-1595). Measured, never
+ * guessed from its length: the same text fits in three lines on a desktop and takes seven on a phone.
+ */
+export function Description({ text, lines }: { text: string; lines: keyof typeof CLAMP }) {
+  const ref = useRef<HTMLParagraphElement>(null)
+  const id = useId()
+  const [open, setOpen] = useState(false)
+  const [clamped, setClamped] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || open) return
+    // 1 px of slack: a box that fits can still round a fraction of a line differently from its content.
+    const check = () => setClamped(el.scrollHeight - el.clientHeight > 1)
+    check()
+    const ro = new ResizeObserver(check)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [open, text])
+  return (
+    <div className="space-y-1">
+      <p ref={ref} id={id} className={cn('text-sm whitespace-pre-wrap', !open && CLAMP[lines])}>
+        {/* Line breaks are kept, but a run of blank lines is one paragraph break: typed gaps read as holes. */}
+        {text.trim().replace(/\n\s*\n\s*/g, '\n\n')}
+      </p>
+      {open || clamped ? (
+        <Button
+          variant="link"
+          size="sm"
+          aria-expanded={open}
+          aria-controls={id}
+          onClick={() => setOpen((o) => !o)}
+          className="h-auto p-0 text-sm pointer-coarse:min-h-11"
+        >
+          {open ? copy.showLess : copy.showMore}
+        </Button>
+      ) : null}
+    </div>
   )
 }
 

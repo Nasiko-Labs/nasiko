@@ -6,10 +6,10 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fmtMoney } from '@nasiko/ui/lib/format'
 import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
@@ -18,6 +18,7 @@ import { agentWhere } from '@nasiko/testing/agents'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, recordRequests, server } from '@nasiko/testing/setup'
 import { copy as mcpCopy } from '@nasiko/features/mcp/copy'
+import { Description } from './components/bits'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -159,6 +160,56 @@ describe('overview', () => {
     expect(within(summary).getByText('Your key · OPENAI_API_KEY')).toBeInTheDocument()
     await userEvent.click(within(summary).getByRole('button', { name: /All details/ }))
     expect(await screen.findByRole('tab', { name: 'Details', selected: true })).toBeInTheDocument()
+  })
+
+  it('a description longer than its clamp gets Show more on Overview and Details; one that fits gets none (NAS-1595)', async () => {
+    // jsdom has no layout: a clamped paragraph reads as 60 px tall with 100 px of text, any other as fitting.
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(100)
+    const client = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (
+      this: Element,
+    ) {
+      return this.tagName === 'P' && /\bline-clamp-\d/.test(this.className) ? 60 : 100
+    })
+    onTestFinished(() => {
+      scroll.mockRestore()
+      client.mockRestore()
+    })
+    const { router } = renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    const text = within(summary).getByText(`${running.display_name} handles`, { exact: false })
+    expect(text).toHaveClass('line-clamp-3')
+    await userEvent.click(within(summary).getByRole('button', { name: copy.showMore }))
+    expect(text).not.toHaveClass('line-clamp-3')
+    expect(within(summary).getByRole('button', { name: copy.showLess })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+
+    await router.navigate({
+      to: '/agents/$agentId',
+      params: { agentId: running.id },
+      search: { tab: 'details' },
+    })
+    const what = await screen.findByRole('region', { name: copy.whatItDoes })
+    const full = within(what).getByText(`${running.display_name} handles`, { exact: false })
+    expect(full).toHaveClass('line-clamp-4')
+    const more = within(what).getAllByRole('button', { name: copy.showMore })[0]!
+    expect(more).toHaveAttribute('aria-controls', full.id)
+    await userEvent.click(more)
+    expect(full).not.toHaveClass('line-clamp-4')
+
+    // Fits: no toggle.
+    client.mockReturnValue(100)
+    await router.navigate({ to: '/agents/$agentId', params: { agentId: running.id } })
+    const fits = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(within(fits).queryByRole('button', { name: copy.showMore })).toBeNull()
+  })
+
+  it('a description keeps its line breaks but folds runs of blank lines into one paragraph break', () => {
+    const { container } = render(
+      <Description text={'\n  One.\nTwo.\n\n\n  \n\nThree.\n\n'} lines={3} />,
+    )
+    expect(container.querySelector('p')!.textContent).toBe('One.\nTwo.\n\nThree.')
   })
 
   it("someone else's summary has the description but no routing (owner or superuser only)", async () => {
