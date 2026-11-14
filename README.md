@@ -1,7 +1,7 @@
 ![Nasiko](docs/assets/nasiko-runtime-banner.png)
 
-**Nasiko is the OpenRuntime for agents, coding harnesses, frameworks and tools.**<br />
-Find the coding agents already running. See what each one costs, by harness and model. Route them to the models you choose while developers keep using their existing harness workflows. Then deploy your own agents on the same runtime, with tools, policy and human approval built in.
+**Nasiko is the OpenRuntime for AI agents.**<br />
+See every coding agent your team runs and what it costs. Route it to the models you choose. Then deploy and govern your own agents on the same runtime.
 
 **[📚 Documentation](https://docs.nasiko.com)**  •  **[💬 Discord](https://discord.com/invite/HmnfkTfjFv)**  •  **[🐛 Report a bug](https://github.com/Nasiko-Labs/nasiko/issues)**
 
@@ -18,111 +18,73 @@ Find the coding agents already running. See what each one costs, by harness and 
 
 ## Table of Contents
 
-- [What is Nasiko?](#what-is-nasiko)
+- [Why Nasiko](#why-nasiko)
 - [Features](#features)
-- [Why this runs in the call path](#why-this-runs-in-the-call-path)
 - [Architecture](#architecture)
-- [Get started](#get-started)
-- [Coding agents: discover, report, route](#coding-agents-discover-report-route)
-- [Deploying your own agents](#deploying-your-own-agents)
-- [Environment variables](#environment-variables)
+- [Quick start](#quick-start)
+- [Coding agents](#coding-agents)
+- [Deploy your own agents](#deploy-your-own-agents)
 - [Troubleshooting](#troubleshooting)
-- [Project activity](#project-activity)
-- [Documentation and links](#documentation-and-links)
-- [Support](#support)
-- [Contributing](#contributing)
-- [License](#license)
+- [Community](#community)
 
-## What is Nasiko?
+## Why Nasiko
 
-Your developers are already running coding agents. Claude Code, Codex, Cursor, OpenCode, often
-more than one at a time, each with its own dashboard and its own billing unit. At the end of the
-month there is a real bill, and nobody can say who spent it, on which model, or what it produced.
+Your developers already run coding agents: Claude Code, Codex, Cursor, OpenCode, often several at
+once, each with its own dashboard and billing. At the end of the month nobody can say who spent
+what, on which model.
 
-Nasiko finds those agents, puts their spend in one schema, and hands back the model choice the
-harness made for you. The same runtime then deploys and governs the agents you build yourself:
-any A2A agent, with tools through one MCP gateway, permissions for agents as well as people, and
-human approval where it matters. An OpenRuntime belongs to no vendor inside it: your cost history,
-your policy and your model choice stay with you rather than with whichever harness you happened to
-install.
+Nasiko finds those agents, puts their spend in one place, and gives you back the model choice.
+Your cost history, policy and model choice stay with you, not with any one vendor.
 
-Two properties hold the rest of this together, and they are not the same thing.
+- **Non-invasive.** Discovery changes nothing. Reporting and routing are opt-in, with no wrapper
+  or SDK in your code.
+- **Non-intrusive.** After a one-time setup, developers keep using their harness exactly as before.
 
-**Non-invasive discovery** is about your architecture. Nasiko detects the harnesses you already
-run without changing their configuration. Reporting and routing are explicit opt-ins that add hooks
-or update harness settings, but they require no wrapper or SDK in your application code.
-
-**Non-intrusive operation** is about your day. After one-time setup, developers keep using the same
-harness commands and interfaces. OpenCode must be restarted after its plugin is installed, and
-Codex asks you to trust the new Nasiko hooks.
-
-![Nasiko Dashboard](docs/assets/ui-dashboard.png)<br />
-**Nasiko Dashboard**: see coding-agent sessions and spend, deploy agents, route traffic, manage
-tools, and watch traces.
+![Nasiko Dashboard](docs/assets/ui-dashboard.png)
 
 ## Features
 
-Three things break first when an agent estate grows: spend nobody can attribute, permissions nobody
-can enumerate, and a fleet nobody can run as one system. The feature set is grouped accordingly,
-starting with the coding agents you already have.
+### Your coding agents
 
-### Coding agents
-
-| Feature                | What it does                                                                                                                              |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Discovery**          | `nasiko agents discover` finds Claude Code, Codex, OpenCode and Cursor CLI on a machine. Read-only: no account, no server, nothing sent. |
-| **Session reporting**  | Hooks report each completed turn, so sessions, tokens and cost appear in one dashboard. Past sessions are imported too.                   |
-| **Model routing**      | Point a harness at Nasiko instead of its vendor. Claude Code can run on your OpenAI key; the harness never holds the real key.            |
+| Feature               | What it does                                                                                          |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| **Discovery**         | Finds Claude Code, Codex, OpenCode and Cursor CLI on a machine. Read-only: no account, nothing sent. |
+| **Session reporting** | Every completed turn, with its tokens and cost, lands in one dashboard. Past sessions are imported.  |
+| **Model routing**     | Point a harness at Nasiko instead of its vendor. Claude Code can run on your OpenAI key.             |
 
 ### TokenOps
 
-| Feature                        | What it does                                                                                                                                                                                    |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **LLM Router**                 | Agents get an `OPENAI_BASE_URL` and a short-lived identity token instead of a real key. The router resolves provider, model, and key server-side. No agent and no log ever sees a real API key. |
-| **Cost and token attribution** | Usage and cost are collected from `gen_ai.*` span attributes and broken out per agent and per model, rather than arriving as a single provider invoice you have to reverse-engineer.            |
-| **One trace per interaction**  | Every dispatch and proxy hop emits a real OTel span, so a request is one end-to-end trace across every agent hop, with cost attached.                                                           |
+| Feature                   | What it does                                                                                               |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| **LLM Router**            | Agents get a short-lived token, never a real API key. Provider, model and key are resolved on the server. |
+| **Cost attribution**      | Usage and cost per agent and per model, instead of one provider invoice you have to reverse-engineer.     |
+| **Token optimization**    | Compresses large payloads, compacts tool schemas and picks which chat history a request carries. Every saving is recorded. |
+| **One trace per request** | Every hop emits an OTel span, so a request is one end-to-end trace with its cost attached.               |
 
-### Policy, security, and governance
+### Policy and governance
 
-| Feature                                          | What it does                                                                                                                                                                                                     |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Single ingress, always proxied**               | Agents are never publicly reachable. Every agent-to-agent call is proxied through the server, so limits and tracing apply at every hop rather than only the first.                                               |
-| **Access control, for agents as well as people** | User-to-agent ownership and grants, plus an agent-to-agent allowlist. The two gate every proxy call independently.                                                                                               |
-| **MCP Gateway**                                  | One permanent URL gives every agent a merged, permission-filtered view of Composio toolkits and custom MCP servers, without the agent ever holding the credentials. An agent discovers only what it was granted. |
-| **Human in the loop**                            | Set a tool to **ask** and the agent pauses until someone approves it. Agents can also pause to ask a question, then resume the same task with the answer.                                                       |
-| **Flow guards**                                  | Redis-backed cascade limits (depth, fan-out, token budget, timeout, cycle detection) stop a loop between two agents from quietly consuming your budget.                                                          |
-| **Encrypted secrets**                            | Per-agent secrets are encrypted at rest with AES-256-GCM and injected only at deploy time, so they stay out of your repo.                                                                                        |
+| Feature                     | What it does                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------- |
+| **Single ingress**          | Agents are never publicly reachable. Every agent-to-agent call goes through the server.                 |
+| **Access control**          | Ownership and grants for people, plus an allowlist for which agents may call which.                     |
+| **MCP Gateway**             | One URL gives each agent the tools it was granted. Credentials stay with the gateway, never the agent. |
+| **Human in the loop**       | Set a tool to **ask** and the agent pauses until someone approves it.                                   |
+| **Flow guards**             | Limits on depth, fan-out, token budget and cycles stop runaway agent loops.                             |
+| **Encrypted secrets**       | Per-agent secrets are encrypted at rest with AES-256-GCM and injected at deploy.                        |
 
 ### Orchestration
 
-| Feature                             | What it does                                                                                                                                                     |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Deploy anything that speaks A2A** | `nasiko deploy` builds, pushes to the embedded registry, and runs it. No external registry required, and no SDK to adopt.                                        |
-| **Intelligent routing engine**      | A 3-stage pipeline: shortlist by embedding similarity, rerank on conversation context, then an LLM makes the final pick. Callers do not need to know your fleet. |
-| **Embedded OCI registry**           | Self-hosted, S3-backed, with layer dedup, so `nasiko push` and `nasiko deploy` need nothing external.                                                            |
-| **CLI-first, no lock-in**           | `nasiko new`, `run`, `chat`, `deploy`. Bring your own LLM provider, and change it later.                                                                         |
-
-## Why this runs in the call path
-
-There is no version of this that works from the outside, and saying so plainly is the shortest way
-to explain the architecture below.
-
-Every coding-agent vendor meters in its own private unit, and none of them offers an ingest
-endpoint for another vendor's usage. There is no invoice reconciliation that produces one number,
-and no procurement policy that produces one either. To attribute spend across vendors you have to
-be in the path where the calls happen.
-
-Enforcement has the same shape. A budget cap or a tool allowlist is only real if it sits where the
-request goes, rather than in a review meeting or in an environment variable a developer can unset.
-
-That constraint is what the next section is a picture of.
+| Feature                     | What it does                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------ |
+| **Deploy any A2A agent**    | `nasiko deploy` builds, pushes and runs it. No proprietary format and no SDK.                    |
+| **Routing engine**          | Picks the right agent for a request in three stages: embedding shortlist, rerank, LLM selection. |
+| **Built-in registry**       | An embedded, S3-backed OCI registry, so nothing external is needed to push and deploy.           |
 
 ## Architecture
 
-Nasiko is a **single process** with no separate gateway. Every inter-agent call is proxied back
-through the server, the single chokepoint where flow limits, ACLs, and observability are enforced.
-Durable state lives in **Postgres**, **Redis**, and **S3** (RustFS), with optional observability via
-**Tempo / Loki / the OTel Collector**.
+To attribute spend across vendors and enforce a budget or a tool rule, Nasiko has to sit where the
+calls happen. So it runs as a **single server process** that every agent call passes through, with
+state in **Postgres**, **Redis** and **S3** (RustFS) and traces in **Tempo / Loki / OTel**.
 
 ```mermaid
 flowchart LR
@@ -190,19 +152,15 @@ flowchart LR
     OTEL --> LOKI
 ```
 
-> Every request to an agent is either dispatched by the routing engine or proxied generically, and both
-> paths originate **inside** the server. Agents never receive a direct, public request, and both call
-> back out into the LLM Router and MCP Gateway rather than holding real API keys or tool credentials.
+Agents never receive a direct public request, and they call the LLM Router and MCP Gateway instead
+of holding real API keys or tool credentials.
 
-## Get started
+## Quick start
 
-| You need                                             | For                                                         |
-| ---------------------------------------------------- | ----------------------------------------------------------- |
-| Nothing but the CLI                                  | Discovering coding agents on a machine                      |
-| [Docker](https://docs.docker.com/get-docker/) with Compose V2 (`docker compose`, not the legacy `docker-compose`) | Running the server and dashboard |
-| [Rust](https://rustup.rs) 1.85+                      | Only to build the CLI or server from source                 |
+You need [Docker](https://docs.docker.com/get-docker/) with Compose V2 for the server. The CLI alone
+is enough to discover coding agents.
 
-### 1. Install the CLI
+**1. Install the CLI**
 
 ```sh
 # macOS and Linux
@@ -212,93 +170,70 @@ curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash
 irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
 ```
 
-Check it with `nasiko --version`. Installer options (version pinning, install folder, mirrors) are
-in [Install and connect](https://docs.nasiko.com/install).
+Or build it from source with Rust 1.85+: `cargo install --path cli/ --force`.
 
-**Or build from source** with Rust 1.85+: `cargo install --path cli/ --force` from a clone of this
-repo. Cargo puts the binary in `~/.cargo/bin`.
-
-You can already run `nasiko agents discover` now, before any server exists. See
-[Discover](#discover).
-
-### 2. Run the server with Docker Compose
+**2. Start the server**
 
 ```sh
 git clone https://github.com/Nasiko-Labs/nasiko.git && cd nasiko
-cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
+cp .env.example .env
 docker compose up -d
 ```
 
-This builds the server image and starts the full stack:
-**Postgres · Redis · RustFS (S3) · OTel Collector · Tempo · Loki · nasiko-server**. The first
-build compiles Rust inside Docker and takes a few minutes; later builds are fast.
+The first build compiles the server inside Docker and takes a few minutes. Then open
+**[http://localhost:8080](http://localhost:8080)** and log in as `admin` / `changeme`.
 
-Open **[http://localhost:8080](http://localhost:8080)** and log in with `ADMIN_USERNAME` /
-`ADMIN_PASSWORD` (default `admin` / `changeme`).
+The `.env` defaults work on your own machine. Before anyone else can reach the server, change these:
 
-**About `.env`.** The template's development values work as-is on your own machine. Before anyone
-else can reach the server, replace them:
+| Variable                 | Set it to                                                    |
+| ------------------------ | ------------------------------------------------------------ |
+| `SECRETS_ENCRYPTION_KEY` | `openssl rand -base64 32`, once. A new key can't read old secrets. |
+| `JWT_SECRET`             | `openssl rand -base64 48`                                    |
+| `AGENT_JWT_SECRET`       | another `openssl rand -base64 48`, different from the one above |
+| `ADMIN_PASSWORD`         | anything but `changeme`                                      |
+| `OPENAI_API_KEY`         | your key, for dashboard chat, the routing engine and deployed agents |
 
-- `SECRETS_ENCRYPTION_KEY`: `openssl rand -base64 32`. Keep it once set; existing secrets can't be
-  decrypted with a new key.
-- `JWT_SECRET` and `AGENT_JWT_SECRET`: two **different** values from `openssl rand -base64 48`.
-  `AGENT_JWT_SECRET` signs the short-lived tokens coding agents and deployed agents use for routing.
-- `ADMIN_PASSWORD`: anything but `changeme`.
+After editing `.env`, run `docker compose up -d` again. Every variable is described in
+[`server/.env.example`](server/.env.example).
 
-Set `OPENAI_API_KEY` for features that call a model with the server's default configuration, such
-as dashboard chat, the routing engine and deployed agents. The dashboard loads without it.
-
-Compose sets the infrastructure and telemetry URLs (`DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`,
-`MCP_GATEWAY_PUBLIC_URL`, `CODING_AGENT_OTLP_ENDPOINT` and others) itself; don't replace them with
-host addresses. After changing `.env`, run `docker compose up -d` again. `docker compose restart`
-doesn't reload it.
-
-```sh
-docker compose logs -f server   # follow server logs
-docker compose down             # stop everything
-docker compose up -d --build    # rebuild after pulling new changes
-```
-
-**Per platform:**
-
-- **macOS and Windows:** install [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-  and wait until the engine is running.
-- **Linux:** install [Docker Engine and the Compose plugin](https://docs.docker.com/engine/install/),
-  then add yourself to the `docker` group: `sudo usermod -aG docker "$USER"` and log out and back in.
-  Native Docker doesn't provide `host.docker.internal`; see [Troubleshooting](#troubleshooting) if
-  a deployed agent can't reach the MCP gateway.
-
-### 3. Connect the CLI and sign in
+**3. Connect the CLI**
 
 ```sh
 nasiko connect http://localhost:8080
-nasiko auth login        # ADMIN_USERNAME / ADMIN_PASSWORD from .env
+nasiko auth login
 ```
 
-Signing in doesn't change your coding tools. From here, choose what to do next:
+Now [measure and route your coding agents](#coding-agents) or
+[deploy your own](#deploy-your-own-agents).
 
-- **[Measure and route your coding agents](#coding-agents-discover-report-route)**
-- **[Deploy your own agents](#deploying-your-own-agents)**
+### Run from source
 
-> Want hot-reload or to work on Nasiko itself? See [CONTRIBUTING.md](CONTRIBUTING.md) for running
-> the server natively with `just`.
+Working on Nasiko itself? Run the server natively with hot-reload. This needs Rust 1.85+,
+[`just`](https://github.com/casey/just) and Docker for the backing services:
 
-## Coding agents: discover, report, route
+```sh
+just infra    # Postgres, Redis, RustFS and the OTel stack in Docker
+just dev      # the server, rebuilt on every change (cargo install cargo-watch)
+```
 
-Nasiko manages the coding-agent CLIs already installed on your machine: it can record what they
-do, route their LLM calls, or both. The two are independent opt-ins.
+Toolchain setup, tests and code layout are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-| Harness     | Discovery and session reporting | LLM routing |
-| ----------- | ------------------------------- | ----------- |
-| Claude Code | yes                             | yes         |
-| Codex       | yes                             | yes         |
-| OpenCode    | yes                             | yes         |
-| Cursor CLI  | yes                             | not yet     |
+## Coding agents
 
-Those four are supported today, and we're adding more. Want another one?
-[Open an issue](https://github.com/Nasiko-Labs/nasiko/issues).
+Reporting and routing are separate opt-ins. Use either or both.
+
+| Harness     | Discovery and reporting | Model routing |
+| ----------- | ----------------------- | ------------- |
+| Claude Code | yes                     | yes           |
+| Codex       | yes                     | yes           |
+| OpenCode    | yes                     | yes           |
+| Cursor CLI  | yes                     | not yet       |
+
+Want another harness? [Open an issue](https://github.com/Nasiko-Labs/nasiko/issues).
 
 ### Discover
+
+Works before you have a server or an account:
 
 ```sh
 nasiko agents discover
@@ -312,233 +247,109 @@ opencode   -          no          -         ~/.config/opencode
 cursor     yes        no          v2        ~/.cursor
 ```
 
-`DETECTED` means the harness is on this machine; `CONNECTED` means it already reports to Nasiko.
-Discovery reads your machine, prints what it finds, and exits. It changes no settings, needs no
-account, and sends nothing off the machine.
+### Report sessions
 
-### Session reporting
-
-Once you're signed in, one command connects every detected harness and imports its past sessions
-in the background:
+One command connects every detected harness and imports its past sessions:
 
 ```sh
 nasiko agents setup
+nasiko sessions                  # see what was recorded
 ```
 
-Setup installs Nasiko's reporting hooks for each detected harness that isn't connected yet, with
-prompt and response text included. To keep text out for a harness, install it yourself first;
-setup keeps that choice:
+Add `nasiko agents install claude --no-content` first to keep prompt and response text out.
+Codex asks you to trust the new hooks on its next start, and OpenCode needs a restart.
+[How reporting works](https://docs.nasiko.com/coding-agents/session-reporting).
 
-```sh
-nasiko agents install claude --no-content   # omit prompt and response text
-nasiko agents setup                         # connect the rest and import past sessions
-```
+### Route models
 
-Codex asks you to trust the new hooks the next time it starts, and OpenCode needs a restart.
-
-Completed turns are queued locally and delivered to the server, so a server that's briefly
-unreachable costs you nothing. Finish one turn in a connected harness, then check:
-
-```sh
-nasiko sessions                  # recorded sessions
-nasiko agents status             # import progress
-nasiko agents sync               # flush queued events now
-nasiko agents uninstall <agent>  # remove hooks; recorded history stays
-```
-
-How the hooks, queue and cost tracking work, per harness:
-[Session reporting](https://docs.nasiko.com/coding-agents/session-reporting).
-
-### Routing: give the harness back the model choice
-
-Some harnesses arrive tied to a provider by default. Claude Code defaults to Anthropic; Codex
-defaults to OpenAI. That choice arrived with the tool rather than with you.
-
-Register a provider and key with Nasiko once, then point a harness at Nasiko instead of at its
-vendor. Inbound wire protocol and outbound provider are decoupled, so an Anthropic-format request
-from Claude Code is served by your OpenAI key:
+Register a provider key once, then point a harness at Nasiko. Claude Code's requests can then be
+served by your OpenAI key:
 
 ```sh
 nasiko llm-config create --name my-openai --provider openai --model gpt-4o \
   --api-key-secret OPENAI_API_KEY --secret-value "$OPENAI_API_KEY"
 nasiko connect claude --config my-openai
-nasiko status claude             # show the current binding
 ```
 
-`nasiko connect codex` and `nasiko connect opencode` work the same way, and
-`nasiko disconnect <agent>` restores the original settings. The key is stored encrypted on the
-server; the harness gets a short-lived token instead.
+`connect codex` and `connect opencode` work the same way, and `nasiko disconnect <agent>` undoes
+it. The key stays encrypted on the server; the harness only gets a short-lived token. Settings are
+per user, so connecting affects every session of that harness on the machine.
+[What `connect` changes](https://docs.nasiko.com/coding-agents/routing).
 
-> Claude Code and OpenCode settings are per-user, global files. Connecting affects every Claude
-> Code or OpenCode process on the machine, not just the current project.
+## Deploy your own agents
 
-What each `connect` changes is in [Route models](https://docs.nasiko.com/coding-agents/routing),
-and the full `llm-config` reference is in [LLM configs](https://docs.nasiko.com/models/llm-configs).
-
-## Deploying your own agents
-
-Past the coding agents you already run, Nasiko deploys agents you write yourself. They can be in
-Python, Rust, Go, or TypeScript. At runtime they must speak
-[A2A](https://github.com/a2aproject/a2a-spec) v1.0: Nasiko sends the `A2A-Version: 1.0` header on
-every outbound A2A request. Source deployments also include an `AgentCard.json` and a `Dockerfile`.
-There is no proprietary agent format and no SDK to adopt. See
-[`docs/A2A_PROTOCOL.md`](docs/A2A_PROTOCOL.md) for the detail.
-
-`nasiko deploy` builds the image locally, so it needs Docker. `nasiko upload` instead sends source
-to the server, which builds and deploys it.
-
-### Deploy your first agent
-
-With the server running and the CLI signed in ([Get started](#get-started)):
+Nasiko runs any agent that speaks [A2A](https://github.com/a2aproject/a2a-spec) v1.0, in Python,
+Rust, Go or TypeScript. There is no SDK to adopt.
 
 ```sh
-nasiko new openai my-agent && cd my-agent  # scaffold from a template
-nasiko deploy .                            # build, push, and deploy
-nasiko chat --agent my-agent "Hello there" # talk to your agent
+nasiko new openai my-agent && cd my-agent   # scaffold from a template
+nasiko deploy .                             # build, push and deploy
+nasiko chat --agent my-agent "Hello there"
 ```
 
-You can also deploy agents from the dashboard: upload source, import from GitHub, or pull from the
-artifact registry.
+`nasiko deploy` builds locally with Docker. `nasiko upload` sends the source and the server builds it.
+You can also deploy from the dashboard: upload source, import from GitHub, or pull from the registry.
 
-### Handy CLI commands
+| Command                                      | What it does                              |
+| -------------------------------------------- | ----------------------------------------- |
+| `nasiko ps`                                  | List running agents                       |
+| `nasiko logs <agent> -f`                     | Follow an agent's logs                    |
+| `nasiko stop` / `start` / `restart` / `scale` | Agent lifecycle                          |
+| `nasiko rm --name <agent>`                   | Remove an agent                           |
+| `nasiko secrets set`                         | Store encrypted per-agent secrets         |
+| `nasiko mcp`                                 | Manage tools and tool permissions         |
+| `nasiko observe`                             | Sessions, traces, stats and spend         |
 
-| Command                                           | Description                                                           |
-| ------------------------------------------------- | --------------------------------------------------------------------- |
-| `nasiko connect <url>`                            | Register a server and switch to it                                    |
-| `nasiko auth login`                               | Authenticate with the active server                                   |
-| `nasiko new [template] [name]`                    | Scaffold a new agent project                                          |
-| `nasiko build` / `nasiko run`                     | Build the agent image / build + run it locally                        |
-| `nasiko push` / `nasiko deploy <image>`           | Push image / build-push-deploy to the server                          |
-| `nasiko upload [source]`                          | Upload source; the server builds it (no local Docker)                 |
-| `nasiko ps`                                       | List running agents                                                   |
-| `nasiko logs <agent> -f`                          | Stream (and follow) agent logs                                        |
-| `nasiko stop` / `start` / `restart` / `scale <n>` | Agent lifecycle                                                       |
-| `nasiko rm --name <agent>`                        | Terminate + deregister an agent (positional `id` only accepts a UUID) |
-| `nasiko chat --agent <agent> [message]`          | Interactive or one-shot A2A chat                                      |
-| `nasiko secrets set`                              | Configure encrypted per-agent secrets                                 |
-| `nasiko mcp`                                      | Manage MCP Gateway connectors and tool permissions                    |
-| `nasiko observe`                                  | Observability: sessions, traces, spans, stats, FinOps                 |
-| `nasiko maf`                                      | Multi-agent flow workflows (create/run/inspect)                       |
-| `nasiko registry`                                 | Browse the artifact registry                                          |
-| `nasiko github`                                   | GitHub integration (status/repos/connect/disconnect/clone)            |
+Run `nasiko <command> --help` for every option.
 
-Run `nasiko --help` for the full, workflow-ordered command list.
+### Give your agent tools
 
-### Give your agent MCP tools
-
-Every deployed agent can call tools through the **MCP Gateway**, a single JSON-RPC endpoint that
-merges Composio toolkits and your own MCP servers into one permission-filtered catalog. The agent
-never holds a third-party credential: it authenticates to the gateway with the `MCP_GATEWAY_TOKEN`
-injected at deploy, and the gateway calls the tool with the user's stored connection.
-
-An agent only sees the tools it was granted:
+Each deployed agent reaches its tools through the MCP Gateway and only sees what it was granted:
 
 ```sh
-nasiko mcp catalog                                         # what can be connected
-nasiko mcp connect --toolkit github                        # connect your account (OAuth/API key)
-nasiko mcp agent-tools enable my-agent <connector-id>      # turn a connector on for my-agent
+nasiko mcp connect --toolkit github                                         # connect your account
+nasiko mcp agent-tools enable my-agent <connector-id>                       # grant it to my-agent
 nasiko mcp agent-tools set-rule my-agent <connector-id> "GITHUB_DELETE_*" ask   # allow | ask | block
-nasiko mcp agent-tools tools my-agent <connector-id>       # catalog + effective stance per tool
 ```
 
-Bring your own MCP server with `nasiko mcp connector register` (a URL), or `upload` /
-`upload-github` to have the platform build and host it.
+Bring your own MCP server with `nasiko mcp connector register <name> <url>`.
+[Connect your agent to the gateway](https://docs.nasiko.com/build/mcp/agent-integration).
 
-Making your agent a gateway client (authentication, forwarding `traceparent`, and the error codes
-that pause a call) is covered in
-[Connect your agent to the MCP gateway](https://docs.nasiko.com/build/mcp/agent-integration).
-Gateway internals are in [`docs/MCP_GATEWAY_DESIGN.md`](docs/MCP_GATEWAY_DESIGN.md).
+### Pause for a human
 
-### Human in the loop
-
-An agent can stop mid-task and wait for a person, then resume the **same task** with their answer.
-This is plain A2A with no Nasiko SDK: the agent ends its turn in `TASK_STATE_INPUT_REQUIRED` (it
-needs information it shouldn't guess) or `TASK_STATE_AUTH_REQUIRED` (a tool approval or connector
-re-auth), and Nasiko records the request, shows it in dashboard **Chat** and `nasiko chat`, and
-sends the reply back to the agent.
-
-How to pause, resume, offer choices, and pause for tool approvals:
+An agent can stop mid-task to ask a question or wait for a tool approval, then resume the same task
+with the answer. It's plain A2A, shown in dashboard **Chat** and `nasiko chat`.
 [Pause for a human](https://docs.nasiko.com/build/human-in-the-loop).
 
-> [`agents/general-assistant-1.1.1.zip`](agents/general-assistant-1.1.1.zip) is a complete working
-> example of both sections above: a Python `a2a-sdk` agent that uses whatever MCP tools it is
-> granted, asks instead of guessing, and pauses for tool approvals. Deploy it with
-> `nasiko upload agents/general-assistant-1.1.1.zip`, then type `hitl input test`,
-> `hitl auth test`, `hitl options test` or `hitl multiselect test` to try each pause without an LLM
-> key.
-
-## Environment variables
-
-Configuration is env-driven. [`.env.example`](.env.example) is the Compose quick start and
-[`server/.env.example`](server/.env.example) is the annotated reference for every variable the
-server reads. `docker-compose.yml` supplies infrastructure and telemetry URLs and the agent network;
-don't replace those with host-local addresses in the Compose setup.
-
-| Variable                                                                       | Purpose                                                   | Default                                               |
-| ------------------------------------------------------------------------------ | --------------------------------------------------------- | ----------------------------------------------------- |
-| `OPENAI_API_KEY`                                                               | LLM provider for the router, chat and agents              | optional                                              |
-| `SECRETS_ENCRYPTION_KEY`                                                       | Base64 32-byte AES-256-GCM key                            | **required**; dev value in `.env.example`             |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD`                                            | Bootstrap admin account                                   | `admin` / `changeme`                                  |
-| `JWT_SECRET`                                                                   | Signs user-login tokens                                   | **required**; dev value in `.env.example`             |
-| `AGENT_JWT_SECRET`                                                             | Signs agent identity tokens for LLM routing and the MCP gateway | **required for routing**; dev value in `.env.example` |
-| `S3_BUCKET` / `S3_ACCESS_KEY` / `S3_SECRET_KEY` / `S3_REGION`                  | S3 settings; credentials must match RustFS                | supplied by `.env.example`                            |
-| `OCI_STORAGE_BUCKET`                                                           | Bucket for embedded OCI registry blobs and manifests      | `nasiko-artifacts`                                    |
-| `AGENT_RUNTIME`                                                                | Container runtime (`docker` in OSS)                       | `docker`                                              |
-| `DATABASE_URL` / `REDIS_URL` / `S3_ENDPOINT`                                   | Infra connections                                         | set by Compose                                        |
-| `MCP_GATEWAY_PUBLIC_URL`                                                       | Public URL injected into agents for the MCP gateway       | set by Compose                                        |
-| `CODING_AGENT_OTLP_ENDPOINT`                                                   | OTLP/HTTP export for coding-agent traces, tokens and cost | set by Compose; a host-run server must set it         |
-| `COMPOSIO_API_KEY`                                                             | Composio platform (MCP toolkits)                          | optional                                              |
-| `SEED_TOOLKITS`                                                                | Composio toolkits to register at boot                     | optional; needs `COMPOSIO_API_KEY`                    |
-| `SEED_AGENTS`                                                                  | Space-separated images deployed at boot                   | optional                                              |
-| `ROUTER_MODEL` / `EMBEDDING_MODEL`                                             | Routing-engine models                                     | see `config/`                                         |
-| `NASIKO_FLOW_MAX_DEPTH` / `NASIKO_FLOW_MAX_FAN_OUT` / `NASIKO_FLOW_MAX_TOKENS` | Flow-guard cascade limits                                 | see `config/`                                         |
+> **Try it:** `nasiko upload agents/general-assistant-1.1.1.zip` deploys a complete example that
+> uses MCP tools and pauses for approval. Type `hitl input test` to see a pause without an LLM key.
 
 ## Troubleshooting
 
-| Problem                                                     | Fix                                                                                                                                                       |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `permission denied` on the Docker socket                    | macOS/Windows: start Docker Desktop. Linux/WSL: `sudo usermod -aG docker "$USER" && newgrp docker`                                                        |
-| Server can't reach Postgres                                 | `docker compose up -d` and wait until `docker compose ps` shows `healthy`                                                                                 |
-| `invalid SECRETS_ENCRYPTION_KEY` at startup                 | Fresh install only: `sed -i.bak "s/^SECRETS_ENCRYPTION_KEY=.*/SECRETS_ENCRYPTION_KEY=$(openssl rand -base64 32)/" .env`                                    |
-| `address already in use` on ports 9000/4317/4318            | Find it with `lsof -i :9000`. On Windows, usually Docker Desktop plus a WSL engine: keep one, `wsl --shutdown`, then `docker compose up -d`                |
-| Changes to `.env` have no effect                            | `docker compose up -d` (not `restart`)                                                                                                                    |
-| Agent `Name or service not known` (Linux Docker)            | Recreate with `--add-host host.docker.internal:host-gateway`, or set `MCP_GATEWAY_PUBLIC_URL` to the bridge IP                                            |
-| Agent upload → `500 agents_owner_id_fkey`                   | Log out and back in, or `docker compose down -v && docker compose up -d` then log in fresh (deletes local data)                                           |
-| `SEED_TOOLKITS is set but COMPOSIO_API_KEY is not`          | Set `COMPOSIO_API_KEY`, or leave both unset                                                                                                               |
-| Building from source fails to link                          | Use the [install script](#1-install-the-cli) instead, or see the toolchain steps in [CONTRIBUTING.md](CONTRIBUTING.md#installing-the-toolchain)           |
+| Problem                                          | Fix                                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| `permission denied` on the Docker socket         | Start Docker Desktop, or on Linux: `sudo usermod -aG docker "$USER" && newgrp docker`   |
+| Server can't reach Postgres                      | Wait until `docker compose ps` shows `healthy`                                          |
+| `.env` changes have no effect                    | Run `docker compose up -d`, not `restart`                                               |
+| `address already in use` (9000, 4317, 4318)      | Find the process with `lsof -i :9000`; on Windows keep one Docker engine and `wsl --shutdown` |
+| Agent can't reach the MCP gateway (Linux)        | Add `--add-host host.docker.internal:host-gateway`, or set `MCP_GATEWAY_PUBLIC_URL` to the bridge IP |
 
-More, by platform: [Troubleshooting the server](https://docs.nasiko.com/self-hosting/troubleshooting)
-and [Troubleshooting coding agents](https://docs.nasiko.com/coding-agents/troubleshooting).
+More: [server](https://docs.nasiko.com/self-hosting/troubleshooting) and
+[coding agents](https://docs.nasiko.com/coding-agents/troubleshooting).
 
-## Project activity
+## Community
 
-![Issues over time](https://shieldcn.dev/chart/github/issues/Nasiko-Labs/nasiko.svg?theme=blue&width=520&height=220&border=true)
+- **Docs:** [docs.nasiko.com](https://docs.nasiko.com)
+- **Discord:** [join the community](https://discord.com/invite/HmnfkTfjFv) for questions and ideas
+- **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md) covers local setup, conventions and the PR flow
+- **Design docs:** [`docs/`](docs/) for the A2A protocol, MCP gateway internals and CLI design
 
 [![GitHub stars](https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=red&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/stargazers)
 [![Total commits](https://shieldcn.dev/github/commits/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=amber&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/commits)
 [![Pull requests](https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=violet&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/pulls)
 
-## Documentation and links
+[![GitHub stars](https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=red&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/stargazers)
+[![Total commits](https://shieldcn.dev/github/commits/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=amber&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/commits)
+[![Pull requests](https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=violet&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/pulls)
 
-- **Official docs**: **[docs.nasiko.com](https://docs.nasiko.com)**: guides, CLI and API reference
-- **Design docs**: [`docs/`](docs/): the A2A protocol, agent lifecycle, MCP Gateway internals, CLI design, networking
-- **Code layout and development setup**: [CONTRIBUTING.md](CONTRIBUTING.md)
-- **A2A protocol**: [github.com/a2aproject/a2a-spec](https://github.com/a2aproject/a2a-spec)
-- **Docker**: [docs.docker.com/get-docker](https://docs.docker.com/get-docker/)
-- **Rust toolchain**: [rustup.rs](https://rustup.rs)
-
-## Support
-
-Questions, ideas, or stuck on setup? Join the community on Discord:
-
-**[discord.com/invite/HmnfkTfjFv](https://discord.com/invite/HmnfkTfjFv)**
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, code conventions, and the PR flow.
-
-## License
-
-**Apache-2.0**. See [LICENSE](LICENSE).
-
-Built with love by the Nasiko team. Stars, issues, and PRs are always welcome.
+Licensed under **Apache-2.0**. See [LICENSE](LICENSE). Stars, issues and PRs are always welcome.
