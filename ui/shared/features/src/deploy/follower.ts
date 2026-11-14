@@ -13,6 +13,7 @@
  * After a reload nothing is followed (Builds is the place to check). Sign-out and another account's sign-in drop
  * everything (`clearFollower`, from `clearUploads` in `stopDeployWork`, R3).
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import type { QueryClient } from '@tanstack/react-query'
 import { recentUploadsQuery } from './api'
 import {
@@ -78,6 +79,9 @@ export function onFollowFinished(fn: Notify): () => void {
   return () => void finishListeners.delete(fn)
 }
 const finished = (n: FollowNotice) => {
+  productEvent('agent_deployed', { status: n.kind })
+  // Activation: an agent of theirs is running. PostHog counts the first time per person.
+  if (n.kind === 'running') productEvent('agent_discovered', { kind: 'deployed' })
   for (const fn of finishListeners) fn(n)
 }
 

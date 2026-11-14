@@ -2,6 +2,7 @@
  * Sending (plan §6.1, EN1-EN4, EN7-EN8): create the chat, save the user row, stream a direct reply and save it
  * (a routed stream goes to `turnRouted`); Run again and Save again. A direct reply is the client's to save.
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import { emptyTurn, reduceSseEvent } from './a2aReducer'
 import { readSse, SseOverflowError } from '@nasiko/data-access/sse'
 import { asFileParts } from './attachments'
@@ -280,6 +281,7 @@ export function createSend(core: Core, routed: ReturnType<typeof createRouted>) 
       return Promise.reject(
         new ChatError({ phase: 'save-user', key: 'saveUserFailed', certainty: 'not-dispatched' }),
       )
+    productEvent('chat_message_sent', { mode: input.chatMode ?? 'direct' })
     if (text.length > tuning.MESSAGE_MAX_CHARS)
       return Promise.reject(
         new ChatError({ phase: 'save-user', key: 'tooLong', certainty: 'not-dispatched' }),

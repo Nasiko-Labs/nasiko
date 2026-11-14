@@ -1,6 +1,7 @@
 import { skipToken, useQuery } from '@tanstack/react-query'
 import { createFileRoute, redirect, useRouterState } from '@tanstack/react-router'
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
+import { productEvent } from '@nasiko/app-core/analytics'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { AppShell } from '@nasiko/app-shell/shell/AppShell'
 import { BuildToasts } from '@nasiko/features/deploy/components/BuildToasts'
@@ -53,6 +54,11 @@ function AppLayout() {
   const layer = useQuery({ queryKey: ['nav-hidden'], queryFn: skipToken, ...navHidden?.query })
   const layerHidden = navHidden ? navHidden.hidden(layer.data) : NONE
   const path = useRouterState({ select: (s) => s.location.pathname })
+  // A product page view names the route (`/_app/agents/$agentId`), never the URL, which carries ids.
+  const routeId = useRouterState({ select: (s) => s.matches.at(-1)?.routeId })
+  useEffect(() => {
+    if (routeId) productEvent('app_page_view', { route: routeId })
+  }, [routeId])
   // Budgets are Enterprise only: an OSS build has no item to hide, and EE hides its own while the probe is out.
   const budgetsHidden = slots.budgets.useNavHidden()
   return (

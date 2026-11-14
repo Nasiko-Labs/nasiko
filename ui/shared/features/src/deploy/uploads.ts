@@ -11,6 +11,7 @@
  * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`;
  * 202 `{data: {build_id, agent_id, …}}`; errors are plain text (400/409/413/500).
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import type { QueryClient } from '@tanstack/react-query'
 import { ApiError, apiUrl, isAbortError, safeJson } from '@nasiko/data-access/client'
 import type { components } from '@nasiko/data-access/schema.gen'
@@ -158,6 +159,7 @@ export function startUpload(
 ): Promise<UploadState> {
   const current = entries.get(userId)
   if (current?.state.phase === 'uploading') return Promise.resolve(current.state)
+  productEvent('agent_deploy_started', { method: 'upload' })
   const entry: Entry = {
     state: { phase: 'uploading', fileName, fields, loaded: 0, total: file.size },
     xhr: null,
@@ -259,6 +261,7 @@ export function startImport(
 ): Promise<ImportState> {
   const current = imports.get(userId)
   if (current?.phase === 'importing') return Promise.resolve(current)
+  productEvent('agent_deploy_started', { method: 'registry' })
   const started: ImportState = { phase: 'importing', reference, startedAt: Date.now() }
   imports.set(userId, started)
   emit()
@@ -335,6 +338,7 @@ export const uploadsEpoch = () => epoch
 
 export function rememberClone(buildId: string, repo: string) {
   clonedRepos.set(buildId, repo)
+  productEvent('agent_deploy_started', { method: 'github' })
 }
 
 export const clonedRepo = (buildId: string): string | null => clonedRepos.get(buildId) ?? null
