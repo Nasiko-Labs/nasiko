@@ -125,7 +125,21 @@ pub async fn metered_llm<T, E>(
         key_source: "platform",
         ledger: llm.ledger(),
     };
-    metered_call(phase, db, execution_id, user_id, step_index, source, fut).await
+    // A routed call is already in `trace_usage`, written by the router; writing it here too
+    // would add its tokens to the row twice.
+    let record = !llm.is_routed();
+    let fut = super::llm::MAF_STEP.scope(step_index, fut);
+    metered_call_inner(
+        phase,
+        db,
+        execution_id,
+        user_id,
+        step_index,
+        source,
+        record,
+        fut,
+    )
+    .await
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
@@ -149,6 +163,31 @@ pub async fn metered_call<T, E>(
     user_id: Uuid,
     step_index: Option<i32>,
     source: UsageSource<'_>,
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
+) -> Result<(T, LlmUsage), E> {
+    metered_call_inner(
+        phase,
+        db,
+        execution_id,
+        user_id,
+        step_index,
+        source,
+        true,
+        fut,
+    )
+    .await
+}
+
+/// [`metered_call`]; `record` false keeps the span but skips the `trace_usage` write.
+#[allow(clippy::too_many_arguments)]
+async fn metered_call_inner<T, E>(
+    phase: &'static str,
+    db: &PgPool,
+    execution_id: Uuid,
+    user_id: Uuid,
+    step_index: Option<i32>,
+    source: UsageSource<'_>,
+    record: bool,
     fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
 ) -> Result<(T, LlmUsage), E> {
     let start = Instant::now();
@@ -187,22 +226,25 @@ pub async fn metered_call<T, E>(
         // Awaited, so a run's spend is recorded before it reads it back (`platform_spend`), but
         // run as its own task: a stopped run is dropped wherever it is, and a write dropped
         // mid-transaction would roll back the record of a call that was already paid for.
-        let write = write_trace_usage(
-            db.clone(),
-            execution_id,
-            user_id,
-            phase,
-            step_index,
-            OwnedSource::from(&source),
-            usage.clone(),
-        );
-        if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
-            tracing::warn!(
-                execution_id = %execution_id,
+        // Router-backed calls log usage in the router, so `record` is false for them.
+        if record {
+            let write = write_trace_usage(
+                db.clone(),
+                execution_id,
+                user_id,
                 phase,
-                error = %e,
-                "maf: trace_usage write task failed (non-fatal)"
+                step_index,
+                OwnedSource::from(&source),
+                usage.clone(),
             );
+            if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
+                tracing::warn!(
+                    execution_id = %execution_id,
+                    phase,
+                    error = %e,
+                    "maf: trace_usage write task failed (non-fatal)"
+                );
+            }
         }
     }
 
@@ -1639,7 +1681,8 @@ pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformS
     type SpendRow = (Option<i32>, Option<i64>, Option<f64>);
 
     let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT (metadata->>'step_index')::int,
+        "SELECT COALESCE((metadata->>'step_index')::int,
+                         (substring(agent_name from '^maf:step([0-9]+)$'))::int),
                 COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0)::BIGINT,
                 COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
            FROM trace_usage

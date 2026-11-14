@@ -589,7 +589,12 @@ async fn process_job(
     // The key the execution's owner saved from the UI wins over the worker's own.
     let owner_llm = match crate::user_key::saved_openai_key(db, user_id).await {
         Some(key) => llm.with_api_key(key),
-        None => llm.clone(),
+        // Platform key: routed calls are billed to the run owner under this execution.
+        None => llm.with_call(crate::llm_backend::LlmCallContext {
+            user_id,
+            component: "maf".into(),
+            session_id: Some(execution_id.to_string()),
+        }),
     };
     let ctx = MafRunContext {
         client: &agent_calls.client,
