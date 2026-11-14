@@ -217,6 +217,97 @@ async fn update_rejects_non_zip_extension() {
     server.cleanup().await;
 }
 
+/// PUT a hand-built multipart body to the update route as superuser.
+async fn put_raw_update(
+    server: &common::TestServer,
+    uid: &str,
+    agent_id: &str,
+    body: Vec<u8>,
+) -> reqwest::Response {
+    common::as_superuser(
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent_id}/update"))),
+        uid,
+        "admin",
+    )
+    .header("content-type", "multipart/form-data; boundary=XBOUNDARY")
+    .body(body)
+    .send()
+    .await
+    .unwrap()
+}
+
+async fn queued_builds(server: &common::TestServer, agent_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM build_jobs WHERE agent_id = $1")
+        .bind(Uuid::parse_str(agent_id).unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn update_rejects_empty_source() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, uid, "empty-source-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    let res = do_update(&server, uid, agent_id, None, Some(Vec::new())).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(res.text().await.unwrap(), "source zip is empty");
+    assert_eq!(queued_builds(&server, agent_id).await, 0, "nothing queued");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn update_rejects_truncated_upload() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, uid, "truncated-upload-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // The source part starts but the body ends before its closing boundary.
+    let body = b"--XBOUNDARY\r\n\
+        Content-Disposition: form-data; name=\"source\"; filename=\"agent.zip\"\r\n\
+        Content-Type: application/zip\r\n\r\n\
+        PK\x03\x04partial"
+        .to_vec();
+    let res = put_raw_update(&server, uid, agent_id, body).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(res.text().await.unwrap(), "could not read the upload");
+    assert_eq!(queued_builds(&server, agent_id).await, 0, "nothing queued");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn update_rejects_oversized_upload() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+
+    let agent = create_agent(&server, uid, "oversized-upload-agent", "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap();
+
+    // One byte over the route's 100 MiB limit.
+    let zip = vec![0u8; 100 * 1024 * 1024 + 1];
+    let res = do_update(&server, uid, agent_id, None, Some(zip)).await;
+    assert_eq!(res.status(), 413);
+    assert_eq!(res.text().await.unwrap(), "upload is larger than 100 MiB");
+    assert_eq!(queued_builds(&server, agent_id).await, 0, "nothing queued");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn update_non_semver_agent_without_explicit_version_returns_400() {

@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, State, multipart::MultipartError},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{post, put},
 };
 use serde::{Deserialize, Serialize};
@@ -18,7 +18,7 @@ use crate::build::{self, BuildStatus, download_repo_tarball, routes::extract_zip
 use crate::github::load_github_token;
 use crate::state::AppState;
 
-use super::utils::{set_build_status, set_upload_status, store_build_logs};
+use super::utils::{set_build_status, set_upload_status};
 
 /// Max multipart body for an agent update (mirrors the upload router). Without
 /// this the update route inherited axum's 2 MiB default, and `field.bytes()`
@@ -93,10 +93,11 @@ pub(crate) struct UpdateAgentForm {
     request_body(content = UpdateAgentForm, content_type = "multipart/form-data"),
     responses(
         (status = 202, description = "Build queued", body = UpdateAgentResponse),
-        (status = 400, description = "Invalid version/strategy or parking_policy, or non-.zip source"),
+        (status = 400, description = "Invalid version/strategy or parking_policy, non-.zip or empty source, or an unreadable upload"),
         (status = 403, description = "Caller cannot manage this agent"),
         (status = 404, description = "No such agent"),
         (status = 409, description = "Version already exists or is not greater than current"),
+        (status = 413, description = "Upload larger than 100 MiB"),
     ),
 )]
 pub(crate) async fn update_agent(
@@ -162,7 +163,12 @@ pub(crate) async fn update_agent(
     let mut changelog: Option<String> = None;
     let mut parking_policy: Option<String> = None;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => return unreadable_upload(&e, agent_id),
+        };
         match field.name().unwrap_or("") {
             "source" => {
                 // Validate file extension before buffering the entire payload.
@@ -170,18 +176,27 @@ pub(crate) async fn update_agent(
                 if !fname.is_empty() && !fname.ends_with(".zip") {
                     return (StatusCode::BAD_REQUEST, "source must be a .zip file").into_response();
                 }
-                let data = field.bytes().await.unwrap_or_default();
-                if !data.is_empty() {
-                    source_data = Some(data.to_vec());
+                let data = match field.bytes().await {
+                    Ok(data) => data,
+                    Err(e) => return unreadable_upload(&e, agent_id),
+                };
+                if data.is_empty() {
+                    return (StatusCode::BAD_REQUEST, "source zip is empty").into_response();
                 }
+                source_data = Some(data.to_vec());
             }
-            "version" => {
-                requested_version = field.text().await.ok().filter(|s| !s.is_empty());
-            }
-            "changelog" => {
-                changelog = field.text().await.ok().filter(|s| !s.is_empty());
-            }
-            "parking_policy" => parking_policy = field.text().await.ok(),
+            "version" => match field.text().await {
+                Ok(text) => requested_version = Some(text).filter(|s| !s.is_empty()),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
+            "changelog" => match field.text().await {
+                Ok(text) => changelog = Some(text).filter(|s| !s.is_empty()),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
+            "parking_policy" => match field.text().await {
+                Ok(text) => parking_policy = Some(text),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
             _ => {}
         }
     }
@@ -399,6 +414,24 @@ pub(crate) async fn update_agent(
         .into_response()
 }
 
+/// The answer to an update body that could not be read: `413` when it is over
+/// [`MAX_UPDATE_BYTES`], `400` for anything else (malformed, or the client hung
+/// up mid-upload). Never treated as "no source": that queues a rebuild from
+/// GitHub, so the caller would get a `202` and a build without their upload.
+fn unreadable_upload(e: &MultipartError, agent_id: Uuid) -> Response {
+    tracing::warn!(error = %e, %agent_id, "update: could not read the multipart body");
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        let limit_mib = MAX_UPDATE_BYTES / (1024 * 1024);
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("upload is larger than {limit_mib} MiB"),
+        )
+            .into_response()
+    } else {
+        (StatusCode::BAD_REQUEST, "could not read the upload").into_response()
+    }
+}
+
 fn bump_patch_version(current: &str) -> String {
     semver::Version::parse(current)
         .map(|mut v| {
@@ -494,9 +527,6 @@ pub async fn execute_agent_update(
 
     let tmp_dir = std::env::temp_dir().join(format!("nasiko-update-{build_id}"));
 
-    // The image build's captured output, filled once the build runs so the Builds tab can show it.
-    let mut build_logs = String::new();
-
     let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
         let agent_source_dir = if let Some(zip_data) = source_data {
@@ -545,12 +575,11 @@ pub async fn execute_agent_update(
         let tar_bytes = tokio::task::spawn_blocking(move || build::tar_directory(&src))
             .await
             .map_err(|e| format!("tar task failed: {e}"))??;
-        build_logs = state
+        state
             .runtime
             .build(&tar_bytes, &image_tag)
             .await
-            .map_err(|e| format!("build: {e}"))?
-            .logs;
+            .map_err(|e| format!("build: {e}"))?;
 
         set_upload_status(
             db,
@@ -689,7 +718,6 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Success).await;
-            store_build_logs(db, state.oci_storage.as_ref(), build_id, &build_logs).await;
             set_upload_status(
                 db,
                 &upload_id,
@@ -717,21 +745,10 @@ pub async fn execute_agent_update(
             .await;
 
             set_build_status(db, build_id, BuildStatus::Failed).await;
-            // Persist what explains the failure on the build row: the build output when the image
-            // built, otherwise the error text, which carries the builder's own log for a build
-            // failure. The `upload_status.error_message` column stays a generic reason because
-            // clients read it via GET /agents/uploads; the detail lives in the build logs.
-            store_build_logs(
-                db,
-                state.oci_storage.as_ref(),
-                build_id,
-                if build_logs.trim().is_empty() {
-                    &e
-                } else {
-                    &build_logs
-                },
-            )
-            .await;
+            // `e` is a detailed internal string (may contain raw docker/tar/IO error
+            // text) — log it, but the `upload_status.error_message` column is read
+            // back by clients via GET /agents/uploads, so store a generic reason there
+            // instead of leaking internals through the status-polling API.
             set_upload_status(
                 db,
                 &upload_id,
