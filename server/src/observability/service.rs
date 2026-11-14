@@ -1669,7 +1669,7 @@ impl ObservabilityService {
         .bind(&user_ids)
         .bind(&view.scoped_names)
         .bind(view.own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
@@ -2975,7 +2975,7 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await

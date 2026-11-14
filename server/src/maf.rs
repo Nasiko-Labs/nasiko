@@ -12,7 +12,7 @@ use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     decomposer::DecomposerClient,
     executor,
-    llm::{LlmClient, LlmError, NO_OPENAI_KEY_MESSAGE},
+    llm::{LlmClient, LlmError},
     planner::{self, AgentInfo as PlannerAgentInfo},
     stop,
     types::{MafDefinition, MafStep, StepResult},
