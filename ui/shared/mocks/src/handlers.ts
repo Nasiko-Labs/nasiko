@@ -618,19 +618,20 @@ let settingsRow: Record<string, unknown> | null = null
 // Secret values the mock was sent (the router state keeps names only); a seed secret reads as a fake key.
 let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
-/** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
-const SETTINGS_DEFAULTS = {
+/** settings.rs `get_settings` with no row: nothing stored. */
+const SETTINGS_DEFAULTS = { registry_url: null, catalog_tabs: null }
+/** `SettingsResponse`'s running values, from the server's environment and never stored: `OPENAI_MODEL`, `ROUTER_MODEL`
+ * (distinct so tests can tell the two rows apart; a cloud workspace runs `gpt-4o-mini` for both), `DEFAULT_PROVIDER`
+ * and the `NASIKO_FLOW_*` defaults. */
+const SETTINGS_RUNNING = {
+  orchestrator_model: 'gpt-4o-mini',
+  router_model: 'gpt-4.1-mini',
   default_provider: 'openai',
   max_flow_depth: 5,
   max_flow_fan_out: 20,
   max_flow_tokens: 100_000,
-  flow_timeout_secs: 120,
-  registry_url: null,
-  catalog_tabs: null,
+  flow_timeout_secs: 600,
 }
-/** `SettingsResponse`'s models: the server's `OPENAI_MODEL` and `ROUTER_MODEL`, never stored. Distinct so tests can
- * tell the two rows apart (a cloud workspace runs `gpt-4o-mini` for both). */
-const SETTINGS_MODELS = { orchestrator_model: 'gpt-4o-mini', router_model: 'gpt-4.1-mini' }
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
 // scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
 // What stays here is only what the harness itself owns: the `?mock=` variant names and the `budgets` group key.
@@ -2133,11 +2134,11 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     // settings.rs at 43833316: a bare object; with no row yet, its hard-coded defaults.
     http.get('/api/settings', () =>
       loggedIn
-        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_MODELS })
+        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_RUNNING })
         : unauthorized(),
     ),
-    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). A
-    // `router_model` in the body is ignored: the models come from the server's environment.
+    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). The
+    // running values in a body (models, provider, flow limits) are ignored: they come from the server's environment.
     http.put('/api/settings', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (!sessionUser().is_superuser) return text('requires superuser', 403)
@@ -2145,7 +2146,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       settingsRow = Object.fromEntries(
         Object.keys(SETTINGS_DEFAULTS).map((k) => [k, body[k] ?? null]),
       )
-      return HttpResponse.json({ ...settingsRow, ...SETTINGS_MODELS })
+      return HttpResponse.json({ ...settingsRow, ...SETTINGS_RUNNING })
     }),
     ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],

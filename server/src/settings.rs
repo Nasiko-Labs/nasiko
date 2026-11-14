@@ -21,22 +21,19 @@ pub fn router() -> Router<AppState> {
         .merge(write_settings)
 }
 
-/// The stored settings row. The two models the server runs are not in it: they come from the
-/// environment, and [`SettingsResponse`] adds them.
-#[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
+/// The stored settings row: what an operator edits here and the platform reads back. What the
+/// server runs from its environment is not in it; [`SettingsResponse`] adds that.
+#[derive(Debug, Default, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Settings {
-    pub default_provider: Option<String>,
-    pub max_flow_depth: Option<i32>,
-    pub max_flow_fan_out: Option<i32>,
-    pub max_flow_tokens: Option<i64>,
-    pub flow_timeout_secs: Option<i32>,
+    /// A registry whose host the registry import also accepts. Unset adds no host.
     pub registry_url: Option<String>,
     /// Comma-separated tag names pinning the agent-catalog tab list.
     /// Unset/empty → the UI derives tabs from the most common agent tags.
     pub catalog_tabs: Option<String>,
     /// Organization-wide embedding destination — the last level of the embedding
     /// priority order, used when neither the request nor the agent's LLM config names an
-    /// embedding model.
+    /// embedding model. No default: inventing one would pick a vector space on the
+    /// operator's behalf, and "unset" falls through to an honest 400 at call time.
     pub default_embedding_provider: Option<String>,
     pub default_embedding_model: Option<String>,
     /// Whether a key is stored, never the key itself. Same rule as the OIDC client
@@ -45,63 +42,12 @@ pub struct Settings {
     pub default_embedding_api_key_configured: bool,
 }
 
-impl Settings {
-    /// What a deployment that has never saved settings behaves as if it had.
-    ///
-    /// One definition, used for BOTH "no row at all" and "a row whose column is
-    /// still NULL". Those two used to disagree — the no-row case returned these
-    /// values and the NULL case returned nulls — which was invisible only
-    /// because nothing else created the row. `PUT /api/orchestrator/policy`
-    /// (enterprise) now does: it names just its own two columns, so an operator
-    /// who opens Settings → Orchestrator first materialises `id = 1` with every
-    /// column here left NULL, and this endpoint started reporting blanks where
-    /// it had reported defaults.
-    fn defaults() -> Self {
-        Self {
-            default_provider: Some("openai".into()),
-            max_flow_depth: Some(5),
-            max_flow_fan_out: Some(20),
-            max_flow_tokens: Some(100000),
-            flow_timeout_secs: Some(120),
-            registry_url: None,
-            catalog_tabs: None,
-            default_embedding_provider: None,
-            default_embedding_model: None,
-            default_embedding_api_key_configured: false,
-        }
-    }
-
-    /// Fill any column still NULL from [`Self::defaults`].
-    ///
-    /// Only the columns that HAVE a default are filled: `registry_url` and
-    /// `catalog_tabs` default to `None`, so "unset" stays unset and keeps
-    /// meaning what it means to their consumers (no registry configured; derive
-    /// the catalog tabs from agent tags).
-    fn with_defaults(self) -> Self {
-        let d = Self::defaults();
-        Self {
-            default_provider: self.default_provider.or(d.default_provider),
-            max_flow_depth: self.max_flow_depth.or(d.max_flow_depth),
-            max_flow_fan_out: self.max_flow_fan_out.or(d.max_flow_fan_out),
-            max_flow_tokens: self.max_flow_tokens.or(d.max_flow_tokens),
-            flow_timeout_secs: self.flow_timeout_secs.or(d.flow_timeout_secs),
-            registry_url: self.registry_url,
-            catalog_tabs: self.catalog_tabs,
-            // No default: "unset" means the embedding path falls through to a 400 when
-            // nothing else named a model, which is the honest answer. Inventing a model
-            // here would pick a vector space on the operator's behalf.
-            default_embedding_provider: self.default_embedding_provider,
-            default_embedding_model: self.default_embedding_model,
-            default_embedding_api_key_configured: self.default_embedding_api_key_configured,
-        }
-    }
-}
-
-/// What `GET` and `PUT /api/settings` answer: the stored row plus the models the server runs.
+/// What `GET` and `PUT /api/settings` answer: the stored row plus what the server runs.
 ///
-/// Both models are read-only here. They come from `OPENAI_MODEL` and `ROUTER_MODEL`, which is
-/// what the chat orchestrator and the workflow router use; the `settings.router_model` column
-/// they replace was never read by either.
+/// Everything but the stored row is read-only here: it comes from the server's environment, which
+/// is what the orchestrators, the LLM router and the flow guard read. The `settings` columns these
+/// fields once answered from (`router_model`, `default_provider`, `max_flow_*`,
+/// `flow_timeout_secs`) were never read by any of them.
 #[derive(Debug, Serialize)]
 pub struct SettingsResponse {
     #[serde(flatten)]
@@ -110,27 +56,43 @@ pub struct SettingsResponse {
     pub orchestrator_model: String,
     /// Picks the agent for each workflow step.
     pub router_model: String,
+    /// The LLM router's `DEFAULT_PROVIDER`: the provider for an agent with no LLM config whose
+    /// request names none.
+    pub default_provider: String,
+    /// The flow guard's limits (`NASIKO_FLOW_*`), fixed at startup.
+    pub max_flow_depth: i32,
+    pub max_flow_fan_out: i32,
+    pub max_flow_tokens: i64,
+    pub flow_timeout_secs: i32,
 }
 
 impl SettingsResponse {
-    fn new(stored: Settings, config: &nasiko_config::Config) -> Self {
+    fn new(stored: Settings, config: &nasiko_config::Config, default_provider: String) -> Self {
         Self {
             stored,
             orchestrator_model: config.openai_model.clone(),
             router_model: config.router_model.clone(),
+            default_provider,
+            max_flow_depth: config.flow_max_depth,
+            max_flow_fan_out: config.flow_max_fan_out,
+            max_flow_tokens: config.flow_max_tokens,
+            flow_timeout_secs: config.flow_timeout_secs,
         }
+    }
+
+    /// The response for `state`. The provider is read where the LLM router reads it, so the two
+    /// cannot disagree.
+    fn running(stored: Settings, state: &AppState) -> Self {
+        let provider = nasiko_llm_router::GatewayConfig::from_env().default_provider;
+        Self::new(stored, &state.config, provider)
     }
 }
 
-/// The body of `PUT /api/settings`. A `router_model` sent by an older client is ignored like any
-/// other unknown key: the model is set by the server's environment.
+/// The body of `PUT /api/settings`. What [`SettingsResponse`] reports from the environment
+/// (`router_model`, `default_provider`, the flow limits), when an older client sends it, is
+/// ignored like any other unknown key.
 #[derive(Debug, Deserialize)]
 pub struct SettingsUpdate {
-    pub default_provider: Option<String>,
-    pub max_flow_depth: Option<i32>,
-    pub max_flow_fan_out: Option<i32>,
-    pub max_flow_tokens: Option<i64>,
-    pub flow_timeout_secs: Option<i32>,
     pub registry_url: Option<String>,
     pub catalog_tabs: Option<String>,
     pub default_embedding_provider: Option<String>,
@@ -151,8 +113,6 @@ pub struct SettingsUpdate {
 async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
     let row = sqlx::query_as::<_, Settings>(
         r#"SELECT
-            default_provider, max_flow_depth,
-            max_flow_fan_out, max_flow_tokens, flow_timeout_secs,
             registry_url, catalog_tabs,
             default_embedding_provider, default_embedding_model,
             (default_embedding_api_key_encrypted IS NOT NULL)
@@ -163,14 +123,14 @@ async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl In
     .await;
 
     let stored = match row {
-        Ok(Some(s)) => s.with_defaults(),
-        Ok(None) => Settings::defaults(),
+        Ok(Some(s)) => s,
+        Ok(None) => Settings::default(),
         Err(e) => {
             tracing::error!(%e, "get_settings: db error");
             return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
     };
-    Json(SettingsResponse::new(stored, &state.config)).into_response()
+    Json(SettingsResponse::running(stored, &state)).into_response()
 }
 
 async fn update_settings(
@@ -254,19 +214,12 @@ async fn update_settings(
 
     let result = sqlx::query_as::<_, Settings>(
         r#"INSERT INTO settings (
-               id, default_provider, max_flow_depth, max_flow_fan_out,
-               max_flow_tokens, flow_timeout_secs, registry_url, catalog_tabs,
+               id, registry_url, catalog_tabs,
                default_embedding_provider, default_embedding_model,
                default_embedding_api_key_encrypted
            )
-           VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9,
-                   CASE WHEN $10 THEN NULL ELSE $11 END)
+           VALUES (1, $1, $2, $3, $4, CASE WHEN $5 THEN NULL ELSE $6 END)
            ON CONFLICT (id) DO UPDATE SET
-             default_provider = EXCLUDED.default_provider,
-             max_flow_depth = EXCLUDED.max_flow_depth,
-             max_flow_fan_out = EXCLUDED.max_flow_fan_out,
-             max_flow_tokens = EXCLUDED.max_flow_tokens,
-             flow_timeout_secs = EXCLUDED.flow_timeout_secs,
              registry_url = EXCLUDED.registry_url,
              catalog_tabs = EXCLUDED.catalog_tabs,
              default_embedding_provider = EXCLUDED.default_embedding_provider,
@@ -275,22 +228,16 @@ async fn update_settings(
              -- null: it is never returned by GET, so a client cannot resend what it was
              -- never given. Absent means keep; the explicit flag is the only way to clear.
              default_embedding_api_key_encrypted = CASE
-                 WHEN $10 THEN NULL
+                 WHEN $5 THEN NULL
                  ELSE COALESCE(EXCLUDED.default_embedding_api_key_encrypted,
                                settings.default_embedding_api_key_encrypted)
              END
            RETURNING
-             default_provider, max_flow_depth, max_flow_fan_out,
-             max_flow_tokens, flow_timeout_secs, registry_url, catalog_tabs,
+             registry_url, catalog_tabs,
              default_embedding_provider, default_embedding_model,
              (default_embedding_api_key_encrypted IS NOT NULL)
                  AS default_embedding_api_key_configured"#,
     )
-    .bind(&body.default_provider)
-    .bind(body.max_flow_depth)
-    .bind(body.max_flow_fan_out)
-    .bind(body.max_flow_tokens)
-    .bind(body.flow_timeout_secs)
     .bind(&body.registry_url)
     .bind(&body.catalog_tabs)
     .bind(&incoming_embedding.provider)
@@ -301,8 +248,8 @@ async fn update_settings(
     .await;
 
     match result {
-        // The page puts this answer straight into its cache, so it carries the models too.
-        Ok(s) => Json(SettingsResponse::new(s, &state.config)).into_response(),
+        // The page puts this answer straight into its cache, so it carries what runs too.
+        Ok(s) => Json(SettingsResponse::running(s, &state)).into_response(),
         Err(e) => {
             tracing::error!(%e, "update_settings: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -314,82 +261,17 @@ async fn update_settings(
 mod tests {
     use super::*;
 
-    /// Regression: a row created by another endpoint — `PUT
-    /// /api/orchestrator/policy` names only its own two columns — leaves every
-    /// column here NULL, and `GET /api/settings` reported those nulls instead
-    /// of the defaults it returns when there is no row at all. Same deployment,
-    /// same configuration, two different answers depending on which settings
-    /// page the operator happened to open first.
+    /// These genuinely mean "unset" to their consumers — no extra registry, catalog tabs derived
+    /// from agent tags, no embedding default — so a deployment that never saved settings must
+    /// not acquire a value it never had.
     #[test]
-    fn a_row_of_nulls_reads_the_same_as_no_row_at_all() {
-        let materialised = Settings {
-            default_provider: None,
-            max_flow_depth: None,
-            max_flow_fan_out: None,
-            max_flow_tokens: None,
-            flow_timeout_secs: None,
-            registry_url: None,
-            catalog_tabs: None,
-            default_embedding_provider: None,
-            default_embedding_model: None,
-            default_embedding_api_key_configured: false,
-        }
-        .with_defaults();
-
-        let no_row = Settings::defaults();
-        assert_eq!(materialised.default_provider, no_row.default_provider);
-        assert_eq!(materialised.max_flow_depth, no_row.max_flow_depth);
-        assert_eq!(materialised.max_flow_fan_out, no_row.max_flow_fan_out);
-        assert_eq!(materialised.max_flow_tokens, no_row.max_flow_tokens);
-        assert_eq!(materialised.flow_timeout_secs, no_row.flow_timeout_secs);
-    }
-
-    /// Defaults fill gaps; they never overwrite what the operator stored.
-    #[test]
-    fn a_stored_value_survives_the_defaults() {
-        let stored = Settings {
-            default_provider: None,
-            max_flow_depth: Some(1),
-            max_flow_fan_out: None,
-            max_flow_tokens: None,
-            flow_timeout_secs: None,
-            registry_url: Some("https://registry.example.com".into()),
-            catalog_tabs: Some("a,b".into()),
-            default_embedding_provider: Some("openai".into()),
-            default_embedding_model: Some("text-embedding-3-small".into()),
-            default_embedding_api_key_configured: true,
-        }
-        .with_defaults();
-
-        assert_eq!(stored.max_flow_depth, Some(1));
-        assert_eq!(
-            stored.registry_url.as_deref(),
-            Some("https://registry.example.com")
-        );
-        assert_eq!(stored.catalog_tabs.as_deref(), Some("a,b"));
-        assert_eq!(stored.default_embedding_provider.as_deref(), Some("openai"));
-        assert_eq!(
-            stored.default_embedding_model.as_deref(),
-            Some("text-embedding-3-small")
-        );
-        // …and the gaps are filled.
-        assert_eq!(stored.default_provider.as_deref(), Some("openai"));
-        assert_eq!(stored.max_flow_fan_out, Some(20));
-    }
-
-    /// These two genuinely mean "unset" to their consumers — no registry
-    /// configured, and derive the catalog tabs from agent tags — so they must
-    /// not acquire a value they never had.
-    #[test]
-    fn unset_optional_columns_are_not_invented() {
-        let filled = Settings::defaults();
-        assert!(filled.registry_url.is_none());
-        assert!(filled.catalog_tabs.is_none());
-        // An invented embedding default would pick a vector space for the operator; the
-        // honest answer for "nothing configured" is a 400 at call time.
-        assert!(filled.default_embedding_provider.is_none());
-        assert!(filled.default_embedding_model.is_none());
-        assert!(!filled.default_embedding_api_key_configured);
+    fn a_workspace_that_never_saved_has_nothing_stored() {
+        let none = Settings::default();
+        assert!(none.registry_url.is_none());
+        assert!(none.catalog_tabs.is_none());
+        assert!(none.default_embedding_provider.is_none());
+        assert!(none.default_embedding_model.is_none());
+        assert!(!none.default_embedding_api_key_configured);
     }
 
     /// The key is a platform credential and `GET /api/settings` is readable by every
@@ -398,7 +280,7 @@ mod tests {
     fn the_response_type_exposes_only_whether_a_key_is_configured() {
         let json = serde_json::to_value(Settings {
             default_embedding_api_key_configured: true,
-            ..Settings::defaults()
+            ..Settings::default()
         })
         .unwrap();
         assert_eq!(json["default_embedding_api_key_configured"], true);

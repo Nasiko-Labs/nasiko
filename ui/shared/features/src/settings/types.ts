@@ -9,8 +9,10 @@ const text = z.string().nullable().optional()
 const int = z.number().int().nullable().optional()
 
 /**
- * `SettingsResponse`: a bare JSON object (no envelope), the singleton row plus the two models the server runs.
- * `orchestrator_model` and `router_model` come from its environment (`OPENAI_MODEL`, `ROUTER_MODEL`) and are read-only.
+ * `SettingsResponse`: a bare JSON object (no envelope), the singleton row plus what the server runs. The models, the
+ * default provider and the flow limits come from its environment (`OPENAI_MODEL`, `ROUTER_MODEL`, `DEFAULT_PROVIDER`,
+ * `NASIKO_FLOW_*`) and are read-only. An older server answers the provider and limits from stored columns nothing
+ * read, and sends no `orchestrator_model`.
  */
 export const settingsSchema = z.looseObject({
   orchestrator_model: text,
@@ -27,19 +29,25 @@ export type Settings = z.infer<typeof settingsSchema>
 
 /**
  * `SettingsUpdate`'s fields. The PUT binds every one of them (`INSERT … ON CONFLICT DO UPDATE SET` all columns), so a
- * field left out is written as NULL (ST-2): the body always carries all of them. The two models are not among them.
+ * field left out is written as NULL (ST-2): the body always carries all of them. What the server runs is not among
+ * them.
  */
 export const SETTINGS_FIELDS = [
-  'default_provider',
-  'max_flow_depth',
-  'max_flow_fan_out',
-  'max_flow_tokens',
-  'flow_timeout_secs',
   'registry_url',
   'catalog_tabs',
 ] as const satisfies readonly (keyof Settings)[]
 
 export type SettingsField = (typeof SETTINGS_FIELDS)[number]
+
+/** What the server runs, from its environment: shown, never sent. */
+export type RunningField =
+  | 'orchestrator_model'
+  | 'router_model'
+  | 'default_provider'
+  | 'max_flow_depth'
+  | 'max_flow_fan_out'
+  | 'max_flow_tokens'
+  | 'flow_timeout_secs'
 
 /**
  * `GET/PUT /api/settings/composio` (`oss/server/src/composio_settings.rs`): not in the OpenAPI spec. The key itself is
