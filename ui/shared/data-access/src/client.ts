@@ -137,7 +137,17 @@ let apiBase = ''
  */
 export function setApiBase(url: string) {
   apiBase = url
+  apiBaseUnresolved = false
 }
+
+/** An edition that has to look its API base up marks a failed lookup, so a guide doesn't guess where the API is. */
+let apiBaseUnresolved = false
+
+export const markApiBaseUnresolved = () => {
+  apiBaseUnresolved = true
+}
+
+export const isApiBaseUnresolved = () => apiBaseUnresolved
 
 /** `path` against the API base. An absolute URL is used as is (an edition's call to its own page origin). */
 export function apiUrl(path: string): URL {
