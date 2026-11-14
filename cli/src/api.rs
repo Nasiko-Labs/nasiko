@@ -142,7 +142,7 @@ pub fn extract_error_detail(body: &str) -> String {
 }
 
 /// A one-line next step for an HTTP failure status, starting with a newline; empty when there
-/// is nothing general to add. Shared with `nasiko-ee`, so both CLIs say the same thing.
+/// is nothing general to add. Public so another CLI built on this crate words its hints the same way.
 pub fn status_hint(status: u16) -> &'static str {
     match status {
         401 => "\nhint: session expired or invalid — run: nasiko auth login",
