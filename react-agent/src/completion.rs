@@ -159,14 +159,11 @@ impl UsageModel {
     fn platform(config: &OrchestratorConfig) -> Result<Self, String> {
         let gateway = nasiko_llm_router::config::GatewayConfig::from_env();
         let provider: String = gateway.default_provider.clone();
-        let api_key: String = gateway.platform_key_for(&provider).to_string();
+        // The orchestrator is the platform's own call: its key, not the one agents fall back to,
+        // which the Free plane leaves empty.
+        let api_key: String = gateway.service_key_for(&provider).to_string();
         if api_key.is_empty() {
-            if provider == "openai" {
-                return Err(NO_KEY_MESSAGE.to_string());
-            }
-            return Err(format!(
-                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
-            ));
+            return Err(NO_KEY_MESSAGE.to_string());
         }
         let model: String = if config.model.trim().is_empty() {
             gateway.default_model.clone()
