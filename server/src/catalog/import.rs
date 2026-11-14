@@ -814,12 +814,11 @@ pub(crate) struct RegistryImportRequest {
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
 
 /// Registry hosts always allowed for import, independent of any env var or the
-/// settings-page registry — Nasiko's own registry works out of the box. It
-/// answers on both names; the older one stays while references to it remain.
-const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.com", "registry.nasiko.dev"];
+/// settings-page registry — Nasiko's own registry works out of the box.
+const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.com"];
 
 /// Extract the bare host from a configured registry URL such as
-/// `https://registry.nasiko.dev` or `registry.nasiko.dev:5000/path`: scheme and
+/// `https://registry.nasiko.com` or `registry.nasiko.com:5000/path`: scheme and
 /// path are stripped; any port is left for `validate_registry_host` to normalize.
 fn registry_url_host(url: &str) -> Option<String> {
     let s = url.trim();
@@ -936,7 +935,7 @@ async fn registry_import(state: AppState, claims: Claims, req: RegistryImportReq
     // Parse OCI reference: "registry.host/owner/name:tag"
     let (repo_with_host, tag) = split_reference_tag(&req.reference);
 
-    // Split host from repo path: "registry.nasiko.dev/nasiko/agent" → ("registry.nasiko.dev", "nasiko/agent")
+    // Split host from repo path: "registry.nasiko.com/nasiko/agent" → ("registry.nasiko.com", "nasiko/agent")
     let (host, repo) = match repo_with_host.split_once('/') {
         Some((h, r)) => (h, r.to_string()),
         None => {
@@ -1428,16 +1427,16 @@ mod tests {
     #[test]
     fn registry_url_host_strips_scheme_and_path() {
         assert_eq!(
-            registry_url_host("https://registry.nasiko.dev"),
-            Some("registry.nasiko.dev".to_string())
+            registry_url_host("https://registry.nasiko.com"),
+            Some("registry.nasiko.com".to_string())
         );
         assert_eq!(
-            registry_url_host("http://registry.nasiko.dev/nasiko/foo"),
-            Some("registry.nasiko.dev".to_string())
+            registry_url_host("http://registry.nasiko.com/nasiko/foo"),
+            Some("registry.nasiko.com".to_string())
         );
         assert_eq!(
-            registry_url_host("registry.nasiko.dev:5000/foo"),
-            Some("registry.nasiko.dev:5000".to_string())
+            registry_url_host("registry.nasiko.com:5000/foo"),
+            Some("registry.nasiko.com:5000".to_string())
         );
         assert_eq!(registry_url_host("   "), None);
         assert_eq!(registry_url_host(""), None);
@@ -1451,8 +1450,8 @@ mod tests {
             .iter()
             .map(|h| (*h).to_string())
             .collect();
-        assert!(validate_registry_host("registry.nasiko.dev", &allowed).is_ok());
-        assert!(validate_registry_host("registry.nasiko.dev:443", &allowed).is_ok());
+        assert!(validate_registry_host("registry.nasiko.com", &allowed).is_ok());
+        assert!(validate_registry_host("registry.nasiko.com:443", &allowed).is_ok());
         assert!(validate_registry_host("evil.example.com", &allowed).is_err());
     }
 
@@ -1558,15 +1557,15 @@ mod tests {
 
     #[test]
     fn reference_tag_defaults_to_latest() {
-        let (repo, tag) = split_reference_tag("registry.nasiko.dev/nasiko/a");
-        assert_eq!(repo, "registry.nasiko.dev/nasiko/a");
+        let (repo, tag) = split_reference_tag("registry.nasiko.com/nasiko/a");
+        assert_eq!(repo, "registry.nasiko.com/nasiko/a");
         assert_eq!(tag, "latest");
     }
 
     #[test]
     fn reference_tag_is_split_after_the_last_slash() {
-        let (repo, tag) = split_reference_tag("registry.nasiko.dev/nasiko/a:1.0.1");
-        assert_eq!(repo, "registry.nasiko.dev/nasiko/a");
+        let (repo, tag) = split_reference_tag("registry.nasiko.com/nasiko/a:1.0.1");
+        assert_eq!(repo, "registry.nasiko.com/nasiko/a");
         assert_eq!(tag, "1.0.1");
     }
 

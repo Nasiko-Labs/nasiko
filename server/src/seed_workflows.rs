@@ -364,7 +364,7 @@ async fn resolve_steps(
 }
 
 /// The tag of an image reference, ignoring a `host:port` registry and any
-/// digest: `registry.nasiko.dev/nasiko/summarizer:1.0.1-image` → `1.0.1-image`.
+/// digest: `registry.nasiko.com/nasiko/summarizer:1.0.1-image` → `1.0.1-image`.
 fn image_tag(image: &str) -> Option<&str> {
     let image = image.split('@').next().unwrap_or(image);
     let last_segment = image.rsplit('/').next().unwrap_or(image);
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn the_tag_ignores_the_registry_port_and_digest() {
         assert_eq!(
-            image_tag("registry.nasiko.dev/nasiko/summarizer:1.0.1-image"),
+            image_tag("registry.nasiko.com/nasiko/summarizer:1.0.1-image"),
             Some("1.0.1-image")
         );
         assert_eq!(

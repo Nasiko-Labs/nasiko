@@ -93,7 +93,7 @@ mod tests {
     fn safe_methods_always_pass() {
         let h = headers(&[
             ("sec-fetch-site", "same-site"),
-            ("origin", "https://evil.nasiko.dev"),
+            ("origin", "https://evil.app.nasiko.com"),
         ]);
         for m in [Method::GET, Method::HEAD, Method::OPTIONS] {
             assert!(!cross(m.clone(), &h), "{m}");
@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn a_sibling_subdomain_is_refused_even_though_it_is_same_site() {
         for site in ["same-site", "cross-site"] {
-            let h = headers(&[("sec-fetch-site", site), ("host", "nasiko.dev")]);
+            let h = headers(&[("sec-fetch-site", site), ("host", "app.nasiko.com")]);
             assert!(cross(Method::POST, &h), "{site}");
             assert!(cross(Method::DELETE, &h), "{site}");
         }
@@ -121,15 +121,18 @@ mod tests {
     fn fetch_metadata_wins_over_a_matching_origin() {
         let h = headers(&[
             ("sec-fetch-site", "same-site"),
-            ("origin", "https://nasiko.dev"),
-            ("host", "nasiko.dev"),
+            ("origin", "https://app.nasiko.com"),
+            ("host", "app.nasiko.com"),
         ]);
         assert!(cross(Method::PUT, &h));
     }
 
     #[test]
     fn without_fetch_metadata_origin_must_match_host() {
-        let same = headers(&[("origin", "https://nasiko.dev"), ("host", "nasiko.dev")]);
+        let same = headers(&[
+            ("origin", "https://app.nasiko.com"),
+            ("host", "app.nasiko.com"),
+        ]);
         assert!(!cross(Method::POST, &same));
         let with_port = headers(&[
             ("origin", "http://localhost:8080"),
@@ -137,26 +140,29 @@ mod tests {
         ]);
         assert!(!cross(Method::POST, &with_port));
         let sibling = headers(&[
-            ("origin", "https://acme.nasiko.dev"),
-            ("host", "nasiko.dev"),
+            ("origin", "https://acme.app.nasiko.com"),
+            ("host", "app.nasiko.com"),
         ]);
         assert!(cross(Method::POST, &sibling));
-        let null = headers(&[("origin", "null"), ("host", "nasiko.dev")]);
+        let null = headers(&[("origin", "null"), ("host", "app.nasiko.com")]);
         assert!(cross(Method::POST, &null));
     }
 
     #[test]
     fn a_request_with_neither_header_is_not_from_a_browser_page() {
-        assert!(!cross(Method::POST, &headers(&[("host", "nasiko.dev")])));
+        assert!(!cross(
+            Method::POST,
+            &headers(&[("host", "app.nasiko.com")])
+        ));
     }
 
     #[test]
     fn a_trusted_origin_passes_and_others_do_not() {
-        let trusted = ["https://app.nasiko.dev".to_string()];
+        let trusted = ["https://app.nasiko.com".to_string()];
         let from_trusted = headers(&[
             ("sec-fetch-site", "same-site"),
-            ("origin", "https://app.nasiko.dev"),
-            ("host", "registry.nasiko.dev"),
+            ("origin", "https://app.nasiko.com"),
+            ("host", "registry.nasiko.com"),
         ]);
         assert!(!is_cross_origin_write(
             &Method::POST,
@@ -165,8 +171,8 @@ mod tests {
         ));
         let from_sibling = headers(&[
             ("sec-fetch-site", "same-site"),
-            ("origin", "https://acme.nasiko.dev"),
-            ("host", "registry.nasiko.dev"),
+            ("origin", "https://acme.app.nasiko.com"),
+            ("host", "registry.nasiko.com"),
         ]);
         assert!(is_cross_origin_write(
             &Method::POST,

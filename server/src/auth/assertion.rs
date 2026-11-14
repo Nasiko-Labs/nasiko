@@ -253,8 +253,8 @@ mod tests {
     #[test]
     fn jwks_url_is_derived_from_the_configured_bff_url_only() {
         assert_eq!(
-            jwks_url("https://nasiko.dev/"),
-            "https://nasiko.dev/.well-known/nasiko-delegation-jwks.json"
+            jwks_url("https://app.nasiko.com/"),
+            "https://app.nasiko.com/.well-known/nasiko-delegation-jwks.json"
         );
     }
 }

@@ -5,13 +5,13 @@ One command, no account and no administrator rights.
 macOS and Linux:
 
 ```console
-$ curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash
+$ curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
+irm https://registry.nasiko.com/r/nasiko/install-ps1 | iex
 ```
 
 Then check it: `nasiko --version`.
@@ -55,10 +55,10 @@ into a shell isn't allowed where you are, download it, read it, then run it: it'
 |---|---|---|
 | `NASIKO_VERSION` | `latest` | Install a specific release, e.g. `v0.2.0` |
 | `NASIKO_INSTALL_DIR` | `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\nasiko`) | Where to install |
-| `NASIKO_REGISTRY` | `registry.nasiko.dev` | Registry to install from (a mirror, say) |
+| `NASIKO_REGISTRY` | `registry.nasiko.com` | Registry to install from (a mirror, say) |
 
 ```console
-$ curl -fsSL https://registry.nasiko.dev/r/nasiko/install | NASIKO_VERSION=v0.2.0 bash
+$ curl -fsSL https://registry.nasiko.com/r/nasiko/install | NASIKO_VERSION=v0.2.0 bash
 ```
 
 ## Updating and removing

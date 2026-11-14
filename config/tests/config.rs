@@ -662,10 +662,10 @@ fn openai_api_key_is_read_from_env() {
 #[serial]
 fn cp_domain_is_read_from_env() {
     set_required_vars();
-    unsafe { std::env::set_var("CP_DOMAIN", "example.nasiko.dev") };
+    unsafe { std::env::set_var("CP_DOMAIN", "example.app.nasiko.com") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.domain, Some("example.nasiko.dev".to_string()));
+    assert_eq!(cfg.domain, Some("example.app.nasiko.com".to_string()));
 
     unsafe { std::env::remove_var("CP_DOMAIN") };
     unset_required_vars();
@@ -705,7 +705,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
     unsafe {
         std::env::set_var(
             "REGISTRY_IMPORT_ALLOWED_HOSTS",
-            "ghcr.io,quay.io,registry.nasiko.dev",
+            "ghcr.io,quay.io,registry.nasiko.com",
         )
     };
 
@@ -715,7 +715,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
         vec![
             "ghcr.io".to_string(),
             "quay.io".to_string(),
-            "registry.nasiko.dev".to_string(),
+            "registry.nasiko.com".to_string(),
         ]
     );
 

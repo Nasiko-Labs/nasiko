@@ -1271,7 +1271,7 @@ fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
+/// `cp.app.nasiko.com` and typical deployment env files have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
@@ -1480,10 +1480,10 @@ mod registry_alias_tests {
     fn aliases_drop_blanks_and_the_registry_itself() {
         assert_eq!(
             registry_aliases(
-                " free.nasiko.dev , ,free.app.nasiko.com",
+                " free.old.example , ,free.app.nasiko.com",
                 "free.app.nasiko.com"
             ),
-            vec!["free.nasiko.dev"]
+            vec!["free.old.example"]
         );
         assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
     }
@@ -1511,10 +1511,10 @@ mod tests {
     #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(
-            super::origin_of("https://acme.nasiko.dev/app?x=1"),
-            Some("https://acme.nasiko.dev".to_string())
+            super::origin_of("https://acme.app.nasiko.com/app?x=1"),
+            Some("https://acme.app.nasiko.com".to_string())
         );
-        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
+        assert_eq!(super::origin_of("acme.app.nasiko.com"), None);
         assert_eq!(super::origin_of("https:///app"), None);
     }
 
@@ -1668,7 +1668,7 @@ mod tests {
 
     #[test]
     fn base_url_written_with_v1_is_stripped() {
-        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
+        // The cp.app.nasiko.com form — appending `/v1/audio/transcriptions` to the
         // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
         assert_eq!(
             openai_base_url_without_v1("https://api.openai.com/v1"),

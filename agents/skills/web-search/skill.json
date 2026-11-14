@@ -1,5 +1,5 @@
 {
-  "apiVersion": "nasiko.dev/v1",
+  "apiVersion": "nasiko.com/v1",
   "kind": "Skill",
   "metadata": {
     "name": "web-search",

@@ -135,12 +135,12 @@ mod tests {
     #[test]
     fn splits_tag_after_the_last_slash() {
         assert_eq!(
-            split_tag("registry.nasiko.dev/nasiko/a:1.0.1"),
-            ("registry.nasiko.dev/nasiko/a", Some("1.0.1"))
+            split_tag("registry.nasiko.com/nasiko/a:1.0.1"),
+            ("registry.nasiko.com/nasiko/a", Some("1.0.1"))
         );
         assert_eq!(
-            split_tag("registry.nasiko.dev/nasiko/a"),
-            ("registry.nasiko.dev/nasiko/a", None)
+            split_tag("registry.nasiko.com/nasiko/a"),
+            ("registry.nasiko.com/nasiko/a", None)
         );
     }
 
@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn host_detection_matches_the_oci_heuristic() {
-        assert!(is_host("registry.nasiko.dev"));
+        assert!(is_host("registry.nasiko.com"));
         assert!(is_host("localhost"));
         assert!(is_host("localhost:5000"));
         assert!(!is_host("nasiko"));
@@ -169,14 +169,14 @@ mod tests {
     #[test]
     fn host_qualified_references_pass_through_untouched() {
         assert_eq!(
-            qualify("registry.nasiko.dev/nasiko/infra-agent:1.0.1").unwrap(),
-            "registry.nasiko.dev/nasiko/infra-agent:1.0.1"
+            qualify("registry.nasiko.com/nasiko/infra-agent:1.0.1").unwrap(),
+            "registry.nasiko.com/nasiko/infra-agent:1.0.1"
         );
     }
 
     #[test]
     fn a_host_with_no_artifact_is_rejected() {
-        let err = qualify("registry.nasiko.dev").unwrap_err().to_string();
+        let err = qualify("registry.nasiko.com").unwrap_err().to_string();
         assert!(err.contains("no artifact"), "{err}");
     }
 

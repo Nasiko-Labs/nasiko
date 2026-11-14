@@ -269,7 +269,7 @@ mod tests {
     fn claims(exp_offset: i64) -> serde_json::Value {
         let now = chrono::Utc::now().timestamp();
         serde_json::json!({
-            "iss": "https://nasiko.dev", "aud": "https://acme.nasiko.dev", "sub": "portal-1",
+            "iss": "https://app.nasiko.com", "aud": "https://acme.app.nasiko.com", "sub": "portal-1",
             "email": "Satya@Acme.test", "email_verified": true, "ws": "ws-1", "jti": "j-1",
             "iat": now, "exp": now + exp_offset, "token_type": "bff-assertion"
         })
@@ -281,8 +281,8 @@ mod tests {
         let v = verify_assertion(
             &t,
             &jwks("k1"),
-            "https://nasiko.dev",
-            "https://acme.nasiko.dev",
+            "https://app.nasiko.com",
+            "https://acme.app.nasiko.com",
         )
         .unwrap();
         assert_eq!(v.email, "satya@acme.test");
@@ -297,8 +297,8 @@ mod tests {
             verify_assertion(
                 &t,
                 &jwks("k1"),
-                "https://nasiko.dev",
-                "https://other.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://other.app.nasiko.com"
             )
             .is_err()
         );
@@ -307,7 +307,7 @@ mod tests {
                 &t,
                 &jwks("k1"),
                 "https://evil.dev",
-                "https://acme.nasiko.dev"
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
@@ -315,8 +315,8 @@ mod tests {
             verify_assertion(
                 &t,
                 &jwks("k2"),
-                "https://nasiko.dev",
-                "https://acme.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
             )
             .unwrap_err(),
             UNKNOWN_KID
@@ -326,8 +326,8 @@ mod tests {
             verify_assertion(
                 &expired,
                 &jwks("k1"),
-                "https://nasiko.dev",
-                "https://acme.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
@@ -341,8 +341,8 @@ mod tests {
             verify_assertion(
                 &sign("k1", c),
                 &jwks("k1"),
-                "https://nasiko.dev",
-                "https://acme.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
@@ -352,8 +352,8 @@ mod tests {
             verify_assertion(
                 &sign("k1", c),
                 &jwks("k1"),
-                "https://nasiko.dev",
-                "https://acme.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
@@ -371,8 +371,8 @@ mod tests {
             verify_assertion(
                 &t,
                 &jwks("k1"),
-                "https://nasiko.dev",
-                "https://acme.nasiko.dev"
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
@@ -387,8 +387,8 @@ mod tests {
         assert_eq!(signer.kid().len(), 16);
         let now = now_secs();
         let claims = AssertionClaims {
-            iss: "https://nasiko.dev".into(),
-            aud: "https://acme.nasiko.dev".into(),
+            iss: "https://app.nasiko.com".into(),
+            aud: "https://acme.app.nasiko.com".into(),
             sub: "portal-1".into(),
             email: "a@acme.test".into(),
             email_verified: true,
@@ -406,8 +406,8 @@ mod tests {
         let v = verify_assertion(
             &token,
             &ring.jwks(),
-            "https://nasiko.dev",
-            "https://acme.nasiko.dev",
+            "https://app.nasiko.com",
+            "https://acme.app.nasiko.com",
         )
         .unwrap();
         assert_eq!(v.jti, "j-2");
