@@ -1339,7 +1339,7 @@ export function chatHandlers(ctx: ChatMockContext): HttpHandler[] {
       const denied = guard()
       if (denied) return denied
       if (ctx.hasVariant?.('transcribe-unconfigured'))
-        return text('Transcription not configured', 503)
+        return text('Transcription needs an OpenAI API key: add one in Settings → Secrets.', 503)
       if (!(await readUploadedFiles(request)).length) return text('No audio file provided', 400)
       return HttpResponse.json({ text: 'Hello from the mock microphone.' })
     }),

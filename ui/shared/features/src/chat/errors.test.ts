@@ -10,7 +10,6 @@ import {
   refusalOf,
   savedTurnError,
   restError,
-  sendErrorText,
 } from './errors'
 
 describe('error copy', () => {
@@ -57,6 +56,28 @@ describe('refusals a layer recognises', () => {
     expect(refusalOf(cut, read)).toBeNull()
   })
 
+  it('a 503 that names its reason shows that reason, with or without a layer', () => {
+    const message =
+      'Coding sessions are not configured on this server (AGENT_JWT_SECRET is not set)'
+    const direct = dispatchError(503, { error: { code: -32603, message } })
+    const routed = dispatchError(
+      503,
+      { error: { code: -32603, message } },
+      { chatMode: 'routed', operation: 'send' },
+    )
+    for (const error of [direct, routed]) {
+      for (const reader of [null, read]) {
+        expect(refusalOf(error, reader)).toMatchObject({ cause: message, detail: message })
+      }
+    }
+  })
+
+  it('the stock no-agents 503 keeps the generic copy', () => {
+    const none = dispatchError(503, { error: { code: -32603, message: 'no agents available' } })
+    expect(refusalOf(none, null)).toBeNull()
+    expect(refusalOf(dispatchError(503, ''), null)).toBeNull()
+  })
+
   it('an OSS build has no reader, so every failure is the generic one', () => {
     expect(refusalOf(failedTurnError('agentFailed', 'E: quota_hit'), null)).toBeNull()
     expect(failedTurnError('agentFailed', 'upstream timeout')).toMatchObject({
@@ -89,10 +110,9 @@ describe('dispatchError', () => {
     [404, 'agentGone', 'rejected-before-run'],
     [413, 'messageTooLarge', 'rejected-before-run'],
     [429, 'rateLimited', 'rejected-before-run'],
-    // A 503 or 5xx that says why is the server's answer, shown with its reason (NAS-1624).
-    [503, 'refusedWithReason', 'rejected-before-run'],
-    [500, 'serverError', 'unknown'],
-    [502, 'serverError', 'unknown'],
+    [503, 'noAgents', 'rejected-before-run'],
+    [500, 'cutOff', 'unknown'],
+    [502, 'cutOff', 'unknown'],
   ] as const)('%i → %s', (status, key, certainty) => {
     const e = dispatchError(status, {
       jsonrpc: '2.0',
@@ -100,49 +120,6 @@ describe('dispatchError', () => {
       error: { code: -32603, message: 'boom' },
     })
     expect(e).toMatchObject({ key, certainty, rpcCode: -32603, serverDetail: 'boom' })
-  })
-
-  it('a 503 is "no running agent" only when the server says so or says nothing', () => {
-    expect(dispatchError(503, null)).toMatchObject({ key: 'noAgents' })
-    expect(
-      dispatchError(503, { error: { code: -32603, message: 'no agents available' } }),
-    ).toMatchObject({
-      key: 'noAgents',
-    })
-    // a2a_dispatch.rs `Resolve` (-32609): not running, parked, workload down.
-    expect(
-      dispatchError(503, {
-        error: { code: -32609, message: 'agent not running (status: stopped)' },
-      }),
-    ).toMatchObject({ key: 'noAgents', serverDetail: 'agent not running (status: stopped)' })
-    expect(
-      dispatchError(503, {
-        error: { code: -32603, message: "attachment 'a.pdf' could not be read; try again" },
-      }),
-    ).toMatchObject({ key: 'refusedWithReason' })
-  })
-
-  it('a 5xx without a reason, or with the catch-all "internal error", is still a cut-off', () => {
-    expect(dispatchError(500, null)).toMatchObject({ key: 'cutOff' })
-    expect(
-      dispatchError(500, { error: { code: -32603, message: 'internal error' } }),
-    ).toMatchObject({
-      key: 'cutOff',
-      serverDetail: 'internal error',
-    })
-    expect(dispatchError(502, '<html>bad gateway</html>')).toMatchObject({
-      key: 'cutOff',
-      serverDetail: undefined,
-    })
-  })
-
-  it('reads the reason from every body shape the server sends', () => {
-    expect(dispatchError(500, { message: 'OPENAI_API_KEY not set' }).serverDetail).toBe(
-      'OPENAI_API_KEY not set',
-    )
-    expect(dispatchError(500, { error: 'no key', code: 'llm_key_missing' }).serverDetail).toBe(
-      'no key',
-    )
   })
 
   it('keeps a plain-text 429 body as detail', () => {
@@ -154,22 +131,6 @@ describe('dispatchError', () => {
   it('only unknown outcomes ask before Run again', () => {
     expect(needsRunAgainConfirm(dispatchError(500, null))).toBe(true)
     expect(needsRunAgainConfirm(dispatchError(429, null))).toBe(false)
-  })
-})
-
-describe('sendErrorText', () => {
-  it("adds the server's reason as a sentence between the problem and the action", () => {
-    const refused = dispatchError(503, {
-      error: { code: -32603, message: "attachment 'a.pdf' could not be read; try again" },
-    })
-    expect(sendErrorText(refused)).toBe(
-      `${errorCopy.refusedWithReason.problem} ${copy.serverSaid("attachment 'a.pdf' could not be read; try again.")} ${errorCopy.refusedWithReason.action}`,
-    )
-    // Without a reason it is the two-part line it always was.
-    expect(sendErrorText(dispatchError(503, null))).toBe(
-      `${errorCopy.noAgents.problem} ${errorCopy.noAgents.action}`,
-    )
-    expect(sendErrorText(null)).toBeNull()
   })
 })
 
@@ -208,13 +169,13 @@ describe('restError', () => {
 })
 
 describe('Copy details (§5.6)', () => {
-  it('lists exactly phase, chat, trace, codes, the server reason, the doc anchor and the debug pointer', () => {
+  it('lists exactly phase, chat, trace, codes, the doc anchor and the debug pointer', () => {
     const e = new ChatError({
       phase: 'dispatch',
       key: 'routedRateLimited',
       certainty: 'rejected-before-run',
       status: 429,
-      serverDetail: 'rate limit exceeded',
+      serverDetail: 'secret body',
     })
     const text = copyDetails(e, { sessionId: 's-1', traceId: null })
     expect(text).toBe(
@@ -224,10 +185,10 @@ describe('Copy details (§5.6)', () => {
         'trace: none',
         'http: 429',
         'rpc: none',
-        'server: rate limit exceeded',
         'docs: docs/chat.md#errors-429',
         'more: reopen the chat with ?debug=turn',
       ].join('\n'),
     )
+    expect(text).not.toContain('secret')
   })
 })

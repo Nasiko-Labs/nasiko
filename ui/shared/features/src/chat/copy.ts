@@ -53,18 +53,6 @@ export const errorCopy = {
     cause: 'The agent is stopped or still deploying.',
     action: 'Open Agents to start it.',
   },
-  // A 503 that isn't "not running" (an unreadable attachment, a refused session): its reason shows under it.
-  refusedWithReason: {
-    problem: "OpenRuntime couldn't run this message.",
-    cause: 'It refused the request before the agent saw it.',
-    action: 'Fix what the reason says, then send it again.',
-  },
-  // A 5xx that came with a reason: the server answered, so the connection didn't drop.
-  serverError: {
-    problem: "OpenRuntime couldn't finish this request.",
-    cause: 'It answered with an error, and the agent may already have started.',
-    action: 'Fix what the reason says, then refresh status before running it again.',
-  },
   cutOff: {
     problem: 'The reply was cut off.',
     cause: 'The connection ended before the agent finished. It may still be running.',
@@ -505,6 +493,12 @@ export const copy = {
   discardReply: 'Discard reply',
   details: 'Details',
   serverSaid: (t: string) => `Server said: ${t}`,
+  // A 503 whose own words say why OpenRuntime can't run the turn (errors.ts `unavailableWithReason`);
+  // the cause is the server's sentence.
+  unavailableWithReason: {
+    problem: "OpenRuntime can't run this turn right now.",
+    action: 'Fix the setting it names, or ask your admin, then run it again.',
+  },
   viewTrace: 'View trace',
   traceTitle: 'Trace for this reply',
   openFullTrace: 'Open full trace',
