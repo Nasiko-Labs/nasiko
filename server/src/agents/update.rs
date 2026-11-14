@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
-    extract::{Multipart, Path, State},
+    extract::{Multipart, Path, State, multipart::MultipartError},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
     routing::{post, put},
 };
 use serde::{Deserialize, Serialize};
@@ -93,10 +93,11 @@ pub(crate) struct UpdateAgentForm {
     request_body(content = UpdateAgentForm, content_type = "multipart/form-data"),
     responses(
         (status = 202, description = "Build queued", body = UpdateAgentResponse),
-        (status = 400, description = "Invalid version/strategy or parking_policy, or non-.zip source"),
+        (status = 400, description = "Invalid version/strategy or parking_policy, non-.zip or empty source, or an unreadable upload"),
         (status = 403, description = "Caller cannot manage this agent"),
         (status = 404, description = "No such agent"),
         (status = 409, description = "Version already exists or is not greater than current"),
+        (status = 413, description = "Upload larger than 100 MiB"),
     ),
 )]
 pub(crate) async fn update_agent(
@@ -162,7 +163,12 @@ pub(crate) async fn update_agent(
     let mut changelog: Option<String> = None;
     let mut parking_policy: Option<String> = None;
 
-    while let Ok(Some(field)) = multipart.next_field().await {
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => return unreadable_upload(&e, agent_id),
+        };
         match field.name().unwrap_or("") {
             "source" => {
                 // Validate file extension before buffering the entire payload.
@@ -170,18 +176,27 @@ pub(crate) async fn update_agent(
                 if !fname.is_empty() && !fname.ends_with(".zip") {
                     return (StatusCode::BAD_REQUEST, "source must be a .zip file").into_response();
                 }
-                let data = field.bytes().await.unwrap_or_default();
-                if !data.is_empty() {
-                    source_data = Some(data.to_vec());
+                let data = match field.bytes().await {
+                    Ok(data) => data,
+                    Err(e) => return unreadable_upload(&e, agent_id),
+                };
+                if data.is_empty() {
+                    return (StatusCode::BAD_REQUEST, "source zip is empty").into_response();
                 }
+                source_data = Some(data.to_vec());
             }
-            "version" => {
-                requested_version = field.text().await.ok().filter(|s| !s.is_empty());
-            }
-            "changelog" => {
-                changelog = field.text().await.ok().filter(|s| !s.is_empty());
-            }
-            "parking_policy" => parking_policy = field.text().await.ok(),
+            "version" => match field.text().await {
+                Ok(text) => requested_version = Some(text).filter(|s| !s.is_empty()),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
+            "changelog" => match field.text().await {
+                Ok(text) => changelog = Some(text).filter(|s| !s.is_empty()),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
+            "parking_policy" => match field.text().await {
+                Ok(text) => parking_policy = Some(text),
+                Err(e) => return unreadable_upload(&e, agent_id),
+            },
             _ => {}
         }
     }
@@ -398,6 +413,24 @@ pub(crate) async fn update_agent(
         }),
     )
         .into_response()
+}
+
+/// The answer to an update body that could not be read: `413` when it is over
+/// [`MAX_UPDATE_BYTES`], `400` for anything else (malformed, or the client hung
+/// up mid-upload). Never treated as "no source": that queues a rebuild from
+/// GitHub, so the caller would get a `202` and a build without their upload.
+fn unreadable_upload(e: &MultipartError, agent_id: Uuid) -> Response {
+    tracing::warn!(error = %e, %agent_id, "update: could not read the multipart body");
+    if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        let limit_mib = MAX_UPDATE_BYTES / (1024 * 1024);
+        (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("upload is larger than {limit_mib} MiB"),
+        )
+            .into_response()
+    } else {
+        (StatusCode::BAD_REQUEST, "could not read the upload").into_response()
+    }
 }
 
 fn bump_patch_version(current: &str) -> String {
