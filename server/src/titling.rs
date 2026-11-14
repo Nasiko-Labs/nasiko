@@ -94,7 +94,7 @@ async fn generate_title(
         ],
         stream: false,
         temperature: Some(0.2),
-        max_tokens: Some(16),
+        max_tokens: Some(1024),
         response_format: None,
         stream_options: None,
     };

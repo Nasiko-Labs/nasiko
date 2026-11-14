@@ -58,7 +58,7 @@ impl AgentSelector {
             ],
             stream: false,
             temperature: Some(0.0),
-            max_tokens: Some(500),
+            max_tokens: Some(2048),
             response_format: Some(ResponseFormat::JsonSchema {
                 json_schema: JsonSchema {
                     name: "agent_selection".to_string(),

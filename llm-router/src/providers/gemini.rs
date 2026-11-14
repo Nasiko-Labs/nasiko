@@ -203,11 +203,26 @@ impl ProviderClient for GeminiProvider {
                     yield Err(ProviderError::Status {
                         status,
                         message: message.to_string(),
-                        retryable: false,
+                        retryable: status == 429 || status >= 500,
                     });
                     return;
                 }
+                if let Some(um) = response.get("usageMetadata") {
+                    let cached = um["cachedContentTokenCount"].as_i64();
+                    usage = Some(Usage {
+                        prompt_tokens: uncached_prompt(um["promptTokenCount"].as_i64(), cached),
+                        completion_tokens: output_tokens(um),
+                        total_tokens: um["totalTokenCount"].as_i64(),
+                        cache_read_input_tokens: cached,
+                        cache_creation_input_tokens: None,
+                        cache_creation: None,
+                        prompt_tokens_details: None,
+                    });
+                }
                 let Some(candidate) = response["candidates"].as_array().and_then(|c| c.first()) else {
+                    if response.get("usageMetadata").is_some() {
+                        continue;
+                    }
                     yield Err(ProviderError::Parse("Gemini stream event has no candidate".into()));
                     return;
                 };
@@ -238,6 +253,13 @@ impl ProviderClient for GeminiProvider {
                                 .unwrap_or_else(|| "{}".to_string());
                             let index = tool_index;
                             tool_index += 1;
+                            let mut extra = Map::new();
+                            if let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str()) {
+                                extra.insert(
+                                    "thought_signature".to_string(),
+                                    Value::String(sig.to_string()),
+                                );
+                            }
                             yield Ok(delta_chunk(&id, &model, Delta {
                                 tool_calls: Some(vec![ToolCallDelta {
                                     index,
@@ -248,6 +270,7 @@ impl ProviderClient for GeminiProvider {
                                         // Gemini sends complete args in one chunk.
                                         arguments: Some(arguments),
                                     }),
+                                    extra,
                                 }]),
                                 ..Delta::default()
                             }));
@@ -327,42 +350,43 @@ impl ProviderClient for GeminiProvider {
             .collect();
 
         let url = format!("{}/models/{}:batchEmbedContents", self.base, cfg.model);
-        let resp = self
-            .authed(self.http.post(url), &cfg.api_key)
-            .await?
-            .json(&json!({ "requests": requests }))
-            .send()
-            .await
-            .map_err(|e| ProviderError::Transport(e.to_string()))?;
+        let mut data: Vec<Embedding> = Vec::with_capacity(inputs.len());
+        let mut offset = 0usize;
+        for chunk in requests.chunks(100) {
+            let resp = self
+                .authed(self.http.post(&url), &cfg.api_key)
+                .await?
+                .json(&json!({ "requests": chunk }))
+                .send()
+                .await
+                .map_err(|e| ProviderError::Transport(e.to_string()))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ProviderError::Status {
-                status: status.as_u16(),
-                message: text,
-                retryable: status.as_u16() == 429 || status.is_server_error(),
-            });
-        }
+            let status = resp.status();
+            if !status.is_success() {
+                let text = resp.text().await.unwrap_or_default();
+                return Err(ProviderError::Status {
+                    status: status.as_u16(),
+                    message: text,
+                    retryable: status.as_u16() == 429 || status.is_server_error(),
+                });
+            }
 
-        let value: Value = resp
-            .json()
-            .await
-            .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        let data = value["embeddings"]
-            .as_array()
-            .map(|embs| {
-                embs.iter()
-                    .enumerate()
-                    .map(|(i, e)| Embedding {
+            let value: Value = resp
+                .json()
+                .await
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            if let Some(embs) = value["embeddings"].as_array() {
+                for (i, e) in embs.iter().enumerate() {
+                    data.push(Embedding {
                         object: "embedding".to_string(),
                         embedding: e["values"].clone(),
-                        index: i as i64,
+                        index: (offset + i) as i64,
                         extra: Map::new(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                    });
+                }
+            }
+            offset += chunk.len();
+        }
 
         // Gemini's batch embed API returns no token counts; estimate so usage
         // rows are billed instead of recording zero input tokens.
@@ -937,7 +961,11 @@ fn assistant_to_gemini(m: &Message) -> Value {
         for tc in tool_calls {
             let args: Value =
                 serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
-            parts.push(json!({ "functionCall": { "name": tc.function.name, "args": args } }));
+            let mut fc_part = json!({ "functionCall": { "name": tc.function.name, "args": args } });
+            if let Some(sig) = tc.extra.get("thought_signature").and_then(|v| v.as_str()) {
+                fc_part["thoughtSignature"] = Value::String(sig.to_string());
+            }
+            parts.push(fc_part);
         }
     }
     if parts.is_empty() {
@@ -988,12 +1016,19 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
                     .get("args")
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "{}".to_string());
+                let mut extra = Map::new();
+                if let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str()) {
+                    extra.insert(
+                        "thought_signature".to_string(),
+                        Value::String(sig.to_string()),
+                    );
+                }
                 // Gemini supplies no call id; synthesize a stable-within-response one.
                 tool_calls.push(ToolCall {
                     id: format!("call_{name}_{call_index}"),
                     kind: "function".to_string(),
                     function: FunctionCall { name, arguments },
-                    extra: Map::new(),
+                    extra,
                 });
                 call_index += 1;
             }
@@ -2243,5 +2278,114 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("done"));
         refused.assert_async().await;
         whole.assert_async().await;
+    }
+
+    #[test]
+    fn thought_signature_round_trips_through_response_and_request() {
+        let gemini = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": { "name": "lookup", "args": { "id": 1 } },
+                        "thoughtSignature": "sig-abc-123"
+                    }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 8 }
+        });
+        let resp = from_gemini_response(&gemini, "gemini-2.5-pro").unwrap();
+        let tc = &resp.choices[0].message.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(
+            tc.extra.get("thought_signature").and_then(|v| v.as_str()),
+            Some("sig-abc-123")
+        );
+
+        let model_msg = assistant_to_gemini(&resp.choices[0].message);
+        assert_eq!(
+            model_msg["parts"][0]["thoughtSignature"].as_str(),
+            Some("sig-abc-123")
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_preserves_thought_signature_and_skips_usage_only_event() {
+        let mut server = mockito::Server::new_async().await;
+        let sse = concat!(
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"id\":1}},\"thoughtSignature\":\"sig-stream-1\"}]},\"finishReason\":\"STOP\"}]}\n\n",
+            "data: {\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n"
+        );
+        server
+            .mock("POST", "/models/gemini-1.5-pro:streamGenerateContent?alt=sse")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+
+        let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
+        let req: ChatRequest = serde_json::from_value(
+            json!({ "stream": true, "messages": [{ "role": "user", "content": "hi" }] }),
+        )
+        .unwrap();
+        let results: Vec<Result<ChatChunk, ProviderError>> =
+            provider.chat_stream(&req, &resolved()).await.unwrap().collect().await;
+        assert!(results.iter().all(|r| r.is_ok()), "unexpected error: {results:?}");
+        let chunks: Vec<ChatChunk> = results.into_iter().map(|r| r.unwrap()).collect();
+        let tc_delta = chunks
+            .iter()
+            .flat_map(|c| c.choices.iter())
+            .filter_map(|ch| ch.delta.tool_calls.as_ref())
+            .flatten()
+            .next()
+            .unwrap();
+        assert_eq!(
+            tc_delta.extra.get("thought_signature").and_then(|v| v.as_str()),
+            Some("sig-stream-1")
+        );
+        assert_eq!(
+            chunks.last().and_then(|c| c.usage.as_ref()).and_then(|u| u.total_tokens),
+            Some(15)
+        );
+    }
+
+    #[tokio::test]
+    async fn embeddings_chunk_over_100_requests() {
+        let mut server = mockito::Server::new_async().await;
+        let first_body: Vec<Value> = (0..100).map(|i| json!({ "values": [i as f32] })).collect();
+        let second_body = vec![json!({ "values": [100.0] })];
+        let m1 = server
+            .mock("POST", "/models/gemini-1.5-pro:batchEmbedContents")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "embeddings": first_body }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let m2 = server
+            .mock("POST", "/models/gemini-1.5-pro:batchEmbedContents")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "embeddings": second_body }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+
+        let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
+        let inputs: Vec<String> = (0..101).map(|i| format!("t{i}")).collect();
+        let req: EmbeddingsRequest =
+            serde_json::from_value(json!({ "model": "gemini-1.5-pro", "input": inputs })).unwrap();
+        let resp = provider
+            .embeddings(
+                &req,
+                &ResolvedEmbeddingConfig::for_test("gemini", "gemini-1.5-pro", "AIza-test"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.data.len(), 101);
+        assert_eq!(resp.data[100].index, 100);
+        m1.assert_async().await;
+        m2.assert_async().await;
     }
 }

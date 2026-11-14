@@ -67,7 +67,7 @@ impl VertexProvider {
 }
 
 /// Vertex authenticates only with the platform's ADC identity. A user-secret config would
-/// spend platform GCP credentials while skipping credit charging, so it is refused.
+/// spend platform GCP credentials while skipping usage billing, so it is refused.
 fn require_platform_paid(platform_paid: bool) -> Result<(), ProviderError> {
     if platform_paid {
         Ok(())
