@@ -317,7 +317,7 @@ impl RoutingEngine for OssRoutingEngine {
                 // at it; skipping this is what made a tuning session's rejected
                 // calls free in FinOps.
                 if record_usage {
-                    write_selector_usage(pool, req.user_id, &req.session_id, &usage).await;
+                    record_selector_usage(pool, req.user_id, &req.session_id, &usage).await;
                 }
                 // trace_usage rows are keyed (trace_id, agent_name), not by uuid.
                 let selection_token_usage_id: Option<Uuid> = None;
@@ -370,7 +370,7 @@ impl RoutingEngine for OssRoutingEngine {
         // Add selector usage to trace_usage (non-fatal). The log row's
         // selection_token_usage_id stays NULL: trace_usage has no row uuid.
         if let Some(ref cr) = selector_usage.filter(|_| record_usage) {
-            write_selector_usage(pool, req.user_id, &req.session_id, cr).await;
+            record_selector_usage(pool, req.user_id, &req.session_id, cr).await;
         }
         let selection_token_usage_id: Option<Uuid> = None;
 
@@ -458,6 +458,29 @@ fn spawn_router_log(pool: &PgPool, entry: RouterLogEntry) {
     tokio::spawn(async move {
         write_router_log(&pool, entry).await;
     });
+}
+
+/// Writes the selector's usage row in its own task and waits for it.
+///
+/// The provider call is already paid for, so the row must land even if the
+/// caller's `route()` future is dropped mid-write (client disconnect). The
+/// spawned task outlives the caller; awaiting the handle keeps the write
+/// ordered before the router log row.
+async fn record_selector_usage(
+    pool: &PgPool,
+    user_id: Uuid,
+    session_id: &str,
+    cr: &crate::providers::CompletionResult,
+) {
+    let pool: PgPool = pool.clone();
+    let session_id: String = session_id.to_owned();
+    let cr: crate::providers::CompletionResult = cr.clone();
+    let handle: tokio::task::JoinHandle<()> = tokio::spawn(async move {
+        write_selector_usage(&pool, user_id, &session_id, &cr).await;
+    });
+    if let Err(err) = handle.await {
+        tracing::warn!(%err, "selector usage task failed (non-fatal)");
+    }
 }
 
 /// Adds the Stage 3 selector's token usage to `trace_usage` under
