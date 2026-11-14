@@ -1,9 +1,9 @@
 /**
- * Reo (visitor and sales-intent analytics), only where a page turns it on (the multi-tenant dashboard on nasiko.dev)
+ * Reo (visitor and sales-intent analytics), only where a page turns it on (the multi-tenant dashboard on app.nasiko.com)
  * and only after the person agreed. Self-hosted EE, OSS and the desktop apps never call `loadReo`, so `Reo` is never
  * defined there and every function below does nothing.
  *
- * Consent is opt-in everywhere: nasiko.dev can't tell a visitor's region, so it asks everyone, the way the EU, UK and
+ * Consent is opt-in everywhere: app.nasiko.com can't tell a visitor's region, so it asks everyone, the way the EU, UK and
  * Switzerland require. A Global Privacy Control or Do Not Track signal is a "no" that the person can't be asked to
  * override from a banner (they can still turn it on in Settings → Privacy).
  */
