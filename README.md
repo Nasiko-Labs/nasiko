@@ -158,7 +158,8 @@ of holding real API keys or tool credentials.
 ## Quick start
 
 You need [Docker](https://docs.docker.com/get-docker/) with Compose V2 for the server. The CLI alone
-is enough to discover coding agents.
+is enough to discover coding agents. On Linux, add yourself to the `docker` group first:
+`sudo usermod -aG docker "$USER"`, then log out and back in.
 
 **1. Install the CLI**
 
@@ -200,7 +201,7 @@ After editing `.env`, run `docker compose up -d` again. Every variable is descri
 
 ```sh
 nasiko connect http://localhost:8080
-nasiko auth login
+nasiko auth login                 # admin / changeme, or your ADMIN_PASSWORD
 ```
 
 Now [measure and route your coding agents](#coding-agents) or
@@ -216,6 +217,8 @@ just infra    # Postgres, Redis, RustFS and the OTel stack in Docker
 just dev      # the server, rebuilt on every change (cargo install cargo-watch)
 ```
 
+To see coding-agent tokens and cost on a native server, set
+`CODING_AGENT_OTLP_ENDPOINT=http://localhost:4318` in `server/.env` (Compose sets it for you).
 Toolchain setup, tests and code layout are in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Coding agents
@@ -249,11 +252,18 @@ cursor     yes        no          v2        ~/.cursor
 
 ### Report sessions
 
-One command connects every detected harness and imports its past sessions:
+With the server running and the CLI signed in ([Quick start](#quick-start)), one command connects
+every detected harness and imports its past sessions:
 
 ```sh
 nasiko agents setup
-nasiko sessions                  # see what was recorded
+```
+
+Finish one turn in a connected harness, then check that it arrived:
+
+```sh
+nasiko sessions                  # recorded sessions
+nasiko agents status             # import progress
 ```
 
 Add `nasiko agents install claude --no-content` first to keep prompt and response text out.
