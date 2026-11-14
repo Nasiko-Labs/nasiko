@@ -52,66 +52,95 @@ pub struct TemplateStep {
 
 /// Every template this server knows. Ids must be unique.
 pub const TEMPLATES: &[WorkflowTemplate] = &[
+    // Showcase workflows: a run needs no input (the dashboard's Run sends none), so each
+    // carries its own sample data in its first step, and its description says so.
     WorkflowTemplate {
-        id: "meeting-follow-up",
+        id: "chief-of-staff-follow-up",
         version: 1,
-        name: "Meeting follow-up",
-        description: "Turns a meeting transcript into decisions, a task list and \
-                      a ready-to-send follow-up email.",
+        name: "Chief of Staff: Meeting Follow-up",
+        description: "Turns a meeting into decisions, owners and a ready-to-send \
+                      follow-up email. Runs on a built-in sample meeting.",
         steps: &[
             TemplateStep {
                 agent: "meeting-notes-processor",
                 agent_version: "1.0.0",
-                task: "Read the meeting transcript and pull out the decisions made, \
-                       the action items with their owners and due dates, and any \
-                       open questions.",
+                task: "Read this sample meeting transcript and pull out the decisions, \
+                       the action items with owner and due date, and the open \
+                       questions. Transcript: \"Weekly launch sync, 12 Nov. Attendees: \
+                       Priya (PM), Rahul (Eng), Anil (Marketing). Priya: We agreed to \
+                       ship the new onboarding flow on 20 Nov. Rahul: I'll fix the CSV \
+                       export bug by 18 Nov. Anil: I'll have the launch blog post ready \
+                       by 17 Nov. Open question: do we launch the mobile app now? \
+                       Decision: the mobile app moves to December. Priya: Rahul, please \
+                       also add usage alerts before launch.\"",
             },
             TemplateStep {
                 agent: "task-breakdown",
                 agent_version: "1.0.0",
-                task: "Break the action items from the meeting into an ordered list \
-                       of concrete tasks, keeping each task's owner and due date.",
+                task: "Turn the action items into an ordered task list for the launch, \
+                       keeping each owner and due date, and flag anything due before \
+                       18 Nov as urgent.",
             },
             TemplateStep {
                 agent: "reply-drafter",
                 agent_version: "1.0.0",
-                task: "Draft a follow-up email to the meeting's attendees that \
-                       summarises the decisions and lists the tasks with their \
-                       owners and due dates.",
+                task: "Draft the follow-up email the meeting organiser sends to Priya, \
+                       Rahul and Anil: thank them, confirm the decisions, list each task \
+                       with owner and due date, and note that the mobile app moved to \
+                       December. It goes out by email.",
             },
             TemplateStep {
                 agent: "humanizer",
                 agent_version: "1.0.0",
-                task: "Rewrite the follow-up email so it reads naturally and warmly, \
-                       without changing any decision, task, owner or date.",
+                task: "Rewrite the email so it reads warm and natural, without changing \
+                       any decision, owner or date.",
             },
         ],
     },
     WorkflowTemplate {
-        id: "multilingual-brief",
+        id: "voice-of-customer-roadmap",
         version: 1,
-        name: "Multilingual brief",
-        description: "Condenses a long document or thread into a short, readable \
-                      brief in the language you ask for.",
+        name: "Voice of Customer \u{2192} Roadmap",
+        description: "Turns raw customer feedback into ranked themes, roadmap tasks and \
+                      a reply to the customer in their own language. Runs on built-in \
+                      sample feedback.",
         steps: &[
             TemplateStep {
                 agent: "summarizer",
                 agent_version: "1.0.0",
-                task: "Summarise the text into a short brief: the key points, the \
-                       decisions and anything that needs action.",
+                task: "Group this sample customer feedback into themes, ranked by how \
+                       many customers raised each, with one short quote per theme. \
+                       Feedback: \"1. Acme (500 users): Monthly reports download as \
+                       blank PDFs, our finance team is blocked. 2. Brightly: I can't \
+                       find where to add teammates. 3. Acme: Blank PDF reports again \
+                       this month, please fix. 4. Zento: Love the dashboard, but \
+                       exports are slow. 5. Lumen (Spain): Los informes en PDF salen en \
+                       blanco, necesitamos una soluci\u{f3}n urgente. 6. Brightly: \
+                       Adding teammates is confusing.\"",
+            },
+            TemplateStep {
+                agent: "task-breakdown",
+                agent_version: "1.0.0",
+                task: "Turn the top themes into prioritised roadmap tasks, highest \
+                       customer impact first, each with a one-line reason.",
+            },
+            TemplateStep {
+                agent: "reply-drafter",
+                agent_version: "1.0.0",
+                task: "Draft a reply to Lumen, the Spanish customer whose PDF reports \
+                       come out blank: apologise, say the fix is planned, and promise \
+                       an update by 20 Nov. It goes out by email.",
             },
             TemplateStep {
                 agent: "humanizer",
                 agent_version: "1.0.0",
-                task: "Rewrite the brief so it reads naturally, keeping every fact \
-                       and point it makes.",
+                task: "Make the reply sound natural and caring, keeping the commitment \
+                       and the date.",
             },
             TemplateStep {
                 agent: "translator",
                 agent_version: "1.0.0",
-                task: "Translate the brief into the language the user asked for, \
-                       keeping its tone. If no language was given, return it in \
-                       English.",
+                task: "Translate the reply into Spanish for Lumen, keeping its tone.",
             },
         ],
     },
@@ -374,8 +403,8 @@ mod tests {
     #[test]
     fn templates_are_found_by_id() {
         assert_eq!(
-            template("meeting-follow-up").map(|t| t.id),
-            Some("meeting-follow-up")
+            template("chief-of-staff-follow-up").map(|t| t.id),
+            Some("chief-of-staff-follow-up")
         );
         assert!(template("no-such-template").is_none());
     }
