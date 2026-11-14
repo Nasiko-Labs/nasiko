@@ -132,6 +132,21 @@ pub(crate) async fn fetch_and_apply_agent_card(
 /// update / rollback) that reaches this function — same env-driven approach
 /// `nasiko_config::Config` itself uses for these fields. The key is the
 /// owner's saved one, else `OPENAI_API_KEY`.
+/// In-process router used for platform-key agent embeddings. Set once at state
+/// construction; deploy paths here only carry a pool, not `AppState`.
+static EMBED_BACKEND: std::sync::OnceLock<nasiko_orchestrator::llm_backend::SharedLlmBackend> =
+    std::sync::OnceLock::new();
+
+/// Register the router backend for [`embed_updated_agent`]. First call wins.
+pub(crate) fn set_embed_backend(backend: nasiko_orchestrator::llm_backend::SharedLlmBackend) {
+    let _ = EMBED_BACKEND.set(backend);
+}
+
+/// The registered router backend, for deploy/build paths that carry no `AppState`.
+pub(crate) fn platform_backend() -> Option<&'static nasiko_orchestrator::llm_backend::SharedLlmBackend> {
+    EMBED_BACKEND.get()
+}
+
 async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
     let base_url =
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
@@ -148,12 +163,8 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
     let Some((name, description, tags, owner_id)) = row else {
         return;
     };
-    let Some(api_key) = nasiko_orchestrator::user_key::saved_openai_key(db, owner_id)
-        .await
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-    else {
-        return;
-    };
+    let saved_key: Option<String> =
+        nasiko_orchestrator::user_key::saved_openai_key(db, owner_id).await;
 
     let agent = nasiko_orchestrator::AgentCard {
         id: agent_id,
@@ -166,9 +177,33 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
         embedding_content_hash: None,
     };
 
-    if let Err(e) =
-        nasiko_orchestrator::embed_and_store_agent(db, &agent, &api_key, &base_url, &model).await
-    {
+    let result = match (saved_key, EMBED_BACKEND.get()) {
+        (Some(key), _) => {
+            nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model).await
+        }
+        (None, Some(backend)) => {
+            let routed = nasiko_orchestrator::vector_store::RoutedEmbedder {
+                backend: std::sync::Arc::clone(backend),
+                call: nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id: owner_id,
+                    component: "agent_embedding".to_string(),
+                    session_id: None,
+                },
+            };
+            nasiko_orchestrator::vector_store::embed_and_store_agent_routed(
+                db, &agent, &routed, &model,
+            )
+            .await
+        }
+        (None, None) => match std::env::var("OPENAI_API_KEY") {
+            Ok(key) => {
+                nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model)
+                    .await
+            }
+            Err(_) => return,
+        },
+    };
+    if let Err(e) = result {
         tracing::warn!(%agent_id, error = %e, "proactive agent embedding failed (non-fatal, will be computed lazily on next route())");
     }
 }

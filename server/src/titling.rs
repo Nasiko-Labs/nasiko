@@ -40,9 +40,22 @@ async fn generate_title(
     user_id: Uuid,
     prompt: &str,
 ) -> Result<String, ProviderError> {
-    let provider =
-        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
-            .await;
+    // A user's saved OpenAI key is spent directly; otherwise the platform call goes
+    // through the in-process router, which picks the provider and records usage.
+    let provider = match nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await
+    {
+        Some(key) => nasiko_orchestrator::providers::LLMProvider::from_env(state.http_client.clone())
+            .with_api_key(key),
+        None => nasiko_orchestrator::providers::LLMProvider::from_env(state.http_client.clone())
+            .with_backend(
+                std::sync::Arc::clone(&state.llm_backend),
+                nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id,
+                    component: "titling".to_string(),
+                    session_id: None,
+                },
+            ),
+    };
 
     let request = ChatCompletionRequest {
         // Reuse the cheap task model already configured for capability

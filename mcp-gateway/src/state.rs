@@ -11,11 +11,17 @@ use std::sync::Arc;
 use nasiko_config::Config;
 use sqlx::PgPool;
 
+use nasiko_orchestrator::llm_backend::{LlmCallContext, SharedLlmBackend};
+use nasiko_orchestrator::providers::LLMProvider;
+
 use crate::authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 use crate::config::{McpConfig, ToolSearchMode};
 use crate::endpoint_refresh::{EndpointRefresher, NoopEndpointRefresher};
 use crate::provider::{ComposioBackend, ComposioProvider, Providers};
 use crate::search::ToolSearchIndex;
+
+/// `trace_usage.agent_name` for description-backfill chat calls.
+pub const DESCRIPTION_COMPONENT: &str = "mcp_tool_description";
 
 #[derive(Clone)]
 pub struct McpState {
@@ -42,7 +48,7 @@ pub struct McpState {
     /// Best-effort LLM fallback for connector/tool descriptions the native
     /// source didn't provide — see `description_backfill`. Never used when a
     /// native description is already present.
-    pub llm: nasiko_orchestrator::providers::LLMProvider,
+    pub llm: LLMProvider,
     /// Flat tool search index — semantic (default) or BM25 (fallback).
     pub search_index: Arc<dyn ToolSearchIndex>,
 }
@@ -63,32 +69,46 @@ impl McpState {
     }
 
     /// Build gateway state from the server's shared handles and platform config.
+    ///
+    /// `llm_backend` is the in-process LLM router. When present, tool embeddings and
+    /// description backfill go through it (any configured provider, usage in
+    /// `trace_usage`); when absent, semantic search degrades to keyword search and
+    /// descriptions use the env OpenAI key.
     pub fn new(
         db: PgPool,
         redis: nasiko_redis::SharedRedis,
         http_client: reqwest::Client,
         config: &Config,
+        llm_backend: Option<SharedLlmBackend>,
     ) -> Self {
         let mcp_config = McpConfig::from_config(config);
         let providers = Providers::new(http_client.clone(), &mcp_config);
-        let llm = nasiko_orchestrator::providers::LLMProvider::from_env(http_client.clone());
+        let mut llm = LLMProvider::from_env(http_client.clone());
+        if let Some(backend) = &llm_backend {
+            llm = llm.with_backend(
+                Arc::clone(backend),
+                LlmCallContext {
+                    user_id: uuid::Uuid::nil(),
+                    component: DESCRIPTION_COMPONENT.to_string(),
+                    session_id: None,
+                },
+            );
+        }
         let search_index: Arc<dyn ToolSearchIndex> = match mcp_config.tool_search_mode {
-            ToolSearchMode::Semantic => {
-                if let Some(ref api_key) = mcp_config.openai_api_key {
-                    Arc::new(crate::search::SemanticSearchIndex::new(
-                        http_client.clone(),
-                        redis.clone(),
-                        api_key.clone(),
-                        mcp_config.embedding_model.clone(),
-                    ))
-                } else {
+            ToolSearchMode::Semantic => match &llm_backend {
+                Some(backend) => Arc::new(crate::search::SemanticSearchIndex::new(
+                    redis.clone(),
+                    Arc::clone(backend),
+                    mcp_config.embedding_model.clone(),
+                )),
+                None => {
                     tracing::warn!(
-                        "MCP_TOOL_SEARCH_MODE=semantic but OPENAI_API_KEY not set, \
+                        "MCP_TOOL_SEARCH_MODE=semantic but no LLM router backend, \
                          falling back to keyword"
                     );
                     Arc::new(crate::search::Bm25SearchIndex::new())
                 }
-            }
+            },
             ToolSearchMode::Keyword => Arc::new(crate::search::Bm25SearchIndex::new()),
             ToolSearchMode::None => Arc::new(crate::search::NoopSearchIndex),
         };

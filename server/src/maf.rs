@@ -154,24 +154,9 @@ struct MafRow {
     status: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
-    /// How many times the caller has run this workflow — COUNT(*) over their
-    /// maf_executions, computed on read rather than stored, so it can never
-    /// drift out of sync. Only the caller's runs: on a public workflow, other
-    /// users' runs are theirs.
+    /// How many times this workflow has been run — COUNT(*) over maf_executions,
+    /// computed on read rather than stored, so it can never drift out of sync.
     execution_count: i64,
-    /// Every user may see and run it, not only its owner (see [`can_use`]).
-    /// Defaulted for the `RETURNING` clauses of create and draft paths, which
-    /// only ever write private rows.
-    #[sqlx(default)]
-    is_public: bool,
-}
-
-/// Whether `user_id` may see and run this workflow: its owner always, anyone
-/// else only when it is public — the platform's seeded workflows
-/// (`crate::seed_workflows`). Editing, promoting and deleting stay with the
-/// owner, so those handlers compare `user_id` directly instead.
-fn can_use(row: &MafRow, user_id: Uuid) -> bool {
-    row.user_id == user_id || row.is_public
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -236,8 +221,6 @@ struct MafResponse {
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
     execution_count: i64,
-    /// Every user may run it; only its owner may edit or delete it.
-    is_public: bool,
 }
 
 #[derive(Serialize)]
@@ -357,7 +340,6 @@ fn maf_row_to_response(row: MafRow) -> MafResponse {
         created_at: row.created_at,
         updated_at: row.updated_at,
         execution_count: row.execution_count,
-        is_public: row.is_public,
     }
 }
 
@@ -657,7 +639,6 @@ struct WorkflowListRow {
     total_tokens: i64,
     last_run_at: Option<DateTime<Utc>>,
     last_run_status: Option<String>,
-    is_public: bool,
 }
 
 #[derive(Serialize)]
@@ -686,8 +667,6 @@ struct WorkflowListResponse {
     step_count: usize,
     /// The distinct agents this workflow uses, in first-use order.
     agent_names: Vec<String>,
-    /// Every user may run it; only its owner may edit or delete it.
-    is_public: bool,
 }
 
 /// The distinct agents a workflow's steps use, in first-use order.
@@ -720,18 +699,14 @@ enum ListScope {
 }
 
 impl ListScope {
-    /// This scope's `WHERE` fragment, `$1` being the caller. A closed enum, so
-    /// no caller text ever reaches the statement.
+    /// This scope's `WHERE` fragment. A closed enum, so no caller text ever
+    /// reaches the statement.
     fn predicate(self) -> &'static str {
         match self {
-            // The caller's own, plus the public ones every user may run.
-            Self::Active => "(m.user_id = $1 OR m.is_public) AND m.status = 'active'",
-            // Only the caller's own: a draft is a work in progress nobody else
-            // has a use for. Soft-deleted rows stay out: discarding a draft
-            // means discarding it, whether or not it had been deployed by then.
-            Self::Drafted => {
-                "m.user_id = $1 AND m.drafted_at IS NOT NULL AND m.status <> 'deleted'"
-            }
+            Self::Active => "m.status = 'active'",
+            // Soft-deleted rows stay out: discarding a draft means discarding
+            // it, whether or not it had been deployed by then.
+            Self::Drafted => "m.drafted_at IS NOT NULL AND m.status <> 'deleted'",
         }
     }
 }
@@ -775,7 +750,6 @@ async fn fetch_workflow_page(
     let sql = format!(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
                   m.status, m.created_at, m.updated_at,
-                  m.is_public,
                   COUNT(e.id) AS execution_count,
                   -- A run its owner stopped never got the chance to succeed or fail.
                   ROUND(100.0 * COUNT(*) FILTER (WHERE e.status = 'success')
@@ -784,16 +758,12 @@ async fn fetch_workflow_page(
                   MAX(e.started_at) AS last_run_at,
                   (SELECT latest.status
                      FROM maf_executions latest
-                    WHERE latest.maf_id = m.id AND latest.user_id = $1
-                      AND latest.started_at IS NOT NULL
+                    WHERE latest.maf_id = m.id AND latest.started_at IS NOT NULL
                     ORDER BY latest.started_at DESC
                     LIMIT 1) AS last_run_status
            FROM mafs m
-           -- The caller's runs only. Every run of a private workflow is its
-           -- owner's, so this changes nothing there; on a public workflow it
-           -- keeps other users' runs, spend and outcomes out of the card.
-           LEFT JOIN maf_executions e ON e.maf_id = m.id AND e.user_id = $1
-           WHERE {}
+           LEFT JOIN maf_executions e ON e.maf_id = m.id
+           WHERE m.user_id = $1 AND {}
              AND ($4::text IS NULL
                   OR m.name ILIKE '%' || $4 || '%'
                   OR COALESCE(m.description, '') ILIKE '%' || $4 || '%')
@@ -847,7 +817,6 @@ fn list_row_to_response(row: WorkflowListRow) -> WorkflowListResponse {
         last_run_status: row.last_run_status,
         step_count,
         agent_names,
-        is_public: row.is_public,
     }
 }
 
@@ -1468,7 +1437,7 @@ async fn promote_draft(
     // Read first so each way this can fail gets its own answer. The UPDATE
     // below folds "gone", "someone else's" and "not a draft" into one empty
     // result, and a caller that sees only a 404 can't tell which happened.
-    let draft = match fetch_maf(&state.db, id, user_id).await {
+    let draft = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("draft"),
@@ -1540,8 +1509,8 @@ async fn get_maf(
         None => return unauthorized(),
     };
 
-    match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(row)) if can_use(&row, user_id) => ok_json(
+    match fetch_maf(&state.db, id).await {
+        Ok(Some(row)) if row.user_id == user_id => ok_json(
             StatusCode::OK,
             maf_row_to_response(row),
             "Workflow retrieved successfully",
@@ -1571,7 +1540,7 @@ async fn update_maf(
         None => return unauthorized(),
     };
 
-    let existing = match fetch_maf(&state.db, id, user_id).await {
+    let existing = match fetch_maf(&state.db, id).await {
         Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
@@ -1709,9 +1678,8 @@ async fn update_maf(
            SET name = $1, description = $2, maf_json = $3::jsonb, updated_at = now()
            WHERE id = $4 AND status <> 'deleted'
            RETURNING id, user_id, name, description, maf_json::text AS maf_json,
-                     status, created_at, updated_at, is_public,
-                     (SELECT COUNT(*) FROM maf_executions e
-                       WHERE e.maf_id = mafs.id AND e.user_id = mafs.user_id) AS execution_count"#,
+                     status, created_at, updated_at,
+                     (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = mafs.id) AS execution_count"#,
     )
     .bind(new_name)
     .bind(new_description)
@@ -1745,7 +1713,7 @@ async fn delete_maf(
 
     // Ownership check before soft-delete — superuser may delete any workflow (same
     // owner-or-superuser convention as agent management elsewhere).
-    match fetch_maf(&state.db, id, user_id).await {
+    match fetch_maf(&state.db, id).await {
         Ok(Some(row)) if row.user_id != user_id && !claims.is_superuser => {
             return forbidden("not owned by caller");
         }
@@ -1817,10 +1785,8 @@ async fn run_workflow(
         }
     };
 
-    // A public workflow runs as the caller: the execution row below is theirs,
-    // and the agent check below asks about their access, not the owner's.
-    let maf = match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(r)) if can_use(&r, user_id) => r,
+    let maf = match fetch_maf(&state.db, id).await {
+        Ok(Some(r)) if r.user_id == user_id => r,
         Ok(Some(_)) => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
@@ -1942,14 +1908,12 @@ async fn run_workflow(
 
     // Fresh count including the execution just created, so the caller can
     // update its UI immediately without a separate re-fetch.
-    let execution_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1 AND user_id = $2",
-    )
-    .bind(id)
-    .bind(user_id)
-    .fetch_one(&state.db)
-    .await
-    .unwrap_or(0);
+    let execution_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM maf_executions WHERE maf_id = $1")
+            .bind(id)
+            .fetch_one(&state.db)
+            .await
+            .unwrap_or(0);
 
     ok_json(
         StatusCode::ACCEPTED,
@@ -2005,10 +1969,9 @@ async fn list_executions(
         None => return unauthorized(),
     };
 
-    // The caller may use the workflow; the query below then lists only their
-    // own runs of it, which on a public workflow is all they may see.
-    match fetch_maf(&state.db, id, user_id).await {
-        Ok(Some(r)) if !can_use(&r, user_id) => return forbidden("not owned by caller"),
+    // Verify ownership of the MAF first
+    match fetch_maf(&state.db, id).await {
+        Ok(Some(r)) if r.user_id != user_id => return forbidden("not owned by caller"),
         Ok(None) => return not_found("workflow"),
         Err(e) => return internal_err(e),
         Ok(Some(_)) => {}
@@ -2275,10 +2238,8 @@ async fn stop_executions(
             return bad_request(&format!("at most {MAX_STOP_IDS} execution_ids per request"));
         }
         (None, false) => stop::StopScope::Executions(&ids),
-        (Some(workflow_id), true) => match fetch_maf(&state.db, workflow_id, user_id).await {
-            // `stop_in_db` matches the caller's own runs only, so stopping a
-            // public workflow stops what the caller started and nothing else.
-            Ok(Some(row)) if can_use(&row, user_id) => stop::StopScope::Workflow(workflow_id),
+        (Some(workflow_id), true) => match fetch_maf(&state.db, workflow_id).await {
+            Ok(Some(row)) if row.user_id == user_id => stop::StopScope::Workflow(workflow_id),
             Ok(Some(_)) => return forbidden("not owned by caller"),
             Ok(None) => return not_found("workflow"),
             Err(e) => return internal_err(e),
@@ -2620,21 +2581,28 @@ async fn generate_maf(
     } else {
         "platform"
     };
-    let api_key = match saved_key.or_else(|| state.config.openai_api_key.clone()) {
-        Some(k) => k,
-        None => {
-            return err_json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "No OpenAI API key: add one in the setup guide or Settings → Secrets",
-            );
-        }
+    // A saved user key is spent directly; otherwise the planner call goes through the
+    // in-process router (any configured provider), which records its usage.
+    let llm = match saved_key {
+        Some(k) => LlmClient::new(
+            state.http_client.clone(),
+            k,
+            state.config.openai_base_url.clone(),
+            state.config.openai_model.clone(),
+        ),
+        None => LlmClient::new(
+            state.http_client.clone(),
+            String::new(),
+            state.config.openai_base_url.clone(),
+            state.config.openai_model.clone(),
+        )
+        .with_backend(std::sync::Arc::clone(&state.llm_backend))
+        .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {
+            user_id,
+            component: "maf_planner".to_string(),
+            session_id: None,
+        }),
     };
-    let llm = LlmClient::new(
-        state.http_client.clone(),
-        api_key,
-        state.config.openai_base_url.clone(),
-        state.config.openai_model.clone(),
-    );
 
     // Fetch all agents visible to this user
     let agent_rows = match fetch_user_agents(&state.db, user_id).await {
@@ -2658,7 +2626,8 @@ async fn generate_maf(
         .collect();
 
     let (plan, usage) = planner::plan_maf(&req.description, &planner_agents, &llm).await;
-    if let Some(usage) = usage {
+    // Routed calls: the router already wrote `trace_usage`.
+    if let Some(usage) = usage.filter(|_| !llm.is_routed()) {
         record_planner_usage(&state.db, user_id, &llm, key_source, &usage).await;
     }
     match plan {
@@ -2744,23 +2713,14 @@ async fn record_planner_usage(
 /// can fetch, edit, promote and discard; only the run path treats it specially.
 /// Soft-deleted rows stay excluded, so a deleted workflow is still a 404
 /// everywhere.
-///
-/// `execution_count` counts `caller`'s runs only — see [`MafRow`]. Access is
-/// the handler's to decide, from the row's `user_id` and `is_public`.
-async fn fetch_maf(
-    db: &sqlx::PgPool,
-    id: Uuid,
-    caller: Uuid,
-) -> Result<Option<MafRow>, sqlx::Error> {
+async fn fetch_maf(db: &sqlx::PgPool, id: Uuid) -> Result<Option<MafRow>, sqlx::Error> {
     sqlx::query_as::<_, MafRow>(
         r#"SELECT m.id, m.user_id, m.name, m.description, m.maf_json::text AS maf_json,
-                  m.status, m.created_at, m.updated_at, m.is_public,
-                  (SELECT COUNT(*) FROM maf_executions e
-                    WHERE e.maf_id = m.id AND e.user_id = $2) AS execution_count
+                  m.status, m.created_at, m.updated_at,
+                  (SELECT COUNT(*) FROM maf_executions e WHERE e.maf_id = m.id) AS execution_count
            FROM mafs m WHERE m.id = $1 AND m.status <> 'deleted'"#,
     )
     .bind(id)
-    .bind(caller)
     .fetch_optional(db)
     .await
 }

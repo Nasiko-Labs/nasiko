@@ -50,7 +50,7 @@ async fn coding_agent_turn_streams_a_real_completion() {
     unsafe {
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", &key);
-        std::env::remove_var("OPENAI_API_BASE");
+        std::env::remove_var("OPENAI_BASE_URL");
     }
 
     let docker = DockerRuntime::new(DockerRuntimeConfig::default())

@@ -67,7 +67,7 @@ async fn seed(server: &TestServer, name: &str) -> Caller {
 fn configure(base: &str, compact_tools: bool) {
     // SAFETY: serialized by #[serial] within this test binary.
     unsafe {
-        std::env::set_var("OPENAI_API_BASE", base);
+        std::env::set_var("OPENAI_BASE_URL", base);
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
         std::env::set_var(

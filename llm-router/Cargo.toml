@@ -40,7 +40,7 @@ rand_distr = { workspace = true }
 
 # Storage & outbound HTTP (the crate owns these via LlmRouterCtx — no nasiko-server dep)
 sqlx = { workspace = true }
-reqwest = { workspace = true, features = ["json", "stream"] }
+reqwest = { workspace = true, features = ["json", "stream", "multipart"] }
 futures = { workspace = true }
 async-stream = { workspace = true }
 bytes = { workspace = true }

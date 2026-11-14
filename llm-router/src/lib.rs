@@ -42,6 +42,7 @@ pub mod inbound;
 pub mod inject;
 pub mod ir;
 pub mod payer;
+pub mod platform;
 pub mod providers;
 mod range_view;
 pub mod recovery;

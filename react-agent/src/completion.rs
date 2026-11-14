@@ -67,12 +67,46 @@ pub(crate) enum CompletionEvent {
 }
 
 impl UsageModel {
+    /// Explicit OpenAI key (user's saved key or `OPENAI_API_KEY`) → OpenAI-compatible endpoint.
+    /// No key → the router's platform default provider (`DEFAULT_PROVIDER`, else the first
+    /// provider with credentials), so a Vertex-only deployment works.
     pub fn from_config(config: &OrchestratorConfig) -> Result<Self, String> {
-        let api_key = config
+        let explicit_key: Option<String> = config
             .api_key
             .clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-            .ok_or_else(|| "OPENAI_API_KEY not set".to_owned())?;
+            .filter(|k| !k.trim().is_empty());
+        match explicit_key {
+            Some(api_key) => Ok(Self::openai(config, api_key)),
+            None => Self::platform(config),
+        }
+    }
+
+    fn platform(config: &OrchestratorConfig) -> Result<Self, String> {
+        let gateway = nasiko_llm_router::config::GatewayConfig::from_env();
+        let provider: String = gateway.default_provider.clone();
+        let api_key: String = gateway.platform_key_for(&provider).to_string();
+        if api_key.is_empty() {
+            return Err(format!(
+                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
+            ));
+        }
+        let model: String = if config.model.trim().is_empty() {
+            gateway.default_model.clone()
+        } else {
+            config.model.clone()
+        };
+        let http = reqwest::Client::new();
+        let client = nasiko_llm_router::providers::provider_for(&provider, None, &http, &gateway)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            provider: Arc::from(client),
+            config: Self::resolved(provider.clone(), model, api_key),
+            identity: Some(provider),
+        })
+    }
+
+    fn openai(config: &OrchestratorConfig, api_key: String) -> Self {
         let base = config
             .base_url
             .clone()
@@ -83,12 +117,18 @@ impl UsageModel {
             .ok()
             .filter(|url| url.host_str() == Some("api.openai.com"))
             .map(|_| "openai".to_owned());
-        Ok(Self {
+        Self {
             provider: Arc::new(OpenAiProvider::new(reqwest::Client::new(), base)),
-            config: ResolvedConfig {
-                provider: "openai".into(),
-                model: config.model.clone(),
-                litellm_model: config.model.clone(),
+            config: Self::resolved("openai".into(), config.model.clone(), api_key),
+            identity,
+        }
+    }
+
+    fn resolved(provider: String, model: String, api_key: String) -> ResolvedConfig {
+        ResolvedConfig {
+                provider,
+                litellm_model: model.clone(),
+                model,
                 api_key,
                 fallback_models: vec![],
                 temperature: None,
@@ -107,9 +147,7 @@ impl UsageModel {
                 compress_enabled: false,
                 // No agent row either, so no agent to key OpenAI's prompt cache by.
                 agent_id: String::new(),
-            },
-            identity,
-        })
+        }
     }
 
     pub fn call_identity(&self, streaming: bool) -> CallUsage {

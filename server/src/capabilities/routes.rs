@@ -234,9 +234,15 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
 }
 
 async fn make_generator(state: &AppState, user_id: Uuid) -> CapabilityGenerator {
-    let provider =
-        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
-            .await;
+    // No saved user key: the call goes through the in-process LLM router.
+    let provider = nasiko_orchestrator::user_key::routed_llm_provider(
+        &state.db,
+        state.http_client.clone(),
+        user_id,
+        Some(&state.llm_backend),
+        "capability_generation",
+    )
+    .await;
     // `state.config.capability_generator_model` is already loaded via
     // `env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini")`
     // (oss/config/src/lib.rs) — read that resolved config value instead of

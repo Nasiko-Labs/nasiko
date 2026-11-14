@@ -61,8 +61,8 @@ async fn seed(server: &TestServer, name: &str) -> Caller {
 fn route_providers_to(base: &str) {
     // SAFETY: serialized by #[serial] within this test binary.
     unsafe {
-        std::env::set_var("OPENAI_API_BASE", base);
-        std::env::set_var("ANTHROPIC_API_BASE", base);
+        std::env::set_var("OPENAI_BASE_URL", base);
+        std::env::set_var("ANTHROPIC_BASE_URL", base);
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
         std::env::set_var("PLATFORM_ANTHROPIC_API_KEY", "sk-ant-platform-test");

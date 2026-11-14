@@ -7,6 +7,49 @@ mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
+/// Last-resort model for the platform's small task calls (selector, titles,
+/// capability generation, MCP descriptions).
+const TASK_MODEL_FALLBACK: &str = "gpt-4o-mini";
+
+/// Model for a platform task call: its own env var, else `DEFAULT_MODEL`, else
+/// [`TASK_MODEL_FALLBACK`]. Following `DEFAULT_MODEL` keeps a Vertex-only
+/// deployment from sending `gpt-4o-mini` to a provider that cannot serve it.
+fn task_model(var: &str) -> String {
+    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
+}
+
+/// Pure core of [`task_model`]; blank values count as unset.
+fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
+    [own, default_model]
+        .into_iter()
+        .flatten()
+        .map(|m: String| m.trim().to_string())
+        .find(|m: &String| !m.is_empty())
+        .unwrap_or_else(|| TASK_MODEL_FALLBACK.to_string())
+}
+
+#[cfg(test)]
+mod task_model_tests {
+    use super::pick_task_model;
+
+    #[test]
+    fn own_var_wins() {
+        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
+        assert_eq!(m, "a");
+    }
+
+    #[test]
+    fn falls_back_to_default_model() {
+        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
+        assert_eq!(m, "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn falls_back_to_gpt_when_nothing_set() {
+        assert_eq!(pick_task_model(None, None), "gpt-4o-mini");
+    }
+}
+
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
 /// fleet, which is why the assertion exchange refuses it.
@@ -816,9 +859,9 @@ impl Config {
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
-            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
-            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
+            router_model: task_model("ROUTER_MODEL"),
+            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
+            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),

@@ -6,5 +6,6 @@
 //! - [`custom_providers`] — admin API for DB-registered custom LLM endpoints.
 pub mod custom_providers;
 pub mod model_registry;
+pub mod platform_backend;
 pub mod providers;
 pub mod wiring;

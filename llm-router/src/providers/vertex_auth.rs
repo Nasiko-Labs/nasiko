@@ -1,16 +1,14 @@
 //! Application Default Credentials (ADC) token source for Vertex AI.
 //!
-//! Resolution order, as Google's client libraries do it:
-//! 1. `GOOGLE_APPLICATION_CREDENTIALS` file path,
-//! 2. `~/.config/gcloud/application_default_credentials.json`,
-//! 3. the GCE/GKE metadata server.
+//! Resolution order:
+//! 1. `VERTEX_CREDENTIALS_JSON` — the complete ADC JSON as the env value (not a path),
+//! 2. the GCE/GKE metadata server.
 //!
-//! The file is either an `authorized_user` (refresh token) or a `service_account`
+//! The JSON is either an `authorized_user` (refresh token) or a `service_account`
 //! (RS256-signed JWT exchanged for an access token). Tokens are cached and refreshed
 //! a minute before expiry. Parsing and request building are pure and unit-tested; only
 //! [`TokenSource::token`] does IO.
 
-use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -23,6 +21,8 @@ const DEFAULT_TOKEN_URI: &str = "https://oauth2.googleapis.com/token";
 const METADATA_URL: &str =
     "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
 const REFRESH_MARGIN: Duration = Duration::from_secs(60);
+/// Env var holding the full ADC JSON document.
+pub const CREDENTIALS_ENV: &str = "VERTEX_CREDENTIALS_JSON";
 
 /// What an ADC JSON file contains.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -68,18 +68,20 @@ pub struct TokenSource {
 impl TokenSource {
     /// Locate ADC and build a token source. No network call happens here.
     pub fn discover(http: reqwest::Client) -> Result<Self, ProviderError> {
-        let origin: Origin = match credentials_path() {
-            Some(path) if path.exists() => {
-                let text: String = std::fs::read_to_string(&path).map_err(|e| {
-                    ProviderError::Transport(format!("read ADC file {}: {e}", path.display()))
-                })?;
-                Origin::File(parse_credentials(&text)?)
-            }
-            _ => Origin::Metadata,
-        };
+        let raw: Option<String> = std::env::var(CREDENTIALS_ENV).ok();
+        let origin: Origin = origin_from(raw.as_deref())?;
         Ok(Self {
             http,
             origin,
+            cached: Mutex::new(None),
+        })
+    }
+
+    /// Build from inline ADC JSON text (same parsing as `VERTEX_CREDENTIALS_JSON`).
+    pub fn from_credentials_json(http: reqwest::Client, text: &str) -> Result<Self, ProviderError> {
+        Ok(Self {
+            http,
+            origin: origin_from(Some(text))?,
             cached: Mutex::new(None),
         })
     }
@@ -143,19 +145,17 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn credentials_path() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
-        if !p.is_empty() {
-            return Some(PathBuf::from(p));
-        }
+/// Pure: inline ADC JSON when present and non-blank, else the metadata server.
+fn origin_from(raw: Option<&str>) -> Result<Origin, ProviderError> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(text) => Ok(Origin::File(parse_credentials(text)?)),
+        None => Ok(Origin::Metadata),
     }
-    let home: String = std::env::var("HOME").ok()?;
-    Some(PathBuf::from(home).join(".config/gcloud/application_default_credentials.json"))
 }
 
 pub fn parse_credentials(text: &str) -> Result<Credentials, ProviderError> {
     serde_json::from_str(text)
-        .map_err(|e| ProviderError::Parse(format!("unsupported ADC credentials file: {e}")))
+        .map_err(|e| ProviderError::Parse(format!("{CREDENTIALS_ENV} is not valid ADC JSON: {e}")))
 }
 
 /// Token endpoint URL and form body for `creds`. Pure: `now` is injected.
@@ -267,6 +267,23 @@ mod tests {
             token_uri: None,
         };
         assert!(matches!(token_request(&c, 0), Err(ProviderError::Parse(_))));
+    }
+
+    #[test]
+    fn inline_json_selects_credentials() {
+        let raw = r#" {"type":"authorized_user","client_id":"i","client_secret":"s","refresh_token":"r"} "#;
+        assert!(matches!(origin_from(Some(raw)), Ok(Origin::File(_))));
+    }
+
+    #[test]
+    fn missing_or_blank_falls_back_to_metadata() {
+        assert!(matches!(origin_from(None), Ok(Origin::Metadata)));
+        assert!(matches!(origin_from(Some("  ")), Ok(Origin::Metadata)));
+    }
+
+    #[test]
+    fn path_instead_of_json_is_error() {
+        assert!(origin_from(Some("/etc/adc.json")).is_err());
     }
 
     #[test]

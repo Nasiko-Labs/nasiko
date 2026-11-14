@@ -3,6 +3,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use std::time::Instant;
 
+use crate::llm_backend::{LlmCallContext, SharedLlmBackend};
 use crate::models::*;
 
 /// Provider abstraction for different LLM backends.
@@ -11,6 +12,9 @@ pub struct LLMProvider {
     client: Client,
     api_key: String,
     base_url: String,
+    /// When set, non-streaming calls go through the in-process LLM router, which picks
+    /// the provider and records usage.
+    routed: Option<(SharedLlmBackend, LlmCallContext)>,
 }
 
 impl LLMProvider {
@@ -24,7 +28,19 @@ impl LLMProvider {
             client,
             api_key,
             base_url: nasiko_config::openai_base_url_without_v1(&base_url).to_string(),
+            routed: None,
         }
+    }
+
+    /// Send non-streaming calls through `backend` under `call`.
+    pub fn with_backend(mut self, backend: SharedLlmBackend, call: LlmCallContext) -> Self {
+        self.routed = Some((backend, call));
+        self
+    }
+
+    /// True when calls go through the router (which then writes usage itself).
+    pub fn is_routed(&self) -> bool {
+        self.routed.is_some()
     }
 
     pub fn from_env(client: Client) -> Self {
@@ -120,6 +136,23 @@ impl LLMProvider {
     ) -> Result<CompletionResult, ProviderError> {
         let start = Instant::now();
 
+        if let Some((backend, call)) = &self.routed {
+            let body: serde_json::Value = serde_json::to_value(request)
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            let reply: serde_json::Value = backend
+                .chat(call, body)
+                .await
+                .map_err(ProviderError::Network)?;
+            let resp: ChatCompletionResponse = serde_json::from_value(reply)
+                .map_err(|e| ProviderError::Parse(e.to_string()))?;
+            return Ok(completion_result(
+                resp,
+                start,
+                backend.provider(),
+                request.model.clone(),
+            ));
+        }
+
         let response = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
@@ -143,6 +176,22 @@ impl LLMProvider {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
+        Ok(completion_result(
+            resp,
+            start,
+            "openai".to_string(),
+            request.model.clone(),
+        ))
+    }
+}
+
+fn completion_result(
+    resp: ChatCompletionResponse,
+    start: Instant,
+    provider: String,
+    model: String,
+) -> CompletionResult {
+    {
         let latency_ms = start.elapsed().as_millis() as i32;
 
         let content = resp
@@ -161,14 +210,14 @@ impl LLMProvider {
             completion_tokens_details: None,
         });
 
-        Ok(CompletionResult {
+        CompletionResult {
             content,
             finish_reason,
             usage,
             latency_ms,
-            provider: "openai".to_string(),
-            model: request.model.clone(),
-        })
+            provider,
+            model,
+        }
     }
 }
 

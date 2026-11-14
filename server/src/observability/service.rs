@@ -1299,7 +1299,12 @@ pub struct ObservabilityService {
     http_client: reqwest::Client,
     config: Arc<Config>,
     store: nasiko_event_store::EventStore,
+    /// In-process LLM router; serves insights when the user saved no OpenAI key.
+    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 }
+
+/// `trace_usage.agent_name` for finops insight calls.
+const INSIGHTS_COMPONENT: &str = "finops_insights";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnsureSessionOutcome {
@@ -1393,6 +1398,7 @@ impl ObservabilityService {
             http_client: state.http_client.clone(),
             config: state.config.clone(),
             store: state.event_store(),
+            llm_backend: Arc::clone(&state.llm_backend),
         }
     }
 
@@ -3778,16 +3784,8 @@ impl ObservabilityService {
         payload: &InsightsRequest,
         user_id: uuid::Uuid,
     ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
-        let base_url = self
-            .config
-            .openai_base_url
-            .as_deref()
-            .unwrap_or("https://api.openai.com/v1");
-        let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
-        let api_key = saved_key
-            .as_deref()
-            .or(self.config.openai_api_key.as_deref())
-            .unwrap_or_default();
+        let saved_key: Option<String> =
+            nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
 
         let prompt = format!(
             r#"You are a FinOps analyst reviewing AI agent usage metrics for the last 30 days.
@@ -3804,33 +3802,26 @@ Data: {}"#,
         );
 
         let body = serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": &self.config.capability_generator_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 200,
             "temperature": 0.3,
         });
 
-        let resp = self
-            .http_client
-            .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::Internal(format!(
-                "LLM HTTP {status}: {text}"
-            )));
-        }
-
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
+        let json: Value = match saved_key {
+            Some(api_key) => self.insights_with_user_key(&api_key, &body).await?,
+            None => {
+                let call = nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id,
+                    component: INSIGHTS_COMPONENT.to_string(),
+                    session_id: None,
+                };
+                self.llm_backend
+                    .chat(&call, body)
+                    .await
+                    .map_err(ObservabilityError::Internal)?
+            }
+        };
 
         let text = json["choices"][0]["message"]["content"]
             .as_str()
@@ -3847,6 +3838,37 @@ Data: {}"#,
             status_code: 200,
             message: "Insights generated successfully".into(),
         })
+    }
+
+    /// Insights on the user's own saved OpenAI key; bypasses the router (user pays).
+    async fn insights_with_user_key(
+        &self,
+        api_key: &str,
+        body: &Value,
+    ) -> Result<Value, ObservabilityError> {
+        let base_url: &str = self
+            .config
+            .openai_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        let resp = self
+            .http_client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(api_key)
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ObservabilityError::Internal(format!(
+                "LLM HTTP {status}: {text}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))
     }
 
     // ── 8. finops/agent-hours ─────────────────────────────────────────────────

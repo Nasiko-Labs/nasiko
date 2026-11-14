@@ -65,9 +65,12 @@ pub fn provider_for(
                     TOKENS.get_or_init(|| t).clone()
                 }
             };
-            Ok(Box::new(
-                GeminiProvider::new(http.clone(), cfg.vertex_api_base()).with_adc(tokens),
-            ))
+            Ok(Box::new(vertex::VertexProvider::new(
+                http.clone(),
+                cfg.vertex_api_base(),
+                cfg.vertex_openapi_base(),
+                tokens,
+            )))
         }
         "openrouter" => Ok(Box::new(
             OpenRouterProvider::new(
@@ -176,6 +179,7 @@ pub(crate) mod media;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
+pub mod vertex;
 pub mod vertex_auth;
 
 pub use anthropic::AnthropicProvider;

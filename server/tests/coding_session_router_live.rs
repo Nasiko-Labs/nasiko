@@ -132,8 +132,8 @@ async fn session_token_gets_real_reply_and_bills_the_session_user() {
     unsafe {
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", &key);
-        // Leave OPENAI_API_BASE pointing at real OpenAI, not a leftover stub.
-        std::env::remove_var("OPENAI_API_BASE");
+        // Leave OPENAI_BASE_URL pointing at real OpenAI, not a leftover stub.
+        std::env::remove_var("OPENAI_BASE_URL");
     }
 
     let server = TestServer::start().await;
@@ -298,7 +298,7 @@ async fn stub_upstream() -> mockito::ServerGuard {
         .await;
     // SAFETY: serialized by #[serial]; set before the app reads its config.
     unsafe {
-        std::env::set_var("OPENAI_API_BASE", upstream.url());
+        std::env::set_var("OPENAI_BASE_URL", upstream.url());
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
     }

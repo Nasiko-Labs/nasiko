@@ -72,9 +72,17 @@ pub struct OssRoutingEngine {
     /// without this `SessionHistory::fetch_pacms` would re-embed the same
     /// messages on every call. See `TextEmbeddingCache` docs.
     history_embedding_cache: TextEmbeddingCache,
+    /// In-process LLM router for platform-key calls (embeddings + selector).
+    backend: Option<crate::llm_backend::SharedLlmBackend>,
 }
 
 impl OssRoutingEngine {
+    /// Route platform-key embeddings and selection through `backend`.
+    pub fn with_backend(mut self, backend: crate::llm_backend::SharedLlmBackend) -> Self {
+        self.backend = Some(backend);
+        self
+    }
+
     pub fn new(
         config: RouterConfig,
         http_client: Client,
@@ -91,6 +99,7 @@ impl OssRoutingEngine {
             base_url,
             embedding_model,
             history_embedding_cache: Arc::new(DashMap::new()),
+            backend: None,
         }
     }
 
@@ -129,13 +138,34 @@ impl RoutingEngine for OssRoutingEngine {
         // is selected per the caller's own stored strategy and budget tier —
         // see `context_selection::fetch_for_user`.
         // The key a user saved from the UI wins over the server's own.
-        let api_key = user_key::openai_key(pool, req.user_id, &self.api_key).await;
-        let history_store = VectorStore::for_embedding(
-            api_key.clone(),
-            self.base_url.clone(),
-            self.embedding_model.clone(),
-            Arc::clone(&self.history_embedding_cache),
-        );
+        let saved_key: Option<String> = user_key::saved_openai_key(pool, req.user_id).await;
+        // No saved user key + router available: platform calls go through the router.
+        let routed: Option<crate::vector_store::RoutedEmbedder> = match (&saved_key, &self.backend)
+        {
+            (None, Some(b)) => Some(crate::vector_store::RoutedEmbedder {
+                backend: Arc::clone(b),
+                call: crate::llm_backend::LlmCallContext {
+                    user_id: req.user_id,
+                    component: "router_selection".to_string(),
+                    session_id: Some(req.session_id.clone()),
+                },
+            }),
+            _ => None,
+        };
+        let api_key: String = saved_key.unwrap_or_else(|| self.api_key.clone());
+        let history_store = match &routed {
+            Some(r) => VectorStore::for_embedding_routed(
+                r.clone(),
+                self.embedding_model.clone(),
+                Arc::clone(&self.history_embedding_cache),
+            ),
+            None => VectorStore::for_embedding(
+                api_key.clone(),
+                self.base_url.clone(),
+                self.embedding_model.clone(),
+                Arc::clone(&self.history_embedding_cache),
+            ),
+        };
         // Resolved before the join: the workspace override is a borrow, and a temporary inside the
         // join would not outlive it.
         let tiers = self.config.context_tiers.with_overrides(pool).await;
@@ -176,14 +206,27 @@ impl RoutingEngine for OssRoutingEngine {
             VectorStore::disabled_from(agents.clone())
         } else {
             tracing::info!("routing_engine: stage 1 (shortlist) — building vector store");
-            VectorStore::build(
-                agents.clone(),
-                api_key.clone(),
-                self.base_url.clone(),
-                self.embedding_model.clone(),
-                pool,
-            )
-            .await
+            match &routed {
+                Some(r) => {
+                    VectorStore::build_routed(
+                        agents.clone(),
+                        r.clone(),
+                        self.embedding_model.clone(),
+                        pool,
+                    )
+                    .await
+                }
+                None => {
+                    VectorStore::build(
+                        agents.clone(),
+                        api_key.clone(),
+                        self.base_url.clone(),
+                        self.embedding_model.clone(),
+                        pool,
+                    )
+                    .await
+                }
+            }
         });
         let shortlist = store
             .shortlist(
@@ -230,10 +273,13 @@ impl RoutingEngine for OssRoutingEngine {
             })
             .collect();
 
-        let selector = AgentSelector::new(
-            LLMProvider::new(self.http_client.clone(), api_key, self.base_url.clone()),
-            self.router_model.clone(),
-        );
+        let mut provider = LLMProvider::new(self.http_client.clone(), api_key, self.base_url.clone());
+        if let Some(r) = &routed {
+            provider = provider.with_backend(Arc::clone(&r.backend), r.call.clone());
+        }
+        // Router writes trace_usage for routed calls; skip our own write.
+        let record_usage: bool = routed.is_none();
+        let selector = AgentSelector::new(provider, self.router_model.clone());
         let (selected_agent, fallback_used, reasoning, selector_usage) = match selector
             .select_agent(&req.query, &history_msgs, &summaries, policy)
             .await
@@ -266,7 +312,9 @@ impl RoutingEngine for OssRoutingEngine {
                 // before the log row rather than after, because the row points
                 // at it; skipping this is what made a tuning session's rejected
                 // calls free in FinOps.
-                write_selector_usage(pool, req.user_id, &req.session_id, &usage).await;
+                if record_usage {
+                    write_selector_usage(pool, req.user_id, &req.session_id, &usage).await;
+                }
                 // trace_usage rows are keyed (trace_id, agent_name), not by uuid.
                 let selection_token_usage_id: Option<Uuid> = None;
                 // A refusal is still a routing decision: log it like any other,
@@ -317,7 +365,7 @@ impl RoutingEngine for OssRoutingEngine {
 
         // Add selector usage to trace_usage (non-fatal). The log row's
         // selection_token_usage_id stays NULL: trace_usage has no row uuid.
-        if let Some(ref cr) = selector_usage {
+        if let Some(ref cr) = selector_usage.filter(|_| record_usage) {
             write_selector_usage(pool, req.user_id, &req.session_id, cr).await;
         }
         let selection_token_usage_id: Option<Uuid> = None;

@@ -62,7 +62,6 @@ pub mod seed;
 pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
-pub mod seed_workflows;
 pub mod serve;
 pub mod sessions;
 pub mod settings;
@@ -196,6 +195,20 @@ where
                 model: state.config.openai_model.clone(),
             },
             ledger: state.usage_tracker.ledger(),
+            // Platform-key calls go through the in-process router, so any configured
+            // provider (OpenAI, Vertex, Anthropic, ...) serves them and the router alone
+            // writes their usage.
+            backend: Some(std::sync::Arc::new(
+                crate::llm_router::platform_backend::RouterBackend::new(
+                    nasiko_llm_router::platform::PlatformLlm::new(
+                        nasiko_llm_router::LlmRouterCtx {
+                            ledger: state.usage_tracker.ledger(),
+                            payer: state.shared_call_payer.clone(),
+                            ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+                        },
+                    ),
+                ),
+            )),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };

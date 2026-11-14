@@ -80,7 +80,25 @@ pub fn inject_llm_env(
     for format in ALL_FORMATS {
         write_router_credential(env_vars, cfg, format, &token);
     }
+    write_default_model(env_vars, cfg);
     Ok(())
+}
+
+/// The env var agent SDK templates read their model from.
+const MODEL_VAR: &str = "OPENAI_MODEL";
+
+/// Fills `OPENAI_MODEL` with the router's default model when the deployment left it unset.
+///
+/// Without it an agent falls back to its built-in default (`gpt-4o-mini`), which a router with
+/// no OpenAI credentials (e.g. Vertex-only) cannot serve. An explicit value always wins.
+fn write_default_model(env_vars: &mut HashMap<String, String>, cfg: &GatewayConfig) {
+    let has_model: bool = env_vars
+        .get(MODEL_VAR)
+        .is_some_and(|m| !m.trim().is_empty());
+    let default_model: &str = cfg.default_model.trim();
+    if !has_model && !default_model.is_empty() {
+        env_vars.insert(MODEL_VAR.into(), default_model.to_owned());
+    }
 }
 
 /// Points the SDK for `format` at the router (base URL, shared with the coding-agent per-turn
@@ -311,6 +329,41 @@ mod tests {
     #[test]
     fn the_model_default_survives_the_wiring() {
         assert_eq!(injected()["OPENAI_MODEL"], "gpt-4o-mini");
+    }
+
+    #[test]
+    fn missing_model_gets_the_router_default() {
+        let c = GatewayConfig {
+            default_model: "gemini-3.8-flash".into(),
+            ..cfg()
+        };
+        for start in [HashMap::new(), HashMap::from([("OPENAI_MODEL".to_owned(), " ".to_owned())])] {
+            let mut env = start;
+            inject_llm_env(&mut env, &ctx(), &c).unwrap();
+            assert_eq!(env["OPENAI_MODEL"], "gemini-3.8-flash");
+        }
+    }
+
+    #[test]
+    fn explicit_model_beats_the_router_default() {
+        let c = GatewayConfig {
+            default_model: "gemini-3.8-flash".into(),
+            ..cfg()
+        };
+        let mut env = HashMap::from([("OPENAI_MODEL".to_owned(), "deepseek-ai/deepseek-v4.1-flash-maas".to_owned())]);
+        inject_llm_env(&mut env, &ctx(), &c).unwrap();
+        assert_eq!(env["OPENAI_MODEL"], "deepseek-ai/deepseek-v4.1-flash-maas");
+    }
+
+    #[test]
+    fn empty_router_default_writes_no_model() {
+        let c = GatewayConfig {
+            default_model: String::new(),
+            ..cfg()
+        };
+        let mut env = HashMap::new();
+        inject_llm_env(&mut env, &ctx(), &c).unwrap();
+        assert!(!env.contains_key("OPENAI_MODEL"));
     }
 
     #[test]

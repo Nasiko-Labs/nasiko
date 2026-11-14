@@ -34,6 +34,11 @@ pub struct LlmClient {
     pub model: String,
     /// Where this client's metered calls are recorded besides `trace_usage`.
     ledger: Arc<dyn UsageLedger>,
+    /// In-process LLM router. When set, calls go through it (any provider) and the
+    /// router writes `trace_usage`, so callers must not record usage themselves.
+    backend: Option<crate::llm_backend::SharedLlmBackend>,
+    /// Billing/labeling context for routed calls.
+    call: Option<crate::llm_backend::LlmCallContext>,
 }
 
 #[derive(Serialize)]
@@ -125,10 +130,13 @@ pub struct LlmUsage {
 }
 
 impl LlmClient {
-    /// The same client spending `api_key`, for a user who saved their own.
+    /// The same client spending `api_key`, for a user who saved their own. A user's key is an
+    /// OpenAI key, so the call goes to OpenAI directly, not through the router.
     pub fn with_api_key(&self, api_key: String) -> Self {
         Self {
             api_key,
+            backend: None,
+            call: None,
             ..self.clone()
         }
     }
@@ -145,7 +153,30 @@ impl LlmClient {
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             model,
             ledger: Arc::new(NoUsageLedger),
+            backend: None,
+            call: None,
         }
+    }
+
+    /// The same client, its calls served by the in-process LLM router.
+    pub fn with_backend(self, backend: crate::llm_backend::SharedLlmBackend) -> Self {
+        Self {
+            backend: Some(backend),
+            ..self
+        }
+    }
+
+    /// The same client, routed calls billed/labelled with `call`.
+    pub fn with_call(&self, call: crate::llm_backend::LlmCallContext) -> Self {
+        Self {
+            call: Some(call),
+            ..self.clone()
+        }
+    }
+
+    /// Whether calls go through the router (which then owns usage recording).
+    pub fn is_routed(&self) -> bool {
+        self.backend.is_some()
     }
 
     /// The same client, its metered calls handed to `ledger`.
@@ -222,6 +253,22 @@ impl LlmClient {
             body["response_format"] = fmt;
         }
 
+        if let Some(backend) = &self.backend {
+            let call = self.call.clone().unwrap_or(crate::llm_backend::LlmCallContext {
+                user_id: uuid::Uuid::nil(),
+                component: "maf".into(),
+                session_id: None,
+            });
+            if self.model.is_empty() {
+                body.as_object_mut().unwrap().remove("model");
+            }
+            let started = std::time::Instant::now();
+            let value: serde_json::Value = backend.chat(&call, body).await?;
+            let parsed: CompletionResponse = serde_json::from_value(value)
+                .map_err(|e| format!("LLM response parse error: {e}"))?;
+            return self.finish(parsed, started);
+        }
+
         let send = |body: &serde_json::Value| {
             self.http
                 .post(format!("{}/chat/completions", self.base_url))
@@ -259,7 +306,14 @@ impl LlmClient {
             .json()
             .await
             .map_err(|e| format!("LLM response parse error: {e}"))?;
+        self.finish(parsed, started)
+    }
 
+    fn finish(
+        &self,
+        parsed: CompletionResponse,
+        started: std::time::Instant,
+    ) -> Result<(String, LlmUsage), String> {
         let latency_ms = started.elapsed().as_millis() as i64;
         let usage = match parsed.usage {
             Some(u) => LlmUsage {

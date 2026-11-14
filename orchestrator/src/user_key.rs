@@ -47,6 +47,31 @@ pub async fn llm_provider(pool: &PgPool, client: Client, user_id: Uuid) -> LLMPr
     }
 }
 
+/// Like [`llm_provider`], but with no saved user key the calls go through `backend` (the
+/// in-process LLM router), billed to `user_id` under `component`. Without a backend it falls
+/// back to the environment's OpenAI endpoint.
+pub async fn routed_llm_provider(
+    pool: &PgPool,
+    client: Client,
+    user_id: Uuid,
+    backend: Option<&crate::llm_backend::SharedLlmBackend>,
+    component: &str,
+) -> LLMProvider {
+    let provider = LLMProvider::from_env(client);
+    match (saved_openai_key(pool, user_id).await, backend) {
+        (Some(key), _) => provider.with_api_key(key),
+        (None, Some(backend)) => provider.with_backend(
+            std::sync::Arc::clone(backend),
+            crate::llm_backend::LlmCallContext {
+                user_id,
+                component: component.to_owned(),
+                session_id: None,
+            },
+        ),
+        (None, None) => provider,
+    }
+}
+
 /// The key to call OpenAI with for `user_id`: their saved one, else `server_key`.
 pub async fn openai_key(pool: &PgPool, user_id: Uuid, server_key: &str) -> String {
     saved_openai_key(pool, user_id)

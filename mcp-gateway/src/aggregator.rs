@@ -248,7 +248,6 @@ mod tests {
                 tool_search_mode: crate::config::ToolSearchMode::None,
                 tool_search_tool_limit: 15,
                 tool_search_meta_limit: 10,
-                openai_api_key: None,
                 embedding_model: "text-embedding-3-small".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),

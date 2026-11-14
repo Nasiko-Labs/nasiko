@@ -74,7 +74,7 @@ async fn stub_upstream() -> mockito::ServerGuard {
         .await;
     // SAFETY: serialized by #[serial] within this test binary.
     unsafe {
-        std::env::set_var("OPENAI_API_BASE", upstream.url());
+        std::env::set_var("OPENAI_BASE_URL", upstream.url());
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
     }

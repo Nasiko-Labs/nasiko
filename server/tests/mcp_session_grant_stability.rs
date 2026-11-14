@@ -139,7 +139,6 @@ fn mcp_state(db: PgPool) -> McpState {
             tool_search_mode: ToolSearchMode::Semantic,
             tool_search_tool_limit: 0,
             tool_search_meta_limit: 0,
-            openai_api_key: None,
             embedding_model: "".to_string(),
             gateway_instructions: String::new(),
             identity_signing_key: b"test-identity-signing-key".to_vec(),

@@ -819,10 +819,28 @@ pub async fn auto_generate_capabilities_pub(
     .ok()
     .flatten();
     let provider = match owner {
+        // No saved user key: the call goes through the in-process LLM router.
         Some(owner) => {
-            nasiko_orchestrator::user_key::llm_provider(db, http_client.clone(), owner).await
+            nasiko_orchestrator::user_key::routed_llm_provider(
+                db,
+                http_client.clone(),
+                owner,
+                crate::agents::utils::platform_backend(),
+                "capability_generation",
+            )
+            .await
         }
-        None => LLMProvider::from_env(http_client.clone()),
+        None => match crate::agents::utils::platform_backend() {
+            Some(backend) => LLMProvider::from_env(http_client.clone()).with_backend(
+                std::sync::Arc::clone(backend),
+                nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id: Uuid::nil(),
+                    component: "capability_generation".to_string(),
+                    session_id: None,
+                },
+            ),
+            None => LLMProvider::from_env(http_client.clone()),
+        },
     };
     // Caller passes `state.config.capability_generator_model` (already
     // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —

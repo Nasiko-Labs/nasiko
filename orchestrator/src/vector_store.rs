@@ -7,7 +7,22 @@ use serde::Deserialize;
 use sqlx::PgPool;
 
 use crate::error::RouterError;
+use crate::llm_backend::{LlmCallContext, SharedLlmBackend};
 use crate::types::AgentCard;
+
+/// In-process router route for embeddings: backend plus who the call is billed to.
+#[derive(Clone)]
+pub struct RoutedEmbedder {
+    pub backend: SharedLlmBackend,
+    pub call: LlmCallContext,
+}
+
+/// Hash stored in `agents.embedding_content_hash`. Includes the model so switching
+/// `EMBEDDING_MODEL` (e.g. OpenAI -> Vertex, different dimensions) re-embeds agents
+/// instead of silently comparing vectors of different lengths.
+pub fn agent_content_hash(prompt: &str, model: &str) -> i64 {
+    hash_prompt(&format!("{model}\n{prompt}"))
+}
 
 pub struct EmbeddedAgent {
     pub agent: AgentCard,
@@ -64,9 +79,56 @@ pub async fn embed_and_store_agent(
 ) -> Result<Vec<f32>, RouterError> {
     let client = Client::new();
     let prompt = agent_prompt(agent);
-    let content_hash = hash_prompt(&prompt);
     let embedding = embed_text(&client, api_key, base_url, model, &prompt).await?;
+    persist_agent_embedding(pool, agent, model, &prompt, &embedding).await;
+    Ok(embedding)
+}
 
+/// [`embed_and_store_agent`] through the in-process LLM router.
+pub async fn embed_and_store_agent_routed(
+    pool: &PgPool,
+    agent: &AgentCard,
+    routed: &RoutedEmbedder,
+    model: &str,
+) -> Result<Vec<f32>, RouterError> {
+    let prompt = agent_prompt(agent);
+    let embedding: Vec<f32> = routed_embed(routed, model, std::slice::from_ref(&prompt))
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))?;
+    persist_agent_embedding(pool, agent, model, &prompt, &embedding).await;
+    Ok(embedding)
+}
+
+async fn routed_embed(
+    routed: &RoutedEmbedder,
+    model: &str,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>, RouterError> {
+    let out: Vec<Vec<f32>> = routed
+        .backend
+        .embed(&routed.call, model, texts)
+        .await
+        .map_err(|e| RouterError::Embedding(format!("router embeddings failed: {e}")))?;
+    if out.len() != texts.len() {
+        return Err(RouterError::Embedding(format!(
+            "expected {} embeddings, got {}",
+            texts.len(),
+            out.len()
+        )));
+    }
+    Ok(out)
+}
+
+async fn persist_agent_embedding(
+    pool: &PgPool,
+    agent: &AgentCard,
+    model: &str,
+    prompt: &str,
+    embedding: &[f32],
+) {
+    let content_hash = agent_content_hash(prompt, model);
     let embedding_f64: Vec<f64> = embedding.iter().map(|f| *f as f64).collect();
     if let Err(e) = sqlx::query(
         r#"UPDATE agents SET embedding = $1, embedding_content_hash = $2, embedded_at = now()
@@ -80,8 +142,6 @@ pub async fn embed_and_store_agent(
     {
         tracing::warn!(agent_id = %agent.id, error = %e, "failed to persist agent embedding (non-fatal)");
     }
-
-    Ok(embedding)
 }
 
 pub struct VectorStore {
@@ -93,6 +153,8 @@ pub struct VectorStore {
     /// Only set by `for_embedding` — the agent-catalog constructors reuse the
     /// embeddings persisted on the `agents` table instead.
     text_cache: Option<TextEmbeddingCache>,
+    /// When set, embeddings go through the in-process router instead of OpenAI.
+    routed: Option<RoutedEmbedder>,
 }
 
 #[derive(Deserialize)]
@@ -123,8 +185,29 @@ impl VectorStore {
         model: String,
         pool: &PgPool,
     ) -> Self {
-        if api_key.is_empty() {
-            tracing::debug!("No OpenAI API key configured — Stage 1 (vector store) disabled");
+        Self::build_with(agents, api_key, base_url, model, None, pool).await
+    }
+
+    /// [`Self::build`] with embeddings served by the in-process router.
+    pub async fn build_routed(
+        agents: Vec<AgentCard>,
+        routed: RoutedEmbedder,
+        model: String,
+        pool: &PgPool,
+    ) -> Self {
+        Self::build_with(agents, String::new(), String::new(), model, Some(routed), pool).await
+    }
+
+    async fn build_with(
+        agents: Vec<AgentCard>,
+        api_key: String,
+        base_url: String,
+        model: String,
+        routed: Option<RoutedEmbedder>,
+        pool: &PgPool,
+    ) -> Self {
+        if api_key.is_empty() && routed.is_none() {
+            tracing::debug!("No embeddings backend configured — Stage 1 (vector store) disabled");
             return Self::disabled_from(agents);
         }
 
@@ -133,7 +216,7 @@ impl VectorStore {
         let mut stored_misses = 0usize;
 
         for agent in &agents {
-            let content_hash = hash_prompt(&agent_prompt(agent));
+            let content_hash = agent_content_hash(&agent_prompt(agent), &model);
 
             if let (Some(emb), Some(stored_hash)) = (&agent.embedding, agent.embedding_content_hash)
                 && stored_hash == content_hash
@@ -148,7 +231,11 @@ impl VectorStore {
 
             stored_misses += 1;
             let embed_start = Instant::now();
-            match embed_and_store_agent(pool, agent, &api_key, &base_url, &model).await {
+            let result: Result<Vec<f32>, RouterError> = match &routed {
+                Some(r) => embed_and_store_agent_routed(pool, agent, r, &model).await,
+                None => embed_and_store_agent(pool, agent, &api_key, &base_url, &model).await,
+            };
+            match result {
                 Ok(emb) => {
                     tracing::info!(
                         agent_name = %agent.name,
@@ -176,6 +263,24 @@ impl VectorStore {
             model,
             enabled: true,
             text_cache: None,
+            routed,
+        }
+    }
+
+    /// [`Self::for_embedding`] served by the in-process router.
+    pub fn for_embedding_routed(
+        routed: RoutedEmbedder,
+        model: String,
+        cache: TextEmbeddingCache,
+    ) -> Self {
+        Self {
+            agents: vec![],
+            api_key: String::new(),
+            base_url: String::new(),
+            model,
+            enabled: true,
+            text_cache: Some(cache),
+            routed: Some(routed),
         }
     }
 
@@ -200,6 +305,7 @@ impl VectorStore {
             model,
             enabled,
             text_cache: Some(cache),
+            routed: None,
         }
     }
 
@@ -212,6 +318,7 @@ impl VectorStore {
             model: String::new(),
             enabled: false,
             text_cache: None,
+            routed: None,
         }
     }
 
@@ -234,6 +341,7 @@ impl VectorStore {
             model: String::new(),
             enabled: false,
             text_cache: None,
+            routed: None,
         }
     }
 
@@ -280,9 +388,17 @@ impl VectorStore {
         if let Some(cached) = self.cached_embedding(text) {
             return Ok(cached);
         }
-        let client = Client::new();
-        let embedding =
-            embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await?;
+        let embedding: Vec<f32> = match &self.routed {
+            Some(r) => routed_embed(r, &self.model, &[text.to_string()])
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))?,
+            None => {
+                let client = Client::new();
+                embed_text(&client, &self.api_key, &self.base_url, &self.model, text).await?
+            }
+        };
         self.store_embedding(text, &embedding);
         Ok(embedding)
     }
@@ -312,16 +428,21 @@ impl VectorStore {
         }
 
         if !misses.is_empty() {
-            let client = Client::new();
             let miss_texts: Vec<String> = misses.iter().map(|(_, t)| t.clone()).collect();
-            let fetched = embed_texts(
-                &client,
-                &self.api_key,
-                &self.base_url,
-                &self.model,
-                &miss_texts,
-            )
-            .await?;
+            let fetched: Vec<Vec<f32>> = match &self.routed {
+                Some(r) => routed_embed(r, &self.model, &miss_texts).await?,
+                None => {
+                    let client = Client::new();
+                    embed_texts(
+                        &client,
+                        &self.api_key,
+                        &self.base_url,
+                        &self.model,
+                        &miss_texts,
+                    )
+                    .await?
+                }
+            };
             for ((i, text), emb) in misses.into_iter().zip(fetched) {
                 self.store_embedding(&text, &emb);
                 result[i] = Some(emb);
@@ -517,5 +638,13 @@ mod tests {
         let h1 = hash_prompt("agent-1 does engineering things");
         let h2 = hash_prompt("agent-1 does completely different things");
         assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn agent_content_hash_depends_on_model() {
+        let a = agent_content_hash("agent-1 does things", "text-embedding-3-small");
+        let b = agent_content_hash("agent-1 does things", "text-embedding-005");
+        assert_ne!(a, b);
+        assert_eq!(a, agent_content_hash("agent-1 does things", "text-embedding-3-small"));
     }
 }

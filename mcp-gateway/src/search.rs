@@ -1,7 +1,8 @@
 //! Flat tool search — the query-aware discovery layer for `tools/list`.
 //!
 //! Two implementations behind a shared [`ToolSearchIndex`] trait:
-//! - [`SemanticSearchIndex`]: embedding cosine similarity (default, requires `EMBEDDING_MODEL`)
+//! - [`SemanticSearchIndex`]: embedding cosine similarity via the in-process LLM router
+//!   (default; model from `EMBEDDING_MODEL`)
 //! - [`Bm25SearchIndex`]: keyword BM25 scoring (fallback, zero external deps)
 //!
 //! Both search the full `mcp_connector_tools` table in a single pass (flat search).
@@ -15,6 +16,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use nasiko_orchestrator::llm_backend::{LlmCallContext, SharedLlmBackend};
 
 use crate::error::Result;
 use crate::permissions::PermissionContext;
@@ -298,69 +301,51 @@ fn bytes_to_f32_vec(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-const DEFAULT_EMBEDDING_BASE_URL: &str = "https://api.openai.com/v1";
+/// `trace_usage.agent_name` for gateway embedding calls.
+pub const EMBEDDING_COMPONENT: &str = "mcp_tool_embedding";
 
-/// OpenAI-compatible embedding API client.
+/// Texts per router call; keeps request bodies bounded for every provider.
+const EMBED_CHUNK: usize = 256;
+
+/// Embeds through the in-process LLM router, so whichever provider serves
+/// `EMBEDDING_MODEL` (OpenAI, Gemini, Vertex, …) is used and usage is billed
+/// to the platform (`Uuid::nil()`), labelled [`EMBEDDING_COMPONENT`].
 struct EmbeddingClient {
-    http: reqwest::Client,
-    base_url: String,
-    api_key: String,
+    backend: SharedLlmBackend,
     model: String,
 }
 
-#[derive(serde::Deserialize)]
-struct EmbeddingResponse {
-    data: Vec<EmbeddingData>,
-}
-
-#[derive(serde::Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
 impl EmbeddingClient {
-    async fn embed_batch(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, String> {
-        const CHUNK: usize = 512;
-        let mut all = Vec::with_capacity(texts.len());
-
-        for chunk in texts.chunks(CHUNK) {
-            let body = serde_json::json!({
-                "model": &self.model,
-                "input": chunk,
-            });
-
-            let resp = self
-                .http
-                .post(format!("{}/embeddings", self.base_url))
-                .bearer_auth(&self.api_key)
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| format!("embedding API request failed: {e}"))?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                return Err(format!("embedding API {status}: {text}"));
-            }
-
-            let parsed: EmbeddingResponse = resp
-                .json()
-                .await
-                .map_err(|e| format!("embedding API response parse error: {e}"))?;
-            for d in parsed.data {
-                all.push(d.embedding);
-            }
+    fn call() -> LlmCallContext {
+        LlmCallContext {
+            user_id: Uuid::nil(),
+            component: EMBEDDING_COMPONENT.to_string(),
+            session_id: None,
         }
+    }
 
+    async fn embed_batch(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, String> {
+        let call: LlmCallContext = Self::call();
+        let mut all: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(EMBED_CHUNK) {
+            let vectors: Vec<Vec<f32>> = self.backend.embed(&call, &self.model, chunk).await?;
+            if vectors.len() != chunk.len() {
+                return Err(format!(
+                    "embedding backend returned {} vectors for {} inputs",
+                    vectors.len(),
+                    chunk.len()
+                ));
+            }
+            all.extend(vectors);
+        }
         Ok(all)
     }
 
     async fn embed_one(&self, text: &str) -> std::result::Result<Vec<f32>, String> {
-        let mut results = self.embed_batch(&[text.to_string()]).await?;
+        let mut results: Vec<Vec<f32>> = self.embed_batch(&[text.to_string()]).await?;
         results
             .pop()
-            .ok_or_else(|| "embedding API returned empty result".to_string())
+            .ok_or_else(|| "embedding backend returned empty result".to_string())
     }
 }
 
@@ -380,12 +365,8 @@ pub struct SemanticSearchIndex {
 }
 
 impl SemanticSearchIndex {
-    pub fn new(
-        http: reqwest::Client,
-        redis: nasiko_redis::SharedRedis,
-        api_key: String,
-        model: String,
-    ) -> Self {
+    /// `backend` embeds both tool texts and queries with `model`.
+    pub fn new(redis: nasiko_redis::SharedRedis, backend: SharedLlmBackend, model: String) -> Self {
         Self {
             inner: RwLock::new(SemanticInner {
                 tools: Vec::new(),
@@ -393,12 +374,7 @@ impl SemanticSearchIndex {
             }),
             rebuild_lock: tokio::sync::Mutex::new(()),
             bm25: Bm25SearchIndex::new(),
-            client: EmbeddingClient {
-                http,
-                base_url: DEFAULT_EMBEDDING_BASE_URL.to_string(),
-                api_key,
-                model,
-            },
+            client: EmbeddingClient { backend, model },
             redis,
         }
     }
@@ -975,17 +951,77 @@ mod tests {
 
     // ─── Semantic fallback tests ───────────────────────────────────────────
 
+    /// Router stand-in whose every call fails.
+    struct FailingBackend;
+
+    #[async_trait]
+    impl nasiko_orchestrator::llm_backend::LlmBackend for FailingBackend {
+        async fn chat(
+            &self,
+            _call: &LlmCallContext,
+            _body: serde_json::Value,
+        ) -> std::result::Result<serde_json::Value, String> {
+            Err("unavailable".into())
+        }
+        async fn embed(
+            &self,
+            _call: &LlmCallContext,
+            _model: &str,
+            _texts: &[String],
+        ) -> std::result::Result<Vec<Vec<f32>>, String> {
+            Err("unavailable".into())
+        }
+        fn provider(&self) -> String {
+            "test".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn embed_batch_rejects_vector_count_mismatch() {
+        struct ShortBackend;
+        #[async_trait]
+        impl nasiko_orchestrator::llm_backend::LlmBackend for ShortBackend {
+            async fn chat(
+                &self,
+                _call: &LlmCallContext,
+                _body: serde_json::Value,
+            ) -> std::result::Result<serde_json::Value, String> {
+                Err("unused".into())
+            }
+            async fn embed(
+                &self,
+                call: &LlmCallContext,
+                _model: &str,
+                _texts: &[String],
+            ) -> std::result::Result<Vec<Vec<f32>>, String> {
+                assert_eq!(call.component, EMBEDDING_COMPONENT);
+                assert_eq!(call.user_id, Uuid::nil());
+                Ok(vec![vec![1.0]])
+            }
+            fn provider(&self) -> String {
+                "test".into()
+            }
+        }
+        let client = EmbeddingClient {
+            backend: std::sync::Arc::new(ShortBackend),
+            model: "m".into(),
+        };
+        let err: String = client
+            .embed_batch(&["a".to_string(), "b".to_string()])
+            .await
+            .unwrap_err();
+        assert!(err.contains("1 vectors for 2 inputs"), "{err}");
+    }
+
     #[tokio::test]
     async fn semantic_falls_back_to_bm25_when_query_embedding_fails() {
         // Nothing listens on port 1, so the Redis cache and the embedding call
         // both fail at once without leaving the machine.
-        let mut index = SemanticSearchIndex::new(
-            reqwest::Client::new(),
+        let index = SemanticSearchIndex::new(
             nasiko_redis::SharedRedis::new(redis::Client::open("redis://127.0.0.1:1").unwrap()),
-            "test-key".to_string(),
+            std::sync::Arc::new(FailingBackend),
             "test-model".to_string(),
         );
-        index.client.base_url = "http://127.0.0.1:1".to_string();
         index.bm25.index(sample_tools());
 
         let results = index

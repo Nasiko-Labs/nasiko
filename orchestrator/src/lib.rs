@@ -2,6 +2,7 @@ pub mod agent_registry;
 pub mod context_selection;
 pub mod engine;
 pub mod error;
+pub mod llm_backend;
 pub mod maf;
 pub mod models;
 pub mod outbound;

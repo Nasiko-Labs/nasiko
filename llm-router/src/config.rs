@@ -99,9 +99,9 @@ pub struct GatewayConfig {
     pub anthropic_api_base: String,
     pub gemini_api_base: String,
     /// Vertex AI (ADC auth): GCP project id. Empty disables the `vertex` provider.
-    /// Env `VERTEX_PROJECT`, falling back to `GOOGLE_CLOUD_PROJECT`.
+    /// Env `GOOGLE_CLOUD_PROJECT`.
     pub vertex_project: String,
-    /// Vertex location, env `VERTEX_LOCATION` (default `global`).
+    /// Vertex location, env `GOOGLE_CLOUD_LOCATION` (default `global`).
     pub vertex_location: String,
     pub openrouter_api_base: String,
 
@@ -331,7 +331,7 @@ impl GatewayConfig {
             Err(_) => d.generic_key_fallback,
         };
 
-        Self {
+        let mut c = Self {
             agent_jwt_secret: env_or("AGENT_JWT_SECRET", &d.agent_jwt_secret),
             agent_jwt_algorithm: env_or("AGENT_JWT_ALGORITHM", &d.agent_jwt_algorithm),
             default_provider: env_or("DEFAULT_PROVIDER", &d.default_provider),
@@ -412,16 +412,16 @@ impl GatewayConfig {
                 ],
                 d.pricing_sync_interval_secs,
             ),
-            openai_api_base: env_or("OPENAI_API_BASE", &d.openai_api_base),
+            openai_api_base: env_or("OPENAI_BASE_URL", &d.openai_api_base),
             openai_max_tools: env_parse_first(&["OPENAI_MAX_TOOLS"], d.openai_max_tools),
-            anthropic_api_base: env_or("ANTHROPIC_API_BASE", &d.anthropic_api_base),
-            gemini_api_base: env_or("GEMINI_API_BASE", &d.gemini_api_base),
+            anthropic_api_base: env_or("ANTHROPIC_BASE_URL", &d.anthropic_api_base),
+            gemini_api_base: env_or("GOOGLE_GEMINI_BASE_URL", &d.gemini_api_base),
             vertex_project: env_or(
-                "VERTEX_PROJECT",
-                &env_or("GOOGLE_CLOUD_PROJECT", &d.vertex_project),
+                "GOOGLE_CLOUD_PROJECT",
+                &d.vertex_project,
             ),
-            vertex_location: env_or("VERTEX_LOCATION", &d.vertex_location),
-            openrouter_api_base: env_or("OPENROUTER_API_BASE", &d.openrouter_api_base),
+            vertex_location: env_or("GOOGLE_CLOUD_LOCATION", &d.vertex_location),
+            openrouter_api_base: env_or("OPENROUTER_BASE_URL", &d.openrouter_api_base),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
@@ -490,19 +490,58 @@ impl GatewayConfig {
                 "TOKEN_COMPRESS_RECOVERY_TTL_SECS",
                 d.compress_recovery_ttl_secs as usize,
             ) as u64,
+        };
+        // No explicit DEFAULT_PROVIDER: pick the first provider that has credentials, so a
+        // Vertex-only (ADC) deployment never silently routes to an unkeyed `openai`.
+        if std::env::var("DEFAULT_PROVIDER").map_or(true, |v| v.trim().is_empty()) {
+            let explicit_model: bool = std::env::var("DEFAULT_MODEL").is_ok_and(|v| !v.trim().is_empty());
+            if let Some((provider, model)) = c.detect_default_provider() {
+                c.default_provider = provider.to_string();
+                if !explicit_model {
+                    c.default_model = model.to_string();
+                }
+            }
         }
+        c
+    }
+
+    /// First built-in provider with platform credentials, plus a sensible default model
+    /// for it. Order: openai, anthropic, gemini, vertex, openrouter. `None` when nothing
+    /// is configured (keeps the static default; requests then fail with `NoApiKey`).
+    pub fn detect_default_provider(&self) -> Option<(&'static str, &'static str)> {
+        const CANDIDATES: [(&str, &str); 5] = [
+            ("openai", "gpt-4o-mini"),
+            ("anthropic", "claude-haiku-4-5"),
+            ("gemini", "gemini-2.5-flash"),
+            ("vertex", "gemini-3.8-flash"),
+            ("openrouter", "openai/gpt-4o-mini"),
+        ];
+        CANDIDATES
+            .into_iter()
+            .find(|(p, _)| !self.platform_key_for(p).is_empty())
     }
 
     /// Vertex AI base URL up to `/publishers/google`; the Gemini spoke appends
     /// `/models/{model}:{method}`. `global` uses the region-less host.
     pub fn vertex_api_base(&self) -> String {
+        format!("{}/publishers/google", self.vertex_location_base())
+    }
+
+    /// Vertex AI OpenAI-compatible base (MaaS models: DeepSeek, gpt-oss, Llama, Qwen,
+    /// and `google/` Gemini). The OpenAI spoke appends `/chat/completions`.
+    pub fn vertex_openapi_base(&self) -> String {
+        format!("{}/endpoints/openapi", self.vertex_location_base())
+    }
+
+    /// `https://{host}/v1/projects/{p}/locations/{l}`; `global` uses the region-less host.
+    fn vertex_location_base(&self) -> String {
         let (p, l) = (&self.vertex_project, &self.vertex_location);
         let host: String = if l == "global" {
             "aiplatform.googleapis.com".to_string()
         } else {
             format!("{l}-aiplatform.googleapis.com")
         };
-        format!("https://{host}/v1/projects/{p}/locations/{l}/publishers/google")
+        format!("https://{host}/v1/projects/{p}/locations/{l}")
     }
 
     /// The platform-owned fallback key for a **built-in** `provider`, used when an
@@ -673,6 +712,16 @@ mod tests {
             cfg.vertex_api_base(),
             "https://us-central1-aiplatform.googleapis.com/v1/projects/p1/locations/us-central1/publishers/google"
         );
+    }
+
+    #[test]
+    fn detect_default_provider_picks_vertex_when_only_adc_configured() {
+        let mut cfg = GatewayConfig::default();
+        assert_eq!(cfg.detect_default_provider(), None);
+        cfg.vertex_project = "p1".into();
+        assert_eq!(cfg.detect_default_provider(), Some(("vertex", "gemini-3.8-flash")));
+        cfg.platform_openai_api_key = "sk".into();
+        assert_eq!(cfg.detect_default_provider(), Some(("openai", "gpt-4o-mini")));
     }
 
     #[test]
