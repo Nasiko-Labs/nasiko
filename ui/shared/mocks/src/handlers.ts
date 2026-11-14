@@ -2713,7 +2713,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()

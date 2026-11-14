@@ -814,8 +814,9 @@ pub(crate) struct RegistryImportRequest {
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
 
 /// Registry hosts always allowed for import, independent of any env var or the
-/// settings-page registry — Nasiko's own registry works out of the box.
-const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.dev"];
+/// settings-page registry — Nasiko's own registry works out of the box. It
+/// answers on both names; the older one stays while references to it remain.
+const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.com", "registry.nasiko.dev"];
 
 /// Extract the bare host from a configured registry URL such as
 /// `https://registry.nasiko.dev` or `registry.nasiko.dev:5000/path`: scheme and

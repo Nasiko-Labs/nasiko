@@ -158,13 +158,13 @@ export const copy = {
     // How to bring an agent from the public registry (user request 2026-11-09), above the Deploy page's own form.
     registryHow: {
       title: 'Copy an agent from the Nasiko registry',
-      site: 'registry.nasiko.dev',
-      siteUrl: 'https://registry.nasiko.dev',
+      site: 'registry.nasiko.com',
+      siteUrl: 'https://registry.nasiko.com',
       open: 'Open',
       openRest: 'and pick an agent.',
       copyStep: 'In its Install section, copy the reference after',
       pull: 'docker pull',
-      example: 'registry.nasiko.dev/acme/support-bot:1.2.0',
+      example: 'registry.nasiko.com/acme/support-bot:1.2.0',
       paste: 'Paste it below and press Import and deploy.',
       label: 'How to copy from the registry',
     },

@@ -136,10 +136,6 @@ pub struct Config {
     /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
     /// agent name. Empty when unset; an invalid value fails startup.
     pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
-    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
-    /// after `SEED_AGENTS`, as public workflows every user can run
-    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
-    pub seed_workflows: String,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -443,7 +439,7 @@ pub struct Config {
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.com"
     pub registry_import_allowed_hosts: Vec<String>,
     /// Browser origins allowed to make cross-origin requests (comma-separated,
     /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
@@ -811,7 +807,6 @@ impl Config {
                 std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
             )
             .map_err(anyhow::Error::msg)?,
-            seed_workflows: env_or("SEED_WORKFLOWS", ""),
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),

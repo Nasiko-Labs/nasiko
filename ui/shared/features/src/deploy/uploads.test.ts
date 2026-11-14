@@ -233,7 +233,7 @@ describe('registry imports in the registry (eng review R4)', () => {
   it('runs as a QueryClient mutation (a 401 reaches the shared handler) and records the result', async () => {
     const { qc, onError } = setup()
     const { importFor, startImport } = await import('./uploads')
-    const ok = await startImport(qc, USER, 'registry.nasiko.dev/a/b:1.0.0', async () => ({
+    const ok = await startImport(qc, USER, 'registry.nasiko.com/a/b:1.0.0', async () => ({
       agent_id: 'a1',
       build_id: 'b1',
       container_name: 'c',
@@ -253,7 +253,7 @@ describe('registry imports in the registry (eng review R4)', () => {
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(Response.json({ agent_id: 'a1', status: 'success' }, { status: 201 }))
     onTestFinished(() => fetch.mockRestore())
-    await sendRegistryImport('registry.nasiko.dev/nasiko/b:1.0.0')
+    await sendRegistryImport('registry.nasiko.com/nasiko/b:1.0.0')
     // No deadline: apiFetch's 30 s one would report an import still building (minutes) as failed (NAS-1449).
     expect(fetch.mock.calls[0]?.[1]?.signal).toBeUndefined()
   })
@@ -265,7 +265,7 @@ describe('registry imports in the registry (eng review R4)', () => {
     const stale = () => keys.map((k) => qc.getQueryState(k)?.isInvalidated)
     const seed = () => keys.forEach((k) => qc.setQueryData(k, []))
     seed()
-    await startImport(qc, USER, 'registry.nasiko.dev/nasiko/b:1.0.0', async () => ({
+    await startImport(qc, USER, 'registry.nasiko.com/nasiko/b:1.0.0', async () => ({
       agent_id: 'a1',
       build_id: 'b1',
       container_name: 'c',
@@ -274,7 +274,7 @@ describe('registry imports in the registry (eng review R4)', () => {
     expect(stale()).toEqual([true, true, false])
     // A failed import may still have registered its agent (the row is written before the build).
     seed()
-    await startImport(qc, USER, 'registry.nasiko.dev/nasiko/b:1.0.1', async () => {
+    await startImport(qc, USER, 'registry.nasiko.com/nasiko/b:1.0.1', async () => {
       throw new ApiError(500, null, '/api/import/registry', 'build failed')
     })
     expect(stale()).toEqual([true, true, false])

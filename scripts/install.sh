@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Nasiko CLI installer: published to the registry as nasiko/install and served at
-# https://registry.nasiko.dev/r/nasiko/install
+# https://registry.nasiko.com/r/nasiko/install
 #
 # Usage:
-#   curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash
+#   curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash
 #
 # Environment overrides (see docs/CLI_INSTALL.md):
 #   NASIKO_VERSION      version tag to install (default: latest)
 #   NASIKO_INSTALL_DIR  install destination (default: ~/.local/bin)
-#   NASIKO_REGISTRY     registry host (default: registry.nasiko.dev)
+#   NASIKO_REGISTRY     registry host (default: registry.nasiko.com)
 #
 # Design constraints (do not "fix" these):
 #   - Never invokes sudo; writes only to mktemp and the user-owned install dir.
@@ -16,7 +16,7 @@
 #   - Anonymous pulls only: the nasiko/nasiko repository is public-read.
 set -euo pipefail
 
-REGISTRY="${NASIKO_REGISTRY:-registry.nasiko.dev}"
+REGISTRY="${NASIKO_REGISTRY:-registry.nasiko.com}"
 REPO="nasiko/nasiko"
 VERSION="${NASIKO_VERSION:-latest}"
 API="https://${REGISTRY}/v2/${REPO}"

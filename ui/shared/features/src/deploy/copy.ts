@@ -109,9 +109,9 @@ export const copy = {
   },
   registry: {
     reference: 'Image reference',
-    placeholder: 'registry.nasiko.dev/acme/support-bot:1.2.0',
+    placeholder: 'registry.nasiko.com/acme/support-bot:1.2.0',
     hint: (host: string) => `host/owner/name:tag. Allowed hosts: ${host} and any your admin added.`,
-    format: 'Use host/owner/name:tag, like registry.nasiko.dev/acme/support-bot:1.2.0.',
+    format: 'Use host/owner/name:tag, like registry.nasiko.com/acme/support-bot:1.2.0.',
     submit: 'Import and deploy',
     importing: 'Importing (pull or build, then deploy)',
     usual: 'usually 1–5 min',
