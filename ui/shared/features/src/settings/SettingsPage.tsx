@@ -51,7 +51,6 @@ interface Spec {
 /** Every control maps to a `SettingsUpdate` field (the legacy page's rule: serde drops unknown keys silently). */
 const FIELDS: Record<CoreSection, Spec[]> = {
   general: [
-    { key: 'router_model', kind: 'text' },
     { key: 'default_provider', kind: 'provider' },
     { key: 'catalog_tabs', kind: 'text' },
   ],
@@ -69,7 +68,7 @@ const FIELDS: Record<CoreSection, Spec[]> = {
 const sectionOf = (k: SettingsField): CoreSection =>
   CORE_SECTIONS.find((s) => FIELDS[s].some((f) => f.key === k)) ?? 'general'
 
-// A blank router model or limit would be stored as NULL, and nothing restores the default (the legacy page sent that).
+// A blank limit would be stored as NULL, and nothing restores the default (the legacy page sent that).
 // z.object, not z.record: zod is one shared chunk, and an API no other page uses would land in the shell budget.
 const fieldsSchema = z.object(
   Object.fromEntries(SETTINGS_FIELDS.map((k) => [k, z.string()])) as Record<
@@ -78,8 +77,6 @@ const fieldsSchema = z.object(
   >,
 )
 const schema = fieldsSchema.superRefine((v, ctx) => {
-  if (!v.router_model?.trim())
-    ctx.addIssue({ code: 'custom', path: ['router_model'], message: copy.required })
   for (const f of [...FIELDS.limits])
     if (positiveIntProblem(v[f.key] ?? '', f.max ?? INT_MAX))
       ctx.addIssue({ code: 'custom', path: [f.key], message: copy.positiveInt })
@@ -253,6 +250,9 @@ function SettingsForm({
         {CORE_SECTIONS.map((s) => (
           // Every section stays mounted, like the legacy page's panels: hidden ones keep their inputs registered.
           <div key={s} hidden={s !== section}>
+            {s === 'general' && settings.orchestrator_model ? (
+              <ModelRows settings={settings} />
+            ) : null}
             {FIELDS[s].map(control)}
             {s === 'general' ? (
               <SettingRow
@@ -284,4 +284,35 @@ function SettingsForm({
       <LeaveGuard when={isDirty && !isSubmitting && !save.isPending} samePath />
     </form>
   )
+}
+
+/**
+ * The models the server runs: set by its environment, so shown, not edited. Rendered only when the server sends
+ * `orchestrator_model`: an older one (a multi-tenant workspace not yet upgraded) answers `router_model` from a stored
+ * column nothing reads, which must not be shown as what runs.
+ */
+function ModelRows({ settings }: { settings: Settings }) {
+  const keyHint = (
+    <>
+      {copy.models.keyBefore}
+      <Link to="/router" className="underline underline-offset-4">
+        {copy.models.router}
+      </Link>
+      {copy.models.keyAfter}
+    </>
+  )
+  return (['orchestrator_model', 'router_model'] as const).map((k) => (
+    <SettingRow
+      key={k}
+      label={copy.models[k].label}
+      hint={
+        <>
+          {copy.models[k].hint} {keyHint}
+        </>
+      }
+    >
+      <p className="font-mono text-sm break-all">{settings[k] || copy.models.unknown}</p>
+      <p className="mt-1 text-xs text-muted-foreground">{copy.models.setByServer}</p>
+    </SettingRow>
+  ))
 }

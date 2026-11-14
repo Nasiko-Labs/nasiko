@@ -8,8 +8,12 @@ import { z } from 'zod'
 const text = z.string().nullable().optional()
 const int = z.number().int().nullable().optional()
 
-/** `Settings`: a bare JSON object (no envelope). Every field is nullable; the row is a singleton. */
+/**
+ * `SettingsResponse`: a bare JSON object (no envelope), the singleton row plus the two models the server runs.
+ * `orchestrator_model` and `router_model` come from its environment (`OPENAI_MODEL`, `ROUTER_MODEL`) and are read-only.
+ */
 export const settingsSchema = z.looseObject({
+  orchestrator_model: text,
   router_model: text,
   default_provider: text,
   max_flow_depth: int,
@@ -23,10 +27,9 @@ export type Settings = z.infer<typeof settingsSchema>
 
 /**
  * `SettingsUpdate`'s fields. The PUT binds every one of them (`INSERT … ON CONFLICT DO UPDATE SET` all columns), so a
- * field left out is written as NULL (ST-2): the body always carries all of them.
+ * field left out is written as NULL (ST-2): the body always carries all of them. The two models are not among them.
  */
 export const SETTINGS_FIELDS = [
-  'router_model',
   'default_provider',
   'max_flow_depth',
   'max_flow_fan_out',

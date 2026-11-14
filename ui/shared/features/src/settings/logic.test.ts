@@ -13,7 +13,6 @@ import {
 import { SETTINGS_FIELDS } from './types'
 
 const fresh = {
-  router_model: 'gpt-4o',
   default_provider: 'anthropic',
   max_flow_depth: 8,
   max_flow_fan_out: 20,
@@ -39,13 +38,13 @@ describe('settingsBody (update_settings writes every column)', () => {
     const body = settingsBody({}, values, new Set(['catalog_tabs', 'max_flow_tokens'] as const))
     expect(body.catalog_tabs).toBeNull()
     expect(body.max_flow_tokens).toBe(100_000)
-    expect(body.router_model).toBeNull()
+    expect(body.default_provider).toBeNull()
     expect(Object.values(body).every((v) => v !== undefined)).toBe(true)
   })
 
   it('reads nulls as empty fields', () => {
-    expect(valuesOf({ router_model: null, max_flow_depth: 5 })).toMatchObject({
-      router_model: '',
+    expect(valuesOf({ default_provider: null, max_flow_depth: 5 })).toMatchObject({
+      default_provider: '',
       max_flow_depth: '5',
       catalog_tabs: '',
     })

@@ -1,10 +1,11 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy as shellCopy } from '@nasiko/app-core/shell/copy'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
-import { recordRequestBodies } from '@nasiko/testing/setup'
+import { recordRequestBodies, server } from '@nasiko/testing/setup'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { copy } from './copy'
 
@@ -14,6 +15,8 @@ afterEach(() => configureMocks({ seed, now, loggedIn: true, variant: null, super
 const T = { timeout: 12000 }
 const f = copy.fields
 const sectionNav = () => screen.findByRole('navigation', { name: copy.nav.label }, T)
+/** A settings row (`SettingRow`'s grid), found by its label. */
+const rowOf = (label: string) => screen.getByText(label).closest<HTMLElement>('.grid')!
 
 describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
   it('opens from Organization → Settings on General, with the legacy module nav (no SSO in OSS)', async () => {
@@ -22,7 +25,15 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
     await userEvent.click(within(main).getByRole('link', { name: 'Settings' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/settings'))
     expect(await screen.findByRole('heading', { level: 1, name: 'General' }, T)).toBeInTheDocument()
-    expect(await screen.findByLabelText(f.router_model.label, {}, T)).toHaveValue('deepseek-v4-pro')
+    // The models are the server's, shown read-only, each under its own label: no field to edit.
+    await screen.findByText(copy.models.orchestrator_model.label, {}, T)
+    const orchestrator = within(rowOf(copy.models.orchestrator_model.label))
+    expect(orchestrator.getByText('gpt-4o-mini')).toBeInTheDocument()
+    expect(orchestrator.getByText(copy.models.setByServer)).toBeInTheDocument()
+    const routing = within(rowOf(copy.models.router_model.label))
+    expect(routing.getByText('gpt-4.1-mini')).toBeInTheDocument()
+    expect(routing.getByText(copy.models.setByServer)).toBeInTheDocument()
+    expect(screen.queryByRole('textbox', { name: /model/i })).not.toBeInTheDocument()
     const nav = await sectionNav()
     expect(
       within(nav)
@@ -47,9 +58,8 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
   it('keeps edits across sections and saves them with one Save, every column from a fresh read', async () => {
     const bodies = recordRequestBodies()
     const { router } = renderApp('/settings')
-    const model = await screen.findByLabelText(f.router_model.label, {}, T)
-    await userEvent.clear(model)
-    await userEvent.type(model, 'gpt-4o')
+    const tabs = await screen.findByLabelText(f.catalog_tabs.label, {}, T)
+    await userEvent.type(tabs, 'devops, finance')
     // A section is a view of one form: switching doesn't ask to leave, and the edit survives.
     await userEvent.click(within(await sectionNav()).getByRole('link', { name: 'Flow limits' }))
     expect(
@@ -65,7 +75,6 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        router_model: 'x',
         default_provider: 'openai',
         max_flow_depth: 5,
         max_flow_fan_out: 20,
@@ -82,14 +91,13 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
       .filter((r) => r.method === 'PUT' && r.url.pathname === '/api/settings')
       .at(-1)
     expect(put?.body).toEqual({
-      router_model: 'gpt-4o',
       default_provider: 'openai',
       max_flow_depth: 8,
       max_flow_fan_out: 20,
       max_flow_tokens: 100000,
       flow_timeout_secs: 120,
       registry_url: 'https://registry.example.com',
-      catalog_tabs: null,
+      catalog_tabs: 'devops, finance',
     })
     bodies.stop()
     // The fresh form shows the saved row, and saves again.
@@ -97,6 +105,28 @@ describe('Settings: workspace sections (plans/feat-settings.md §1.1)', () => {
     expect(await screen.findByLabelText(f.registry_url.label)).toHaveValue(
       'https://registry.example.com',
     )
+  })
+
+  it('shows no model from a server that does not report the running ones', async () => {
+    // An older server answers its stored column (or the old hard-coded default) and no `orchestrator_model`.
+    server.use(
+      http.get('/api/settings', () =>
+        HttpResponse.json({
+          router_model: 'deepseek-v4-pro',
+          default_provider: 'openai',
+          max_flow_depth: 5,
+          max_flow_fan_out: 20,
+          max_flow_tokens: 100000,
+          flow_timeout_secs: 120,
+          registry_url: null,
+          catalog_tabs: null,
+        }),
+      ),
+    )
+    renderApp('/settings')
+    expect(await screen.findByLabelText(f.catalog_tabs.label, {}, T)).toBeInTheDocument()
+    expect(screen.queryByText(copy.models.router_model.label)).not.toBeInTheDocument()
+    expect(screen.queryByText('deepseek-v4-pro')).not.toBeInTheDocument()
   })
 
   it('shows the section of a field that fails, instead of saving nothing silently', async () => {

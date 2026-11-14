@@ -21,9 +21,10 @@ pub fn router() -> Router<AppState> {
         .merge(write_settings)
 }
 
+/// The stored settings row. The two models the server runs are not in it: they come from the
+/// environment, and [`SettingsResponse`] adds them.
 #[derive(Debug, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Settings {
-    pub router_model: Option<String>,
     pub default_provider: Option<String>,
     pub max_flow_depth: Option<i32>,
     pub max_flow_fan_out: Option<i32>,
@@ -57,7 +58,6 @@ impl Settings {
     /// it had reported defaults.
     fn defaults() -> Self {
         Self {
-            router_model: Some("deepseek-v4-pro".into()),
             default_provider: Some("openai".into()),
             max_flow_depth: Some(5),
             max_flow_fan_out: Some(20),
@@ -80,7 +80,6 @@ impl Settings {
     fn with_defaults(self) -> Self {
         let d = Self::defaults();
         Self {
-            router_model: self.router_model.or(d.router_model),
             default_provider: self.default_provider.or(d.default_provider),
             max_flow_depth: self.max_flow_depth.or(d.max_flow_depth),
             max_flow_fan_out: self.max_flow_fan_out.or(d.max_flow_fan_out),
@@ -98,9 +97,35 @@ impl Settings {
     }
 }
 
+/// What `GET` and `PUT /api/settings` answer: the stored row plus the models the server runs.
+///
+/// Both models are read-only here. They come from `OPENAI_MODEL` and `ROUTER_MODEL`, which is
+/// what the chat orchestrator and the workflow router use; the `settings.router_model` column
+/// they replace was never read by either.
+#[derive(Debug, Serialize)]
+pub struct SettingsResponse {
+    #[serde(flatten)]
+    pub stored: Settings,
+    /// Answers and picks agents in chat, and writes workflow steps' prompts and final output.
+    pub orchestrator_model: String,
+    /// Picks the agent for each workflow step.
+    pub router_model: String,
+}
+
+impl SettingsResponse {
+    fn new(stored: Settings, config: &nasiko_config::Config) -> Self {
+        Self {
+            stored,
+            orchestrator_model: config.openai_model.clone(),
+            router_model: config.router_model.clone(),
+        }
+    }
+}
+
+/// The body of `PUT /api/settings`. A `router_model` sent by an older client is ignored like any
+/// other unknown key: the model is set by the server's environment.
 #[derive(Debug, Deserialize)]
 pub struct SettingsUpdate {
-    pub router_model: Option<String>,
     pub default_provider: Option<String>,
     pub max_flow_depth: Option<i32>,
     pub max_flow_fan_out: Option<i32>,
@@ -126,7 +151,7 @@ pub struct SettingsUpdate {
 async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl IntoResponse {
     let row = sqlx::query_as::<_, Settings>(
         r#"SELECT
-            router_model, default_provider, max_flow_depth,
+            default_provider, max_flow_depth,
             max_flow_fan_out, max_flow_tokens, flow_timeout_secs,
             registry_url, catalog_tabs,
             default_embedding_provider, default_embedding_model,
@@ -137,14 +162,15 @@ async fn get_settings(State(state): State<AppState>, _claims: Claims) -> impl In
     .fetch_optional(&state.db)
     .await;
 
-    match row {
-        Ok(Some(s)) => Json(s.with_defaults()).into_response(),
-        Ok(None) => Json(Settings::defaults()).into_response(),
+    let stored = match row {
+        Ok(Some(s)) => s.with_defaults(),
+        Ok(None) => Settings::defaults(),
         Err(e) => {
             tracing::error!(%e, "get_settings: db error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
         }
-    }
+    };
+    Json(SettingsResponse::new(stored, &state.config)).into_response()
 }
 
 async fn update_settings(
@@ -228,15 +254,14 @@ async fn update_settings(
 
     let result = sqlx::query_as::<_, Settings>(
         r#"INSERT INTO settings (
-               id, router_model, default_provider, max_flow_depth, max_flow_fan_out,
+               id, default_provider, max_flow_depth, max_flow_fan_out,
                max_flow_tokens, flow_timeout_secs, registry_url, catalog_tabs,
                default_embedding_provider, default_embedding_model,
                default_embedding_api_key_encrypted
            )
-           VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                   CASE WHEN $11 THEN NULL ELSE $12 END)
+           VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9,
+                   CASE WHEN $10 THEN NULL ELSE $11 END)
            ON CONFLICT (id) DO UPDATE SET
-             router_model = EXCLUDED.router_model,
              default_provider = EXCLUDED.default_provider,
              max_flow_depth = EXCLUDED.max_flow_depth,
              max_flow_fan_out = EXCLUDED.max_flow_fan_out,
@@ -250,18 +275,17 @@ async fn update_settings(
              -- null: it is never returned by GET, so a client cannot resend what it was
              -- never given. Absent means keep; the explicit flag is the only way to clear.
              default_embedding_api_key_encrypted = CASE
-                 WHEN $11 THEN NULL
+                 WHEN $10 THEN NULL
                  ELSE COALESCE(EXCLUDED.default_embedding_api_key_encrypted,
                                settings.default_embedding_api_key_encrypted)
              END
            RETURNING
-             router_model, default_provider, max_flow_depth, max_flow_fan_out,
+             default_provider, max_flow_depth, max_flow_fan_out,
              max_flow_tokens, flow_timeout_secs, registry_url, catalog_tabs,
              default_embedding_provider, default_embedding_model,
              (default_embedding_api_key_encrypted IS NOT NULL)
                  AS default_embedding_api_key_configured"#,
     )
-    .bind(&body.router_model)
     .bind(&body.default_provider)
     .bind(body.max_flow_depth)
     .bind(body.max_flow_fan_out)
@@ -277,7 +301,8 @@ async fn update_settings(
     .await;
 
     match result {
-        Ok(s) => Json(s).into_response(),
+        // The page puts this answer straight into its cache, so it carries the models too.
+        Ok(s) => Json(SettingsResponse::new(s, &state.config)).into_response(),
         Err(e) => {
             tracing::error!(%e, "update_settings: db error");
             (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -298,7 +323,6 @@ mod tests {
     #[test]
     fn a_row_of_nulls_reads_the_same_as_no_row_at_all() {
         let materialised = Settings {
-            router_model: None,
             default_provider: None,
             max_flow_depth: None,
             max_flow_fan_out: None,
@@ -313,7 +337,6 @@ mod tests {
         .with_defaults();
 
         let no_row = Settings::defaults();
-        assert_eq!(materialised.router_model, no_row.router_model);
         assert_eq!(materialised.default_provider, no_row.default_provider);
         assert_eq!(materialised.max_flow_depth, no_row.max_flow_depth);
         assert_eq!(materialised.max_flow_fan_out, no_row.max_flow_fan_out);
@@ -325,7 +348,6 @@ mod tests {
     #[test]
     fn a_stored_value_survives_the_defaults() {
         let stored = Settings {
-            router_model: Some("gpt-4o".into()),
             default_provider: None,
             max_flow_depth: Some(1),
             max_flow_fan_out: None,
@@ -339,7 +361,6 @@ mod tests {
         }
         .with_defaults();
 
-        assert_eq!(stored.router_model.as_deref(), Some("gpt-4o"));
         assert_eq!(stored.max_flow_depth, Some(1));
         assert_eq!(
             stored.registry_url.as_deref(),
