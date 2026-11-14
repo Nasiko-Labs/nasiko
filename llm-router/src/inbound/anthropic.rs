@@ -60,8 +60,17 @@ impl InboundParser for AnthropicInbound {
         if let Some(tools) = body.get("tools").and_then(Value::as_array) {
             oa["tools"] = json!(tools.iter().map(tool_from_anthropic).collect::<Vec<_>>());
         }
-        if let Some(tc) = body.get("tool_choice").and_then(tool_choice_from_anthropic) {
-            oa["tool_choice"] = tc;
+        if let Some(tool_choice) = body.get("tool_choice") {
+            if let Some(tc) = tool_choice_from_anthropic(tool_choice) {
+                oa["tool_choice"] = tc;
+            }
+            // Anthropic's `disable_parallel_tool_use` rides alongside `tool_choice`
+            // rather than being its own top-level field; carry it onto the IR's named
+            // `parallel_tool_calls` so outbound providers can act on it.
+            if tool_choice.get("disable_parallel_tool_use").and_then(Value::as_bool) == Some(true)
+            {
+                oa["parallel_tool_calls"] = json!(false);
+            }
         }
 
         serde_json::from_value(oa)
@@ -235,6 +244,9 @@ fn tool_from_anthropic(t: &Value) -> Value {
     if let Some(s) = t.get("input_schema") {
         function["parameters"] = s.clone();
     }
+    if let Some(strict) = t.get("strict") {
+        function["strict"] = strict.clone();
+    }
     json!({ "type": "function", "function": function })
 }
 
@@ -243,6 +255,10 @@ fn tool_choice_from_anthropic(v: &Value) -> Option<Value> {
     match v.get("type").and_then(Value::as_str) {
         Some("auto") => Some(json!("auto")),
         Some("any") => Some(json!("required")),
+        // Anthropic Messages defines `{"type": "none"}`; OpenAI's counterpart is the
+        // bare string "none". Previously unhandled, so the selector was dropped and
+        // the model was free to call any declared tool despite the caller's request.
+        Some("none") => Some(json!("none")),
         Some("tool") => v
             .get("name")
             .and_then(Value::as_str)
@@ -588,6 +604,33 @@ mod tests {
         assert_eq!(req.tool_choice, Some(json!("required")));
         assert_eq!(req.messages[0].role, "system");
         assert_eq!(req.tools.as_ref().unwrap()[0].function.name, "f");
+    }
+
+    #[test]
+    fn parse_tool_choice_none_is_not_dropped() {
+        // Regression: a `none` tool_choice used to vanish entirely in the IR, leaving
+        // the model free to call tools despite the caller asking for none of them.
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tool_choice": { "type": "none" },
+                "tools": [{ "name": "f", "input_schema": { "type": "object" } }]
+            }))
+            .unwrap();
+        assert_eq!(req.tool_choice, Some(json!("none")));
+    }
+
+    #[test]
+    fn parse_tool_strict_and_disable_parallel_tool_use() {
+        let req = AnthropicInbound
+            .parse_chat(json!({
+                "messages": [{ "role": "user", "content": "hi" }],
+                "tool_choice": { "type": "tool", "name": "f", "disable_parallel_tool_use": true },
+                "tools": [{ "name": "f", "input_schema": { "type": "object" }, "strict": true }]
+            }))
+            .unwrap();
+        assert_eq!(req.parallel_tool_calls, Some(false));
+        assert_eq!(req.tools.as_ref().unwrap()[0].function.strict, Some(true));
     }
 
     // ── render_chat_response (IR → Anthropic response) ────────────────────────

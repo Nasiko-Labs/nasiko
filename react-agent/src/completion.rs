@@ -256,6 +256,7 @@ fn wire_request(request: CompletionRequest) -> Result<ChatRequest, CompletionErr
         messages,
         tool_choice: tools.as_ref().map(|_| json!("auto")),
         tools,
+        parallel_tool_calls: None,
         temperature: request.temperature,
         max_tokens: request
             .max_tokens

@@ -373,9 +373,19 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
     if !system_parts.is_empty() {
         body["systemInstruction"] = json!({ "parts": [{ "text": system_parts.join("\n") }] });
     }
+    // Gemini's `allowedFunctionNames` restriction only takes effect in `ANY` mode; in
+    // `AUTO` mode it's ignored and every declared tool stays callable. So an `"auto"`
+    // (optional) allowed_tools subset has to be enforced by filtering the *declared*
+    // tools themselves, not by toolConfig.
+    let auto_allowed_names = req.tool_choice.as_ref().and_then(allowed_tools_auto_names);
     if let Some(tools) = &req.tools {
         let decls: Vec<Value> = tools
             .iter()
+            .filter(|t| {
+                auto_allowed_names
+                    .as_ref()
+                    .is_none_or(|names| names.contains(&t.function.name.as_str()))
+            })
             .map(|t| {
                 let mut d = json!({ "name": t.function.name });
                 if let Some(desc) = &t.function.description {
@@ -391,7 +401,9 @@ fn to_gemini_request(req: &ChatRequest, cfg: &ResolvedConfig) -> Value {
             body["tools"] = json!([{ "functionDeclarations": decls }]);
         }
     }
-    if let Some(tool_config) = req.tool_choice.as_ref().and_then(tool_choice_to_gemini) {
+    if auto_allowed_names.is_none()
+        && let Some(tool_config) = req.tool_choice.as_ref().and_then(tool_choice_to_gemini)
+    {
         body["toolConfig"] = tool_config;
     }
 
@@ -434,6 +446,33 @@ fn assistant_to_gemini(m: &Message) -> Value {
     json!({ "role": "model", "parts": parts })
 }
 
+/// The tool names of an `{"type": "allowed_tools", "allowed_tools": {...}}` choice
+/// whose `mode` is **not** `"required"` — i.e. an optional subset, which Gemini can
+/// only enforce by not declaring the excluded tools (`allowedFunctionNames` is a
+/// no-op outside `ANY` mode). `None` for every other shape, including a `required`
+/// subset (handled by `tool_choice_to_gemini` via `toolConfig` instead).
+fn allowed_tools_auto_names(choice: &Value) -> Option<Vec<&str>> {
+    let allowed_tools = choice
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|t| *t == "allowed_tools")
+        .and_then(|_| choice.get("allowed_tools"))?;
+    if allowed_tools.get("mode").and_then(Value::as_str) == Some("required") {
+        return None;
+    }
+    let names: Vec<&str> = allowed_tools
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|t| t.get("function")?.get("name")?.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    (!names.is_empty()).then_some(names)
+}
+
 fn tool_choice_to_gemini(choice: &Value) -> Option<Value> {
     match choice {
         Value::String(s) => {
@@ -444,13 +483,39 @@ fn tool_choice_to_gemini(choice: &Value) -> Option<Value> {
             };
             Some(json!({ "functionCallingConfig": { "mode": mode } }))
         }
-        Value::Object(o) => o
-            .get("function")
-            .and_then(|f| f.get("name"))
-            .and_then(Value::as_str)
-            .map(|name| {
-                json!({ "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [name] } })
-            }),
+        Value::Object(o) => {
+            if o.get("type").and_then(Value::as_str) == Some("allowed_tools") {
+                // Unlike Anthropic, Gemini's `allowedFunctionNames` takes a list, so a
+                // multi-tool subset round-trips exactly, not just a single tool.
+                let names: Vec<&str> = o
+                    .get("allowed_tools")
+                    .and_then(|a| a.get("tools"))
+                    .and_then(Value::as_array)
+                    .map(|tools| {
+                        tools
+                            .iter()
+                            .filter_map(|t| t.get("function")?.get("name")?.as_str())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if names.is_empty() {
+                    return None;
+                }
+                let mode = match o.get("allowed_tools").and_then(|a| a.get("mode")).and_then(Value::as_str) {
+                    Some("required") => "ANY",
+                    _ => "AUTO",
+                };
+                return Some(
+                    json!({ "functionCallingConfig": { "mode": mode, "allowedFunctionNames": names } }),
+                );
+            }
+            o.get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(Value::as_str)
+                .map(|name| {
+                    json!({ "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": [name] } })
+                })
+        }
         _ => None,
     }
 }
@@ -615,6 +680,64 @@ mod tests {
         assert_eq!(decl["parameters"]["properties"]["text"]["type"], "string");
         assert_eq!(body["generationConfig"]["temperature"], 0.1);
         assert_eq!(body["generationConfig"]["maxOutputTokens"], 4000);
+    }
+
+    #[test]
+    fn allowed_tools_subset_maps_to_allowed_function_names() {
+        // Regression: an OpenAI `tool_choice.allowed_tools` subset used to fall through
+        // to no toolConfig at all, leaving every declared tool callable.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "required",
+                    "tools": [
+                        { "type": "function", "function": { "name": "tool_a" } },
+                        { "type": "function", "function": { "name": "tool_b" } }
+                    ]
+                }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a" } },
+                { "type": "function", "function": { "name": "tool_b" } }
+            ]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved());
+        assert_eq!(body["toolConfig"]["functionCallingConfig"]["mode"], "ANY");
+        assert_eq!(
+            body["toolConfig"]["functionCallingConfig"]["allowedFunctionNames"],
+            json!(["tool_a", "tool_b"])
+        );
+    }
+
+    #[test]
+    fn allowed_tools_auto_mode_filters_declared_tools_instead_of_tool_config() {
+        // Regression: Gemini only honors `allowedFunctionNames` in ANY mode, so an
+        // "auto" (optional) subset sent as AUTO + allowedFunctionNames was silently a
+        // no-op — every declared tool, including the excluded one, stayed callable.
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": "hi" }],
+            "tool_choice": {
+                "type": "allowed_tools",
+                "allowed_tools": {
+                    "mode": "auto",
+                    "tools": [{ "type": "function", "function": { "name": "tool_a" } }]
+                }
+            },
+            "tools": [
+                { "type": "function", "function": { "name": "tool_a" } },
+                { "type": "function", "function": { "name": "tool_b" } }
+            ]
+        }))
+        .unwrap();
+        let body = to_gemini_request(&req, &resolved());
+        let decls = body["tools"][0]["functionDeclarations"].as_array().unwrap();
+        assert_eq!(decls.len(), 1);
+        assert_eq!(decls[0]["name"], "tool_a");
+        // No toolConfig needed: the restriction is enforced by what's declared.
+        assert!(body.get("toolConfig").is_none());
     }
 
     #[test]

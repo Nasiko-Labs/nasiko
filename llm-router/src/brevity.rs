@@ -222,6 +222,7 @@ mod tests {
                 name: "search".into(),
                 description: None,
                 parameters: None,
+                strict: None,
             },
             extra: Default::default(),
         }
@@ -244,6 +245,7 @@ mod tests {
             messages,
             tools: None,
             tool_choice: None,
+            parallel_tool_calls: None,
             temperature: None,
             max_tokens: None,
             stream: None,

@@ -1553,6 +1553,7 @@ mod tests {
                 name: "query-docs".to_string(),
                 description: None,
                 parameters: None,
+                strict: None,
             },
             extra: Map::new(),
         }];
