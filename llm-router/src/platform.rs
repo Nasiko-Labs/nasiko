@@ -696,4 +696,39 @@ mod embedding_route_tests {
             }
         );
     }
+
+    /// `PlatformLlm::can_embed` is `embedding_model_fits` over this route.
+    fn can_embed(cfg: &GatewayConfig, requested: &str) -> bool {
+        let r: EmbeddingRoute = embedding_route(cfg, requested);
+        embedding_model_fits(&r.model, &r.provider)
+    }
+
+    #[test]
+    fn anthropic_default_falls_back_to_keyed_gemini() {
+        let c: GatewayConfig = cfg("anthropic", "", "g");
+        let r: EmbeddingRoute = embedding_route(&c, "text-embedding-3-small");
+        assert_eq!(
+            r,
+            EmbeddingRoute {
+                provider: "gemini".into(),
+                model: "gemini-embedding-001".into()
+            }
+        );
+        assert!(can_embed(&c, "text-embedding-3-small"));
+    }
+
+    #[test]
+    fn no_embedding_provider_keyed_cannot_embed() {
+        assert!(!can_embed(&cfg("anthropic", "", ""), "text-embedding-3-small"));
+        assert!(!can_embed(&cfg("openrouter", "", ""), "gemini-embedding-001"));
+    }
+
+    #[test]
+    fn embedding_providers_reject_chat_only_providers() {
+        assert!(!embedding_model_fits("text-embedding-3-small", "anthropic"));
+        assert!(!embedding_model_fits("text-embedding-3-small", "openrouter"));
+        for p in EMBEDDING_PROVIDERS {
+            assert!(default_embedding_model(p).is_some(), "{p} needs a default model");
+        }
+    }
 }

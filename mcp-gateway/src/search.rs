@@ -657,6 +657,14 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    #[test]
+    fn cosine_similarity_is_zero_for_mismatched_or_empty_vectors() {
+        // 3072-dim Gemini vs 1536-dim OpenAI vectors must not be compared.
+        assert_eq!(cosine_similarity(&[1.0, 0.0, 0.0], &[1.0, 0.0]), 0.0);
+        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert!((cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]) - 1.0).abs() < 1e-6);
+    }
+
     fn tool(connector: &str, name: &str, desc: &str) -> ToolEntry {
         ToolEntry {
             connector_id: Uuid::new_v5(&Uuid::NAMESPACE_DNS, connector.as_bytes()),
