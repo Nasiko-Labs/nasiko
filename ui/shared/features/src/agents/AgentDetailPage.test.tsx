@@ -6,10 +6,10 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fmtMoney } from '@nasiko/ui/lib/format'
 import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
@@ -33,6 +33,15 @@ const running = agent(0)
 const url = (i: number, tab?: string) => `/agents/${agent(i).id}${tab ? `?tab=${tab}` : ''}`
 const title = () => screen.findByRole('heading', { level: 1 })
 const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
+
+// The first render in this file loads the agent page's lazy code, which on a busy runner can take
+// longer than a query waits. That cost belongs to no test, so it is paid once here, with a timeout
+// of its own; otherwise whichever test happens to run first is the one that times out.
+beforeAll(async () => {
+  renderApp(url(0))
+  await screen.findByRole('heading', { level: 1 }, { timeout: 120_000 })
+  cleanup()
+}, 150_000)
 
 describe('resolving the URL', () => {
   it('a unique name redirects to the UUID URL', async () => {
@@ -532,8 +541,10 @@ describe('settings', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
     const dialog = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Stay' }))
+    // The dialog animates out, and the page behind it stays inert until it has gone.
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.search).toEqual({ tab: 'settings' })
-    expect(screen.getByRole('textbox', { name: 'Display name' })).toHaveValue(
+    expect(await screen.findByRole('textbox', { name: 'Display name' })).toHaveValue(
       `${agent(1).display_name} edited`,
     )
   })

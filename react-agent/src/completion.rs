@@ -161,11 +161,6 @@ impl UsageModel {
         let provider: String = gateway.default_provider.clone();
         let api_key: String = gateway.platform_key_for(&provider).to_string();
         if api_key.is_empty() {
-            // OpenAI is the default: say where a user adds a key (the vertex merge had
-            // dropped this wording). Other providers name what is missing.
-            if provider == "openai" {
-                return Err(NO_KEY_MESSAGE.to_string());
-            }
             return Err(format!(
                 "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
             ));

@@ -424,12 +424,7 @@ fn build_span_tree(
             model,
             operation: first_str_attr(
                 &s.attributes,
-                &[
-                    "gen_ai.operation.name",
-                    "rpc.method",
-                    "code.function",
-                    "http.route",
-                ],
+                &["gen_ai.operation.name", "rpc.method", "code.function", "http.route"],
             ),
             provider: first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"]),
             span_annotation_summaries: vec![],
