@@ -89,7 +89,8 @@ impl PlatformLlm {
             resp.usage.clone(),
             started,
             finish_reason,
-        );
+        )
+        .await;
         Ok(resp)
     }
 
@@ -134,7 +135,8 @@ impl PlatformLlm {
             attempts.take_failed(),
         );
         let resp = result?;
-        self.log(call, "embedding", provider, model, resp.usage.clone(), started, None);
+        self.log(call, "embedding", provider, model, resp.usage.clone(), started, None)
+            .await;
         Ok(resp)
     }
 
@@ -243,7 +245,8 @@ impl PlatformLlm {
             None,
             started,
             None,
-        );
+        )
+        .await;
         Ok(Transcript { text })
     }
 
@@ -260,8 +263,11 @@ impl PlatformLlm {
         }
     }
 
+    /// Writes the usage row before returning, so a caller that reads spend back (MAF's
+    /// `platform_spend`) sees this call. The write runs as its own task: a caller dropped
+    /// mid-await cannot roll back the record of a call that was already paid for.
     #[allow(clippy::too_many_arguments)]
-    fn log(
+    async fn log(
         &self,
         call: &PlatformCall,
         operation_type: &'static str,
@@ -272,11 +278,10 @@ impl PlatformLlm {
         finish_reason: Option<String>,
     ) {
         let cached_tokens: Option<i64> = usage.as_ref().and_then(|u| u.cache_read_input_tokens);
-        usage::spawn_log(
-            self.ctx.db.clone(),
-            self.ctx.pricing.clone(),
-            self.ctx.ledger.clone(),
-            UsageRecord {
+        let db = self.ctx.db.clone();
+        let pricing = self.ctx.pricing.clone();
+        let ledger = self.ctx.ledger.clone();
+        let record = UsageRecord {
                 owner_id: call.user_id.clone(),
                 agent_id: call.component.clone(),
                 operation_type,
@@ -299,8 +304,15 @@ impl PlatformLlm {
                 compact_tools_bytes: None,
                 request_bytes: None,
                 failure: None,
-            },
-        );
+        };
+        let write = tokio::spawn(async move {
+            usage::log_usage(db, pricing.as_ref(), ledger.as_ref(), record).await
+        });
+        match write.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(error = %e, "platform usage write failed (swallowed)"),
+            Err(e) => tracing::warn!(error = %e, "platform usage write task failed (swallowed)"),
+        }
     }
 }
 

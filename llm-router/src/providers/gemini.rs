@@ -419,7 +419,12 @@ fn parse_vertex_predict(value: &Value, model: &str) -> Result<EmbeddingsResponse
         .as_array()
         .ok_or_else(|| ProviderError::Parse("Vertex predict response has no predictions".into()))?;
     let mut data: Vec<Embedding> = Vec::with_capacity(predictions.len());
+    // Billable input tokens: sum of `embeddings.statistics.token_count` per prediction.
+    let mut token_count: Option<i64> = None;
     for (i, p) in predictions.iter().enumerate() {
+        if let Some(n) = p["embeddings"]["statistics"]["token_count"].as_f64() {
+            token_count = Some(token_count.unwrap_or(0) + n as i64);
+        }
         let values: &Value = &p["embeddings"]["values"];
         if !values.is_array() {
             return Err(ProviderError::Parse(format!(
@@ -437,7 +442,11 @@ fn parse_vertex_predict(value: &Value, model: &str) -> Result<EmbeddingsResponse
         object: "list".to_string(),
         data,
         model: model.to_string(),
-        usage: None,
+        usage: token_count.map(|n| Usage {
+            prompt_tokens: Some(n),
+            total_tokens: Some(n),
+            ..Usage::default()
+        }),
         extra: Map::new(),
     })
 }

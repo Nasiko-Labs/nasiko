@@ -122,6 +122,7 @@ pub async fn metered_llm<T>(
     // A routed call is already in `trace_usage`, written by the router; writing it here too
     // would add its tokens to the row twice.
     let record = !llm.is_routed();
+    let fut = super::llm::MAF_STEP.scope(step_index, fut);
     metered_call_inner(phase, db, execution_id, user_id, step_index, source, record, fut).await
 }
 
@@ -1658,7 +1659,8 @@ pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformS
     type SpendRow = (Option<i32>, Option<i64>, Option<f64>);
 
     let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT (metadata->>'step_index')::int,
+        "SELECT COALESCE((metadata->>'step_index')::int,
+                         (substring(agent_name from '^maf:step([0-9]+)$'))::int),
                 COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0)::BIGINT,
                 COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
            FROM trace_usage

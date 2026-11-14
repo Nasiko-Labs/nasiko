@@ -26,6 +26,19 @@ fn openai_rejects_temperature(body: &str) -> bool {
     param == "temperature" && matches!(code, "unsupported_value" | "unsupported_parameter")
 }
 
+tokio::task_local! {
+    /// Step index of the MAF phase running on this task; `None` for run-level phases.
+    pub static MAF_STEP: Option<i32>;
+}
+
+/// Routed-call label: `maf` becomes `maf:step<i>` inside a step phase; other labels unchanged.
+pub fn step_component(component: &str, step: Option<i32>) -> String {
+    match step {
+        Some(i) if component == "maf" => format!("maf:step{i}"),
+        _ => component.to_string(),
+    }
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -254,11 +267,15 @@ impl LlmClient {
         }
 
         if let Some(backend) = &self.backend {
-            let call = self.call.clone().unwrap_or(crate::llm_backend::LlmCallContext {
+            let mut call = self.call.clone().unwrap_or(crate::llm_backend::LlmCallContext {
                 user_id: uuid::Uuid::nil(),
                 component: "maf".into(),
                 session_id: None,
             });
+            // A step phase runs inside `MAF_STEP.scope`; label its row `maf:step<i>` so
+            // `platform_spend` keeps the per-step split for router-recorded calls.
+            let step: Option<i32> = MAF_STEP.try_with(|s| *s).ok().flatten();
+            call.component = step_component(&call.component, step);
             if self.model.is_empty() {
                 body.as_object_mut().unwrap().remove("model");
             }
@@ -267,6 +284,11 @@ impl LlmClient {
             let parsed: CompletionResponse = serde_json::from_value(value)
                 .map_err(|e| format!("LLM response parse error: {e}"))?;
             return self.finish(parsed, started);
+        }
+
+        // Direct OpenAI call (user key) with no configured model: OpenAI default.
+        if body["model"].as_str().is_some_and(str::is_empty) {
+            body["model"] = serde_json::json!("gpt-6-luna");
         }
 
         let send = |body: &serde_json::Value| {

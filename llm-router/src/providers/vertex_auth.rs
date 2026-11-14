@@ -68,7 +68,7 @@ pub struct TokenSource {
 impl TokenSource {
     /// Locate ADC and build a token source. No network call happens here.
     pub fn discover(http: reqwest::Client) -> Result<Self, ProviderError> {
-        let raw: Option<String> = std::env::var(CREDENTIALS_ENV).ok();
+        let raw: Option<String> = read_adc_text()?;
         let origin: Origin = origin_from(raw.as_deref())?;
         Ok(Self {
             http,
@@ -145,7 +145,67 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Pure: inline ADC JSON when present and non-blank, else the metadata server.
+/// ADC text in documented order: inline `VERTEX_CREDENTIALS_JSON`, the file named by
+/// `GOOGLE_APPLICATION_CREDENTIALS` (must exist), then gcloud's well-known file.
+/// `None` means use the metadata server.
+fn read_adc_text() -> Result<Option<String>, ProviderError> {
+    let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    if let Some(inline) = env(CREDENTIALS_ENV) {
+        return Ok(Some(inline));
+    }
+    let home: Option<String> = env("HOME");
+    if let Some(path) = env("GOOGLE_APPLICATION_CREDENTIALS") {
+        let path: String = expand_home(&path, home.as_deref());
+        return std::fs::read_to_string(&path).map(Some).map_err(|e| {
+            ProviderError::Parse(format!("GOOGLE_APPLICATION_CREDENTIALS={path}: {e}"))
+        });
+    }
+    let well_known: Option<String> = well_known_adc_path(env("CLOUDSDK_CONFIG").as_deref(), home.as_deref());
+    Ok(well_known.and_then(|p| std::fs::read_to_string(p).ok()))
+}
+
+/// Pure: gcloud ADC path (`$CLOUDSDK_CONFIG` or `~/.config/gcloud`).
+fn well_known_adc_path(cloudsdk_config: Option<&str>, home: Option<&str>) -> Option<String> {
+    let dir: String = match cloudsdk_config {
+        Some(d) => d.trim_end_matches('/').to_string(),
+        None => format!("{}/.config/gcloud", home?.trim_end_matches('/')),
+    };
+    Some(format!("{dir}/application_default_credentials.json"))
+}
+
+/// Pure: expand a leading `~/` (the env example documents that form).
+fn expand_home(path: &str, home: Option<&str>) -> String {
+    match (path.strip_prefix("~/"), home) {
+        (Some(rest), Some(h)) => format!("{}/{rest}", h.trim_end_matches('/')),
+        _ => path.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod adc_path_tests {
+    use super::*;
+
+    #[test]
+    fn well_known_path_prefers_cloudsdk_config() {
+        assert_eq!(
+            well_known_adc_path(Some("/c/"), Some("/h")).as_deref(),
+            Some("/c/application_default_credentials.json")
+        );
+        assert_eq!(
+            well_known_adc_path(None, Some("/h")).as_deref(),
+            Some("/h/.config/gcloud/application_default_credentials.json")
+        );
+        assert_eq!(well_known_adc_path(None, None), None);
+    }
+
+    #[test]
+    fn expand_home_only_expands_tilde_prefix() {
+        assert_eq!(expand_home("~/a.json", Some("/h")), "/h/a.json");
+        assert_eq!(expand_home("/abs/a.json", Some("/h")), "/abs/a.json");
+    }
+}
+
+/// Pure: ADC JSON text when present and non-blank, else the metadata server.
 fn origin_from(raw: Option<&str>) -> Result<Origin, ProviderError> {
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         Some(text) => Ok(Origin::File(parse_credentials(text)?)),

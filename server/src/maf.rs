@@ -2594,7 +2594,7 @@ async fn generate_maf(
             state.http_client.clone(),
             String::new(),
             state.config.openai_base_url.clone(),
-            state.config.openai_model.clone(),
+            crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_default(),
         )
         .with_backend(std::sync::Arc::clone(&state.llm_backend))
         .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {

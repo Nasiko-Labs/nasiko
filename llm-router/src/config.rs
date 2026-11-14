@@ -412,16 +412,25 @@ impl GatewayConfig {
                 ],
                 d.pricing_sync_interval_secs,
             ),
-            openai_api_base: env_or("OPENAI_BASE_URL", &d.openai_api_base),
+            openai_api_base: normalize_openai_base(&env_or_first(
+                &["OPENAI_BASE_URL", "OPENAI_API_BASE"],
+                &d.openai_api_base,
+            )),
             openai_max_tools: env_parse_first(&["OPENAI_MAX_TOOLS"], d.openai_max_tools),
-            anthropic_api_base: env_or("ANTHROPIC_BASE_URL", &d.anthropic_api_base),
-            gemini_api_base: env_or("GOOGLE_GEMINI_BASE_URL", &d.gemini_api_base),
-            vertex_project: env_or(
-                "GOOGLE_CLOUD_PROJECT",
-                &d.vertex_project,
+            anthropic_api_base: env_or_first(
+                &["ANTHROPIC_BASE_URL", "ANTHROPIC_API_BASE"],
+                &d.anthropic_api_base,
             ),
+            gemini_api_base: env_or_first(
+                &["GOOGLE_GEMINI_BASE_URL", "GEMINI_API_BASE"],
+                &d.gemini_api_base,
+            ),
+            vertex_project: env_or("GOOGLE_CLOUD_PROJECT", &d.vertex_project),
             vertex_location: env_or("GOOGLE_CLOUD_LOCATION", &d.vertex_location),
-            openrouter_api_base: env_or("OPENROUTER_BASE_URL", &d.openrouter_api_base),
+            openrouter_api_base: env_or_first(
+                &["OPENROUTER_BASE_URL", "OPENROUTER_API_BASE"],
+                &d.openrouter_api_base,
+            ),
             openrouter_http_referer: env_or("OPENROUTER_HTTP_REFERER", &d.openrouter_http_referer),
             openrouter_x_title: env_or("OPENROUTER_X_TITLE", &d.openrouter_x_title),
             llm_gateway_base_url: env_or("LLM_GATEWAY_BASE_URL", &d.llm_gateway_base_url),
@@ -494,12 +503,17 @@ impl GatewayConfig {
         // No explicit DEFAULT_PROVIDER: pick the first provider that has credentials, so a
         // Vertex-only (ADC) deployment never silently routes to an unkeyed `openai`.
         if std::env::var("DEFAULT_PROVIDER").map_or(true, |v| v.trim().is_empty()) {
-            let explicit_model: bool = std::env::var("DEFAULT_MODEL").is_ok_and(|v| !v.trim().is_empty());
-            if let Some((provider, model)) = c.detect_default_provider() {
+            if let Some((provider, _)) = c.detect_default_provider() {
                 c.default_provider = provider.to_string();
-                if !explicit_model {
-                    c.default_model = model.to_string();
-                }
+            }
+        }
+        // DEFAULT_MODEL unset: use the chosen provider's built-in model, whether the
+        // provider was explicit or detected, so `vertex` never receives an OpenAI model.
+        let explicit_model: bool =
+            std::env::var("DEFAULT_MODEL").is_ok_and(|v| !v.trim().is_empty());
+        if !explicit_model {
+            if let Some(model) = builtin_default_model(&c.default_provider) {
+                c.default_model = model.to_string();
             }
         }
         c
@@ -509,14 +523,7 @@ impl GatewayConfig {
     /// for it. Order: openai, anthropic, gemini, vertex, openrouter. `None` when nothing
     /// is configured (keeps the static default; requests then fail with `NoApiKey`).
     pub fn detect_default_provider(&self) -> Option<(&'static str, &'static str)> {
-        const CANDIDATES: [(&str, &str); 5] = [
-            ("openai", "gpt-4o-mini"),
-            ("anthropic", "claude-haiku-4-5"),
-            ("gemini", "gemini-2.5-flash"),
-            ("vertex", "gemini-3.8-flash"),
-            ("openrouter", "openai/gpt-4o-mini"),
-        ];
-        CANDIDATES
+        BUILTIN_DEFAULT_MODELS
             .into_iter()
             .find(|(p, _)| !self.platform_key_for(p).is_empty())
     }
@@ -652,6 +659,44 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Built-in providers in detection order, each with its default model.
+const BUILTIN_DEFAULT_MODELS: [(&str, &str); 5] = [
+    ("openai", "gpt-6.1-sol"),
+    ("anthropic", "claude-haiku-5-5"),
+    ("gemini", "gemini-4-hydrogen"),
+    ("vertex", "gemini-4-hydrogen"),
+    ("openrouter", "openai/gpt-6.1-sol"),
+];
+
+/// Default model for a built-in provider; `None` for custom providers.
+pub fn builtin_default_model(provider: &str) -> Option<&'static str> {
+    BUILTIN_DEFAULT_MODELS
+        .into_iter()
+        .find(|(p, _)| *p == provider)
+        .map(|(_, m)| m)
+}
+
+/// First non-empty env var among `keys` (new name first, legacy aliases after).
+fn env_or_first(keys: &[&str], default: &str) -> String {
+    keys.iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// OpenAI-compatible base as the router's spoke expects it (ends at the version
+/// segment). A bare origin like `https://api.openai.com` gets `/v1`, matching the
+/// direct `LLMProvider`, which appends `/v1/chat/completions` to a root.
+pub fn normalize_openai_base(raw: &str) -> String {
+    let trimmed: &str = raw.trim().trim_end_matches('/');
+    let after_scheme: &str = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    if after_scheme.contains('/') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/v1")
+    }
+}
+
 /// Select a platform key from explicit platform and generic keys. Empty strings
 /// count as unset. When `fallback` is true, prefer platform then fall back to
 /// generic; when false, use only the platform key.
@@ -689,6 +734,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalize_openai_base_adds_v1_to_bare_origin() {
+        assert_eq!(normalize_openai_base("https://api.openai.com"), "https://api.openai.com/v1");
+        assert_eq!(normalize_openai_base("https://api.openai.com/"), "https://api.openai.com/v1");
+        assert_eq!(normalize_openai_base("https://api.openai.com/v1/"), "https://api.openai.com/v1");
+        assert_eq!(normalize_openai_base("http://127.0.0.1:1234/x/v1"), "http://127.0.0.1:1234/x/v1");
+    }
+
+    #[test]
+    fn builtin_default_model_per_provider() {
+        assert_eq!(builtin_default_model("vertex"), Some("gemini-4-hydrogen"));
+        assert_eq!(builtin_default_model("anthropic"), Some("claude-haiku-5-5"));
+        assert_eq!(builtin_default_model("custom-x"), None);
+    }
+
+    #[test]
     fn vertex_api_base_global_uses_regionless_host() {
         let cfg = GatewayConfig {
             vertex_project: "p1".into(),
@@ -719,9 +779,9 @@ mod tests {
         let mut cfg = GatewayConfig::default();
         assert_eq!(cfg.detect_default_provider(), None);
         cfg.vertex_project = "p1".into();
-        assert_eq!(cfg.detect_default_provider(), Some(("vertex", "gemini-3.8-flash")));
+        assert_eq!(cfg.detect_default_provider(), Some(("vertex", "gemini-4-hydrogen")));
         cfg.platform_openai_api_key = "sk".into();
-        assert_eq!(cfg.detect_default_provider(), Some(("openai", "gpt-4o-mini")));
+        assert_eq!(cfg.detect_default_provider(), Some(("openai", "gpt-6.1-sol")));
     }
 
     #[test]

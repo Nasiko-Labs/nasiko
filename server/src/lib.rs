@@ -192,7 +192,10 @@ where
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
                 base_url: state.config.openai_base_url.clone(),
-                model: state.config.openai_model.clone(),
+                // Empty unless `OPENAI_MODEL` is set: routed calls then use the router's
+                // default model; direct user-key calls fall back to `gpt-4o-mini` in `LlmClient`.
+                model: crate::state::explicit_openai_model(&state.config.openai_model)
+                    .unwrap_or_default(),
             },
             ledger: state.usage_tracker.ledger(),
             // Platform-key calls go through the in-process router, so any configured
