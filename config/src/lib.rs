@@ -9,11 +9,11 @@ pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// Last-resort model for the platform's small task calls (selector, titles,
 /// capability generation, MCP descriptions).
-const TASK_MODEL_FALLBACK: &str = "gpt-4o-mini";
+pub const TASK_MODEL_FALLBACK: &str = "gpt-6-luna";
 
 /// Model for a platform task call: its own env var, else `DEFAULT_MODEL`, else
 /// [`TASK_MODEL_FALLBACK`]. Following `DEFAULT_MODEL` keeps a Vertex-only
-/// deployment from sending `gpt-4o-mini` to a provider that cannot serve it.
+/// deployment from sending an OpenAI model to a provider that cannot serve it.
 fn task_model(var: &str) -> String {
     pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
 }
@@ -46,7 +46,7 @@ mod task_model_tests {
 
     #[test]
     fn falls_back_to_gpt_when_nothing_set() {
-        assert_eq!(pick_task_model(None, None), "gpt-4o-mini");
+        assert_eq!(pick_task_model(None, None), crate::TASK_MODEL_FALLBACK);
     }
 }
 
@@ -855,7 +855,7 @@ impl Config {
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_model: env_or("OPENAI_MODEL", TASK_MODEL_FALLBACK),
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
