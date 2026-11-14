@@ -170,7 +170,7 @@ fn chat_body(stream: bool) -> serde_json::Value {
 #[tokio::test]
 #[serial]
 async fn a_chat_call_the_provider_fails_with_503_is_booked() {
-    let _upstream = failing_provider("/chat/completions", 503).await;
+    let _upstream = failing_provider("/v1/chat/completions", 503).await;
     let server = TestServer::start().await;
     let caller = seed(&server, "failed-chat").await;
 
@@ -188,7 +188,7 @@ async fn a_chat_call_the_provider_fails_with_503_is_booked() {
 #[tokio::test]
 #[serial]
 async fn a_stream_the_provider_refuses_with_429_is_booked() {
-    let _upstream = failing_provider("/chat/completions", 429).await;
+    let _upstream = failing_provider("/v1/chat/completions", 429).await;
     let server = TestServer::start().await;
     let caller = seed(&server, "failed-stream").await;
 
@@ -229,7 +229,7 @@ async fn an_anthropic_messages_call_that_fails_is_booked() {
 #[tokio::test]
 #[serial]
 async fn a_responses_call_that_fails_is_booked() {
-    let _upstream = failing_provider("/responses", 503).await;
+    let _upstream = failing_provider("/v1/responses", 503).await;
     let server = TestServer::start().await;
     let caller = seed(&server, "failed-responses").await;
 
@@ -251,7 +251,7 @@ async fn a_responses_call_that_fails_is_booked() {
 #[tokio::test]
 #[serial]
 async fn an_embeddings_call_that_fails_is_booked() {
-    let _upstream = failing_provider("/embeddings", 500).await;
+    let _upstream = failing_provider("/v1/embeddings", 500).await;
     let server = TestServer::start().await;
     let caller = seed(&server, "failed-embeddings").await;
 

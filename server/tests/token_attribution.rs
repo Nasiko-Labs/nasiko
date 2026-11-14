@@ -68,7 +68,7 @@ fn agent_jwt(agent_id: Uuid, owner_id: Uuid) -> String {
 async fn stub_upstream() -> mockito::ServerGuard {
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -82,7 +82,7 @@ async fn stub_upstream() -> mockito::ServerGuard {
         .create_async()
         .await;
     upstream
-        .mock("POST", "/embeddings")
+        .mock("POST", "/v1/embeddings")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(

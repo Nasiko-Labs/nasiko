@@ -187,7 +187,8 @@ impl PlatformLlm {
             )));
         }
         let provider: &str = self.default_provider();
-        match transcription_route(provider) {
+        let has_openai_key: bool = !self.ctx.cfg.platform_key_for("openai").is_empty();
+        match transcription_route_for(provider, has_openai_key) {
             Some(TranscriptionRoute::Whisper) => self.transcribe_whisper(call, req).await,
             Some(TranscriptionRoute::ChatAudio) => {
                 let chat: ChatRequest = transcription_chat_request(&req);
@@ -384,6 +385,13 @@ fn transcription_route(provider: &str) -> Option<TranscriptionRoute> {
         "gemini" | "vertex" => Some(TranscriptionRoute::ChatAudio),
         _ => None,
     }
+}
+
+/// Route for the chat default `provider`; a provider without audio input (Anthropic,
+/// OpenRouter) falls back to Whisper when the platform has an OpenAI key, so the chat
+/// default never disables voice input.
+fn transcription_route_for(provider: &str, has_openai_key: bool) -> Option<TranscriptionRoute> {
+    transcription_route(provider).or(has_openai_key.then_some(TranscriptionRoute::Whisper))
 }
 
 /// `input_audio.format` for a content type: `audio/webm;codecs=opus` → `webm`,

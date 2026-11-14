@@ -172,14 +172,18 @@ async fn embed_updated_agent(
 
     let result = match (saved_key, backend) {
         (Some(key), _) => {
-            nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model).await
+            let direct_model: String =
+                nasiko_orchestrator::providers::direct_embedding_model(&model, &base_url);
+            nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &direct_model)
+                .await
         }
         (None, Some(backend)) => {
             let routed = nasiko_orchestrator::vector_store::RoutedEmbedder {
                 backend: std::sync::Arc::clone(backend),
                 call: nasiko_orchestrator::llm_backend::LlmCallContext {
                     user_id: owner_id,
-                    component: "agent_embedding".to_string(),
+                    component: nasiko_orchestrator::llm_backend::PlatformComponent::AgentEmbedding
+                        .to_string(),
                     session_id: None,
                 },
             };

@@ -2599,7 +2599,7 @@ async fn generate_maf(
         .with_backend(std::sync::Arc::clone(&state.llm_backend))
         .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {
             user_id,
-            component: "maf_planner".to_string(),
+            component: nasiko_orchestrator::llm_backend::PlatformComponent::MafPlanner.to_string(),
             session_id: None,
         }),
     };

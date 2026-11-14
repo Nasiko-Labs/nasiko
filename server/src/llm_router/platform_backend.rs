@@ -5,10 +5,11 @@
 //! provider from platform config and writes `trace_usage`.
 
 use async_trait::async_trait;
+use nasiko_llm_router::error::GatewayError;
 use nasiko_llm_router::inbound::{InboundFormat, inbound_for};
 use nasiko_llm_router::ir::{ChatRequest, EmbeddingsRequest, EmbeddingsResponse};
 use nasiko_llm_router::platform::{PlatformCall, PlatformLlm, TranscribeRequest, Transcript};
-use nasiko_orchestrator::llm_backend::{LlmBackend, LlmCallContext};
+use nasiko_orchestrator::llm_backend::{LlmBackend, LlmCallContext, LlmError};
 
 pub struct RouterBackend {
     llm: PlatformLlm,
@@ -25,6 +26,19 @@ fn platform_call(call: &LlmCallContext) -> PlatformCall {
         user_id: call.user_id.to_string(),
         component: call.component.clone(),
         session_id: call.session_id.clone(),
+    }
+}
+
+/// Keeps the upstream status of a provider rejection (`GatewayError::Provider`) so callers
+/// can tell "request rejected" from "provider unreachable".
+pub(crate) fn llm_error(e: GatewayError) -> LlmError {
+    let status: Option<u16> = match &e {
+        GatewayError::Provider { status, .. } => Some(status.as_u16()),
+        _ => None,
+    };
+    LlmError {
+        status,
+        message: e.to_string(),
     }
 }
 
@@ -52,14 +66,17 @@ impl LlmBackend for RouterBackend {
         &self,
         call: &LlmCallContext,
         body: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<serde_json::Value, LlmError> {
         let inbound = inbound_for(InboundFormat::OpenAi);
-        let req: ChatRequest = inbound.parse_chat(body).map_err(|e| e.to_string())?;
+        let req: ChatRequest = inbound.parse_chat(body).map_err(|e| LlmError {
+            status: Some(400),
+            message: e.to_string(),
+        })?;
         let resp = self
             .llm
             .chat(&platform_call(call), req)
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(llm_error)?;
         Ok(inbound.render_chat_response(resp))
     }
 
@@ -128,6 +145,20 @@ mod tests {
             {"embedding": [1.0], "index": 0}
         ]));
         assert_eq!(vectors(r, 2).unwrap(), vec![vec![1.0], vec![2.0]]);
+    }
+
+    #[test]
+    fn provider_rejection_keeps_status() {
+        let e = llm_error(GatewayError::Provider {
+            status: axum::http::StatusCode::BAD_REQUEST,
+            message: "response_format unavailable".into(),
+        });
+        assert_eq!(e.status, Some(400));
+        assert!(e.message.contains("response_format"));
+        assert_eq!(
+            llm_error(GatewayError::Upstream("down".into())).status,
+            None
+        );
     }
 
     #[test]

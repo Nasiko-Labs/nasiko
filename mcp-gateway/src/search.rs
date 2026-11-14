@@ -963,8 +963,12 @@ mod tests {
             &self,
             _call: &LlmCallContext,
             _body: serde_json::Value,
-        ) -> std::result::Result<serde_json::Value, String> {
-            Err("unavailable".into())
+        ) -> std::result::Result<serde_json::Value, nasiko_orchestrator::llm_backend::LlmError>
+        {
+            Err(nasiko_orchestrator::llm_backend::LlmError {
+                status: None,
+                message: "unavailable".into(),
+            })
         }
         async fn embed(
             &self,
@@ -988,8 +992,12 @@ mod tests {
                 &self,
                 _call: &LlmCallContext,
                 _body: serde_json::Value,
-            ) -> std::result::Result<serde_json::Value, String> {
-                Err("unused".into())
+            ) -> std::result::Result<serde_json::Value, nasiko_orchestrator::llm_backend::LlmError>
+            {
+                Err(nasiko_orchestrator::llm_backend::LlmError {
+                    status: None,
+                    message: "unused".into(),
+                })
             }
             async fn embed(
                 &self,

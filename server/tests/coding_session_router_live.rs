@@ -283,7 +283,7 @@ async fn sweep_purges_only_expired_revocations() {
 async fn stub_upstream() -> mockito::ServerGuard {
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(

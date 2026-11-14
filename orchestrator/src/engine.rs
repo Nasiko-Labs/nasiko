@@ -146,13 +146,16 @@ impl RoutingEngine for OssRoutingEngine {
                 backend: Arc::clone(b),
                 call: crate::llm_backend::LlmCallContext {
                     user_id: req.user_id,
-                    component: "router_selection".to_string(),
+                    component: crate::llm_backend::PlatformComponent::RouterSelection.to_string(),
                     session_id: Some(req.session_id.clone()),
                 },
             }),
             _ => None,
         };
         let api_key: String = saved_key.unwrap_or_else(|| self.api_key.clone());
+        // Direct (non-routed) calls hit OpenAI: use an OpenAI embedding model there.
+        let direct_model: String =
+            crate::providers::direct_embedding_model(&self.embedding_model, &self.base_url);
         let history_store = match &routed {
             Some(r) => VectorStore::for_embedding_routed(
                 r.clone(),
@@ -162,7 +165,7 @@ impl RoutingEngine for OssRoutingEngine {
             None => VectorStore::for_embedding(
                 api_key.clone(),
                 self.base_url.clone(),
-                self.embedding_model.clone(),
+                direct_model.clone(),
                 Arc::clone(&self.history_embedding_cache),
             ),
         };
@@ -221,7 +224,7 @@ impl RoutingEngine for OssRoutingEngine {
                         agents.clone(),
                         api_key.clone(),
                         self.base_url.clone(),
-                        self.embedding_model.clone(),
+                        direct_model.clone(),
                         pool,
                     )
                     .await

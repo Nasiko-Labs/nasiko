@@ -52,7 +52,8 @@ async fn generate_title(
                 std::sync::Arc::clone(&state.llm_backend),
                 nasiko_orchestrator::llm_backend::LlmCallContext {
                     user_id,
-                    component: "titling".to_string(),
+                    component: nasiko_orchestrator::llm_backend::PlatformComponent::Titling
+                        .to_string(),
                     session_id: None,
                 },
             ),

@@ -16,7 +16,7 @@ use nasiko_orchestrator::llm_backend::LlmCallContext;
 use crate::state::AppState;
 
 /// Usage label for transcription rows in `trace_usage`.
-const COMPONENT: &str = "transcription";
+const COMPONENT: &str = nasiko_orchestrator::llm_backend::PlatformComponent::Transcription.as_str();
 const DEFAULT_MIME: &str = "audio/webm";
 
 #[derive(Serialize)]

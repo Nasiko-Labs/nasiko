@@ -22,9 +22,13 @@ pub struct LLMProvider {
     official_openai: bool,
 }
 
-/// True when `base_url` points at the official OpenAI API.
+/// True when `base_url`'s host is exactly `api.openai.com` (proxies such as
+/// `api.openai.com.proxy.example` are custom endpoints and keep their model names).
 pub fn is_official_openai(base_url: &str) -> bool {
-    base_url.to_ascii_lowercase().contains("api.openai.com")
+    reqwest::Url::parse(base_url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "api.openai.com")
 }
 
 /// True when `model` is clearly another provider's name and OpenAI would reject it.
@@ -49,6 +53,21 @@ pub fn is_foreign_model(model: &str) -> bool {
 pub fn direct_openai_model(requested: &str, openai_model: &str) -> String {
     if is_foreign_model(requested) {
         openai_model.to_owned()
+    } else {
+        requested.to_owned()
+    }
+}
+
+/// OpenAI embedding model used when the configured one belongs to another provider.
+pub const OPENAI_EMBEDDING_FALLBACK: &str = "text-embedding-3-small";
+
+/// Embedding model for a direct (saved-key) call to `base_url`: official OpenAI gets an
+/// OpenAI model (`EMBEDDING_MODEL=gemini-embedding-001` would 404 there); custom endpoints
+/// keep `requested`. Callers pass the result to the vector store so cache keys match the
+/// vectors actually produced.
+pub fn direct_embedding_model(requested: &str, base_url: &str) -> String {
+    if is_official_openai(base_url) && is_foreign_model(requested) {
+        OPENAI_EMBEDDING_FALLBACK.to_owned()
     } else {
         requested.to_owned()
     }
@@ -197,10 +216,14 @@ impl LLMProvider {
         if let Some((backend, call)) = &self.routed {
             let body: serde_json::Value =
                 serde_json::to_value(request).map_err(|e| ProviderError::Parse(e.to_string()))?;
-            let reply: serde_json::Value = backend
-                .chat(call, body)
-                .await
-                .map_err(ProviderError::Network)?;
+            let reply: serde_json::Value =
+                backend.chat(call, body).await.map_err(|e| match e.status {
+                    Some(status) => ProviderError::Api {
+                        status,
+                        body: e.message,
+                    },
+                    None => ProviderError::Network(e.message),
+                })?;
             let resp: ChatCompletionResponse =
                 serde_json::from_value(reply).map_err(|e| ProviderError::Parse(e.to_string()))?;
             return Ok(completion_result(
@@ -311,6 +334,12 @@ mod model_tests {
         assert!(is_official_openai("https://API.openai.com"));
         assert!(!is_official_openai("https://api.deepseek.com/v1"));
         assert!(!is_official_openai("http://localhost:4000"));
+        assert!(!is_official_openai(
+            "https://api.openai.com.proxy.example/v1"
+        ));
+        assert!(!is_official_openai(
+            "https://proxy.example/api.openai.com/v1"
+        ));
     }
 
     #[test]

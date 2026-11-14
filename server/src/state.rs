@@ -177,7 +177,9 @@ impl AppState {
                     backend: Arc::clone(&self.llm_backend),
                     call: nasiko_orchestrator::llm_backend::LlmCallContext {
                         user_id,
-                        component: "history_embedding".to_string(),
+                        component:
+                            nasiko_orchestrator::llm_backend::PlatformComponent::HistoryEmbedding
+                                .to_string(),
                         session_id: None,
                     },
                 },
@@ -185,13 +187,19 @@ impl AppState {
                 self.history_embedding_cache.clone(),
             );
         };
+        let base_url: String = self
+            .config
+            .openai_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".into());
+        let model: String = nasiko_orchestrator::providers::direct_embedding_model(
+            &self.config.embedding_model,
+            &base_url,
+        );
         VectorStore::for_embedding(
             saved_key,
-            self.config
-                .openai_base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com".into()),
-            self.config.embedding_model.clone(),
+            base_url,
+            model,
             self.history_embedding_cache.clone(),
         )
     }

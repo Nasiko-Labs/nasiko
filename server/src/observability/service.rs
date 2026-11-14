@@ -1304,7 +1304,8 @@ pub struct ObservabilityService {
 }
 
 /// `trace_usage.agent_name` for finops insight calls.
-const INSIGHTS_COMPONENT: &str = "finops_insights";
+const INSIGHTS_COMPONENT: &str =
+    nasiko_orchestrator::llm_backend::PlatformComponent::FinopsInsights.as_str();
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnsureSessionOutcome {
@@ -2622,7 +2623,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2639,7 +2640,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2671,7 +2672,7 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
@@ -2703,7 +2704,7 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
         .await
@@ -3819,7 +3820,7 @@ Data: {}"#,
                 self.llm_backend
                     .chat(&call, body)
                     .await
-                    .map_err(ObservabilityError::Internal)?
+                    .map_err(|e| ObservabilityError::Internal(e.message))?
             }
         };
 
@@ -4068,19 +4069,19 @@ fn empty_agent_hours_response(
 /// The `trace_usage.agent_name`s the platform's own model calls are written under, which belong
 /// to no registered agent: the chat orchestrator (`router::usage_meta::PricedTurn::persist`), the
 /// routing selector (`nasiko_orchestrator` `write_selector_usage`) and MAF's run-level phases
-/// (`executor::maf_agent_name(None)`). MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
-const PLATFORM_ROW_NAMES: [&str; 3] = ["orchestrator", "router_selection", "maf"];
+/// (`executor::maf_agent_name(None)`) and every router-billed component; the list lives in
+/// `PlatformComponent`. MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
+fn platform_row_names() -> Vec<&'static str> {
+    nasiko_orchestrator::llm_backend::PlatformComponent::all_names()
+}
 
 /// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
 const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
 
-/// Whether `agent_name` is one of the platform's own rows: [`PLATFORM_ROW_NAMES`], or a MAF
+/// Whether `agent_name` is one of the platform's own rows: [`platform_row_names`], or a MAF
 /// per-step row matching [`PLATFORM_STEP_ROW_PATTERN`].
 fn is_platform_row_name(agent_name: &str) -> bool {
-    PLATFORM_ROW_NAMES.contains(&agent_name)
-        || PLATFORM_STEP_ROW_PATTERN
-            .strip_suffix('%')
-            .is_some_and(|prefix| agent_name.starts_with(prefix))
+    nasiko_orchestrator::llm_backend::PlatformComponent::is_platform_row(agent_name)
 }
 
 /// The agent usage booked on one MAF step's trace (`step_trace_usage`), or a run's sum of them.
@@ -4204,7 +4205,7 @@ mod tests {
     #[test]
     fn platform_row_names_match_the_maf_writers() {
         use nasiko_orchestrator::maf::executor::maf_agent_name;
-        assert!(PLATFORM_ROW_NAMES.contains(&maf_agent_name(None).as_str()));
+        assert!(platform_row_names().contains(&maf_agent_name(None).as_str()));
         let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
         assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
     }

@@ -82,7 +82,7 @@ async fn provider(replies: Vec<Value>) -> mockito::ServerGuard {
     let seen = Arc::new(Mutex::new(0usize));
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body_from_request(move |_| {
@@ -112,7 +112,7 @@ async fn streaming_provider() -> mockito::ServerGuard {
         "usage": { "prompt_tokens": 50, "completion_tokens": 5, "total_tokens": 55 }
     });
     upstream
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "text/event-stream")
         .with_body(format!("data: {chunk}\n\ndata: [DONE]\n\n"))

@@ -837,7 +837,9 @@ pub async fn auto_generate_capabilities_pub(
             std::sync::Arc::clone(llm_backend),
             nasiko_orchestrator::llm_backend::LlmCallContext {
                 user_id: Uuid::nil(),
-                component: "capability_generation".to_string(),
+                component:
+                    nasiko_orchestrator::llm_backend::PlatformComponent::CapabilityGeneration
+                        .to_string(),
                 session_id: None,
             },
         ),
