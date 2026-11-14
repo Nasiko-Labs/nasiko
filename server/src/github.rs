@@ -125,21 +125,13 @@ async fn consume_oauth_state(
 
 /// `GET /api/github/login`
 ///
-/// What a caller is told when this server has no GitHub OAuth app configured.
-const GITHUB_NOT_CONFIGURED: &str =
-    "GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)";
-
-/// What a caller is told when GitHub refuses this server's OAuth app credentials.
-const GITHUB_CREDENTIALS_REJECTED: &str = "GitHub rejected this server's OAuth client credentials. \
-     Ask your admin to check GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET.";
-
 /// Returns the GitHub OAuth authorization URL as JSON so the client can open
 /// it in a new tab/popup for the connect flow.
 async fn github_login(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": GITHUB_NOT_CONFIGURED})),
+            Json(serde_json::json!({"error": "GitHub OAuth not configured"})),
         )
             .into_response();
     };
@@ -178,7 +170,7 @@ async fn github_login_user(State(state): State<AppState>) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": GITHUB_NOT_CONFIGURED})),
+            Json(serde_json::json!({"error": "GitHub OAuth not configured"})),
         )
             .into_response();
     };
@@ -211,7 +203,7 @@ async fn github_token(State(state): State<AppState>, claims: Claims) -> impl Int
     let Some(svc) = state.github_svc.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"success": false, "message": GITHUB_NOT_CONFIGURED, "status": "disconnected"})),
+            Json(serde_json::json!({"success": false, "message": "GitHub OAuth not configured", "status": "disconnected"})),
         ).into_response();
     };
 
@@ -265,7 +257,11 @@ async fn github_callback(
     Query(params): Query<CallbackQuery>,
 ) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, GITHUB_NOT_CONFIGURED).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GitHub OAuth not configured",
+        )
+            .into_response();
     };
 
     // Verify the HMAC-signed state — gives us the user_id without auth headers.
@@ -315,10 +311,6 @@ async fn github_callback(
     // Exchange the authorization code for an access token + user profile.
     let (token, github_user) = match svc.exchange_code(&params.code).await {
         Ok(t) => t,
-        Err(nasiko_github::Error::ClientCredentialsRejected) => {
-            warn!("GitHub code exchange: GitHub rejected this server's OAuth client credentials");
-            return (StatusCode::BAD_GATEWAY, GITHUB_CREDENTIALS_REJECTED).into_response();
-        }
         Err(e) => {
             warn!(%e, "GitHub code exchange failed");
             return (StatusCode::BAD_GATEWAY, "GitHub OAuth failed").into_response();
@@ -622,7 +614,7 @@ async fn github_status(State(state): State<AppState>, claims: Claims) -> impl In
 
 async fn github_repos(State(state): State<AppState>, claims: Claims) -> impl IntoResponse {
     let Some(svc) = state.github_svc.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, GITHUB_NOT_CONFIGURED).into_response();
+        return (StatusCode::NOT_FOUND, "GitHub OAuth not configured").into_response();
     };
 
     let user_id = match claims.user_uuid() {
@@ -725,7 +717,11 @@ async fn github_clone(
 ) -> impl IntoResponse {
     // GitHub service must be configured (needed by the build worker later).
     if state.github_svc.is_none() {
-        return (StatusCode::SERVICE_UNAVAILABLE, GITHUB_NOT_CONFIGURED).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "GitHub OAuth not configured",
+        )
+            .into_response();
     };
 
     let user_id = match claims.user_uuid() {

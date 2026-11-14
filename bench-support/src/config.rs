@@ -130,7 +130,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         injection_proxy_token: String::new(),
         seed_agents: None,
         seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),
