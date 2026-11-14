@@ -384,6 +384,8 @@ pub struct ToolCallDelta {
     pub kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<FunctionCallDelta>,
+    #[serde(flatten, default, skip_serializing_if = "Map::is_empty")]
+    pub extra: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -727,6 +729,7 @@ mod tests {
                             name: Some("f".into()),
                             arguments: Some("{\"a\":".into()),
                         }),
+                        ..ToolCallDelta::default()
                     }]),
                 },
                 finish_reason: None,

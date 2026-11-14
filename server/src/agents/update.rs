@@ -664,6 +664,7 @@ pub async fn execute_agent_update(
                 state.db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
+                state.llm_backend.clone(),
                 agent_id,
                 agent_url.clone(),
             ));
@@ -1063,6 +1064,7 @@ pub async fn execute_agent_rollback(
                 state.db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
+                state.llm_backend.clone(),
                 agent_id,
                 agent_url.clone(),
             ));

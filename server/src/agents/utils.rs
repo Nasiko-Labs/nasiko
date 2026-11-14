@@ -41,6 +41,7 @@ pub(crate) async fn answers_http(http: &reqwest::Client, agent_url: &str) -> boo
 pub(crate) async fn fetch_and_apply_agent_card(
     db: &sqlx::PgPool,
     http: &reqwest::Client,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
     agent_id: Uuid,
     agent_url: &str,
 ) -> bool {
@@ -117,7 +118,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
         crate::catalog::skills::sync_agent_skills_json(db, agent_id, skills_json).await;
     }
 
-    embed_updated_agent(db, agent_id).await;
+    embed_updated_agent(db, backend, agent_id).await;
 
     true
 }
@@ -132,7 +133,14 @@ pub(crate) async fn fetch_and_apply_agent_card(
 /// update / rollback) that reaches this function — same env-driven approach
 /// `nasiko_config::Config` itself uses for these fields. The key is the
 /// owner's saved one, else `OPENAI_API_KEY`.
-async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
+///
+/// `backend` is the caller's `AppState::llm_backend` (the in-process router); it is
+/// passed explicitly so each server instance (and each test) uses its own router.
+async fn embed_updated_agent(
+    db: &sqlx::PgPool,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
+    agent_id: Uuid,
+) {
     let base_url =
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model =
@@ -148,12 +156,8 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
     let Some((name, description, tags, owner_id)) = row else {
         return;
     };
-    let Some(api_key) = nasiko_orchestrator::user_key::saved_openai_key(db, owner_id)
-        .await
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-    else {
-        return;
-    };
+    let saved_key: Option<String> =
+        nasiko_orchestrator::user_key::saved_openai_key(db, owner_id).await;
 
     let agent = nasiko_orchestrator::AgentCard {
         id: agent_id,
@@ -166,9 +170,37 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
         embedding_content_hash: None,
     };
 
-    if let Err(e) =
-        nasiko_orchestrator::embed_and_store_agent(db, &agent, &api_key, &base_url, &model).await
-    {
+    let result = match (saved_key, backend) {
+        (Some(key), _) => {
+            let direct_model: String =
+                nasiko_orchestrator::providers::direct_embedding_model(&model, &base_url);
+            nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &direct_model)
+                .await
+        }
+        (None, Some(backend)) => {
+            let routed = nasiko_orchestrator::vector_store::RoutedEmbedder {
+                backend: std::sync::Arc::clone(backend),
+                call: nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id: owner_id,
+                    component: nasiko_orchestrator::llm_backend::PlatformComponent::AgentEmbedding
+                        .to_string(),
+                    session_id: None,
+                },
+            };
+            nasiko_orchestrator::vector_store::embed_and_store_agent_routed(
+                db, &agent, &routed, &model,
+            )
+            .await
+        }
+        (None, None) => match std::env::var("OPENAI_API_KEY") {
+            Ok(key) => {
+                nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model)
+                    .await
+            }
+            Err(_) => return,
+        },
+    };
+    if let Err(e) = result {
         tracing::warn!(%agent_id, error = %e, "proactive agent embedding failed (non-fatal, will be computed lazily on next route())");
     }
 }
@@ -255,6 +287,7 @@ pub(crate) async fn fetch_agent_card_with_retry(
     db: sqlx::PgPool,
     http: reqwest::Client,
     runtime: Arc<dyn nasiko_runtime::ContainerRuntime>,
+    backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
     agent_id: Uuid,
     agent_url: String,
 ) {
@@ -275,7 +308,7 @@ pub(crate) async fn fetch_agent_card_with_retry(
     };
     for attempt in 1..=30u32 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if fetch_and_apply_agent_card(&db, &http, agent_id, &agent_url).await {
+        if fetch_and_apply_agent_card(&db, &http, Some(&backend), agent_id, &agent_url).await {
             return;
         }
         tracing::debug!(%agent_id, attempt, "agent card fetch attempt failed");

@@ -41,6 +41,9 @@ pub struct AppState {
     pub coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
+    /// In-process LLM router for the server's own platform-key calls (titles, planner,
+    /// capabilities, proactive agent embeddings). The router writes their usage.
+    pub llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
     /// Where both orchestrators read the operator's policy from — the chat-path
     /// delegation policy and the routing engine's bar and prompt text. OSS wires
     /// `NoOrchestratorPolicy`, which imposes nothing; the EE composition root
@@ -165,14 +168,38 @@ impl AppState {
     /// so the call sites don't each re-derive the provider settings. Embeds with the key `user_id`
     /// saved from the UI when there is one, else the server's.
     pub async fn history_vector_store(&self, user_id: uuid::Uuid) -> VectorStore {
-        let server_key = self.config.openai_api_key.as_deref().unwrap_or_default();
+        let Some(saved_key) =
+            nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await
+        else {
+            // No saved user key: platform embeddings go through the in-process router.
+            return VectorStore::for_embedding_routed(
+                nasiko_orchestrator::vector_store::RoutedEmbedder {
+                    backend: Arc::clone(&self.llm_backend),
+                    call: nasiko_orchestrator::llm_backend::LlmCallContext {
+                        user_id,
+                        component:
+                            nasiko_orchestrator::llm_backend::PlatformComponent::HistoryEmbedding
+                                .to_string(),
+                        session_id: None,
+                    },
+                },
+                self.config.embedding_model.clone(),
+                self.history_embedding_cache.clone(),
+            );
+        };
+        let base_url: String = self
+            .config
+            .openai_base_url
+            .clone()
+            .unwrap_or_else(|| "https://api.openai.com".into());
+        let model: String = nasiko_orchestrator::providers::direct_embedding_model(
+            &self.config.embedding_model,
+            &base_url,
+        );
         VectorStore::for_embedding(
-            nasiko_orchestrator::user_key::openai_key(&self.db, user_id, server_key).await,
-            self.config
-                .openai_base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com".into()),
-            self.config.embedding_model.clone(),
+            saved_key,
+            base_url,
+            model,
             self.history_embedding_cache.clone(),
         )
     }
@@ -294,8 +321,20 @@ impl AppState {
             config.agent_call_timeout_secs,
         ));
 
+        // Platform-key embeddings and agent selection go through the in-process LLM router,
+        // so any configured provider (OpenAI, Vertex, ...) serves them and the router alone
+        // writes their usage.
+        let routing_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend =
+            Arc::new(crate::llm_router::platform_backend::RouterBackend::new(
+                nasiko_llm_router::platform::PlatformLlm::new(nasiko_llm_router::LlmRouterCtx {
+                    ledger: usage_tracker.ledger(),
+                    payer: Arc::new(nasiko_llm_router::payer::CallerPays),
+                    ..nasiko_llm_router::LlmRouterCtx::from_shared(db.clone())
+                }),
+            ));
         let routing_engine: Arc<dyn RoutingEngine> = Arc::new(
-            nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone()),
+            nasiko_orchestrator::OssRoutingEngine::from_config(&config, http_client.clone())
+                .with_backend(Arc::clone(&routing_backend)),
         );
         let orchestrator_policy: Arc<dyn crate::orchestrator_policy::OrchestratorPolicySource> =
             Arc::new(crate::orchestrator_policy::NoOrchestratorPolicy);
@@ -417,6 +456,7 @@ impl AppState {
             redis.clone(),
             http_client.clone(),
             &config,
+            Some(Arc::clone(&routing_backend)),
         );
         // Swap in the real, ContainerRuntime-backed endpoint refresher (Step
         // 13) — the gateway crate's own default is a no-op, since it has no
@@ -452,6 +492,7 @@ impl AppState {
             ),
             config: Arc::new(config),
             routing_engine,
+            llm_backend: routing_backend,
             orchestrator_policy,
             spend_gate,
             shared_call_payer: Arc::new(nasiko_llm_router::payer::CallerPays),
@@ -748,7 +789,7 @@ impl AppState {
             self.config.agent_platform_key_fallback,
             self.config.openai_api_key.as_deref(),
             self.config.openai_base_url.as_deref(),
-            &self.config.openai_model,
+            explicit_openai_model(&self.config.openai_model).as_deref(),
         )
     }
 
@@ -838,12 +879,13 @@ impl AppState {
 /// Builds the platform fallback environment map for agent deployments.
 ///
 /// When `agent_platform_key_fallback` is false, `OPENAI_API_KEY` is omitted.
-/// `OPENAI_BASE_URL` and `OPENAI_MODEL` are always included when set.
+/// `OPENAI_BASE_URL` and `OPENAI_MODEL` are included when set. An unset model is left out so the
+/// LLM router wiring (`inject_llm_env`) fills in the router's default model.
 fn build_platform_fallback_env(
     agent_platform_key_fallback: bool,
     openai_api_key: Option<&str>,
     openai_base_url: Option<&str>,
-    openai_model: &str,
+    openai_model: Option<&str>,
 ) -> std::collections::HashMap<String, String> {
     let mut env = std::collections::HashMap::new();
     if agent_platform_key_fallback && let Some(key) = openai_api_key {
@@ -852,8 +894,17 @@ fn build_platform_fallback_env(
     if let Some(url) = openai_base_url {
         env.insert("OPENAI_BASE_URL".into(), url.to_string());
     }
-    env.insert("OPENAI_MODEL".into(), openai_model.to_string());
+    if let Some(model) = openai_model {
+        env.insert("OPENAI_MODEL".into(), model.to_string());
+    }
     env
+}
+
+/// The configured model only when the operator set `OPENAI_MODEL`; `None` for the compiled
+/// `gpt-4o-mini` default, which a router without OpenAI credentials cannot serve.
+pub(crate) fn explicit_openai_model(configured: &str) -> Option<String> {
+    let set: bool = std::env::var("OPENAI_MODEL").is_ok_and(|m| !m.trim().is_empty());
+    set.then(|| configured.to_owned())
 }
 
 /// Postgres extensions the migrations require (`0001_schema.sql` runs
@@ -943,12 +994,18 @@ mod tests {
     }
 
     #[test]
+    fn platform_fallback_env_leaves_unset_model_to_the_router() {
+        let env = build_platform_fallback_env(true, Some("test-key"), None, None);
+        assert!(!env.contains_key("OPENAI_MODEL"));
+    }
+
+    #[test]
     fn platform_fallback_env_omits_key_when_flag_is_false() {
         let env = build_platform_fallback_env(
             false,
             Some("test-key"),
             Some("https://api.test.com"),
-            "test-model",
+            Some("test-model"),
         );
         assert!(
             !env.contains_key("OPENAI_API_KEY"),
@@ -963,7 +1020,7 @@ mod tests {
 
     #[test]
     fn platform_fallback_env_includes_key_when_flag_is_true() {
-        let env = build_platform_fallback_env(true, Some("test-key"), None, "test-model");
+        let env = build_platform_fallback_env(true, Some("test-key"), None, Some("test-model"));
         assert_eq!(
             env.get("OPENAI_API_KEY"),
             Some(&"test-key".to_string()),
