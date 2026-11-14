@@ -1248,7 +1248,6 @@ pub async fn execute_upload_and_deploy(
                 db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
-                state.llm_backend.clone(),
                 agent_id,
                 agent_url.clone(),
             ));
@@ -1619,7 +1618,6 @@ pub async fn execute_clone_and_deploy(
                 db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
-                state.llm_backend.clone(),
                 agent_id,
                 agent_url.clone(),
             ));

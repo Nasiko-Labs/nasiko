@@ -309,7 +309,6 @@ async fn deploy(
                     state.db.clone(),
                     state.http_client.clone(),
                     state.runtime.clone(),
-                    state.llm_backend.clone(),
                     agent_id,
                     endpoint.clone(),
                 ));
@@ -847,7 +846,6 @@ async fn restart(
                 state.db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
-                state.llm_backend.clone(),
                 agent_id,
                 agent_url,
             ));

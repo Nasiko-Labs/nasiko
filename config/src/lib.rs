@@ -7,49 +7,6 @@ mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
-/// Last-resort model for the platform's small task calls (selector, titles,
-/// capability generation, MCP descriptions).
-pub const TASK_MODEL_FALLBACK: &str = "gpt-6-luna";
-
-/// Model for a platform task call: its own env var, else `DEFAULT_MODEL`, else
-/// [`TASK_MODEL_FALLBACK`]. Following `DEFAULT_MODEL` keeps a Vertex-only
-/// deployment from sending an OpenAI model to a provider that cannot serve it.
-fn task_model(var: &str) -> String {
-    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
-}
-
-/// Pure core of [`task_model`]; blank values count as unset.
-fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
-    [own, default_model]
-        .into_iter()
-        .flatten()
-        .map(|m: String| m.trim().to_string())
-        .find(|m: &String| !m.is_empty())
-        .unwrap_or_else(|| TASK_MODEL_FALLBACK.to_string())
-}
-
-#[cfg(test)]
-mod task_model_tests {
-    use super::pick_task_model;
-
-    #[test]
-    fn own_var_wins() {
-        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
-        assert_eq!(m, "a");
-    }
-
-    #[test]
-    fn falls_back_to_default_model() {
-        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
-        assert_eq!(m, "gemini-3.8-flash");
-    }
-
-    #[test]
-    fn falls_back_to_gpt_when_nothing_set() {
-        assert_eq!(pick_task_model(None, None), crate::TASK_MODEL_FALLBACK);
-    }
-}
-
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
 /// fleet, which is why the assertion exchange refuses it.
@@ -179,6 +136,10 @@ pub struct Config {
     /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
     /// agent name. Empty when unset; an invalid value fails startup.
     pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
+    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
+    /// after `SEED_AGENTS`, as public workflows every user can run
+    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
+    pub seed_workflows: String,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -850,18 +811,19 @@ impl Config {
                 std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
             )
             .map_err(anyhow::Error::msg)?,
+            seed_workflows: env_or("SEED_WORKFLOWS", ""),
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: env_or("OPENAI_MODEL", TASK_MODEL_FALLBACK),
+            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: task_model("ROUTER_MODEL"),
-            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
-            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
+            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
+            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
+            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
