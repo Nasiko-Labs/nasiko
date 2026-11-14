@@ -1248,63 +1248,71 @@ struct ConfigPlan {
     tier3_model: Option<String>,
 }
 
-/// Reroutes an unconfigured agent's request hint to the platform default when the SDK surface
-/// names a built-in provider the platform holds no credentials for.
+/// Picks the destination for an unconfigured agent. The inbound SDK surface only fixes the
+/// wire format; the router translates any format to any provider, so the surface never picks
+/// the provider.
 ///
-/// Every agent speaks the OpenAI SDK by default, so a Vertex- or Gemini-only deployment saw
-/// `provider = "openai"` and failed with "no platform fallback key". The hinted model survives
-/// only when the default provider can serve it; otherwise `DEFAULT_MODEL` replaces it (an old
-/// agent still sending `gpt-4o-mini` lands on the default model, not a 404).
+/// 1. `provider/model` naming a keyed built-in provider → that provider, bare model.
+/// 2. Otherwise the platform `DEFAULT_PROVIDER`. The requested model is kept only when the
+///    SDK surface is that provider's own family (an OpenAI SDK on an OpenAI deployment);
+///    any other pairing gets `DEFAULT_MODEL`, since a model named for another wire format
+///    is not something the default provider serves. No model-name guessing.
 fn usable_hint<'a>(cfg: &'a GatewayConfig, hint: RequestHint<'a>) -> RequestHint<'a> {
-    let Some(provider) = hint.provider else {
+    let default_provider: &'a str = cfg.default_provider.as_str();
+    if let Some((provider, model)) = hint.model.and_then(|m| explicit_provider(cfg, m)) {
+        return RequestHint {
+            provider: Some(provider),
+            model: Some(model),
+        };
+    }
+    let Some(surface) = hint.provider else {
         return hint;
     };
-    let default_provider: &str = cfg.default_provider.as_str();
-    let default_keyed: bool = !cfg.platform_key_for(default_provider).is_empty();
-    // Injected default model (e.g. Gemini) arriving via the OpenAI SDK hint: the hinted
-    // provider cannot serve it even when it has a key, so follow the model to the default.
-    let model_belongs_to_default: bool = hint.model.is_some_and(|m| {
-        model_fits_provider(m, default_provider) && !model_fits_provider(m, provider)
-    });
-    let unusable: bool = is_builtin_provider(provider)
-        && provider != default_provider
-        && default_keyed
-        && (cfg.platform_key_for(provider).is_empty() || model_belongs_to_default);
-    if !unusable {
-        return hint;
+    // OpenRouter ids are `vendor/model`; an OpenRouter default serves them as-is.
+    let keep_model: bool = same_family(surface, default_provider)
+        || (default_provider == "openrouter" && hint.model.is_some_and(|m| m.contains('/')));
+    let model: Option<&'a str> = if keep_model {
+        hint.model
+    } else {
+        Some(cfg.default_model.as_str())
+    };
+    if surface != default_provider || model != hint.model {
+        tracing::info!(
+            surface,
+            to = default_provider,
+            requested_model = ?hint.model,
+            model = ?model,
+            "resolver: routing unconfigured agent to platform default provider"
+        );
     }
-    let model: Option<&'a str> = hint
-        .model
-        .filter(|m| model_fits_provider(m, default_provider))
-        .or(Some(cfg.default_model.as_str()));
-    tracing::info!(
-        from = provider,
-        to = default_provider,
-        requested_model = ?hint.model,
-        model = ?model,
-        "resolver: hinted provider has no credentials, using platform default"
-    );
     RequestHint {
         provider: Some(default_provider),
         model,
     }
 }
 
-/// Whether `model` plausibly belongs to built-in `provider` (name-prefix heuristic).
-fn model_fits_provider(model: &str, provider: &str) -> bool {
-    let m: String = model.trim().to_ascii_lowercase();
-    if m.is_empty() {
-        return false;
+/// `provider/model` where `provider` is a keyed built-in → `(provider, model)`.
+fn explicit_provider<'a>(cfg: &'a GatewayConfig, model: &'a str) -> Option<(&'a str, &'a str)> {
+    let (prefix, rest) = model.split_once('/')?;
+    let provider: &'static str = ["openai", "anthropic", "gemini", "vertex", "openrouter"]
+        .into_iter()
+        .find(|p| p.eq_ignore_ascii_case(prefix.trim()))?;
+    if rest.is_empty() || cfg.platform_key_for(provider).is_empty() {
+        return None;
     }
-    match provider {
-        "gemini" => m.starts_with("gemini") || m.starts_with("gemma"),
-        // Vertex also serves Model Garden MaaS ids (`vendor/model`).
-        "vertex" => m.starts_with("gemini") || m.starts_with("gemma") || m.contains('/'),
-        "anthropic" => m.starts_with("claude"),
-        "openrouter" => m.contains('/'),
-        "openai" => m.starts_with("gpt") || m.starts_with('o') || m.starts_with("text-embedding-3"),
-        _ => false,
+    Some((provider, rest))
+}
+
+/// Whether the SDK surface `surface` natively belongs to `provider` (Gemini and Vertex share
+/// one model namespace).
+fn same_family(surface: &str, provider: &str) -> bool {
+    fn family(p: &str) -> &str {
+        match p {
+            "vertex" => "gemini",
+            other => other,
+        }
     }
+    family(surface) == family(provider)
 }
 
 /// Whether `provider` is one of the built-in providers the router speaks natively.
@@ -1730,9 +1738,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_config_honors_request_hint_over_defaults() {
-        // No llm_config: the request's own provider (from the SDK surface) + model are
-        // honored, not the platform defaults. Anthropic platform key follows the provider.
+    async fn no_config_routes_to_explicit_provider_prefix() {
+        // No llm_config: the SDK surface never picks the provider; an explicit
+        // `provider/model` naming a keyed provider does. Key follows that provider.
         let config = GatewayConfig {
             default_provider: "openai".into(),
             default_model: "gpt-4o-mini".into(),
@@ -1748,8 +1756,8 @@ mod tests {
             org_embedding_default: None,
         };
         let hint = RequestHint {
-            provider: Some("anthropic"),
-            model: Some("claude-3-5-sonnet-20241022"),
+            provider: Some("openai"),
+            model: Some("anthropic/claude-3-5-sonnet-20241022"),
         };
         let r = resolve(&store, &cache(), &config, AGENT, OWNER, hint)
             .await
@@ -2511,79 +2519,73 @@ mod shared_user_tests {
         }
     }
 
-    #[test]
-    fn unkeyed_openai_hint_falls_to_default_provider() {
-        let cfg = GatewayConfig {
-            default_provider: "gemini".into(),
-            default_model: "gemini-2.5-flash".into(),
-            platform_gemini_api_key: "g-key".into(),
-            ..GatewayConfig::default()
-        };
-        let old = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: Some("openai"),
-                model: Some("gpt-4o-mini"),
-            },
-        );
-        assert_eq!(old.provider, Some("gemini"));
-        assert_eq!(old.model, Some("gemini-2.5-flash"));
-        let injected = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: Some("openai"),
-                model: Some("gemini-2.0-flash"),
-            },
-        );
-        assert_eq!(injected.model, Some("gemini-2.0-flash"));
-    }
-
-    #[test]
-    fn keyed_hint_is_kept() {
-        let cfg = GatewayConfig {
-            default_provider: "gemini".into(),
-            default_model: "gemini-2.5-flash".into(),
-            platform_gemini_api_key: "g-key".into(),
-            platform_openai_api_key: "sk".into(),
-            ..GatewayConfig::default()
-        };
-        let h = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: Some("openai"),
-                model: Some("gpt-4o-mini"),
-            },
-        );
-        assert_eq!(h.provider, Some("openai"));
-        assert_eq!(h.model, Some("gpt-4o-mini"));
-    }
-
-    #[test]
-    fn keyed_openai_hint_with_injected_gemini_model_goes_to_default() {
-        let cfg = GatewayConfig {
+    fn gemini_cfg() -> GatewayConfig {
+        GatewayConfig {
             default_provider: "gemini".into(),
             default_model: "gemini-4-hydrogen".into(),
             platform_gemini_api_key: "g-key".into(),
             platform_openai_api_key: "sk".into(),
             ..GatewayConfig::default()
+        }
+    }
+
+    fn hint<'a>(provider: &'a str, model: &'a str) -> RequestHint<'a> {
+        RequestHint {
+            provider: Some(provider),
+            model: Some(model),
+        }
+    }
+
+    #[test]
+    fn openai_sdk_on_gemini_platform_uses_default_provider_and_model() {
+        let cfg = gemini_cfg();
+        // Provider comes from the platform, not the SDK surface — even with an OpenAI key.
+        for model in ["gpt-4o-mini", "o3", "ft:gpt-4o:x", "gemini-2.0-flash"] {
+            let h = super::usable_hint(&cfg, hint("openai", model));
+            assert_eq!(h.provider, Some("gemini"), "{model}");
+            assert_eq!(h.model, Some("gemini-4-hydrogen"), "{model}");
+        }
+        let h = super::usable_hint(&cfg, hint("anthropic", "claude-haiku-5-5"));
+        assert_eq!(
+            (h.provider, h.model),
+            (Some("gemini"), Some("gemini-4-hydrogen"))
+        );
+    }
+
+    #[test]
+    fn native_surface_keeps_requested_model() {
+        let cfg = gemini_cfg();
+        let h = super::usable_hint(&cfg, hint("gemini", "gemini-2.5-pro"));
+        assert_eq!(
+            (h.provider, h.model),
+            (Some("gemini"), Some("gemini-2.5-pro"))
+        );
+        let openai = GatewayConfig {
+            default_provider: "openai".into(),
+            default_model: "gpt-4o-mini".into(),
+            platform_openai_api_key: "sk".into(),
+            ..GatewayConfig::default()
         };
-        let h = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: Some("openai"),
-                model: Some("gemini-4-hydrogen"),
-            },
+        let h = super::usable_hint(&openai, hint("openai", "gpt-4o"));
+        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o")));
+    }
+
+    #[test]
+    fn explicit_prefix_picks_keyed_provider() {
+        let cfg = gemini_cfg();
+        let h = super::usable_hint(&cfg, hint("openai", "gemini/gemini-2.5-pro"));
+        assert_eq!(
+            (h.provider, h.model),
+            (Some("gemini"), Some("gemini-2.5-pro"))
         );
-        assert_eq!(h.provider, Some("gemini"));
-        assert_eq!(h.model, Some("gemini-4-hydrogen"));
-        let kept = super::usable_hint(
-            &cfg,
-            RequestHint {
-                provider: Some("openai"),
-                model: Some("gpt-6.1-sol"),
-            },
+        let h = super::usable_hint(&cfg, hint("openai", "openai/gpt-6.1-sol"));
+        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-6.1-sol")));
+        // Unkeyed prefix is ignored → platform default.
+        let h = super::usable_hint(&cfg, hint("openai", "anthropic/claude-haiku-5-5"));
+        assert_eq!(
+            (h.provider, h.model),
+            (Some("gemini"), Some("gemini-4-hydrogen"))
         );
-        assert_eq!(kept.provider, Some("openai"));
     }
 
     fn gateway() -> GatewayConfig {

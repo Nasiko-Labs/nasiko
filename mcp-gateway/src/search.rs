@@ -279,6 +279,10 @@ impl ToolSearchIndex for Bm25SearchIndex {
 // ── Semantic ───────────────────────────────────────────────────────────────────
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    // Vectors from different embedding models are not comparable.
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -497,10 +501,12 @@ impl ToolSearchIndex for SemanticSearchIndex {
         // Find tools that need (re-)embedding: no embedding or model mismatch.
         let existing_model: HashMap<(Uuid, String), String> = load_embedding_models(db).await?;
 
+        // Stored rows record the provider/model that served them; a switch re-embeds.
+        let identity: String = self.client.backend.embedding_identity(&self.client.model);
         let mut texts_to_embed: Vec<(usize, String)> = Vec::new();
         for (i, tool) in tools.iter().enumerate() {
             let key = (tool.connector_id, tool.tool_name.clone());
-            let needs_embed = !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &self.client.model);
+            let needs_embed = !matches!((existing.get(&key), existing_model.get(&key)), (Some(_), Some(model)) if model == &identity);
             if needs_embed {
                 texts_to_embed.push((
                     i,
@@ -523,7 +529,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
                             tool.connector_id,
                             tool.tool_name.clone(),
                             f32_vec_to_bytes(&emb),
-                            self.client.model.clone(),
+                            identity.clone(),
                         ));
                         new_embeddings.insert(*idx, emb);
                     }

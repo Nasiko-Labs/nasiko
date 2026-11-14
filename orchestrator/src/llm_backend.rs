@@ -152,6 +152,12 @@ pub trait LlmBackend: Send + Sync {
         model.to_string()
     }
 
+    /// Whether an [`LlmBackend::embed`] call for `model` can succeed (some provider
+    /// serves embeddings). Default: `true`.
+    fn can_embed(&self, _model: &str) -> bool {
+        true
+    }
+
     /// Speech to text. `mime_type` is the upload content type (e.g. `audio/webm`).
     /// The default rejects, so backends without audio support need no change.
     async fn transcribe(

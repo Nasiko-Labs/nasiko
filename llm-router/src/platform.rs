@@ -50,6 +50,12 @@ impl PlatformLlm {
         embedding_route(&self.ctx.cfg, requested)
     }
 
+    /// Whether some platform provider can serve an embeddings call for `requested`.
+    pub fn can_embed(&self, requested: &str) -> bool {
+        let route: EmbeddingRoute = self.resolve_embedding(requested);
+        embedding_model_fits(&route.model, &route.provider)
+    }
+
     /// The provider platform calls go to.
     pub fn default_provider(&self) -> &str {
         &self.ctx.cfg.default_provider
@@ -574,16 +580,21 @@ fn embedding_model_fits(model: &str, provider: &str) -> bool {
                 || m.starts_with("text-embedding-00")
                 || m.starts_with("text-multilingual-embedding")
         }
-        _ => !m.is_empty(),
+        // anthropic and openrouter expose no embeddings API.
+        _ => false,
     }
 }
+
+/// Built-in providers with an embeddings API, in fallback order.
+const EMBEDDING_PROVIDERS: [&str; 3] = ["openai", "gemini", "vertex"];
 
 /// Picks the embedding provider from the model, not the chat provider.
 ///
 /// 1. Default provider serves the model → default provider.
-/// 2. Another keyed built-in provider serves it → that provider.
-/// 3. Else default provider with its own default embedding model (so a Gemini-only
-///    deployment still embeds when `EMBEDDING_MODEL` is left at `text-embedding-3-small`).
+/// 2. Another keyed provider serves it → that provider.
+/// 3. Default provider can embed → its own default embedding model.
+/// 4. Default cannot embed (anthropic, openrouter) → first keyed embedding provider
+///    with its default model.
 pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> EmbeddingRoute {
     let default: &str = cfg.default_provider.as_str();
     if embedding_model_fits(requested, default) {
@@ -592,7 +603,7 @@ pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> Embedding
             model: requested.to_string(),
         };
     }
-    for p in ["openai", "gemini", "vertex"] {
+    for p in EMBEDDING_PROVIDERS {
         if p != default && embedding_model_fits(requested, p) && !cfg.platform_key_for(p).is_empty()
         {
             return EmbeddingRoute {
@@ -601,13 +612,42 @@ pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> Embedding
             };
         }
     }
-    let model: String = default_embedding_model(default)
-        .map(str::to_string)
-        .unwrap_or_else(|| requested.to_string());
-    tracing::info!(requested, provider = default, model = %model, "embedding model swapped to provider default");
+    if let Some(model) = default_embedding_model(default) {
+        tracing::info!(
+            requested,
+            provider = default,
+            model,
+            "embedding model swapped to provider default"
+        );
+        return EmbeddingRoute {
+            provider: default.to_string(),
+            model: model.to_string(),
+        };
+    }
+    for p in EMBEDDING_PROVIDERS {
+        if !cfg.platform_key_for(p).is_empty()
+            && let Some(model) = default_embedding_model(p)
+        {
+            tracing::info!(
+                requested,
+                provider = p,
+                model,
+                "default provider cannot embed; using keyed embedding provider"
+            );
+            return EmbeddingRoute {
+                provider: p.to_string(),
+                model: model.to_string(),
+            };
+        }
+    }
+    tracing::warn!(
+        requested,
+        provider = default,
+        "no platform provider can serve embeddings"
+    );
     EmbeddingRoute {
         provider: default.to_string(),
-        model,
+        model: requested.to_string(),
     }
 }
 

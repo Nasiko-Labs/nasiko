@@ -104,6 +104,10 @@ impl LlmBackend for RouterBackend {
         format!("{}/{}", route.provider, route.model)
     }
 
+    fn can_embed(&self, model: &str) -> bool {
+        self.llm.can_embed(model)
+    }
+
     async fn transcribe(
         &self,
         call: &LlmCallContext,

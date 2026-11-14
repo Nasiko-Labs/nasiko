@@ -3857,11 +3857,7 @@ Data: {}"#,
         let mut body: Value = body.clone();
         if nasiko_orchestrator::providers::is_official_openai(base_url) {
             let requested: String = body["model"].as_str().unwrap_or_default().to_owned();
-            let fallback: String = std::env::var("OPENAI_MODEL")
-                .ok()
-                .map(|m| m.trim().to_owned())
-                .filter(|m| !m.is_empty() && !nasiko_orchestrator::providers::is_foreign_model(m))
-                .unwrap_or_else(|| nasiko_config::TASK_MODEL_FALLBACK.to_owned());
+            let fallback: String = nasiko_orchestrator::providers::direct_openai_fallback();
             body["model"] = Value::String(nasiko_orchestrator::providers::direct_openai_model(
                 &requested, &fallback,
             ));

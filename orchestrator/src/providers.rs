@@ -58,6 +58,21 @@ pub fn direct_openai_model(requested: &str, openai_model: &str) -> String {
     }
 }
 
+/// OpenAI chat model used on the official API when neither the request nor
+/// `OPENAI_MODEL` names an OpenAI model. Only direct OpenAI calls need it; routed
+/// calls leave the model blank and the LLM router picks its provider's default.
+pub const OPENAI_CHAT_FALLBACK: &str = "gpt-6-luna";
+
+/// Model a direct OpenAI call swaps a foreign model to: `OPENAI_MODEL` when it is
+/// an OpenAI model, else [`OPENAI_CHAT_FALLBACK`].
+pub fn direct_openai_fallback() -> String {
+    std::env::var("OPENAI_MODEL")
+        .ok()
+        .map(|m: String| m.trim().to_owned())
+        .filter(|m: &String| !is_foreign_model(m))
+        .unwrap_or_else(|| OPENAI_CHAT_FALLBACK.to_owned())
+}
+
 /// OpenAI embedding model used when the configured one belongs to another provider.
 pub const OPENAI_EMBEDDING_FALLBACK: &str = "text-embedding-3-small";
 
@@ -86,11 +101,7 @@ impl LLMProvider {
             official_openai: is_official_openai(&base_url),
             base_url: nasiko_config::openai_base_url_without_v1(&base_url).to_string(),
             routed: None,
-            openai_model: std::env::var("OPENAI_MODEL")
-                .ok()
-                .map(|m| m.trim().to_owned())
-                .filter(|m| !m.is_empty() && !is_foreign_model(m))
-                .unwrap_or_else(|| nasiko_config::TASK_MODEL_FALLBACK.to_owned()),
+            openai_model: direct_openai_fallback(),
         }
     }
 

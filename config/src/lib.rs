@@ -7,6 +7,46 @@ mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
+/// Model for a platform task call (selector, titles, capability generation, MCP
+/// descriptions): its own env var, else `DEFAULT_MODEL`, else empty. Empty lets the
+/// LLM router pick its resolved provider's default model, so no deployment ever
+/// sends a hard-coded model to a provider that cannot serve it.
+fn task_model(var: &str) -> String {
+    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
+}
+
+/// Pure core of [`task_model`]; blank values count as unset.
+fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
+    [own, default_model]
+        .into_iter()
+        .flatten()
+        .map(|m: String| m.trim().to_string())
+        .find(|m: &String| !m.is_empty())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod task_model_tests {
+    use super::pick_task_model;
+
+    #[test]
+    fn own_var_wins() {
+        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
+        assert_eq!(m, "a");
+    }
+
+    #[test]
+    fn falls_back_to_default_model() {
+        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
+        assert_eq!(m, "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn empty_when_nothing_set_so_the_router_picks() {
+        assert_eq!(pick_task_model(None, None), "");
+    }
+}
+
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
 /// fleet, which is why the assertion exchange refuses it.
@@ -439,7 +479,7 @@ pub struct Config {
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.com"
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
     pub registry_import_allowed_hosts: Vec<String>,
     /// Browser origins allowed to make cross-origin requests (comma-separated,
     /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
@@ -812,13 +852,13 @@ impl Config {
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_model: task_model("OPENAI_MODEL"),
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
-            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
-            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
+            router_model: task_model("ROUTER_MODEL"),
+            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
+            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),

@@ -102,7 +102,8 @@ pub async fn embed_and_store_agent_routed(
         .into_iter()
         .next()
         .ok_or_else(|| RouterError::Embedding("empty embedding response".into()))?;
-    persist_agent_embedding(pool, agent, model, &prompt, &embedding).await;
+    let identity: String = routed.backend.embedding_identity(model);
+    persist_agent_embedding(pool, agent, &identity, &prompt, &embedding).await;
     Ok(embedding)
 }
 
@@ -219,17 +220,27 @@ impl VectorStore {
         routed: Option<RoutedEmbedder>,
         pool: &PgPool,
     ) -> Self {
-        if api_key.is_empty() && routed.is_none() {
+        let can_embed: bool = match &routed {
+            Some(r) => r.backend.can_embed(&model),
+            None => !api_key.is_empty(),
+        };
+        if !can_embed {
             tracing::debug!("No embeddings backend configured — Stage 1 (vector store) disabled");
             return Self::disabled_from(agents);
         }
+        // Hash with the provider/model that actually serves the vector, matching
+        // what `persist_agent_embedding` stores, so a provider switch re-embeds.
+        let identity: String = match &routed {
+            Some(r) => r.backend.embedding_identity(&model),
+            None => model.clone(),
+        };
 
         let mut embedded = Vec::with_capacity(agents.len());
         let mut stored_hits = 0usize;
         let mut stored_misses = 0usize;
 
         for agent in &agents {
-            let content_hash = agent_content_hash(&agent_prompt(agent), &model);
+            let content_hash = agent_content_hash(&agent_prompt(agent), &identity);
 
             if let (Some(emb), Some(stored_hash)) = (&agent.embedding, agent.embedding_content_hash)
                 && stored_hash == content_hash
