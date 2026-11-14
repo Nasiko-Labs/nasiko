@@ -51,8 +51,6 @@ const PUBLIC = {
     'AgentBuildsTab',
     'components/DeployAgentButton',
     'components/BuildToasts',
-    // The Marketplace install panel shows build logs with the same renderer as the Builds tab.
-    'components/BuildLogView',
     'copy',
     'follower',
     // The onboarding guide's Bring an agent step hosts the Deploy tabs themselves.
