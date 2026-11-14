@@ -1136,7 +1136,8 @@ fn error_code(error: &GatewayError) -> &'static str {
         GatewayError::MissingAuthHeader
         | GatewayError::TokenExpired
         | GatewayError::InvalidToken(_)
-        | GatewayError::MissingAgentId => "invalid_api_key",
+        | GatewayError::MissingAgentId
+        | GatewayError::TokenRevoked => "invalid_api_key",
         GatewayError::Forbidden(_) => "permission_denied",
         GatewayError::BadRequest(_) => "invalid_request_error",
         GatewayError::NoRegistryEntry(_)

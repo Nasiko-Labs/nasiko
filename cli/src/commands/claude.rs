@@ -360,6 +360,7 @@ fn disconnect_internal(print: bool, force: bool) -> Result<()> {
         teardown_mcp_gateway(&state.binding);
     }
     restore_settings(&state)?;
+    coding_agent_router::revoke_bound_routing_tokens_best_effort(&state.binding, "Claude Code");
     fs::remove_file(state_path()).context("failed to remove Claude connection state")?;
     if print {
         term::print_success("Disconnected Claude Code from Nasiko.");
