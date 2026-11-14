@@ -147,21 +147,6 @@ fn planning_failed(error: &LlmError) -> axum::response::Response {
     }
 }
 
-/// Whether a run can reach a model at all: the owner saved an OpenAI key, the server has one,
-/// or the server points at its own OpenAI-compatible endpoint (which may need no key).
-async fn run_has_model_key(state: &AppState, user_id: Uuid) -> bool {
-    let server_key = state
-        .config
-        .openai_api_key
-        .as_deref()
-        .is_some_and(|k| !k.trim().is_empty());
-    server_key
-        || state.config.openai_base_url.is_some()
-        || nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
-            .await
-            .is_some()
-}
-
 fn unauthorized() -> axum::response::Response {
     err_json(StatusCode::UNAUTHORIZED, "invalid or missing user identity")
 }
@@ -1896,11 +1881,9 @@ async fn run_workflow(
     {
         return policy_refused(&refused);
     }
-    // Refused here, not after enqueueing: with no model to plan the run, every execution would
-    // fail at its first step, seconds later and out of the caller's sight.
-    if !run_has_model_key(&state, user_id).await {
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY_MESSAGE);
-    }
+    // No key check here: many runs never call the model (a step prompt without placeholders, no
+    // final-output instruction), so they must run without one. A run that does need the model
+    // and has no key fails on that step with `LlmError::NoKey`, which says how to add one.
 
     let max_attempts: i32 = std::env::var("MAF_MAX_ATTEMPTS")
         .ok()

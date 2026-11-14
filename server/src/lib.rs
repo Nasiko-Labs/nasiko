@@ -185,8 +185,8 @@ where
 {
     // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
     // output synthesis: the one the execution's owner saved from the UI, else the server's
-    // `OPENAI_API_KEY`. With neither (and no custom
-    // `OPENAI_BASE_URL`), `run_workflow` refuses the run up front with a 503.
+    // `OPENAI_API_KEY`. With neither, a step that
+    // needs the model fails with "No OpenAI API key"; steps that don't call it still run.
     {
         let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
