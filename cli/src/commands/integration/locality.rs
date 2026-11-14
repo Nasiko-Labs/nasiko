@@ -19,7 +19,10 @@ pub fn chat_history_warning(cluster: &str) -> String {
 
 /// The question itself; the default answer is no.
 pub fn chat_history_question(cluster: &str) -> String {
-    format!("Sync chat history to {cluster} too? (No syncs usage only: {USAGE})")
+    format!(
+        "Also send chat history (the text of prompts, responses and tool output) to {cluster}? \
+         (No sends usage only: {USAGE})"
+    )
 }
 
 /// Said instead, for a control plane that doesn't keep chat history.
