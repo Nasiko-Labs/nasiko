@@ -95,19 +95,27 @@ impl PlatformLlm {
     }
 
     /// One embeddings call on `provider`/`model` (platform key, no fallback).
+    ///
+    /// Without an explicit provider the model picks it (`embedding_route`), so embeddings
+    /// no longer ride the chat provider.
     pub async fn embed(
         &self,
         call: &PlatformCall,
         provider: Option<&str>,
         req: EmbeddingsRequest,
     ) -> Result<EmbeddingsResponse, GatewayError> {
-        let provider: String = provider
-            .map(str::to_string)
-            .unwrap_or_else(|| self.ctx.cfg.default_provider.clone());
-        let model: String = req
+        let requested: String = req
             .model
             .clone()
             .ok_or_else(|| GatewayError::BadRequest("embedding model required".into()))?;
+        let route: EmbeddingRoute = match provider {
+            Some(p) => EmbeddingRoute { provider: p.to_string(), model: requested },
+            None => embedding_route(&self.ctx.cfg, &requested),
+        };
+        let provider: String = route.provider;
+        let model: String = route.model;
+        let mut req = req;
+        req.model = Some(model.clone());
         let api_key = self.ctx.cfg.platform_key_for(&provider).to_string();
         if api_key.is_empty() {
             return Err(GatewayError::BadRequest(format!(
@@ -495,4 +503,96 @@ fn platform_chat_config(
         compress_enabled: false,
         agent_id: String::new(),
     })
+}
+
+/// Provider + model one platform embeddings call runs on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingRoute {
+    pub provider: String,
+    pub model: String,
+}
+
+/// Default embedding model per built-in provider.
+fn default_embedding_model(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai" => Some("text-embedding-3-small"),
+        "gemini" => Some("gemini-embedding-001"),
+        "vertex" => Some("text-embedding-005"),
+        _ => None,
+    }
+}
+
+/// Whether `provider` serves embedding `model` (name-prefix heuristic).
+fn embedding_model_fits(model: &str, provider: &str) -> bool {
+    let m: String = model.trim().to_ascii_lowercase();
+    match provider {
+        "openai" => m.starts_with("text-embedding-3") || m.starts_with("text-embedding-ada"),
+        "gemini" => m.starts_with("gemini-embedding") || m.starts_with("text-embedding-004"),
+        "vertex" => {
+            m.starts_with("gemini-embedding")
+                || m.starts_with("text-embedding-00")
+                || m.starts_with("text-multilingual-embedding")
+        }
+        _ => !m.is_empty(),
+    }
+}
+
+/// Picks the embedding provider from the model, not the chat provider.
+///
+/// 1. Default provider serves the model → default provider.
+/// 2. Another keyed built-in provider serves it → that provider.
+/// 3. Else default provider with its own default embedding model (so a Gemini-only
+///    deployment still embeds when `EMBEDDING_MODEL` is left at `text-embedding-3-small`).
+pub fn embedding_route(cfg: &crate::GatewayConfig, requested: &str) -> EmbeddingRoute {
+    let default: &str = cfg.default_provider.as_str();
+    if embedding_model_fits(requested, default) {
+        return EmbeddingRoute { provider: default.to_string(), model: requested.to_string() };
+    }
+    for p in ["openai", "gemini", "vertex"] {
+        if p != default
+            && embedding_model_fits(requested, p)
+            && !cfg.platform_key_for(p).is_empty()
+        {
+            return EmbeddingRoute { provider: p.to_string(), model: requested.to_string() };
+        }
+    }
+    let model: String = default_embedding_model(default)
+        .map(str::to_string)
+        .unwrap_or_else(|| requested.to_string());
+    tracing::info!(requested, provider = default, model = %model, "embedding model swapped to provider default");
+    EmbeddingRoute { provider: default.to_string(), model }
+}
+
+#[cfg(test)]
+mod embedding_route_tests {
+    use super::*;
+    use crate::GatewayConfig;
+
+    fn cfg(default: &str, openai: &str, gemini: &str) -> GatewayConfig {
+        GatewayConfig {
+            default_provider: default.into(),
+            platform_openai_api_key: openai.into(),
+            platform_gemini_api_key: gemini.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn gemini_only_swaps_openai_embedding_model() {
+        let r: EmbeddingRoute = embedding_route(&cfg("gemini", "", "g"), "text-embedding-3-small");
+        assert_eq!(r, EmbeddingRoute { provider: "gemini".into(), model: "gemini-embedding-001".into() });
+    }
+
+    #[test]
+    fn gemini_model_kept_on_gemini() {
+        let r: EmbeddingRoute = embedding_route(&cfg("gemini", "", "g"), "gemini-embedding-001");
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "gemini-embedding-001");
+    }
+
+    #[test]
+    fn keyed_openai_serves_openai_model_when_chat_is_gemini() {
+        let r: EmbeddingRoute = embedding_route(&cfg("gemini", "sk", "g"), "text-embedding-3-small");
+        assert_eq!(r, EmbeddingRoute { provider: "openai".into(), model: "text-embedding-3-small".into() });
+    }
 }
