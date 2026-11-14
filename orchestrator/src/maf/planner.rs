@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, LlmClient, LlmUsage};
+use super::llm::{ChatMessage, LlmClient, LlmError, LlmUsage};
 
 /// Minimal agent info needed for planning.
 #[derive(Debug, Clone, Serialize)]
@@ -81,7 +81,7 @@ pub async fn plan_maf(
     description: &str,
     agents: &[AgentInfo],
     llm: &LlmClient,
-) -> (Result<MafPlan, String>, Option<LlmUsage>) {
+) -> (Result<MafPlan, LlmError>, Option<LlmUsage>) {
     // Build a simple table so the LLM sees UUID → name clearly
     let agent_table = agents
         .iter()
@@ -104,7 +104,10 @@ pub async fn plan_maf(
     ];
 
     match llm.chat_json(messages).await {
-        Ok((json, usage)) => (parse_plan(json, agents), Some(usage)),
+        Ok((json, usage)) => (
+            parse_plan(json, agents).map_err(LlmError::Other),
+            Some(usage),
+        ),
         Err(e) => (Err(e), None),
     }
 }

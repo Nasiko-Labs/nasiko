@@ -25,11 +25,15 @@ pub enum PolicyError {
     /// failing), so a retry may succeed. The policy logs the cause; it is never
     /// returned to the caller.
     Unavailable,
+    /// The policy can't decide because the server is set up wrongly, so a retry
+    /// won't help. The message names what an admin must fix.
+    Misconfigured(String),
 }
 
 impl PolicyError {
     /// The status and message the caller gets: `400` with the reason for a
-    /// rejection, `503` with a generic retry hint when the policy couldn't decide.
+    /// rejection, `503` with a generic retry hint when the policy couldn't decide,
+    /// and `500` with what to fix when the server is set up wrongly.
     pub fn status_and_message(&self) -> (StatusCode, String) {
         match self {
             Self::Rejected(reason) => (StatusCode::BAD_REQUEST, reason.clone()),
@@ -37,6 +41,7 @@ impl PolicyError {
                 StatusCode::SERVICE_UNAVAILABLE,
                 "the workflow couldn't be checked right now; try again".to_string(),
             ),
+            Self::Misconfigured(reason) => (StatusCode::INTERNAL_SERVER_ERROR, reason.clone()),
         }
     }
 }
@@ -176,5 +181,13 @@ mod tests {
             message,
             "the workflow couldn't be checked right now; try again"
         );
+    }
+
+    #[test]
+    fn a_misconfigured_server_is_a_500_that_says_what_to_fix_and_not_to_retry() {
+        let (status, message) =
+            PolicyError::Misconfigured("ask your admin to check X".into()).status_and_message();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(message, "ask your admin to check X");
     }
 }

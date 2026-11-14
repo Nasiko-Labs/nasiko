@@ -488,9 +488,12 @@ export interface WorkflowsCtx {
 
 class MafError extends Error {
   readonly status: number
-  constructor(status: number, message: string) {
+  /** The machine-readable `code` some refusals carry beside the message (maf.rs, beside the message). */
+  readonly code: string | undefined
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -516,7 +519,12 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
     } catch (err) {
       if (err instanceof MafError)
         return HttpResponse.json(
-          { data: null, status_code: err.status, message: err.message },
+          {
+            data: null,
+            status_code: err.status,
+            message: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          },
           { status: err.status },
         )
       throw err
@@ -902,8 +910,18 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
       guard(async () => {
         const description = text((await body(request)).description)
         if (!description) throw new MafError(400, 'description is required')
+        // maf.rs `generate_maf`'s own wording for each.
         if (ctx.hasVariant('workflows-no-key'))
-          throw new MafError(503, 'OPENAI_API_KEY is not configured on this server')
+          throw new MafError(
+            503,
+            'No OpenAI API key: add one in the setup guide or Settings → Secrets',
+          )
+        if (ctx.hasVariant('workflows-key-rejected'))
+          throw new MafError(
+            502,
+            'OpenAI rejected your saved API key. Update it in LLM router',
+            'llm_key_rejected',
+          )
         const mine = ctx
           .agents()
           .agents.filter((a) => a.owner_id === ctx.me().id && !a.deleted && a.harness === null)

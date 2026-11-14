@@ -185,33 +185,17 @@ where
 {
     // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
     // output synthesis: the one the execution's owner saved from the UI, else the server's
-    // `OPENAI_API_KEY`. With neither, an execution fails with the provider's error.
+    // `OPENAI_API_KEY`. With neither (and no custom
+    // `OPENAI_BASE_URL`), `run_workflow` refuses the run up front with a 503.
     {
         let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
                 base_url: state.config.openai_base_url.clone(),
-                // Empty unless `OPENAI_MODEL` is set: routed calls then use the router's
-                // default model; direct user-key calls fall back to `gpt-4o-mini` in `LlmClient`.
-                model: crate::state::explicit_openai_model(&state.config.openai_model)
-                    .unwrap_or_default(),
+                model: state.config.openai_model.clone(),
             },
             ledger: state.usage_tracker.ledger(),
-            // Platform-key calls go through the in-process router, so any configured
-            // provider (OpenAI, Vertex, Anthropic, ...) serves them and the router alone
-            // writes their usage.
-            backend: Some(std::sync::Arc::new(
-                crate::llm_router::platform_backend::RouterBackend::new(
-                    nasiko_llm_router::platform::PlatformLlm::new(
-                        nasiko_llm_router::LlmRouterCtx {
-                            ledger: state.usage_tracker.ledger(),
-                            payer: state.shared_call_payer.clone(),
-                            ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
-                        },
-                    ),
-                ),
-            )),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };

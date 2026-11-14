@@ -5,9 +5,9 @@
  * - `unknown`: the request was sent; the agent may have run (5xx, network, stream drop).
  * Only `unknown` asks before "Run again" (DS13).
  */
-import { ApiError } from '@nasiko/data-access/client'
+import { ApiError, serverMessageOf } from '@nasiko/data-access/client'
 import type { ChatRefusal, Slots } from '@nasiko/app-core/edition/edition'
-import { errorCopy, type ErrorKey } from './copy'
+import { copy, errorCopy, type ErrorKey } from './copy'
 
 export type ChatErrorPhase =
   'create' | 'save-user' | 'upload' | 'dispatch' | 'stream' | 'save-assistant'
@@ -76,7 +76,7 @@ export function dispatchError(
   ctx: DispatchContext = { chatMode: 'direct', operation: 'send' },
 ): ChatError {
   const rpc = rpcError(body)
-  const detail = rpc.message ?? (typeof body === 'string' ? body.trim() || undefined : undefined)
+  const detail = rpc.message ?? serverMessageOf(body) ?? undefined
   const base = { phase: 'dispatch' as const, status, rpcCode: rpc.code, serverDetail: detail }
   if (ctx.chatMode === 'routed')
     return routedDispatchError(status, base, ctx.operation === 'resume')
@@ -93,10 +93,28 @@ export function dispatchError(
   // quirk: §10.11 — 429 has no Retry-After, so the copy says "a minute".
   if (status === 429)
     return new ChatError({ ...base, key: 'rateLimited', certainty: 'rejected-before-run' })
+  // A 503 is "the agent isn't running" only when the server says so (or says nothing): the same status also
+  // carries refusals such as an unreadable attachment, whose reason the notice shows.
   if (status === 503)
-    return new ChatError({ ...base, key: 'noAgents', certainty: 'rejected-before-run' })
+    return new ChatError({
+      ...base,
+      key: agentNotRunning(rpc.code, detail) ? 'noAgents' : 'refusedWithReason',
+      certainty: 'rejected-before-run',
+    })
+  // A 5xx with a reason is the server's answer, not a dropped connection. Its catch-all text names no reason.
+  if (status >= 500 && detail && !GENERIC_SERVER_TEXT.test(detail))
+    return new ChatError({ ...base, key: 'serverError', certainty: 'unknown' })
   return new ChatError({ ...base, key: 'cutOff', certainty: 'unknown' })
 }
+
+/** The server's catch-all 500 text (a2a_dispatch.rs `Internal`): it names no cause. */
+const GENERIC_SERVER_TEXT = /^internal (server )?error\.?$/i
+
+/** JSON-RPC code of a target-resolution failure (a2a_dispatch.rs `Resolve`: not running, parked, workload down). */
+const RPC_RESOLVE = -32609
+
+const agentNotRunning = (rpcCode: number | undefined, detail: string | undefined) =>
+  !detail || rpcCode === RPC_RESOLVE || /no agents available/i.test(detail)
 
 function routedDispatchError(
   status: number,
@@ -173,7 +191,12 @@ export const failedTurnError = (
  */
 export function refusalOf(error: ChatError, read: Slots['chatRefusal']): ChatRefusal | null {
   if (!read || !error.serverDetail) return null
-  if (error.key !== 'agentFailed' && error.key !== 'routedFailed' && error.key !== 'noAgents')
+  if (
+    error.key !== 'agentFailed' &&
+    error.key !== 'routedFailed' &&
+    error.key !== 'noAgents' &&
+    error.key !== 'refusedWithReason'
+  )
     return null
   return read(error.serverDetail)
 }
@@ -203,5 +226,16 @@ export const needsRunAgainConfirm = (e: ChatError | null | undefined) =>
 export const sendErrorText = (error: unknown): string | null => {
   if (!error) return null
   const c = errorCopy[error instanceof ChatError ? error.key : 'createFailed']
-  return `${c.problem} ${c.action}`
+  const said =
+    error instanceof ChatError
+      ? error.serverDetail
+      : error instanceof ApiError
+        ? (error.serverMessage ?? undefined)
+        : undefined
+  return said
+    ? `${c.problem} ${copy.serverSaid(asSentence(said))} ${c.action}`
+    : `${c.problem} ${c.action}`
 }
+
+/** The server's reason as a sentence, so the line's next sentence doesn't run into it. */
+export const asSentence = (t: string) => (/[.!?]$/.test(t) ? t : `${t}.`)

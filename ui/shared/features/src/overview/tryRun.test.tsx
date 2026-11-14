@@ -219,11 +219,27 @@ describe('TryAgentRun', () => {
     )
     renderCard()
     fireEvent.click(await screen.findByRole('button', { name: t.baseline }))
-    expect(
-      await screen.findByText(/The run didn't finish: 502 agent unavailable/),
-    ).toBeInTheDocument()
+    // The server's reason, not the status and raw body (NAS-1624).
+    expect(await screen.findByText(/The run didn't finish: agent unavailable/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: t.retry })).toBeEnabled()
     expect(readDone('u1')).toEqual([])
+  })
+
+  it('says the JSON-RPC reason of a refused run, never the raw JSON', async () => {
+    server.use(
+      http.post('*/api/orchestrator/a2a', () =>
+        HttpResponse.json(
+          { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'OPENAI_API_KEY not set' } },
+          { status: 500 },
+        ),
+      ),
+    )
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: t.baseline }))
+    expect(
+      await screen.findByText(/The run didn't finish: OPENAI_API_KEY not set/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/jsonrpc/)).not.toBeInTheDocument()
   })
 
   it('waits for the agent to be deployed', async () => {

@@ -26,24 +26,13 @@ struct AgentClaims {
     agent_id: Option<String>,
     #[serde(default)]
     owner_id: Option<String>,
-    #[serde(default)]
-    iat: Option<i64>,
-}
-
-/// A verified agent token's identity: who it speaks for, and when it was issued (`iat`, Unix
-/// seconds; `None` for a token minted without one), which the router compares against the
-/// agent's `llm_tokens_revoked_at`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AgentToken {
-    pub agent_id: String,
-    pub owner_id: String,
-    pub issued_at: Option<i64>,
 }
 
 /// Verify an `Authorization` header value and extract `(agent_id, owner_id)`.
 ///
 /// - `None` header ⇒ 401 "Missing Authorization header".
-/// - Empty `agent_jwt_secret` ⇒ fail closed: 401 "Gateway JWT secret not configured".
+/// - Empty `agent_jwt_secret` ⇒ fail closed: 503 "LLM router misconfigured: AGENT_JWT_SECRET is
+///   not set on the server." (a server fault, so not a 401 an SDK reads as a bad key).
 /// - Expired ⇒ 401 "Agent token expired". Other signature/format errors ⇒ 401
 ///   "Invalid agent token: <err>". Absent/empty `agent_id` ⇒ 401 "Token missing
 ///   agent_id claim".
@@ -51,15 +40,6 @@ pub fn verify_agent_jwt(
     authorization: Option<&str>,
     cfg: &GatewayConfig,
 ) -> Result<(String, String), GatewayError> {
-    let token = verify_agent_token(authorization, cfg)?;
-    Ok((token.agent_id, token.owner_id))
-}
-
-/// [`verify_agent_jwt`], also returning the token's issue time.
-pub fn verify_agent_token(
-    authorization: Option<&str>,
-    cfg: &GatewayConfig,
-) -> Result<AgentToken, GatewayError> {
     let header = authorization.ok_or(GatewayError::MissingAuthHeader)?;
 
     // Fail closed on misconfiguration — never fail open.
@@ -84,11 +64,7 @@ pub fn verify_agent_token(
         .filter(|s| !s.is_empty())
         .ok_or(GatewayError::MissingAgentId)?;
     let owner_id = data.claims.owner_id.unwrap_or_default();
-    Ok(AgentToken {
-        agent_id,
-        owner_id,
-        issued_at: data.claims.iat,
-    })
+    Ok((agent_id, owner_id))
 }
 
 /// Strip a case-insensitive `Bearer ` prefix; tolerate a raw token with no prefix.
@@ -195,17 +171,6 @@ mod tests {
         let (agent_id, owner_id) = verify_agent_jwt(Some(&bearer(&token)), &cfg(SECRET)).unwrap();
         assert_eq!(agent_id, "agent-123");
         assert_eq!(owner_id, "owner-abc");
-    }
-
-    #[test]
-    fn verified_token_carries_its_issue_time() {
-        let now = now_unix();
-        let token =
-            mint_with_times("a", "o", SECRET, now - 30, now + 3600, Algorithm::HS256).unwrap();
-        let verified = verify_agent_token(Some(&bearer(&token)), &cfg(SECRET)).unwrap();
-        assert_eq!(verified.issued_at, Some((now - 30) as i64));
-        assert_eq!(verified.agent_id, "a");
-        assert_eq!(verified.owner_id, "o");
     }
 
     #[test]

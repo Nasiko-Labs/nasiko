@@ -296,10 +296,11 @@ export const MOCK_VARIANTS = [
   'mcp-toolkits-fail',
   'mcp-upload-fails',
   // Workflows (plans/feat-workflows.md §8): no workflows or runs; answers as OSS `main` (no drafts, promote, metrics);
-  // the planner has no API key (503) or fails (422).
+  // the planner has no API key (503), the provider rejects it (502 `llm_key_rejected`) or planning fails (422).
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
+  'workflows-key-rejected',
   'workflows-planner-fails',
   // Onboarding (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §5): a server without
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
@@ -2713,7 +2714,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()

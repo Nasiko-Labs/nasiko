@@ -274,11 +274,11 @@ where
 /// `[consumer, execution_id, consumer, execution_id, ...]` grouped by consumer.
 fn by_owner(pairs: &[String]) -> HashMap<&str, Vec<&str>> {
     let mut owners: HashMap<&str, Vec<&str>> = HashMap::new();
-    for pair in pairs.chunks_exact(2) {
+    for [consumer, execution_id] in pairs.as_chunks::<2>().0 {
         owners
-            .entry(pair[0].as_str())
+            .entry(consumer.as_str())
             .or_default()
-            .push(pair[1].as_str());
+            .push(execution_id.as_str());
     }
     owners
 }

@@ -16,21 +16,12 @@ pub enum GatewayError {
     // ── 401 — authentication ────────────────────────────────────────────────
     #[error("Missing Authorization header")]
     MissingAuthHeader,
-    #[error("Gateway JWT secret not configured")]
-    JwtSecretNotConfigured,
     #[error("Agent token expired")]
     TokenExpired,
     #[error("Invalid agent token: {0}")]
     InvalidToken(String),
     #[error("Token missing agent_id claim")]
     MissingAgentId,
-    /// The owner revoked the agent's LLM routing tokens after this one was issued — what
-    /// `nasiko disconnect <coding-agent>` does. 401 so a client refreshes its credential: a
-    /// still-connected one gets a fresh token, a disconnected one learns it was disconnected.
-    #[error(
-        "Nasiko LLM routing was disconnected for this agent; restart the coding agent to use its own provider, or reconnect it"
-    )]
-    TokenRevoked,
 
     // ── 403 — authenticated but unattributable (strict flow enforcement) ────
     // The agent's credential is valid — what's missing is authorization
@@ -44,10 +35,23 @@ pub enum GatewayError {
     BadRequest(String),
     #[error("No registry entry for agent_id={0}")]
     NoRegistryEntry(String),
-    #[error("Secret '{0}' not found for owner_id={1}")]
-    SecretNotFound(String, String),
-    #[error("No api_key_secret_name set and no platform fallback key configured")]
-    NoApiKey,
+    /// The LLM config names a user secret the owner never stored. Worded for the end user: an
+    /// agent relays it into the chat. The owner id stays out of the message.
+    #[error(
+        "Your LLM config uses the secret '{0}', which doesn't exist. Add it in Settings → \
+         Secrets or edit the config."
+    )]
+    SecretNotFound(String),
+    /// The owner's stored secret exists but this server can't decrypt it (the server's
+    /// encryption key changed since it was saved). Saving it again is the fix.
+    #[error(
+        "Your stored API key '{0}' can't be decrypted on this server. Save it again in \
+         Settings → Secrets."
+    )]
+    SecretUnreadable(String),
+    /// No per-user key and no platform key for the provider the call resolved to.
+    #[error("{}", no_api_key_message(.provider, .model))]
+    NoApiKey { provider: String, model: String },
     /// The agent is shared with the calling user, so it runs on their own LLM config, and they
     /// have none. Worded for the end user: an agent relays it into the chat.
     #[error(
@@ -81,6 +85,10 @@ pub enum GatewayError {
     StorageUnavailable,
     #[error("the router is handling too much data right now; try again")]
     Busy,
+    /// Fail closed: without the secret no agent token can be verified. A 503, not a 401, so
+    /// agent SDKs don't read a server misconfiguration as a bad API key.
+    #[error("LLM router misconfigured: AGENT_JWT_SECRET is not set on the server.")]
+    JwtSecretNotConfigured,
 
     // ── 500 — server-side fault (DB/crypto/config integrity) ─────────────────
     // Not client-actionable; the detail is logged but not exposed in the body.
@@ -93,25 +101,24 @@ impl GatewayError {
     pub fn status(&self) -> StatusCode {
         match self {
             GatewayError::MissingAuthHeader
-            | GatewayError::JwtSecretNotConfigured
             | GatewayError::TokenExpired
             | GatewayError::InvalidToken(_)
-            | GatewayError::MissingAgentId
-            | GatewayError::TokenRevoked => StatusCode::UNAUTHORIZED,
+            | GatewayError::MissingAgentId => StatusCode::UNAUTHORIZED,
             GatewayError::Forbidden(_) => StatusCode::FORBIDDEN,
             GatewayError::BadRequest(_)
             | GatewayError::NoRegistryEntry(_)
-            | GatewayError::SecretNotFound(_, _)
-            | GatewayError::NoApiKey
+            | GatewayError::SecretNotFound(_)
+            | GatewayError::SecretUnreadable(_)
+            | GatewayError::NoApiKey { .. }
             | GatewayError::NoSharedUserConfig => StatusCode::BAD_REQUEST,
             GatewayError::OwnerAllowanceSpent { .. } => StatusCode::TOO_MANY_REQUESTS,
             GatewayError::Upstream(_) => StatusCode::BAD_GATEWAY,
             GatewayError::Provider { status, .. } => *status,
             GatewayError::UpstreamTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             GatewayError::PayloadTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
-            GatewayError::StorageUnavailable | GatewayError::Busy => {
-                StatusCode::SERVICE_UNAVAILABLE
-            }
+            GatewayError::StorageUnavailable
+            | GatewayError::Busy
+            | GatewayError::JwtSecretNotConfigured => StatusCode::SERVICE_UNAVAILABLE,
             GatewayError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -139,6 +146,29 @@ impl IntoResponse for GatewayError {
         }
         response
     }
+}
+
+/// The environment variable that holds the platform key for a built-in provider, or `None`
+/// for a provider the platform has no key setting for.
+pub(crate) fn platform_key_env(provider: &str) -> Option<&'static str> {
+    match provider {
+        "openai" => Some("PLATFORM_OPENAI_API_KEY"),
+        "anthropic" => Some("PLATFORM_ANTHROPIC_API_KEY"),
+        "gemini" => Some("PLATFORM_GEMINI_API_KEY"),
+        "openrouter" => Some("PLATFORM_OPENROUTER_API_KEY"),
+        _ => None,
+    }
+}
+
+fn no_api_key_message(provider: &str, model: &str) -> String {
+    let admin_fix = match platform_key_env(provider) {
+        Some(env) => format!(", or ask your admin to set {env}"),
+        None => String::new(),
+    };
+    format!(
+        "No API key for provider '{provider}' (model {model}). Connect a model with your own \
+         key in LLM router{admin_fix}."
+    )
 }
 
 pub(crate) fn error_body(status: StatusCode, message: &str) -> Json<serde_json::Value> {
@@ -257,6 +287,58 @@ mod tests {
             assert_eq!(body["error"]["message"], expected);
             assert_eq!(body["detail"], expected);
         }
+    }
+
+    #[test]
+    fn a_key_refusal_names_the_provider_the_model_and_the_fix() {
+        let error = GatewayError::NoApiKey {
+            provider: "anthropic".into(),
+            model: "claude-sonnet".into(),
+        };
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.to_string(),
+            "No API key for provider 'anthropic' (model claude-sonnet). Connect a model with your \
+             own key in LLM router, or ask your admin to set PLATFORM_ANTHROPIC_API_KEY."
+        );
+        let no_platform_setting = GatewayError::NoApiKey {
+            provider: "deepseek".into(),
+            model: "r1".into(),
+        };
+        assert_eq!(
+            no_platform_setting.to_string(),
+            "No API key for provider 'deepseek' (model r1). Connect a model with your own key in \
+             LLM router."
+        );
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_secret_says_which_and_never_names_the_owner() {
+        let missing = GatewayError::SecretNotFound("ANTHROPIC_API_KEY".into());
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            missing.to_string(),
+            "Your LLM config uses the secret 'ANTHROPIC_API_KEY', which doesn't exist. Add it in \
+             Settings → Secrets or edit the config."
+        );
+        let unreadable = GatewayError::SecretUnreadable("ANTHROPIC_API_KEY".into());
+        assert_eq!(unreadable.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            unreadable.to_string(),
+            "Your stored API key 'ANTHROPIC_API_KEY' can't be decrypted on this server. Save it \
+             again in Settings → Secrets."
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_jwt_secret_is_a_503_that_names_the_setting() {
+        let (status, body) = body_of(GatewayError::JwtSecretNotConfigured).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body["detail"],
+            "LLM router misconfigured: AGENT_JWT_SECRET is not set on the server."
+        );
+        assert_eq!(body["error"]["type"], "api_error");
     }
 
     #[tokio::test]

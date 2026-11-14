@@ -41,6 +41,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
+  'workflows-key-rejected',
   'workflows-planner-fails',
   'onboarding-absent',
   'onboarding-done',

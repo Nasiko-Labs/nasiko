@@ -124,15 +124,22 @@ async fn exchange_rates(arguments: &str) -> Result<String, String> {
         urlencode(&base),
     );
 
-    let resp = http_get(&url)
-        .await?
+    let response = http_get(&url).await?;
+    let http_status = response.status().as_u16();
+    let resp = response
         .json::<serde_json::Value>()
         .await
-        .map_err(|e| format!("parse failed: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "exchange-rate service (open.er-api.com) returned an unreadable answer (HTTP {http_status}): {e}"
+            )
+        })?;
 
     if resp["result"].as_str() != Some("success") {
-        let error_type = resp["error-type"].as_str().unwrap_or("unknown error");
-        return Err(format!("API error: {error_type}"));
+        let error_type = resp["error-type"].as_str().unwrap_or("no error type given");
+        return Err(format!(
+            "exchange-rate service (open.er-api.com) returned an error: {error_type} (HTTP {http_status})"
+        ));
     }
 
     let rates = resp["rates"]

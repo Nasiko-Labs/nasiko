@@ -13,7 +13,13 @@
  */
 import { productEvent } from '@nasiko/app-core/analytics'
 import type { QueryClient } from '@tanstack/react-query'
-import { ApiError, apiUrl, isAbortError, safeJson } from '@nasiko/data-access/client'
+import {
+  ApiError,
+  apiUrl,
+  failureMessage,
+  isAbortError,
+  safeJson,
+} from '@nasiko/data-access/client'
 import type { components } from '@nasiko/data-access/schema.gen'
 import { clearFollower, follow, importFinished } from './follower'
 import { parseReference } from './registry'
@@ -137,7 +143,14 @@ function send(
           ),
         )
       }
-      reject(new ApiError(xhr.status, body, UPLOAD_PATH, `POST ${UPLOAD_PATH} → ${xhr.status}`))
+      reject(
+        new ApiError(
+          xhr.status,
+          body,
+          UPLOAD_PATH,
+          failureMessage(xhr.status, body, 'POST', UPLOAD_PATH),
+        ),
+      )
     }
     xhr.onerror = () =>
       reject(new ApiError(502, null, UPLOAD_PATH, `POST ${UPLOAD_PATH} → network error`))

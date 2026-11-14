@@ -295,17 +295,20 @@ async fn ip_info(arguments: &str) -> Result<String, String> {
         urlencode(ip),
     );
 
-    let resp = reqwest::get(&url)
+    let response = reqwest::get(&url)
         .await
-        .map_err(|e| format!("request failed: {e}"))?
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| format!("parse failed: {e}"))?;
+        .map_err(|e| format!("ip-api.com request failed: {e}"))?;
+    let http_status = response.status().as_u16();
+    let resp = response.json::<serde_json::Value>().await.map_err(|e| {
+        format!("ip-api.com returned an unreadable answer (HTTP {http_status}): {e}")
+    })?;
 
     let status = resp["status"].as_str().unwrap_or("unknown");
     if status == "fail" {
-        let message = resp["message"].as_str().unwrap_or("unknown error");
-        return Err(format!("IP lookup failed: {message}"));
+        let message = resp["message"].as_str().unwrap_or("no reason given");
+        return Err(format!(
+            "ip-api.com lookup failed: {message} (HTTP {http_status})"
+        ));
     }
 
     let query = resp["query"].as_str().unwrap_or(ip);

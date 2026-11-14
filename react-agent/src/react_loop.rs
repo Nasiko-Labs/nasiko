@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::completion::{CompletionEvent, UsageModel};
+use crate::completion::{CompletionEvent, UsageModel, failure_text};
 use futures::StreamExt;
 use rig::completion::message::ToolCall;
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
@@ -384,6 +384,16 @@ fn finalize_answer(
     }
 }
 
+/// Whose key pays for the orchestrator's own model calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiKeySource {
+    /// The user's own key, saved with an OpenAI config in LLM router.
+    Saved,
+    /// The server's `OPENAI_API_KEY`.
+    #[default]
+    Server,
+}
+
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -396,6 +406,8 @@ pub struct OrchestratorConfig {
     pub base_url: Option<String>,
     /// API key. If None, uses OPENAI_API_KEY env var.
     pub api_key: Option<String>,
+    /// Whose key `api_key` is, which decides what a refused key tells the user to do.
+    pub api_key_source: ApiKeySource,
     /// Operator policy governing what this orchestration is allowed to do —
     /// see [`DelegationPolicy`]. `None` imposes nothing, which is what an
     /// unconfigured deployment runs with.
@@ -429,6 +441,7 @@ impl Default for OrchestratorConfig {
             temperature: Some(0.2),
             base_url: None,
             api_key: None,
+            api_key_source: ApiKeySource::Server,
             policy: None,
             outbound_prefix: None,
             attachment_note: None,
@@ -595,7 +608,7 @@ impl Orchestrator {
             let response = req
                 .send()
                 .await
-                .map_err(|e| OrchestratorError::Completion(e.to_string()))?;
+                .map_err(|e| OrchestratorError::Completion(failure_text(&e)))?;
 
             // This completion's total token cost, attributed evenly across
             // however many tool calls it produced (best available granularity
@@ -1055,10 +1068,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: e.to_string(),
+                            message: failure_text(&e),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(e.to_string()));
+                    return Err(OrchestratorError::Completion(failure_text(&e)));
                 }
             };
 
@@ -1318,10 +1331,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: e.to_string(),
+                            message: failure_text(&e),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(e.to_string()));
+                    return Err(OrchestratorError::Completion(failure_text(&e)));
                 }
             };
 
@@ -1343,10 +1356,10 @@ async fn run_stream_inner(
                     Err(e) => {
                         let _ = tx
                             .send(OrchestratorEvent::Error {
-                                message: e.to_string(),
+                                message: failure_text(&e),
                             })
                             .await;
-                        return Err(OrchestratorError::Completion(e.to_string()));
+                        return Err(OrchestratorError::Completion(failure_text(&e)));
                     }
                 }
             }

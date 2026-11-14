@@ -6,7 +6,7 @@
  * any other: it is listed in Chat and Sessions, and its session page shows what the agent did. The LLM router meters the
  * run as it happens, and the stream's usage frame says what it cost.
  */
-import { fetchApi } from '@nasiko/data-access/client'
+import { failureMessage, fetchApi, safeJson } from '@nasiko/data-access/client'
 import { readSse } from '@nasiko/data-access/sse'
 import { emptyTurn, reduceSseEvent, type TurnState } from './a2aReducer'
 import { createSession, saveMessage } from './api'
@@ -83,7 +83,13 @@ export async function runAgentOnce(opts: {
       }),
     ),
   })
-  if (!res.ok) throw new TryRunError(`${res.status} ${await res.text().catch(() => '')}`.trim())
+  if (!res.ok) {
+    // The server's reason (its JSON-RPC error message), never the raw body (NAS-1624).
+    const text = await res.text().catch(() => '')
+    throw new TryRunError(
+      failureMessage(res.status, text ? safeJson(text) : null, 'POST', '/api/orchestrator/a2a'),
+    )
+  }
   const state = await stream(res, opts.onWorking, opts.signal)
   const outcome = outcomeOf(state, false)
   if (outcome.kind === 'save' && clientWrites(row.transcript, 'assistant'))

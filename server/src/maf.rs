@@ -12,7 +12,7 @@ use nasiko_orchestrator::RouteRequest;
 use nasiko_orchestrator::maf::{
     decomposer::DecomposerClient,
     executor,
-    llm::LlmClient,
+    llm::{LlmClient, LlmError, NO_OPENAI_KEY_MESSAGE},
     planner::{self, AgentInfo as PlannerAgentInfo},
     stop,
     types::{MafDefinition, MafStep, StepResult},
@@ -114,6 +114,52 @@ fn err_json(status: StatusCode, message: &str) -> axum::response::Response {
         })),
     )
         .into_response()
+}
+
+/// [`err_json`] with a machine-readable `code` the UI can choose its wording by.
+fn err_json_with_code(status: StatusCode, message: &str, code: &str) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "data": serde_json::Value::Null,
+            "status_code": status.as_u16(),
+            "message": message,
+            "code": code,
+        })),
+    )
+        .into_response()
+}
+
+/// The planner's failure as a response: a missing or refused key is the provider's refusal
+/// (`502`, code `llm_key_rejected`, naming whose key), anything else is a plan the model could
+/// not produce (`422`).
+fn planning_failed(error: &LlmError) -> axum::response::Response {
+    match error {
+        LlmError::KeyRejected(_) | LlmError::NoKey => err_json_with_code(
+            StatusCode::BAD_GATEWAY,
+            &format!("AI drafting failed: {error}"),
+            "llm_key_rejected",
+        ),
+        _ => err_json(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &format!("planning failed: {error}"),
+        ),
+    }
+}
+
+/// Whether a run can reach a model at all: the owner saved an OpenAI key, the server has one,
+/// or the server points at its own OpenAI-compatible endpoint (which may need no key).
+async fn run_has_model_key(state: &AppState, user_id: Uuid) -> bool {
+    let server_key = state
+        .config
+        .openai_api_key
+        .as_deref()
+        .is_some_and(|k| !k.trim().is_empty());
+    server_key
+        || state.config.openai_base_url.is_some()
+        || nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id)
+            .await
+            .is_some()
 }
 
 fn unauthorized() -> axum::response::Response {
@@ -907,7 +953,12 @@ async fn route_with_access_check(
         // Relayed verbatim rather than rephrased: this crate does not know what the policy
         // checked for, so it cannot say what to do about it.
         Err(nasiko_orchestrator::RouterError::PolicyRefused { reason }) => return Err(reason),
-        Err(_) => None,
+        // The catalog fallback picks an agent instead, but a routing model that keeps failing
+        // (a refused key, say) must not go unseen.
+        Err(e) => {
+            tracing::warn!(error = %e, "maf: routing failed, falling back to the catalog");
+            None
+        }
     };
     Ok(match routed {
         Some((id, name, endpoint)) if crate::acl::can_access_agent(state, claims, id).await => {
@@ -1243,10 +1294,7 @@ async fn decompose_into_steps(
                 error = %e,
                 "maf create: decomposer failed"
             );
-            return Err(err_json(
-                StatusCode::SERVICE_UNAVAILABLE,
-                &format!("decomposer: {e}"),
-            ));
+            return Err(err_json(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()));
         }
     };
     tracing::info!(
@@ -1847,6 +1895,11 @@ async fn run_workflow(
         .await
     {
         return policy_refused(&refused);
+    }
+    // Refused here, not after enqueueing: with no model to plan the run, every execution would
+    // fail at its first step, seconds later and out of the caller's sight.
+    if !run_has_model_key(&state, user_id).await {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY_MESSAGE);
     }
 
     let max_attempts: i32 = std::env::var("MAF_MAX_ATTEMPTS")
@@ -2581,27 +2634,20 @@ async fn generate_maf(
     } else {
         "platform"
     };
-    // A saved user key is spent directly; otherwise the planner call goes through the
-    // in-process router (any configured provider), which records its usage.
+    let server_key = state.config.openai_api_key.clone();
+    if saved_key.is_none() && server_key.is_none() {
+        return err_json(StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY_MESSAGE);
+    }
+    let server_llm = LlmClient::new(
+        state.http_client.clone(),
+        server_key.unwrap_or_default(),
+        state.config.openai_base_url.clone(),
+        state.config.openai_model.clone(),
+    );
+    // A saved key makes the client the owner's, so a refusal names the owner's key.
     let llm = match saved_key {
-        Some(k) => LlmClient::new(
-            state.http_client.clone(),
-            k,
-            state.config.openai_base_url.clone(),
-            state.config.openai_model.clone(),
-        ),
-        None => LlmClient::new(
-            state.http_client.clone(),
-            String::new(),
-            state.config.openai_base_url.clone(),
-            crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_default(),
-        )
-        .with_backend(std::sync::Arc::clone(&state.llm_backend))
-        .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {
-            user_id,
-            component: nasiko_orchestrator::llm_backend::PlatformComponent::MafPlanner.to_string(),
-            session_id: None,
-        }),
+        Some(key) => server_llm.with_api_key(key),
+        None => server_llm,
     };
 
     // Fetch all agents visible to this user
@@ -2626,8 +2672,7 @@ async fn generate_maf(
         .collect();
 
     let (plan, usage) = planner::plan_maf(&req.description, &planner_agents, &llm).await;
-    // Routed calls: the router already wrote `trace_usage`.
-    if let Some(usage) = usage.filter(|_| !llm.is_routed()) {
+    if let Some(usage) = usage {
         record_planner_usage(&state.db, user_id, &llm, key_source, &usage).await;
     }
     match plan {
@@ -2661,10 +2706,7 @@ async fn generate_maf(
                 "Workflow plan generated successfully",
             )
         }
-        Err(e) => err_json(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            &format!("planning failed: {e}"),
-        ),
+        Err(e) => planning_failed(&e),
     }
 }
 
@@ -2773,6 +2815,39 @@ async fn fetch_user_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nasiko_orchestrator::maf::llm::KeySource;
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    /// The UI picks its wording by `code`, so a refused key must carry it, as a 502.
+    #[tokio::test]
+    async fn a_refused_planner_key_is_a_502_with_the_key_rejected_code() {
+        let response = planning_failed(&LlmError::KeyRejected(KeySource::Owner));
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body_json(response).await;
+        assert_eq!(body["code"], "llm_key_rejected");
+        assert_eq!(body["status_code"], 502);
+        assert!(body["data"].is_null());
+        let message = body["message"].as_str().expect("message");
+        assert!(message.contains("your saved API key"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn any_other_planning_failure_stays_a_422_without_a_code() {
+        let response = planning_failed(&LlmError::Other("planner returned zero steps".into()));
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_json(response).await;
+        assert!(body.get("code").is_none());
+        assert_eq!(
+            body["message"],
+            "planning failed: planner returned zero steps"
+        );
+    }
 
     /// The create screen sends the same step shape to both saves. `step_index`
     /// was required here and ignored, so "Save as draft and test" — which is a

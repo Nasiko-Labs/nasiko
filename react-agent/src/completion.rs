@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream::BoxStream};
 use nasiko_llm_router::{
     ir::{ChatRequest, Message as WireMessage, ToolCallDelta, Usage},
-    providers::{OpenAiProvider, ProviderClient},
+    providers::{OpenAiProvider, ProviderClient, ProviderError},
     resolver::ResolvedConfig,
 };
 use rig::{
@@ -20,7 +20,14 @@ use rig::{
 use serde::Serialize;
 use serde_json::json;
 
-use crate::react_loop::OrchestratorConfig;
+use crate::react_loop::{ApiKeySource, OrchestratorConfig};
+
+/// What a chat turn shows when the orchestrator has no key to call its model with.
+pub(crate) const NO_KEY_MESSAGE: &str = "No OpenAI API key for the orchestrator. Save an OpenAI \
+    key in LLM router, or ask your admin to set OPENAI_API_KEY.";
+
+/// Longest provider message carried into a failure the user reads.
+const PROVIDER_MESSAGE_MAX_CHARS: usize = 300;
 
 /// Disjoint token counts for one completion, not a running session total.
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +61,73 @@ pub(crate) struct UsageModel {
     provider: Arc<dyn ProviderClient>,
     config: ResolvedConfig,
     identity: Option<String>,
+    wording: FailureWording,
+}
+
+/// Turns a provider failure into what the user reads: whose key was refused and where to fix
+/// it, or the provider's status and its own short message, never its raw body.
+#[derive(Clone, Copy)]
+struct FailureWording {
+    key_source: ApiKeySource,
+    provider_is_openai: bool,
+}
+
+impl FailureWording {
+    fn describe(self, error: ProviderError) -> CompletionError {
+        let ProviderError::Status {
+            status, message, ..
+        } = &error
+        else {
+            return CompletionError::ProviderError(error.to_string());
+        };
+        tracing::warn!(status, provider_message = %message, "orchestrator model call failed");
+        let provider = if self.provider_is_openai {
+            "OpenAI"
+        } else {
+            "The model provider"
+        };
+        let text = match (status, self.key_source) {
+            (401 | 403, ApiKeySource::Saved) => {
+                format!("{provider} rejected your saved API key. Update it in LLM router.")
+            }
+            (401 | 403, ApiKeySource::Server) => format!(
+                "{provider} rejected this server's API key. Ask your admin to check OPENAI_API_KEY."
+            ),
+            _ => match short_provider_message(message) {
+                Some(said) => format!("The model provider returned HTTP {status}: {said}"),
+                None => format!("The model provider returned HTTP {status}."),
+            },
+        };
+        CompletionError::ProviderError(text)
+    }
+}
+
+/// The provider's own one-line explanation from an OpenAI-shaped error body
+/// (`{"error":{"message":…}}` or `{"message":…}`), shortened; `None` when the body has none.
+fn short_provider_message(body: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(body).ok()?;
+    let said = value
+        .pointer("/error/message")
+        .or_else(|| value.get("message"))?
+        .as_str()?
+        .trim();
+    if said.is_empty() {
+        return None;
+    }
+    let mut short: String = said.chars().take(PROVIDER_MESSAGE_MAX_CHARS).collect();
+    if short.len() < said.len() {
+        short.push('…');
+    }
+    Some(short)
+}
+
+/// What the user reads for a failed model call: the provider failure's own text, without
+/// rig's `ProviderError: ` variant prefix.
+pub(crate) fn failure_text(error: &CompletionError) -> String {
+    match error {
+        CompletionError::ProviderError(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 pub(crate) struct RawCompletion {
@@ -67,46 +141,14 @@ pub(crate) enum CompletionEvent {
 }
 
 impl UsageModel {
-    /// Explicit OpenAI key (user's saved key or `OPENAI_API_KEY`) → OpenAI-compatible endpoint.
-    /// No key → the router's platform default provider (`DEFAULT_PROVIDER`, else the first
-    /// provider with credentials), so a Vertex-only deployment works.
     pub fn from_config(config: &OrchestratorConfig) -> Result<Self, String> {
-        let explicit_key: Option<String> = config
+        // An empty key is no key: sending it only earns the provider's 401.
+        let api_key = config
             .api_key
             .clone()
             .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-            .filter(|k| !k.trim().is_empty());
-        match explicit_key {
-            Some(api_key) => Ok(Self::openai(config, api_key)),
-            None => Self::platform(config),
-        }
-    }
-
-    fn platform(config: &OrchestratorConfig) -> Result<Self, String> {
-        let gateway = nasiko_llm_router::config::GatewayConfig::from_env();
-        let provider: String = gateway.default_provider.clone();
-        let api_key: String = gateway.platform_key_for(&provider).to_string();
-        if api_key.is_empty() {
-            return Err(format!(
-                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
-            ));
-        }
-        let model: String = if config.model.trim().is_empty() {
-            gateway.default_model.clone()
-        } else {
-            config.model.clone()
-        };
-        let http = reqwest::Client::new();
-        let client = nasiko_llm_router::providers::provider_for(&provider, None, &http, &gateway)
-            .map_err(|e| e.to_string())?;
-        Ok(Self {
-            provider: Arc::from(client),
-            config: Self::resolved(provider.clone(), model, api_key),
-            identity: Some(provider),
-        })
-    }
-
-    fn openai(config: &OrchestratorConfig, api_key: String) -> Self {
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| NO_KEY_MESSAGE.to_owned())?;
         let base = config
             .base_url
             .clone()
@@ -117,18 +159,12 @@ impl UsageModel {
             .ok()
             .filter(|url| url.host_str() == Some("api.openai.com"))
             .map(|_| "openai".to_owned());
-        Self {
+        Ok(Self {
             provider: Arc::new(OpenAiProvider::new(reqwest::Client::new(), base)),
-            config: Self::resolved("openai".into(), config.model.clone(), api_key),
-            identity,
-        }
-    }
-
-    fn resolved(provider: String, model: String, api_key: String) -> ResolvedConfig {
-        ResolvedConfig {
-                provider,
-                litellm_model: model.clone(),
-                model,
+            config: ResolvedConfig {
+                provider: "openai".into(),
+                model: config.model.clone(),
+                litellm_model: config.model.clone(),
                 api_key,
                 fallback_models: vec![],
                 temperature: None,
@@ -147,7 +183,13 @@ impl UsageModel {
                 compress_enabled: false,
                 // No agent row either, so no agent to key OpenAI's prompt cache by.
                 agent_id: String::new(),
-        }
+            },
+            wording: FailureWording {
+                key_source: config.api_key_source,
+                provider_is_openai: identity.is_some(),
+            },
+            identity,
+        })
     }
 
     pub fn call_identity(&self, streaming: bool) -> CallUsage {
@@ -172,11 +214,12 @@ impl UsageModel {
         let request = wire_request(request)?;
         let identity = self.call_identity(true);
         let span = call_span(&identity);
+        let wording = self.wording;
         let upstream = self
             .provider
             .chat_stream(&request, &self.config)
             .await
-            .map_err(provider_error)?;
+            .map_err(|error| wording.describe(error))?;
         Ok(Box::pin(async_stream::stream! {
             futures::pin_mut!(upstream);
             let mut tools = BTreeMap::<i64, ToolFragments>::new();
@@ -185,7 +228,7 @@ impl UsageModel {
             while let Some(chunk) = upstream.next().await {
                 let chunk = match chunk {
                     Ok(chunk) => chunk,
-                    Err(error) => { failure = Some(provider_error(error)); break; }
+                    Err(error) => { failure = Some(wording.describe(error)); break; }
                 };
                 if let Some(raw) = chunk.usage {
                     // Providers may repeat cumulative snapshots; never sum them.
@@ -230,7 +273,7 @@ impl CompletionModel for UsageModel {
             .provider
             .chat(&wire_request(request)?, &self.config)
             .await
-            .map_err(provider_error)?;
+            .map_err(|error| self.wording.describe(error))?;
         let usage = response
             .usage
             .and_then(|raw| normalized_usage(raw, &identity));
@@ -396,10 +439,6 @@ impl ToolFragments {
     }
 }
 
-fn provider_error(error: impl std::fmt::Display) -> CompletionError {
-    CompletionError::ProviderError(error.to_string())
-}
-
 fn call_span(usage: &CallUsage) -> tracing::Span {
     tracing::info_span!("gen_ai.orchestrator.chat", otel.kind = "client", gen_ai.operation.name = "chat",
         gen_ai.request.model = %usage.model, gen_ai.provider.name = usage.provider.as_deref().unwrap_or("unknown"),
@@ -433,6 +472,76 @@ mod tests {
     };
     use rig::completion::Message;
     use std::sync::Mutex;
+
+    fn refused(status: u16, body: &str) -> ProviderError {
+        ProviderError::Status {
+            status,
+            message: body.into(),
+            retryable: false,
+        }
+    }
+
+    fn openai_wording(key_source: ApiKeySource) -> FailureWording {
+        FailureWording {
+            key_source,
+            provider_is_openai: true,
+        }
+    }
+
+    #[test]
+    fn a_blank_key_is_no_key_and_says_where_to_add_one() {
+        let error = UsageModel::from_config(&OrchestratorConfig {
+            api_key: Some("  ".into()),
+            ..Default::default()
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, NO_KEY_MESSAGE);
+        assert!(error.contains("LLM router") && error.contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn a_refused_key_says_whose_key_and_never_echoes_the_body() {
+        let body = r#"{"error":{"message":"Incorrect API key provided: sk-abc"}}"#;
+        let saved = failure_text(&openai_wording(ApiKeySource::Saved).describe(refused(401, body)));
+        assert_eq!(
+            saved,
+            "OpenAI rejected your saved API key. Update it in LLM router."
+        );
+        let server =
+            failure_text(&openai_wording(ApiKeySource::Server).describe(refused(403, body)));
+        assert_eq!(
+            server,
+            "OpenAI rejected this server's API key. Ask your admin to check OPENAI_API_KEY."
+        );
+        assert!(!saved.contains("sk-abc") && !server.contains("sk-abc"));
+    }
+
+    #[test]
+    fn another_status_carries_the_providers_short_message_or_just_the_status() {
+        let wording = openai_wording(ApiKeySource::Server);
+        let missing_model = r#"{"error":{"message":"The model `gpt-4.0` does not exist","code":"model_not_found"}}"#;
+        assert_eq!(
+            failure_text(&wording.describe(refused(404, missing_model))),
+            "The model provider returned HTTP 404: The model `gpt-4.0` does not exist"
+        );
+        assert_eq!(
+            failure_text(&wording.describe(refused(502, "<html>bad gateway</html>"))),
+            "The model provider returned HTTP 502."
+        );
+        let long = format!(r#"{{"message":"{}"}}"#, "x".repeat(400));
+        let text = failure_text(&wording.describe(refused(400, &long)));
+        assert!(text.ends_with('…') && text.chars().count() < 360, "{text}");
+    }
+
+    #[test]
+    fn a_transport_failure_keeps_its_own_text() {
+        let wording = openai_wording(ApiKeySource::Saved);
+        assert_eq!(
+            failure_text(&wording.describe(ProviderError::Transport("connection refused".into()))),
+            "transport error: connection refused"
+        );
+    }
 
     struct FakeProvider {
         response: serde_json::Value,

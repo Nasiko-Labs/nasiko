@@ -319,9 +319,14 @@ export const copy = {
   retry: 'Retry',
   serverDown: 'OpenRuntime server unreachable.',
   somethingWrong: 'Something went wrong.',
+  /** The server's own reason, when it gave one we have no better words for. */
+  serverSaid: (t: string) => `OpenRuntime said: ${/[.!?]$/.test(t) ? t : `${t}.`}`,
 } as const
 
-/** What the user reads for a failed call (plan §6.4): our copy first, server text behind Details. */
+/**
+ * What the user reads for a failed call (plan §6.4): our copy first, server text behind Details. When we have no
+ * words of our own for it, the server's reason is the message itself (NAS-1624), never "Something went wrong".
+ */
 export interface ErrorCopy {
   message: string
   detail: string | null
@@ -355,22 +360,26 @@ export function errorCopy(err: unknown, context: ErrorContext = 'read'): ErrorCo
     return { message: 'Another build may be in progress.', detail }
   if (s === 422 && context === 'secret')
     return { message: 'Names use letters, digits and underscores.', detail }
-  if (s === 500 && context === 'lifecycle')
+  // A missing container answers a bare "internal error" (containers.rs); any other reason is the real one.
+  if (s === 500 && context === 'lifecycle' && (!detail || GENERIC_500.test(detail)))
     return {
       message:
         "The runtime couldn't find this agent's container. Redeploy it with `nasiko deploy`.",
       detail,
     }
   if (isObservabilityUnconfigured(api)) return { message: copy.obsOff, detail }
-  if (api.isServerUnreachable) return { message: copy.serverDown, detail }
+  if (api.isServerUnreachable && !detail) return { message: copy.serverDown, detail }
+  if (detail && !GENERIC_500.test(detail)) return { message: copy.serverSaid(detail), detail: null }
   return { message: copy.somethingWrong, detail }
 }
 
-/** Plain-text server bodies only, cut short (HTML error pages and JSON envelopes are dropped). */
+/** The server's catch-all 500 text: it names no cause, so it never becomes the message. */
+const GENERIC_500 = /^internal (server )?error\.?$/i
+
+/** The server's reason (plain text, `{message}`, `{error}`), cut short; HTML error pages are dropped. */
 function serverDetail(api: ApiError | null): string | null {
-  if (!api || typeof api.body !== 'string') return null
-  const text = api.body.trim()
-  if (!text || text.startsWith('<')) return null
+  const text = api?.serverMessage
+  if (!text) return null
   return text.length > SERVER_TEXT_MAX ? `${text.slice(0, SERVER_TEXT_MAX)}…` : text
 }
 

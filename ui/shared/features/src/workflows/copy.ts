@@ -127,8 +127,13 @@ export const copy = {
   regenerate: 'Regenerate plan',
   generating: 'Generating your workflow...',
   plan: {
-    'no-key':
-      "AI drafting isn't available — this server has no OpenAI API key configured. You can still add steps manually below.",
+    // The server's reason says which key (yours or the server's) and where it goes; this is the wording without one.
+    'no-key': (said: string | null) =>
+      said
+        ? `AI drafting isn't available: ${said}. You can still add steps manually below.`
+        : "AI drafting isn't available: this server has no model API key configured. You can still add steps manually below.",
+    'key-rejected': (said: string | null) =>
+      `AI drafting failed: ${said ? `${said}.` : 'the model provider rejected the API key.'} You can still add steps manually below.`,
     noAgentsBefore: "You don't have any agents yet, so there's nothing to plan with.",
     noAgentsLink: 'Deploy an agent',
     noAgentsAfter: 'first, then draft steps.',

@@ -205,9 +205,10 @@ describe('dispatch body and errors (§2.2, §5.6)', () => {
       key: 'routedNoAgents',
       certainty: 'rejected-before-run',
     })
+    // An HTML error page is no reason: it is dropped, never shown.
     expect(dispatchError(502, '<html>', send)).toMatchObject({
       key: 'routedInternal',
-      serverDetail: '<html>',
+      serverDetail: undefined,
     })
     // Direct keeps v1a's mapping.
     expect(dispatchError(503, null)).toMatchObject({ key: 'noAgents' })

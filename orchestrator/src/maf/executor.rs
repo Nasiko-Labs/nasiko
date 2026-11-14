@@ -11,7 +11,7 @@ use sqlx::PgPool;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
-use super::llm::{ChatMessage, LlmClient, LlmUsage};
+use super::llm::{ChatMessage, LlmClient, LlmError, LlmUsage};
 use super::types::{ExecutionResult, MafDefinition, MafStep, PausedStep, StepOutcome, StepResult};
 
 /// What one step's agent call produced, before extraction — a normal reply, or a pause that must
@@ -105,35 +105,21 @@ async fn timed<T>(
 /// Metering must never break a run: a failed usage write is logged and
 /// swallowed, matching `write_selector_usage` and the router's
 /// `spawn_log`.
-pub async fn metered_llm<T>(
+pub async fn metered_llm<T, E>(
     phase: &'static str,
     db: &PgPool,
     execution_id: Uuid,
     user_id: Uuid,
     step_index: Option<i32>,
     llm: &LlmClient,
-    fut: impl std::future::Future<Output = Result<(T, LlmUsage), String>>,
-) -> Result<(T, LlmUsage), String> {
+    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
+) -> Result<(T, LlmUsage), E> {
     let source = UsageSource {
         provider: llm.provider(),
         key_source: "platform",
         ledger: llm.ledger(),
     };
-    // A routed call is already in `trace_usage`, written by the router; writing it here too
-    // would add its tokens to the row twice.
-    let record = !llm.is_routed();
-    let fut = super::llm::MAF_STEP.scope(step_index, fut);
-    metered_call_inner(
-        phase,
-        db,
-        execution_id,
-        user_id,
-        step_index,
-        source,
-        record,
-        fut,
-    )
-    .await
+    metered_call(phase, db, execution_id, user_id, step_index, source, fut).await
 }
 
 /// Who served a metered call and whose key paid for it, as recorded on its span and
@@ -157,31 +143,6 @@ pub async fn metered_call<T, E>(
     user_id: Uuid,
     step_index: Option<i32>,
     source: UsageSource<'_>,
-    fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
-) -> Result<(T, LlmUsage), E> {
-    metered_call_inner(
-        phase,
-        db,
-        execution_id,
-        user_id,
-        step_index,
-        source,
-        true,
-        fut,
-    )
-    .await
-}
-
-/// [`metered_call`]; `record` false keeps the span but skips the `trace_usage` write.
-#[allow(clippy::too_many_arguments)]
-async fn metered_call_inner<T, E>(
-    phase: &'static str,
-    db: &PgPool,
-    execution_id: Uuid,
-    user_id: Uuid,
-    step_index: Option<i32>,
-    source: UsageSource<'_>,
-    record: bool,
     fut: impl std::future::Future<Output = Result<(T, LlmUsage), E>>,
 ) -> Result<(T, LlmUsage), E> {
     let start = Instant::now();
@@ -220,25 +181,22 @@ async fn metered_call_inner<T, E>(
         // Awaited, so a run's spend is recorded before it reads it back (`platform_spend`), but
         // run as its own task: a stopped run is dropped wherever it is, and a write dropped
         // mid-transaction would roll back the record of a call that was already paid for.
-        // Router-backed calls log usage in the router, so `record` is false for them.
-        if record {
-            let write = write_trace_usage(
-                db.clone(),
-                execution_id,
-                user_id,
+        let write = write_trace_usage(
+            db.clone(),
+            execution_id,
+            user_id,
+            phase,
+            step_index,
+            OwnedSource::from(&source),
+            usage.clone(),
+        );
+        if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
+            tracing::warn!(
+                execution_id = %execution_id,
                 phase,
-                step_index,
-                OwnedSource::from(&source),
-                usage.clone(),
+                error = %e,
+                "maf: trace_usage write task failed (non-fatal)"
             );
-            if let Err(e) = super::stop::spawn_usage_write(execution_id, write).await {
-                tracing::warn!(
-                    execution_id = %execution_id,
-                    phase,
-                    error = %e,
-                    "maf: trace_usage write task failed (non-fatal)"
-                );
-            }
         }
     }
 
@@ -938,7 +896,7 @@ pub async fn execute_step(
     {
         Ok(v) => v,
         Err(e) => {
-            let err = format!("step {}: prompt generation failed: {e}", step.step_index);
+            let err = step_llm_failure(step.step_index, "prompt generation", &e);
             step_results[i].status = "failed".to_string();
             step_results[i].error = Some(err.clone());
             persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
@@ -1424,7 +1382,7 @@ async fn finish_step(
     {
         Ok(v) => v,
         Err(e) => {
-            let err = format!("step {}: extraction failed: {e}", step.step_index);
+            let err = step_llm_failure(step.step_index, "extraction", &e);
             step_results[i].status = "failed".to_string();
             step_results[i].prompt = actual_prompt;
             step_results[i].latency_ms = latency_ms;
@@ -1592,7 +1550,7 @@ pub async fn finish_run_with_context(
         generate_final_output(context, guidelines, llm, outbound, outbound_prefix),
     )
     .await
-    .map_err(|e| format!("final output generation failed: {e}"))?;
+    .map_err(|e| final_output_failure(&e))?;
     total_tokens += output_usage.total_tokens;
 
     // Report what the platform recorded, not what MAF counted.
@@ -1679,8 +1637,7 @@ pub(super) async fn platform_spend(db: &PgPool, execution_id: Uuid) -> PlatformS
     type SpendRow = (Option<i32>, Option<i64>, Option<f64>);
 
     let result: Result<Vec<SpendRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT COALESCE((metadata->>'step_index')::int,
-                         (substring(agent_name from '^maf:step([0-9]+)$'))::int),
+        "SELECT (metadata->>'step_index')::int,
                 COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens), 0)::BIGINT,
                 COALESCE(SUM(cost_usd), 0)::DOUBLE PRECISION
            FROM trace_usage
@@ -1878,6 +1835,26 @@ pub struct StepPlan {
     pub to_extract: String,
 }
 
+/// What a step whose model call failed reads as on the run page. A provider refusal
+/// (missing or refused key, error status) says the step couldn't run and why; anything
+/// else keeps naming the phase that broke.
+fn step_llm_failure(step_index: i32, phase: &str, error: &LlmError) -> String {
+    if error.is_provider_refusal() {
+        format!("Step {step_index} couldn't run: {error}")
+    } else {
+        format!("step {step_index}: {phase} failed: {error}")
+    }
+}
+
+/// [`step_llm_failure`] for the final synthesis, which belongs to no step.
+fn final_output_failure(error: &LlmError) -> String {
+    if error.is_provider_refusal() {
+        format!("The final answer couldn't be written: {error}")
+    } else {
+        format!("final output generation failed: {error}")
+    }
+}
+
 // ─── LLM call 1: runtime planner ─────────────────────────────────────────────
 
 /// `planner_note`, when given, is appended to the step list as extra guidance for the planner.
@@ -1885,7 +1862,7 @@ pub async fn plan_execution(
     steps: &[MafStep],
     llm: &LlmClient,
     planner_note: Option<&str>,
-) -> Result<((Vec<StepPlan>, String), LlmUsage), String> {
+) -> Result<((Vec<StepPlan>, String), LlmUsage), LlmError> {
     let system = "You are a MAF (Multi-Agent Flow) step planner.\n\
                   Given a list of steps (each with a task description and the agent that will \
                   handle it), generate:\n\
@@ -1969,14 +1946,14 @@ pub async fn plan_execution(
 
     let plans_json = json["steps"]
         .as_array()
-        .ok_or_else(|| "planner returned no 'steps' array".to_string())?;
+        .ok_or_else(|| LlmError::Other("planner returned no 'steps' array".into()))?;
 
     if plans_json.len() != steps.len() {
-        return Err(format!(
+        return Err(LlmError::Other(format!(
             "planner returned {} step plans but MAF has {} steps",
             plans_json.len(),
             steps.len()
-        ));
+        )));
     }
 
     let plans = plans_json
@@ -1993,7 +1970,8 @@ pub async fn plan_execution(
                 .to_string();
             Ok(StepPlan { prompt, to_extract })
         })
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(LlmError::Other)?;
 
     Ok(((plans, output_generation), usage))
 }
@@ -2005,7 +1983,7 @@ async fn generate_step_prompt(
     task_description: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, LlmUsage), String> {
+) -> Result<(String, LlmUsage), LlmError> {
     // No placeholders — send the template verbatim, no LLM call needed.
     // Zeroed usage rather than a real one: nothing was spent, so no
     // `token_usage` row should be written for this step's prompt phase.
@@ -2091,7 +2069,9 @@ async fn generate_step_prompt(
     let prompt = json["prompt"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "LLM prompt generation returned no 'prompt' field".to_string())?;
+        .ok_or_else(|| {
+            LlmError::Other("LLM prompt generation returned no 'prompt' field".into())
+        })?;
 
     Ok((prompt, usage))
 }
@@ -2105,7 +2085,7 @@ async fn extract_info(
     goal: &str,
     context: &str,
     llm: &LlmClient,
-) -> Result<(String, LlmUsage), String> {
+) -> Result<(String, LlmUsage), LlmError> {
     // System prompt matches Python's MAFExecutor._extract_info exactly.
     let system = "You are a Multi-Agent Flow (MAF) information extractor.\n\
                   Your task is to extract specific information from an agent's response based \
@@ -2200,7 +2180,9 @@ async fn extract_info(
     let extracted = json["extracted_info"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "LLM extraction returned no 'extracted_info' field".to_string())?;
+        .ok_or_else(|| {
+            LlmError::Other("LLM extraction returned no 'extracted_info' field".into())
+        })?;
 
     Ok((extracted, usage))
 }
@@ -2213,7 +2195,7 @@ async fn generate_final_output(
     llm: &LlmClient,
     outbound: &dyn OutboundPrefix,
     outbound_prefix: Option<&str>,
-) -> Result<(String, LlmUsage), String> {
+) -> Result<(String, LlmUsage), LlmError> {
     // System prompt matches Python's MAFExecutor._create_final_output exactly.
     let system = "You are a Multi-Agent Flow (MAF) final output generator.\n\
                   Your task is to consolidate all information extracted from various agents \
@@ -2308,7 +2290,9 @@ async fn generate_final_output(
     let output = json["final_output"]
         .as_str()
         .map(|s| s.to_string())
-        .ok_or_else(|| "LLM final output returned no 'final_output' field".to_string())?;
+        .ok_or_else(|| {
+            LlmError::Other("LLM final output returned no 'final_output' field".into())
+        })?;
 
     Ok((output, usage))
 }
@@ -2611,6 +2595,23 @@ pub fn build_context(step_results: &[StepResult]) -> String {
 #[cfg(test)]
 mod resume_tests {
     use super::*;
+    use crate::maf::llm::KeySource;
+
+    #[test]
+    fn a_step_refused_by_the_provider_says_it_couldnt_run_and_why() {
+        let rejected = LlmError::KeyRejected(KeySource::Owner);
+        assert_eq!(
+            step_llm_failure(2, "prompt generation", &rejected),
+            "Step 2 couldn't run: OpenAI rejected your saved API key. \
+             Update it in LLM router, then try again."
+        );
+        let malformed = LlmError::Other("LLM returned no choices".into());
+        assert_eq!(
+            step_llm_failure(2, "extraction", &malformed),
+            "step 2: extraction failed: LLM returned no choices"
+        );
+        assert!(final_output_failure(&LlmError::NoKey).starts_with("The final answer couldn't"));
+    }
 
     #[test]
     fn an_agent_mounted_below_root_is_called_at_its_mount() {

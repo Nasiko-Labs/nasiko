@@ -20,6 +20,8 @@ pub use events::{OrchestratorEvent, PolicyRejectionKind};
 pub use guard::{BeforeCallFuture, CallGuard};
 pub use policy::{DelegationPolicy, ToolSchemaExtra};
 pub use prompt::prefixed;
-pub use react_loop::{OrchestrationResult, Orchestrator, OrchestratorConfig, TurnTrace};
+pub use react_loop::{
+    ApiKeySource, OrchestrationResult, Orchestrator, OrchestratorConfig, TurnTrace,
+};
 pub use registry::{AgentInfo, AgentRegistry, AgentSkill, RegistrySource};
 pub use tool::A2aTool;

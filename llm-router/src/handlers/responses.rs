@@ -1134,16 +1134,15 @@ fn content_text(content: &Value) -> Option<String> {
 fn error_code(error: &GatewayError) -> &'static str {
     match error {
         GatewayError::MissingAuthHeader
-        | GatewayError::JwtSecretNotConfigured
         | GatewayError::TokenExpired
         | GatewayError::InvalidToken(_)
-        | GatewayError::MissingAgentId
-        | GatewayError::TokenRevoked => "invalid_api_key",
+        | GatewayError::MissingAgentId => "invalid_api_key",
         GatewayError::Forbidden(_) => "permission_denied",
         GatewayError::BadRequest(_) => "invalid_request_error",
         GatewayError::NoRegistryEntry(_)
-        | GatewayError::SecretNotFound(_, _)
-        | GatewayError::NoApiKey
+        | GatewayError::SecretNotFound(_)
+        | GatewayError::SecretUnreadable(_)
+        | GatewayError::NoApiKey { .. }
         | GatewayError::NoSharedUserConfig => "routing_configuration_error",
         GatewayError::OwnerAllowanceSpent { .. } => "allowance_exhausted",
         GatewayError::Upstream(_) | GatewayError::UpstreamTimeout(_) => "upstream_error",
@@ -1152,7 +1151,9 @@ fn error_code(error: &GatewayError) -> &'static str {
         }
         GatewayError::Provider { .. } => "invalid_request_error",
         GatewayError::PayloadTooLarge { .. } => "request_too_large",
-        GatewayError::StorageUnavailable | GatewayError::Busy => "service_unavailable",
+        GatewayError::StorageUnavailable
+        | GatewayError::Busy
+        | GatewayError::JwtSecretNotConfigured => "service_unavailable",
         GatewayError::Internal(_) => "internal_error",
     }
 }

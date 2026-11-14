@@ -749,6 +749,11 @@ pub(crate) async fn orchestrator_stream(
     // Whose key pays for this turn's model calls, recorded on each usage row it writes.
     let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
     let key_source = super::usage_meta::KeySource::for_saved_key(saved_key.is_some());
+    let api_key_source = if saved_key.is_some() {
+        nasiko_react_agent::ApiKeySource::Saved
+    } else {
+        nasiko_react_agent::ApiKeySource::Server
+    };
     let mut config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -759,6 +764,7 @@ pub(crate) async fn orchestrator_stream(
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
         api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+        api_key_source,
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -1717,7 +1723,7 @@ async fn agent_stream(
             file_parts,
         )
     };
-    append_attachment_note(&mut req_body, attachment_note.as_deref());
+    append_attachment_note_part(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
@@ -2044,7 +2050,7 @@ async fn agent_stream(
                 Some(&context_id),
                 file_parts,
             );
-            append_attachment_note(&mut retry_body, attachment_note.as_deref());
+            append_attachment_note_part(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
             let retry = build_agent_req()
                 .json(&retry_body)
@@ -2686,13 +2692,13 @@ fn with_attachment_list<'q>(
     ))
 }
 
-fn append_attachment_note(req: &mut JsonRpcRequest, note: Option<&str>) {
+fn append_attachment_note_part(req: &mut JsonRpcRequest, note: Option<&str>) {
     let Some(note) = note else { return };
     let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
     let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) else {
         return;
     };
-    let _ = nasiko_agent_proxy::context_part::append_user_text(message, note, tagging);
+    let _ = nasiko_agent_proxy::context_part::append_context_part(message, note, tagging);
 }
 
 const CHAT_UPLOAD_PREFIX: &str = "chat-files/";

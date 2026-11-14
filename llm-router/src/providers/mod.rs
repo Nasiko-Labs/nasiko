@@ -52,26 +52,6 @@ pub fn provider_for(
             GeminiProvider::new(http.clone(), cfg.gemini_api_base.clone())
                 .with_explicit_cache(cfg.cache_markers_enabled),
         )),
-        "vertex" => {
-            static TOKENS: std::sync::OnceLock<std::sync::Arc<vertex_auth::TokenSource>> =
-                std::sync::OnceLock::new();
-            let tokens: std::sync::Arc<vertex_auth::TokenSource> = match TOKENS.get() {
-                Some(t) => t.clone(),
-                None => {
-                    let t = std::sync::Arc::new(
-                        vertex_auth::TokenSource::discover(http.clone())
-                            .map_err(|e| GatewayError::Internal(e.to_string()))?,
-                    );
-                    TOKENS.get_or_init(|| t).clone()
-                }
-            };
-            Ok(Box::new(vertex::VertexProvider::new(
-                http.clone(),
-                cfg.vertex_api_base(),
-                cfg.vertex_openapi_base(),
-                tokens,
-            )))
-        }
         "openrouter" => Ok(Box::new(
             OpenRouterProvider::new(
                 http.clone(),
@@ -179,8 +159,6 @@ pub(crate) mod media;
 pub mod openai;
 pub mod openrouter;
 pub(crate) mod sse;
-pub mod vertex;
-pub mod vertex_auth;
 
 pub use anthropic::AnthropicProvider;
 pub use bedrock_converse::BedrockConverseProvider;
@@ -290,6 +268,67 @@ impl ProviderError {
 /// may still answer.
 pub(crate) fn is_bad_key_400(status: u16, message: &str) -> bool {
     status == 400 && (message.contains("API_KEY_INVALID") || message.contains("API key not valid"))
+}
+
+/// Who paid with the key a provider refused, which decides who can fix it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyOwner {
+    /// The owner's own secret, named by their LLM config.
+    User,
+    /// The platform key for a built-in provider (`PLATFORM_<PROVIDER>_API_KEY`).
+    Platform,
+    /// The key stored with a custom provider in LLM router.
+    CustomProvider,
+}
+
+impl KeyOwner {
+    pub(crate) fn of(platform_paid: bool, custom_provider: bool) -> Self {
+        match (platform_paid, custom_provider) {
+            (false, _) => KeyOwner::User,
+            (true, true) => KeyOwner::CustomProvider,
+            (true, false) => KeyOwner::Platform,
+        }
+    }
+}
+
+/// A provider refusing the key it was sent (401, 403, or Gemini's 400 `API_KEY_INVALID`),
+/// reworded to say whose key it was and where to fix it, or `None` for any other failure.
+/// Stays a 502: the caller's own token is fine, and a 401 would send SDKs into a
+/// credential-refresh loop. The provider's raw body is in the attempt log, not here.
+pub(crate) fn rejected_key_error(
+    err: &ProviderError,
+    provider: &str,
+    owner: KeyOwner,
+) -> Option<GatewayError> {
+    let ProviderError::Status {
+        status, message, ..
+    } = err
+    else {
+        return None;
+    };
+    if !matches!(status, 401 | 403) && !is_bad_key_400(*status, message) {
+        return None;
+    }
+    let (whose, fix) = match owner {
+        KeyOwner::User => (
+            "the API key from your LLM config",
+            "Update the key in LLM router.".to_string(),
+        ),
+        KeyOwner::Platform => (
+            "this server's API key",
+            match crate::error::platform_key_env(provider) {
+                Some(env) => format!("Ask your admin to check {env}."),
+                None => "Ask your admin to check it.".to_string(),
+            },
+        ),
+        KeyOwner::CustomProvider => (
+            "the API key stored for this provider",
+            "Ask your admin to update it in LLM router.".to_string(),
+        ),
+    };
+    Some(GatewayError::Upstream(format!(
+        "provider '{provider}' rejected {whose} (HTTP {status}). {fix}"
+    )))
 }
 
 pub(crate) fn param_rejection(detail: &str) -> Option<String> {
@@ -463,6 +502,46 @@ mod tests {
         assert!(matches!(g, GatewayError::Upstream(_)), "{g}");
         assert_eq!(g.status(), axum::http::StatusCode::BAD_GATEWAY);
         assert!(g.to_string().contains("API key not valid"), "{g}");
+    }
+
+    #[test]
+    fn a_rejected_key_names_whose_key_and_only_for_key_failures() {
+        let refused = |status: u16, message: &str| ProviderError::Status {
+            status,
+            message: message.into(),
+            retryable: false,
+        };
+        let custom = rejected_key_error(
+            &refused(403, "forbidden"),
+            "my-gw",
+            KeyOwner::CustomProvider,
+        )
+        .unwrap();
+        assert_eq!(custom.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            custom.to_string(),
+            "Upstream LLM error: provider 'my-gw' rejected the API key stored for this provider \
+             (HTTP 403). Ask your admin to update it in LLM router."
+        );
+        let gemini = rejected_key_error(
+            &refused(400, "API key not valid. Please pass a valid API key."),
+            "gemini",
+            KeyOwner::Platform,
+        )
+        .unwrap();
+        assert!(
+            gemini.to_string().contains("PLATFORM_GEMINI_API_KEY"),
+            "{gemini}"
+        );
+        for not_a_key_failure in [refused(400, "bad image"), refused(500, "boom")] {
+            assert!(
+                rejected_key_error(&not_a_key_failure, "openai", KeyOwner::User).is_none(),
+                "{not_a_key_failure}"
+            );
+        }
+        assert_eq!(KeyOwner::of(false, true), KeyOwner::User);
+        assert_eq!(KeyOwner::of(true, true), KeyOwner::CustomProvider);
+        assert_eq!(KeyOwner::of(true, false), KeyOwner::Platform);
     }
 
     #[test]

@@ -22,7 +22,7 @@ use serde_json::Value;
 use tokio::time::Instant;
 
 use super::attempts::AttemptLog;
-use super::{ProviderClient, ProviderError, provider_for};
+use super::{KeyOwner, ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse};
@@ -263,7 +263,9 @@ impl Failures {
     fn note(&mut self, attempt: &ResolvedConfig, err: ProviderError) -> Option<GatewayError> {
         let ends_chain = ends_the_chain(&err);
         let rejected = matches!(err, ProviderError::Rejected(_));
-        let err = GatewayError::from(err);
+        let key_owner = KeyOwner::of(attempt.platform_paid, attempt.custom_endpoint.is_some());
+        let err = super::rejected_key_error(&err, &attempt.provider, key_owner)
+            .unwrap_or_else(|| GatewayError::from(err));
         self.last_timeout = match &err {
             GatewayError::UpstreamTimeout(message) => Some(message.clone()),
             _ => None,
@@ -1723,6 +1725,37 @@ mod tests {
             .unwrap();
 
         assert_eq!(model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_says_whose_key_it_was_and_stays_a_502() {
+        let mut openai = mockito::Server::new_async().await;
+        let refused =
+            json!({"error": {"message": "Incorrect API key provided: sk-..."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 401, refused.clone(), 2).await;
+
+        let (cfg, platform) = openai_chain(openai.url(), vec![]);
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &platform, &hi())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            err.to_string(),
+            "Upstream LLM error: provider 'openai' rejected this server's API key (HTTP 401). \
+             Ask your admin to check PLATFORM_OPENAI_API_KEY."
+        );
+
+        let (cfg, mut own_key) = openai_chain(openai.url(), vec![]);
+        own_key.platform_paid = false;
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &own_key, &hi())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Upstream LLM error: provider 'openai' rejected the API key from your LLM config \
+             (HTTP 401). Update the key in LLM router."
+        );
+        assert!(!err.to_string().contains("Incorrect API key"));
     }
 
     #[test]
