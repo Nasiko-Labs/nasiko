@@ -296,6 +296,19 @@ pub enum ProviderError {
     Parse(String),
 }
 
+impl ProviderError {
+    /// Whether the provider refused the key itself (`401`/`403`), as opposed to the request.
+    pub fn is_rejected_key(&self) -> bool {
+        matches!(
+            self,
+            Self::Api {
+                status: 401 | 403,
+                ..
+            }
+        )
+    }
+}
+
 #[cfg(test)]
 mod model_tests {
     use super::*;
@@ -331,18 +344,5 @@ mod model_tests {
         ] {
             assert_eq!(direct_openai_model(m, "gpt-6-luna"), "gpt-6-luna", "{m}");
         }
-    }
-}
-
-impl ProviderError {
-    /// Whether the provider refused the key itself (`401`/`403`), as opposed to the request.
-    pub fn is_rejected_key(&self) -> bool {
-        matches!(
-            self,
-            Self::Api {
-                status: 401 | 403,
-                ..
-            }
-        )
     }
 }
