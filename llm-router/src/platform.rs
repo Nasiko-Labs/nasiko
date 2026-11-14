@@ -719,16 +719,28 @@ mod embedding_route_tests {
 
     #[test]
     fn no_embedding_provider_keyed_cannot_embed() {
-        assert!(!can_embed(&cfg("anthropic", "", ""), "text-embedding-3-small"));
-        assert!(!can_embed(&cfg("openrouter", "", ""), "gemini-embedding-001"));
+        assert!(!can_embed(
+            &cfg("anthropic", "", ""),
+            "text-embedding-3-small"
+        ));
+        assert!(!can_embed(
+            &cfg("openrouter", "", ""),
+            "gemini-embedding-001"
+        ));
     }
 
     #[test]
     fn embedding_providers_reject_chat_only_providers() {
         assert!(!embedding_model_fits("text-embedding-3-small", "anthropic"));
-        assert!(!embedding_model_fits("text-embedding-3-small", "openrouter"));
+        assert!(!embedding_model_fits(
+            "text-embedding-3-small",
+            "openrouter"
+        ));
         for p in EMBEDDING_PROVIDERS {
-            assert!(default_embedding_model(p).is_some(), "{p} needs a default model");
+            assert!(
+                default_embedding_model(p).is_some(),
+                "{p} needs a default model"
+            );
         }
     }
 }

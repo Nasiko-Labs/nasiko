@@ -686,7 +686,9 @@ fn env_or_first(keys: &[&str], default: &str) -> String {
 /// segment). A bare origin like `https://api.openai.com` gets `/v1`, matching the
 /// direct `LLMProvider`, which appends `/v1/chat/completions` to a root.
 pub fn normalize_openai_base(raw: &str) -> String {
-    let trimmed: &str = raw.trim().trim_end_matches('/');
+    // Query/fragment never belong on a base the spoke appends paths to.
+    let no_query: &str = raw.trim().split(['?', '#']).next().unwrap_or("");
+    let trimmed: &str = no_query.trim_end_matches('/');
     let after_scheme: &str = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
     if after_scheme.contains('/') {
         trimmed.to_string()
@@ -748,6 +750,11 @@ mod tests {
         assert_eq!(
             normalize_openai_base("http://127.0.0.1:1234/x/v1"),
             "http://127.0.0.1:1234/x/v1"
+        );
+        assert_eq!(normalize_openai_base("https://host?x=1"), "https://host/v1");
+        assert_eq!(
+            normalize_openai_base("https://host/v1/#frag"),
+            "https://host/v1"
         );
     }
 
