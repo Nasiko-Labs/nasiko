@@ -310,7 +310,11 @@ impl ContainerRuntime for FakeRuntime {
         Ok(vec![])
     }
 
-    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
+    async fn build(
+        &self,
+        _tar_context: &[u8],
+        image_tag: &str,
+    ) -> RuntimeResult<nasiko_runtime::BuildReport> {
         self.builds_started
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let gate = self.build_gate.lock().unwrap().clone();
@@ -322,7 +326,7 @@ impl ContainerRuntime for FakeRuntime {
                 "fake build failure (scripted by test)".into(),
             ));
         }
-        Ok(image_tag.to_owned())
+        Ok(nasiko_runtime::BuildReport::image_only(image_tag))
     }
 
     async fn supports_autoscaling(&self) -> bool {
@@ -914,7 +918,6 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         injection_proxy_token: String::new(),
         seed_agents: None,
         seed_agent_settings: Default::default(),
-        seed_workflows: String::new(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),
