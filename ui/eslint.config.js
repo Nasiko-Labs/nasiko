@@ -51,8 +51,6 @@ const PUBLIC = {
     'AgentBuildsTab',
     'components/DeployAgentButton',
     'components/BuildToasts',
-    // The Marketplace install panel shows build logs with the same renderer as the Builds tab.
-    'components/BuildLogView',
     'copy',
     'follower',
     // The onboarding guide's Bring an agent step hosts the Deploy tabs themselves.
@@ -229,7 +227,7 @@ const banned = [
   },
   {
     selector:
-      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD)$/]",
+      "MemberExpression[object.type='MemberExpression'][object.object.type='MetaProperty'][object.property.name='env'][property.name!=/^(DEV|MODE|PROD|NASIKO_[A-Z]+_COMPILED_IN)$/]",
     message: 'Read configuration through src/lib/env.ts, not import.meta.env.',
   },
   {
