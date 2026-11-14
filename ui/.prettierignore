@@ -27,3 +27,7 @@ shared/ui/src/primitives/
 ee/features/enterprise/src/genui/lang/
 # Written by msw on install (package.json "msw.workerDirectory"); CI's npm ci regenerates it unformatted.
 public/mockServiceWorker.js
+# The desktop app's Rust build output: `!*.js` above would otherwise pull in Tauri's compressed embedded assets
+# (binary files named *.js) and generated scripts under target/ and gen/ (ui/desktop-tauri/.gitignore).
+desktop-tauri/src-tauri/target/
+desktop-tauri/src-tauri/gen/
