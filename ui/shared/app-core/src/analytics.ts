@@ -166,10 +166,9 @@ export function identifySignIn(email: string | null | undefined, displayName?: s
 }
 
 /**
- * Product events (doc "Website tracking plan: revised events", product section; add a name there
- * first). The core names what happened; an edition decides where it goes. The multi-tenant
- * dashboard sends them to nasiko.dev's `POST /relay/events` (`ee/mt/app/src/features/privacy`);
- * OSS and self-hosted EE register nothing, so every call is a no-op there.
+ * Product events (the shared event list, product section; add a name there first). The core names
+ * what happened; an edition decides where it goes by registering a sink with `setProductSink`. An
+ * edition that registers none sends nothing: every call is then a no-op.
  */
 export type ProductEvent =
   | 'app_page_view'
