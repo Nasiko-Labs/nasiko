@@ -216,9 +216,9 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.seed_agents, None);
     assert_eq!(cfg.openai_api_key, None);
     assert_eq!(cfg.openai_base_url, None);
-    assert_eq!(cfg.openai_model, "gpt-4o-mini");
-    assert_eq!(cfg.router_model, "gpt-4o-mini");
-    assert_eq!(cfg.capability_generator_model, "gpt-4o-mini");
+    assert_eq!(cfg.openai_model, nasiko_config::TASK_MODEL_FALLBACK);
+    assert_eq!(cfg.router_model, nasiko_config::TASK_MODEL_FALLBACK);
+    assert_eq!(cfg.capability_generator_model, nasiko_config::TASK_MODEL_FALLBACK);
     assert_eq!(cfg.a2a_discovery_url, None);
     assert_eq!(cfg.otel_endpoint, None);
     assert_eq!(cfg.otel_protocol, "grpc");

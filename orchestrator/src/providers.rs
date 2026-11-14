@@ -15,6 +15,28 @@ pub struct LLMProvider {
     /// When set, non-streaming calls go through the in-process LLM router, which picks
     /// the provider and records usage.
     routed: Option<(SharedLlmBackend, LlmCallContext)>,
+    /// Model sent on the direct OpenAI path when the requested one belongs to another
+    /// provider (task models resolve from `DEFAULT_MODEL` before the backend is known).
+    openai_model: String,
+}
+
+/// True when `model` is clearly another provider's name and OpenAI would reject it.
+pub fn is_foreign_model(model: &str) -> bool {
+    let m: String = model.trim().to_ascii_lowercase();
+    m.is_empty()
+        || m.contains('/')
+        || ["gemini", "claude", "deepseek", "text-embedding-0", "llama", "mistral", "qwen"]
+            .iter()
+            .any(|p| m.starts_with(p))
+}
+
+/// The model to send OpenAI directly: `requested` unless it is foreign, else `openai_model`.
+pub fn direct_openai_model(requested: &str, openai_model: &str) -> String {
+    if is_foreign_model(requested) {
+        openai_model.to_owned()
+    } else {
+        requested.to_owned()
+    }
 }
 
 impl LLMProvider {
@@ -29,7 +51,23 @@ impl LLMProvider {
             api_key,
             base_url: nasiko_config::openai_base_url_without_v1(&base_url).to_string(),
             routed: None,
+            openai_model: std::env::var("OPENAI_MODEL")
+                .ok()
+                .map(|m| m.trim().to_owned())
+                .filter(|m| !m.is_empty() && !is_foreign_model(m))
+                .unwrap_or_else(|| nasiko_config::TASK_MODEL_FALLBACK.to_owned()),
         }
+    }
+
+    /// The request as sent to OpenAI directly, with a foreign model swapped out.
+    fn direct_request(&self, request: &ChatCompletionRequest) -> ChatCompletionRequest {
+        let mut req: ChatCompletionRequest = request.clone();
+        let model: String = direct_openai_model(&req.model, &self.openai_model);
+        if model != req.model {
+            tracing::info!(requested = %req.model, sent = %model, "non-OpenAI model on direct OpenAI path; substituted");
+            req.model = model;
+        }
+        req
     }
 
     /// Send non-streaming calls through `backend` under `call`.
@@ -61,6 +99,7 @@ impl LLMProvider {
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChunkStream, ProviderError> {
+        let request: &ChatCompletionRequest = &self.direct_request(request);
         let response = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
@@ -153,6 +192,7 @@ impl LLMProvider {
             ));
         }
 
+        let request: &ChatCompletionRequest = &self.direct_request(request);
         let response = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
@@ -240,4 +280,22 @@ pub enum ProviderError {
     Api { status: u16, body: String },
     #[error("parse error: {0}")]
     Parse(String),
+}
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+
+    #[test]
+    fn openai_models_pass_through() {
+        assert_eq!(direct_openai_model("gpt-6-luna", "x"), "gpt-6-luna");
+        assert_eq!(direct_openai_model("o4-mini", "x"), "o4-mini");
+    }
+
+    #[test]
+    fn foreign_models_are_swapped() {
+        for m in ["gemini-2.5-flash", "claude-haiku-4-5", "openai/gpt-4o", "deepseek-v4-pro", ""] {
+            assert_eq!(direct_openai_model(m, "gpt-6-luna"), "gpt-6-luna", "{m}");
+        }
+    }
 }
