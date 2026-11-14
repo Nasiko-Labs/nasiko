@@ -24,6 +24,13 @@ pub enum GatewayError {
     InvalidToken(String),
     #[error("Token missing agent_id claim")]
     MissingAgentId,
+    /// The owner revoked the agent's LLM routing tokens after this one was issued — what
+    /// `nasiko disconnect <coding-agent>` does. 401 so a client refreshes its credential: a
+    /// still-connected one gets a fresh token, a disconnected one learns it was disconnected.
+    #[error(
+        "Nasiko LLM routing was disconnected for this agent; restart the coding agent to use its own provider, or reconnect it"
+    )]
+    TokenRevoked,
 
     // ── 403 — authenticated but unattributable (strict flow enforcement) ────
     // The agent's credential is valid — what's missing is authorization
@@ -89,7 +96,8 @@ impl GatewayError {
             | GatewayError::JwtSecretNotConfigured
             | GatewayError::TokenExpired
             | GatewayError::InvalidToken(_)
-            | GatewayError::MissingAgentId => StatusCode::UNAUTHORIZED,
+            | GatewayError::MissingAgentId
+            | GatewayError::TokenRevoked => StatusCode::UNAUTHORIZED,
             GatewayError::Forbidden(_) => StatusCode::FORBIDDEN,
             GatewayError::BadRequest(_)
             | GatewayError::NoRegistryEntry(_)

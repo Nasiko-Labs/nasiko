@@ -16,6 +16,12 @@ use crate::commands::coding_agent_router::{
 const ROUTER_VERSION: u32 = 1;
 const ROUTER_PLUGIN: &str = "nasiko-llm-router.js";
 const ROUTER_MARKER: &str = "nasiko-router-version:";
+/// The credential helper's error once OpenCode routing is disconnected (followed by the CLI name
+/// and `connect opencode`). The generated plugin recognizes it by [`DISCONNECTED_MARKER`] and shows
+/// it as is, instead of a generic helper failure, in an OpenCode session started before the
+/// disconnect.
+const DISCONNECTED_MESSAGE: &str = "Nasiko LLM routing was disconnected for OpenCode. Restart OpenCode to use your own providers, or reconnect with:";
+const DISCONNECTED_MARKER: &str = "Nasiko LLM routing was disconnected";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ConnectionState {
@@ -209,6 +215,7 @@ pub fn disconnect(force: bool) -> Result<()> {
         coding_agent_router::revoke_bound_mcp_credential_best_effort(&state.binding);
     }
     remove_managed_plugin_or_preserve(&state.plugin_path)?;
+    coding_agent_router::revoke_bound_routing_tokens_best_effort(&state.binding, "OpenCode");
     let path = state_path();
     if path.exists() {
         fs::remove_file(&path).with_context(|| format!("failed to remove {}", path.display()))?;
@@ -274,7 +281,7 @@ pub fn status() -> Result<()> {
 pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
         anyhow::anyhow!(
-            "OpenCode routing is not connected; run: {} connect opencode",
+            "{DISCONNECTED_MESSAGE} {}",
             crate::commands::local_agents::cli_name()
         )
     })?;
@@ -450,6 +457,8 @@ fn plugin_body(
         "{} status opencode",
         crate::commands::local_agents::cli_name()
     );
+    let disconnected_marker =
+        serde_json::to_string(DISCONNECTED_MARKER).expect("serializable marker");
     // Emitted only when a credential was minted, so an unconfigured/unreachable control plane
     // produces a plugin with no MCP block at all.
     let mcp_config_block = if mcp_credential.is_some() {
@@ -493,9 +502,13 @@ export const NasikoLlmRouter = async () => {{
       process.kill()
       await process.exited.catch(() => undefined)
     }}
-    const [output] = await Promise.all([outputPromise, errorPromise])
+    const [output, errorOutput] = await Promise.all([outputPromise, errorPromise])
     if (status === timeout) throw new Error("Nasiko credential helper timed out; run `{status_command}`")
-    if (status !== 0) throw new Error("Nasiko credential helper failed; run `{status_command}`")
+    if (status !== 0) {{
+      const disconnected = errorOutput.split("\n").find((line) => line.includes({disconnected_marker}))
+      if (disconnected) throw new Error(disconnected.replace(/^Error:\s*/, "").trim())
+      throw new Error("Nasiko credential helper failed; run `{status_command}`")
+    }}
     let credential
     try {{
       credential = JSON.parse(output)
@@ -664,6 +677,19 @@ mod tests {
             config_path_from(None, None, "/home/me".into()),
             PathBuf::from("/home/me/.config/opencode")
         );
+    }
+
+    /// An OpenCode session started before `disconnect` keeps the plugin in memory: once its
+    /// cached token is refused, the helper's disconnected error must reach the user as is.
+    #[test]
+    fn generated_plugin_surfaces_the_disconnected_helper_error() {
+        let body = plugin_body(Path::new("/usr/local/bin/nasiko"), "https://cp/", None);
+        assert!(DISCONNECTED_MESSAGE.starts_with(DISCONNECTED_MARKER));
+        assert!(body.contains(&format!(
+            "line.includes({})",
+            serde_json::to_string(DISCONNECTED_MARKER).unwrap()
+        )));
+        assert!(body.contains("Nasiko credential helper failed"));
     }
 
     #[test]

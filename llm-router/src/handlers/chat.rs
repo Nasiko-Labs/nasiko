@@ -28,7 +28,7 @@ use nasiko_session_token::{
 
 use super::auth_layer::rejected_body;
 use crate::LlmRouterCtx;
-use crate::auth::verify_agent_jwt;
+use crate::auth::verify_agent_token;
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
@@ -141,7 +141,7 @@ const CREDENTIAL_HEADERS: [HeaderName; 3] = [
 /// back to the agent-identity token.
 ///
 /// A valid, non-revoked session token wins; anything that isn't one of our
-/// session tokens falls through to [`verify_agent_jwt`], so A2A agents are
+/// session tokens falls through to [`verify_agent_token`], so A2A agents are
 /// unaffected. Expiry and revocation are hard failures (fail closed).
 pub(crate) async fn authenticate_caller(
     ctx: &LlmRouterCtx,
@@ -192,18 +192,23 @@ pub(crate) async fn verify_agent_identity(
     store: &dyn RegistryStore,
     authorization: Option<&str>,
 ) -> Result<(String, String), GatewayError> {
-    let (agent_id, owner_id) = verify_agent_jwt(authorization, &ctx.cfg)?;
+    let token = verify_agent_token(authorization, &ctx.cfg)?;
+    let (agent_id, owner_id) = (token.agent_id, token.owner_id);
     let id = uuid::Uuid::parse_str(&agent_id)
         .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
-    let current_owner = store
-        .fetch_agent_owner(id)
+    let identity = store
+        .fetch_agent_identity(id)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, "llm-router: agent owner lookup failed — failing closed");
             GatewayError::Forbidden("identity store unavailable".into())
         })?
-        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))?
-        .to_string();
+        .ok_or_else(|| GatewayError::Forbidden("agent not found for token".into()))?;
+    if is_revoked(token.issued_at, identity.llm_tokens_revoked_at) {
+        tracing::info!(%agent_id, "llm-router: agent token predates its LLM token revocation");
+        return Err(GatewayError::TokenRevoked);
+    }
+    let current_owner = identity.owner_id.to_string();
     if !owner_id.is_empty() && owner_id != current_owner {
         tracing::warn!(%agent_id, token_owner = %owner_id, %current_owner, "llm-router: agent token predates an ownership change");
         return Err(GatewayError::Forbidden(
@@ -212,6 +217,17 @@ pub(crate) async fn verify_agent_identity(
         ));
     }
     Ok((agent_id, owner_id))
+}
+
+/// True when a token issued at `issued_at` (Unix seconds) falls before the agent's last LLM token
+/// revocation. Compared at whole-second precision, the precision of `iat`: a token issued in the
+/// same second as the revocation is accepted, so a reconnect straight after a disconnect works. A
+/// token without `iat` cannot prove it came after a revocation, so it is refused once one exists.
+fn is_revoked(issued_at: Option<i64>, revoked_at: Option<chrono::DateTime<chrono::Utc>>) -> bool {
+    let Some(revoked_at) = revoked_at else {
+        return false;
+    };
+    issued_at.is_none_or(|issued| issued < revoked_at.timestamp())
 }
 
 /// True if this session token's `jti` has been revoked. Fails closed (a store
@@ -1677,6 +1693,129 @@ mod tests {
         ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
             Ok(None)
         }
+    }
+
+    /// [`Store`], plus an LLM token revocation time.
+    struct RevokedStore {
+        inner: Store,
+        revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    }
+    #[async_trait]
+    impl RegistryStore for RevokedStore {
+        async fn fetch_llm_config(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            self.inner.fetch_llm_config(id).await
+        }
+        async fn fetch_agent_owner(&self, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            self.inner.fetch_agent_owner(id).await
+        }
+        async fn fetch_agent_identity(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<crate::resolver::AgentIdentity>, sqlx::Error> {
+            Ok(self.inner.fetch_agent_owner(id).await?.map(|owner_id| {
+                crate::resolver::AgentIdentity {
+                    owner_id,
+                    llm_tokens_revoked_at: self.revoked_at,
+                }
+            }))
+        }
+        async fn fetch_user_secret(
+            &self,
+            owner: Uuid,
+            name: &str,
+        ) -> Result<Option<String>, sqlx::Error> {
+            self.inner.fetch_user_secret(owner, name).await
+        }
+        async fn fetch_live_flow(
+            &self,
+            trace_id: &str,
+            agent: Uuid,
+            window: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            self.inner.fetch_live_flow(trace_id, agent, window).await
+        }
+        async fn fetch_custom_provider(
+            &self,
+            name: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            self.inner.fetch_custom_provider(name).await
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            self.inner.fetch_org_embedding_default().await
+        }
+    }
+
+    fn revoked_store(revoked_at: Option<chrono::DateTime<chrono::Utc>>) -> RevokedStore {
+        RevokedStore {
+            inner: Store {
+                config: None,
+                is_coding_agent: true,
+                compress_enabled: false,
+            },
+            revoked_at,
+        }
+    }
+
+    fn fresh_agent_token() -> String {
+        let token =
+            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 600, Algorithm::HS256).unwrap();
+        format!("Bearer {token}")
+    }
+
+    #[tokio::test]
+    async fn a_token_issued_before_the_revocation_is_refused() {
+        let ctx = ctx_with("http://unused".into());
+        let store = revoked_store(Some(chrono::Utc::now() + chrono::Duration::seconds(60)));
+        let err = verify_agent_identity(&ctx, &store, Some(&fresh_agent_token()))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::TokenRevoked), "{err:?}");
+        assert_eq!(err.status(), StatusCode::UNAUTHORIZED);
+        assert!(err.to_string().contains("disconnected"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_token_issued_after_the_revocation_is_accepted() {
+        let ctx = ctx_with("http://unused".into());
+        let store = revoked_store(Some(chrono::Utc::now() - chrono::Duration::seconds(60)));
+        let (agent_id, owner_id) = verify_agent_identity(&ctx, &store, Some(&fresh_agent_token()))
+            .await
+            .unwrap();
+        assert_eq!(agent_id, AGENT);
+        assert_eq!(owner_id, OWNER);
+    }
+
+    #[tokio::test]
+    async fn an_agent_never_revoked_is_accepted() {
+        let ctx = ctx_with("http://unused".into());
+        let store = revoked_store(None);
+        assert!(
+            verify_agent_identity(&ctx, &store, Some(&fresh_agent_token()))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn revocation_compares_at_whole_second_precision() {
+        let revoked = chrono::DateTime::from_timestamp(1_000, 700_000_000).unwrap();
+        assert!(is_revoked(Some(999), Some(revoked)));
+        assert!(
+            !is_revoked(Some(1_000), Some(revoked)),
+            "same second is a reconnect"
+        );
+        assert!(!is_revoked(Some(1_001), Some(revoked)));
+        assert!(!is_revoked(Some(999), None));
+        assert!(
+            is_revoked(None, Some(revoked)),
+            "no iat cannot prove it is newer"
+        );
+        assert!(!is_revoked(None, None));
     }
 
     /// No-op tier registry: attribution now always resolves in these tests

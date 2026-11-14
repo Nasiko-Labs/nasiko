@@ -1305,3 +1305,110 @@ async fn issue_llm_token_rejects_non_owning_superuser() {
     assert_eq!(res.status(), 403);
     server.cleanup().await;
 }
+
+// ─── DELETE /api/agents/{id}/llm-token — disconnect stops cached tokens ────
+//
+// `nasiko disconnect <coding-agent>` revokes the agent's LLM routing tokens so a
+// session still holding a cached one stops spending through the router at once.
+// A token minted after the revocation (a reconnect) must keep working.
+
+const LLM_REVOKE_JWT_SECRET: &str = "llm-revoke-test-secret";
+
+async fn issue_llm_token(server: &TestServer, jwt: &str, agent: Uuid) -> String {
+    let res = server
+        .client
+        .post(server.url(&format!("/api/agents/{agent}/llm-token")))
+        .bearer_auth(jwt)
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "issuing an LLM routing token");
+    let body: serde_json::Value = res.json().await.unwrap();
+    body["data"]["token"].as_str().unwrap().to_owned()
+}
+
+async fn router_call(server: &TestServer, token: &str) -> (u16, String) {
+    let res = server
+        .client
+        .post(server.url("/v1/chat/completions"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    (res.status().as_u16(), res.text().await.unwrap_or_default())
+}
+
+#[tokio::test]
+#[serial]
+async fn revoking_llm_tokens_refuses_cached_ones_but_not_a_reconnect() {
+    // SAFETY: #[serial]; set before the app reads its config at boot, removed at the end.
+    unsafe { std::env::set_var("AGENT_JWT_SECRET", LLM_REVOKE_JWT_SECRET) };
+    let server =
+        TestServer::start_with(|c| c.agent_jwt_secret = LLM_REVOKE_JWT_SECRET.into()).await;
+    let owner = seed_user(&server, "llmt-owner-rev").await;
+    let agent = seed_agent(&server, owner, "llmt-agent-rev").await;
+    mark_coding_agent(&server, agent).await;
+    let jwt = common::sign_token(&owner.to_string(), "llmt-owner-rev", false, "member");
+
+    let cached = issue_llm_token(&server, &jwt, agent).await;
+    let (_, body) = router_call(&server, &cached).await;
+    assert!(
+        !body.contains("disconnected"),
+        "sanity: not revoked yet: {body}"
+    );
+
+    // `iat` has whole-second precision and a same-second token is accepted, so
+    // revoke in a later second than the cached token was issued.
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    let res = server
+        .client
+        .delete(server.url(&format!("/api/agents/{agent}/llm-token")))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+
+    let (status, body) = router_call(&server, &cached).await;
+    assert_eq!(
+        status, 401,
+        "a token issued before the revoke is refused: {body}"
+    );
+    assert!(body.contains("disconnected"), "{body}");
+
+    let reconnected = issue_llm_token(&server, &jwt, agent).await;
+    let (_, body) = router_call(&server, &reconnected).await;
+    assert!(
+        !body.contains("disconnected"),
+        "a token issued after the revoke works: {body}"
+    );
+
+    // Idempotent, and owner-gated.
+    let res = server
+        .client
+        .delete(server.url(&format!("/api/agents/{agent}/llm-token")))
+        .bearer_auth(&jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    let stranger = seed_user(&server, "llmt-stranger-rev").await;
+    let stranger_jwt =
+        common::sign_token(&stranger.to_string(), "llmt-stranger-rev", false, "member");
+    let res = server
+        .client
+        .delete(server.url(&format!("/api/agents/{agent}/llm-token")))
+        .bearer_auth(&stranger_jwt)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+
+    server.cleanup().await;
+    unsafe { std::env::remove_var("AGENT_JWT_SECRET") };
+}

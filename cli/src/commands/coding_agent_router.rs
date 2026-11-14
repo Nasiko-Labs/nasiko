@@ -349,6 +349,52 @@ pub fn revoke_mcp_credential_best_effort(client: &Client, agent_id: &str) {
     }
 }
 
+/// What a control plane that predates LLM token revocation answers `DELETE .../llm-token` with:
+/// the route exists, for `POST` only.
+const NO_LLM_REVOKE_ROUTE: u16 = 405;
+/// The agent is gone, so it has no tokens left to revoke.
+const NO_SUCH_AGENT: u16 = 404;
+
+/// How a `DELETE .../llm-token` went, as far as `disconnect` cares.
+#[derive(Debug, PartialEq, Eq)]
+enum RoutingRevoke {
+    Revoked,
+    AgentGone,
+    Unsupported,
+}
+
+/// Revoke every LLM routing token the control plane issued for the bound agent, so a session
+/// still holding a cached one stops routing (and spending) through Nasiko now instead of when the
+/// token expires. Tokens issued later still work, so reconnecting needs nothing more.
+fn revoke_routing_tokens(client: &Client, agent_id: &str) -> Result<RoutingRevoke> {
+    let path = format!("/agents/{agent_id}/llm-token");
+    Ok(
+        match client.delete_or_status(&path, &[NO_LLM_REVOKE_ROUTE, NO_SUCH_AGENT])? {
+            Ok(()) => RoutingRevoke::Revoked,
+            Err(NO_SUCH_AGENT) => RoutingRevoke::AgentGone,
+            Err(_) => RoutingRevoke::Unsupported,
+        },
+    )
+}
+
+/// [`revoke_routing_tokens`] for `binding`, turning every failure into a printed warning: like the
+/// MCP revoke, local cleanup must finish whether or not the control plane is reachable. Shared by
+/// every `disconnect` (Claude, Codex, OpenCode), called once the local restore has succeeded.
+pub fn revoke_bound_routing_tokens_best_effort(binding: &ConnectionBinding, display_name: &str) {
+    let outcome = client_for_binding(binding, "skipping LLM routing token revoke")
+        .and_then(|client| revoke_routing_tokens(&client, &binding.agent_id));
+    match outcome {
+        Ok(RoutingRevoke::Revoked | RoutingRevoke::AgentGone) => {}
+        Ok(RoutingRevoke::Unsupported) => term::print_info(&format!(
+            "This control plane can't revoke LLM routing tokens yet; open {display_name} sessions can keep routing through Nasiko for up to 10 minutes."
+        )),
+        Err(error) => term::print_warning(&format!(
+            "failed to revoke LLM routing tokens; open {display_name} sessions can keep routing through Nasiko for up to 10 minutes: {}",
+            one_line_warning(&error)
+        )),
+    }
+}
+
 /// Looks up `binding.cluster` in `cfg`, refusing if the alias no longer exists or has since been
 /// re-pointed at a different URL — shared by `client_for_binding` and `credential_from_config`,
 /// which append their own `remedy` to whichever of the two problems is found.
@@ -375,9 +421,9 @@ fn bound_cluster_entry<'a>(
 /// Resolves a `Client` for `binding`'s cluster from `~/.nasiko/config.json`, independent of
 /// whichever cluster is currently active — so a stale binding's DELETE never reaches a server
 /// other than the one that issued the credential.
-fn client_for_binding(binding: &ConnectionBinding) -> Result<Client> {
+fn client_for_binding(binding: &ConnectionBinding, remedy: &str) -> Result<Client> {
     let cfg = config::load()?;
-    let entry = bound_cluster_entry(binding, &cfg, "skipping MCP gateway credential revoke")?;
+    let entry = bound_cluster_entry(binding, &cfg, remedy)?;
     Ok(Client::from_cluster_entry_with_timeout(
         entry,
         Some(CP_CALL_TIMEOUT),
@@ -389,7 +435,7 @@ fn client_for_binding(binding: &ConnectionBinding) -> Result<Client> {
 /// Shared by every `disconnect` (Claude, Codex, OpenCode): local cleanup must proceed regardless
 /// of whether the control plane is reachable.
 pub fn revoke_bound_mcp_credential_best_effort(binding: &ConnectionBinding) {
-    match client_for_binding(binding) {
+    match client_for_binding(binding, "skipping MCP gateway credential revoke") {
         Ok(client) => revoke_mcp_credential_best_effort(&client, &binding.agent_id),
         Err(error) => term::print_warning(&format!(
             "failed to revoke the MCP gateway credential: {}",
@@ -1257,6 +1303,59 @@ mod tests {
                 .to_string()
                 .contains("login changed")
         );
+    }
+
+    fn client_for(server: &mockito::Server) -> Client {
+        Client::from_cluster_entry(&ClusterEntry {
+            url: server.url(),
+            username: None,
+            token: Some("login-jwt".into()),
+        })
+    }
+
+    #[test]
+    fn revoking_routing_tokens_deletes_the_agents_llm_tokens() {
+        let mut server = mockito::Server::new();
+        let request = server
+            .mock("DELETE", "/api/agents/agent/llm-token")
+            .match_header("authorization", "Bearer login-jwt")
+            .with_status(204)
+            .create();
+        let outcome = revoke_routing_tokens(&client_for(&server), "agent").unwrap();
+        assert_eq!(outcome, RoutingRevoke::Revoked);
+        request.assert();
+    }
+
+    #[test]
+    fn a_control_plane_without_the_revoke_route_is_reported_as_unsupported() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("DELETE", "/api/agents/agent/llm-token")
+            .with_status(405)
+            .create();
+        let outcome = revoke_routing_tokens(&client_for(&server), "agent").unwrap();
+        assert_eq!(outcome, RoutingRevoke::Unsupported);
+    }
+
+    #[test]
+    fn revoking_for_a_deleted_agent_is_not_a_failure() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("DELETE", "/api/agents/agent/llm-token")
+            .with_status(404)
+            .create();
+        let outcome = revoke_routing_tokens(&client_for(&server), "agent").unwrap();
+        assert_eq!(outcome, RoutingRevoke::AgentGone);
+    }
+
+    #[test]
+    fn a_server_error_while_revoking_is_an_error() {
+        let mut server = mockito::Server::new();
+        server
+            .mock("DELETE", "/api/agents/agent/llm-token")
+            .with_status(500)
+            .create();
+        assert!(revoke_routing_tokens(&client_for(&server), "agent").is_err());
     }
 
     #[test]

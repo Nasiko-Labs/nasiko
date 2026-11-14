@@ -366,6 +366,7 @@ pub fn disconnect(force: bool) -> Result<()> {
     } else {
         coding_agent_router::atomic_write(&state.config_path, rendered.as_bytes())?;
     }
+    coding_agent_router::revoke_bound_routing_tokens_best_effort(&state.binding, "Codex");
     fs::remove_file(state_path()).context("failed to remove Codex routing state")?;
     term::print_success("Disconnected Codex routing from Nasiko.");
     println!("Codex auth, history, and the registered agent were kept.");
@@ -428,7 +429,7 @@ pub fn status() -> Result<()> {
 pub fn credential() -> Result<()> {
     let state = load_state()?.ok_or_else(|| {
         anyhow::anyhow!(
-            "Codex routing is not connected; run: {} connect codex",
+            "Nasiko LLM routing was disconnected for Codex. Restart Codex to use your own provider, or reconnect with: {} connect codex",
             crate::commands::local_agents::cli_name()
         )
     })?;
