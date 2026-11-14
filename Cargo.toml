@@ -167,6 +167,9 @@ aws-config = "1"
 
 # ─── Crypto ─────────────────────────────────────────────────────────────────
 sha2 = "0.10"
+# Already resolved transitively via jsonwebtoken; promoted to a direct dep so
+# ee/licensing can use it for Ed25519 keygen (ring::signature::Ed25519KeyPair).
+ring = "0.17"
 hkdf = "0.12"
 hmac = "0.12"
 hex = "0.4"
