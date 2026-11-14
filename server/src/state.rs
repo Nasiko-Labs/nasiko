@@ -655,6 +655,10 @@ impl AppState {
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
+            // After the agents: each step binds to a seed agent's row, which
+            // the line above registers (its deploy may still be in progress;
+            // a step finds its agent's endpoint when it runs).
+            crate::seed_workflows::seed_workflows_if_configured(&state).await;
             crate::seed::seed_harness_agents_if_enabled(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
         });
