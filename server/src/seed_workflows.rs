@@ -56,7 +56,7 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
         id: "meeting-follow-up",
         version: 1,
         name: "Meeting follow-up",
-        description: "Turns a meeting transcript into decisions, a task plan and \
+        description: "Turns a meeting transcript into decisions, a task list and \
                       a ready-to-send follow-up email.",
         steps: &[
             TemplateStep {
