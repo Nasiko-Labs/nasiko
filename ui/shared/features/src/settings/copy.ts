@@ -187,24 +187,12 @@ export const copy = {
     saveFailed: (reason: string) => `Could not save MCP toolkit settings: ${reason}`,
   },
 
-  // Read-only: the server's OPENAI_MODEL and ROUTER_MODEL. Both spend the caller's OpenAI key when they saved one.
-  models: {
-    orchestrator_model: {
-      label: 'Orchestrator model',
-      hint: 'Answers and picks agents in chat, and writes each workflow step’s prompt and the final output.',
-    },
-    router_model: {
-      label: 'Workflow routing model',
-      hint: 'Picks the agent for each workflow step.',
-    },
-    setByServer: 'Set by the server',
-    unknown: 'Not reported',
-    keyBefore: 'Uses your OpenAI key from the ',
-    router: 'LLM router',
-    keyAfter: ', or the server’s own if you haven’t added one.',
-  },
-
   fields: {
+    router_model: {
+      label: 'Router model',
+      hint: 'Model the routing engine uses to pick an agent for each query (ROUTER_MODEL).',
+      placeholder: 'e.g. gpt-4o',
+    },
     default_provider: {
       label: 'Default provider',
       hint: 'Provider used when an agent has no LLM config of its own.',

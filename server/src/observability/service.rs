@@ -899,6 +899,10 @@ pub struct FinopsDashboardData {
     /// plus an "Others" catchall, ready to feed a pie/donut chart without any
     /// client-side aggregation.
     pub spend_by_agent: SpendByAgentBreakdown,
+    /// Who spent it: one row per user in the window, largest spender first, under the same
+    /// filters as everything above. A caller who may not see other users gets only their own
+    /// row (`handler::get_finops_dashboard`).
+    pub users: Vec<UserFinopsRow>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1161,6 +1165,26 @@ pub struct SpendByAgentBreakdown {
     /// more than 5 agents. Empty when there is no spend in the window.
     pub slices: Vec<SpendPieSlice>,
     pub total_spend_usd: f64,
+}
+
+/// One user's usage in the dashboard window.
+#[derive(Serialize, Clone, Debug, ToSchema, sqlx::FromRow)]
+pub struct UserFinopsRow {
+    /// `None` for calls no user made: the platform's own routing and planning.
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub total_cost: f64,
+    pub operations: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    /// Prompt, completion and both cache counts, as the dashboard's `token_usage` counts them.
+    pub total_tokens: i64,
+    pub tool_call_count: i64,
+    /// How many agents the user's calls went to.
+    pub agents: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2703,6 +2727,46 @@ impl ObservabilityService {
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
+        // 5. Per user, under the same filters: who spent what.
+        let users: Vec<UserFinopsRow> = sqlx::query_as(
+            r#"SELECT s.user_id::TEXT AS user_id, u.username, u.email,
+                      COALESCE(SUM(s.cost_usd), 0)::FLOAT8 AS total_cost,
+                      COALESCE(SUM(s.traces), 0)::BIGINT AS operations,
+                      COALESCE(SUM(s.input_tokens), 0)::BIGINT AS prompt_tokens,
+                      COALESCE(SUM(s.output_tokens), 0)::BIGINT AS completion_tokens,
+                      COALESCE(SUM(s.cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                      COALESCE(SUM(s.cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(s.input_tokens + s.output_tokens + s.cache_read_tokens
+                                   + s.cache_creation_tokens), 0)::BIGINT AS total_tokens,
+                      COALESCE(SUM(s.tool_call_count), 0)::BIGINT AS tool_call_count,
+                      COUNT(DISTINCT s.agent_name)::BIGINT AS agents
+               FROM trace_spend s
+               LEFT JOIN users u ON u.id = s.user_id
+               WHERE s.ts >= $1 AND s.ts < $2
+                 AND ($3::TEXT IS NULL OR s.agent_name = $3)
+                 AND ($4::TEXT IS NULL OR s.model = $4)
+                 AND ($5::TEXT IS NULL OR s.provider = $5)
+                 AND (NOT $6::BOOL OR s.user_id = ANY($7::UUID[]))
+                 AND ($8::TEXT[] IS NULL OR s.agent_name = ANY($8)
+                      OR (s.user_id = $9 AND (s.agent_name = ANY($10) OR s.agent_name LIKE $11)))
+               GROUP BY s.user_id, u.username, u.email
+               ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
+        )
+        .bind(start)
+        .bind(now)
+        .bind(agent_filter)
+        .bind(model_filter)
+        .bind(provider_filter)
+        .bind(has_user_filter)
+        .bind(&user_id_list)
+        .bind(&scoped_names)
+        .bind(own_platform_user)
+        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(PLATFORM_STEP_ROW_PATTERN)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
         // Index lookups for joining.
         let current_by_name: HashMap<&str, &TraceUsageAgg> = current_rows
             .iter()
@@ -3018,6 +3082,7 @@ impl ObservabilityService {
                 kpis,
                 attributions,
                 spend_by_agent,
+                users,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -4128,6 +4193,7 @@ fn empty_finops_response(
                 slices: vec![],
                 total_spend_usd: 0.0,
             },
+            users: vec![],
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),

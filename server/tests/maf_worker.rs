@@ -256,7 +256,6 @@ fn start_with<E: MafExecutor + 'static>(
                 model: "unused".into(),
             },
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            backend: None,
             concurrency,
             heartbeat: HEARTBEAT,
         },

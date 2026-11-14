@@ -38,8 +38,6 @@ pub struct GeminiProvider {
     base: String,
     /// Cache the agent's marked prefix as a `cachedContents` resource (`gemini_cache`).
     explicit_cache: bool,
-    /// Vertex mode: bearer token from ADC instead of the `x-goog-api-key` header.
-    adc: Option<std::sync::Arc<super::vertex_auth::TokenSource>>,
 }
 
 impl GeminiProvider {
@@ -48,26 +46,6 @@ impl GeminiProvider {
             http,
             base,
             explicit_cache: false,
-            adc: None,
-        }
-    }
-
-    /// Vertex AI: authenticate with ADC bearer tokens. Explicit caching stays off
-    /// (`cachedContents` is API-key only here).
-    pub fn with_adc(mut self, tokens: std::sync::Arc<super::vertex_auth::TokenSource>) -> Self {
-        self.adc = Some(tokens);
-        self.explicit_cache = false;
-        self
-    }
-
-    async fn authed(
-        &self,
-        builder: reqwest::RequestBuilder,
-        api_key: &str,
-    ) -> Result<reqwest::RequestBuilder, ProviderError> {
-        match &self.adc {
-            Some(tokens) => Ok(builder.bearer_auth(tokens.token().await?)),
-            None => Ok(builder.header("x-goog-api-key", api_key)),
         }
     }
 
@@ -121,8 +99,9 @@ impl GeminiProvider {
         cfg: &ResolvedConfig,
         body: &Value,
     ) -> Result<reqwest::Response, ProviderError> {
-        self.authed(self.http.post(url), &cfg.api_key)
-            .await?
+        self.http
+            .post(url)
+            .header("x-goog-api-key", &cfg.api_key)
             .json(body)
             .send()
             .await
@@ -203,26 +182,11 @@ impl ProviderClient for GeminiProvider {
                     yield Err(ProviderError::Status {
                         status,
                         message: message.to_string(),
-                        retryable: status == 429 || status >= 500,
+                        retryable: false,
                     });
                     return;
                 }
-                if let Some(um) = response.get("usageMetadata") {
-                    let cached = um["cachedContentTokenCount"].as_i64();
-                    usage = Some(Usage {
-                        prompt_tokens: uncached_prompt(um["promptTokenCount"].as_i64(), cached),
-                        completion_tokens: output_tokens(um),
-                        total_tokens: um["totalTokenCount"].as_i64(),
-                        cache_read_input_tokens: cached,
-                        cache_creation_input_tokens: None,
-                        cache_creation: None,
-                        prompt_tokens_details: None,
-                    });
-                }
                 let Some(candidate) = response["candidates"].as_array().and_then(|c| c.first()) else {
-                    if response.get("usageMetadata").is_some() {
-                        continue;
-                    }
                     yield Err(ProviderError::Parse("Gemini stream event has no candidate".into()));
                     return;
                 };
@@ -253,13 +217,6 @@ impl ProviderClient for GeminiProvider {
                                 .unwrap_or_else(|| "{}".to_string());
                             let index = tool_index;
                             tool_index += 1;
-                            let mut extra = Map::new();
-                            if let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str()) {
-                                extra.insert(
-                                    "thought_signature".to_string(),
-                                    Value::String(sig.to_string()),
-                                );
-                            }
                             yield Ok(delta_chunk(&id, &model, Delta {
                                 tool_calls: Some(vec![ToolCallDelta {
                                     index,
@@ -270,7 +227,6 @@ impl ProviderClient for GeminiProvider {
                                         // Gemini sends complete args in one chunk.
                                         arguments: Some(arguments),
                                     }),
-                                    extra,
                                 }]),
                                 ..Delta::default()
                             }));
@@ -292,7 +248,7 @@ impl ProviderClient for GeminiProvider {
                         // so report only the uncached remainder (see
                         // `Usage::normalize_openai_details`).
                         prompt_tokens: uncached_prompt(um["promptTokenCount"].as_i64(), cached),
-                        completion_tokens: output_tokens(um),
+                        completion_tokens: um["candidatesTokenCount"].as_i64(),
                         total_tokens: um["totalTokenCount"].as_i64(),
                         cache_read_input_tokens: cached,
                         cache_creation_input_tokens: None,
@@ -340,98 +296,24 @@ impl ProviderClient for GeminiProvider {
                 .collect(),
             other => vec![other.to_string()],
         };
-        if self.adc.is_some() {
-            return self.vertex_predict_embeddings(&inputs, cfg).await;
-        }
         let model_path = format!("models/{}", cfg.model);
         let requests: Vec<Value> = inputs
             .iter()
             .map(|text| json!({ "model": model_path, "content": { "parts": [{ "text": text }] } }))
             .collect();
 
-        let url = format!("{}/models/{}:batchEmbedContents", self.base, cfg.model);
-        let mut data: Vec<Embedding> = Vec::with_capacity(inputs.len());
-        let mut offset = 0usize;
-        for chunk in requests.chunks(100) {
-            let resp = self
-                .authed(self.http.post(&url), &cfg.api_key)
-                .await?
-                .json(&json!({ "requests": chunk }))
-                .send()
-                .await
-                .map_err(|e| ProviderError::Transport(e.to_string()))?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                let text = resp.text().await.unwrap_or_default();
-                return Err(ProviderError::Status {
-                    status: status.as_u16(),
-                    message: text,
-                    retryable: status.as_u16() == 429 || status.is_server_error(),
-                });
-            }
-
-            let value: Value = resp
-                .json()
-                .await
-                .map_err(|e| ProviderError::Parse(e.to_string()))?;
-            if let Some(embs) = value["embeddings"].as_array() {
-                for (i, e) in embs.iter().enumerate() {
-                    data.push(Embedding {
-                        object: "embedding".to_string(),
-                        embedding: e["values"].clone(),
-                        index: (offset + i) as i64,
-                        extra: Map::new(),
-                    });
-                }
-            }
-            offset += chunk.len();
-        }
-
-        // Gemini's batch embed API returns no token counts; estimate so usage
-        // rows are billed instead of recording zero input tokens.
-        let estimated: i64 = estimate_embedding_tokens(&inputs);
-        Ok(EmbeddingsResponse {
-            object: "list".to_string(),
-            data,
-            model: cfg.model.clone(),
-            usage: Some(Usage {
-                prompt_tokens: Some(estimated),
-                total_tokens: Some(estimated),
-                ..Usage::default()
-            }),
-            extra: Map::new(),
-        })
-    }
-}
-
-/// Approximate token count for embedding inputs (~4 chars per token, at least
-/// one token per non-empty text). Used when the provider reports no usage.
-fn estimate_embedding_tokens(inputs: &[String]) -> i64 {
-    inputs
-        .iter()
-        .map(|text| {
-            let chars: i64 = text.chars().count() as i64;
-            if chars == 0 { 0 } else { (chars + 3) / 4 }
-        })
-        .sum()
-}
-
-impl GeminiProvider {
-    /// Vertex AI serves embeddings via `models/{model}:predict`, not `:batchEmbedContents`.
-    async fn vertex_predict_embeddings(
-        &self,
-        inputs: &[String],
-        cfg: &ResolvedEmbeddingConfig,
-    ) -> Result<EmbeddingsResponse, ProviderError> {
-        let url = format!("{}/models/{}:predict", self.base, cfg.model);
         let resp = self
-            .authed(self.http.post(url), &cfg.api_key)
-            .await?
-            .json(&vertex_predict_body(inputs))
+            .http
+            .post(format!(
+                "{}/models/{}:batchEmbedContents",
+                self.base, cfg.model
+            ))
+            .header("x-goog-api-key", &cfg.api_key)
+            .json(&json!({ "requests": requests }))
             .send()
             .await
             .map_err(|e| ProviderError::Transport(e.to_string()))?;
+
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -441,172 +323,34 @@ impl GeminiProvider {
                 retryable: status.as_u16() == 429 || status.is_server_error(),
             });
         }
+
         let value: Value = resp
             .json()
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
-        parse_vertex_predict(&value, &cfg.model)
-    }
-}
-
-/// Vertex `:predict` request body: one instance per input text.
-fn vertex_predict_body(inputs: &[String]) -> Value {
-    let instances: Vec<Value> = inputs.iter().map(|t| json!({ "content": t })).collect();
-    json!({ "instances": instances })
-}
-
-/// Vertex `:predict` response (`predictions[].embeddings.values`) → OpenAI shape.
-fn parse_vertex_predict(value: &Value, model: &str) -> Result<EmbeddingsResponse, ProviderError> {
-    let predictions: &Vec<Value> = value["predictions"]
-        .as_array()
-        .ok_or_else(|| ProviderError::Parse("Vertex predict response has no predictions".into()))?;
-    let mut data: Vec<Embedding> = Vec::with_capacity(predictions.len());
-    // Billable input tokens: sum of `embeddings.statistics.token_count` per prediction.
-    let mut token_count: Option<i64> = None;
-    for (i, p) in predictions.iter().enumerate() {
-        if let Some(n) = p["embeddings"]["statistics"]["token_count"].as_f64() {
-            token_count = Some(token_count.unwrap_or(0) + n as i64);
-        }
-        let values: &Value = &p["embeddings"]["values"];
-        if !values.is_array() {
-            return Err(ProviderError::Parse(format!(
-                "Vertex prediction {i} has no embeddings.values"
-            )));
-        }
-        data.push(Embedding {
-            object: "embedding".to_string(),
-            embedding: values.clone(),
-            index: i as i64,
-            extra: Map::new(),
-        });
-    }
-    Ok(EmbeddingsResponse {
-        object: "list".to_string(),
-        data,
-        model: model.to_string(),
-        usage: token_count.map(|n| Usage {
-            prompt_tokens: Some(n),
-            total_tokens: Some(n),
-            ..Usage::default()
-        }),
-        extra: Map::new(),
-    })
-}
-
-#[cfg(test)]
-mod vertex_predict_tests {
-    use super::*;
-
-    #[test]
-    fn body_has_one_instance_per_text() {
-        let body: Value = vertex_predict_body(&["a".into(), "b".into()]);
-        assert_eq!(body, json!({"instances":[{"content":"a"},{"content":"b"}]}));
-    }
-
-    #[test]
-    fn parses_predictions_in_order() {
-        let v: Value = json!({"predictions":[
-            {"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":1}}},
-            {"embeddings":{"values":[0.3,0.4],"statistics":{"token_count":1}}}
-        ]});
-        let r: EmbeddingsResponse = parse_vertex_predict(&v, "text-embedding-005").unwrap();
-        assert_eq!(r.data.len(), 2);
-        assert_eq!(r.data[1].index, 1);
-        assert_eq!(r.data[1].embedding, json!([0.3, 0.4]));
-        assert_eq!(r.model, "text-embedding-005");
-    }
-
-    /// Live: `VERTEX_LIVE_PROJECT=<p> cargo test ... vertex_live -- --ignored --nocapture`.
-    /// Reads `~/.config/gcloud/application_default_credentials.json`.
-    #[tokio::test]
-    #[ignore]
-    async fn vertex_live() {
-        let loc: String = std::env::var("VERTEX_LIVE_LOCATION").unwrap_or("global".into());
-        let home: String = std::env::var("HOME").unwrap();
-        let path: String = format!("{home}/.config/gcloud/application_default_credentials.json");
-        let json_text: String = std::fs::read_to_string(&path).expect("ADC file");
-        let adc: Value = serde_json::from_str(&json_text).unwrap();
-        let project: String = std::env::var("VERTEX_LIVE_PROJECT")
-            .ok()
-            .or_else(|| adc["quota_project_id"].as_str().map(str::to_string))
-            .unwrap_or_else(|| "nasiko-engineer".into());
-        println!("project {project}, location {loc}");
-        let http = reqwest::Client::new();
-        let tokens = std::sync::Arc::new(
-            crate::providers::vertex_auth::TokenSource::from_credentials_json(
-                http.clone(),
-                &json_text,
-            )
-            .unwrap(),
-        );
-        let token: String = tokens.token().await.expect("ADC token");
-        println!("token ok ({} chars)", token.len());
-        let host: String = if loc == "global" {
-            "aiplatform.googleapis.com".into()
-        } else {
-            format!("{loc}-aiplatform.googleapis.com")
-        };
-        let base: String =
-            format!("https://{host}/v1/projects/{project}/locations/{loc}/publishers/google");
-
-        let chat: reqwest::Response = http
-            .post(format!("{base}/models/gemini-2.5-flash:generateContent"))
-            .bearer_auth(&token)
-            .json(&json!({"contents":[{"role":"user","parts":[{"text":"Say ok"}]}]}))
-            .send()
-            .await
-            .unwrap();
-        let chat_status = chat.status();
-        let chat_body: String = chat.text().await.unwrap();
-        println!(
-            "gemini chat {chat_status}: {}",
-            &chat_body[..chat_body.len().min(300)]
-        );
-        let _ = chat_status;
-
-        let provider = GeminiProvider::new(http.clone(), base.clone()).with_adc(tokens.clone());
-        let emb: EmbeddingsResponse = provider
-            .vertex_predict_embeddings(&["hello".into(), "world".into()], &live_emb_cfg())
-            .await
-            .expect("embeddings");
-        let dims: usize = emb.data[0]
-            .embedding
+        let data = value["embeddings"]
             .as_array()
-            .map(|a| a.len())
-            .unwrap_or(0);
-        println!("embeddings: {} vectors, {dims} dims", emb.data.len());
-        assert_eq!(emb.data.len(), 2);
-        assert!(dims > 0);
+            .map(|embs| {
+                embs.iter()
+                    .enumerate()
+                    .map(|(i, e)| Embedding {
+                        object: "embedding".to_string(),
+                        embedding: e["values"].clone(),
+                        index: i as i64,
+                        extra: Map::new(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let ds_loc: String =
-            std::env::var("VERTEX_LIVE_DEEPSEEK_LOCATION").unwrap_or("us-central1".into());
-        let ds: reqwest::Response = http
-            .post(format!(
-                "https://{ds_loc}-aiplatform.googleapis.com/v1/projects/{project}/locations/{ds_loc}/endpoints/openapi/chat/completions"
-            ))
-            .bearer_auth(&token)
-            .json(&json!({"model":"deepseek-ai/deepseek-v3.1-maas","messages":[{"role":"user","content":"Say ok"}]}))
-            .send().await.unwrap();
-        let ds_status = ds.status();
-        let ds_body: String = ds.text().await.unwrap();
-        println!(
-            "deepseek (openapi) {ds_status}: {}",
-            &ds_body[..ds_body.len().min(300)]
-        );
-    }
-
-    fn live_emb_cfg() -> ResolvedEmbeddingConfig {
-        ResolvedEmbeddingConfig::for_test("vertex", "text-embedding-005", "adc")
-    }
-
-    #[test]
-    fn missing_values_is_parse_error() {
-        let v: Value = json!({"predictions":[{"embeddings":{}}]});
-        assert!(matches!(
-            parse_vertex_predict(&v, "m"),
-            Err(ProviderError::Parse(_))
-        ));
-        assert!(parse_vertex_predict(&json!({}), "m").is_err());
+        // Gemini's batch embed API returns no token counts.
+        Ok(EmbeddingsResponse {
+            object: "list".to_string(),
+            data,
+            model: cfg.model.clone(),
+            usage: None,
+            extra: Map::new(),
+        })
     }
 }
 
@@ -621,17 +365,6 @@ mod vertex_predict_tests {
 /// Clamped at zero: the subtraction should never go negative, but a provider
 /// reporting a larger cached count than prompt count must not produce a
 /// negative token count that the cost trigger would read as a credit.
-/// Billable output: `candidatesTokenCount` plus `thoughtsTokenCount`. Gemini 3/4
-/// thinking tokens are billed as output but excluded from the candidates count.
-fn output_tokens(usage: &Value) -> Option<i64> {
-    let candidates: Option<i64> = usage["candidatesTokenCount"].as_i64();
-    let thoughts: Option<i64> = usage["thoughtsTokenCount"].as_i64();
-    match (candidates, thoughts) {
-        (None, None) => None,
-        (c, t) => Some(c.unwrap_or(0) + t.unwrap_or(0)),
-    }
-}
-
 fn uncached_prompt(prompt: Option<i64>, cached: Option<i64>) -> Option<i64> {
     match (prompt, cached) {
         (Some(prompt), Some(cached)) => Some((prompt - cached).max(0)),
@@ -892,23 +625,6 @@ fn translate(req: &ChatRequest, cfg: &ResolvedConfig) -> Result<GeminiRequest, P
     if !stop.is_empty() {
         gen_cfg.insert("stopSequences".into(), json!(stop));
     }
-    // OpenAI `response_format` → Gemini JSON mode. `json_schema` carries a standard JSON
-    // Schema, which `responseJsonSchema` accepts as is (unlike the OpenAPI-subset
-    // `responseSchema`).
-    if let Some(rf) = req.extra.get("response_format") {
-        match rf.get("type").and_then(Value::as_str) {
-            Some("json_object") => {
-                gen_cfg.insert("responseMimeType".into(), json!("application/json"));
-            }
-            Some("json_schema") => {
-                gen_cfg.insert("responseMimeType".into(), json!("application/json"));
-                if let Some(schema) = rf.pointer("/json_schema/schema") {
-                    gen_cfg.insert("responseJsonSchema".into(), schema.clone());
-                }
-            }
-            _ => {}
-        }
-    }
     if !gen_cfg.is_empty() {
         body["generationConfig"] = Value::Object(gen_cfg);
     }
@@ -961,11 +677,7 @@ fn assistant_to_gemini(m: &Message) -> Value {
         for tc in tool_calls {
             let args: Value =
                 serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
-            let mut fc_part = json!({ "functionCall": { "name": tc.function.name, "args": args } });
-            if let Some(sig) = tc.extra.get("thought_signature").and_then(|v| v.as_str()) {
-                fc_part["thoughtSignature"] = Value::String(sig.to_string());
-            }
-            parts.push(fc_part);
+            parts.push(json!({ "functionCall": { "name": tc.function.name, "args": args } }));
         }
     }
     if parts.is_empty() {
@@ -1016,19 +728,12 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
                     .get("args")
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| "{}".to_string());
-                let mut extra = Map::new();
-                if let Some(sig) = part.get("thoughtSignature").and_then(|v| v.as_str()) {
-                    extra.insert(
-                        "thought_signature".to_string(),
-                        Value::String(sig.to_string()),
-                    );
-                }
                 // Gemini supplies no call id; synthesize a stable-within-response one.
                 tool_calls.push(ToolCall {
                     id: format!("call_{name}_{call_index}"),
                     kind: "function".to_string(),
                     function: FunctionCall { name, arguments },
-                    extra,
+                    extra: Map::new(),
                 });
                 call_index += 1;
             }
@@ -1058,7 +763,7 @@ fn from_gemini_response(body: &Value, model: &str) -> Result<ChatResponse, Provi
         Usage {
             // See `uncached_prompt` — promptTokenCount is cache-inclusive.
             prompt_tokens: uncached_prompt(u["promptTokenCount"].as_i64(), cached),
-            completion_tokens: output_tokens(u),
+            completion_tokens: u["candidatesTokenCount"].as_i64(),
             total_tokens: u["totalTokenCount"].as_i64(),
             cache_read_input_tokens: cached,
             cache_creation_input_tokens: None,
@@ -1591,12 +1296,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn estimate_embedding_tokens_rounds_up_per_text() {
-        let inputs: Vec<String> = vec!["abcde".into(), String::new(), "abcd".into()];
-        assert_eq!(estimate_embedding_tokens(&inputs), 3);
-    }
-
     #[tokio::test]
     async fn embeddings_via_batch_embed_contents() {
         let mut server = mockito::Server::new_async().await;
@@ -1815,36 +1514,6 @@ mod tests {
             }
             other => panic!("expected a 400, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn response_format_maps_to_json_mode() {
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "gemini-4-hydrogen",
-            "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {"type": "json_object"}
-        }))
-        .unwrap();
-        let body = to_gemini_request(&req, &resolved()).unwrap();
-        assert_eq!(
-            body["generationConfig"]["responseMimeType"],
-            "application/json"
-        );
-
-        let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
-        let req: ChatRequest = serde_json::from_value(json!({
-            "model": "gemini-4-hydrogen",
-            "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": schema}}
-        }))
-        .unwrap();
-        let body = to_gemini_request(&req, &resolved()).unwrap();
-        assert_eq!(
-            body["generationConfig"]["responseMimeType"],
-            "application/json"
-        );
-        assert_eq!(body["generationConfig"]["responseJsonSchema"], schema);
-        assert!(body.get("response_format").is_none());
     }
 
     #[test]
@@ -2278,130 +1947,5 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("done"));
         refused.assert_async().await;
         whole.assert_async().await;
-    }
-
-    #[test]
-    fn thought_signature_round_trips_through_response_and_request() {
-        let gemini = json!({
-            "candidates": [{
-                "content": {
-                    "role": "model",
-                    "parts": [{
-                        "functionCall": { "name": "lookup", "args": { "id": 1 } },
-                        "thoughtSignature": "sig-abc-123"
-                    }]
-                },
-                "finishReason": "STOP"
-            }],
-            "usageMetadata": { "promptTokenCount": 5, "candidatesTokenCount": 3, "totalTokenCount": 8 }
-        });
-        let resp = from_gemini_response(&gemini, "gemini-2.5-pro").unwrap();
-        let tc = &resp.choices[0].message.tool_calls.as_ref().unwrap()[0];
-        assert_eq!(
-            tc.extra.get("thought_signature").and_then(|v| v.as_str()),
-            Some("sig-abc-123")
-        );
-
-        let model_msg = assistant_to_gemini(&resp.choices[0].message);
-        assert_eq!(
-            model_msg["parts"][0]["thoughtSignature"].as_str(),
-            Some("sig-abc-123")
-        );
-    }
-
-    #[tokio::test]
-    async fn stream_preserves_thought_signature_and_skips_usage_only_event() {
-        let mut server = mockito::Server::new_async().await;
-        let sse = concat!(
-            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"lookup\",\"args\":{\"id\":1}},\"thoughtSignature\":\"sig-stream-1\"}]},\"finishReason\":\"STOP\"}]}\n\n",
-            "data: {\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n"
-        );
-        server
-            .mock(
-                "POST",
-                "/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
-            )
-            .with_status(200)
-            .with_header("content-type", "text/event-stream")
-            .with_body(sse)
-            .create_async()
-            .await;
-
-        let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
-        let req: ChatRequest = serde_json::from_value(
-            json!({ "stream": true, "messages": [{ "role": "user", "content": "hi" }] }),
-        )
-        .unwrap();
-        let results: Vec<Result<ChatChunk, ProviderError>> = provider
-            .chat_stream(&req, &resolved())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        assert!(
-            results.iter().all(|r| r.is_ok()),
-            "unexpected error: {results:?}"
-        );
-        let chunks: Vec<ChatChunk> = results.into_iter().map(|r| r.unwrap()).collect();
-        let tc_delta = chunks
-            .iter()
-            .flat_map(|c| c.choices.iter())
-            .filter_map(|ch| ch.delta.tool_calls.as_ref())
-            .flatten()
-            .next()
-            .unwrap();
-        assert_eq!(
-            tc_delta
-                .extra
-                .get("thought_signature")
-                .and_then(|v| v.as_str()),
-            Some("sig-stream-1")
-        );
-        assert_eq!(
-            chunks
-                .last()
-                .and_then(|c| c.usage.as_ref())
-                .and_then(|u| u.total_tokens),
-            Some(15)
-        );
-    }
-
-    #[tokio::test]
-    async fn embeddings_chunk_over_100_requests() {
-        let mut server = mockito::Server::new_async().await;
-        let first_body: Vec<Value> = (0..100).map(|i| json!({ "values": [i as f32] })).collect();
-        let second_body = vec![json!({ "values": [100.0] })];
-        let m1 = server
-            .mock("POST", "/models/gemini-1.5-pro:batchEmbedContents")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(json!({ "embeddings": first_body }).to_string())
-            .expect(1)
-            .create_async()
-            .await;
-        let m2 = server
-            .mock("POST", "/models/gemini-1.5-pro:batchEmbedContents")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(json!({ "embeddings": second_body }).to_string())
-            .expect(1)
-            .create_async()
-            .await;
-
-        let provider = GeminiProvider::new(reqwest::Client::new(), server.url());
-        let inputs: Vec<String> = (0..101).map(|i| format!("t{i}")).collect();
-        let req: EmbeddingsRequest =
-            serde_json::from_value(json!({ "model": "gemini-1.5-pro", "input": inputs })).unwrap();
-        let resp = provider
-            .embeddings(
-                &req,
-                &ResolvedEmbeddingConfig::for_test("gemini", "gemini-1.5-pro", "AIza-test"),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.data.len(), 101);
-        assert_eq!(resp.data[100].index, 100);
-        m1.assert_async().await;
-        m2.assert_async().await;
     }
 }

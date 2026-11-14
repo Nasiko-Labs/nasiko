@@ -132,19 +132,6 @@ export const copy = {
   nothingConnectedDesc:
     'Connect a server or toolkit and its tools become available to your agents.',
   browseAvailable: 'Browse available',
-  // No toolkit yet (NAS-1599): only an admin can set the Composio key, so everyone else is told to ask.
-  toolkitSetup: {
-    title: 'Get app toolkits with Composio',
-    intro: 'Toolkits for apps like Gmail, Slack and Notion come from Composio. To list them here:',
-    steps: [
-      'Go to Settings → MCP toolkits.',
-      'Enter your Composio API key.',
-      'Tick the toolkits you want people to connect to, then save.',
-      'They appear here, ready to connect.',
-    ],
-    open: 'Open MCP toolkits',
-    askAdmin: 'Only an admin can change these settings. Ask yours to add a key and pick toolkits.',
-  },
   allConnected: 'Everything is connected',
   allConnectedDesc: 'Every server and toolkit in this view is already connected.',
 

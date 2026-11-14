@@ -226,7 +226,6 @@ impl ProviderClient for AnthropicProvider {
                                         name: block["name"].as_str().map(str::to_string),
                                         arguments: Some(String::new()),
                                     }),
-                                    ..ToolCallDelta::default()
                                 }]),
                                 ..Delta::default()
                             }));
@@ -258,7 +257,6 @@ impl ProviderClient for AnthropicProvider {
                                                 name: None,
                                                 arguments: Some(partial.to_string()),
                                             }),
-                                            ..ToolCallDelta::default()
                                         }]),
                                         ..Delta::default()
                                     }));
@@ -281,7 +279,6 @@ impl ProviderClient for AnthropicProvider {
                                         name: None,
                                         arguments: Some("{}".into()),
                                     }),
-                                    ..ToolCallDelta::default()
                                 }]),
                                 ..Delta::default()
                             }));

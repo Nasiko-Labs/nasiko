@@ -499,7 +499,6 @@ fn converse_event_stream(
                                             .map(|n| unsanitize_tool_name(n, &name_map)),
                                         arguments: Some(String::new()),
                                     }),
-                                    ..ToolCallDelta::default()
                                 }]),
                                 ..Delta::default()
                             }));
@@ -530,7 +529,6 @@ fn converse_event_stream(
                                             name: None,
                                             arguments: Some(input.to_string()),
                                         }),
-                                        ..ToolCallDelta::default()
                                     }]),
                                     ..Delta::default()
                                 }));
@@ -553,7 +551,6 @@ fn converse_event_stream(
                                         name: None,
                                         arguments: Some("{}".into()),
                                     }),
-                                    ..ToolCallDelta::default()
                                 }]),
                                 ..Delta::default()
                             }));

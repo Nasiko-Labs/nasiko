@@ -1132,7 +1132,6 @@ mod tests {
                             name: Some("translate_text".into()),
                             arguments: Some(String::new()),
                         }),
-                        ..ToolCallDelta::default()
                     }]),
                     ..Delta::default()
                 },
@@ -1157,7 +1156,6 @@ mod tests {
                             name: None,
                             arguments: Some(partial.into()),
                         }),
-                        ..ToolCallDelta::default()
                     }]),
                     ..Delta::default()
                 },

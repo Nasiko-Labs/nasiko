@@ -15,7 +15,7 @@ struct Owner {
 async fn stub_upstream() -> mockito::ServerGuard {
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/v1/chat/completions")
+        .mock("POST", "/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(

@@ -245,16 +245,7 @@ pub async fn log_usage(
         tracing::debug!(owner_id = %record.owner_id, "skipping usage row: owner_id is not a uuid");
         return Ok(());
     };
-    // A nil owner (system calls: MCP tool indexing, unattributed builds) has no `users` row, so
-    // the FK insert would fail; skip it explicitly instead of failing the transaction.
-    if owner.is_nil() {
-        tracing::debug!(agent_id = %record.agent_id, "skipping usage row: system call has no owner");
-        return Ok(());
-    }
     let agent = Uuid::parse_str(&record.agent_id).ok();
-    // A non-UUID agent id is a platform component label (`maf`, `titling`, ...): keep it as
-    // the row's `agent_name` instead of collapsing every component into one empty name.
-    let component_label: Option<String> = component_label(agent, &record.agent_id);
     let estimated_input_tokens =
         estimated_prompt_tokens(record.failure, record.usage.as_ref(), record.request_bytes);
     let reported_usage = record.usage.is_some();
@@ -341,7 +332,6 @@ pub async fn log_usage(
         metadata,
         owner,
         agent,
-        component_label,
         flow_id: record.flow_id.clone(),
         model: record.model.clone(),
         provider: record.provider.clone(),
@@ -406,8 +396,6 @@ struct LiveSpend {
     metadata: serde_json::Value,
     owner: Uuid,
     agent: Option<Uuid>,
-    /// `agent_name` for a platform component call (no agent uuid).
-    component_label: Option<String>,
     flow_id: Option<String>,
     model: String,
     provider: String,
@@ -435,30 +423,6 @@ fn source_for(workload_kind: Option<&str>, is_coding: bool) -> &'static str {
         (Some("acp_coding_agent"), _) => "acp",
         (_, true) => "coding",
         _ => "agent",
-    }
-}
-
-/// The component label for a call whose agent id is not a uuid; `None` for agent calls
-/// and blank ids.
-fn component_label(agent: Option<Uuid>, agent_id: &str) -> Option<String> {
-    let id: &str = agent_id.trim();
-    (agent.is_none() && !id.is_empty()).then(|| id.to_string())
-}
-
-#[cfg(test)]
-mod component_label_tests {
-    use super::component_label;
-    use uuid::Uuid;
-
-    #[test]
-    fn label_kept_for_component() {
-        assert_eq!(component_label(None, "titling").as_deref(), Some("titling"));
-    }
-
-    #[test]
-    fn no_label_for_agent_or_blank() {
-        assert_eq!(component_label(Some(Uuid::new_v4()), "x"), None);
-        assert_eq!(component_label(None, "  "), None);
     }
 }
 
@@ -602,7 +566,7 @@ async fn write_trace_usage(
     let agent_name: String = match (&info, live.agent) {
         (Some(i), _) => i.name.clone(),
         (None, Some(id)) => id.to_string(),
-        (None, None) => live.component_label.clone().unwrap_or_default(),
+        (None, None) => String::new(),
     };
     let source: &'static str = info
         .as_ref()

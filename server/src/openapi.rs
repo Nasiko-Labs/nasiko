@@ -58,7 +58,6 @@ use crate::state::AppState;
         crate::agents::llm_config::set_my_llm_config,
         crate::agents::llm_config::delete_my_llm_config,
         crate::agents::llm_config::issue_llm_token,
-        crate::agents::llm_config::revoke_llm_tokens,
         crate::agents::llm_config::issue_mcp_token,
         crate::agents::llm_config::revoke_mcp_token,
         crate::llm_configs::list,

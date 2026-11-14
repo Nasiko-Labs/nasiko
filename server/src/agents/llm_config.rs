@@ -49,10 +49,7 @@ pub fn router() -> Router<AppState> {
                 .put(set_my_llm_config)
                 .delete(delete_my_llm_config),
         )
-        .route(
-            "/{id}/llm-token",
-            post(issue_llm_token).delete(revoke_llm_tokens),
-        )
+        .route("/{id}/llm-token", post(issue_llm_token))
         .route(
             "/{id}/mcp-token",
             post(issue_mcp_token).delete(revoke_mcp_token),
@@ -359,59 +356,6 @@ pub(crate) async fn revoke_mcp_token(
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "failed to revoke MCP gateway token",
-            )
-                .into_response()
-        }
-    }
-}
-
-/// Revoke every LLM routing token issued for the agent so far. `nasiko disconnect <coding-agent>`
-/// calls this so a session still holding a cached token stops spending through the router at
-/// once instead of when its token expires: the router refuses agent tokens issued before
-/// `agents.llm_tokens_revoked_at`. Tokens issued afterwards work, so reconnecting needs nothing
-/// more. Owner or superuser, like the MCP-token DELETE; idempotent. The time comes from this
-/// process's clock, the clock that stamps a token's `iat`, not the database's. For a deployed
-/// agent this also refuses its deploy-time token until its next redeploy re-mints one.
-#[utoipa::path(
-    delete,
-    path = "/api/agents/{id}/llm-token",
-    tag = "agents",
-    params(("id" = Uuid, Path, description = "Agent id")),
-    responses(
-        (status = 204, description = "LLM routing tokens revoked"),
-        (status = 403, description = "Caller is neither the agent owner nor a superuser"),
-        (status = 404, description = "No such agent"),
-    ),
-)]
-pub(crate) async fn revoke_llm_tokens(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(resp) =
-        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
-    {
-        return resp;
-    }
-
-    let revoked = sqlx::query(
-        "UPDATE agents SET llm_tokens_revoked_at = $2 WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .bind(Utc::now())
-    .execute(&state.db)
-    .await;
-    match revoked {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => {
-            tracing::error!(%error, %agent_id, "failed to revoke LLM routing tokens");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to revoke LLM routing tokens",
             )
                 .into_response()
         }
