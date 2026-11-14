@@ -36,3 +36,18 @@ test('the span sheet fits the screen with content capture off @phone', async ({ 
   const panel = await openCaptureOffSpan(page)
   expect(await sidewaysScroll(panel)).toBe(0)
 })
+
+// Six traces is the most the switcher shows as toggles, a row wider than 1024px less the sidebar: it scrolls on its
+// own instead of pushing the page, top bar included, past the window.
+test('six traces scroll in their row, not the page', async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 900 })
+  await page.goto('/sessions/5eed-sess-translator-2026-09-26?anchor=2026-09-26&preset=7d')
+  const row = page.getByRole('group', { name: 'Traces in this session' })
+  await expect(row.getByRole('button')).toHaveCount(6)
+  expect(await row.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true)
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+    ),
+  ).toBe(0)
+})
