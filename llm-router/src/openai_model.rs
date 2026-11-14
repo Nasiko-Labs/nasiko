@@ -39,7 +39,12 @@ pub fn direct_openai_model(requested: &str, openai_model: &str) -> String {
 /// OpenAI chat model used on the official API when neither the request nor
 /// `OPENAI_MODEL` names an OpenAI model. Only direct OpenAI calls need it; routed
 /// calls leave the model blank and the LLM router picks its provider's default.
-pub const OPENAI_CHAT_FALLBACK: &str = "gpt-6-luna";
+///
+/// Not a reasoning model: the direct path has none of the router's parameter repair, and
+/// the orchestrator always sends function tools, which reasoning models refuse on
+/// `/v1/chat/completions` at their default `reasoning_effort` (`gpt-6-luna` and
+/// `gpt-6.1-sol` both 400); the direct callers also send `temperature`.
+pub const OPENAI_CHAT_FALLBACK: &str = "gpt-4o-mini";
 
 /// Model a direct OpenAI call swaps a foreign model to: `OPENAI_MODEL` when it is
 /// an OpenAI model, else [`OPENAI_CHAT_FALLBACK`].
@@ -69,6 +74,18 @@ mod tests {
 
     const OFFICIAL: &str = "https://api.openai.com/v1";
     const CUSTOM: &str = "https://llm.example.com/v1";
+
+    /// The orchestrator sends tools on the direct path; reasoning models refuse them there.
+    #[test]
+    fn the_direct_fallback_is_not_a_reasoning_model() {
+        let reasoning = ["gpt-5", "gpt-6", "o1", "o3", "o4"];
+        assert!(
+            !reasoning
+                .iter()
+                .any(|p| OPENAI_CHAT_FALLBACK.starts_with(p)),
+            "{OPENAI_CHAT_FALLBACK}"
+        );
+    }
 
     #[test]
     fn empty_model_gets_fallback_on_any_host() {
