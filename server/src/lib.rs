@@ -185,8 +185,7 @@ where
 {
     // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
     // output synthesis: the one the execution's owner saved from the UI, else the server's
-    // `OPENAI_API_KEY`. With neither, a step that
-    // needs the model fails with "No OpenAI API key"; steps that don't call it still run.
+    // `OPENAI_API_KEY`. With neither, an execution fails with the provider's error.
     {
         let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
@@ -565,12 +564,29 @@ where
         // session JWT or an OAuth `code`/`state`. See `redact_credential_uri`.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
+                // Record the matched route as `http.route` so the trace UI can show each inbound
+                // call's operation (e.g. `POST /v1/chat/completions` vs `POST /api/mcp`) as the
+                // span's secondary label — telling an LLM-gateway call from an MCP/other call
+                // apart within one `request ×N` group. The span name stays `request`, so
+                // same-name spans still group into one section (NAS-1543). The matched route is a
+                // template (`/api/mcp/s/{token}`), so it carries no secret, unlike the raw URI.
+                // `Router::layer` runs this after routing, so `MatchedPath` is set (as in
+                // `error_reporting::trace_requests`); a request no route matched (UI pages and
+                // assets) records none.
+                let route = req
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map(|r| format!("{} {}", req.method(), r.as_str()));
                 let span = tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
+                    http.route = tracing::field::Empty,
                 );
+                if let Some(route) = &route {
+                    span.record("http.route", route.as_str());
+                }
                 // Adopt the caller's W3C trace context when it sends one, so this
                 // server span joins the flow that triggered it rather than rooting
                 // a trace of its own. Callers without a `traceparent` (a browser
