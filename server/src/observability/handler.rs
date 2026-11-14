@@ -1052,8 +1052,9 @@ async fn finops_scope(
     }
 }
 
-/// Whether the caller owns the agent named by the filter; `unfiltered` answers when there is none
-/// (the dashboard's `my_agent`: browsing only your own agents).
+/// Whether the caller owns the agent named by the filter; with no filter, `unfiltered` asks for the
+/// dashboard's `my_agent` (browsing only your own agents), which holds only while no one else's
+/// agent shares a name with one of yours: the spend rows are matched by name.
 async fn owns_filtered_agent(
     state: &AppState,
     claims: &Claims,
@@ -1062,7 +1063,7 @@ async fn owns_filtered_agent(
 ) -> bool {
     match agent_name {
         Some(name) => super::routes::agent_name_owned_by_caller(state, claims, name).await,
-        None => unfiltered,
+        None => unfiltered && super::routes::agent_names_owned_by_caller(state, claims).await,
     }
 }
 
