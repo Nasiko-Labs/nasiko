@@ -129,6 +129,25 @@ describe('MCP catalog (plans/feat-mcp.md §2)', () => {
     expect(screen.getAllByRole('button', { name: copy.upload })).toHaveLength(1)
   })
 
+  it('walks an admin to Settings → MCP toolkits while there are no toolkits', async () => {
+    configureMocks({ variant: 'mcp-empty' })
+    renderApp('/mcp?view=toolkits')
+    expect(await screen.findByText(copy.toolkitSetup.title, {}, T)).toBeInTheDocument()
+    // The steps are the Toolkits view's empty card, not a second one.
+    expect(screen.queryByText(copy.empty.toolkits.title)).toBeNull()
+    expect(screen.getByRole('link', { name: copy.toolkitSetup.open })).toHaveAttribute(
+      'href',
+      '/settings?section=mcp',
+    )
+  })
+
+  it('tells anyone else to ask an admin, with no Settings link', async () => {
+    configureMocks({ variant: 'mcp-empty', superuser: false })
+    renderApp('/mcp')
+    expect(await screen.findByText(copy.toolkitSetup.askAdmin, {}, T)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: copy.toolkitSetup.open })).toBeNull()
+  })
+
   it('still lists custom servers when the toolkit list fails, and says so', async () => {
     configureMocks({ variant: 'mcp-toolkits-fail' })
     renderApp('/mcp')
