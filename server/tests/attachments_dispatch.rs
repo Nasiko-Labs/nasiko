@@ -1099,7 +1099,7 @@ async fn an_agent_with_no_media_code_gets_the_image_to_its_model_through_the_rou
     let seen_by_provider = Arc::new(Mutex::new(Vec::<Value>::new()));
     let capture = Arc::clone(&seen_by_provider);
     let _provider_mock = provider
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body_from_request(move |request| {

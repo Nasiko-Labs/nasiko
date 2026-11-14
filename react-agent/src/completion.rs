@@ -141,55 +141,101 @@ pub(crate) enum CompletionEvent {
 }
 
 impl UsageModel {
+    /// The user's saved key (`config.api_key`) → OpenAI-compatible endpoint. Otherwise the
+    /// router's platform default provider (`DEFAULT_PROVIDER`, else the first provider with
+    /// credentials). The platform `OPENAI_API_KEY` is deliberately not a user key: a Vertex
+    /// deployment that adds it only for Whisper must keep chatting on Vertex.
     pub fn from_config(config: &OrchestratorConfig) -> Result<Self, String> {
-        // An empty key is no key: sending it only earns the provider's 401.
-        let api_key = config
+        let explicit_key: Option<String> = config
             .api_key
             .clone()
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-            .filter(|key| !key.trim().is_empty())
-            .ok_or_else(|| NO_KEY_MESSAGE.to_owned())?;
+            .filter(|k: &String| !k.trim().is_empty());
+        match explicit_key {
+            Some(api_key) => Ok(Self::openai(config, api_key)),
+            None => Self::platform(config),
+        }
+    }
+
+    fn platform(config: &OrchestratorConfig) -> Result<Self, String> {
+        let gateway = nasiko_llm_router::config::GatewayConfig::from_env();
+        let provider: String = gateway.default_provider.clone();
+        let api_key: String = gateway.platform_key_for(&provider).to_string();
+        if api_key.is_empty() {
+            return Err(format!(
+                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
+            ));
+        }
+        let model: String = if config.model.trim().is_empty() {
+            gateway.default_model.clone()
+        } else {
+            config.model.clone()
+        };
+        let http = reqwest::Client::new();
+        let client = nasiko_llm_router::providers::provider_for(&provider, None, &http, &gateway)
+            .map_err(|e| e.to_string())?;
+        Ok(Self {
+            provider: Arc::from(client),
+            config: Self::resolved(provider.clone(), model, api_key),
+            wording: FailureWording {
+                key_source: config.api_key_source,
+                provider_is_openai: provider == "openai",
+            },
+            identity: Some(provider),
+        })
+    }
+
+    fn openai(config: &OrchestratorConfig, api_key: String) -> Self {
         let base = config
             .base_url
             .clone()
             .or_else(|| std::env::var("OPENAI_BASE_URL").ok())
             .unwrap_or_else(|| "https://api.openai.com/v1".into());
+        let fallback: String = nasiko_llm_router::openai_model::direct_openai_fallback();
+        let model: String = nasiko_llm_router::openai_model::resolve_direct_chat_model(
+            &config.model,
+            &base,
+            &fallback,
+        );
         // OpenAI-compatible wire format does not establish the hosting provider.
         let identity = reqwest::Url::parse(&base)
             .ok()
             .filter(|url| url.host_str() == Some("api.openai.com"))
             .map(|_| "openai".to_owned());
-        Ok(Self {
+        Self {
             provider: Arc::new(OpenAiProvider::new(reqwest::Client::new(), base)),
-            config: ResolvedConfig {
-                provider: "openai".into(),
-                model: config.model.clone(),
-                litellm_model: config.model.clone(),
-                api_key,
-                fallback_models: vec![],
-                temperature: None,
-                max_tokens: None,
-                has_llm_config: false,
-                pinned_model: None,
-                tier1_model: None,
-                tier2_model: None,
-                tier3_model: None,
-                platform_paid: true,
-                custom_endpoint: None,
-                is_coding_agent: false,
-                // Compression is a per-agent opt-in read from `agents.compress_enabled`.
-                // This is the orchestrator's own call against the provider, made from
-                // `OrchestratorConfig` with no agent row behind it, so nothing opted in.
-                compress_enabled: false,
-                // No agent row either, so no agent to key OpenAI's prompt cache by.
-                agent_id: String::new(),
-            },
+            config: Self::resolved("openai".into(), model, api_key),
             wording: FailureWording {
                 key_source: config.api_key_source,
                 provider_is_openai: identity.is_some(),
             },
             identity,
-        })
+        }
+    }
+
+    fn resolved(provider: String, model: String, api_key: String) -> ResolvedConfig {
+        ResolvedConfig {
+            provider,
+            litellm_model: model.clone(),
+            model,
+            api_key,
+            fallback_models: vec![],
+            temperature: None,
+            max_tokens: None,
+            has_llm_config: false,
+            pinned_model: None,
+            tier1_model: None,
+            tier2_model: None,
+            tier3_model: None,
+            platform_paid: true,
+            custom_endpoint: None,
+            is_coding_agent: false,
+            // Compression is a per-agent opt-in read from `agents.compress_enabled`.
+            // This is the orchestrator's own call against the provider, made from
+            // `OrchestratorConfig` with no agent row behind it, so nothing opted in.
+            compress_enabled: false,
+            // No agent row either, so no agent to key OpenAI's prompt cache by.
+            agent_id: String::new(),
+        }
     }
 
     pub fn call_identity(&self, streaming: bool) -> CallUsage {
@@ -590,6 +636,34 @@ mod tests {
         ) -> Result<EmbeddingsResponse, ProviderError> {
             unreachable!("completion adapter does not embed")
         }
+    }
+
+    #[test]
+    fn saved_key_resolves_empty_and_foreign_models_on_official_host_only() {
+        let build = |model: &str, base: &str| -> String {
+            let m: UsageModel = UsageModel::from_config(&OrchestratorConfig {
+                api_key: Some("test-only".into()),
+                base_url: Some(base.into()),
+                model: model.into(),
+                ..Default::default()
+            })
+            .unwrap();
+            m.call_identity(false).model
+        };
+        let fallback: String = nasiko_llm_router::openai_model::direct_openai_fallback();
+        assert_eq!(build("", "https://api.openai.com/v1"), fallback);
+        assert_eq!(
+            build("gemini-4-hydrogen", "https://api.openai.com/v1"),
+            fallback
+        );
+        assert_eq!(
+            build("gemini-4-hydrogen", "https://llm.example.com/v1"),
+            "gemini-4-hydrogen"
+        );
+        assert_eq!(
+            build("gpt-6.1-sol", "https://api.openai.com/v1"),
+            "gpt-6.1-sol"
+        );
     }
 
     fn model(chunks: Vec<serde_json::Value>, fail: bool) -> (UsageModel, Arc<FakeProvider>) {

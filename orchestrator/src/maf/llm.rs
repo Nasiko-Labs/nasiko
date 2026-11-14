@@ -26,6 +26,19 @@ fn openai_rejects_temperature(body: &str) -> bool {
     param == "temperature" && matches!(code, "unsupported_value" | "unsupported_parameter")
 }
 
+tokio::task_local! {
+    /// Step index of the MAF phase running on this task; `None` for run-level phases.
+    pub static MAF_STEP: Option<i32>;
+}
+
+/// Routed-call label: `maf` becomes `maf:step<i>` inside a step phase; other labels unchanged.
+pub fn step_component(component: &str, step: Option<i32>) -> String {
+    match step {
+        Some(i) if component == "maf" => format!("maf:step{i}"),
+        _ => component.to_string(),
+    }
+}
+
 /// Whose OpenAI key a client spends, so a refused key can say who has to fix it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
@@ -140,6 +153,11 @@ pub struct LlmClient {
     pub model: String,
     /// Where this client's metered calls are recorded besides `trace_usage`.
     ledger: Arc<dyn UsageLedger>,
+    /// In-process LLM router. When set, calls go through it (any provider) and the
+    /// router writes `trace_usage`, so callers must not record usage themselves.
+    backend: Option<crate::llm_backend::SharedLlmBackend>,
+    /// Billing/labeling context for routed calls.
+    call: Option<crate::llm_backend::LlmCallContext>,
 }
 
 #[derive(Serialize)]
@@ -231,10 +249,13 @@ pub struct LlmUsage {
 }
 
 impl LlmClient {
-    /// The same client spending `api_key`, for a user who saved their own.
+    /// The same client spending `api_key`, for a user who saved their own. A user's key is an
+    /// OpenAI key, so the call goes to OpenAI directly, not through the router.
     pub fn with_api_key(&self, api_key: String) -> Self {
         Self {
             api_key,
+            backend: None,
+            call: None,
             key_source: KeySource::Owner,
             ..self.clone()
         }
@@ -258,7 +279,30 @@ impl LlmClient {
             base_url: base_url.unwrap_or_else(|| "https://api.openai.com/v1".into()),
             model,
             ledger: Arc::new(NoUsageLedger),
+            backend: None,
+            call: None,
         }
+    }
+
+    /// The same client, its calls served by the in-process LLM router.
+    pub fn with_backend(self, backend: crate::llm_backend::SharedLlmBackend) -> Self {
+        Self {
+            backend: Some(backend),
+            ..self
+        }
+    }
+
+    /// The same client, routed calls billed/labelled with `call`.
+    pub fn with_call(&self, call: crate::llm_backend::LlmCallContext) -> Self {
+        Self {
+            call: Some(call),
+            ..self.clone()
+        }
+    }
+
+    /// Whether calls go through the router (which then owns usage recording).
+    pub fn is_routed(&self) -> bool {
+        self.backend.is_some()
     }
 
     /// The same client, its metered calls handed to `ledger`.
@@ -335,6 +379,41 @@ impl LlmClient {
             body["response_format"] = fmt;
         }
 
+        if let Some(backend) = &self.backend {
+            let mut call = self
+                .call
+                .clone()
+                .unwrap_or(crate::llm_backend::LlmCallContext {
+                    user_id: uuid::Uuid::nil(),
+                    component: "maf".into(),
+                    session_id: None,
+                });
+            // A step phase runs inside `MAF_STEP.scope`; label its row `maf:step<i>` so
+            // `platform_spend` keeps the per-step split for router-recorded calls.
+            let step: Option<i32> = MAF_STEP.try_with(|s| *s).ok().flatten();
+            call.component = step_component(&call.component, step);
+            if self.model.is_empty() {
+                body.as_object_mut().unwrap().remove("model");
+            }
+            let started = std::time::Instant::now();
+            let value: serde_json::Value = backend
+                .chat(&call, body)
+                .await
+                .map_err(|e| LlmError::Other(e.to_string()))?;
+            let parsed: CompletionResponse = serde_json::from_value(value)
+                .map_err(|e| LlmError::Other(format!("LLM response parse error: {e}")))?;
+            return self
+                .finish(parsed, started, &self.model)
+                .map_err(LlmError::Other);
+        }
+
+        // Direct OpenAI call (user key): empty model → OpenAI default; a foreign model (e.g. an
+        // inherited Gemini `DEFAULT_MODEL`) → OpenAI default only on api.openai.com.
+        let fallback: String = crate::providers::direct_openai_fallback();
+        let direct_model: String =
+            crate::providers::resolve_direct_chat_model(&self.model, &self.base_url, &fallback);
+        body["model"] = serde_json::json!(direct_model);
+
         let send = |body: &serde_json::Value| {
             self.http
                 .post(format!("{}/chat/completions", self.base_url))
@@ -370,7 +449,16 @@ impl LlmClient {
             .json()
             .await
             .map_err(|e| LlmError::Other(format!("LLM response parse error: {e}")))?;
+        self.finish(parsed, started, &direct_model)
+            .map_err(LlmError::Other)
+    }
 
+    fn finish(
+        &self,
+        parsed: CompletionResponse,
+        started: std::time::Instant,
+        sent_model: &str,
+    ) -> Result<(String, LlmUsage), String> {
         let latency_ms = started.elapsed().as_millis() as i64;
         let usage = match parsed.usage {
             Some(u) => LlmUsage {
@@ -387,12 +475,12 @@ impl LlmClient {
                     .prompt_tokens_details
                     .map(|d| d.cached_tokens)
                     .unwrap_or(0),
-                model: parsed.model.unwrap_or_else(|| self.model.clone()),
+                model: parsed.model.unwrap_or_else(|| sent_model.to_owned()),
                 latency_ms,
             },
             // No usage block at all: record the call happened, with zeroes.
             None => LlmUsage {
-                model: parsed.model.unwrap_or_else(|| self.model.clone()),
+                model: parsed.model.unwrap_or_else(|| sent_model.to_owned()),
                 latency_ms,
                 ..Default::default()
             },

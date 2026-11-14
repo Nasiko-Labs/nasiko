@@ -239,17 +239,19 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
     Ok(combined)
 }
 
-/// The generator for `user_id`, or the answer to send when there is no OpenAI key to call it with.
 async fn make_generator(
     state: &AppState,
     user_id: Uuid,
 ) -> Result<CapabilityGenerator, axum::response::Response> {
-    let provider =
-        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
-            .await;
-    if !provider.has_api_key() {
-        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY).into_response());
-    }
+    // No saved user key: the call goes through the in-process LLM router.
+    let provider = nasiko_orchestrator::user_key::routed_llm_provider(
+        &state.db,
+        state.http_client.clone(),
+        user_id,
+        Some(&state.llm_backend),
+        "capability_generation",
+    )
+    .await;
     // `state.config.capability_generator_model` is already loaded via
     // `env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini")`
     // (oss/config/src/lib.rs) — read that resolved config value instead of

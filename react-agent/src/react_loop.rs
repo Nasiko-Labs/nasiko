@@ -404,7 +404,7 @@ pub struct OrchestratorConfig {
     pub temperature: Option<f64>,
     /// OpenAI-compatible base URL. If None, uses OPENAI_BASE_URL env var.
     pub base_url: Option<String>,
-    /// API key. If None, uses OPENAI_API_KEY env var.
+    /// The user's saved OpenAI key. If None, the router's platform provider is used.
     pub api_key: Option<String>,
     /// Whose key `api_key` is, which decides what a refused key tells the user to do.
     pub api_key_source: ApiKeySource,

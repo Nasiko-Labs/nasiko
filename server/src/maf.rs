@@ -2617,20 +2617,27 @@ async fn generate_maf(
     } else {
         "platform"
     };
-    let server_key = state.config.openai_api_key.clone();
-    if saved_key.is_none() && server_key.is_none() {
-        return err_json(StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY_MESSAGE);
-    }
-    let server_llm = LlmClient::new(
-        state.http_client.clone(),
-        server_key.unwrap_or_default(),
-        state.config.openai_base_url.clone(),
-        state.config.openai_model.clone(),
-    );
-    // A saved key makes the client the owner's, so a refusal names the owner's key.
+    // A saved user key is spent directly; otherwise the planner call goes through the
+    // in-process router (any configured provider), which records its usage.
     let llm = match saved_key {
-        Some(key) => server_llm.with_api_key(key),
-        None => server_llm,
+        Some(k) => LlmClient::new(
+            state.http_client.clone(),
+            k,
+            state.config.openai_base_url.clone(),
+            state.config.openai_model.clone(),
+        ),
+        None => LlmClient::new(
+            state.http_client.clone(),
+            String::new(),
+            state.config.openai_base_url.clone(),
+            crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_default(),
+        )
+        .with_backend(std::sync::Arc::clone(&state.llm_backend))
+        .with_call(nasiko_orchestrator::llm_backend::LlmCallContext {
+            user_id,
+            component: nasiko_orchestrator::llm_backend::PlatformComponent::MafPlanner.to_string(),
+            session_id: None,
+        }),
     };
 
     // Fetch all agents visible to this user
@@ -2655,7 +2662,8 @@ async fn generate_maf(
         .collect();
 
     let (plan, usage) = planner::plan_maf(&req.description, &planner_agents, &llm).await;
-    if let Some(usage) = usage {
+    // Routed calls: the router already wrote `trace_usage`.
+    if let Some(usage) = usage.filter(|_| !llm.is_routed()) {
         record_planner_usage(&state.db, user_id, &llm, key_source, &usage).await;
     }
     match plan {

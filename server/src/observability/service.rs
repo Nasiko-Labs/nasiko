@@ -899,10 +899,6 @@ pub struct FinopsDashboardData {
     /// plus an "Others" catchall, ready to feed a pie/donut chart without any
     /// client-side aggregation.
     pub spend_by_agent: SpendByAgentBreakdown,
-    /// Who spent it: one row per user in the window, largest spender first, under the same
-    /// filters as everything above. A caller who may not see other users gets only their own
-    /// row (`handler::get_finops_dashboard`).
-    pub users: Vec<UserFinopsRow>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1167,26 +1163,6 @@ pub struct SpendByAgentBreakdown {
     pub total_spend_usd: f64,
 }
 
-/// One user's usage in the dashboard window.
-#[derive(Serialize, Clone, Debug, ToSchema, sqlx::FromRow)]
-pub struct UserFinopsRow {
-    /// `None` for calls no user made: the platform's own routing and planning.
-    pub user_id: Option<String>,
-    pub username: Option<String>,
-    pub email: Option<String>,
-    pub total_cost: f64,
-    pub operations: i64,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub cache_read_tokens: i64,
-    pub cache_creation_tokens: i64,
-    /// Prompt, completion and both cache counts, as the dashboard's `token_usage` counts them.
-    pub total_tokens: i64,
-    pub tool_call_count: i64,
-    /// How many agents the user's calls went to.
-    pub agents: i64,
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct FinopsDayDrilldownResponse {
     pub data: FinopsDayDrilldown,
@@ -1323,7 +1299,13 @@ pub struct ObservabilityService {
     http_client: reqwest::Client,
     config: Arc<Config>,
     store: nasiko_event_store::EventStore,
+    /// In-process LLM router; serves insights when the user saved no OpenAI key.
+    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 }
+
+/// `trace_usage.agent_name` for finops insight calls.
+const INSIGHTS_COMPONENT: &str =
+    nasiko_orchestrator::llm_backend::PlatformComponent::FinopsInsights.as_str();
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnsureSessionOutcome {
@@ -1417,6 +1399,7 @@ impl ObservabilityService {
             http_client: state.http_client.clone(),
             config: state.config.clone(),
             store: state.event_store(),
+            llm_backend: Arc::clone(&state.llm_backend),
         }
     }
 
@@ -2640,7 +2623,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2657,7 +2640,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2689,7 +2672,7 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
@@ -2721,49 +2704,9 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
-        .await
-        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        // 5. Per user, under the same filters: who spent what.
-        let users: Vec<UserFinopsRow> = sqlx::query_as(
-            r#"SELECT s.user_id::TEXT AS user_id, u.username, u.email,
-                      COALESCE(SUM(s.cost_usd), 0)::FLOAT8 AS total_cost,
-                      COALESCE(SUM(s.traces), 0)::BIGINT AS operations,
-                      COALESCE(SUM(s.input_tokens), 0)::BIGINT AS prompt_tokens,
-                      COALESCE(SUM(s.output_tokens), 0)::BIGINT AS completion_tokens,
-                      COALESCE(SUM(s.cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
-                      COALESCE(SUM(s.cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
-                      COALESCE(SUM(s.input_tokens + s.output_tokens + s.cache_read_tokens
-                                   + s.cache_creation_tokens), 0)::BIGINT AS total_tokens,
-                      COALESCE(SUM(s.tool_call_count), 0)::BIGINT AS tool_call_count,
-                      COUNT(DISTINCT s.agent_name)::BIGINT AS agents
-               FROM trace_spend s
-               LEFT JOIN users u ON u.id = s.user_id
-               WHERE s.ts >= $1 AND s.ts < $2
-                 AND ($3::TEXT IS NULL OR s.agent_name = $3)
-                 AND ($4::TEXT IS NULL OR s.model = $4)
-                 AND ($5::TEXT IS NULL OR s.provider = $5)
-                 AND (NOT $6::BOOL OR s.user_id = ANY($7::UUID[]))
-                 AND ($8::TEXT[] IS NULL OR s.agent_name = ANY($8)
-                      OR (s.user_id = $9 AND (s.agent_name = ANY($10) OR s.agent_name LIKE $11)))
-               GROUP BY s.user_id, u.username, u.email
-               ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
-        )
-        .bind(start)
-        .bind(now)
-        .bind(agent_filter)
-        .bind(model_filter)
-        .bind(provider_filter)
-        .bind(has_user_filter)
-        .bind(&user_id_list)
-        .bind(&scoped_names)
-        .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
-        .bind(PLATFORM_STEP_ROW_PATTERN)
-        .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
@@ -3082,7 +3025,6 @@ impl ObservabilityService {
                 kpis,
                 attributions,
                 spend_by_agent,
-                users,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -3843,16 +3785,8 @@ impl ObservabilityService {
         payload: &InsightsRequest,
         user_id: uuid::Uuid,
     ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
-        let base_url = self
-            .config
-            .openai_base_url
-            .as_deref()
-            .unwrap_or("https://api.openai.com/v1");
-        let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
-        let api_key = saved_key
-            .as_deref()
-            .or(self.config.openai_api_key.as_deref())
-            .unwrap_or_default();
+        let saved_key: Option<String> =
+            nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
 
         let prompt = format!(
             r#"You are a FinOps analyst reviewing AI agent usage metrics for the last 30 days.
@@ -3869,33 +3803,26 @@ Data: {}"#,
         );
 
         let body = serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": &self.config.capability_generator_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 200,
             "temperature": 0.3,
         });
 
-        let resp = self
-            .http_client
-            .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::Internal(format!(
-                "LLM HTTP {status}: {text}"
-            )));
-        }
-
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
+        let json: Value = match saved_key {
+            Some(api_key) => self.insights_with_user_key(&api_key, &body).await?,
+            None => {
+                let call = nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id,
+                    component: INSIGHTS_COMPONENT.to_string(),
+                    session_id: None,
+                };
+                self.llm_backend
+                    .chat(&call, body)
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.message))?
+            }
+        };
 
         let text = json["choices"][0]["message"]["content"]
             .as_str()
@@ -3912,6 +3839,47 @@ Data: {}"#,
             status_code: 200,
             message: "Insights generated successfully".into(),
         })
+    }
+
+    /// Insights on the user's own saved OpenAI key; bypasses the router (user pays).
+    async fn insights_with_user_key(
+        &self,
+        api_key: &str,
+        body: &Value,
+    ) -> Result<Value, ObservabilityError> {
+        let base_url: &str = self
+            .config
+            .openai_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        // Inherited task model may be another provider's (e.g. Gemini `DEFAULT_MODEL`);
+        // swap it only on the official OpenAI API, keep it on custom compatible endpoints.
+        let mut body: Value = body.clone();
+        if nasiko_orchestrator::providers::is_official_openai(base_url) {
+            let requested: String = body["model"].as_str().unwrap_or_default().to_owned();
+            let fallback: String = nasiko_orchestrator::providers::direct_openai_fallback();
+            body["model"] = Value::String(nasiko_orchestrator::providers::direct_openai_model(
+                &requested, &fallback,
+            ));
+        }
+        let resp = self
+            .http_client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ObservabilityError::Internal(format!(
+                "LLM HTTP {status}: {text}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))
     }
 
     // ── 8. finops/agent-hours ─────────────────────────────────────────────────
@@ -4097,19 +4065,19 @@ fn empty_agent_hours_response(
 /// The `trace_usage.agent_name`s the platform's own model calls are written under, which belong
 /// to no registered agent: the chat orchestrator (`router::usage_meta::PricedTurn::persist`), the
 /// routing selector (`nasiko_orchestrator` `write_selector_usage`) and MAF's run-level phases
-/// (`executor::maf_agent_name(None)`). MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
-const PLATFORM_ROW_NAMES: [&str; 3] = ["orchestrator", "router_selection", "maf"];
+/// (`executor::maf_agent_name(None)`) and every router-billed component; the list lives in
+/// `PlatformComponent`. MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
+fn platform_row_names() -> Vec<&'static str> {
+    nasiko_orchestrator::llm_backend::PlatformComponent::all_names()
+}
 
 /// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
 const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
 
-/// Whether `agent_name` is one of the platform's own rows: [`PLATFORM_ROW_NAMES`], or a MAF
+/// Whether `agent_name` is one of the platform's own rows: [`platform_row_names`], or a MAF
 /// per-step row matching [`PLATFORM_STEP_ROW_PATTERN`].
 fn is_platform_row_name(agent_name: &str) -> bool {
-    PLATFORM_ROW_NAMES.contains(&agent_name)
-        || PLATFORM_STEP_ROW_PATTERN
-            .strip_suffix('%')
-            .is_some_and(|prefix| agent_name.starts_with(prefix))
+    nasiko_orchestrator::llm_backend::PlatformComponent::is_platform_row(agent_name)
 }
 
 /// The agent usage booked on one MAF step's trace (`step_trace_usage`), or a run's sum of them.
@@ -4193,7 +4161,6 @@ fn empty_finops_response(
                 slices: vec![],
                 total_spend_usd: 0.0,
             },
-            users: vec![],
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
@@ -4234,7 +4201,7 @@ mod tests {
     #[test]
     fn platform_row_names_match_the_maf_writers() {
         use nasiko_orchestrator::maf::executor::maf_agent_name;
-        assert!(PLATFORM_ROW_NAMES.contains(&maf_agent_name(None).as_str()));
+        assert!(platform_row_names().contains(&maf_agent_name(None).as_str()));
         let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
         assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
     }

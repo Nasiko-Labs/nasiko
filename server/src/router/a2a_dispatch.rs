@@ -761,9 +761,22 @@ pub(crate) async fn orchestrator_stream(
         // fallback ("deepseek-v4-flash") that doesn't exist on a real OpenAI
         // endpoint and silently 404s every orchestrator call when OPENAI_MODEL
         // is unset.
-        model: state.config.openai_model.clone(),
+        // Unset `OPENAI_MODEL` → empty, so a router-backed turn uses the router's default
+        // model instead of the compiled `gpt-4o-mini` (unservable on e.g. Vertex-only).
+        model: crate::state::explicit_openai_model(&state.config.openai_model).unwrap_or_else(
+            || {
+                let has_openai_key: bool = saved_key.is_some();
+                if has_openai_key {
+                    state.config.openai_model.clone()
+                } else {
+                    String::new()
+                }
+            },
+        ),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
-        api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
+        // Only the user's saved key goes direct to OpenAI; platform credentials (including
+        // `OPENAI_API_KEY`) are picked by the router via `DEFAULT_PROVIDER`.
+        api_key: saved_key,
         api_key_source,
         max_turns: 10,
         temperature: Some(0.2),
