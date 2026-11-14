@@ -114,9 +114,10 @@ describe('Create workflow (plans/feat-workflows.md §3, §4)', () => {
       'Anything',
     )
     await userEvent.click(screen.getByRole('button', { name: copy.generate }))
+    // The server's message already opens with "AI drafting failed:" (maf.rs `planning_failed`): said once.
     expect(
       await screen.findByText(
-        copy.plan['key-rejected']('OpenAI rejected your saved API key. Update it in LLM router'),
+        'AI drafting failed: OpenAI rejected your saved API key. Update it in LLM router, then try again. You can still add steps manually below.',
         {},
         T,
       ),

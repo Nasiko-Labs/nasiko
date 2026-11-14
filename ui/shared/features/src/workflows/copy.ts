@@ -38,6 +38,9 @@ export const AGE_FILTER_LABEL: Record<RunAgeFilter, string> = {
 
 export const HEALTH_LABEL = { healthy: 'Healthy', degraded: 'Degraded', unhealthy: 'Unhealthy' }
 
+/** A server sentence used mid-message: trimmed, without its closing full stop (the message adds its own). */
+const clause = (said: string) => said.trim().replace(/\.$/, '')
+
 export const copy = {
   nav: { deployed: 'Deployed', drafts: 'Drafts', runs: 'Runs', label: 'Workflows' },
   title: 'Workflows',
@@ -130,10 +133,11 @@ export const copy = {
     // The server's reason says which key (yours or the server's) and where it goes; this is the wording without one.
     'no-key': (said: string | null) =>
       said
-        ? `AI drafting isn't available: ${said}. You can still add steps manually below.`
+        ? `AI drafting isn't available: ${clause(said)}. You can still add steps manually below.`
         : "AI drafting isn't available: this server has no model API key configured. You can still add steps manually below.",
+    // maf.rs `planning_failed` already opens with "AI drafting failed:", so it isn't said twice.
     'key-rejected': (said: string | null) =>
-      `AI drafting failed: ${said ? `${said}.` : 'the model provider rejected the API key.'} You can still add steps manually below.`,
+      `AI drafting failed: ${said ? clause(said.replace(/^AI drafting failed:\s*/i, '')) : 'the model provider rejected the API key'}. You can still add steps manually below.`,
     noAgentsBefore: "You don't have any agents yet, so there's nothing to plan with.",
     noAgentsLink: 'Deploy an agent',
     noAgentsAfter: 'first, then draft steps.',

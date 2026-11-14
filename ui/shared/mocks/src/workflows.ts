@@ -919,7 +919,7 @@ export function workflowHandlers(ctx: WorkflowsCtx): HttpHandler[] {
         if (ctx.hasVariant('workflows-key-rejected'))
           throw new MafError(
             502,
-            'OpenAI rejected your saved API key. Update it in LLM router',
+            'AI drafting failed: OpenAI rejected your saved API key. Update it in LLM router, then try again.',
             'llm_key_rejected',
           )
         const mine = ctx

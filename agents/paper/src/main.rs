@@ -23,7 +23,18 @@ fn llm_error_message(status: reqwest::StatusCode, body: &str) -> String {
             status.as_u16()
         );
     }
-    format!("LLM API {status}: {body}")
+    // The provider's (or the LLM router's) own `error.message` when the body carries one, so the
+    // user reads a sentence rather than a JSON dump; the raw body stays in the log.
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v["error"]["message"].as_str().map(str::to_owned));
+    match message {
+        Some(message) => {
+            tracing::warn!(%status, body, "model call failed");
+            format!("LLM API {status}: {message}")
+        }
+        None => format!("LLM API {status}: {body}"),
+    }
 }
 
 struct PaperAgent {
