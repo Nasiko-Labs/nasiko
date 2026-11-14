@@ -2317,7 +2317,10 @@ mod tests {
             "data: {\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":5,\"totalTokenCount\":15}}\n\n"
         );
         server
-            .mock("POST", "/models/gemini-1.5-pro:streamGenerateContent?alt=sse")
+            .mock(
+                "POST",
+                "/models/gemini-1.5-pro:streamGenerateContent?alt=sse",
+            )
             .with_status(200)
             .with_header("content-type", "text/event-stream")
             .with_body(sse)
@@ -2329,9 +2332,16 @@ mod tests {
             json!({ "stream": true, "messages": [{ "role": "user", "content": "hi" }] }),
         )
         .unwrap();
-        let results: Vec<Result<ChatChunk, ProviderError>> =
-            provider.chat_stream(&req, &resolved()).await.unwrap().collect().await;
-        assert!(results.iter().all(|r| r.is_ok()), "unexpected error: {results:?}");
+        let results: Vec<Result<ChatChunk, ProviderError>> = provider
+            .chat_stream(&req, &resolved())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(
+            results.iter().all(|r| r.is_ok()),
+            "unexpected error: {results:?}"
+        );
         let chunks: Vec<ChatChunk> = results.into_iter().map(|r| r.unwrap()).collect();
         let tc_delta = chunks
             .iter()
@@ -2341,11 +2351,17 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(
-            tc_delta.extra.get("thought_signature").and_then(|v| v.as_str()),
+            tc_delta
+                .extra
+                .get("thought_signature")
+                .and_then(|v| v.as_str()),
             Some("sig-stream-1")
         );
         assert_eq!(
-            chunks.last().and_then(|c| c.usage.as_ref()).and_then(|u| u.total_tokens),
+            chunks
+                .last()
+                .and_then(|c| c.usage.as_ref())
+                .and_then(|u| u.total_tokens),
             Some(15)
         );
     }
