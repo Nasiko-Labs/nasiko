@@ -791,6 +791,7 @@ async fn github_clone(
     if let Err((code, msg)) = crate::agents::validate_image_ref(
         &state.db,
         &state.config.agent_image_registry,
+        &state.config.agent_image_registry_aliases,
         &image_tag,
         user_id,
         false,

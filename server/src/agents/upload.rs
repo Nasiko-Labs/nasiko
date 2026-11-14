@@ -604,6 +604,7 @@ pub(crate) async fn upload_and_deploy(
     if let Err((code, msg)) = crate::agents::validate_image_ref(
         &state.db,
         &state.config.agent_image_registry,
+        &state.config.agent_image_registry_aliases,
         &image_tag,
         owner_id,
         false, // Non-superusers validated here; superusers skip this path via deployer gate
@@ -1427,6 +1428,7 @@ pub async fn execute_clone_and_deploy(
             if let Err((_, msg)) = crate::agents::validate_image_ref(
                 db,
                 agent_image_registry,
+                &state.config.agent_image_registry_aliases,
                 &new_tag,
                 owner_id,
                 false,

@@ -652,13 +652,27 @@ impl AppState {
         crate::composio_settings::apply_stored_key(self).await;
         tokio::spawn(crate::composio_settings::watch_stored_key(self.clone()));
 
+        // Before the seeding below, which compares each seed's stored image with its mirror: after
+        // a rename, references to the registry's former hosts move to its current one first, and
+        // the agents they moved are redeployed in the background (see `agents::rehost`).
+        let registry = &self.config.agent_image_registry;
+        if self.config.agent_image_registry_placeholder.as_ref() != Some(registry) {
+            let aliases = &self.config.agent_image_registry_aliases;
+            match crate::agents::rehost::rewrite_references(&self.db, registry, aliases).await {
+                Ok(0) => {}
+                Ok(queued) => tracing::info!(
+                    queued,
+                    %registry,
+                    "registry rehost: image references moved to the current registry host"
+                ),
+                Err(e) => tracing::error!(%e, "registry rehost: moving image references failed"),
+            }
+            tokio::spawn(crate::agents::rehost::retry_until_drained(self.clone()));
+        }
+
         let state = self.clone();
         tokio::spawn(async move {
             crate::seed::seed_agents_if_configured(&state).await;
-            // After the agents: each step binds to a seed agent's row, which
-            // the line above registers (its deploy may still be in progress;
-            // a step finds its agent's endpoint when it runs).
-            crate::seed_workflows::seed_workflows_if_configured(&state).await;
             crate::seed::seed_harness_agents_if_enabled(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
         });

@@ -290,6 +290,7 @@ pub(crate) async fn update_agent(
     if let Err((code, msg)) = crate::agents::validate_image_ref(
         &state.db,
         &state.config.agent_image_registry,
+        &state.config.agent_image_registry_aliases,
         &image_tag,
         agent_owner_id,
         claims.is_superuser,

@@ -225,6 +225,7 @@ async fn deploy(
             match crate::agents::canonicalize_and_validate_image_ref(
                 &state.db,
                 &state.config.agent_image_registry,
+                &state.config.agent_image_registry_aliases,
                 &req.image,
                 owner_id,
                 claims.is_superuser,

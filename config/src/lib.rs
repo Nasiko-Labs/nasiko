@@ -90,6 +90,12 @@ pub struct Config {
     /// Work that bakes the address into deployed agents, such as seeding,
     /// waits while the two are equal.
     pub agent_image_registry_placeholder: Option<String>,
+    /// Other hosts this control plane's registry answers on
+    /// (`AGENT_IMAGE_REGISTRY_ALIASES`, comma-separated): its names before a
+    /// rename. An image naming one of them is this registry's, so it is held to
+    /// the namespace rules, and at startup every stored reference to one is
+    /// moved to `agent_image_registry` (`agents::rehost`).
+    pub agent_image_registry_aliases: Vec<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -130,10 +136,6 @@ pub struct Config {
     /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
     /// agent name. Empty when unset; an invalid value fails startup.
     pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
-    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
-    /// after `SEED_AGENTS`, as public workflows every user can run
-    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
-    pub seed_workflows: String,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -781,6 +783,10 @@ impl Config {
                 .ok()
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty()),
+            agent_image_registry_aliases: registry_aliases(
+                &std::env::var("AGENT_IMAGE_REGISTRY_ALIASES").unwrap_or_default(),
+                &env_or("AGENT_IMAGE_REGISTRY", ""),
+            ),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -801,7 +807,6 @@ impl Config {
                 std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
             )
             .map_err(anyhow::Error::msg)?,
-            seed_workflows: env_or("SEED_WORKFLOWS", ""),
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
@@ -1354,6 +1359,34 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `AGENT_IMAGE_REGISTRY_ALIASES`: comma-separated, trimmed, empty entries and
+/// the registry's own host dropped (an image naming it is already this
+/// registry's, and rehosting it onto itself would be a pointless rewrite).
+fn registry_aliases(raw: &str, registry: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty() && *alias != registry.trim())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(test)]
+mod registry_alias_tests {
+    use super::registry_aliases;
+
+    #[test]
+    fn aliases_drop_blanks_and_the_registry_itself() {
+        assert_eq!(
+            registry_aliases(
+                " free.nasiko.dev , ,free.app.nasiko.com",
+                "free.app.nasiko.com"
+            ),
+            vec!["free.nasiko.dev"]
+        );
+        assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
+    }
 }
 
 #[cfg(test)]

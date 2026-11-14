@@ -277,6 +277,7 @@ pub(crate) async fn build_and_deploy(
     crate::agents::validate_image_ref(
         &state.db,
         &state.config.agent_image_registry,
+        &state.config.agent_image_registry_aliases,
         &image_tag,
         owner_id,
         false, // Import is deployer-gated, but still validate non-superusers
