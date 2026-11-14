@@ -619,6 +619,7 @@ let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
 /** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
 const SETTINGS_DEFAULTS = {
+  router_model: 'deepseek-v4-pro',
   default_provider: 'openai',
   max_flow_depth: 5,
   max_flow_fan_out: 20,
@@ -627,9 +628,6 @@ const SETTINGS_DEFAULTS = {
   registry_url: null,
   catalog_tabs: null,
 }
-/** `SettingsResponse`'s models: the server's `OPENAI_MODEL` and `ROUTER_MODEL`, never stored. Distinct so tests can
- * tell the two rows apart (a cloud workspace runs `gpt-4o-mini` for both). */
-const SETTINGS_MODELS = { orchestrator_model: 'gpt-4o-mini', router_model: 'gpt-4.1-mini' }
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
 // scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
 // What stays here is only what the harness itself owns: the `?mock=` variant names and the `budgets` group key.
@@ -2131,12 +2129,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   settings: [
     // settings.rs at 43833316: a bare object; with no row yet, its hard-coded defaults.
     http.get('/api/settings', () =>
-      loggedIn
-        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_MODELS })
-        : unauthorized(),
+      loggedIn ? HttpResponse.json(settingsRow ?? SETTINGS_DEFAULTS) : unauthorized(),
     ),
-    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). A
-    // `router_model` in the body is ignored: the models come from the server's environment.
+    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2).
     http.put('/api/settings', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (!sessionUser().is_superuser) return text('requires superuser', 403)
@@ -2144,7 +2139,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       settingsRow = Object.fromEntries(
         Object.keys(SETTINGS_DEFAULTS).map((k) => [k, body[k] ?? null]),
       )
-      return HttpResponse.json({ ...settingsRow, ...SETTINGS_MODELS })
+      return HttpResponse.json(settingsRow)
     }),
     ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],
@@ -2718,7 +2713,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()
