@@ -44,6 +44,11 @@ pub enum McpError {
     #[error("composio error: {0}")]
     Composio(String),
 
+    /// Composio refused this server's API key. Safe to show on every surface: it names only what
+    /// to update, never the key or Composio's response.
+    #[error("Composio rejected the API key. Update it in Settings → MCP toolkits.")]
+    ComposioKeyRejected,
+
     /// OAuth 2.1 discovery / token exchange failure.
     #[error("oauth error: {0}")]
     Oauth(String),
@@ -94,7 +99,10 @@ impl McpError {
             McpError::Conflict(_) => 409,
             McpError::ToolApprovalRequired(_) => 428, // Precondition Required
             McpError::NotConfigured(_) => 503,
-            McpError::Backend(_) | McpError::Composio(_) | McpError::Oauth(_) => 502,
+            McpError::Backend(_)
+            | McpError::Composio(_)
+            | McpError::ComposioKeyRejected
+            | McpError::Oauth(_) => 502,
             _ => 500,
         }
     }
@@ -150,7 +158,8 @@ impl McpError {
             | McpError::Conflict(_)
             | McpError::ToolBlocked(_)
             | McpError::ToolApprovalRequired(_)
-            | McpError::NotConfigured(_) => self.to_string(),
+            | McpError::NotConfigured(_)
+            | McpError::ComposioKeyRejected => self.to_string(),
         };
         JsonRpcError::new(code, message)
     }
@@ -204,7 +213,8 @@ impl McpError {
             | McpError::ToolApprovalRequired(_)
             | McpError::NotConfigured(_)
             | McpError::Backend(_)
-            | McpError::Composio(_) => self.to_string(),
+            | McpError::Composio(_)
+            | McpError::ComposioKeyRejected => self.to_string(),
         }
     }
 }

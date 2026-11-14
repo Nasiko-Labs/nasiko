@@ -226,7 +226,12 @@ pub(crate) async fn get_secret(
                 .into_response(),
                 Err(e) => {
                     tracing::error!(%e, %user_id, "get_secret: decrypt failed");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "This secret can't be decrypted on this server (the encryption key \
+                         changed). Save it again.",
+                    )
+                        .into_response()
                 }
             }
         }

@@ -223,7 +223,7 @@ async fn start_harness_turn(
         Ok(minted) => minted,
         Err(e) => {
             let _ = lifecycle::release_turn(&state.db, &lease).await;
-            return Err(CodingTurnError::Setup(format!("session credential: {e}")));
+            return Err(CodingTurnError::from_credential("session credential", e));
         }
     };
     let token_id = RevokedTokenId::from_minted(&minted);
@@ -637,7 +637,10 @@ async fn turn_harness(
         .await?
         .filter(|h| h.enabled)
         .ok_or_else(|| {
-            CodingTurnError::Setup(format!("harness {:?} is not enabled", target.harness_id))
+            CodingTurnError::NotConfigured(format!(
+                "Harness '{}' is not enabled on this server",
+                target.harness_id
+            ))
         })?;
     Ok(with_hitl_argv(harness, hitl))
 }

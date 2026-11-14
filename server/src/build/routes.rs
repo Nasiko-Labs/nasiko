@@ -314,7 +314,13 @@ async fn create_build(
             .await
         {
             tracing::error!(%e, %agent_id, %key, "create_build: failed to upload source");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            // A storage backend fault (credentials, endpoint, bucket) is the operator's to fix,
+            // and the error that says which is in the log.
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "file storage is unavailable; ask your admin to check the S3_* settings",
+            )
+                .into_response();
         }
         Some(key)
     } else {
@@ -379,7 +385,6 @@ pub async fn execute_build(
     http_client: reqwest::Client,
     allowed_hosts: Vec<String>,
     capability_generator_model: String,
-    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 ) {
     set_build_status(&db, build_id, BuildStatus::Building).await;
 
@@ -513,7 +518,6 @@ pub async fn execute_build(
                     key,
                     &agent_name,
                     &capability_generator_model,
-                    &llm_backend,
                 )
                 .await;
             }
@@ -794,7 +798,6 @@ pub async fn auto_generate_capabilities_pub(
     source_key: &str,
     agent_name: &str,
     capability_generator_model: &str,
-    llm_backend: &nasiko_orchestrator::llm_backend::SharedLlmBackend,
 ) {
     use crate::capabilities::generator::CapabilityGenerator;
     use nasiko_orchestrator::providers::LLMProvider;
@@ -822,27 +825,10 @@ pub async fn auto_generate_capabilities_pub(
     .ok()
     .flatten();
     let provider = match owner {
-        // No saved user key: the call goes through the in-process LLM router.
         Some(owner) => {
-            nasiko_orchestrator::user_key::routed_llm_provider(
-                db,
-                http_client.clone(),
-                owner,
-                Some(llm_backend),
-                "capability_generation",
-            )
-            .await
+            nasiko_orchestrator::user_key::llm_provider(db, http_client.clone(), owner).await
         }
-        None => LLMProvider::from_env(http_client.clone()).with_backend(
-            std::sync::Arc::clone(llm_backend),
-            nasiko_orchestrator::llm_backend::LlmCallContext {
-                user_id: Uuid::nil(),
-                component:
-                    nasiko_orchestrator::llm_backend::PlatformComponent::CapabilityGeneration
-                        .to_string(),
-                session_id: None,
-            },
-        ),
+        None => LLMProvider::from_env(http_client.clone()),
     };
     // Caller passes `state.config.capability_generator_model` (already
     // resolved from `CAPABILITY_GENERATOR_MODEL`, default "gpt-4o-mini") —

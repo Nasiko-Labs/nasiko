@@ -10,6 +10,7 @@ path = "src/lib.rs"
 anyhow.workspace = true
 crossterm.workspace = true
 semver.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 zip.workspace = true
 

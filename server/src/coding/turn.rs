@@ -114,12 +114,34 @@ pub enum CodingTurnError {
     /// credential, an unusable catalog entry, a sandbox that offers the wrong transport.
     #[error("harness turn setup failed: {0}")]
     Setup(String),
+    /// This server is not set up to run the turn: no session-signing secret, or a harness that is
+    /// switched off. The message names what to change and is safe to show the caller, so it is
+    /// answered as `503` with the message, never as an internal error.
+    #[error("{0}")]
+    NotConfigured(String),
     #[error(transparent)]
     Runtime(#[from] nasiko_runtime::RuntimeError),
     #[error(transparent)]
     Acp(#[from] nasiko_acp_client::AcpError),
     #[error(transparent)]
     Db(#[from] sqlx::Error),
+}
+
+/// What the caller is told when coding sessions cannot run because no session-signing secret is set.
+pub const SESSIONS_NOT_CONFIGURED: &str =
+    "Coding sessions are not configured on this server (AGENT_JWT_SECRET is not set)";
+
+impl CodingTurnError {
+    /// A session credential could not be minted. A missing secret is a setup fault the caller can
+    /// be told about; any other failure stays an internal setup error.
+    pub fn from_credential(what: &str, error: nasiko_session_token::SessionTokenError) -> Self {
+        match error {
+            nasiko_session_token::SessionTokenError::SecretNotConfigured => {
+                Self::NotConfigured(SESSIONS_NOT_CONFIGURED.to_owned())
+            }
+            other => Self::Setup(format!("{what}: {other}")),
+        }
+    }
 }
 
 /// How long to wait for a freshly-deployed container to report `Running` before
@@ -957,6 +979,27 @@ pub(crate) fn replica_id() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{CodingTurnError, Utc, gateway_mcp_servers, lost_reason, safe_session_label};
+
+    #[test]
+    fn a_missing_signing_secret_is_named_to_the_caller() {
+        let e = CodingTurnError::from_credential(
+            "session credential",
+            nasiko_session_token::SessionTokenError::SecretNotConfigured,
+        );
+        assert!(
+            matches!(&e, CodingTurnError::NotConfigured(m) if m.contains("AGENT_JWT_SECRET")),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn any_other_credential_failure_stays_an_internal_setup_error() {
+        let e = CodingTurnError::from_credential(
+            "session credential",
+            nasiko_session_token::SessionTokenError::MissingToken,
+        );
+        assert!(matches!(e, CodingTurnError::Setup(_)), "{e:?}");
+    }
 
     #[test]
     fn a_lost_lease_is_worded_by_what_the_row_says() {

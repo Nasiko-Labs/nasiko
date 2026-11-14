@@ -446,7 +446,14 @@ async fn update_composio(
     });
     let failed = match task.await {
         Ok(Ok(failed)) => failed,
-        Ok(Err(e)) => return internal("composio settings: apply toolkits", e),
+        // The gateway's own redaction decides what is safe to name (a rejected Composio key is;
+        // database text is not), so the admin learns why the toolkits did not change.
+        Ok(Err(e)) => {
+            tracing::error!(%e, "composio settings: apply toolkits");
+            let status =
+                StatusCode::from_u16(e.http_status()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            return (status, e.client_message()).into_response();
+        }
         Err(e) => return internal("composio settings: apply toolkits", e),
     };
 

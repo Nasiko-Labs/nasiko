@@ -75,10 +75,12 @@ async fn main() {
     let telemetry_config = TelemetryConfig::from_env();
     init_telemetry(&telemetry_config);
 
-    let config = nasiko_config::Config::from_env().expect("invalid config");
-    config
-        .validate_secrets_key()
-        .expect("invalid SECRETS_ENCRYPTION_KEY at startup");
+    let config = nasiko_config::Config::from_env()
+        .unwrap_or_else(|e| nasiko_config::exit_invalid_config(format!("{e:#}")));
+    if let Err(e) = config.validate_secrets_key() {
+        nasiko_config::exit_invalid_config(format!("SECRETS_ENCRYPTION_KEY: {e}"));
+    }
+    config.warn_unset_optional_keys();
     let bind = config.bind.clone();
 
     // Build DB pool early so it can be shared with auth services. Raised from sqlx's
@@ -88,7 +90,8 @@ async fn main() {
     let db =
         connect_to_postgres_with_retry(&config.database_url, config.database_max_connections).await;
 
-    let jwt_secret = std::env::var("JWT_SECRET").expect("JWT_SECRET must be set");
+    let jwt_secret = nasiko_utils::required_env("JWT_SECRET")
+        .unwrap_or_else(|e| nasiko_config::exit_invalid_config(e));
     let auth: Arc<dyn nasiko_auth::AuthService> =
         Arc::new(nasiko_auth::AuthServiceImpl::new(db.clone(), jwt_secret));
 

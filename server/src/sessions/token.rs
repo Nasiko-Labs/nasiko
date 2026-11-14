@@ -288,7 +288,7 @@ pub async fn ensure_sandbox_token(needs: &TokenNeeds<'_>) -> Result<String, Codi
         session_id,
         needs.flow_id,
     )
-    .map_err(|e| setup("sandbox credential", e))?;
+    .map_err(|e| CodingTurnError::from_credential("sandbox credential", e))?;
     let stored = store_sandbox_token(&state.db, lease, agent_id, &minted.token, &minted.jti)
         .await
         .map_err(|e| setup("sandbox credential", e))?;

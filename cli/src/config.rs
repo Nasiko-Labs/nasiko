@@ -35,8 +35,13 @@ pub fn load() -> Result<Config> {
     }
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let config: Config = serde_json::from_str(&content)?;
-    Ok(config)
+    serde_json::from_str(&content).map_err(|e| {
+        anyhow::anyhow!(
+            "{} is not valid JSON ({e}) — fix or delete it, then run: {} connect <url>",
+            path.display(),
+            crate::commands::local_agents::cli_name()
+        )
+    })
 }
 
 pub fn save(config: &Config) -> Result<()> {
@@ -118,7 +123,7 @@ pub fn active_cluster() -> Result<(String, ClusterEntry)> {
     let entry = config
         .clusters
         .get(&name)
-        .ok_or_else(|| anyhow::anyhow!("cluster '{}' not found in config", name))?
+        .ok_or_else(|| missing_active_cluster(&name))?
         .clone();
     Ok((name, entry))
 }
@@ -242,17 +247,31 @@ pub fn connect(name: &str, url: &str) -> Result<()> {
     save(&config)
 }
 
-/// Save username + token for the active cluster after login.
+/// The active cluster names an entry the config file does not have (hand-edited, or removed).
+/// One plain line, like the other active-cluster errors.
+fn missing_active_cluster(name: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "active cluster '{name}' is not in {} — run: {} connect <url>, or {} use <name>",
+        config_path().display(),
+        crate::commands::local_agents::cli_name(),
+        crate::commands::local_agents::cli_name()
+    )
+}
+
+/// Save username + token for the active cluster after login. Fails rather than reporting a
+/// sign-in that saved nothing when the active cluster has no entry.
 pub fn save_login(username: &str, token: &str) -> Result<()> {
     let mut config = load()?;
     let name = config
         .active
         .clone()
         .ok_or_else(|| anyhow::anyhow!("no active cluster"))?;
-    if let Some(entry) = config.clusters.get_mut(&name) {
-        entry.username = Some(username.to_string());
-        entry.token = Some(token.to_string());
-    }
+    let entry = config
+        .clusters
+        .get_mut(&name)
+        .ok_or_else(|| missing_active_cluster(&name))?;
+    entry.username = Some(username.to_string());
+    entry.token = Some(token.to_string());
     save(&config)
 }
 

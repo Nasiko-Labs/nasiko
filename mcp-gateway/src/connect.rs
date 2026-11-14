@@ -201,10 +201,11 @@ pub(crate) async fn composio_connect(
     connector: &McpConnector,
     redirect_url: Option<&str>,
 ) -> Result<ConnectOutcome> {
-    let auth_config_id = connector
-        .auth_config_id
-        .as_deref()
-        .ok_or_else(|| McpError::Internal("composio connector missing auth_config_id".into()))?;
+    let auth_config_id = connector.auth_config_id.as_deref().ok_or_else(|| {
+        McpError::NotConfigured(
+            "this Composio connector isn't fully set up (no auth config); reconnect it".into(),
+        )
+    })?;
 
     if let Some(existing) = repo::get_user_connection(&state.db, user_id, connector.id).await? {
         match existing.status.as_str() {

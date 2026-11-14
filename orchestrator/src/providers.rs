@@ -3,7 +3,6 @@ use futures::StreamExt;
 use reqwest::Client;
 use std::time::Instant;
 
-use crate::llm_backend::{LlmCallContext, SharedLlmBackend};
 use crate::models::*;
 
 /// Provider abstraction for different LLM backends.
@@ -12,80 +11,6 @@ pub struct LLMProvider {
     client: Client,
     api_key: String,
     base_url: String,
-    /// When set, non-streaming calls go through the in-process LLM router, which picks
-    /// the provider and records usage.
-    routed: Option<(SharedLlmBackend, LlmCallContext)>,
-    /// Model sent on the direct OpenAI path when the requested one belongs to another
-    /// provider (task models resolve from `DEFAULT_MODEL` before the backend is known).
-    openai_model: String,
-    /// True when `base_url` is `api.openai.com`; custom compatible endpoints keep the requested model.
-    official_openai: bool,
-}
-
-/// True when `base_url`'s host is exactly `api.openai.com` (proxies such as
-/// `api.openai.com.proxy.example` are custom endpoints and keep their model names).
-pub fn is_official_openai(base_url: &str) -> bool {
-    reqwest::Url::parse(base_url.trim())
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| host == "api.openai.com")
-}
-
-/// True when `model` is clearly another provider's name and OpenAI would reject it.
-pub fn is_foreign_model(model: &str) -> bool {
-    let m: String = model.trim().to_ascii_lowercase();
-    m.is_empty()
-        || m.contains('/')
-        || [
-            "gemini",
-            "claude",
-            "deepseek",
-            "text-embedding-0",
-            "llama",
-            "mistral",
-            "qwen",
-        ]
-        .iter()
-        .any(|p| m.starts_with(p))
-}
-
-/// The model to send OpenAI directly: `requested` unless it is foreign, else `openai_model`.
-pub fn direct_openai_model(requested: &str, openai_model: &str) -> String {
-    if is_foreign_model(requested) {
-        openai_model.to_owned()
-    } else {
-        requested.to_owned()
-    }
-}
-
-/// OpenAI chat model used on the official API when neither the request nor
-/// `OPENAI_MODEL` names an OpenAI model. Only direct OpenAI calls need it; routed
-/// calls leave the model blank and the LLM router picks its provider's default.
-pub const OPENAI_CHAT_FALLBACK: &str = "gpt-6-luna";
-
-/// Model a direct OpenAI call swaps a foreign model to: `OPENAI_MODEL` when it is
-/// an OpenAI model, else [`OPENAI_CHAT_FALLBACK`].
-pub fn direct_openai_fallback() -> String {
-    std::env::var("OPENAI_MODEL")
-        .ok()
-        .map(|m: String| m.trim().to_owned())
-        .filter(|m: &String| !is_foreign_model(m))
-        .unwrap_or_else(|| OPENAI_CHAT_FALLBACK.to_owned())
-}
-
-/// OpenAI embedding model used when the configured one belongs to another provider.
-pub const OPENAI_EMBEDDING_FALLBACK: &str = "text-embedding-3-small";
-
-/// Embedding model for a direct (saved-key) call to `base_url`: official OpenAI gets an
-/// OpenAI model (`EMBEDDING_MODEL=gemini-embedding-001` would 404 there); custom endpoints
-/// keep `requested`. Callers pass the result to the vector store so cache keys match the
-/// vectors actually produced.
-pub fn direct_embedding_model(requested: &str, base_url: &str) -> String {
-    if is_official_openai(base_url) && is_foreign_model(requested) {
-        OPENAI_EMBEDDING_FALLBACK.to_owned()
-    } else {
-        requested.to_owned()
-    }
 }
 
 impl LLMProvider {
@@ -98,36 +23,8 @@ impl LLMProvider {
         Self {
             client,
             api_key,
-            official_openai: is_official_openai(&base_url),
             base_url: nasiko_config::openai_base_url_without_v1(&base_url).to_string(),
-            routed: None,
-            openai_model: direct_openai_fallback(),
         }
-    }
-
-    /// The request as sent to OpenAI directly, with a foreign model swapped out.
-    fn direct_request(&self, request: &ChatCompletionRequest) -> ChatCompletionRequest {
-        let mut req: ChatCompletionRequest = request.clone();
-        if !self.official_openai {
-            return req;
-        }
-        let model: String = direct_openai_model(&req.model, &self.openai_model);
-        if model != req.model {
-            tracing::info!(requested = %req.model, sent = %model, "non-OpenAI model on direct OpenAI path; substituted");
-            req.model = model;
-        }
-        req
-    }
-
-    /// Send non-streaming calls through `backend` under `call`.
-    pub fn with_backend(mut self, backend: SharedLlmBackend, call: LlmCallContext) -> Self {
-        self.routed = Some((backend, call));
-        self
-    }
-
-    /// True when calls go through the router (which then writes usage itself).
-    pub fn is_routed(&self) -> bool {
-        self.routed.is_some()
     }
 
     pub fn from_env(client: Client) -> Self {
@@ -143,12 +40,17 @@ impl LLMProvider {
         self
     }
 
+    /// Whether there is any key to send. Without one every call is refused upstream, so a caller
+    /// can say so before making it.
+    pub fn has_api_key(&self) -> bool {
+        !self.api_key.trim().is_empty()
+    }
+
     /// Streaming chat completion — returns a pinned stream of parsed chunks.
     pub async fn chat_completion_stream(
         &self,
         request: &ChatCompletionRequest,
     ) -> Result<ChunkStream, ProviderError> {
-        let request: &ChatCompletionRequest = &self.direct_request(request);
         let response = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
@@ -224,28 +126,6 @@ impl LLMProvider {
     ) -> Result<CompletionResult, ProviderError> {
         let start = Instant::now();
 
-        if let Some((backend, call)) = &self.routed {
-            let body: serde_json::Value =
-                serde_json::to_value(request).map_err(|e| ProviderError::Parse(e.to_string()))?;
-            let reply: serde_json::Value =
-                backend.chat(call, body).await.map_err(|e| match e.status {
-                    Some(status) => ProviderError::Api {
-                        status,
-                        body: e.message,
-                    },
-                    None => ProviderError::Network(e.message),
-                })?;
-            let resp: ChatCompletionResponse =
-                serde_json::from_value(reply).map_err(|e| ProviderError::Parse(e.to_string()))?;
-            return Ok(completion_result(
-                resp,
-                start,
-                backend.provider(),
-                request.model.clone(),
-            ));
-        }
-
-        let request: &ChatCompletionRequest = &self.direct_request(request);
         let response = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
@@ -269,22 +149,6 @@ impl LLMProvider {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
-        Ok(completion_result(
-            resp,
-            start,
-            "openai".to_string(),
-            request.model.clone(),
-        ))
-    }
-}
-
-fn completion_result(
-    resp: ChatCompletionResponse,
-    start: Instant,
-    provider: String,
-    model: String,
-) -> CompletionResult {
-    {
         let latency_ms = start.elapsed().as_millis() as i32;
 
         let content = resp
@@ -303,14 +167,14 @@ fn completion_result(
             completion_tokens_details: None,
         });
 
-        CompletionResult {
+        Ok(CompletionResult {
             content,
             finish_reason,
             usage,
             latency_ms,
-            provider,
-            model,
-        }
+            provider: "openai".to_string(),
+            model: request.model.clone(),
+        })
     }
 }
 
@@ -335,40 +199,15 @@ pub enum ProviderError {
     Parse(String),
 }
 
-#[cfg(test)]
-mod model_tests {
-    use super::*;
-
-    #[test]
-    fn only_official_openai_endpoint_swaps_models() {
-        assert!(is_official_openai("https://api.openai.com/v1"));
-        assert!(is_official_openai("https://API.openai.com"));
-        assert!(!is_official_openai("https://api.deepseek.com/v1"));
-        assert!(!is_official_openai("http://localhost:4000"));
-        assert!(!is_official_openai(
-            "https://api.openai.com.proxy.example/v1"
-        ));
-        assert!(!is_official_openai(
-            "https://proxy.example/api.openai.com/v1"
-        ));
-    }
-
-    #[test]
-    fn openai_models_pass_through() {
-        assert_eq!(direct_openai_model("gpt-6-luna", "x"), "gpt-6-luna");
-        assert_eq!(direct_openai_model("o4-mini", "x"), "o4-mini");
-    }
-
-    #[test]
-    fn foreign_models_are_swapped() {
-        for m in [
-            "gemini-2.5-flash",
-            "claude-haiku-4-5",
-            "openai/gpt-4o",
-            "deepseek-v4-pro",
-            "",
-        ] {
-            assert_eq!(direct_openai_model(m, "gpt-6-luna"), "gpt-6-luna", "{m}");
-        }
+impl ProviderError {
+    /// Whether the provider refused the key itself (`401`/`403`), as opposed to the request.
+    pub fn is_rejected_key(&self) -> bool {
+        matches!(
+            self,
+            Self::Api {
+                status: 401 | 403,
+                ..
+            }
+        )
     }
 }

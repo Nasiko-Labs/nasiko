@@ -42,7 +42,10 @@ async fn generate(
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
-    let generator = make_generator(&state, user_id).await;
+    let generator = match make_generator(&state, user_id).await {
+        Ok(g) => g,
+        Err(refusal) => return refusal,
+    };
     let agent_name = body.agent_name.as_deref().unwrap_or("unnamed-agent");
 
     match generator
@@ -109,7 +112,10 @@ async fn generate_and_apply(
         Err(e) => return (StatusCode::BAD_REQUEST, e).into_response(),
     };
 
-    let generator = make_generator(&state, owner_id).await;
+    let generator = match make_generator(&state, owner_id).await {
+        Ok(g) => g,
+        Err(refusal) => return refusal,
+    };
 
     let (card, _result) = match generator.generate(&source_code, &agent_name, None).await {
         Ok(r) => r,
@@ -233,27 +239,36 @@ fn extract_text_from_zip(data: &[u8]) -> Result<String, zip::result::ZipError> {
     Ok(combined)
 }
 
-async fn make_generator(state: &AppState, user_id: Uuid) -> CapabilityGenerator {
-    // No saved user key: the call goes through the in-process LLM router.
-    let provider = nasiko_orchestrator::user_key::routed_llm_provider(
-        &state.db,
-        state.http_client.clone(),
-        user_id,
-        Some(&state.llm_backend),
-        "capability_generation",
-    )
-    .await;
+/// The generator for `user_id`, or the answer to send when there is no OpenAI key to call it with.
+async fn make_generator(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<CapabilityGenerator, axum::response::Response> {
+    let provider =
+        nasiko_orchestrator::user_key::llm_provider(&state.db, state.http_client.clone(), user_id)
+            .await;
+    if !provider.has_api_key() {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, NO_OPENAI_KEY).into_response());
+    }
     // `state.config.capability_generator_model` is already loaded via
     // `env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini")`
     // (oss/config/src/lib.rs) — read that resolved config value instead of
     // re-reading the env var here with a hardcoded placeholder
     // ("deepseek-v4-flash") that doesn't exist on a real OpenAI-compatible
     // endpoint and 404s every call once the env var is unset.
-    CapabilityGenerator::new(provider, state.config.capability_generator_model.clone())
+    Ok(CapabilityGenerator::new(
+        provider,
+        state.config.capability_generator_model.clone(),
+    ))
 }
+
+const NO_OPENAI_KEY: &str = "No OpenAI API key: add one in Settings → Secrets.";
 
 fn error_response(e: GeneratorError) -> axum::response::Response {
     let (status, message) = match &e {
+        GeneratorError::Provider(p) if p.is_rejected_key() => {
+            (StatusCode::BAD_GATEWAY, "OpenAI rejected the API key.")
+        }
         GeneratorError::Provider(_) => (
             StatusCode::BAD_GATEWAY,
             "capability generator provider error",

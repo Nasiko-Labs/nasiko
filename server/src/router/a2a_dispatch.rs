@@ -749,11 +749,6 @@ pub(crate) async fn orchestrator_stream(
     // Whose key pays for this turn's model calls, recorded on each usage row it writes.
     let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&state.db, user_id).await;
     let key_source = super::usage_meta::KeySource::for_saved_key(saved_key.is_some());
-    let api_key_source = if saved_key.is_some() {
-        nasiko_react_agent::ApiKeySource::Saved
-    } else {
-        nasiko_react_agent::ApiKeySource::Server
-    };
     let mut config = OrchestratorConfig {
         // `state.config.openai_model` is already loaded via `env_or("OPENAI_MODEL",
         // "gpt-4o-mini")` (oss/config/src/lib.rs) — read that shared, validated
@@ -764,7 +759,6 @@ pub(crate) async fn orchestrator_stream(
         model: state.config.openai_model.clone(),
         base_url: std::env::var("OPENAI_BASE_URL").ok(),
         api_key: saved_key.or_else(|| std::env::var("OPENAI_API_KEY").ok()),
-        api_key_source,
         max_turns: 10,
         temperature: Some(0.2),
         policy: policy.clone(),
@@ -2930,9 +2924,14 @@ async fn coding_agent_stream(
         turn.task_id,
     )
     .await
-    .map_err(|e| {
-        tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
-        A2aDispatchError::Internal(e.to_string())
+    .map_err(|e| match e {
+        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
+            A2aDispatchError::Unavailable(message)
+        }
+        e => {
+            tracing::error!(error = %e, agent_id = %turn.agent.id, "coding-agent dispatch turn failed to start");
+            A2aDispatchError::Internal(e.to_string())
+        }
     })
 }
 
@@ -2984,6 +2983,9 @@ async fn harness_agent_stream(
     .map_err(|e| match e {
         crate::coding::turn::CodingTurnError::Busy
         | crate::coding::turn::CodingTurnError::Superseded => A2aDispatchError::SessionBusy,
+        crate::coding::turn::CodingTurnError::NotConfigured(message) => {
+            A2aDispatchError::Unavailable(message)
+        }
         e => {
             tracing::error!(error = %e, agent_id = %turn.agent.id, "harness dispatch turn failed to start");
             A2aDispatchError::Internal(e.to_string())

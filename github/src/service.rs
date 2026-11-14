@@ -275,6 +275,9 @@ impl GitHubService {
 
         let token = match token_resp {
             GitHubTokenResponse::Token(t) => t,
+            GitHubTokenResponse::Error { error, .. } if error == "incorrect_client_credentials" => {
+                return Err(Error::ClientCredentialsRejected);
+            }
             GitHubTokenResponse::Error {
                 error,
                 error_description,

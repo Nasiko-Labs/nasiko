@@ -129,8 +129,7 @@ fn handle_scroll_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
 pub fn create_session(agent: Option<&str>) -> Result<()> {
     let base_url = crate::config::active_url()?;
-    let token = crate::config::active_token()
-        .context("config error")?
+    let token = crate::config::active_token()?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
     let s = session::create_cp_session(&base_url, &token, agent, "New session")?;
     println!("{}", s.session_id);
@@ -139,8 +138,7 @@ pub fn create_session(agent: Option<&str>) -> Result<()> {
 
 pub fn session_history(session_id: &str) -> Result<()> {
     let base_url = crate::config::active_url()?;
-    let token = crate::config::active_token()
-        .context("config error")?
+    let token = crate::config::active_token()?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
     let messages = session::fetch_cp_messages(&base_url, &token, session_id)?;
     if messages.is_empty() {
@@ -165,8 +163,7 @@ pub fn delete_session(session_id: &str, yes: bool) -> Result<()> {
         }
     }
     let base_url = crate::config::active_url()?;
-    let token = crate::config::active_token()
-        .context("config error")?
+    let token = crate::config::active_token()?
         .ok_or_else(|| anyhow::anyhow!("not logged in — run `nasiko auth login`"))?;
     session::delete_cp_session(&base_url, &token, session_id)?;
     println!("Session '{session_id}' deleted.");

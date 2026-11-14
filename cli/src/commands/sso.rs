@@ -135,16 +135,18 @@ fn poll(agent: &Agent, base: &str, code: &CodeResponse) -> Result<String> {
                 drop(spinner);
                 bail!("the code expired before it was approved — run the command again");
             }
+            "" => {
+                drop(spinner);
+                let message = body
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| body.to_string());
+                bail!("sign-in failed (HTTP {http_status}): {message}");
+            }
             other => {
                 drop(spinner);
-                bail!(
-                    "sign-in failed ({})",
-                    if other.is_empty() {
-                        "unexpected response"
-                    } else {
-                        other
-                    }
-                );
+                bail!("sign-in failed ({other})");
             }
         }
     }

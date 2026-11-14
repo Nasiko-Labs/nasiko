@@ -502,14 +502,21 @@ pub async fn agent_proxy(
                 .await
             }
         };
-        return turn.map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-            match e {
-                crate::coding::turn::CodingTurnError::Busy
-                | crate::coding::turn::CodingTurnError::Superseded => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_GATEWAY,
+        return match turn {
+            Ok(response) => Ok(response),
+            Err(crate::coding::turn::CodingTurnError::NotConfigured(message)) => {
+                tracing::warn!(%agent_id, %message, "coding-agent turn refused: server not configured");
+                Ok(not_configured_answer(&message))
             }
-        });
+            Err(e) => {
+                tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
+                Err(match e {
+                    crate::coding::turn::CodingTurnError::Busy
+                    | crate::coding::turn::CodingTurnError::Superseded => StatusCode::CONFLICT,
+                    _ => StatusCode::BAD_GATEWAY,
+                })
+            }
+        };
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so anything not named
@@ -947,6 +954,20 @@ async fn refuse_agent_driving_coding_target(
     });
     Ok(EarlyAnswer::Answered(
         axum::response::IntoResponse::into_response(axum::Json(error)),
+    ))
+}
+
+/// A coding turn this server is not set up to run, answered as a `503` JSON-RPC error carrying the
+/// setup message, in the same shape the orchestrator dispatch uses, instead of an empty `502`.
+fn not_configured_answer(message: &str) -> Response {
+    let error = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": { "code": -32603, "message": message },
+    });
+    axum::response::IntoResponse::into_response((
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(error),
     ))
 }
 

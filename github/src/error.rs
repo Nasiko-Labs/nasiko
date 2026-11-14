@@ -26,6 +26,11 @@ pub enum Error {
     #[error("GitHub OAuth error: {0}")]
     GitHubOAuth(String),
 
+    /// GitHub refused this server's OAuth app credentials (`incorrect_client_credentials`): the
+    /// configured client id or secret is wrong, which no user action can fix.
+    #[error("GitHub rejected the OAuth client credentials")]
+    ClientCredentialsRejected,
+
     /// A GitHub REST API call returned a non-2xx, non-auth status.
     #[error("GitHub API error {status}: {message}")]
     GitHubApi { status: u16, message: String },
