@@ -685,7 +685,9 @@ fn refuse_routing_flags_without_routing(
     if options.mentions_routing() && targets.iter().all(|view| view.router.is_none()) {
         let names: Vec<&str> = targets.iter().map(|view| view.local.display_name).collect();
         bail!(
-            "{} supports session reporting only; --agent, --config and --no-mcp don't apply",
+            "Sorry, the LLM router doesn't support {0}: {0} supports session reporting only, so \
+             --agent, --config and --no-mcp don't apply. You can try Claude Code, Codex or OpenCode \
+             instead (nasiko connect claude|codex|opencode).",
             names.join(" and ")
         );
     }
@@ -904,7 +906,7 @@ pub fn offer_reporting() -> Result<()> {
 }
 
 /// Asked once reporting is set up, by the login offer and by `connect`.
-pub const IMPORT_QUESTION: &str = "Also send the sessions you ran before connecting? (newest first; already-sent ones are skipped)";
+pub const IMPORT_QUESTION: &str = "Import your sessions from before connecting? (newest first)";
 
 /// Whether any of `views` has reporting installed that delivers to `destination`.
 fn reports_here(views: &[AgentView], destination: Option<&ReportingDestination>) -> bool {
@@ -949,15 +951,9 @@ fn login_offer(
         .map(|view| offer_label(view, destination))
         .collect();
     let to = destination.map_or("this cluster", |to| to.cluster_name.as_str());
-    term::print_note(&format!(
-        "Session reporting sends each coding session's usage ({}) to {to}, where it shows in \
-         Nasiko's sessions and cost views. It doesn't change how the agents work, and you'll see \
-         every change before it is applied.",
-        integration::USAGE
-    ));
     let chosen = prompter.multi_select(
         &format!(
-            "Which coding agents should report sessions to {to}? (space selects, enter confirms; select none to change nothing)"
+            "Which coding agents should report sessions to {to}? (space selects, enter confirms; none changes nothing)"
         ),
         &labels,
         &vec![false; offered.len()],
@@ -1098,18 +1094,14 @@ fn pick_agents(views: &[AgentView], prompter: &dyn Prompter) -> Result<Vec<Agent
             if view.is_connected() {
                 label.push_str(" — already connected; select to change its setup");
             } else if view.router.is_none() {
-                label
-                    .push_str(" — can report sessions only; its LLM calls can't go through Nasiko");
+                label.push_str(" — session reporting only");
             }
             label
         })
         .collect();
     let defaults: Vec<bool> = detected.iter().map(|view| !view.is_connected()).collect();
-    term::print_note(
-        "You'll be asked about each part of the setup next, and shown every change before anything is applied.",
-    );
     let chosen = prompter.multi_select(
-        "Which coding agents should Nasiko set up? (space selects, enter confirms)",
+        "Which coding agents do you want to connect? (space selects, enter confirms)",
         &labels,
         &defaults,
     )?;
@@ -1129,10 +1121,7 @@ fn ensure_logged_in(prompter: &dyn Prompter) -> Result<()> {
             return Err(error);
         }
         term::print_warning(&format!("{error:#}"));
-        if !prompter.confirm(
-            &format!("Log in to {cluster} now? (connecting coding agents needs a login)"),
-            true,
-        )? {
+        if !prompter.confirm(&format!("Log in to {cluster} now?"), true)? {
             bail!("a Nasiko login is required to connect coding agents");
         }
         auth::login_without_setup()?;
@@ -1203,18 +1192,16 @@ fn build_plan(
         && prompter.interactive()
         && options.config.is_none()
         && options.agent.is_none()
+        && !prompter.confirm(
+            &format!(
+                "Route LLM calls from {} through Nasiko?",
+                names(&agents, &new_routing)
+            ),
+            true,
+        )?
     {
-        let who = names(&agents, &new_routing);
-        term::print_note(&format!(
-            "LLM routing sends the LLM calls of {who} to Nasiko instead of straight to the model \
-             provider. Nasiko answers them with an LLM config you pick next (its provider, model \
-             and key) and records their tokens and cost. Without it, they keep calling the \
-             provider directly with their own login."
-        ));
-        if !prompter.confirm(&format!("Route LLM calls from {who} through Nasiko?"), true)? {
-            for &i in &new_routing {
-                agents[i].routing = RoutingStep::Skip;
-            }
+        for &i in &new_routing {
+            agents[i].routing = RoutingStep::Skip;
         }
     }
 
@@ -1258,13 +1245,13 @@ fn build_plan(
             }
             _ => true,
         });
-        let who = names(&agents, &routed);
-        term::print_note(&format!(
-            "MCP gateway: adds one MCP server, `nasiko`, to {who}. It offers the tools of the MCP \
-             connectors you can use on Nasiko; nothing else in their MCP setup changes."
-        ));
-        choices.mcp =
-            Some(prompter.confirm(&format!("Add the Nasiko MCP server to {who}?"), suggested)?);
+        choices.mcp = Some(prompter.confirm(
+            &format!(
+                "Give {} your MCP connectors through the Nasiko gateway?",
+                names(&agents, &routed)
+            ),
+            suggested,
+        )?);
     }
 
     // Reporting already installed — working or not — is checked on its own, so its saved
@@ -1283,15 +1270,13 @@ fn build_plan(
         } else if options.mentions_reporting() {
             true
         } else if prompter.interactive() {
-            let who = names(&agents, &unreported);
-            let to = destination.map_or("this cluster", |to| to.cluster_name.as_str());
-            term::print_note(&format!(
-                "Session reporting installs a hook in {who} that sends each coding session's usage \
-                 ({}) to {to}, where it shows in Nasiko's sessions and cost views. It doesn't \
-                 change how they work.",
-                integration::USAGE
-            ));
-            prompter.confirm(&format!("Report sessions from {who} to {to}?"), true)?
+            prompter.confirm(
+                &format!(
+                    "Report sessions from {} to Nasiko observability?",
+                    names(&agents, &unreported)
+                ),
+                true,
+            )?
         } else {
             false
         };
@@ -1371,7 +1356,7 @@ fn existing_reporting_step(
     };
     if let Some((from, to)) = reporting_elsewhere(local, destination) {
         let question = format!(
-            "{} reports its sessions to {from}. Report new sessions to {to} instead? (sessions already sent stay on {from})",
+            "{} reports sessions to {from}. Move reporting to {to}?",
             local.display_name
         );
         if !asked(question)? {
@@ -1406,7 +1391,7 @@ fn existing_reporting_step(
     };
     if !local.reporting_active {
         let question = format!(
-            "{}'s session reporting hook {}, so its sessions aren't being reported. Reinstall it?",
+            "{}'s session reporting hook {}. Reinstall it?",
             local.display_name,
             stale_reason(local)
         );
@@ -1421,7 +1406,7 @@ fn existing_reporting_step(
         && let Some(routing_agent) = misaligned_routing_agent(agent, destination)
     {
         let question = format!(
-            "{} reports sessions under agent {}, but its LLM routing uses agent {routing_agent}. Report under {routing_agent}, so its sessions and LLM calls show as one agent?",
+            "{} reports sessions under agent {}, but its LLM routing uses agent {routing_agent}. Report under {routing_agent}?",
             local.display_name,
             local.reporting_agent_name.as_deref().unwrap_or("?")
         );
@@ -1535,22 +1520,19 @@ fn existing_routing_step(
     let broken = made_as_another_account(current, destination);
     let keep = if broken {
         format!(
-            "Keep it as it is (agent {} on {}) — set up as another account, so its LLM calls fail for you",
+            "Keep it (agent {} on {}) — set up as another account, so its LLM calls fail for you",
             current.agent_name, current.cluster
         )
     } else {
         format!(
-            "Keep it as it is (agent {} on {}) — no change",
+            "Keep it (agent {} on {})",
             current.agent_name, current.cluster
         )
     };
-    let items = vec![
-        keep,
-        "Set it up again — you'll pick an LLM config and the MCP server next".to_string(),
-    ];
+    let items = vec![keep, "Reconnect with new settings".to_string()];
     let choice = prompter.select(
         &format!(
-            "{} already sends its LLM calls through Nasiko. What should happen to that?",
+            "{} LLM routing is already connected.",
             view.local.display_name
         ),
         &items,
@@ -1601,24 +1583,21 @@ fn choose_llm_config(
                 llm_config_hint()
             ))
         ));
-        if prompter.confirm(
-            "Continue without LLM routing? (the agents keep calling their model provider directly)",
-            true,
-        )? {
+        if prompter.confirm("Continue without LLM routing?", true)? {
             return Ok(None);
         }
         bail!("an LLM config is required for LLM routing");
     }
     let mut items = Vec::new();
     if reconnecting {
-        items.push("Keep the LLM config it uses now".to_string());
+        items.push("Keep the routing agent's current LLM config".to_string());
     }
     let first_config = items.len();
     items.extend(configs.iter().map(config_label));
     items.push(if reconnecting {
-        "Leave LLM routing as it is (connected agents stay as they are)".to_string()
+        "Don't change LLM routing (connected agents stay as they are)".to_string()
     } else {
-        "Don't route — keep calling the model provider directly".to_string()
+        "Don't route LLM calls through Nasiko".to_string()
     });
     let default = if reconnecting {
         0
@@ -1628,11 +1607,7 @@ fn choose_llm_config(
             .position(|config| config.get("is_default").and_then(Value::as_bool) == Some(true))
             .unwrap_or(0)
     };
-    let choice = prompter.select(
-        "Which LLM config should answer their LLM calls? (its provider and model are shown)",
-        &items,
-        default,
-    )?;
+    let choice = prompter.select("LLM config to route through:", &items, default)?;
     if reconnecting && choice == 0 {
         return Ok(Some(keep_current));
     }
@@ -1690,7 +1665,7 @@ fn readable_list(items: &[&str]) -> String {
 }
 
 fn print_plan(plan: &Plan) {
-    println!("\nWhat will change:");
+    println!("\nPlan:");
     for agent in &plan.agents {
         println!("  {}", agent.view.local.display_name);
         if let Some(reason) = &agent.blocked {
@@ -2294,11 +2269,11 @@ fn choose_removal(
         )
     } else if prompter.interactive() && has_routing && has_reporting {
         let items = vec![
-            "LLM routing and the Nasiko MCP server — its LLM calls go straight to the model provider again".to_string(),
-            "Session reporting — its sessions stop being sent to Nasiko".to_string(),
+            "LLM routing and MCP gateway".to_string(),
+            "Session reporting".to_string(),
         ];
         let chosen = prompter.multi_select(
-            &format!("What should be disconnected from {name}? (space selects, enter confirms)"),
+            &format!("What should be removed from {name}?"),
             &items,
             &[true, true],
         )?;
@@ -4229,6 +4204,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("session reporting only"), "{error}");
+        // The test view's display name is its id; the real one is "Cursor".
+        assert!(
+            error.to_lowercase().contains("doesn't support cursor"),
+            "{error}"
+        );
+        assert!(error.contains("Claude Code, Codex or OpenCode"), "{error}");
         // Mixed with an agent that routes, they apply to that one.
         assert!(
             refuse_routing_flags_without_routing(
