@@ -292,6 +292,23 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     dot / (na * nb)
 }
 
+/// Persisted vectors whose recorded identity matches `identity`.
+fn reusable_vectors(
+    existing: HashMap<(Uuid, String), Vec<f32>>,
+    models: &HashMap<(Uuid, String), String>,
+    identity: &str,
+) -> HashMap<(Uuid, String), Vec<f32>> {
+    existing
+        .into_iter()
+        .filter(|(key, _)| models.get(key).is_some_and(|m| m == identity))
+        .collect()
+}
+
+/// Whether any tool has a usable (non-empty) semantic vector.
+fn has_semantic_vectors(embeddings: &[Vec<f32>]) -> bool {
+    embeddings.iter().any(|e| !e.is_empty())
+}
+
 fn f32_vec_to_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
@@ -431,6 +448,14 @@ impl ToolSearchIndex for SemanticSearchIndex {
         perms: &PermissionContext,
         limit: usize,
     ) -> Vec<ToolMatch> {
+        // No vectors for the current embedding identity: semantic ranking is meaningless.
+        let has_vectors: bool = has_semantic_vectors(&self.inner.read().unwrap().embeddings);
+        if !has_vectors {
+            return self
+                .bm25
+                .search_tools(query, accessible_connector_ids, perms, limit)
+                .await;
+        }
         let query_emb = match self.embed_query(query).await {
             Ok(emb) => emb,
             Err(e) => {
@@ -495,14 +520,14 @@ impl ToolSearchIndex for SemanticSearchIndex {
             return Ok(());
         }
 
-        // Load existing embeddings from DB.
-        let existing: HashMap<(Uuid, String), Vec<f32>> = load_embeddings(db).await?;
-
-        // Find tools that need (re-)embedding: no embedding or model mismatch.
-        let existing_model: HashMap<(Uuid, String), String> = load_embedding_models(db).await?;
-
         // Stored rows record the provider/model that served them; a switch re-embeds.
         let identity: String = self.client.backend.embedding_identity(&self.client.model);
+
+        // Load existing embeddings from DB, keeping only vectors from the current identity
+        // so a failed re-embed never ranks new-model queries against old-model vectors.
+        let existing_model: HashMap<(Uuid, String), String> = load_embedding_models(db).await?;
+        let existing: HashMap<(Uuid, String), Vec<f32>> =
+            reusable_vectors(load_embeddings(db).await?, &existing_model, &identity);
         let mut texts_to_embed: Vec<(usize, String)> = Vec::new();
         for (i, tool) in tools.iter().enumerate() {
             let key = (tool.connector_id, tool.tool_name.clone());
@@ -663,6 +688,29 @@ mod tests {
         assert_eq!(cosine_similarity(&[1.0, 0.0, 0.0], &[1.0, 0.0]), 0.0);
         assert_eq!(cosine_similarity(&[], &[]), 0.0);
         assert!((cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reusable_vectors_drops_other_identity_and_falls_back_when_none_left() {
+        let a: (Uuid, String) = (connector_id("a"), "t1".to_string());
+        let b: (Uuid, String) = (connector_id("b"), "t2".to_string());
+        let existing: HashMap<(Uuid, String), Vec<f32>> =
+            HashMap::from([(a.clone(), vec![1.0]), (b.clone(), vec![2.0])]);
+        let models: HashMap<(Uuid, String), String> = HashMap::from([
+            (a.clone(), "openai/text-embedding-3-small".to_string()),
+            (b.clone(), "gemini/gemini-embedding-001".to_string()),
+        ]);
+        let kept: HashMap<(Uuid, String), Vec<f32>> =
+            reusable_vectors(existing.clone(), &models, "gemini/gemini-embedding-001");
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept.get(&b), Some(&vec![2.0]));
+
+        let none: HashMap<(Uuid, String), Vec<f32>> =
+            reusable_vectors(existing, &models, "vertex/text-embedding-005");
+        assert!(none.is_empty());
+        let rebuilt: Vec<Vec<f32>> = vec![Vec::new(), Vec::new()];
+        assert!(!has_semantic_vectors(&rebuilt));
+        assert!(has_semantic_vectors(&[Vec::new(), vec![1.0]]));
     }
 
     fn tool(connector: &str, name: &str, desc: &str) -> ToolEntry {

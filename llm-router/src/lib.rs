@@ -41,6 +41,7 @@ pub mod handlers;
 pub mod inbound;
 pub mod inject;
 pub mod ir;
+pub mod openai_model;
 pub mod payer;
 pub mod platform;
 pub mod providers;

@@ -35,6 +35,8 @@ nasiko-pricing.workspace = true
 # ToSchema on the wire-facing preference enums, so the server's OpenAPI registration (CX-1) for
 # `/api/me/context-strategy` and `/api/me/pacms-budget` doesn't need a server-side mirror type.
 utoipa = { workspace = true }
+# Shared direct-OpenAI model normalization (`openai_model`), also used by react-agent.
+nasiko-llm-router.workspace = true
 
 [dev-dependencies]
 nasiko-redis = { workspace = true }

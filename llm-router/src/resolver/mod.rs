@@ -1269,8 +1269,12 @@ fn usable_hint<'a>(cfg: &'a GatewayConfig, hint: RequestHint<'a>) -> RequestHint
     // family check fails and the model falls back to `DEFAULT_MODEL`.
     let surface: &'a str = hint.provider.unwrap_or("");
     // OpenRouter ids are `vendor/model`; an OpenRouter default serves them as-is.
-    let keep_model: bool = (!surface.is_empty() && same_family(surface, default_provider))
-        || (default_provider == "openrouter" && hint.model.is_some_and(|m| m.contains('/')));
+    let openrouter_id: bool =
+        default_provider == "openrouter" && hint.model.is_some_and(|m| m.contains('/'));
+    // A prefix naming an unavailable built-in provider is not a model the default serves.
+    let foreign_prefix: bool = hint.model.is_some_and(names_builtin_provider);
+    let keep_model: bool = openrouter_id
+        || (!foreign_prefix && !surface.is_empty() && same_family(surface, default_provider));
     let model: Option<&'a str> = if keep_model {
         hint.model
     } else {
@@ -1301,6 +1305,14 @@ fn explicit_provider<'a>(cfg: &'a GatewayConfig, model: &'a str) -> Option<(&'a 
         return None;
     }
     Some((provider, rest))
+}
+
+/// Whether `model` is `provider/...` with `provider` a recognized built-in.
+fn names_builtin_provider(model: &str) -> bool {
+    model.split_once('/').is_some_and(|(prefix, _)| {
+        let prefix: String = prefix.trim().to_ascii_lowercase();
+        is_builtin_provider(&prefix)
+    })
 }
 
 /// Whether the SDK surface `surface` natively belongs to `provider` (Gemini and Vertex share
@@ -2634,6 +2646,18 @@ mod shared_user_tests {
             (h.provider, h.model),
             (Some("openrouter"), Some("openai/gpt-6.1-sol"))
         );
+    }
+
+    #[test]
+    fn unavailable_provider_prefix_falls_back_to_default_model() {
+        let cfg: GatewayConfig = gateway();
+        let h: RequestHint<'_> =
+            super::usable_hint(&cfg, hint("openai", "anthropic/claude-haiku-5-5"));
+        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o-mini")));
+        let h: RequestHint<'_> = super::usable_hint(&cfg, hint("openai", "Gemini/gemini-2.5-pro"));
+        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o-mini")));
+        let h: RequestHint<'_> = super::usable_hint(&cfg, hint("openai", "gpt-4o"));
+        assert_eq!((h.provider, h.model), (Some("openai"), Some("gpt-4o")));
     }
 
     fn gateway() -> GatewayConfig {
