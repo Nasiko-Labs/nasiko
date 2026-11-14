@@ -179,7 +179,7 @@ impl MafRun {
         &self,
         server: &common::TestServer,
         targets: &dyn nasiko_orchestrator::AgentTargetResolver,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         let ctx = MafRunContext {
             client: &self.client,
             agent_calls: &self.meter,
@@ -233,7 +233,7 @@ async fn without_the_seam_a_maf_step_refuses_a_parked_agent_with_the_reason() {
     let direct = DirectAddress::new(server.db.clone());
     let err = run.run(&server, &direct).await.err().expect("a failed run");
 
-    assert!(err.contains("parked"), "{err}");
+    assert!(err.to_string().contains("parked"), "{err}");
     assert_eq!(wake.woken_count(agent), 0);
     server.cleanup().await;
 }

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::executor;
 use super::llm::LlmClient;
-use super::types::{MafDefinition, StepOutcome, StepResult};
+use super::types::{MafDefinition, RunError, StepOutcome, StepResult};
 use crate::outbound::OutboundPrefix;
 
 /// Everything a run needs that does not come from the job itself.
@@ -64,14 +64,14 @@ pub trait MafExecutor: Send + Sync {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         content: Option<&str>,
-    ) -> Result<StepOutcome, String>;
+    ) -> Result<StepOutcome, RunError>;
 
     async fn resume(
         &self,
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         resume: MafResume,
-    ) -> Result<StepOutcome, String>;
+    ) -> Result<StepOutcome, RunError>;
 }
 
 /// The open-source executor: every step, in array order.
@@ -84,7 +84,7 @@ impl MafExecutor for LinearMafExecutor {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         content: Option<&str>,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, RunError> {
         executor::run_maf(
             ctx.client,
             ctx.db,
@@ -106,7 +106,7 @@ impl MafExecutor for LinearMafExecutor {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         resume: MafResume,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, RunError> {
         executor::run_maf_from(
             ctx.client,
             ctx.db,

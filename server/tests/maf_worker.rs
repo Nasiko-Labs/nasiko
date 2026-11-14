@@ -75,7 +75,7 @@ impl CountingExecutor {
         }
     }
 
-    async fn hold_a_slot(&self) -> Result<StepOutcome, String> {
+    async fn hold_a_slot(&self) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.most_at_once.fetch_max(now, Ordering::SeqCst);
         let mut counter = StopCounter {
@@ -102,7 +102,7 @@ impl MafExecutor for CountingExecutor {
         _ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _content: Option<&str>,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         self.runs.fetch_add(1, Ordering::SeqCst);
         self.hold_a_slot().await
     }
@@ -112,7 +112,7 @@ impl MafExecutor for CountingExecutor {
         _ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _resume: MafResume,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         self.resumes.fetch_add(1, Ordering::SeqCst);
         self.hold_a_slot().await
     }
@@ -256,7 +256,6 @@ fn start_with<E: MafExecutor + 'static>(
                 model: "unused".into(),
             },
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
-            backend: None,
             concurrency,
             heartbeat: HEARTBEAT,
         },
@@ -774,7 +773,7 @@ impl MafExecutor for SteppingExecutor {
         ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _content: Option<&str>,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         let mut counter = StopCounter {
             stopped: &self.cut_short,
             finished: false,
@@ -805,7 +804,7 @@ impl MafExecutor for SteppingExecutor {
         _ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _resume: MafResume,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         Err("not resumable".into())
     }
 }
@@ -1204,4 +1203,101 @@ async fn overlapping_stops_of_the_same_runs_never_deadlock() {
         );
     }
     server.cleanup().await;
+}
+
+/// Ends every run it is given with `error`, counting how often it was asked.
+struct FailingExecutor {
+    error: nasiko_orchestrator::maf::types::RunError,
+    runs: AtomicUsize,
+}
+
+#[async_trait]
+impl MafExecutor for FailingExecutor {
+    async fn run(
+        &self,
+        _ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _content: Option<&str>,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Err(self.error.clone())
+    }
+
+    async fn resume(
+        &self,
+        _ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _resume: MafResume,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        Err(self.error.clone())
+    }
+}
+
+/// Runs one execution through a worker whose executor always ends it with `error`, and returns
+/// how many times it ran, its final status, its error and its attempt count.
+async fn run_to_failure(
+    error: nasiko_orchestrator::maf::types::RunError,
+) -> (usize, String, Option<String>, i32) {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+
+    let executor = start_with(
+        &server.db,
+        redis,
+        1,
+        FailingExecutor {
+            error,
+            runs: AtomicUsize::new(0),
+        },
+    );
+    assert!(
+        wait_until(Duration::from_secs(20), async || {
+            status_of(&server.db, ids[0]).await == "failed"
+        })
+        .await,
+        "the execution ends failed"
+    );
+    // A retry, were one coming, would already be queued: give it the time to show.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (status, error, attempts): (String, Option<String>, i32) =
+        sqlx::query_as("SELECT status, error, attempt_count FROM maf_executions WHERE id = $1")
+            .bind(ids[0])
+            .fetch_one(&server.db)
+            .await
+            .expect("read execution");
+    let runs = executor.runs.load(Ordering::SeqCst);
+    server.cleanup().await;
+    (runs, status, error, attempts)
+}
+
+/// An agent that timed out would only time out again, after the steps before it ran a second
+/// time: a timed-out run ends on its first attempt, with its reason.
+#[tokio::test]
+#[serial]
+async fn a_timed_out_run_fails_without_a_retry() {
+    let reason = "step 1 (agent 'task-breakdown') timed out after 600s";
+    let (runs, status, error, attempts) = run_to_failure(
+        nasiko_orchestrator::maf::types::RunError::TimedOut(reason.into()),
+    )
+    .await;
+
+    assert_eq!(runs, 1, "run once, not retried");
+    assert_eq!(attempts, 1);
+    assert_eq!(status, "failed");
+    assert_eq!(error.as_deref(), Some(reason));
+}
+
+#[tokio::test]
+#[serial]
+async fn any_other_failure_is_still_retried_up_to_its_attempt_limit() {
+    let (runs, status, _, attempts) = run_to_failure(
+        nasiko_orchestrator::maf::types::RunError::Failed("HTTP 502 Bad Gateway".into()),
+    )
+    .await;
+
+    assert_eq!(runs, 3, "the default MAF_MAX_ATTEMPTS");
+    assert_eq!(attempts, 3);
+    assert_eq!(status, "failed");
 }

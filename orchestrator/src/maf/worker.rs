@@ -15,7 +15,7 @@ use super::{
     llm::LlmClient,
     runner::{MafExecutor, MafResume, MafRunContext},
     stop,
-    types::{MafDefinition, PausedStep, StepOutcome, StepResult},
+    types::{MafDefinition, PausedStep, RunError, StepOutcome, StepResult},
 };
 
 /// Redis stream this worker consumes from. `pub` (not just crate-visible) so every producer —
@@ -589,12 +589,7 @@ async fn process_job(
     // The key the execution's owner saved from the UI wins over the worker's own.
     let owner_llm = match crate::user_key::saved_openai_key(db, user_id).await {
         Some(key) => llm.with_api_key(key),
-        // Platform key: routed calls are billed to the run owner under this execution.
-        None => llm.with_call(crate::llm_backend::LlmCallContext {
-            user_id,
-            component: "maf".into(),
-            session_id: Some(execution_id.to_string()),
-        }),
+        None => llm.clone(),
     };
     let ctx = MafRunContext {
         client: &agent_calls.client,
@@ -624,7 +619,9 @@ async fn process_job(
                     };
                     maf_executor.resume(&ctx, &maf_def, resume).await
                 }
-                Err(e) => Err(format!("failed to load resume state: {e}")),
+                Err(e) => Err(RunError::Failed(format!(
+                    "failed to load resume state: {e}"
+                ))),
             },
         }
     })
@@ -637,7 +634,7 @@ async fn process_job(
     let outcome = tokio::select! {
         outcome = run => outcome.unwrap_or_else(|_| {
             error!("MAF execution {execution_id}: executor panicked");
-            Err("MAF executor panicked".to_string())
+            Err(RunError::Failed("MAF executor panicked".to_string()))
         }),
         () = hold_message(conn.clone(), msg_id, lease) => {
             warn!("MAF execution {execution_id}: another worker took over message {msg_id}; stopping this run");
@@ -779,7 +776,7 @@ async fn fetch_resume_state(
 /// run and a resumed one so the two paths never diverge in how they finish.
 #[allow(clippy::too_many_arguments)]
 async fn finish_job(
-    outcome: Result<StepOutcome, String>,
+    outcome: Result<StepOutcome, RunError>,
     execution_id: Uuid,
     msg_id: &str,
     conn: &mut redis::aio::MultiplexedConnection,
@@ -880,13 +877,15 @@ async fn finish_job(
                 }
             }
         }
-        Err(e) => {
+        Err(run_error) => {
+            let e = run_error.to_string();
             // A resumed job's failure is never retried by restarting from step 0 — that would
             // silently redo already-succeeded steps' agent calls and discard the human's answer.
             // Terminal failure here, not a re-enqueue, is the safe default (resume-retry
             // semantics aren't specified yet; hardening that is a follow-up, not required
-            // for this phase).
-            if is_resume || new_attempt >= max_attempts {
+            // for this phase). Nor is a timed-out run: another attempt waits out the whole
+            // agent-call budget again, after re-running every step before the one that hung.
+            if is_resume || !run_error.is_retryable() || new_attempt >= max_attempts {
                 mark_failed(db, execution_id, &e).await;
                 ack(conn, msg_id).await;
                 warn!(
