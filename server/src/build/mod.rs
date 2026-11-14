@@ -46,6 +46,10 @@ pub fn tar_directory(dir: &std::path::Path) -> Result<Vec<u8>, String> {
     let buf = Vec::new();
     let mut archive = Builder::new(buf);
     archive.follow_symlinks(false);
+    // Normalize modes to 0644 (0755 for dirs and executables). Uploaded sources are
+    // extracted under the server's umask (often 0600), and a root-owned 0600 file is
+    // unreadable to an image that switches to a non-root `USER`.
+    archive.mode(tar::HeaderMode::Deterministic);
     archive
         .append_dir_all(".", dir)
         .map_err(|e| format!("tar append_dir_all: {e}"))?;
@@ -268,6 +272,26 @@ mod tar_directory_tests {
             .find(|(path, ..)| path.ends_with("leak"))
             .unwrap();
         assert!(leak.1, "`leak` must stay a symlink: {leak:?}");
+    }
+
+    #[test]
+    fn owner_only_files_are_world_readable_in_the_context() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let file = scratch.0.join("__main__.py");
+        std::fs::write(&file, "print(1)").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let tar = tar_directory(&scratch.0).unwrap();
+        let mut archive = tar::Archive::new(std::io::Cursor::new(tar));
+        let mode: u32 = archive
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap())
+            .find(|e| e.path().unwrap().ends_with("__main__.py"))
+            .map(|e| e.header().mode().unwrap())
+            .unwrap();
+        assert_eq!(mode & 0o044, 0o044, "mode {mode:o} not group/other readable");
     }
 
     #[test]
