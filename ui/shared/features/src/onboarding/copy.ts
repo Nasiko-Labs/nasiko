@@ -30,9 +30,11 @@ export const copy = {
   } satisfies Record<StepId, { title: string; sub: string }>,
   welcome: {
     title: 'Welcome to Nasiko',
-    // OpenRuntime's narrative comes back ahead of the capabilities (user review 2026-11-05).
+    // OpenRuntime's narrative comes back ahead of the capabilities (user review 2026-11-05). It meters spend, never
+    // "pays for" agents: that read as Nasiko covering the user's model costs (NAS-1592). No lead-in to the stages
+    // below: "work flows through it in four stages" was unclear, and the row stands on its own.
     intro:
-      'OpenRuntime runs, observes, secures and pays for AI agents on any framework. Work flows through it in four stages.',
+      'OpenRuntime runs, observes and secures AI agents on any framework, and meters what they spend.',
     // The four stages as they were before 2026-11-04 (user review 2026-11-05).
     stages: [
       { title: 'Connect', line: 'Models, MCP tools and channels' },
