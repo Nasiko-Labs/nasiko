@@ -477,6 +477,26 @@ pub async fn list_auto_enabled_system_connector_ids(
     Ok(ids)
 }
 
+pub async fn list_coding_agent_owner_toolkit_ids(db: &PgPool, agent_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT uc.connector_id
+           FROM agents a
+           JOIN mcp_user_connections uc ON uc.user_id = a.owner_id
+           JOIN mcp_connectors c ON c.id = uc.connector_id
+           WHERE a.id = $1
+             AND a.deleted_at IS NULL
+             AND a.coding_agent_integration_id IS NOT NULL
+             AND c.provider_type = 'composio'
+             AND COALESCE(c.is_active, true)
+             AND uc.status = 'ACTIVE'
+             AND uc.connected_account_id IS NOT NULL"#,
+    )
+    .bind(agent_id)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
 /// Connectors owned by the user (custom servers they registered).
 pub async fn list_owned_connectors(db: &PgPool, owner_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(

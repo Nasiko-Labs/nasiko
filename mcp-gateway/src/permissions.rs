@@ -168,10 +168,14 @@ pub async fn load_permission_context(
         .filter(|r| !r.enabled)
         .map(|r| r.connector_id)
         .collect();
+    let (system, toolkits) = tokio::try_join!(
+        repo::list_auto_enabled_system_connector_ids(&state.db, agent_id),
+        repo::list_coding_agent_owner_toolkit_ids(&state.db, agent_id),
+    )?;
     enabled_connectors.extend(
-        repo::list_auto_enabled_system_connector_ids(&state.db, agent_id)
-            .await?
+        system
             .into_iter()
+            .chain(toolkits)
             .filter(|id| !switched_off.contains(id)),
     );
     let mut rules = Vec::new();
