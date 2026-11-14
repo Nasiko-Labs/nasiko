@@ -46,16 +46,31 @@ pub async fn expand(
 ) -> Result<ExpandReport, GatewayError> {
     let mut report = ExpandReport::default();
     let turn = current_turn(&req.messages);
-    if !turn.iter().any(|&i| mentions_token(&req.messages[i])) {
+    let instructions: Vec<usize> = (0..req.messages.len())
+        .filter(|&i| is_instruction(&req.messages[i]))
+        .collect();
+    if !turn
+        .iter()
+        .chain(&instructions)
+        .any(|&i| mentions_token(&req.messages[i]))
+    {
         return Ok(report);
     }
+    let host = turn.first().copied();
+    let host_has_media = host.is_some_and(|i| has_media(&req.messages[i]));
 
     let mut files: Vec<MarkerClaims> = Vec::new();
     let mut slots: HashMap<AttachmentRef, usize> = HashMap::new();
+    let mut hosted: Vec<usize> = Vec::new();
     let mut edits: Vec<(usize, Vec<TextEdit>)> = Vec::new();
-    for &index in &turn {
+    for &index in turn.iter().chain(&instructions) {
         let message = &req.messages[index];
-        let media_present = has_media(message);
+        let instruction = is_instruction(message);
+        let media_present = if instruction {
+            host_has_media
+        } else {
+            has_media(message)
+        };
         let mut texts = Vec::new();
         for (part, text, from) in scannable_texts(message) {
             let mut cuts = Vec::new();
@@ -70,12 +85,21 @@ pub async fn expand(
                     Action::Remove
                 } else if let Some(&slot) = slots.get(&claims.reference) {
                     report.repeated += 1;
-                    Action::Repeat(slot)
+                    if instruction {
+                        Action::Remove
+                    } else {
+                        Action::Repeat(slot)
+                    }
                 } else {
                     let slot = files.len();
                     slots.insert(claims.reference.clone(), slot);
                     files.push(claims);
-                    Action::Attach(slot)
+                    if instruction {
+                        hosted.push(slot);
+                        Action::Remove
+                    } else {
+                        Action::Attach(slot)
+                    }
                 };
                 cuts.push(Cut {
                     line: from + span.line.start..from + span.line.end,
@@ -142,10 +166,65 @@ pub async fn expand(
             }
         }
     }
+    let mut emptied: Vec<usize> = Vec::new();
     for (index, texts) in edits {
         apply(&mut req.messages[index], texts, &files, &mut media);
+        if is_instruction(&req.messages[index]) && is_blank(&req.messages[index]) {
+            emptied.push(index);
+        }
+    }
+    let hosted: Vec<Value> = hosted
+        .into_iter()
+        .filter_map(|slot| media[slot].take())
+        .collect();
+    if !hosted.is_empty() {
+        attach_to_turn(&mut req.messages, host, hosted);
+    }
+    emptied.sort_unstable();
+    for index in emptied.into_iter().rev() {
+        req.messages.remove(index);
     }
     Ok(report)
+}
+
+fn is_instruction(message: &Message) -> bool {
+    matches!(message.role.as_str(), "system" | "developer")
+}
+
+fn is_blank(message: &Message) -> bool {
+    match &message.content {
+        Some(Value::String(text)) => text.trim().is_empty(),
+        Some(Value::Array(parts)) => parts.iter().all(|p| {
+            p.get("type").and_then(Value::as_str) == Some("text")
+                && p.get("text")
+                    .and_then(Value::as_str)
+                    .is_none_or(|t| t.trim().is_empty())
+        }),
+        _ => true,
+    }
+}
+
+fn attach_to_turn(messages: &mut Vec<Message>, host: Option<usize>, media: Vec<Value>) {
+    let Some(message) = host.and_then(|i| messages.get_mut(i)) else {
+        messages.push(Message {
+            role: "user".into(),
+            content: Some(Value::Array(media)),
+            name: None,
+            tool_calls: None,
+            tool_call_id: None,
+            extra: Map::new(),
+        });
+        return;
+    };
+    let mut parts = match message.content.take() {
+        Some(Value::Array(parts)) => parts,
+        Some(Value::String(text)) if !text.trim().is_empty() => {
+            vec![json!({"type": "text", "text": text})]
+        }
+        _ => Vec::new(),
+    };
+    parts.extend(media);
+    message.content = Some(Value::Array(parts));
 }
 
 pub(crate) async fn attach_marked_files(
@@ -1138,14 +1217,209 @@ mod tests {
         assert_eq!(store.fetch_count(), 1);
     }
 
+    fn roles(req: &ChatRequest) -> Vec<&str> {
+        req.messages.iter().map(|m| m.role.as_str()).collect()
+    }
+
+    fn image_part() -> Value {
+        json!({"type": "image_url", "image_url": {"url": data_url("image/png", PNG)}})
+    }
+
+    fn pdf_part() -> Value {
+        json!({"type": "file", "file": {"file_data": data_url("application/pdf", PDF), "filename": "q3.pdf"}})
+    }
+
     #[tokio::test]
-    async fn a_request_with_no_user_message_is_untouched() {
-        let mut req = request(json!([{"role": "system", "content": png_line(1)}]));
-        let store = FakeStore::default().with(chat_file(1), PNG);
+    async fn a_marker_in_the_system_prompt_is_attached_to_the_user_message_of_this_turn() {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Summarise the document.\n{}", pdf_line(1))},
+            {"role": "user", "content": "go"},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PDF);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(roles(&req), ["system", "user"]);
+        assert_eq!(content(&req, 0), json!("Summarise the document.\n"));
         assert_eq!(
-            run(&mut req, &store).await.unwrap(),
-            ExpandReport::default()
+            content(&req, 1),
+            json!([{"type": "text", "text": "go"}, pdf_part()])
         );
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.bytes, PDF.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn a_developer_message_is_read_like_a_system_prompt() {
+        let mut req = request(json!([
+            {"role": "developer", "content": format!("Describe it.\n{}", png_line(1))},
+            {"role": "user", "content": [{"type": "text", "text": "what is this?"}]},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 0), json!("Describe it.\n"));
+        assert_eq!(
+            content(&req, 1),
+            json!([{"type": "text", "text": "what is this?"}, image_part()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_system_prompt_left_empty_by_the_cut_is_dropped() {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("  {}\n", png_line(1))},
+            {"role": "user", "content": "what is this?"},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(roles(&req), ["user"]);
+        assert_eq!(
+            content(&req, 0),
+            json!([{"type": "text", "text": "what is this?"}, image_part()])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_marker_in_a_system_prompt_made_of_parts_is_found() {
+        let mut req = request(json!([
+            {"role": "system", "content": [
+                {"type": "text", "text": "Be brief."},
+                {"type": "text", "text": png_line(1)},
+            ]},
+            {"role": "user", "content": "hi"},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(
+            content(&req, 0),
+            json!([{"type": "text", "text": "Be brief."}])
+        );
+        assert_eq!(
+            content(&req, 1),
+            json!([{"type": "text", "text": "hi"}, image_part()])
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_file_in_the_system_prompt_and_the_user_message_is_sent_once_in_the_user_spot()
+    {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Rules.\n{}", pdf_line(1))},
+            {"role": "user", "content": format!("read this\n{}\nthanks", pdf_line(1))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PDF);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 0), json!("Rules.\n"));
+        assert_eq!(
+            content(&req, 1),
+            json!([
+                {"type": "text", "text": "read this\n"},
+                pdf_part(),
+                {"type": "text", "text": "\nthanks"},
+            ])
+        );
+        assert_eq!(report.attached, 1);
+        assert_eq!(report.repeated, 1);
+        assert_eq!(store.fetch_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_system_marker_goes_to_the_user_message_that_opens_the_current_turn() {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Use the file.\n{}", png_line(1))},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": null, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "tool output"},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 1), json!("first question"));
+        assert_eq!(
+            content(&req, 3),
+            json!([{"type": "text", "text": "second question"}, image_part()])
+        );
+        assert_eq!(content(&req, 5), json!("tool output"));
+    }
+
+    #[tokio::test]
+    async fn a_system_marker_is_removed_unfetched_when_the_user_message_already_carries_media() {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Look.\n{}", png_line(1))},
+            {"role": "user", "content": [{"type": "text", "text": "this"}, image_part()]},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 0), json!("Look.\n"));
+        assert_eq!(
+            content(&req, 1),
+            json!([{"type": "text", "text": "this"}, image_part()])
+        );
+        assert_eq!(report.skipped_media_present, 1);
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_system_marker_that_does_not_verify_stays_text_and_is_counted() {
+        let other_flow = MarkerClaims {
+            flow_id: "0".repeat(32),
+            ..claims(chat_file(1), "fact.png", "image/png", PNG.len() as u64)
+        };
+        let line = signer().marker_line(&other_flow);
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Look.\n{line}")},
+            {"role": "user", "content": "this"},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 0), json!(format!("Look.\n{line}")));
+        assert_eq!(content(&req, 1), json!("this"));
+        assert_eq!(report.invalid, 1);
+        assert_eq!(store.fetch_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_system_only_request_gets_a_user_message_holding_the_file() {
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Describe the image.\n{}", png_line(1))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(roles(&req), ["system", "user"]);
+        assert_eq!(content(&req, 0), json!("Describe the image.\n"));
+        assert_eq!(content(&req, 1), json!([image_part()]));
+        assert_eq!(report.attached, 1);
+    }
+
+    #[tokio::test]
+    async fn a_text_file_pasted_in_the_user_message_is_not_attached_again_from_the_system_prompt() {
+        let csv = "region,q2\nEMEA,913\nAPAC,402\nAMER,777\nLATAM,120\n";
+        let line = signer().marker_line(&claims(
+            chat_file(3),
+            "data.csv",
+            "text/csv",
+            csv.len() as u64,
+        ));
+        let mut req = request(json!([
+            {"role": "system", "content": format!("Use the data.\n{line}")},
+            {"role": "user", "content": format!("Totals?\n{csv}")},
+        ]));
+        let store = FakeStore::default().with(chat_file(3), csv.as_bytes().to_vec().leak());
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(content(&req, 0), json!("Use the data.\n"));
+        assert_eq!(content(&req, 1), json!(format!("Totals?\n{csv}")));
+        assert_eq!(report.skipped_text_present, 1);
+        assert_eq!(report.attached, 0);
+    }
+
+    #[tokio::test]
+    async fn assistant_messages_are_never_scanned() {
+        let mut req = request(json!([
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": format!("echo {}", png_line(1))},
+        ]));
+        let store = FakeStore::default().with(chat_file(1), PNG);
+        let report = run(&mut req, &store).await.unwrap();
+        assert_eq!(report, ExpandReport::default());
         assert_eq!(store.fetch_count(), 0);
     }
 }
