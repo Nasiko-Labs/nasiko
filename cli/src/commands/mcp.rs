@@ -2032,12 +2032,26 @@ mod tests {
             .with_status(401)
             .with_body(r#"{"error":"session expired"}"#)
             .create();
-        let client = Client::for_test(&server.url(), None);
+        let client = Client::for_test(&server.url(), Some("stale-token"));
         let err = connections_with(&client, false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("401"), "got: {msg}");
         assert!(msg.contains("session expired"), "got: {msg}");
         assert!(msg.contains("nasiko auth login"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_401_without_any_token_says_not_logged_in() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/api/mcp/connections")
+            .with_status(401)
+            .with_body(r#"{"error":"missing token"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let msg = connections_with(&client, false).unwrap_err().to_string();
+        assert!(msg.contains("not logged in to"), "got: {msg}");
+        assert!(msg.contains("auth login"), "got: {msg}");
     }
 
     #[test]
