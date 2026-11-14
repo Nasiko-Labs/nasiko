@@ -53,6 +53,10 @@ dev:
     set -a; source server/.env 2>/dev/null || source server/.env.example; set +a
     cargo watch -x "run -p nasiko-server --bin nasiko-server"
 
+# Build the UI embedded by the server (requires Node.js >= 22.18 and npm)
+build-ui:
+    cd ui && npm ci && npm run build
+
 # Release OSS control plane (server)
 release-cp tag="latest":
     cargo zigbuild --release --target {{target}} -p nasiko-server
