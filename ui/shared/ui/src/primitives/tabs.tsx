@@ -3,13 +3,16 @@
 // - focus is the one app style: a 2 px `--ring` with a 2 px page-coloured offset (DESIGN.md "Focus"), not the 3 px glow;
 // - inactive triggers use `text-muted-foreground`, not `text-foreground/60` (4.4:1 on the muted list; axe).
 // - `TabsList` defaults `activateOnFocus` to true: arrow keys select as they move, as Radix's automatic activation did
-//   (Base UI's default waits for Enter or Space). Stage D.
+//   (Base UI's default waits for Enter or Space). Stage D. `Tabs` keeps that to the keyboard: Base UI also selects a
+//   tab that gets focus any other way, and a dialog that closes hands focus back to the tab that opened it. After a
+//   blocked tab change (LeaveGuard's "Stay"), that re-ran the change and opened the dialog again, in a loop.
 // - the line indicator sits on the list's bottom edge (`-bottom-1`, 4 px: the list's 3 px padding plus the trigger's
 //   1 px), not 1 px below it (`-5px`): anything outside an `overflow-x-auto` list scrolls it vertically, a stray
 //   scrollbar with macOS "Always show scroll bars" (NAS-1200). A line list draws its rule inside itself
 //   (`shadow-[inset_0_-1px_0_var(--color-border)]`, not `border-b`), so the indicator still covers it.
 "use client"
 
+import * as React from "react"
 import { Tabs as TabsPrimitive } from "@base-ui/react/tabs"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../lib/utils"
@@ -17,8 +20,13 @@ import { cn } from "../lib/utils"
 function Tabs({
   className,
   orientation = "horizontal",
+  onValueChange,
+  onKeyDownCapture,
   ...props
 }: TabsPrimitive.Root.Props) {
+  // Set while a key press inside the tabs is being handled. Base UI moves focus for an arrow key in a microtask,
+  // so the flag is still set then, and is cleared before anything else can focus a tab.
+  const fromKey = React.useRef(false)
   return (
     <TabsPrimitive.Root
       data-slot="tabs"
@@ -28,6 +36,21 @@ function Tabs({
         className
       )}
       {...props}
+      onKeyDownCapture={(event) => {
+        fromKey.current = true
+        setTimeout(() => {
+          fromKey.current = false
+        })
+        onKeyDownCapture?.(event)
+      }}
+      onValueChange={(value, details) => {
+        // Focus selects a tab only when the keyboard moved it there; a click selects through its own event.
+        if (details.event instanceof FocusEvent && !fromKey.current) {
+          details.cancel()
+          return
+        }
+        onValueChange?.(value, details)
+      }}
     />
   )
 }
