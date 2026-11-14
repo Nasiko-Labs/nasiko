@@ -197,6 +197,12 @@ The `.env` defaults work on your own machine. Before anyone else can reach the s
 After editing `.env`, run `docker compose up -d` again. Every variable is described in
 [`server/.env.example`](server/.env.example).
 
+```sh
+docker compose logs -f server   # follow the server logs
+docker compose down             # stop everything
+docker compose up -d --build    # rebuild after pulling new changes
+```
+
 **3. Connect the CLI**
 
 ```sh
@@ -296,6 +302,9 @@ nasiko new openai my-agent && cd my-agent   # scaffold from a template
 nasiko deploy .                             # build, push and deploy
 nasiko chat --agent my-agent "Hello there"
 ```
+
+Deployed agents use the server's `OPENAI_API_KEY` unless you give them their own with
+`nasiko secrets set`, so set it in `.env` before you chat.
 
 `nasiko deploy` builds locally with Docker. `nasiko upload` sends the source and the server builds it.
 You can also deploy from the dashboard: upload source, import from GitHub, or pull from the registry.
