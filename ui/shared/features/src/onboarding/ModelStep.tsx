@@ -1,5 +1,6 @@
 /**
- * The Agent and key step's second half (bring your own key: every model call is billed to it): pick a built-in provider and save its key as
+ * The Agent and key step's second half (bring your own key for your own agents; Starter pack agents are free): pick a
+ * built-in provider and save its key as
  * the caller's default LLM config, through the router's own `useSaveConfig` (key hygiene as there: the mutation keeps
  * nothing and resets on unmount; the key is never read back). "Where do I get a key?" above the field opens the steps.
  * Then the model, the LLM router's own field (`SuggestInput`: the provider's catalog models as suggestions, any name
@@ -30,6 +31,7 @@ import { Spinner } from '@nasiko/ui/primitives/spinner'
 import { useCatalog, useSaveConfig } from '@nasiko/features/router/api'
 import { defaultSecretName } from '@nasiko/features/router/routing'
 import { ApiError } from '@nasiko/data-access/client'
+import { useStarterPackOffered } from './api'
 import { copy } from './copy'
 import { guideProviders, providerName } from './logic'
 import { SectionHeading } from './parts'
@@ -45,6 +47,7 @@ export function ModelStep({
 }) {
   const ids = useId()
   const catalog = useCatalog()
+  const starterPack = useStarterPackOffered()
   const save = useSaveConfig()
   const { reset } = save
   useEffect(() => () => reset(), [reset])
@@ -85,7 +88,10 @@ export function ModelStep({
 
   return (
     <section className="flex flex-col gap-4">
-      <SectionHeading title={copy.model.title} intro={copy.model.intro} />
+      <SectionHeading
+        title={copy.model.title}
+        intro={starterPack === false ? copy.model.introOwn : copy.model.intro}
+      />
       {catalog.isPending ? (
         <Skeleton className="h-24 w-full" />
       ) : catalog.isError ? (

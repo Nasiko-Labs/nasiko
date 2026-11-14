@@ -28,27 +28,11 @@ import type { DeploySearch } from '@nasiko/features/deploy/search'
 import { fmtElapsed, type Stage } from '@nasiko/features/deploy/steps'
 import { type DeployStarted, UploadTab } from '@nasiko/features/deploy/UploadTab'
 import { meQuery } from '@nasiko/data-access/auth'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
-import { type SeededDeploy, useSeededDeploys } from './api'
+import { type SeededDeploy, useSeededDeploys, useStarterPackOffered } from './api'
 import { watchGuideDeploys } from './guideDeploys'
 import { copy } from './copy'
 import { SEEDED_AGENTS } from './logic'
 import { SectionHeading } from './parts'
-/** The query a guide with no `starterPack` slot holds instead: never run (`enabled: false`). */
-const NO_SLOT_QUERY = {
-  queryKey: ['onboarding', 'starter-pack', 'no-slot'],
-  queryFn: () => Promise.resolve(null),
-}
-
-/** Whether the Starter pack tab is offered: yes without a slot, else the slot's answer, null while it's coming. */
-function useStarterPackOffered(): boolean | null {
-  const slot = useSlots().starterPack
-  const q = useQuery<unknown>({ ...(slot?.query ?? NO_SLOT_QUERY), enabled: !!slot, retry: false })
-  if (!slot) return true
-  if (q.isPending) return null
-  return slot.offered(q.isError ? undefined : q.data)
-}
-
 export function AgentStep({
   started,
   onStarted,

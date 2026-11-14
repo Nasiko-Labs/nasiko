@@ -4,6 +4,7 @@
  */
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useSyncExternalStore } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { meQuery } from '@nasiko/data-access/auth'
 import { apiFetch } from '@nasiko/data-access/client'
 import { guideDue, skipKey, type StepId } from './logic'
@@ -175,3 +176,18 @@ export const useSeededDeploys = () =>
     () => seededDeploys,
     () => seededDeploys,
   )
+
+/** The query a guide with no `starterPack` slot holds instead: never run (`enabled: false`). */
+const NO_SLOT_QUERY = {
+  queryKey: ['onboarding', 'starter-pack', 'no-slot'],
+  queryFn: () => Promise.resolve(null),
+}
+
+/** Whether the Starter pack tab is offered: yes without a slot, else the slot's answer, null while it's coming. */
+export function useStarterPackOffered(): boolean | null {
+  const slot = useSlots().starterPack
+  const q = useQuery<unknown>({ ...(slot?.query ?? NO_SLOT_QUERY), enabled: !!slot, retry: false })
+  if (!slot) return true
+  if (q.isPending) return null
+  return slot.offered(q.isError ? undefined : q.data)
+}

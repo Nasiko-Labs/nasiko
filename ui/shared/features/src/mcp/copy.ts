@@ -49,7 +49,6 @@ export const copy = {
   sub: 'Connect MCP servers and choose which agents can use their tools',
   upload: 'Upload MCP server',
   register: 'Register server',
-  sections: { label: 'MCP', builds: 'Builds' },
   searchLabel: 'Search MCP servers',
   searchPlaceholder: 'Search servers and toolkits',
   views: { yours: 'Yours', shared: 'Shared with you', toolkits: 'Toolkits' } satisfies Record<
@@ -74,32 +73,6 @@ export const copy = {
   buildingHint: 'This may take a few minutes. Status updates automatically.',
   buildFailed: 'Build failed',
   buildFailedHint: 'Open the server to see its build logs.',
-  builds: {
-    title: 'Builds',
-    description: 'Every MCP server you uploaded. In-progress ones stay on top.',
-    what: 'uploads',
-    empty: 'No uploads yet',
-    emptyHint: 'Upload your own MCP server and its build shows up here.',
-    loading: 'Loading builds',
-    noMatch: 'No uploads match these filters',
-    noMatchHint: 'Try another status or search, or clear the filters.',
-    clearFilters: 'Clear filters',
-    searchLabel: 'Search uploads',
-    searchPlaceholder: 'Server name',
-    filterLabel: 'Status',
-    deletedConnector: 'This upload failed before it ever deployed, so there is no page for it.',
-    deletedConnectorName: 'Deleted connector',
-    colBuild: 'Build',
-    colStatus: 'Status',
-    colSource: 'Source',
-    colStarted: 'Started',
-    colDuration: 'Duration',
-  },
-  buildFilter: { all: 'All', building: 'In progress', failed: 'Failed', success: 'Succeeded' },
-  // The per-row status badge: past-tense/outcome wording, not `buildFilter`'s tab labels ("In
-  // progress" there, "Building" here) — same split Agents' `copy.filter`/`copy.status` keep.
-  buildStatus: { building: 'Building', failed: 'Failed', success: 'Succeeded' },
-  buildSource: { zip: 'Zip upload', github: 'GitHub' },
   loadFailed: "Couldn't load the catalog",
   loadFailedFix: 'Something went wrong loading connectable servers and toolkits.',
   toolkitsFailed: "Couldn't load toolkits. Custom servers are shown.",
@@ -132,19 +105,6 @@ export const copy = {
   nothingConnectedDesc:
     'Connect a server or toolkit and its tools become available to your agents.',
   browseAvailable: 'Browse available',
-  // No toolkit yet (NAS-1599): only an admin can set the Composio key, so everyone else is told to ask.
-  toolkitSetup: {
-    title: 'Get app toolkits with Composio',
-    intro: 'Toolkits for apps like Gmail, Slack and Notion come from Composio. To list them here:',
-    steps: [
-      'Go to Settings → MCP toolkits.',
-      'Enter your Composio API key.',
-      'Tick the toolkits you want people to connect to, then save.',
-      'They appear here, ready to connect.',
-    ],
-    open: 'Open MCP toolkits',
-    askAdmin: 'Only an admin can change these settings. Ask yours to add a key and pick toolkits.',
-  },
   allConnected: 'Everything is connected',
   allConnectedDesc: 'Every server and toolkit in this view is already connected.',
 
@@ -319,8 +279,6 @@ export const copy = {
     'MCP servers this agent may use. Set each tool to allow, ask or block. Ask pauses the agent mid-task and asks you to approve that call before it runs.',
   agentMcpSubHarness:
     'MCP servers this coding harness may use. Set each tool to allow or block. Approval before a call isn’t available for coding harnesses yet.',
-  agentMcpSubLocal:
-    'MCP servers this agent may use from the machine it runs on. Set each tool to allow or block. Approval before a call isn’t available for agents running outside Nasiko yet.',
   noAgentServers: 'No MCP servers available',
   noAgentServersFix: 'Connect servers on the MCP servers page to make their tools available here.',
   openCatalog: 'Open MCP servers',
@@ -362,7 +320,7 @@ export const copy = {
 
   // Access tab
   publicTitle: 'Visibility',
-  publicToggle: 'Public: everyone on this Open Runtime can use this server',
+  publicToggle: 'Public: everyone on this OpenRuntime can use this server',
   grantsTitle: 'Who has access',
   grantsSub: 'Who this server is shared with.',
   searchGrants: 'Search people',
@@ -406,11 +364,11 @@ export const copy = {
 
 /** The server's own words when it sent any (the gateway's `client_message` is safe to show), else a fallback. */
 export function reason(err: unknown): string {
-  if (isTimeoutError(err)) return 'Open Runtime took too long to answer.'
+  if (isTimeoutError(err)) return 'OpenRuntime took too long to answer.'
   if (err instanceof ApiError) {
     if (err.status === 403 && !err.serverMessage) return "you don't have permission"
     if (err.serverMessage) return err.serverMessage
-    if (err.isServerUnreachable) return "Open Runtime isn't answering."
+    if (err.isServerUnreachable) return "OpenRuntime isn't answering."
     return `error ${err.status}`
   }
   return err instanceof Error ? err.message : 'unknown error'

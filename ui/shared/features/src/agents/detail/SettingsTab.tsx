@@ -106,6 +106,7 @@ function DetailsForm({ agent }: { agent: AgentView }) {
           <FieldLabel htmlFor={nameId}>{copy.displayName}</FieldLabel>
           <Input
             id={nameId}
+            placeholder={copy.displayNamePlaceholder}
             maxLength={200}
             required
             aria-invalid={!!errors.display_name}
@@ -114,7 +115,13 @@ function DetailsForm({ agent }: { agent: AgentView }) {
         </Field>
         <Field className="gap-1">
           <FieldLabel htmlFor={descId}>{copy.description}</FieldLabel>
-          <Textarea id={descId} rows={3} maxLength={2000} {...form.register('description')} />
+          <Textarea
+            id={descId}
+            rows={3}
+            maxLength={2000}
+            placeholder={copy.descriptionPlaceholder}
+            {...form.register('description')}
+          />
         </Field>
         <div className="flex items-center gap-3">
           <Button type="submit" size="sm" disabled={!isDirty || !isValid || update.isPending}>
@@ -205,6 +212,7 @@ function Secrets({ id }: { id: string }) {
           <FieldLabel htmlFor={nameId}>{copy.secretName}</FieldLabel>
           <Input
             id={nameId}
+            placeholder={copy.secretNamePlaceholder}
             className="font-mono"
             autoComplete="off"
             spellCheck={false}
@@ -217,6 +225,7 @@ function Secrets({ id }: { id: string }) {
           <Input
             id={valueId}
             type="password"
+            placeholder={copy.secretValuePlaceholder}
             autoComplete="new-password"
             required
             {...form.register('value')}

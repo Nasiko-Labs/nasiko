@@ -8,7 +8,7 @@ import { Link, useNavigate, useRouter, useRouterState } from '@tanstack/react-ro
 import {
   ArrowLeft,
   BookOpen,
-  CalendarClock,
+  Bug,
   ClipboardCheck,
   CircleAlert,
   CircleUser,
@@ -29,6 +29,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from 'react'
 import {
@@ -64,7 +65,7 @@ import { ApiError } from '@nasiko/data-access/client'
 import { SIDEBAR_HEALTH_INTERVAL_MS, useHealth } from '@nasiko/data-access/health'
 import { env } from '@nasiko/app-core/env'
 import { IS_MAC } from '@nasiko/ui/lib/keys'
-import { DOCS_URL, EXPERT_CALL_URL } from '@nasiko/app-core/links'
+import { DOCS_URL, SUPPORT_MAIL_URL } from '@nasiko/app-core/links'
 import { askForTour } from '@nasiko/app-core/tour'
 import { cn } from '@nasiko/ui/lib/utils'
 import { pickShared, withoutWindow } from '@nasiko/app-core/shell/context'
@@ -226,6 +227,9 @@ export function AppSidebar({
           hidden={hidden}
           focusNextRef={focusNextRef}
           onPick={pick}
+          // A layer's card ends the scrolling list, hidden while a page's panel holds the sidebar: pinned above the
+          // footer it took the nav's room, so more of the nav had to scroll.
+          end={holds || !SidebarCard ? null : <SidebarCard />}
         />
       )}
       {/* The panel's slot stays mounted (only hidden) under Main menu: the page still knows the sidebar holds its
@@ -239,8 +243,6 @@ export function AppSidebar({
         />
       ) : null}
       {/* {holds ? null : <WaitlistCard />} */}
-      {/* A layer's card above the footer, hidden while a page's panel holds the sidebar. */}
-      {holds || !SidebarCard ? null : <SidebarCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
           <HelpRows pathname={pathname} onPick={pick} assessment={assessment} />
@@ -307,12 +309,15 @@ function NavGroups({
   hidden,
   focusNextRef,
   onPick,
+  end,
 }: {
   pathname: string
   badges?: NavBadges
   hidden?: readonly string[]
   focusNextRef: FocusNext
   onPick(): void
+  /** After the nav, in the same scrolling list (a layer's card). */
+  end?: ReactNode
 }) {
   // A layer's nav patches (EE: Lab → Weave fixtures) apply on top of the core's items.
   const items = applyNav(NAV_ITEMS, use(EditionContext).edition.layers).filter(
@@ -349,22 +354,22 @@ function NavGroups({
     return () => ro.disconnect()
   }, [measure])
   return (
-    <nav aria-label={copy.navLabel} className="flex min-h-0 flex-1 flex-col">
-      <SidebarContent
-        ref={scroller}
-        onScroll={measure}
-        className={cn(
-          // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
-          'gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
-          edges.top && edges.bottom
-            ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
-            : edges.top
-              ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px)]'
-              : edges.bottom
-                ? '[mask-image:linear-gradient(to_top,transparent,black_16px)]'
-                : undefined,
-        )}
-      >
+    <SidebarContent
+      ref={scroller}
+      onScroll={measure}
+      className={cn(
+        // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
+        'gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
+        edges.top && edges.bottom
+          ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
+          : edges.top
+            ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px)]'
+            : edges.bottom
+              ? '[mask-image:linear-gradient(to_top,transparent,black_16px)]'
+              : undefined,
+      )}
+    >
+      <nav aria-label={copy.navLabel}>
         {/* A group with no items (Lab, in a production build) has no header either, and the first group drawn has none:
             while the onboarding guide hides Home, Fleet opens the nav without a header or a leading hairline. */}
         {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g, i) => (
@@ -431,12 +436,14 @@ function NavGroups({
             </SidebarMenu>
           </SidebarGroup>
         ))}
-      </SidebarContent>
-    </nav>
+      </nav>
+      {/* Pushed to the bottom while everything fits, as when it sat above the footer. */}
+      {end ? <div className="mt-auto">{end}</div> : null}
+    </SidebarContent>
   )
 }
 
-/** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
+/** How to use (the docs), the CLI guide (in the app) and Report an issue (a mail to support), above the account. */
 function HelpRows({
   pathname,
   onPick,
@@ -447,18 +454,24 @@ function HelpRows({
   assessment: boolean
 }) {
   const { setOpenMobile } = useSidebar()
-  const external = (href: string, label: string, Icon: typeof BookOpen) => (
+  // A mail link opens the mail app, not a tab: `newTab` false.
+  const external = (href: string, label: string, Icon: typeof BookOpen, newTab = true) => (
     <SidebarMenuItem>
       <SidebarMenuButton
         tooltip={label}
         className={ROW}
         render={
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`${label} ${copy.help.newTab}`}
-          />
+          newTab ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`${label} ${copy.help.newTab}`}
+            />
+          ) : (
+            // eslint-disable-next-line jsx-a11y/anchor-has-content -- its content is the button's children, rendered into it
+            <a href={href} />
+          )
         }
       >
         <Icon aria-hidden />
@@ -510,7 +523,7 @@ function HelpRows({
           </SidebarMenuButton>
         </SidebarMenuItem>
       ) : null}
-      {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
+      {external(SUPPORT_MAIL_URL, copy.help.issue, Bug, false)}
     </>
   )
 }

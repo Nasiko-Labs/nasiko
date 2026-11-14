@@ -7,13 +7,17 @@ import { copy } from './copy'
 setupPinnedSeed()
 
 describe('/cli Get started', () => {
-  it('installs, then connects to this server, which signs in itself', async () => {
+  it('installs, connects to this server without signing in, then signs in (no SSO in this edition)', async () => {
     renderApp('/cli')
     const start = await screen.findByRole('region', { name: copy.start.title })
     expect(
       within(start)
         .getAllByRole('code')
         .map((c) => c.textContent),
-    ).toEqual([copy.install.unixCommand, `nasiko connect ${window.location.origin}`])
+    ).toEqual([
+      copy.install.unixCommand,
+      `nasiko connect ${window.location.origin} --login=false`,
+      'nasiko auth login',
+    ])
   })
 })
