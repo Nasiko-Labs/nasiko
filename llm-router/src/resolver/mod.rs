@@ -1248,6 +1248,61 @@ struct ConfigPlan {
     tier3_model: Option<String>,
 }
 
+/// Reroutes an unconfigured agent's request hint to the platform default when the SDK surface
+/// names a built-in provider the platform holds no credentials for.
+///
+/// Every agent speaks the OpenAI SDK by default, so a Vertex- or Gemini-only deployment saw
+/// `provider = "openai"` and failed with "no platform fallback key". The hinted model survives
+/// only when the default provider can serve it; otherwise `DEFAULT_MODEL` replaces it (an old
+/// agent still sending `gpt-4o-mini` lands on the default model, not a 404).
+fn usable_hint<'a>(cfg: &'a GatewayConfig, hint: RequestHint<'a>) -> RequestHint<'a> {
+    let Some(provider) = hint.provider else {
+        return hint;
+    };
+    let default_provider: &str = cfg.default_provider.as_str();
+    let unusable: bool = is_builtin_provider(provider)
+        && provider != default_provider
+        && cfg.platform_key_for(provider).is_empty()
+        && !cfg.platform_key_for(default_provider).is_empty();
+    if !unusable {
+        return hint;
+    }
+    let model: Option<&'a str> = hint
+        .model
+        .filter(|m| model_fits_provider(m, default_provider))
+        .or(Some(cfg.default_model.as_str()));
+    tracing::info!(
+        from = provider,
+        to = default_provider,
+        requested_model = ?hint.model,
+        model = ?model,
+        "resolver: hinted provider has no credentials, using platform default"
+    );
+    RequestHint {
+        provider: Some(default_provider),
+        model,
+    }
+}
+
+/// Whether `model` plausibly belongs to built-in `provider` (name-prefix heuristic).
+fn model_fits_provider(model: &str, provider: &str) -> bool {
+    let m: String = model.trim().to_ascii_lowercase();
+    if m.is_empty() {
+        return false;
+    }
+    match provider {
+        "gemini" => m.starts_with("gemini") || m.starts_with("gemma"),
+        // Vertex also serves Model Garden MaaS ids (`vendor/model`).
+        "vertex" => m.starts_with("gemini") || m.starts_with("gemma") || m.contains('/'),
+        "anthropic" => m.starts_with("claude"),
+        "openrouter" => m.contains('/'),
+        "openai" => {
+            m.starts_with("gpt") || m.starts_with('o') || m.starts_with("text-embedding-3")
+        }
+        _ => false,
+    }
+}
+
 /// Whether `provider` is one of the built-in providers the router speaks natively.
 /// Everything else is a candidate custom (DB-registered) provider.
 ///
@@ -1269,6 +1324,7 @@ fn destination_provider(
     cfg: &GatewayConfig,
     hint: RequestHint<'_>,
 ) -> String {
+    let hint: RequestHint<'_> = usable_hint(cfg, hint);
     match llm_config {
         Some(c) => c.provider.clone(),
         None => hint
@@ -1290,6 +1346,7 @@ fn plan_config(
     let default_model = custom
         .and_then(|c| c.default_model.clone())
         .unwrap_or_else(|| cfg.default_model.clone());
+    let hint: RequestHint<'_> = usable_hint(cfg, hint);
     match llm_config {
         Some(c) => {
             // Configured agent: the config is authoritative — the request hint is ignored.
@@ -2445,6 +2502,35 @@ mod shared_user_tests {
         unsafe {
             std::env::set_var("SECRETS_ENCRYPTION_KEY", BASE64.encode([7u8; 32]));
         }
+    }
+
+    #[test]
+    fn unkeyed_openai_hint_falls_to_default_provider() {
+        let cfg = GatewayConfig {
+            default_provider: "gemini".into(),
+            default_model: "gemini-2.5-flash".into(),
+            platform_gemini_api_key: "g-key".into(),
+            ..GatewayConfig::default()
+        };
+        let old = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-4o-mini") });
+        assert_eq!(old.provider, Some("gemini"));
+        assert_eq!(old.model, Some("gemini-2.5-flash"));
+        let injected = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gemini-2.0-flash") });
+        assert_eq!(injected.model, Some("gemini-2.0-flash"));
+    }
+
+    #[test]
+    fn keyed_hint_is_kept() {
+        let cfg = GatewayConfig {
+            default_provider: "gemini".into(),
+            default_model: "gemini-2.5-flash".into(),
+            platform_gemini_api_key: "g-key".into(),
+            platform_openai_api_key: "sk".into(),
+            ..GatewayConfig::default()
+        };
+        let h = super::usable_hint(&cfg, RequestHint { provider: Some("openai"), model: Some("gpt-4o-mini") });
+        assert_eq!(h.provider, Some("openai"));
+        assert_eq!(h.model, Some("gpt-4o-mini"));
     }
 
     fn gateway() -> GatewayConfig {
