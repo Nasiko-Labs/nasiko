@@ -13,7 +13,8 @@ use tracing::instrument;
 use utoipa::IntoParams;
 
 use super::service::{
-    EnsureSessionOutcome, FinopsAccess, InsightsRequest, ObservabilityService, parse_iso_or_default,
+    EnsureSessionOutcome, FinopsAccess, FinopsUserAgentSpend, InsightsRequest,
+    ObservabilityService, parse_iso_or_default,
 };
 
 /// Request extension injected by EE middleware to scope FinOps queries to a
@@ -664,6 +665,44 @@ pub async fn get_finops_dashboard(
         Ok(resp) => Json(resp).into_response(),
         Err(e) => obs_err(e),
     }
+}
+
+/// Spend per user per agent under the dashboard's filters in `params`, for `user_ids` (`None`:
+/// everyone). A seam for an edition that groups people, which this crate knows nothing about:
+/// the caller decides whose usage, and this decides which agents and calls it may include,
+/// exactly as [`get_finops_dashboard`] does, so the two always agree.
+pub async fn finops_spend_by_user_agent(
+    state: &AppState,
+    claims: &Claims,
+    params: &FinopsFilterParams,
+    user_ids: Option<&[uuid::Uuid]>,
+) -> Result<FinopsUserAgentSpend, Response> {
+    validate_range(params.range.as_deref())?;
+    let agent_name = resolve_agent_filter(&state.db, params.agent_id.as_deref()).await?;
+    if let Some(name) = agent_name.as_deref()
+        && !super::routes::agent_name_fully_accessible(state, claims, name).await
+    {
+        return Err((StatusCode::NOT_FOUND, "agent not found").into_response());
+    }
+    let (start_time, end_time) =
+        resolve_range_params(&params.start_time, &params.end_time, &params.range)?;
+    let accessible_agent_ids = accessible_agent_ids(state, claims).await;
+    svc(state)
+        .get_finops_spend_by_user_agent(
+            &claims.sub,
+            start_time.as_deref(),
+            end_time.as_deref(),
+            agent_name.as_deref(),
+            params.model.as_deref(),
+            params.provider.as_deref(),
+            FinopsAccess {
+                user_ids,
+                accessible_agent_ids: accessible_agent_ids.as_deref(),
+                workflow_owner: None,
+            },
+        )
+        .await
+        .map_err(obs_err)
 }
 
 /// "range" (24h/7d/30d) overrides `start_time`/`end_time` when present,
