@@ -1372,6 +1372,55 @@ struct ScopeBinds {
     user_ids: Vec<uuid::Uuid>,
 }
 
+/// The agents a dashboard-shaped FinOps view covers, and the SQL scope that keeps its queries to
+/// them. One answer for the dashboard and [`ObservabilityService::get_finops_spend_by_user_agent`],
+/// so a breakdown of the dashboard's spend always adds up to the dashboard's own total.
+struct AgentsInView {
+    /// `(id, name, display_name, version)` of every live agent in view.
+    agents: Vec<(uuid::Uuid, String, String, String)>,
+    /// The agents the caller may see, or `None` for every agent.
+    accessible: Option<HashSet<uuid::Uuid>>,
+    /// Internal agents left out because the caller has no other agent in view.
+    dropped_internal: HashSet<uuid::Uuid>,
+    /// A caller who sees only some agents aggregates only their rows, in SQL.
+    /// Narrowing afterwards made every member's dashboard cost as much as the
+    /// whole organization's history, and the summary figures summed straight
+    /// from the rows (unpriced, estimated, unknown-confidence) counted other
+    /// users' spend. `None`: the caller sees every agent.
+    scoped_names: Option<Vec<String>>,
+    own_platform_user: Option<uuid::Uuid>,
+    /// Whether the platform's own rows count toward the view's totals: all of them for a caller
+    /// who sees the whole fleet, the caller's own for a scoped one.
+    platform_rows: bool,
+}
+
+/// One user's spend on one agent in a FinOps window
+/// ([`ObservabilityService::get_finops_spend_by_user_agent`]).
+#[derive(Debug, Clone)]
+pub struct UserAgentSpend {
+    /// `None`: the call carried no user.
+    pub user_id: Option<uuid::Uuid>,
+    /// The registered agent, or `None` for the platform's own calls (orchestrator, MAF).
+    pub agent_id: Option<uuid::Uuid>,
+    /// The agent's display name, or the platform row's name.
+    pub agent_name: String,
+    pub total_cost: f64,
+    pub operations: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub tool_call_count: i64,
+}
+
+/// The rows of [`ObservabilityService::get_finops_spend_by_user_agent`] and the window they cover.
+#[derive(Debug, Clone)]
+pub struct FinopsUserAgentSpend {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub rows: Vec<UserAgentSpend>,
+}
+
 impl ObservabilityService {
     /// Per-turn tokens + cost for a chat session (its A2A contextId), read from
     /// the `token_usage` ledger joined to `flows`, grouped by flow (one row per
@@ -1457,6 +1506,209 @@ impl ObservabilityService {
             has_user_filter: !user_ids.is_empty(),
             user_ids,
         })
+    }
+
+    /// The agents a dashboard-shaped view covers: live agents, narrowed to one by `agent_name`,
+    /// to the caller's own by `owner_id`, and to those the caller may see.
+    async fn agents_in_view(
+        &self,
+        caller: &str,
+        agent_name: Option<&str>,
+        accessible_agent_ids: Option<&[uuid::Uuid]>,
+        owner_id: Option<uuid::Uuid>,
+    ) -> Result<AgentsInView, ObservabilityError> {
+        let accessible: Option<HashSet<uuid::Uuid>> =
+            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let own_platform_user = own_platform_rows_user(
+            accessible.is_some(),
+            owner_id.is_some() || agent_name.is_some(),
+            caller,
+        );
+        let all_agents = self.get_agent_names(owner_id).await?;
+        let mut agents: Vec<_> = match agent_name {
+            Some(name) => all_agents
+                .into_iter()
+                .filter(|(_, n, _, _)| n == name)
+                .collect(),
+            None => all_agents,
+        };
+        if let Some(accessible) = &accessible {
+            agents.retain(|(id, _, _, _)| accessible.contains(id));
+        }
+        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
+        // not the caller's fleet, so a workspace holding nothing else has still
+        // deployed nothing -- and the overview/tokenops pages read exactly that
+        // off `total_agents` to decide between their first-run screen and a real
+        // dashboard. Dropping them makes the list empty, which the early return
+        // in the dashboard turns into the zeroed payload those pages expect. Once
+        // the caller has an agent of their own the internal one stays in, so its
+        // spend is still attributed.
+        //
+        // Scoped to the agents actually in hand, and skipped entirely when there
+        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
+        // every internal agent in the deployment on every dashboard load, and ran
+        // even for the no-agent first-run case this exists to serve, where its
+        // answer cannot change anything.
+        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
+        if !agents.is_empty() {
+            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
+            let internal_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents \
+                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            if internal_count as usize == ids.len() {
+                dropped_internal = ids.into_iter().collect();
+                agents.clear();
+            }
+        }
+        let scoped_names = (accessible.is_some() || owner_id.is_some())
+            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
+        let fleet_view = accessible.is_none() && owner_id.is_none() && agent_name.is_none();
+        Ok(AgentsInView {
+            agents,
+            accessible,
+            dropped_internal,
+            scoped_names,
+            own_platform_user,
+            platform_rows: fleet_view || own_platform_user.is_some(),
+        })
+    }
+
+    /// Spend per user per agent: the dashboard's totals, under the same filters and agent scope,
+    /// broken down by who made each call. `access.user_ids` narrows it to those users, and an
+    /// empty list means nobody, not everybody.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_finops_spend_by_user_agent(
+        &self,
+        caller: &str,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        access: FinopsAccess<'_>,
+    ) -> Result<FinopsUserAgentSpend, ObservabilityError> {
+        let start = parse_iso_or_default(start_time, 30);
+        let end = end_time
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+        let nothing = FinopsUserAgentSpend {
+            start,
+            end,
+            rows: vec![],
+        };
+        if access.user_ids.is_some_and(<[uuid::Uuid]>::is_empty) {
+            return Ok(nothing);
+        }
+        let view = self
+            .agents_in_view(caller, agent_name, access.accessible_agent_ids, None)
+            .await?;
+        if view.agents.is_empty() && view.own_platform_user.is_none() {
+            return Ok(nothing);
+        }
+        let user_ids: Vec<uuid::Uuid> = access.user_ids.map(<[_]>::to_vec).unwrap_or_default();
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: Option<uuid::Uuid>,
+            agent_name: String,
+            operations: i64,
+            input_tokens: i64,
+            output_tokens: i64,
+            cache_read_tokens: i64,
+            cache_creation_tokens: i64,
+            total_cost: f64,
+            tool_call_count: i64,
+            platform: bool,
+        }
+        // The dashboard's aggregation (`get_finops_dashboard`), grouped by user as well.
+        let rows: Vec<Row> = sqlx::query_as(
+            r#"WITH s AS (
+                 SELECT user_id, agent_name,
+                        COALESCE(SUM(traces), 0)::BIGINT AS operations,
+                        COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                        COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                        COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count
+                 FROM trace_spend
+                 WHERE ts >= $1 AND ts < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
+                 GROUP BY user_id, agent_name),
+               h AS (
+                 SELECT agent_name, BOOL_AND(agent_id IS NULL) AS platform
+                 FROM trace_usage
+                 WHERE started_at >= $1 AND started_at < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
+                 GROUP BY agent_name)
+               SELECT s.*, COALESCE(h.platform, false) AS platform
+               FROM s LEFT JOIN h USING (agent_name)"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(agent_name)
+        .bind(model)
+        .bind(provider)
+        .bind(!user_ids.is_empty())
+        .bind(&user_ids)
+        .bind(&view.scoped_names)
+        .bind(view.own_platform_user)
+        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(PLATFORM_STEP_ROW_PATTERN)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // Kept exactly as the dashboard's totals keep them: a live agent in view, or a platform
+        // row when the view counts those. Calls to a deleted agent are in neither.
+        let registered: HashMap<&str, (uuid::Uuid, &str)> = view
+            .agents
+            .iter()
+            .map(|(id, name, display, _)| (name.as_str(), (*id, display.as_str())))
+            .collect();
+        let rows = rows
+            .into_iter()
+            .filter_map(|r| {
+                let (agent_id, agent_name) = match registered.get(r.agent_name.as_str()) {
+                    Some((id, display)) => (Some(*id), display.to_string()),
+                    None if view.platform_rows
+                        && (r.platform || is_platform_row_name(&r.agent_name)) =>
+                    {
+                        (None, r.agent_name)
+                    }
+                    None => return None,
+                };
+                Some(UserAgentSpend {
+                    user_id: r.user_id,
+                    agent_id,
+                    agent_name,
+                    total_cost: r.total_cost,
+                    operations: r.operations,
+                    prompt_tokens: r.input_tokens,
+                    completion_tokens: r.output_tokens,
+                    cache_read_tokens: r.cache_read_tokens,
+                    cache_creation_tokens: r.cache_creation_tokens,
+                    tool_call_count: r.tool_call_count,
+                })
+            })
+            .collect();
+        Ok(FinopsUserAgentSpend { start, end, rows })
     }
 
     async fn get_agent_names(
@@ -2430,54 +2682,16 @@ impl ObservabilityService {
             ..
         } = access;
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
-        let accessible: Option<HashSet<uuid::Uuid>> =
-            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
-        let own_platform_user = own_platform_rows_user(
-            accessible.is_some(),
-            parsed_owner_id.is_some() || agent_name.is_some(),
-            user_id,
-        );
-        let all_agents = self.get_agent_names(parsed_owner_id).await?;
-        let mut agents: Vec<_> = match agent_name {
-            Some(name) => all_agents
-                .into_iter()
-                .filter(|(_, n, _, _)| n == name)
-                .collect(),
-            None => all_agents,
-        };
-        if let Some(accessible) = &accessible {
-            agents.retain(|(id, _, _, _)| accessible.contains(id));
-        }
-        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
-        // not the caller's fleet, so a workspace holding nothing else has still
-        // deployed nothing -- and the overview/tokenops pages read exactly that
-        // off `total_agents` to decide between their first-run screen and a real
-        // dashboard. Dropping them makes the list empty, which the early return
-        // below turns into the zeroed payload those pages expect. Once the caller
-        // has an agent of their own the internal one stays in, so its spend is
-        // still attributed.
-        //
-        // Scoped to the agents actually in hand, and skipped entirely when there
-        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
-        // every internal agent in the deployment on every dashboard load, and ran
-        // even for the no-agent first-run case this exists to serve, where its
-        // answer cannot change anything.
-        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
-        if !agents.is_empty() {
-            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
-            let internal_count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM agents \
-                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
-            )
-            .bind(&ids)
-            .fetch_one(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-            if internal_count as usize == ids.len() {
-                dropped_internal = ids.into_iter().collect();
-                agents.clear();
-            }
-        }
+        let AgentsInView {
+            agents,
+            accessible,
+            dropped_internal,
+            scoped_names,
+            own_platform_user,
+            platform_rows,
+        } = self
+            .agents_in_view(user_id, agent_name, accessible_agent_ids, parsed_owner_id)
+            .await?;
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
@@ -2579,13 +2793,6 @@ impl ObservabilityService {
             .filter(|ids| !ids.is_empty())
             .map(|ids| ids.to_vec())
             .unwrap_or_default();
-        // A caller who sees only some agents aggregates only their rows, in SQL.
-        // Narrowing afterwards made every member's dashboard cost as much as the
-        // whole organization's history, and the summary figures summed straight
-        // from the rows (unpriced, estimated, unknown-confidence) counted other
-        // users' spend. `None`: the caller sees every agent.
-        let scoped_names: Option<Vec<String>> = (accessible.is_some() || parsed_owner_id.is_some())
-            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
 
         // Shared WHERE fragment: agent, model, provider, user_id filters.
         // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
@@ -2914,8 +3121,7 @@ impl ObservabilityService {
         // one slice of the spend chart; a scoped caller gets the same for their own calls only,
         // which is all the queries above let through for them.
         let mut platform_cost = 0.0;
-        let fleet_view = accessible.is_none() && parsed_owner_id.is_none() && agent_name.is_none();
-        if fleet_view || own_platform_user.is_some() {
+        if platform_rows {
             let registered: HashSet<&str> =
                 agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
             // The orchestrator's and MAF's rows carry the routed agent's id (other views name the
