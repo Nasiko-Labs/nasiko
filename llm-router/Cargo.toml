@@ -48,10 +48,6 @@ base64 = { workspace = true }
 hmac = { workspace = true }
 sha2 = { workspace = true }
 
-# Word and Excel attachments read as text (src/providers/media/office.rs)
-zip = { workspace = true }
-quick-xml = { workspace = true }
-
 # Auth (agent-identity JWT verify)
 jsonwebtoken = { workspace = true }
 

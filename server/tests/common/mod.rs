@@ -310,7 +310,11 @@ impl ContainerRuntime for FakeRuntime {
         Ok(vec![])
     }
 
-    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
+    async fn build(
+        &self,
+        _tar_context: &[u8],
+        image_tag: &str,
+    ) -> RuntimeResult<nasiko_runtime::BuildReport> {
         self.builds_started
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let gate = self.build_gate.lock().unwrap().clone();
@@ -322,7 +326,7 @@ impl ContainerRuntime for FakeRuntime {
                 "fake build failure (scripted by test)".into(),
             ));
         }
-        Ok(image_tag.to_owned())
+        Ok(nasiko_runtime::BuildReport::image_only(image_tag))
     }
 
     async fn supports_autoscaling(&self) -> bool {
@@ -555,6 +559,21 @@ impl TestServer {
             fake_runtime,
             None,
             None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(dead_code)]
+    pub async fn start_with_storage(oci_storage: Arc<dyn nasiko_runtime::BlobStore>) -> Self {
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        Self::start_with_runtime_and_handle(
+            |_| {},
+            fake_runtime.clone(),
+            fake_runtime,
+            Some(oci_storage),
+            None,
+            None,
         )
         .await
     }
@@ -569,6 +588,7 @@ impl TestServer {
             |_| {},
             fake_runtime.clone(),
             fake_runtime,
+            None,
             None,
             Some(spend_gate),
         )
@@ -585,6 +605,7 @@ impl TestServer {
             |_| {},
             fake_runtime.clone(),
             fake_runtime,
+            None,
             Some(agent_wake),
             None,
         )
@@ -608,6 +629,7 @@ impl TestServer {
             configure,
             runtime,
             Arc::new(FakeRuntime::default()),
+            None,
             None,
             None,
         )
@@ -719,6 +741,7 @@ impl TestServer {
         configure: impl FnOnce(&mut Config),
         runtime: Arc<dyn ContainerRuntime>,
         fake_handle: Arc<FakeRuntime>,
+        oci_storage: Option<Arc<dyn nasiko_runtime::BlobStore>>,
         agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
         spend_gate: Option<Arc<dyn nasiko_server::spend_gate::SpendGate>>,
     ) -> Self {
@@ -762,9 +785,12 @@ impl TestServer {
 
         // Integration tests run against the S3-compatible store `just infra`
         // brings up, which is also the only backend this edition ships.
-        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = Arc::new(
-            nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
-        );
+        let oci_storage: Arc<dyn nasiko_runtime::BlobStore> = match oci_storage {
+            Some(storage) => storage,
+            None => Arc::new(
+                nasiko_oci::storage::S3Storage::from_env(config.oci_storage_bucket.clone()).await,
+            ),
+        };
         let sandbox = Arc::new(nasiko_runtime::sandbox_fake::FakeSandboxProvider::default());
         let agent_scaling = Arc::new(nasiko_server::agent_scaling::SingleReplica::new(
             runtime.clone(),
@@ -886,12 +912,14 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         agent_registry_host: None,
         seed_image_platform: "linux/amd64".into(),
         agent_image_registry_placeholder: None,
+        agent_image_registry_aliases: Vec::new(),
         build_push_token: String::new(),
         agent_jwt_secret: String::new(),
         agent_jwt_algorithm: "HS256".into(),
         injection_proxy_token: String::new(),
         seed_agents: None,
         seed_agent_settings: Default::default(),
+        seed_workflows: String::new(),
         tiering_enabled: false,
         tiering_interval_secs: 86400,
         cold_path: String::new(),

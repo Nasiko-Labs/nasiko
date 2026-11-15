@@ -398,7 +398,7 @@ pub fn rm(agent: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-const PUBLIC_REGISTRY_URL: &str = "https://registry.nasiko.dev";
+const PUBLIC_REGISTRY_URL: &str = "https://registry.nasiko.com";
 
 fn registry_url() -> String {
     crate::config::artifact_registry_url().unwrap_or_else(|| PUBLIC_REGISTRY_URL.to_string())

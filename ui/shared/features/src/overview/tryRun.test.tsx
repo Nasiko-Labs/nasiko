@@ -10,6 +10,7 @@ import { http, HttpResponse } from 'msw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordRequestBodies, server } from '@nasiko/testing/setup'
 import { agentKeys } from '@nasiko/features/agents/api'
+import { routerKeys } from '@nasiko/features/router/api'
 import { clearSeededDeploys, setSeededDeploy } from '@nasiko/features/onboarding/api'
 import { TryAgentRun } from './components/TryAgentRun'
 import { copy } from './copy'
@@ -124,11 +125,12 @@ function renderCard(opts: { deployed?: boolean; onRan?: () => void } = {}) {
     routeTree: rootRoute,
     history: createMemoryHistory({ initialEntries: ['/'] }),
   })
-  return render(
+  render(
     <QueryClientProvider client={qc}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return qc
 }
 
 describe('TryAgentRun', () => {
@@ -217,11 +219,27 @@ describe('TryAgentRun', () => {
     )
     renderCard()
     fireEvent.click(await screen.findByRole('button', { name: t.baseline }))
-    expect(
-      await screen.findByText(/The run didn't finish: 502 agent unavailable/),
-    ).toBeInTheDocument()
+    // The server's reason, not the status and raw body (NAS-1624).
+    expect(await screen.findByText(/The run didn't finish: agent unavailable/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: t.retry })).toBeEnabled()
     expect(readDone('u1')).toEqual([])
+  })
+
+  it('says the JSON-RPC reason of a refused run, never the raw JSON', async () => {
+    server.use(
+      http.post('*/api/orchestrator/a2a', () =>
+        HttpResponse.json(
+          { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'OPENAI_API_KEY not set' } },
+          { status: 500 },
+        ),
+      ),
+    )
+    renderCard()
+    fireEvent.click(await screen.findByRole('button', { name: t.baseline }))
+    expect(
+      await screen.findByText(/The run didn't finish: OPENAI_API_KEY not set/),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/jsonrpc/)).not.toBeInTheDocument()
   })
 
   it('waits for the agent to be deployed', async () => {
@@ -264,9 +282,31 @@ describe('TryAgentRun', () => {
   it('offers the optimized run after a refresh once the first run is done', async () => {
     writeDone('u1', 'baseline')
     renderCard()
-    expect(await screen.findByRole('button', { name: t.optimized })).toBeEnabled()
+    // Disabled until the LLM router configs answer.
+    await waitFor(() => expect(screen.getByRole('button', { name: t.optimized })).toBeEnabled())
     expect(screen.queryByRole('button', { name: t.baseline })).toBeNull()
     expect(screen.getByText(t.nextStep)).toBeInTheDocument()
+  })
+
+  it('asks for the LLM router before the optimized run, and offers the run once one is set up', async () => {
+    writeDone('u1', 'baseline')
+    server.use(http.get('*/api/llm-configs', () => HttpResponse.json({ data: [] })))
+    const qc = renderCard()
+    expect(await screen.findByText(t.needsRouter)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: t.setUpRouter })).toHaveAttribute('href', '/router')
+    expect(screen.queryByRole('button', { name: t.optimized })).toBeNull()
+    expect(screen.queryByText(t.nextStep)).toBeNull()
+
+    // A config saved on /router invalidates the list, as the router page's save does.
+    server.use(
+      http.get('*/api/llm-configs', () =>
+        HttpResponse.json({ data: [{ id: 'c1', name: 'default' }] }),
+      ),
+    )
+    await act(() => qc.invalidateQueries({ queryKey: routerKeys.configs }))
+    expect(await screen.findByRole('button', { name: t.optimized })).toBeEnabled()
+    expect(screen.getByText(t.nextStep)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: t.setUpRouter })).toBeNull()
   })
 
   it('holds Starting your agent until the server answers, then completes', async () => {

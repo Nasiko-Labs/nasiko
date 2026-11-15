@@ -29,8 +29,6 @@ pub struct MafRunContext<'a> {
     pub targets: &'a dyn crate::target::AgentTargetResolver,
     /// The organization policy prefix for each step's message and the final answer.
     pub outbound: &'a dyn OutboundPrefix,
-    /// Whether each step's message carries the current date and time.
-    pub clock: nasiko_types::agent_clock::AgentClock,
     pub db: &'a PgPool,
     /// The guard every other inter-agent call is bounded by.
     pub flow_guard: &'a Arc<FlowGuard>,
@@ -99,7 +97,6 @@ impl MafExecutor for LinearMafExecutor {
             ctx.llm,
             content,
             ctx.outbound,
-            ctx.clock,
         )
         .await
     }
@@ -129,7 +126,6 @@ impl MafExecutor for LinearMafExecutor {
             resume.context_id,
             resume.answer,
             ctx.outbound,
-            ctx.clock,
         )
         .await
     }

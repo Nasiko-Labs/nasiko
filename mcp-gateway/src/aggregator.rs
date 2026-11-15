@@ -7,17 +7,12 @@
 //! connector is dropped wholesale and individually-blocked tools are removed. A
 //! backend that errors/times out is skipped for this cycle.
 
-use std::collections::HashMap;
-
 use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::cache;
 use crate::error::Result;
-use crate::permissions::{
-    COMPOSIO_META_TOOLKIT, EffectiveAccess, ToolAccess, restricted_composio_meta_tool_allowed,
-    sha256_hex16, toolkit_from_composio_slug,
-};
+use crate::permissions::{PermissionContext, ToolAccess, sha256_hex16};
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::state::McpState;
 use crate::types::{MCPServerConfig, ServerType, connector_prefix};
@@ -28,11 +23,10 @@ pub async fn aggregate_tools(
     user_id: Uuid,
     servers: &[MCPServerConfig],
     connected_toolkits: &[String],
-    toolkit_to_connector: &HashMap<String, Uuid>,
-    access: &EffectiveAccess<'_>,
+    perms: &PermissionContext,
     traceparent: Option<&str>,
 ) -> Result<Vec<Value>> {
-    let key = manifest_key(user_id, servers, connected_toolkits, &access.hash());
+    let key = manifest_key(user_id, servers, connected_toolkits, &perms.hash);
     if let Some(cached) = cache::get_json::<Vec<Value>>(&state.redis, &key).await {
         tracing::debug!(%user_id, "manifest cache hit");
         return Ok(cached);
@@ -64,21 +58,8 @@ pub async fn aggregate_tools(
         // served with search off, where nothing else names a Composio tool:
         // dropping them would leave the agent no way to reach one.
         // `tools/call` enforces per-toolkit permissions on both.
-        //
-        // Under a restricted user entitlement the listing is filtered anyway:
-        // only the allowlisted meta-tools stay, anything else goes through the
-        // same `decide` as a call, and a tool whose toolkit maps to no
-        // connector is dropped.
         if server.kind == ServerType::Composio {
-            if access.is_restricted() {
-                merged.extend(
-                    tools
-                        .into_iter()
-                        .filter(|t| composio_tool_listable(t, toolkit_to_connector, access)),
-                );
-            } else {
-                merged.extend(tools);
-            }
+            merged.extend(tools);
             continue;
         }
 
@@ -86,7 +67,7 @@ pub async fn aggregate_tools(
         // then the SAME per-tool decision `tools/call` enforces — Denied tools are
         // dropped, Ask/Allowed stay listed. Going through `decide` keeps list and
         // call in lockstep.
-        if !access.is_connector_enabled(server.connector_id) {
+        if !perms.is_connector_enabled(server.connector_id) {
             continue;
         }
         let prefix = connector_prefix(server.connector_id);
@@ -108,7 +89,7 @@ pub async fn aggregate_tools(
             if server.system && !server.tool_names.iter().any(|t| t == &original) {
                 continue;
             }
-            if access.decide(server.connector_id, &original) == ToolAccess::Denied {
+            if perms.decide(server.connector_id, &original) == ToolAccess::Denied {
                 continue;
             }
             // System backends are the only generic servers exposed un-prefixed
@@ -130,28 +111,8 @@ pub async fn aggregate_tools(
         state.config.manifest_ttl_seconds,
     )
     .await;
-    tracing::info!(%user_id, tool_count = merged.len(), backends = active.len(), perms_hash = %access.hash(), "manifest built");
+    tracing::info!(%user_id, tool_count = merged.len(), backends = active.len(), perms_hash = %perms.hash, "manifest built");
     Ok(merged)
-}
-
-/// Whether a Composio-listed tool may be shown to a restricted user. Meta-tools
-/// (toolkit `composio`) stay only if on the restricted allowlist; a toolkit tool needs a connector mapping and a
-/// non-denied decision, the same one `tools/call` applies.
-fn composio_tool_listable(
-    tool: &Value,
-    toolkit_to_connector: &HashMap<String, Uuid>,
-    access: &EffectiveAccess<'_>,
-) -> bool {
-    let Some(name) = tool.get("name").and_then(Value::as_str) else {
-        return false;
-    };
-    let toolkit = toolkit_from_composio_slug(name);
-    if toolkit == COMPOSIO_META_TOOLKIT {
-        return restricted_composio_meta_tool_allowed(name);
-    }
-    toolkit_to_connector
-        .get(&toolkit)
-        .is_some_and(|cid| access.decide(*cid, name) != ToolAccess::Denied)
 }
 
 /// `mcp:manifest:{user}:{backends_fp}:{perms_hash}` where `backends_fp` hashes,
@@ -219,7 +180,7 @@ mod tests {
 
     use super::*;
     use crate::config::McpConfig;
-    use crate::permissions::{PermissionContext, PermissionRule};
+    use crate::permissions::PermissionRule;
     use crate::provider::{GenericMcpProvider, Providers};
     use crate::types::Stance;
 
@@ -297,7 +258,6 @@ mod tests {
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
-            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: std::sync::Arc::new(crate::search::NoopSearchIndex),
@@ -496,8 +456,7 @@ mod tests {
             Uuid::new_v4(),
             &servers,
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[good_id])),
+            &perms_enabling(&[good_id]),
             None,
         )
         .await
@@ -558,8 +517,7 @@ mod tests {
             Uuid::new_v4(),
             &servers,
             &["gmail".to_string()],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[generic_id])),
+            &perms_enabling(&[generic_id]),
             None,
         )
         .await
@@ -595,8 +553,7 @@ mod tests {
             Uuid::new_v4(),
             &servers,
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[id])),
+            &perms_enabling(&[id]),
             None,
         )
         .await
@@ -629,8 +586,7 @@ mod tests {
             Uuid::new_v4(),
             &servers,
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[id])),
+            &perms_enabling(&[id]),
             None,
         )
         .await
@@ -672,17 +628,9 @@ mod tests {
             }],
             hash: "h".into(),
         };
-        let merged = aggregate_tools(
-            &state,
-            Uuid::new_v4(),
-            &servers,
-            &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms),
-            None,
-        )
-        .await
-        .unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None)
+            .await
+            .unwrap();
         assert!(merged.is_empty());
     }
 
@@ -709,17 +657,9 @@ mod tests {
             }],
             hash: "h".into(),
         };
-        let merged = aggregate_tools(
-            &state,
-            Uuid::new_v4(),
-            &servers,
-            &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms),
-            None,
-        )
-        .await
-        .unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &servers, &[], &perms, None)
+            .await
+            .unwrap();
         assert_eq!(merged.len(), 1);
         assert_eq!(
             merged[0]["name"],
@@ -767,8 +707,7 @@ mod tests {
             Uuid::new_v4(),
             &[sys, generic],
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[sys_id, generic_id])),
+            &perms_enabling(&[sys_id, generic_id]),
             None,
         )
         .await
@@ -817,8 +756,7 @@ mod tests {
             Uuid::new_v4(),
             &[sys],
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[sys_id])),
+            &perms_enabling(&[sys_id]),
             None,
         )
         .await
@@ -864,8 +802,7 @@ mod tests {
             Uuid::new_v4(),
             &[sys],
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[sys_id])),
+            &perms_enabling(&[sys_id]),
             None,
         )
         .await
@@ -913,8 +850,7 @@ mod tests {
             Uuid::new_v4(),
             &[off],
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[])),
+            &perms_enabling(&[]),
             None,
         )
         .await
@@ -927,8 +863,7 @@ mod tests {
             Uuid::new_v4(),
             &[on],
             &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms_enabling(&[sys_id])),
+            &perms_enabling(&[sys_id]),
             None,
         )
         .await
@@ -969,150 +904,14 @@ mod tests {
             }],
             hash: "h".into(),
         };
-        let merged = aggregate_tools(
-            &state,
-            Uuid::new_v4(),
-            &[sys],
-            &[],
-            &HashMap::new(),
-            &EffectiveAccess::unrestricted(&perms),
-            None,
-        )
-        .await
-        .unwrap();
+        let merged = aggregate_tools(&state, Uuid::new_v4(), &[sys], &[], &perms, None)
+            .await
+            .unwrap();
         assert_eq!(merged.len(), 1, "{merged:?}");
         assert_eq!(
             merged[0]["name"],
             json!("read_file"),
             "the blocked tool is suppressed, its sibling survives"
         );
-    }
-    fn restricted_to(entries: &[(Uuid, &[&str])]) -> crate::entitlements::UserEntitlement {
-        use crate::entitlements::{ToolSet, UserEntitlement};
-        UserEntitlement::Restricted(
-            entries
-                .iter()
-                .map(|(c, names)| {
-                    (
-                        *c,
-                        ToolSet::Only(names.iter().map(|n| n.to_string()).collect()),
-                    )
-                })
-                .collect(),
-        )
-    }
-
-    #[tokio::test]
-    async fn restricted_user_listing_hides_non_entitled_generic_tools() {
-        let mut m = mockito::Server::new_async().await;
-        m.mock("POST", "/mcp")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"read"},{"name":"write"}]}}"#,
-            )
-            .create_async()
-            .await;
-        let id = Uuid::new_v4();
-        let servers = vec![srv(ServerType::Mcp, id, &format!("{}/mcp", m.url()))];
-        let perms = perms_enabling(&[id]);
-        let ent = restricted_to(&[(id, &["read"])]);
-        let merged = aggregate_tools(
-            &test_state(),
-            Uuid::new_v4(),
-            &servers,
-            &[],
-            &HashMap::new(),
-            &EffectiveAccess::new(&perms, &ent),
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(merged.len(), 1, "{merged:?}");
-        assert_eq!(
-            merged[0]["name"],
-            json!(format!("{}__read", connector_prefix(id)))
-        );
-
-        // A connector with no entitlement at all is dropped wholesale.
-        let none = restricted_to(&[]);
-        let merged = aggregate_tools(
-            &test_state(),
-            Uuid::new_v4(),
-            &servers,
-            &[],
-            &HashMap::new(),
-            &EffectiveAccess::new(&perms, &none),
-            None,
-        )
-        .await
-        .unwrap();
-        assert!(merged.is_empty(), "{merged:?}");
-    }
-
-    #[tokio::test]
-    async fn restricted_user_composio_listing_is_filtered_but_keeps_meta_tools() {
-        let mut composio = mockito::Server::new_async().await;
-        composio
-            .mock("POST", "/mcp")
-            .with_status(200)
-            .with_header("content-type", "application/json")
-            .with_body(
-                r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[
-                    {"name":"COMPOSIO_SEARCH_TOOLS"},
-                    {"name":"COMPOSIO_GET_TOOL_SCHEMAS"},
-                    {"name":"COMPOSIO_REMOTE_WORKBENCH"},
-                    {"name":"COMPOSIO_REMOTE_BASH_TOOL"},
-                    {"name":"composio_search_tools"},
-                    {"name":"GMAIL_FETCH_EMAILS"},
-                    {"name":"GMAIL_SEND_EMAIL"},
-                    {"name":"SLACK_POST_MESSAGE"}]}}"#,
-            )
-            .create_async()
-            .await;
-        let gmail = Uuid::new_v4();
-        let servers = vec![srv(
-            ServerType::Composio,
-            Uuid::nil(),
-            &format!("{}/mcp", composio.url()),
-        )];
-        let toolkits = HashMap::from([("gmail".to_string(), gmail)]);
-        let perms = perms_enabling(&[gmail]);
-        let ent = restricted_to(&[(gmail, &["GMAIL_FETCH_EMAILS"])]);
-        let merged = aggregate_tools(
-            &test_state(),
-            Uuid::new_v4(),
-            &servers,
-            &["gmail".to_string()],
-            &toolkits,
-            &EffectiveAccess::new(&perms, &ent),
-            None,
-        )
-        .await
-        .unwrap();
-        let names: Vec<&str> = merged.iter().filter_map(|t| t["name"].as_str()).collect();
-        // The workbench/shell meta-tools and a lower-cased variant are hidden.
-        assert_eq!(
-            names,
-            vec![
-                "COMPOSIO_SEARCH_TOOLS",
-                "COMPOSIO_GET_TOOL_SCHEMAS",
-                "GMAIL_FETCH_EMAILS"
-            ]
-        );
-
-        // Unrestricted: the listing is passed through untouched (8 tools).
-        let merged = aggregate_tools(
-            &test_state(),
-            Uuid::new_v4(),
-            &servers,
-            &["gmail".to_string()],
-            &toolkits,
-            &EffectiveAccess::unrestricted(&perms),
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(merged.len(), 8, "{merged:?}");
     }
 }

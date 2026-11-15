@@ -86,7 +86,7 @@ export function dispatchError(
     return new ChatError({ ...base, key: 'forbidden', certainty: 'rejected-before-run' })
   if (status === 404)
     return new ChatError({ ...base, key: 'agentGone', certainty: 'rejected-before-run' })
-  // The agent, not Open Runtime, refused the body (a2a_dispatch.rs's `AgentRejected`); it never
+  // The agent, not OpenRuntime, refused the body (a2a_dispatch.rs's `AgentRejected`); it never
   // ran, so this is one of the few failures the user can fix outright by dropping the file.
   if (status === 413)
     return new ChatError({ ...base, key: 'messageTooLarge', certainty: 'rejected-before-run' })

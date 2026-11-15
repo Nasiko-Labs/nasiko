@@ -57,7 +57,7 @@ describe('apiFetch / apiData', () => {
     vi.restoreAllMocks()
     expect(net).toBeInstanceOf(ApiError)
     expect((net as ApiError).isServerUnreachable).toBe(true)
-    expect((net as ApiError).message).toBe("Couldn't reach Open Runtime (POST /api/x)")
+    expect((net as ApiError).message).toBe("Couldn't reach OpenRuntime (POST /api/x)")
   })
 
   it("says the server's own reason as the error message, else the status and the request", async () => {
@@ -162,19 +162,19 @@ describe('the API base', () => {
       return Promise.resolve(new Response('{}'))
     })
     await apiFetch('/api/me')
-    setApiBase('https://acme.app.nasiko.com')
+    setApiBase('https://acme.nasiko.dev')
     await apiFetch('/api/me')
     await fetchApi('/api/agents/a/logs/stream')
     // An absolute URL is the edition's own call to the page origin, whatever the base.
     await apiFetch(new URL('/api/me/workspaces', location.origin).href)
     expect(sent).toEqual([
       [`${location.origin}/api/me`, 'same-origin'],
-      ['https://acme.app.nasiko.com/api/me', 'include'],
-      ['https://acme.app.nasiko.com/api/agents/a/logs/stream', 'include'],
+      ['https://acme.nasiko.dev/api/me', 'include'],
+      ['https://acme.nasiko.dev/api/agents/a/logs/stream', 'include'],
       [`${location.origin}/api/me/workspaces`, 'same-origin'],
     ])
     expect(apiUrl('/api/chat/files/f/download').href).toBe(
-      'https://acme.app.nasiko.com/api/chat/files/f/download',
+      'https://acme.nasiko.dev/api/chat/files/f/download',
     )
   })
 })

@@ -58,6 +58,7 @@ fn record(
         compress_metadata: None,
         brevity_metadata: None,
         compact_tools_metadata: None,
+        routing_metadata: None,
         compress_bytes,
         compact_tools_bytes: None,
         request_bytes,

@@ -8,7 +8,6 @@ pub mod build;
 mod handlers;
 pub mod identity;
 pub mod openapi;
-pub(crate) mod search_sync;
 mod service;
 pub mod wiring;
 
@@ -81,7 +80,6 @@ const SENSITIVE_QUERY_KEY_PARTS: &[&str] = &[
     "session",
     "credential",
     "jwt",
-    "assertion",
 ];
 
 /// Redact credentials from a request URI before it reaches a tracing span, a
@@ -561,15 +559,6 @@ mod redaction_tests {
         let redacted =
             redact_credential_uri(&uri("/api/auth/sso/session?token=eyJhbGciOi.payload.sig"));
         assert_eq!(redacted, "/api/auth/sso/session?token=[REDACTED]");
-    }
-
-    /// The browser sign-in's assertion is a signed JWT whose payload holds the person's address.
-    #[test]
-    fn redacts_the_sign_in_assertion_in_the_query() {
-        let redacted = redact_credential_uri(&uri(
-            "/api/auth/assertion/login?assertion=eyJhbGciOi.eyJlbWFpbCI6ImFAYi50ZXN0In0.sig",
-        ));
-        assert_eq!(redacted, "/api/auth/assertion/login?assertion=[REDACTED]");
     }
 
     #[test]

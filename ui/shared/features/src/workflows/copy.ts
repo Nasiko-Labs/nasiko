@@ -76,9 +76,9 @@ export const copy = {
   noMatchText: 'Try a different search term.',
   clearSearch: 'Clear search',
   retry: 'Retry',
-  draftsAbsent: 'Drafts need a newer Open Runtime server',
+  draftsAbsent: 'Drafts need a newer OpenRuntime server',
   draftsAbsentText:
-    'This server keeps deployed workflows only. Create a workflow and deploy it, or update Open Runtime to save drafts.',
+    'This server keeps deployed workflows only. Create a workflow and deploy it, or update OpenRuntime to save drafts.',
   actions: 'Workflow actions',
   open: 'Open workflow',
   runNow: 'Run now',
@@ -142,7 +142,7 @@ export const copy = {
     noAgentsLink: 'Deploy an agent',
     noAgentsAfter: 'first, then draft steps.',
     planner:
-      "Open Runtime couldn't draft steps from that description — try rephrasing it, or add the steps manually below.",
+      "OpenRuntime couldn't draft steps from that description — try rephrasing it, or add the steps manually below.",
     other: (why: string) => `Drafting failed: ${why}`,
   },
   replaceTitle: 'Replace your steps?',

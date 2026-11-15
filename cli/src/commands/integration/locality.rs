@@ -134,7 +134,7 @@ mod tests {
     fn anything_else_is_not_local() {
         for url in [
             "https://nasiko.example.com",
-            "https://app.nasiko.com:443",
+            "https://nasiko.dev:443",
             "http://10.0.0.5:8080",
             "http://192.168.1.10",
             "http://[2001:db8::1]:8080",

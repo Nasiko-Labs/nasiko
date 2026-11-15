@@ -109,6 +109,9 @@ async fn embeddings_core(
         attribution_source: Some(attribution.source),
         // The input as sent, for the prompt estimate when the provider reports no usage.
         request_bytes: serde_json::to_string(&req.input).ok().map(|s| s.len()),
+        // `/v1/embeddings` picks its model in the resolver, not through the precedence chain, so
+        // there is no routing decision to record (`embeddings::select_model`).
+        routing_metadata: None,
     };
     usage::spawn_log_failed(
         &ctx.db,
@@ -144,6 +147,8 @@ async fn embeddings_core(
             // Embeddings are not chat completions; IP-2 never runs here.
             brevity_metadata: None,
             compact_tools_metadata: None,
+            // Model routing (and its tier) is a chat-path decision; see the scope above.
+            routing_metadata: None,
             // Nothing was compressed, so there is nothing to credit to a savings layer.
             compress_bytes: None,
             compact_tools_bytes: None,
@@ -273,6 +278,13 @@ mod tests {
             pricing: Arc::new(nasiko_pricing::PricingEngine::new(
                 PgPool::connect_lazy("postgres://u:p@127.0.0.1:5999/none").unwrap(),
             )),
+            body_permits: crate::handlers::auth_layer::body_permit_pool(256 * 1024 * 1024),
+            attachment_store: Arc::new(crate::attachments::NoAttachmentStore),
+            attachment_cache: Arc::new(crate::attachments::AttachmentCache::new(
+                1024 * 1024,
+                crate::attachments::ATTACHMENT_CACHE_TTL,
+            )),
+            marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
         }
@@ -483,7 +495,8 @@ mod tests {
         let err = embeddings_core(&ctx, &store, &auth_headers(&token), body)
             .await
             .unwrap_err();
-        assert!(matches!(err, GatewayError::Upstream(_)));
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("unknown model"));
         mock.assert_async().await;
     }
 

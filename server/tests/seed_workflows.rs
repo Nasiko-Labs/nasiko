@@ -5,14 +5,26 @@
 /// Run with:  `cargo test --test seed_workflows -- --test-threads=1`
 mod common;
 
-use nasiko_server::seed_workflows::{SeedOutcome, TEMPLATES, seed_workflows};
+use nasiko_server::seed_workflows::{SeedOutcome, seed_workflows};
 use serde_json::Value;
 use serial_test::serial;
 use uuid::Uuid;
 
-const BOTH: [&str; 2] = ["inbox-morning-brief", "monthly-work-recap"];
-const INBOX_AGENTS: [&str; 2] = ["scout", "distiller"];
-const ALL_AGENTS: [&str; 3] = ["scout", "distiller", "herald"];
+const BOTH: [&str; 2] = ["chief-of-staff-follow-up", "voice-of-customer-roadmap"];
+const CHIEF_OF_STAFF_AGENTS: [&str; 4] = [
+    "meeting-notes-processor",
+    "task-breakdown",
+    "reply-drafter",
+    "humanizer",
+];
+const ALL_AGENTS: [&str; 6] = [
+    "meeting-notes-processor",
+    "task-breakdown",
+    "reply-drafter",
+    "humanizer",
+    "summarizer",
+    "translator",
+];
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -135,30 +147,33 @@ async fn a_restart_installs_nothing_twice() {
 #[serial]
 async fn each_step_runs_on_its_seed_agent() {
     let (server, admin) = setup(&ALL_AGENTS).await;
-    seed_workflows(&server.state, &["monthly-work-recap"]).await;
+    seed_workflows(&server.state, &["voice-of-customer-roadmap"]).await;
 
-    let (_, maf_json) = seeded_row(&server, "monthly-work-recap").await;
+    let (_, maf_json) = seeded_row(&server, "voice-of-customer-roadmap").await;
     let names: Vec<&str> = maf_json["steps"]
         .as_array()
         .unwrap()
         .iter()
         .map(|s| s["agent_name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["scout", "distiller", "herald", "herald"]);
+    assert_eq!(
+        names,
+        [
+            "summarizer",
+            "task-breakdown",
+            "reply-drafter",
+            "humanizer",
+            "translator"
+        ]
+    );
 
-    let seeded = |name: &'static str| {
-        sqlx::query_scalar::<_, Uuid>("SELECT id FROM agents WHERE name = $1 AND owner_id = $2")
-            .bind(name)
+    let summarizer: Uuid =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = 'summarizer' AND owner_id = $1")
             .bind(admin)
             .fetch_one(&server.db)
-    };
-    let scout: Uuid = seeded("scout").await.unwrap();
-    let herald: Uuid = seeded("herald").await.unwrap();
-    let ids = step_agent_ids(&maf_json);
-    assert_eq!(ids[0], scout.to_string());
-    // One seed agent may run several steps.
-    assert_eq!(ids[2], herald.to_string());
-    assert_eq!(ids[3], herald.to_string());
+            .await
+            .unwrap();
+    assert_eq!(step_agent_ids(&maf_json)[0], summarizer.to_string());
 
     server.cleanup().await;
 }
@@ -166,13 +181,13 @@ async fn each_step_runs_on_its_seed_agent() {
 #[tokio::test]
 #[serial]
 async fn a_template_whose_agent_is_not_seeded_is_skipped_alone() {
-    let (server, _) = setup(&INBOX_AGENTS).await;
+    let (server, _) = setup(&CHIEF_OF_STAFF_AGENTS).await;
 
     let report = seed_workflows(&server.state, &BOTH).await;
     assert_eq!(report[0].1, SeedOutcome::Installed);
     assert!(
-        matches!(&report[1].1, SeedOutcome::Skipped(reason) if reason.contains("herald")),
-        "Monthly Work Recap needs herald, which is not seeded: {:?}",
+        matches!(&report[1].1, SeedOutcome::Skipped(reason) if reason.contains("summarizer")),
+        "Voice of Customer needs summarizer, which is not seeded: {:?}",
         report[1].1
     );
 
@@ -209,8 +224,8 @@ async fn nothing_is_seeded_without_a_superuser() {
 #[serial]
 async fn a_newer_template_version_updates_the_same_row() {
     let (server, _) = setup(&ALL_AGENTS).await;
-    seed_workflows(&server.state, &["monthly-work-recap"]).await;
-    let (id, _) = seeded_row(&server, "monthly-work-recap").await;
+    seed_workflows(&server.state, &["chief-of-staff-follow-up"]).await;
+    let (id, _) = seeded_row(&server, "chief-of-staff-follow-up").await;
 
     // As if the row was installed by an older template version.
     sqlx::query("UPDATE mafs SET seed_version = 0, name = 'old name' WHERE id = $1")
@@ -219,7 +234,7 @@ async fn a_newer_template_version_updates_the_same_row() {
         .await
         .unwrap();
 
-    let report = seed_workflows(&server.state, &["monthly-work-recap"]).await;
+    let report = seed_workflows(&server.state, &["chief-of-staff-follow-up"]).await;
     assert_eq!(outcomes(&report), [SeedOutcome::Updated]);
     let (name, version): (String, i32) =
         sqlx::query_as("SELECT name, seed_version FROM mafs WHERE id = $1")
@@ -227,12 +242,8 @@ async fn a_newer_template_version_updates_the_same_row() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    let template = TEMPLATES
-        .iter()
-        .find(|t| t.id == "monthly-work-recap")
-        .unwrap();
-    assert_eq!(name, template.name);
-    assert_eq!(version, template.version);
+    assert_eq!(name, "Chief of Staff: Meeting Follow-up");
+    assert_eq!(version, 1);
 
     server.cleanup().await;
 }
@@ -241,21 +252,21 @@ async fn a_newer_template_version_updates_the_same_row() {
 #[serial]
 async fn a_reseeded_agent_is_repointed() {
     let (server, admin) = setup(&ALL_AGENTS).await;
-    seed_workflows(&server.state, &["monthly-work-recap"]).await;
-    let (id, _) = seeded_row(&server, "monthly-work-recap").await;
+    seed_workflows(&server.state, &["voice-of-customer-roadmap"]).await;
+    let (id, _) = seeded_row(&server, "voice-of-customer-roadmap").await;
 
-    // Scout is deleted and seeded again, under a new id.
-    sqlx::query("UPDATE agents SET deleted_at = now() WHERE name = 'scout'")
+    // The summarizer is deleted and seeded again, under a new id.
+    sqlx::query("UPDATE agents SET deleted_at = now() WHERE name = 'summarizer'")
         .execute(&server.db)
         .await
         .unwrap();
-    let new_scout = insert_seed_agent(&server, admin, "scout").await;
+    let new_summarizer = insert_seed_agent(&server, admin, "summarizer").await;
 
-    let report = seed_workflows(&server.state, &["monthly-work-recap"]).await;
+    let report = seed_workflows(&server.state, &["voice-of-customer-roadmap"]).await;
     assert_eq!(outcomes(&report), [SeedOutcome::Updated]);
-    let (same_id, maf_json) = seeded_row(&server, "monthly-work-recap").await;
+    let (same_id, maf_json) = seeded_row(&server, "voice-of-customer-roadmap").await;
     assert_eq!(same_id, id, "updated in place, not reinstalled");
-    assert_eq!(step_agent_ids(&maf_json)[0], new_scout.to_string());
+    assert_eq!(step_agent_ids(&maf_json)[0], new_summarizer.to_string());
 
     server.cleanup().await;
 }
@@ -264,19 +275,22 @@ async fn a_reseeded_agent_is_repointed() {
 #[serial]
 async fn a_deleted_seed_workflow_stays_deleted() {
     let (server, _) = setup(&ALL_AGENTS).await;
-    seed_workflows(&server.state, &["inbox-morning-brief"]).await;
-    sqlx::query("UPDATE mafs SET status = 'deleted' WHERE seed_template = 'inbox-morning-brief'")
-        .execute(&server.db)
-        .await
-        .unwrap();
+    seed_workflows(&server.state, &["chief-of-staff-follow-up"]).await;
+    sqlx::query(
+        "UPDATE mafs SET status = 'deleted' WHERE seed_template = 'chief-of-staff-follow-up'",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
 
-    let report = seed_workflows(&server.state, &["inbox-morning-brief"]).await;
+    let report = seed_workflows(&server.state, &["chief-of-staff-follow-up"]).await;
     assert_eq!(outcomes(&report), [SeedOutcome::Unchanged]);
-    let status: String =
-        sqlx::query_scalar("SELECT status FROM mafs WHERE seed_template = 'inbox-morning-brief'")
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
+    let status: String = sqlx::query_scalar(
+        "SELECT status FROM mafs WHERE seed_template = 'chief-of-staff-follow-up'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
     assert_eq!(status, "deleted");
 
     server.cleanup().await;
@@ -289,7 +303,7 @@ async fn a_deleted_seed_workflow_stays_deleted() {
 async fn every_user_sees_and_runs_a_public_workflow_as_themselves() {
     let (server, admin) = setup(&ALL_AGENTS).await;
     seed_workflows(&server.state, &BOTH).await;
-    let (id, _) = seeded_row(&server, "monthly-work-recap").await;
+    let (id, _) = seeded_row(&server, "chief-of-staff-follow-up").await;
     let member = insert_user(&server, false).await;
 
     // Listed, and fetched, by a user who does not own it.
@@ -377,7 +391,7 @@ async fn every_user_sees_and_runs_a_public_workflow_as_themselves() {
 async fn only_the_owner_edits_or_deletes_a_public_workflow() {
     let (server, _) = setup(&ALL_AGENTS).await;
     seed_workflows(&server.state, &BOTH).await;
-    let (id, _) = seeded_row(&server, "monthly-work-recap").await;
+    let (id, _) = seeded_row(&server, "chief-of-staff-follow-up").await;
     let member = insert_user(&server, false).await;
 
     let res = as_user(

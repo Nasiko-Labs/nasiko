@@ -21,12 +21,11 @@ describe('orderApps', () => {
     app('private', 'Private', 'not_shared'),
   ]
 
-  it('connected apps first, then the ones to connect, the card naming order within each; unreachable ones dropped', () => {
+  it('leads with the apps the card names, connected first, and drops the ones the viewer cannot reach', () => {
     const order = orderApps(apps, [skill(['google drive', 'linear', 'connected apps'])]).map(
       (a) => a.name,
     )
-    // Slack is connected but not on the card: still ahead of Google Drive, which the card names but isn't connected.
-    expect(order).toEqual(['linear', 'slack', 'googledrive', 'zendesk'])
+    expect(order).toEqual(['linear', 'googledrive', 'slack', 'zendesk'])
   })
 
   it('without a card: connected first, then by label', () => {

@@ -71,6 +71,9 @@ export const copy = {
   spendTip: `Metered by the router for the last ${SPEND_DAYS} days, calls billed to you. Calls billed to someone else don’t show here.`,
   colActions: 'Actions',
   changeRouting: 'Change routing',
+  /** Beside a disabled Change routing on a Cursor agent (the CLI's `llm-config attach` refuses it the same way). */
+  routingUnsupported:
+    "The LLM router doesn't support Cursor. Claude Code, Codex and OpenCode can be routed.",
   codingHarness: 'Coding harness',
   readingRouting: 'Reading routing…',
   couldntRead: 'Couldn’t read routing',
@@ -132,6 +135,13 @@ export const copy = {
   cliTiered: 'Tier models can’t be set from the CLI yet.',
   cliNoModel: 'This config has no model, so the CLI can’t create it yet.',
   copyCli: 'Copy CLI command',
+  // The routing sheet's CLI block (user request 2026-11-13): both commands, and what a change reaches.
+  cliAttachLabel: 'To attach a config from the CLI:',
+  cliDetachLabel: 'To detach it (back to your default config):',
+  copyCliAttach: 'Copy the attach command',
+  copyCliDetach: 'Copy the detach command',
+  cliAppliesTo: (seconds: number) =>
+    `Attaching or detaching applies to all of this agent's sessions, existing and new: its next model call uses it, within about ${seconds} seconds.`,
 
   // Providers
   providersTitle: 'Providers',

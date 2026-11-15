@@ -120,18 +120,11 @@ impl InfraAgent {
             // Capture the W3C traceparent before parent_cx is moved into
             // set_parent below; the outbound LLM call needs it so the gateway
             // can attribute tokens to the originating user flow.
-            // Propagate chat_span itself (after re-homing it) so the router's `gen_ai.chat`
-            // nests under ChatCompletion and the trace view shows the model that ran.
-            let traceparent: Option<String> = match parent_cx {
-                Some(cx) => {
-                    use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-                    let fallback = cx.clone();
-                    chat_span.set_parent(cx);
-                    telemetry::traceparent_for_context(&chat_span.context())
-                        .or_else(|| telemetry::traceparent_for_context(&fallback))
-                }
-                None => None,
-            };
+            let traceparent = parent_cx.as_ref().and_then(telemetry::traceparent_for_context);
+            if let Some(cx) = parent_cx {
+                use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                chat_span.set_parent(cx);
+            }
             let capture = telemetry::capture_content();
             if capture {
                 chat_span.record(

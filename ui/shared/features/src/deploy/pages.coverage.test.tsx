@@ -181,7 +181,7 @@ describe('Deploy from a registry: errors', () => {
     renderApp('/deploy?method=registry')
     await userEvent.type(
       await screen.findByRole('textbox', { name: copy.registry.reference }, T),
-      'registry.nasiko.dev/acme/bot:1.0.0',
+      'registry.nasiko.com/acme/bot:1.0.0',
     )
     await userEvent.click(screen.getByRole('button', { name: copy.registry.submit }))
     expect(await screen.findByText(copy.deploy.failed, {}, T)).toBeInTheDocument()

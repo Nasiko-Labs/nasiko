@@ -22,8 +22,6 @@ export const copy = {
   saveFailed: (reason: string) => `Could not save settings: ${reason}`,
   loadWhat: 'settings',
   loading: 'Loading settings',
-  required: 'Enter a value.',
-  positiveInt: 'Enter a whole number of 1 or more.',
 
   // Account settings → Appearance (/account/appearance): every user, stored in this browser only (theme.ts).
   appearance: {
@@ -65,6 +63,8 @@ export const copy = {
           { action: 'Focus the message box', where: 'Chat', keys: [['/']] },
           { action: 'Send the message', where: 'Chat', keys: [['Enter']] },
           { action: 'New line', where: 'Chat', keys: [['Shift', 'Enter']] },
+          { action: 'Start or stop dictation', where: 'Chat', keys: [['F8'], ['Alt', 'R']] },
+          { action: 'Discard the recording', where: 'Chat, while dictating', keys: [['Esc']] },
           { action: 'Close the chat filter', where: 'Chat history, when empty', keys: [['Esc']] },
         ],
       },
@@ -185,20 +185,19 @@ export const copy = {
     saveFailed: (reason: string) => `Could not save MCP toolkit settings: ${reason}`,
   },
 
-  fields: {
+  // Read-only: what the server runs, from its environment (OPENAI_MODEL, ROUTER_MODEL, DEFAULT_PROVIDER, NASIKO_FLOW_*).
+  running: {
+    orchestrator_model: {
+      label: 'Orchestrator model',
+      hint: 'Answers and picks agents in chat, and writes each workflow step’s prompt and the final output.',
+    },
     router_model: {
-      label: 'Router model',
-      hint: 'Model the routing engine uses to pick an agent for each query (ROUTER_MODEL).',
-      placeholder: 'e.g. gpt-4o',
+      label: 'Workflow routing model',
+      hint: 'Picks the agent for each workflow step.',
     },
     default_provider: {
       label: 'Default provider',
-      hint: 'Provider used when an agent has no LLM config of its own.',
-    },
-    catalog_tabs: {
-      label: 'Agent catalog tabs',
-      hint: "Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.",
-      placeholder: 'e.g. devops, finance, support',
+      hint: 'Used when an agent has no LLM config of its own and its request names no provider.',
     },
     max_flow_depth: {
       label: 'Max call depth',
@@ -216,6 +215,23 @@ export const copy = {
       label: 'Flow timeout (seconds)',
       hint: 'Wall-clock limit for a whole flow.',
     },
+    setByServer: 'Set by the server',
+    unknown: 'Not reported',
+    notReported: 'This server doesn’t report the limits it runs.',
+  },
+  // The models spend the caller's OpenAI key when they saved one.
+  models: {
+    keyBefore: 'Uses your OpenAI key from the ',
+    router: 'LLM router',
+    keyAfter: ', or the server’s own if you haven’t added one.',
+  },
+
+  fields: {
+    catalog_tabs: {
+      label: 'Agent catalog tabs',
+      hint: "Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.",
+      placeholder: 'e.g. devops, finance, support',
+    },
     registry_url: {
       label: 'OCI registry URL',
       // Legacy: "Where imported agent images are pulled from." The server adds this URL's host to the registry
@@ -225,11 +241,6 @@ export const copy = {
       invalid: 'Enter a registry host or URL, like https://registry.example.com.',
     },
   },
-  providers: [
-    ['openai', 'OpenAI'],
-    ['anthropic', 'Anthropic'],
-    ['gemini', 'Gemini'],
-  ] as const,
   providerKeys: {
     label: 'Provider API keys',
     before:

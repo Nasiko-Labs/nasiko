@@ -225,6 +225,7 @@ async fn deploy(
             match crate::agents::canonicalize_and_validate_image_ref(
                 &state.db,
                 &state.config.agent_image_registry,
+                &state.config.agent_image_registry_aliases,
                 &req.image,
                 owner_id,
                 claims.is_superuser,
@@ -308,6 +309,7 @@ async fn deploy(
                     state.db.clone(),
                     state.http_client.clone(),
                     state.runtime.clone(),
+                    state.llm_backend.clone(),
                     agent_id,
                     endpoint.clone(),
                 ));
@@ -845,6 +847,7 @@ async fn restart(
                 state.db.clone(),
                 state.http_client.clone(),
                 state.runtime.clone(),
+                state.llm_backend.clone(),
                 agent_id,
                 agent_url,
             ));

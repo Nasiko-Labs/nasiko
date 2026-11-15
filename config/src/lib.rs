@@ -1,11 +1,51 @@
 use std::collections::BTreeMap;
 
-use nasiko_utils::{env_bool, env_or, env_parse, required_env};
+use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
+
+/// Model for a platform task call (selector, titles, capability generation, MCP
+/// descriptions): its own env var, else `DEFAULT_MODEL`, else empty. Empty lets the
+/// LLM router pick its resolved provider's default model, so no deployment ever
+/// sends a hard-coded model to a provider that cannot serve it.
+fn task_model(var: &str) -> String {
+    pick_task_model(std::env::var(var).ok(), std::env::var("DEFAULT_MODEL").ok())
+}
+
+/// Pure core of [`task_model`]; blank values count as unset.
+fn pick_task_model(own: Option<String>, default_model: Option<String>) -> String {
+    [own, default_model]
+        .into_iter()
+        .flatten()
+        .map(|m: String| m.trim().to_string())
+        .find(|m: &String| !m.is_empty())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod task_model_tests {
+    use super::pick_task_model;
+
+    #[test]
+    fn own_var_wins() {
+        let m: String = pick_task_model(Some("a".into()), Some("b".into()));
+        assert_eq!(m, "a");
+    }
+
+    #[test]
+    fn falls_back_to_default_model() {
+        let m: String = pick_task_model(Some("  ".into()), Some("gemini-3.8-flash".into()));
+        assert_eq!(m, "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn empty_when_nothing_set_so_the_router_picks() {
+        assert_eq!(pick_task_model(None, None), "");
+    }
+}
 
 /// The audience a control plane falls back to when nothing identifies its
 /// public origin. Fine for a standalone deployment; never unique across a
@@ -90,6 +130,12 @@ pub struct Config {
     /// Work that bakes the address into deployed agents, such as seeding,
     /// waits while the two are equal.
     pub agent_image_registry_placeholder: Option<String>,
+    /// Other hosts this control plane's registry answers on
+    /// (`AGENT_IMAGE_REGISTRY_ALIASES`, comma-separated): its names before a
+    /// rename. An image naming one of them is this registry's, so it is held to
+    /// the namespace rules, and at startup every stored reference to one is
+    /// moved to `agent_image_registry` (`agents::rehost`).
+    pub agent_image_registry_aliases: Vec<String>,
     /// Username for authenticating agent-image pulls from a private registry
     /// (e.g. a private Docker Hub repo). `None` (default) means anonymous
     /// pulls only — unchanged behavior for public images. Only meaningful
@@ -130,6 +176,10 @@ pub struct Config {
     /// `SEED_AGENT_SETTINGS`: replica bounds and CPU/memory per seeded agent (`SEED_AGENTS`), by
     /// agent name. Empty when unset; an invalid value fails startup.
     pub seed_agent_settings: BTreeMap<String, SeedAgentSettings>,
+    /// `SEED_WORKFLOWS`: space-separated workflow template ids installed at boot,
+    /// after `SEED_AGENTS`, as public workflows every user can run
+    /// (`oss/server/src/seed_workflows.rs`). Empty when unset: nothing installed.
+    pub seed_workflows: String,
     /// `NASIKO_TIERING_ENABLED` (default false): run the daily job that moves
     /// event rows older than 30 days from Postgres to Lance and deletes them
     /// from Postgres (docs/LAKEHOUSE_TRD.md §8). Off = no tiering at all.
@@ -433,7 +483,7 @@ pub struct Config {
     pub git_clone_allowed_hosts: Vec<String>,
     /// Allowed OCI registry hosts for `POST /api/catalog/import/registry`.
     /// Comma-separated.  Empty = reject all registry imports (safest default for
-    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.dev"
+    /// new deployments).  Example: "ghcr.io,quay.io,registry.nasiko.com"
     pub registry_import_allowed_hosts: Vec<String>,
     /// Browser origins allowed to make cross-origin requests (comma-separated,
     /// e.g. "https://app.example.com,http://localhost:5173"). Empty (the
@@ -720,6 +770,17 @@ fn coding_agent_otlp_fallback() -> Option<String> {
 
 impl Config {
     pub fn from_env() -> anyhow::Result<Self> {
+        // Checked together first, so a first start names every missing variable at once.
+        let mut required = vec![
+            "DATABASE_URL",
+            "REDIS_URL",
+            "SECRETS_ENCRYPTION_KEY",
+            "ADMIN_PASSWORD",
+        ];
+        if uses_s3_storage(&env_or("STORAGE_PROVIDER", "s3")) {
+            required.push("S3_SECRET_KEY");
+        }
+        require_all(&required)?;
         let tiering_enabled = env_bool("NASIKO_TIERING_ENABLED", false);
         let tiering_interval_secs = std::env::var("NASIKO_TIERING_INTERVAL_SECS")
             .ok()
@@ -777,6 +838,10 @@ impl Config {
                 .ok()
                 .map(|s| s.trim().to_owned())
                 .filter(|s| !s.is_empty()),
+            agent_image_registry_aliases: registry_aliases(
+                &std::env::var("AGENT_IMAGE_REGISTRY_ALIASES").unwrap_or_default(),
+                &env_or("AGENT_IMAGE_REGISTRY", ""),
+            ),
             agent_registry_username: std::env::var("AGENT_REGISTRY_USERNAME")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -797,18 +862,19 @@ impl Config {
                 std::env::var("SEED_AGENT_SETTINGS").ok().as_deref(),
             )
             .map_err(anyhow::Error::msg)?,
+            seed_workflows: env_or("SEED_WORKFLOWS", ""),
             tiering_enabled,
             tiering_interval_secs,
             cold_path: env_or("NASIKO_COLD_PATH", "./data/cold"),
             openai_api_key: std::env::var("OPENAI_API_KEY").ok(),
             openai_base_url: std::env::var("OPENAI_BASE_URL").ok(),
-            openai_model: env_or("OPENAI_MODEL", "gpt-4o-mini"),
+            openai_model: task_model("OPENAI_MODEL"),
             agent_platform_key_fallback: env_bool("AGENT_PLATFORM_KEY_FALLBACK", true),
             decomposer_api_url: std::env::var("MODEL_API_URL").ok(),
             decomposer_api_key: std::env::var("MODEL_APIKEY").ok(),
-            router_model: env_or("ROUTER_MODEL", "gpt-4o-mini"),
-            capability_generator_model: env_or("CAPABILITY_GENERATOR_MODEL", "gpt-4o-mini"),
-            mcp_description_model: env_or("MCP_DESCRIPTION_MODEL", "gpt-4o-mini"),
+            router_model: task_model("ROUTER_MODEL"),
+            capability_generator_model: task_model("CAPABILITY_GENERATOR_MODEL"),
+            mcp_description_model: task_model("MCP_DESCRIPTION_MODEL"),
             a2a_discovery_url: std::env::var("A2A_DISCOVERY_URL").ok(),
             otel_endpoint: std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otel_protocol: env_or("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc"),
@@ -1082,6 +1148,37 @@ impl Config {
         )
     }
 
+    /// Optional settings left unset that switch a feature off, each with what stops working.
+    /// Logged once at startup ([`Self::warn_unset_optional_keys`]) so the cause is on record
+    /// before the first request that needs it.
+    pub fn unset_optional_keys(&self) -> Vec<&'static str> {
+        let mut unset = Vec::new();
+        if self.agent_jwt_secret.trim().is_empty() {
+            unset.push("AGENT_JWT_SECRET unset: LLM gateway and coding sessions are disabled");
+        }
+        if self.agent_runtime == "kubernetes" && self.build_push_token.trim().is_empty() {
+            unset.push("BUILD_PUSH_TOKEN unset: in-cluster builds cannot push agent images");
+        }
+        if self
+            .openai_api_key
+            .as_deref()
+            .is_none_or(|k| k.trim().is_empty())
+        {
+            unset.push(
+                "OPENAI_API_KEY unset: no server LLM key, so routing and agent runs fail \
+                 until a user saves their own key",
+            );
+        }
+        unset
+    }
+
+    /// Log [`Self::unset_optional_keys`], one warning each.
+    pub fn warn_unset_optional_keys(&self) {
+        for problem in self.unset_optional_keys() {
+            tracing::warn!("{problem}");
+        }
+    }
+
     /// Fail fast if `SECRETS_ENCRYPTION_KEY` can't actually be used to construct
     /// a `SecretsCrypto` (base64-decodes to exactly 32 bytes). Both the OSS
     /// HKDF-per-scope crypto and EE's `nasiko-secrets::SecretsCrypto::from_key`
@@ -1103,6 +1200,19 @@ impl Config {
     pub fn agent_wake_budget_secs(&self) -> u64 {
         wake_budget_secs(self.agent_startup_budget_secs, self.agent_call_timeout_secs)
     }
+}
+
+/// Stop startup over a configuration problem: one plain line per problem on stderr, then exit 1.
+/// A panic would print a thread name and a backtrace hint and read as a crash, not as a setting
+/// to fix.
+pub fn exit_invalid_config(problem: impl std::fmt::Display) -> ! {
+    let problem = problem.to_string();
+    tracing::error!(%problem, "configuration invalid");
+    eprintln!("error: configuration invalid:");
+    for line in problem.lines() {
+        eprintln!("  {line}");
+    }
+    std::process::exit(1)
 }
 
 /// Default `AGENT_STARTUP_BUDGET_SECS`.
@@ -1349,6 +1459,34 @@ fn validate_secrets_key_format(key: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// `AGENT_IMAGE_REGISTRY_ALIASES`: comma-separated, trimmed, empty entries and
+/// the registry's own host dropped (an image naming it is already this
+/// registry's, and rehosting it onto itself would be a pointless rewrite).
+fn registry_aliases(raw: &str, registry: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|alias| !alias.is_empty() && *alias != registry.trim())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(test)]
+mod registry_alias_tests {
+    use super::registry_aliases;
+
+    #[test]
+    fn aliases_drop_blanks_and_the_registry_itself() {
+        assert_eq!(
+            registry_aliases(
+                " free.nasiko.dev , ,free.app.nasiko.com",
+                "free.app.nasiko.com"
+            ),
+            vec!["free.nasiko.dev"]
+        );
+        assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
+    }
 }
 
 #[cfg(test)]

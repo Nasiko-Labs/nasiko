@@ -26,7 +26,7 @@ describe('onboarding logic', () => {
       'translator',
     ])
     expect(SEEDED_AGENTS[0]?.reference).toBe(
-      'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0',
+      'registry.nasiko.com/nasiko/meeting-notes-processor:1.0.0',
     )
     expect(MANDATORY).toBe('meeting-notes-processor')
   })

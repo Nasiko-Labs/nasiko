@@ -9,21 +9,21 @@ and forwards the call to OpenAI / Anthropic / Gemini — translating both direct
 the agent never knows which provider answered. Provider + model are a **runtime config
 change** (one `agents.llm_config` update), with no agent redeploy.
 
-It is a **library crate** mounted in-process by `nasiko-server` (it has no dependency
-on the server — everything it needs comes via [`LlmRouterCtx`]); `src/bin/llm-router.rs`
-also runs it standalone.
+This is a **library crate** mounted in-process by `nasiko-server` (it has no dependency
+on the server — everything it needs comes via [`LlmRouterCtx`]). It's structured to be
+promotable to a standalone binary later without logic changes.
 
 ## Request path
 
 ```
 agent (OpenAI SDK)
   → POST {OPENAI_BASE_URL}/chat/completions   Authorization: Bearer <nasiko-JWT>
-  → the server mounts this router at /v1
+  → Pingora gateway strips the /llm prefix  →  server mounts this router at /v1
   → verify JWT → (agent_id, owner_id)                     [auth.rs]
   → resolve provider/model/key (request.model DISCARDED)  [resolver/]   (TTL-cached)
-  → translate + call provider, with ordered fallbacks     [providers/] [providers/fallback.rs]
+  → translate + call provider, with ordered fallbacks     [providers/] [fallback.rs]
   → return OpenAI shape (JSON or SSE stream)               [inbound/openai.rs]
-  → fire-and-forget usage row → trace_usage               [usage.rs]
+  → fire-and-forget usage row → token_usage               [usage.rs]
 ```
 
 The request's hardcoded `model` is **always ignored** (C4); the registry/default model
@@ -34,9 +34,6 @@ is authoritative on every path (chat, stream, embeddings).
 | Route | Notes |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI Chat Completions, streaming + non-streaming |
-| `POST /v1/responses` | OpenAI Responses |
-| `POST /v1/messages`, `POST /v1/messages/count_tokens` | Anthropic Messages (`ANTHROPIC_BASE_URL`) |
-| `POST /v1beta/models/{model}:generateContent` / `:streamGenerateContent` | Gemini (`GOOGLE_GEMINI_BASE_URL`) |
 | `POST /v1/embeddings` | OpenAI embeddings (OpenAI + Gemini; Anthropic 501) |
 | `GET /v1/models` | static provider/model catalog (public) |
 | `GET /v1/health` | liveness (`{"status":"ok"}`) |
@@ -98,4 +95,13 @@ curl -s http://localhost:8080/v1/chat/completions \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 ```
 Flipping the provider is a single `agents.llm_config` update (no redeploy); a new
-`trace_usage` row appears per call.
+`token_usage` row appears per call.
+
+## Deviations from the original spec
+
+This is the Path-2 (platform-integrated) adaptation of the Python-parity prompt:
+Postgres not Mongo, AES-256-GCM (per-user HKDF) not Fernet, cost via the existing
+`model_pricing` trigger not a static table, `token_usage` not `llm_usage`, a library
+crate not a standalone container, hub-and-spoke IR + traits (multi-inbound-ready;
+v1 ships OpenAI inbound only). Full list in `.context/llm-gateway/RUST_PLAN_V1.md` §9.
+```

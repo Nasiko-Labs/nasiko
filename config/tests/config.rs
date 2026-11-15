@@ -662,10 +662,10 @@ fn openai_api_key_is_read_from_env() {
 #[serial]
 fn cp_domain_is_read_from_env() {
     set_required_vars();
-    unsafe { std::env::set_var("CP_DOMAIN", "example.app.nasiko.com") };
+    unsafe { std::env::set_var("CP_DOMAIN", "example.nasiko.dev") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.domain, Some("example.app.nasiko.com".to_string()));
+    assert_eq!(cfg.domain, Some("example.nasiko.dev".to_string()));
 
     unsafe { std::env::remove_var("CP_DOMAIN") };
     unset_required_vars();
@@ -705,7 +705,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
     unsafe {
         std::env::set_var(
             "REGISTRY_IMPORT_ALLOWED_HOSTS",
-            "ghcr.io,quay.io,registry.nasiko.com",
+            "ghcr.io,quay.io,registry.nasiko.dev",
         )
     };
 
@@ -715,7 +715,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
         vec![
             "ghcr.io".to_string(),
             "quay.io".to_string(),
-            "registry.nasiko.com".to_string(),
+            "registry.nasiko.dev".to_string(),
         ]
     );
 
@@ -884,19 +884,17 @@ fn sandbox_provider_is_read_from_env_and_unknown_fails_startup() {
     set_required_vars();
     unset_vars(&SESSION_KEYS);
 
-    unsafe { std::env::set_var("SANDBOX_PROVIDER", " Harness-Agent ") };
+    unsafe { std::env::set_var("SANDBOX_PROVIDER", " Shared-Pod ") };
     assert_eq!(
         Config::from_env().unwrap().sandbox_provider,
-        SandboxProviderSetting::HarnessAgent
+        SandboxProviderSetting::SharedPod
     );
 
     unsafe { std::env::set_var("SANDBOX_PROVIDER", "firecracker") };
     let err = Config::from_env().unwrap_err().to_string();
-    assert!(err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, harness-agent"));
-
-    unsafe { std::env::set_var("SANDBOX_PROVIDER", "shared-pod") };
-    let err = Config::from_env().unwrap_err().to_string();
-    assert!(err.contains("SANDBOX_PROVIDER") && err.contains("was retired"));
+    assert!(
+        err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, shared-pod, harness-agent")
+    );
 
     unset_vars(&SESSION_KEYS);
     unset_required_vars();

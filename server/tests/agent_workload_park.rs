@@ -146,8 +146,12 @@ impl ContainerRuntime for WorkloadRuntime {
         Ok(Vec::new())
     }
 
-    async fn build(&self, _tar_context: &[u8], image_tag: &str) -> RuntimeResult<String> {
-        Ok(image_tag.to_owned())
+    async fn build(
+        &self,
+        _tar_context: &[u8],
+        image_tag: &str,
+    ) -> RuntimeResult<nasiko_runtime::BuildReport> {
+        Ok(nasiko_runtime::BuildReport::image_only(image_tag))
     }
 }
 

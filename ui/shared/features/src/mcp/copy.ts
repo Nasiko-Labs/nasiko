@@ -49,6 +49,7 @@ export const copy = {
   sub: 'Connect MCP servers and choose which agents can use their tools',
   upload: 'Upload MCP server',
   register: 'Register server',
+  sections: { label: 'MCP', builds: 'Builds' },
   searchLabel: 'Search MCP servers',
   searchPlaceholder: 'Search servers and toolkits',
   views: { yours: 'Yours', shared: 'Shared with you', toolkits: 'Toolkits' } satisfies Record<
@@ -73,6 +74,32 @@ export const copy = {
   buildingHint: 'This may take a few minutes. Status updates automatically.',
   buildFailed: 'Build failed',
   buildFailedHint: 'Open the server to see its build logs.',
+  builds: {
+    title: 'Builds',
+    description: 'Every MCP server you uploaded. In-progress ones stay on top.',
+    what: 'uploads',
+    empty: 'No uploads yet',
+    emptyHint: 'Upload your own MCP server and its build shows up here.',
+    loading: 'Loading builds',
+    noMatch: 'No uploads match these filters',
+    noMatchHint: 'Try another status or search, or clear the filters.',
+    clearFilters: 'Clear filters',
+    searchLabel: 'Search uploads',
+    searchPlaceholder: 'Server name',
+    filterLabel: 'Status',
+    deletedConnector: 'This upload failed before it ever deployed, so there is no page for it.',
+    deletedConnectorName: 'Deleted connector',
+    colBuild: 'Build',
+    colStatus: 'Status',
+    colSource: 'Source',
+    colStarted: 'Started',
+    colDuration: 'Duration',
+  },
+  buildFilter: { all: 'All', building: 'In progress', failed: 'Failed', success: 'Succeeded' },
+  // The per-row status badge: past-tense/outcome wording, not `buildFilter`'s tab labels ("In
+  // progress" there, "Building" here) — same split Agents' `copy.filter`/`copy.status` keep.
+  buildStatus: { building: 'Building', failed: 'Failed', success: 'Succeeded' },
+  buildSource: { zip: 'Zip upload', github: 'GitHub' },
   loadFailed: "Couldn't load the catalog",
   loadFailedFix: 'Something went wrong loading connectable servers and toolkits.',
   toolkitsFailed: "Couldn't load toolkits. Custom servers are shown.",
@@ -105,6 +132,19 @@ export const copy = {
   nothingConnectedDesc:
     'Connect a server or toolkit and its tools become available to your agents.',
   browseAvailable: 'Browse available',
+  // No toolkit yet (NAS-1599): only an admin can set the Composio key, so everyone else is told to ask.
+  toolkitSetup: {
+    title: 'Get app toolkits with Composio',
+    intro: 'Toolkits for apps like Gmail, Slack and Notion come from Composio. To list them here:',
+    steps: [
+      'Go to Settings → MCP toolkits.',
+      'Enter your Composio API key.',
+      'Tick the toolkits you want people to connect to, then save.',
+      'They appear here, ready to connect.',
+    ],
+    open: 'Open MCP toolkits',
+    askAdmin: 'Only an admin can change these settings. Ask yours to add a key and pick toolkits.',
+  },
   allConnected: 'Everything is connected',
   allConnectedDesc: 'Every server and toolkit in this view is already connected.',
 

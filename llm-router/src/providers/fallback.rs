@@ -612,7 +612,6 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             platform_paid,
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
-            is_discovered_agent: primary.is_discovered_agent,
             compress_enabled: primary.compress_enabled,
             agent_id: primary.agent_id.clone(),
         });
@@ -658,7 +657,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         }
     }
@@ -905,7 +903,6 @@ mod tests {
         p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: "https://acme.openai.azure.com".into(),
             dialect: dialect.clone(),
-            public_only: false,
         });
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 2);
@@ -968,7 +965,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =
@@ -1049,7 +1045,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =
@@ -1290,7 +1285,6 @@ mod tests {
         p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: base,
             dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
-            public_only: false,
         });
         p
     }
@@ -1441,7 +1435,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
@@ -1493,7 +1486,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =
@@ -1950,7 +1942,6 @@ mod tests {
         primary.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: stalled,
             dialect: crate::providers::ProviderDialect::OpenAi,
-            public_only: false,
         });
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

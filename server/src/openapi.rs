@@ -58,6 +58,7 @@ use crate::state::AppState;
         crate::agents::llm_config::set_my_llm_config,
         crate::agents::llm_config::delete_my_llm_config,
         crate::agents::llm_config::issue_llm_token,
+        crate::agents::llm_config::revoke_llm_tokens,
         crate::agents::llm_config::issue_mcp_token,
         crate::agents::llm_config::revoke_mcp_token,
         crate::llm_configs::list,
@@ -114,6 +115,7 @@ use crate::state::AppState;
         crate::observability::handler::get_finops_spend_calendar_day,
         crate::observability::handler::get_finops_attributions,
         crate::observability::handler::get_finops_insights,
+        crate::observability::handler::get_model_routing,
         crate::observability::handler::get_agent_hours,
         crate::observability::coding_agents::get_coding_agent_usage,
         // CX-1: the `/api/me/*` preference routes and `/api/settings/context-tiers` predate the

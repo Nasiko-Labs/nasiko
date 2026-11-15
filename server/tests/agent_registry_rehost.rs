@@ -48,17 +48,17 @@ async fn queued(server: &common::TestServer, id: Uuid) -> bool {
 async fn references_on_a_former_host_move_to_the_current_one_and_live_agents_are_queued() {
     let server = common::TestServer::start().await;
     let owner = owner(&server).await;
-    let old = "free.old.example";
+    let old = "free.nasiko.dev";
     let new = "free.app.nasiko.com";
-    let moved = agent(&server, owner, "free.old.example/u-abc/agent:1", false).await;
-    let deleted = agent(&server, owner, "free.old.example/u-abc/gone:1", true).await;
-    let lookalike = agent(&server, owner, "free.old.example.evil.io/u-abc/x:1", false).await;
+    let moved = agent(&server, owner, "free.nasiko.dev/u-abc/agent:1", false).await;
+    let deleted = agent(&server, owner, "free.nasiko.dev/u-abc/gone:1", true).await;
+    let lookalike = agent(&server, owner, "free.nasiko.dev.evil.io/u-abc/x:1", false).await;
     let external = agent(&server, owner, "docker.io/library/nginx:1", false).await;
     sqlx::query(
         "INSERT INTO agent_versions (agent_id, version, image_tag) VALUES ($1, '1.0.0', $2)",
     )
     .bind(moved)
-    .bind("free.old.example/u-abc/agent:1")
+    .bind("free.nasiko.dev/u-abc/agent:1")
     .execute(&server.db)
     .await
     .unwrap();
@@ -78,7 +78,7 @@ async fn references_on_a_former_host_move_to_the_current_one_and_live_agents_are
     );
     assert_eq!(
         image(&server, lookalike).await,
-        "free.old.example.evil.io/u-abc/x:1"
+        "free.nasiko.dev.evil.io/u-abc/x:1"
     );
     assert_eq!(image(&server, external).await, "docker.io/library/nginx:1");
     assert!(queued(&server, moved).await);

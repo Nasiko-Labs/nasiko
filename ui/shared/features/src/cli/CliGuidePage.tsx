@@ -1,8 +1,8 @@
 /**
  * The CLI guide (`/cli`, the sidebar's help rows): install, the first steps against this cluster and a card per task
  * that opens its docs page. docs.nasiko.com can't be framed (X-Frame-Options: DENY), so the reference stays a link.
- * The first steps are the setup guide's (onboarding/HarnessStep.tsx): connect without signing in, then sign in, with
- * SSO where this edition signs in through another method (the `loginMethods` slot).
+ * The first steps are the setup guide's (onboarding/HarnessStep.tsx): install, then connect, which signs in itself
+ * (through SSO where the server has it) and then asks which coding agents to connect.
  */
 import {
   ArrowUpRight,
@@ -14,14 +14,13 @@ import {
   Server,
   SquareTerminal,
 } from 'lucide-react'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { CLI_DOCS_URL, cliDocsUrl } from '@nasiko/app-core/links'
-import { connectWithoutLogin } from './commands'
+import { connectCommand } from './commands'
 import { copy, TASKS } from './copy'
 
 const ICONS = {
@@ -34,14 +33,9 @@ const ICONS = {
 } as const
 
 export function CliGuidePage() {
-  const sso = !!useSlots().loginMethods
   const steps = [
     { label: copy.start.install, command: copy.install.unixCommand },
-    // `nasiko connect` signs in on its own otherwise, before the sign-in step below.
-    { label: copy.start.connect, command: connectWithoutLogin() },
-    sso
-      ? { label: copy.start.signInSso, command: 'nasiko auth login --sso' }
-      : { label: copy.start.signIn, command: 'nasiko auth login' },
+    { label: copy.start.connect, command: connectCommand() },
   ]
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-8">

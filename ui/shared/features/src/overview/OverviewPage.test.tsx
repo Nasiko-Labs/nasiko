@@ -10,6 +10,7 @@ import { clearChatRegistry } from '@nasiko/features/chat/registry'
 import { apiFetch } from '@nasiko/data-access/client'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { configureChatMock } from '@nasiko/mocks/chatStore'
+import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
@@ -17,6 +18,7 @@ import { copy as deployCopy } from '@nasiko/features/deploy/copy'
 import { clearSeededDeploys, setSeededDeploy } from '@nasiko/features/onboarding/api'
 import { copy } from './copy'
 import { PREVIEW_MS } from './preview'
+import { writeDone } from './tryRun'
 import { DEFAULT_RANGE, RANGE_DAYS } from './search'
 import {
   FAILED_SESSION_ROWS,
@@ -760,6 +762,8 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
 
   it('plays on Home itself, in the tile and the activity card, then comes back 5 s after it ends', async () => {
     window.history.replaceState(null, '', '/?mock=no-harnesses')
+    // Between the try-a-run card's two runs, so it shows too.
+    writeDone(ADMIN_ID, 'baseline')
     renderApp('/')
     await loaded()
     const tile = await screen.findByTestId('quiet-harnesses', {}, { timeout: 8000 })
@@ -773,7 +777,7 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     const bar = screen.getByRole('region', { name: p.bar })
     expect(bar).toHaveFocus()
     expect(screen.getByRole('heading', { level: 1, name: copy.title })).toBeInTheDocument()
-    expect(card('quiet-harnesses')).toHaveTextContent('nasiko auth login')
+    expect(card('quiet-harnesses')).toHaveTextContent(`nasiko connect ${window.location.origin}`)
     await userEvent.click(within(bar).getByRole('button', { name: p.jump('Month 1') }))
     expect(within(bar).getByRole('button', { name: p.jump('Month 1') })).toHaveAttribute(
       'aria-current',
@@ -785,6 +789,11 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     // The sample card plays above Needs your attention; the real one sits below it (user 2026-11-06).
     expect(
       card('overview-harness-activity').compareDocumentPosition(card('overview-needs')) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+    // ...and above the try-a-run card, which steps down while the preview plays (user 2026-11-13).
+    expect(
+      card('overview-harness-activity').compareDocumentPosition(card('overview-try-run')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     act(() => {
@@ -844,9 +853,7 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     const bar = screen.getByRole('region', { name: p.bar })
     await user.click(within(bar).getByRole('button', { name: p.copyCommands }))
     expect(writeText).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `nasiko connect ${window.location.origin} --login=false\nnasiko auth login`,
-      ),
+      expect.stringContaining(`| bash\nnasiko connect ${window.location.origin}`),
     )
     act(() => {
       vi.advanceTimersByTime(2 * PREVIEW_HOLD_MS)

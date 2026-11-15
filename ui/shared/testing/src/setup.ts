@@ -69,6 +69,10 @@ if (typeof Element !== 'undefined') {
 // jsdom defines window.scrollTo only to log "Not implemented" on every call, which buried CI logs under thousands of
 // lines. Overwritten, not `??=`: the stub exists, it just does nothing useful.
 if (typeof window !== 'undefined') window.scrollTo = (() => {}) as typeof window.scrollTo
+// Same for canvas (the login showcase's field, the village's sprites): jsdom has none and logs on every getContext.
+if (typeof HTMLCanvasElement !== 'undefined')
+  HTMLCanvasElement.prototype.getContext = (() =>
+    null) as typeof HTMLCanvasElement.prototype.getContext
 
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's

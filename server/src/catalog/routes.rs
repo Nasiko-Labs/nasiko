@@ -471,6 +471,7 @@ pub(crate) async fn create(
         match crate::agents::canonicalize_and_validate_image_ref(
             &state.db,
             &state.config.agent_image_registry,
+            &state.config.agent_image_registry_aliases,
             image,
             owner_id,
             claims.is_superuser,
@@ -1230,6 +1231,7 @@ pub(crate) async fn update(
         match crate::agents::canonicalize_and_validate_image_ref(
             &state.db,
             &state.config.agent_image_registry,
+            &state.config.agent_image_registry_aliases,
             &image,
             owner_id,
             claims.is_superuser,

@@ -41,6 +41,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
+  'workflows-key-rejected',
   'workflows-planner-fails',
   'onboarding-absent',
   'onboarding-done',
@@ -75,6 +76,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
+  'transcribe-unconfigured',
   // LLM router page variants; same reason.
   'router-empty',
   'router-409',

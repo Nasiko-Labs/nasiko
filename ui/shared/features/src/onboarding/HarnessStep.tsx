@@ -7,9 +7,11 @@
  * to connect, offering to move any connected to another server.
  */
 import { Bot, MessageSquare, SquareTerminal } from 'lucide-react'
+import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { Button } from '@nasiko/ui/primitives/button'
+import { connectCommand } from '@nasiko/features/cli/commands'
+import { copy as cliCopy } from '@nasiko/features/cli/copy'
 import { copy as guideCopy } from './copy'
-import { HarnessSetupSteps } from './HarnessSetup'
 import { StepHeading } from './parts'
 
 const copy = guideCopy.harness
@@ -27,10 +29,38 @@ export function HarnessStep({
   /** Out of the guide to one of these pages. */
   onOpen: (to: '/harnesses' | '/agents' | '/chat') => void
 }) {
+  const steps = [
+    { label: copy.steps.install, command: cliCopy.install.unixCommand },
+    { label: copy.steps.connect, command: connectCommand() },
+  ]
   return (
     <div className="flex flex-col gap-6">
       <StepHeading title={copy.title} intro={copy.intro} />
-      <HarnessSetupSteps />
+      <ol className="flex flex-col gap-4">
+        {steps.map((s, i) => (
+          <li key={s.label} className="flex gap-3">
+            <span
+              aria-hidden
+              className="flex size-6 shrink-0 items-center justify-center rounded-md border font-mono text-xs"
+            >
+              {i + 1}
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+              <span className="text-sm">{s.label}</span>
+              <div className="flex items-center gap-2 rounded-md border bg-muted/50 py-1 pr-1 pl-3">
+                <span aria-hidden className="font-mono text-xs text-muted-foreground select-none">
+                  $
+                </span>
+                <code className="min-w-0 flex-1 font-mono text-xs break-all whitespace-pre-wrap">
+                  {s.command}
+                </code>
+                <CopyButton text={s.command} label={copy.copy(s.label)} />
+              </div>
+            </div>
+          </li>
+        ))}
+      </ol>
+      <p className="text-sm text-muted-foreground">{copy.after}</p>
       <section className="flex flex-col gap-3">
         <h3 className="text-sm font-medium">{copy.next}</h3>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(13rem,1fr))] gap-3">

@@ -9,7 +9,8 @@ import { IS_MAC } from '@nasiko/ui/lib/keys'
 import { SettingHeading, SettingRow, SettingRows } from './components/SettingRow'
 import { copy } from './copy'
 
-const label = (key: string) => (key === 'Mod' ? (IS_MAC ? '⌘' : 'Ctrl') : key)
+const label = (key: string) =>
+  key === 'Mod' ? (IS_MAC ? '⌘' : 'Ctrl') : key === 'Alt' && IS_MAC ? '⌥' : key
 
 export function ShortcutsPage() {
   return (

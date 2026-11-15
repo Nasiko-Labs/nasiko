@@ -19,6 +19,7 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
+  modelRouting,
   savings,
   spendCalendar,
   spendTimeseries,
@@ -167,6 +168,7 @@ const setLoggedIn = (value: boolean) => {
  * - `probe-500`: the Sessions → Open chat probe fails with a 500 (§5.10).
  * - `waiting`: the opt-in pending requests (§5.11); `pending-fail` fails every poll, `pending-flaky` answers
  *   once, fails the next 3 polls, then works again (DX3).
+ * - `transcribe-unconfigured`: dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does.
  */
 /** `/api/agents/<segment>` routes that aren't an agent id (`agents/mod.rs` router). */
 const AGENTS_STATIC = new Set(['uploads', 'deployments'])
@@ -179,6 +181,7 @@ export const CHAT_PAGE_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
+  'transcribe-unconfigured',
 ] as const
 
 /**
@@ -293,10 +296,11 @@ export const MOCK_VARIANTS = [
   'mcp-toolkits-fail',
   'mcp-upload-fails',
   // Workflows (plans/feat-workflows.md §8): no workflows or runs; answers as OSS `main` (no drafts, promote, metrics);
-  // the planner has no API key (503) or fails (422).
+  // the planner has no API key (503), the provider rejects it (502 `llm_key_rejected`) or planning fails (422).
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
+  'workflows-key-rejected',
   'workflows-planner-fails',
   // Onboarding (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §5): a server without
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
@@ -614,16 +618,19 @@ let settingsRow: Record<string, unknown> | null = null
 // Secret values the mock was sent (the router state keeps names only); a seed secret reads as a fake key.
 let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
-/** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
-const SETTINGS_DEFAULTS = {
-  router_model: 'deepseek-v4-pro',
+/** settings.rs `get_settings` with no row: nothing stored. */
+const SETTINGS_DEFAULTS = { registry_url: null, catalog_tabs: null }
+/** `SettingsResponse`'s running values, from the server's environment and never stored: `OPENAI_MODEL`, `ROUTER_MODEL`
+ * (distinct so tests can tell the two rows apart; a cloud workspace runs `gpt-4o-mini` for both), `DEFAULT_PROVIDER`
+ * and the `NASIKO_FLOW_*` defaults. */
+const SETTINGS_RUNNING = {
+  orchestrator_model: 'gpt-4o-mini',
+  router_model: 'gpt-4.1-mini',
   default_provider: 'openai',
   max_flow_depth: 5,
   max_flow_fan_out: 20,
   max_flow_tokens: 100_000,
-  flow_timeout_secs: 120,
-  registry_url: null,
-  catalog_tabs: null,
+  flow_timeout_secs: 600,
 }
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
 // scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
@@ -1570,6 +1577,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     ),
   ],
   savings: [
+    // NAS-1263 (`model_routing.rs`): how the router chose each call's model. In the savings group
+    // because the card that reads it sits in TokenOps' Optimization section, beside /finops/savings.
+    http.get(`${FINOPS}/model-routing`, () => respond(() => modelRouting())),
     http.get(`${FINOPS}/savings`, ({ request }) =>
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
@@ -2123,9 +2133,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   settings: [
     // settings.rs at 43833316: a bare object; with no row yet, its hard-coded defaults.
     http.get('/api/settings', () =>
-      loggedIn ? HttpResponse.json(settingsRow ?? SETTINGS_DEFAULTS) : unauthorized(),
+      loggedIn
+        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_RUNNING })
+        : unauthorized(),
     ),
-    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2).
+    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). The
+    // running values in a body (models, provider, flow limits) are ignored: they come from the server's environment.
     http.put('/api/settings', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (!sessionUser().is_superuser) return text('requires superuser', 403)
@@ -2133,7 +2146,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       settingsRow = Object.fromEntries(
         Object.keys(SETTINGS_DEFAULTS).map((k) => [k, body[k] ?? null]),
       )
-      return HttpResponse.json(settingsRow)
+      return HttpResponse.json({ ...settingsRow, ...SETTINGS_RUNNING })
     }),
     ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],
@@ -2604,7 +2617,12 @@ function deployHandlers(): HttpHandler[] {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
         return HttpResponse.json(
-          { success: false, message: 'GitHub OAuth not configured', status: 'disconnected' },
+          {
+            success: false,
+            message:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+            status: 'disconnected',
+          },
           { status: 503 },
         )
       return githubConnected()
@@ -2623,7 +2641,13 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/login', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return HttpResponse.json({ error: 'GitHub OAuth not configured' }, { status: 503 })
+        return HttpResponse.json(
+          {
+            error:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          },
+          { status: 503 },
+        )
       const d = getDeploy()
       // Tests complete the popup themselves (`deployMockState().setGithubConnected`).
       if (import.meta.env.MODE !== 'test')
@@ -2635,7 +2659,10 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/repositories', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 404)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const repos =
@@ -2655,7 +2682,10 @@ function deployHandlers(): HttpHandler[] {
     http.post('/api/github/clone', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 503)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const body = (await request.json().catch(() => ({}))) as {
@@ -2707,7 +2737,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -2813,6 +2843,21 @@ function deployHandlers(): HttpHandler[] {
       const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
       const r = b ? recordAt(b, nowFn()) : null
       return r ? HttpResponse.json(r) : new HttpResponse(null, { status: 404 })
+    }),
+    // The captured build output (build/routes.rs get_build_logs): plain text, or 404 when none was
+    // kept. The source-build install path persists it on the row (catalog/import.rs).
+    http.get('/api/builds/:id/logs', ({ params: p }) => {
+      if (!loggedIn) return unauthorized()
+      if (variant() === 'deploy-no-rights') return noRights()
+      const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
+      const r = b ? recordAt(b, nowFn()) : null
+      if (!r) return text('no logs available', 404)
+      return text(
+        r.status === 'failed'
+          ? `Step 3/4 : RUN pip install -r requirements.txt\nERROR: Could not find a version that satisfies the requirement nasiko-sdk\nThe command '/bin/sh -c pip install -r requirements.txt' returned a non-zero code: 1`
+          : `Step 1/4 : FROM python:3.12-slim\nStep 2/4 : COPY . /app\nStep 3/4 : RUN pip install -r requirements.txt\nStep 4/4 : CMD ["python", "main.py"]\nSuccessfully tagged ${r.image_reference}`,
+        200,
+      )
     }),
     http.get('/api/agents/uploads', ({ request }) => {
       if (!loggedIn) return unauthorized()

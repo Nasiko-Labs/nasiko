@@ -216,6 +216,18 @@ async fn detached(work: impl Future<Output = Response> + Send + 'static) -> Resp
     })
 }
 
+/// The response body for an install whose image build failed: a plain-language reason the
+/// UI shows directly, plus the `build_id` so it can fetch the full log from
+/// `GET /api/builds/{id}/logs`. JSON (parsed by the client's error handler) rather than the
+/// bare `"internal error"` this path used to return, which told the user nothing.
+fn build_failed_body(build_id: Uuid) -> String {
+    serde_json::json!({
+        "error": "The agent's image failed to build. See the build logs for details.",
+        "build_id": build_id,
+    })
+    .to_string()
+}
+
 /// An import that stopped after registering its agent `deploying` leaves it `failed`.
 async fn mark_agent_failed(db: &sqlx::PgPool, agent_id: Uuid) {
     let _ = sqlx::query("UPDATE agents SET status = 'failed', updated_at = now() WHERE id = $1")
@@ -265,6 +277,7 @@ pub(crate) async fn build_and_deploy(
     crate::agents::validate_image_ref(
         &state.db,
         &state.config.agent_image_registry,
+        &state.config.agent_image_registry_aliases,
         &image_tag,
         owner_id,
         false, // Import is deployer-gated, but still validate non-superusers
@@ -435,25 +448,49 @@ pub(crate) async fn build_and_deploy(
             .map_err(|e| e.to_string()),
         Err(e) => Err(e),
     };
-    if let Err(e) = built {
-        tracing::error!(%e, %agent_id, %build_id, "build_and_deploy: build failed");
-        let _ = sqlx::query("UPDATE agent_builds SET status = 'failed' WHERE id = $1")
+    match built {
+        Err(log) => {
+            // The build log (Docker's step output / the BuildKit runner's log, or the
+            // single failing line) is the only record of *why* an install failed — persist
+            // it on the build row and hand it back so the user sees it instead of a bare
+            // 500. Without this the real reason reached nobody but the server log.
+            tracing::error!(%log, %agent_id, %build_id, "build_and_deploy: build failed");
+            let _ = sqlx::query(
+                "UPDATE agent_builds SET status = 'failed', updated_at = now() WHERE id = $1",
+            )
             .bind(build_id)
             .execute(&state.db)
             .await;
-        mark_agent_failed(&state.db, agent_id).await;
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal error".to_string(),
-        ));
+            crate::agents::utils::store_build_logs(
+                &state.db,
+                state.oci_storage.as_ref(),
+                build_id,
+                &log,
+            )
+            .await;
+            mark_agent_failed(&state.db, agent_id).await;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                build_failed_body(build_id),
+            ));
+        }
+        Ok(report) => {
+            // Keep the successful build's output too, so the Builds view can show what ran.
+            let _ = sqlx::query(
+                "UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1",
+            )
+            .bind(build_id)
+            .execute(&state.db)
+            .await;
+            crate::agents::utils::store_build_logs(
+                &state.db,
+                state.oci_storage.as_ref(),
+                build_id,
+                &report.logs,
+            )
+            .await;
+        }
     }
-
-    // Mark build successful
-    let _ =
-        sqlx::query("UPDATE agent_builds SET status = 'success', updated_at = now() WHERE id = $1")
-            .bind(build_id)
-            .execute(&state.db)
-            .await;
 
     let scaling = state.agent_scaling.begin_deploy(agent_id).await;
     let plan = match scaling.plan().await {
@@ -777,8 +814,9 @@ pub(crate) struct RegistryImportRequest {
 const SOURCE_MEDIA_TYPE: &str = "application/vnd.nasiko.agent.v1.tar+gzip";
 
 /// Registry hosts always allowed for import, independent of any env var or the
-/// settings-page registry — Nasiko's own registry works out of the box.
-const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.dev"];
+/// settings-page registry — Nasiko's own registry works out of the box. It
+/// answers on both names; the older one stays while references to it remain.
+const BUILTIN_ALLOWED_REGISTRY_HOSTS: &[&str] = &["registry.nasiko.com", "registry.nasiko.dev"];
 
 /// Extract the bare host from a configured registry URL such as
 /// `https://registry.nasiko.dev` or `registry.nasiko.dev:5000/path`: scheme and

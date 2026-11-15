@@ -53,7 +53,7 @@ const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 #[derive(Clone, Copy, Debug)]
 pub struct Precompressed;
 
-/// A 404 must never be cacheable — demo.app.nasiko.com sits behind Cloudflare,
+/// A 404 must never be cacheable — demo.nasiko.dev sits behind Cloudflare,
 /// which edge-cached an uncached 404 for an observed 20 minutes, outliving its
 /// own fix.
 const NO_STORE: &str = "no-store";
@@ -112,8 +112,6 @@ pub struct CspExtras {
     pub script_src: &'static [&'static str],
     pub connect_src: &'static [&'static str],
     pub img_src: &'static [&'static str],
-    /// Pages the app may embed in an iframe (app.nasiko.com's Contact sales embeds Calendly).
-    pub frame_src: &'static [&'static str],
 }
 
 impl Spa {
@@ -206,7 +204,6 @@ impl Spa {
             join("img-src 'self' data: blob:", extras.img_src),
             "font-src 'self'".to_owned(),
             join("connect-src 'self'", extras.connect_src),
-            join("frame-src 'self'", extras.frame_src),
             "frame-ancestors 'none'".to_owned(),
             "base-uri 'self'".to_owned(),
             "form-action 'self'".to_owned(),
@@ -763,25 +760,6 @@ mod tests {
         assert!(csp.contains("frame-ancestors 'none'"));
         // Scripts stay hash-pinned even though styles are relaxed.
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
-    }
-
-    #[test]
-    fn frames_are_the_apps_own_unless_an_edition_names_more() {
-        let directive = |extras: &CspExtras| {
-            Spa::build_csp(&[], extras)
-                .split("; ")
-                .find(|d| d.starts_with("frame-src "))
-                .expect("frame-src directive")
-                .to_owned()
-        };
-        assert_eq!(directive(&CspExtras::default()), "frame-src 'self'");
-        assert_eq!(
-            directive(&CspExtras {
-                frame_src: &["https://calendly.com"],
-                ..Default::default()
-            }),
-            "frame-src 'self' https://calendly.com"
-        );
     }
 
     #[test]

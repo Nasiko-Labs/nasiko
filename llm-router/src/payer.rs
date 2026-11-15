@@ -10,7 +10,8 @@ use crate::resolver::{ConfigSubject, RegistryStore};
 pub enum Payer {
     /// The caller's own default config and key.
     Caller,
-    /// The agent's owner: the agent's attached config, else the owner's default, with the owner's key.
+    /// The agent's owner: the agent's attached config, else the owner's default, with the owner's key;
+    /// with no stored key, the platform's own key ([`ConfigSubject::Sponsored`]).
     Owner,
     /// The caller, because the owner's allowance for them is used up until `retry_after_secs` from now.
     CallerAfterAllowance { retry_after_secs: u64 },
@@ -61,7 +62,7 @@ pub async fn subject_for_call<'a>(
         return Ok((subject, None));
     }
     Ok(match payer.payer(owner, caller).await? {
-        Payer::Owner => (ConfigSubject::Owner(owner_id), None),
+        Payer::Owner => (ConfigSubject::Sponsored(owner_id), None),
         Payer::Caller => (subject, None),
         Payer::CallerAfterAllowance { retry_after_secs } => (subject, Some(retry_after_secs)),
     })

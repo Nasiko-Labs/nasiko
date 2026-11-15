@@ -39,16 +39,15 @@ function cardPlace(a: AgentApp, named: Map<string, number>): number | null {
 }
 
 /**
- * The apps worth showing, in order: the viewer's connected ones first (what the agent can use for them now), then
- * the ones still to connect. Within each, the apps the agent's card names come first, in the card's own order (an
- * agent with many connectors enabled still leads with the ones it is built around), then the rest by label. An app
- * the viewer cannot reach is left out: they could not connect it here.
+ * The apps worth showing, in order: the ones the agent's card names first, in the card's own order (an agent with
+ * many connectors enabled still leads with the ones it is built around), connected before not; then the rest,
+ * connected before not, by label. An app the viewer cannot reach is left out: they could not connect it here.
  */
 export function orderApps(apps: readonly AgentApp[], skills?: readonly Skill[]): AgentApp[] {
   const named = namedInCard(skills)
   const key = (a: AgentApp): [number, number, number] => {
     const place = cardPlace(a, named)
-    return [a.status === 'needs_connection' ? 1 : 0, place === null ? 1 : 0, place ?? 0]
+    return [place === null ? 1 : 0, a.status === 'needs_connection' ? 1 : 0, place ?? 0]
   }
   return apps
     .filter((a) => a.status !== 'not_shared')

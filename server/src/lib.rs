@@ -62,6 +62,7 @@ pub mod seed;
 pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
+pub mod seed_workflows;
 pub mod serve;
 pub mod sessions;
 pub mod settings;
@@ -185,16 +186,34 @@ where
 {
     // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
     // output synthesis: the one the execution's owner saved from the UI, else the server's
-    // `OPENAI_API_KEY`. With neither, an execution fails with the provider's error.
+    // `OPENAI_API_KEY`. With neither, a step that
+    // needs the model fails with "No OpenAI API key"; steps that don't call it still run.
     {
         let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
                 base_url: state.config.openai_base_url.clone(),
-                model: state.config.openai_model.clone(),
+                // Empty unless `OPENAI_MODEL` is set: routed calls then use the router's
+                // default model; direct user-key calls fall back to `gpt-4o-mini` in `LlmClient`.
+                model: crate::state::explicit_openai_model(&state.config.openai_model)
+                    .unwrap_or_default(),
             },
             ledger: state.usage_tracker.ledger(),
+            // Platform-key calls go through the in-process router, so any configured
+            // provider (OpenAI, Vertex, Anthropic, ...) serves them and the router alone
+            // writes their usage.
+            backend: Some(std::sync::Arc::new(
+                crate::llm_router::platform_backend::RouterBackend::new(
+                    nasiko_llm_router::platform::PlatformLlm::new(
+                        nasiko_llm_router::LlmRouterCtx {
+                            ledger: state.usage_tracker.ledger(),
+                            payer: state.shared_call_payer.clone(),
+                            ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+                        },
+                    ),
+                ),
+            )),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
@@ -485,6 +504,8 @@ where
         ledger: state.usage_tracker.ledger(),
         payer: state.shared_call_payer.clone(),
         ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+            .with_config_cache(state.llm_config_cache.clone())
+            .with_attachment_store(state.attachment_store.clone())
     };
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
@@ -562,12 +583,29 @@ where
         // session JWT or an OAuth `code`/`state`. See `redact_credential_uri`.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
+                // Record the matched route as `http.route` so the trace UI can show each inbound
+                // call's operation (e.g. `POST /v1/chat/completions` vs `POST /api/mcp`) as the
+                // span's secondary label — telling an LLM-gateway call from an MCP/other call
+                // apart within one `request ×N` group. The span name stays `request`, so
+                // same-name spans still group into one section (NAS-1543). The matched route is a
+                // template (`/api/mcp/s/{token}`), so it carries no secret, unlike the raw URI.
+                // `Router::layer` runs this after routing, so `MatchedPath` is set (as in
+                // `error_reporting::trace_requests`); a request no route matched (UI pages and
+                // assets) records none.
+                let route = req
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map(|r| format!("{} {}", req.method(), r.as_str()));
                 let span = tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
+                    http.route = tracing::field::Empty,
                 );
+                if let Some(route) = &route {
+                    span.record("http.route", route.as_str());
+                }
                 // Adopt the caller's W3C trace context when it sends one, so this
                 // server span joins the flow that triggered it rather than rooting
                 // a trace of its own. Callers without a `traceparent` (a browser

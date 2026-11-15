@@ -114,12 +114,67 @@ impl RouteInputs<'_> {
     }
 }
 
+impl RouteSource {
+    /// Stable string form — the `metadata.routing` counter key for this level (NAS-1263).
+    pub fn as_label(self) -> &'static str {
+        match self {
+            RouteSource::Pinned => "pinned",
+            RouteSource::CacheHit => "cache_hit",
+            RouteSource::SmallTalk => "small_talk",
+            RouteSource::Classified => "classified",
+            RouteSource::Config => "config",
+            RouteSource::Default => "default",
+        }
+    }
+
+    /// Every level, in precedence order, so a routing block always carries the same keys and a
+    /// reader can tell "this level served no call" from "this deployment never wrote the block".
+    pub const ALL: [RouteSource; 6] = [
+        RouteSource::Pinned,
+        RouteSource::CacheHit,
+        RouteSource::SmallTalk,
+        RouteSource::Classified,
+        RouteSource::Config,
+        RouteSource::Default,
+    ];
+}
+
 /// The outcome of routing: the model to call and how it was chosen.
 #[derive(Debug, Clone)]
 pub struct RouteDecision {
     pub model: String,
     pub tier: Option<Tier>,
     pub source: RouteSource,
+}
+
+impl RouteDecision {
+    /// What this call contributes to its usage row's `metadata.routing` block (NAS-1263): one
+    /// `calls`, one for the level that served it, one for its tier if it drew one, and one for
+    /// whether that overrode the resolver's model.
+    ///
+    /// Flat integers rather than labels, because a `trace_usage` row is a whole trace's calls
+    /// merged key by key (`usage::write_trace_usage`): a label would be left holding the *last*
+    /// call's level, so a turn that classifies once and then serves three cache hits would report
+    /// itself as a cache hit and the classification would vanish. Counters add up instead, which
+    /// is also the question the ticket asks — how many calls each level and tier served.
+    pub fn to_metadata(&self, model_overridden: bool) -> serde_json::Value {
+        let mut block = serde_json::Map::new();
+        block.insert("calls".to_string(), serde_json::json!(1));
+        for source in RouteSource::ALL {
+            let served = i64::from(source == self.source);
+            block.insert(source.as_label().to_string(), serde_json::json!(served));
+        }
+        let level = self.tier.map(Tier::as_level);
+        for tier in 1..=3i16 {
+            let drawn = i64::from(level == Some(tier));
+            block.insert(format!("tier{tier}"), serde_json::json!(drawn));
+        }
+        block.insert(
+            "model_overridden".to_string(),
+            serde_json::json!(i64::from(model_overridden)),
+        );
+        serde_json::Value::Object(block)
+    }
 }
 
 /// Apply the five-level precedence and return the model to call.
@@ -639,6 +694,7 @@ mod tests {
                 decision.model.clone(),
             ));
         }
+        async fn forget(&self, _conv_id: &str, _agent_id: &str) {}
     }
 
     /// A gate that always judges the turn small talk — exercises the Level 2.5 branch.
@@ -1391,5 +1447,63 @@ mod tests {
         ]));
         assert!(!is_tool_continuation(&[msg("user"), msg("system")]));
         assert!(!is_tool_continuation(&[msg("system")]));
+    }
+
+    /// NAS-1263: the block a routed call contributes — one `calls`, one for its level, one for its
+    /// tier, and the override flag. Every key is present, so a zero reads as "this level served no
+    /// call" rather than "this deployment does not record it".
+    #[test]
+    fn to_metadata_counts_the_level_and_tier_that_served_the_call() {
+        let decision = RouteDecision {
+            model: "gpt-4o-mini".into(),
+            tier: Some(Tier::Tier3),
+            source: RouteSource::SmallTalk,
+        };
+        assert_eq!(
+            decision.to_metadata(true),
+            serde_json::json!({
+                "calls": 1,
+                "pinned": 0,
+                "cache_hit": 0,
+                "small_talk": 1,
+                "classified": 0,
+                "config": 0,
+                "default": 0,
+                "tier1": 0,
+                "tier2": 0,
+                "tier3": 1,
+                "model_overridden": 1,
+            })
+        );
+    }
+
+    /// A level that draws no tier (pinned, config, default) still carries all three tier keys at
+    /// zero — the counters are added up across a trace, and a missing key would make one call's
+    /// block a different shape from another's.
+    #[test]
+    fn to_metadata_of_an_untiered_level_counts_no_tier() {
+        let decision = RouteDecision {
+            model: "gpt-4o".into(),
+            tier: None,
+            source: RouteSource::Pinned,
+        };
+        let block = decision.to_metadata(false);
+        assert_eq!(block["pinned"], 1);
+        assert_eq!(block["model_overridden"], 0);
+        for tier in ["tier1", "tier2", "tier3"] {
+            assert_eq!(block[tier], 0, "{tier}");
+        }
+    }
+
+    /// Each level has its own label, and no two share one: the labels are the counter keys, so a
+    /// collision would silently add two levels together.
+    #[test]
+    fn every_route_source_has_its_own_label() {
+        let labels: Vec<&str> = RouteSource::ALL.iter().map(|s| s.as_label()).collect();
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(labels.len(), unique.len());
+        assert_eq!(RouteSource::SmallTalk.as_label(), "small_talk");
     }
 }

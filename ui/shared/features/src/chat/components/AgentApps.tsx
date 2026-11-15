@@ -2,7 +2,6 @@
  * The apps an agent can use, where a chat starts and under its reply (agentApps.ts). Connecting happens in place,
  * through the MCP catalog's own control and OAuth popup; the list refreshes when the popup closes.
  */
-import { Link } from '@tanstack/react-router'
 import { Check } from 'lucide-react'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { AgentMark } from '@nasiko/features/agents/components/bits'
@@ -49,7 +48,6 @@ function AppConnect({ app, openPopup }: { app: AgentApp; openPopup: (url?: strin
   return (
     <ConnectControl
       size="xs"
-      iconOnly
       openPopup={openPopup}
       target={{
         id: app.id,
@@ -101,16 +99,8 @@ export function AgentApps({ agentId, skills }: { agentId: string; skills?: reado
           </li>
         ))}
         {apps.length > shown.length ? (
-          <li className="self-center text-xs">
-            {/* The rest live on the MCP servers page, its Toolkits view: every toolkit, connected or not. */}
-            <Link
-              to="/mcp"
-              search={{ view: 'toolkits' }}
-              className="text-primary-text underline-offset-4 hover:underline pointer-coarse:inline-flex pointer-coarse:min-h-11 pointer-coarse:items-center"
-              aria-label={copy.moreAppsLabel(apps.length - shown.length)}
-            >
-              {copy.moreApps(apps.length - shown.length)}
-            </Link>
+          <li className="self-center text-xs text-muted-foreground">
+            {copy.moreApps(apps.length - shown.length)}
           </li>
         ) : null}
       </ul>

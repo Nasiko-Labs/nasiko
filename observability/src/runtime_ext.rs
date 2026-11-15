@@ -73,7 +73,6 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         let mut patched = spec.clone();
         let ctx = AgentContext {
             agent_id: spec.name.clone(),
-            agent_uuid: workload_uuid(&spec.container_id),
             tenant_id: self.tenant_id.clone(),
             version: None,
             capture_content: self.capture_content,
@@ -177,8 +176,6 @@ impl<R: ContainerRuntime, I: InstrumentationInjector> ContainerRuntime
         let mut patched = env_vars;
         let ctx = AgentContext {
             agent_id: name.to_string(),
-            // The same value `deploy` injected, or a refresh would change the env and drop it.
-            agent_uuid: workload_uuid(id),
             tenant_id: self.tenant_id.clone(),
             version: None,
             capture_content: self.capture_content,
@@ -299,13 +296,6 @@ impl<P: SandboxProvider + ?Sized> InstrumentedSandbox<P> {
     }
 }
 
-/// A workload's container id as the UUID it was made from, or `None` for one that is not one.
-fn workload_uuid(id: &ContainerId) -> Option<String> {
-    uuid::Uuid::parse_str(id.as_str())
-        .ok()
-        .map(|u| u.to_string())
-}
-
 fn agent_context(
     key: &SandboxKey,
     otel_collector_endpoint: &str,
@@ -315,8 +305,6 @@ fn agent_context(
 ) -> AgentContext {
     AgentContext {
         agent_id: service_name(key),
-        // A sandbox's service name already is its UUID (or `harness-<session>`).
-        agent_uuid: None,
         tenant_id: tenant_id.map(str::to_owned),
         version: None,
         capture_content,

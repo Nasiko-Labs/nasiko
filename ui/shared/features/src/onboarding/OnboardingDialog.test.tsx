@@ -199,13 +199,12 @@ describe('first-run guide', () => {
     // The seed user's model config counts as their key, so Continue comes on once it loads.
     await advance(user)
     await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // Install, connect, then sign in (no SSO in this edition); nothing else.
+    // Install, then connect, which signs in itself; nothing else.
     const commands = screen.getAllByText(/^(curl|nasiko) /).map((c) => c.textContent)
     expect(commands).toEqual([
-      'curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash',
+      'curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash',
       // This server, not the control plane built into the CLI's release (NAS-1464).
-      `nasiko connect ${window.location.origin} --login=false`,
-      'nasiko auth login',
+      `nasiko connect ${window.location.origin}`,
     ])
     expect(screen.queryByRole('button', { name: 'Skip guide' })).toBeNull()
     // More ways on than the harnesses.
@@ -233,14 +232,14 @@ describe('first-run guide', () => {
     await user.click(await screen.findByRole('tab', { name: 'Registry' }))
     // How to copy a reference from the public registry, above the form.
     const how = screen.getByRole('region', { name: 'How to copy from the registry' })
-    expect(within(how).getByRole('link', { name: /registry\.nasiko\.dev/ })).toHaveAttribute(
+    expect(within(how).getByRole('link', { name: /registry\.nasiko\.com/ })).toHaveAttribute(
       'href',
-      'https://registry.nasiko.dev',
+      'https://registry.nasiko.com',
     )
     expect(within(how).getByText('docker pull')).toBeInTheDocument()
     await user.type(
       await screen.findByRole('textbox', { name: deployCopy.registry.reference }),
-      'registry.nasiko.dev/nasiko/onboard-bot:1.0.0',
+      'registry.nasiko.com/nasiko/onboard-bot:1.0.0',
     )
     await user.click(screen.getByRole('button', { name: deployCopy.registry.submit }))
     expect(await screen.findByText(/Your agent is on its way/)).toBeInTheDocument()
@@ -260,7 +259,7 @@ describe('first-run guide', () => {
     await fetch(apiUrl('/api/import/registry'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reference: 'registry.nasiko.dev/nasiko/onboard-bot:1.0.0' }),
+      body: JSON.stringify({ reference: 'registry.nasiko.com/nasiko/onboard-bot:1.0.0' }),
     })
     await router.navigate({ to: '/' })
     await guide()
@@ -336,7 +335,7 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    await importFromRegistry(user, 'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0')
+    await importFromRegistry(user, 'registry.nasiko.com/nasiko/meeting-notes-processor:1.0.0')
     // Under the tabs, a row follows it with a clock.
     const rows = await screen.findByRole('list', { name: 'Your deploys' })
     expect(within(rows).getByText('meeting-notes-processor')).toBeInTheDocument()
@@ -368,7 +367,7 @@ describe('first-run guide', () => {
     renderApp('/')
     await guide()
     await advance(user, /get started/i)
-    await importFromRegistry(user, 'registry.nasiko.dev/nasiko/meeting-notes-processor:1.0.0')
+    await importFromRegistry(user, 'registry.nasiko.com/nasiko/meeting-notes-processor:1.0.0')
     const rows = await screen.findByRole('list', { name: 'Your deploys' })
     // The server's own reason, not the request's status line.
     expect(

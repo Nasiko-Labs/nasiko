@@ -124,16 +124,7 @@ impl CodingAgent {
             .bearer_auth(&self.api_key);
         // The platform's LLM gateway rejects calls with no W3C trace context — it
         // attributes token/cost usage back to the flow that triggered them.
-        // Propagate THIS span so the router's `gen_ai.chat` nests under ChatCompletion.
-        let own_cx: Option<opentelemetry::Context> = parent_cx.map(|_| {
-            use tracing_opentelemetry::OpenTelemetrySpanExt as _;
-            tracing::Span::current().context()
-        });
-        if let Some(tp) = own_cx
-            .as_ref()
-            .and_then(telemetry::traceparent_for_context)
-            .or_else(|| parent_cx.and_then(telemetry::traceparent_for_context))
-        {
+        if let Some(tp) = parent_cx.and_then(telemetry::traceparent_for_context) {
             req = req.header("traceparent", tp);
         }
         let resp = req

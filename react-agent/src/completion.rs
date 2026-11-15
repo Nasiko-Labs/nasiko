@@ -163,12 +163,7 @@ impl UsageModel {
         // which the Free plane leaves empty.
         let api_key: String = gateway.service_key_for(&provider).to_string();
         if api_key.is_empty() {
-            if provider == "openai" {
-                return Err(NO_KEY_MESSAGE.to_string());
-            }
-            return Err(format!(
-                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
-            ));
+            return Err(NO_KEY_MESSAGE.to_string());
         }
         let model: String = if config.model.trim().is_empty() {
             gateway.default_model.clone()
@@ -234,7 +229,6 @@ impl UsageModel {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             // Compression is a per-agent opt-in read from `agents.compress_enabled`.
             // This is the orchestrator's own call against the provider, made from
             // `OrchestratorConfig` with no agent row behind it, so nothing opted in.

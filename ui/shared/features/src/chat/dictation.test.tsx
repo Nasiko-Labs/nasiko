@@ -52,7 +52,7 @@ describe('dictation helpers', () => {
       new ApiError(status, body, '/api/transcribe', '')
     expect(transcribeErrorKey(api(503))).toBe('transcribeUnconfigured')
     expect(transcribeErrorKey(api(502, 'transcription API error'))).toBe('transcribeRejected')
-    // apiFetch's own network failure is a 502 with no body: Open Runtime, not the provider.
+    // apiFetch's own network failure is a 502 with no body: OpenRuntime, not the provider.
     expect(transcribeErrorKey(api(502, null))).toBe('transcribeFailed')
     expect(transcribeErrorKey(api(400, 'failed to read file'))).toBe('transcribeUnreadable')
     expect(transcribeErrorKey(api(500))).toBe('transcribeFailed')

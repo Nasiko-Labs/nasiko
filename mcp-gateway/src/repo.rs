@@ -1274,25 +1274,6 @@ pub async fn get_agent_connector_access_row(
     Ok(row)
 }
 
-pub async fn insert_agent_connector_access_if_absent(
-    db: &PgPool,
-    agent_id: Uuid,
-    connector_id: Uuid,
-    enabled: bool,
-) -> Result<()> {
-    sqlx::query(
-        r#"INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled, tool_rules)
-           VALUES ($1, $2, $3, '[]'::jsonb)
-           ON CONFLICT (agent_id, connector_id) DO NOTHING"#,
-    )
-    .bind(agent_id)
-    .bind(connector_id)
-    .bind(enabled)
-    .execute(db)
-    .await?;
-    Ok(())
-}
-
 pub async fn upsert_agent_connector_access(
     db: &PgPool,
     agent_id: Uuid,
