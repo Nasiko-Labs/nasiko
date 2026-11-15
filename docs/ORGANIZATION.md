@@ -1,11 +1,29 @@
 # Code Organization — Target Standard
 
 How this workspace should be laid out for readability and easy navigation. This is the
-**target**: follow it for new code, and refactor toward it when you touch existing code.
+**target**: follow it for new code, and refactor toward it when you touch existing code. The code
+does not match it everywhere yet; each section says where today's layout differs, under
+**Today**.
 
 The workspace has **three package types** — **libraries**, **servers**, **CLIs**. Every rule
-below applies **per crate**. (The Nasiko enterprise edition extends these same crates by wrapping
-their traits; it follows this standard too and never duplicates logic.)
+below applies **per crate**. Code that extends these crates elsewhere does so by wrapping their
+traits; it follows this standard too and never duplicates logic.
+
+## The workspace today
+
+The root `Cargo.toml` lists the members:
+
+- **Server:** `server` (the control plane, the only server binary).
+- **CLI:** `cli` (the `nasiko` binary).
+- **Libraries:** `auth`, `config`, `secrets`, `observability`, `pricing`, `event-store`,
+  `savings`, `compress`, `runtime`, `react-agent`, `acp-client`, `session-token`, `orchestrator`,
+  `types`, `utils`, `spa`, `coding-policy`, `oci`, `flow`, `redis`, `hitl`, `agent-proxy`,
+  `llm-router`, `tool-compact`, `mcp-gateway`, `github`.
+- **Other binaries and tooling:** `harness-shim` (runs inside harness sandboxes), `bench` and
+  `bench-support`.
+
+The example and seed agents under `agents/` are standalone projects, not workspace members, so
+each builds from its own directory. Database migrations live at the root, in `migrations/`.
 
 ---
 
@@ -19,10 +37,10 @@ their traits; it follows this standard too and never duplicates logic.)
    engine/capability lives in a library crate the server calls.
 4. **A trait only when there are two implementations** (or you genuinely mock it). One impl behind
    a trait is indirection with no payoff.
-5. **Share types, not stacks.** Request/response types live in a serde-only `dto/` crate used by
-   both server and CLI.
+5. **Share types, not stacks.** Request/response types belong in a serde-only `dto/` crate used
+   by both server and CLI (planned; see §4).
 
-The traits that genuinely have two implementations (the enterprise edition supplies the second):
+The traits that genuinely have two implementations (an extension supplies the second):
 
 | Trait                   | Default impl                       |
 | ----------------------- | ---------------------------------- |
@@ -60,7 +78,18 @@ The traits that genuinely have two implementations (the enterprise edition suppl
 
 ## 2. Servers
 
-The server is a thin HTTP + SQL layer. Request flow: `routes.rs → handlers/<f>.rs → repo/<f>.rs → DB`.
+The server is a thin HTTP + SQL layer. Target request flow:
+`routes.rs → handlers/<f>.rs → repo/<f>.rs → DB`.
+
+**Today** `server/src/` is laid out **by feature**, not by layer: a feature is a module or folder
+(`chat/`, `agents/`, `hitl/`, `sessions/`, `catalog/`, `mcp/`, `users/`, `overview/`, …) that holds
+its own routes, handlers and SQL, sometimes with a `routes.rs` of its own (`chat/routes.rs`).
+There is no single `routes.rs`, `handlers/`, `repo/`, `config.rs` or `middleware.rs`: the router
+and the shared middleware (CORS, tracing, auth, rate limiting) are assembled in `lib.rs`
+(`build_app`, `build_app_with_user_router`), rate limiting and ACL checks are in `rate_limit.rs`
+and `acl.rs`, `AppState` is in `state.rs`, telemetry is in `telemetry/`, and configuration comes
+from the `config` crate. Migrations are in the workspace root's `migrations/`. The tree below is
+the target; move code toward it when you touch it, rather than in a separate rewrite.
 
 ```
 server/src/
@@ -84,8 +113,9 @@ server/src/
 │   ├── secrets.rs · github.rs · usage.rs · capabilities.rs · settings.rs · obs.rs
 │   ├── agents/  (agents · grants · deployments · acl)
 │   └── catalog/ (catalog · import · agent_secrets)
-├── tests/                   ← integration; common/ fixtures; #[serial] DB tests
-└── migrations/              ← NNNN_snake_case.sql, consistent zero-padded width
+└── tests/                   ← integration; common/ fixtures; #[serial] DB tests
+
+migrations/                  ← at the workspace root: NNNN_snake_case.sql, consistent zero-padded width
 ```
 
 - **`routes.rs` is the API surface at a glance.** Handlers don't declare their own routes.
@@ -94,9 +124,11 @@ server/src/
   trait(s) — the data-access interface; each feature file implements it. The trait keeps a clean
   boundary between handlers and SQL and lets handlers be unit-tested against a mock repo.
 - **`config.rs` at the root of `src/`** is the server's config entrypoint; it composes the shared
-  `config` crate so env-loading isn't duplicated. Validate every field fail-fast at boot — no
+  `config` crate so env-loading isn't duplicated (today the server uses the `config` crate's
+  `Config` directly). Validate every field fail-fast at boot — no
   `std::env::var` in a handler.
-- **Errors use `anyhow`**, mapped to an HTTP status at the handler boundary (see §5).
+- **Errors use `anyhow`**, mapped to an HTTP status at the handler boundary (see §5). The wire
+  shape of that error is in `docs/API_CONVENTIONS.md`.
 - **Bootstrap/seed is a normal `fn`** in `repo/mod.rs`, invoked from `build_app()` at startup.
 - **All cross-cutting layers live in a single `middleware.rs`** (rate limiting, ACL, auth).
 - **Telemetry setup lives under `handlers/`** (`handlers/telemetry.rs`).
@@ -108,6 +140,12 @@ server/src/
 
 Synchronous only — **no tokio**. `ureq` (HTTP), `clap` (args), `dialoguer`/`indicatif` (UX). Fast
 compile, linear control flow.
+
+**Today** `cli/src/` has `main.rs`, `lib.rs`, `config.rs`, `api.rs` (the HTTP client), `oci.rs`
+and a few helpers; `commands/` is mostly flat, one file per command or group (`deploy.rs`,
+`upload.rs`, `chat.rs`, `observe.rs`, `secrets.rs`, …), with the interactive chat TUI in
+`commands/tui/`, plus `commands/integration/` and `commands/tests/`. Rendering lives with each command, and
+`main` returns `anyhow::Result<()>`. The tree below is the target.
 
 ```
 cli/src/
@@ -128,7 +166,7 @@ cli/src/
 - **One `Cli` + `Commands` enum in `main.rs`**; each group's `Args` in its `commands/` file.
   Doc comments become `--help` — write them for users.
 - **Dispatch only in `main.rs`** → `chat::run(args)`. Logic lives in the command file.
-- **`--json` serializes the same `dto` type the API returned**, so human and scripted output can't
+- **`--json` serializes the same `dto` type the API returned** (once the `dto` crate exists), so human and scripted output can't
   drift.
 - **Exit codes:** `fn main() -> ExitCode`. `0` success · distinct non-zero for expected failures
   (not-found, auth-required) · `1` unexpected. `anyhow::Result<()>` alone collapses everything to `1`
@@ -138,7 +176,10 @@ cli/src/
 
 ## 4. The shared `dto/` crate
 
-Request/response types used by **both** server and CLI live in one serde-only crate:
+**Planned; it does not exist yet.** Today the server and the CLI each define their own
+request/response structs, and the shared crate closest to it is `types` (A2A protocol and registry
+types). The target: request/response types used by **both** server and CLI live in one
+serde-only crate:
 
 ```
 dto/src/                     ← depends on serde ONLY (no axum, sqlx, tokio, ureq)
@@ -249,6 +290,7 @@ CLI      ~/.nasiko/config.json   ← loaded by the cli's config.rs
 /
 ├── .github/workflows/        ← CI, one workflow file per pipeline
 ├── docker-compose.infra.yml  ← local infra (postgres/redis/minio)
+├── migrations/               ← the server's SQL migrations
 └── server/Dockerfile         ← Dockerfile beside the code it packages
 ```
 

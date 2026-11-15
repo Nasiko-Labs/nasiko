@@ -1,4 +1,4 @@
-user := env("DOCKERHUB_USER", "akhilfolium")
+user := env("DOCKERHUB_USER", "nasiko")
 docker := env("DOCKER", if path_exists("/usr/bin/podman") == "true" { "podman" } else { "docker" })
 
 # Build image (self-contained: per-agent pyproject.toml lives in this dir).

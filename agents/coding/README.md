@@ -6,8 +6,9 @@ chat model, with specialized coding tools confined to a workspace directory.
 
 Follows the deployable-agent pattern of `agents/paper` (A2A server via `a2a-server`,
 `AgentExecutor` impl, `/jsonrpc` + agent-card HTTP endpoints), and routes all file/shell access
-through a pluggable `Sandbox` backend. Standalone crate (own `Cargo.lock`, not a workspace
-member) so `docker build`/`nasiko build` can compile it from just this directory.
+through a pluggable `Sandbox` backend. Standalone crate (its own `[workspace]`, not a
+member of the repository's workspace) so `docker build`/`nasiko build` can compile it from just
+this directory; dependencies resolve at build time, as no lockfile is published with it.
 
 ## Status
 

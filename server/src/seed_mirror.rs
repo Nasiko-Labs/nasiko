@@ -598,9 +598,9 @@ mod tests {
 
     #[test]
     fn docker_hub_user_repo_keeps_its_namespace() {
-        let r = parsed("akhilfolium/hr-agent:v2");
+        let r = parsed("example/hr-agent:v2");
         assert_eq!(r.host, "registry-1.docker.io");
-        assert_eq!(r.repository, "akhilfolium/hr-agent");
+        assert_eq!(r.repository, "example/hr-agent");
         assert_eq!(r.reference, "v2");
     }
 

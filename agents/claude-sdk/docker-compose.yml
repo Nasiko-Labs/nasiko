@@ -5,7 +5,7 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     ports:
-      - "10002:10002"
+      - "10002:8000"
     networks:
       - agents-net
 

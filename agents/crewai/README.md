@@ -24,93 +24,46 @@ sequenceDiagram
 
 ## Key Components
 
-- **CrewAI Agent**: Image generation agent with specialized tools
+- **CrewAI Agent**: Image generation agent with specialized tools; the crew's own reasoning runs on
+  `openai/gpt-4o`
 - **A2A Server**: Provides standardized protocol for interacting with the agent
-- **Image Generation**: Uses Gemini API to create images from text descriptions
-- **Cache System**: Stores generated images for retrieval (in-memory or file-based)
+- **Image Generation**: Uses the Gemini API (`gemini-2.0-flash-exp`) to create images from text descriptions
+- **Cache System**: Stores generated images in memory for retrieval within a session
 
-## Prerequisites
+## Configuration
 
-- Python 3.12 or higher
-- [UV](https://docs.astral.sh/uv/) package manager (recommended)
-- Google API Key (for Gemini access)
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `OPENAI_API_KEY` | Yes | Key for the crew's LLM (`openai/gpt-4o`); the server refuses to start without it |
+| `GOOGLE_API_KEY` | Yes | Gemini API key, read by the Google GenAI client for image generation |
+| `HOST_OVERRIDE` | No | URL to advertise on the Agent Card instead of `http://<host>:<port>/` |
 
-## Setup & Running
+The agent listens on port `8000` (`src/__main__.py`, and the `Dockerfile`'s `CMD`).
 
-1. Navigate to the samples directory:
+## Run on Nasiko
 
-   ```bash
-   cd samples/python/agents/crewai
-   ```
+From this directory, with the `nasiko` CLI connected and logged in (see the repository README):
 
-2. Create an environment file with your API key (or Vertex AI credentials):
+```bash
+nasiko secrets set OPENAI_API_KEY sk-...      # vault secrets reach every agent you own
+nasiko secrets set GOOGLE_API_KEY AIza...
+nasiko deploy .                               # build locally, push and deploy
+# or, without local Docker: nasiko upload .   # the server builds it
+```
 
-   ```bash
-   echo "GOOGLE_API_KEY=your_api_key_here" > .env
-   ```
+## Run with Docker
 
-3. Set up the Python environment:
+```bash
+docker build -t crewai-a2a-server .
+docker run -p 8000:8000 \
+  -e OPENAI_API_KEY=sk-... \
+  -e GOOGLE_API_KEY=AIza... \
+  crewai-a2a-server
+```
 
-   ```bash
-   uv python pin 3.13
-   uv venv
-   source .venv/bin/activate
-   ```
-
-4. Run the agent with desired options:
-
-   ```bash
-   # Basic run
-   uv run .
-
-   # On custom host/port
-   uv run . --host 0.0.0.0 --port 8080
-   ```
-
-5. Run the A2A client:
-
-   In a separate terminal:
-
-   ```bash
-   # Connect to the agent (specify the agent URL with correct port and host)
-   cd samples/python/hosts/cli
-   uv run . --agent http://localhost:10001
-   
-   # If you changed the port when starting the agent, use that port instead
-   # uv run . --agent http://localhost:YOUR_PORT
-   ```
-
-## Build Container Image
-
-Agent can also be built using a container file.
-
-1. Navigate to the `samples/python` directory:
-
-   ```bash
-   cd samples/python
-   ```
-
-2. Build the container file
-
-    ```bash
-    podman build -f agents/crewai/Containerfile . -t crewai-a2a-server
-    ```
-
-   > [!Tip]  
-   > Podman is a drop-in replacement for `docker` which can also be used in these commands.
-
-3. Run your container
-
-    ```bash
-    podman run -p 10001:10001 -e GOOGLE_API_KEY=your_api_key_here crewai-a2a-server
-    ```
-
-4. Run A2A client (follow step 5 from the section above)
-
-> [!Important]
->
-> - **Access URL:** You must access the A2A client through the URL `0.0.0.0:10001`. Using `localhost` will not work.
-> - **Hostname Override:** If you're deploying to an environment where the hostname is defined differently outside the container, use the `HOST_OVERRIDE` environment variable to set the expected hostname on the Agent Card. This ensures proper communication with your client application.
+The Agent Card is then at `http://localhost:8000/.well-known/agent-card.json`. Inside the
+container the server binds `0.0.0.0`; run outside a container, `src/__main__.py` defaults to
+`--host localhost --port 8000`.
 
 ## Features & Improvements
 
@@ -119,7 +72,6 @@ Agent can also be built using a container file.
 - Text-to-image generation using Google Gemini
 - Support for modifying existing images using references
 - Robust error handling with automatic retries
-- Optional file-based cache persistence
 - Improved artifact ID extraction from queries
 
 **Limitations:**

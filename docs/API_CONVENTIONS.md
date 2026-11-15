@@ -39,7 +39,8 @@ specs, not this document; where a protocol dictates a shape, the protocol wins.
 ```
 
 - Always JSON. Never plain text, never an empty body (a 204 is the only bodyless response).
-- `code` is a stable slug clients switch on (`invalid_role`, `session_owned`, `last_admin`);
+- `code` is a stable slug clients switch on (`account_locked`, `version_conflict`,
+  `agent_not_shareable`, `harness_sessions_disabled`);
   the message may be reworded freely, the code may not change once shipped.
 - 5xx bodies never carry internal error text — raw `e.to_string()` is a log line, not a
   response. The client gets the slug; the operator gets the detail in the logs, joined by
@@ -116,10 +117,14 @@ handler, not a divergent response.
 
 ## 8. Enforcement — types, not memory
 
-- The serde-only `dto` crate (`docs/ORGANIZATION.md` §4) owns the envelope types:
-  `Data<T>`, `Page<T>`, `ApiError`. Handlers return these types; the convention is an import,
-  not a reviewer's recollection.
-- Review checklist addition: *responses use the shared `dto` envelope types; errors are
-  `ApiError` with a stable `code`; the enterprise edition adds fields, never re-shapes.*
-- The OpenAPI spec is generated from the `dto` crate, so the published contract and the
-  compiled one cannot drift.
+- The planned serde-only `dto` crate (`docs/ORGANIZATION.md` §4; it does not exist yet) will own
+  the envelope types: `Data<T>`, `Page<T>`, `ApiError`. Handlers will return these types, so the
+  convention is an import, not a reviewer's recollection. Until then, handlers build these
+  shapes themselves.
+- Review checklist addition: *responses use the shared envelope shapes (the `dto` types once
+  they exist); errors carry a stable `code`; an extension adds fields, never re-shapes.*
+- The OpenAPI spec is generated today from `utoipa` annotations (`server/src/openapi.rs`:
+  `#[utoipa::path]` on handlers, `#[derive(ToSchema)]` on request/response types), served at
+  `/api/openapi.json` with Swagger UI at `/api/docs`. Coverage is opt-in: only annotated routes
+  appear. Annotating every route, and deriving the schemas from the `dto` types once they exist,
+  keeps the published contract and the compiled one from drifting.

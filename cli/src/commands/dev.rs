@@ -1,383 +1,124 @@
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use nasiko_utils::term;
-use tabled::settings::{Alignment, Style};
-use tabled::{Table, Tabled};
 
 use crate::config;
 use crate::util::container_bin;
 
-const COMPOSE_YAML: &str = include_str!("../../../docker-compose.infra.yml");
-const CP_IMAGE_DEFAULT: &str = "nasiko/cp:latest";
-const CP_BINARY_NAME: &str = "nasiko-cp";
-const CP_BINARY_PATH_IN_IMAGE: &str = "/nasiko-cp-cloud";
-
-// ─── DevEnv ────────────────────────────────────────────────────────────────
-
-struct EnvVar {
-    key: &'static str,
-    description: &'static str,
-    default: Option<&'static str>,
-    secret: bool,
-}
-
-const DEV_ENV_VARS: &[EnvVar] = &[
-    EnvVar {
-        key: "DOCKERHUB_USER",
-        description: "DockerHub org for CP image",
-        default: Some("nasiko"),
-        secret: false,
-    },
-    EnvVar {
-        key: "OPENAI_API_KEY",
-        description: "AI routing + card generation",
-        default: None,
-        secret: true,
-    },
-    EnvVar {
-        key: "OPENAI_BASE_URL",
-        description: "Custom LLM endpoint",
-        default: None,
-        secret: false,
-    },
-    EnvVar {
-        key: "OPENAI_MODEL",
-        description: "Default model for agents",
-        default: Some("deepseek-v4-flash"),
-        secret: false,
-    },
-    EnvVar {
-        key: "ROUTER_MODEL",
-        description: "Model for smart routing",
-        default: Some("deepseek-v4-pro"),
-        secret: false,
-    },
-    EnvVar {
-        key: "GITHUB_CLIENT_ID",
-        description: "GitHub OAuth (login with GitHub)",
-        default: None,
-        secret: false,
-    },
-    EnvVar {
-        key: "GITHUB_CLIENT_SECRET",
-        description: "GitHub OAuth secret",
-        default: None,
-        secret: true,
-    },
-    EnvVar {
-        key: "SEED_AGENTS",
-        description: "Auto-deploy these images on start",
-        default: None,
-        secret: false,
-    },
-];
-
-#[derive(Tabled)]
-struct EnvVarTableRow {
-    #[tabled(rename = "")]
-    num: String,
-    #[tabled(rename = "KEY")]
-    key: String,
-    #[tabled(rename = "VALUE")]
-    value: String,
-    #[tabled(rename = "DESCRIPTION")]
-    description: String,
-}
-
-struct DevEnv {
-    vars: HashMap<String, String>,
-}
-
-impl DevEnv {
-    fn load() -> Self {
-        let file_vars = load_env_file(&dev_env_path());
-        let mut vars = HashMap::new();
-
-        for ev in DEV_ENV_VARS {
-            let value = std::env::var(ev.key)
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| file_vars.get(ev.key).cloned())
-                .or_else(|| ev.default.map(String::from));
-
-            if let Some(v) = value {
-                vars.insert(ev.key.to_string(), v);
-            }
-        }
-
-        Self { vars }
-    }
-
-    fn get(&self, key: &str) -> Option<&str> {
-        self.vars.get(key).map(|s| s.as_str())
-    }
-
-    fn print(&self) {
-        let path = dev_env_path();
-        println!("\nConfiguration ({}):", path.display());
-        let rows: Vec<EnvVarTableRow> = DEV_ENV_VARS
-            .iter()
-            .enumerate()
-            .map(|(i, ev)| {
-                let display = match self.vars.get(ev.key) {
-                    Some(v) if ev.secret && v.len() > 8 => {
-                        format!("{}...{}", &v[..4], &v[v.len() - 4..])
-                    }
-                    Some(_v) if ev.secret => "****".to_string(),
-                    Some(v) => v.clone(),
-                    None => "(not set)".to_string(),
-                };
-                EnvVarTableRow {
-                    num: format!("{}.", i + 1),
-                    key: ev.key.to_string(),
-                    value: display,
-                    description: ev.description.to_string(),
-                }
-            })
-            .collect();
-        println!(
-            "{}",
-            Table::new(rows)
-                .with(Style::blank())
-                .with(Alignment::left())
-        );
-        println!();
-    }
-
-    fn interactive_edit(&mut self) -> Result<()> {
-        loop {
-            let input: String = dialoguer::Input::new()
-                .with_prompt("Edit? [number to change, Enter to proceed, q to quit]")
-                .default(String::new())
-                .allow_empty(true)
-                .interact_text()?;
-
-            let input = input.trim();
-            if input.is_empty() {
-                return Ok(());
-            }
-            if input == "q" || input == "quit" {
-                bail!("aborted");
-            }
-
-            let idx: usize = match input.parse::<usize>() {
-                Ok(n) if n >= 1 && n <= DEV_ENV_VARS.len() => n - 1,
-                _ => {
-                    println!("  Invalid. Enter 1-{}.", DEV_ENV_VARS.len());
-                    continue;
-                }
-            };
-
-            let ev = &DEV_ENV_VARS[idx];
-            let current = self.vars.get(ev.key).cloned().unwrap_or_default();
-
-            let new_value: String = if ev.secret {
-                dialoguer::Password::new()
-                    .with_prompt(ev.key)
-                    .allow_empty_password(true)
-                    .interact()?
-            } else {
-                dialoguer::Input::new()
-                    .with_prompt(ev.key)
-                    .default(current)
-                    .allow_empty(true)
-                    .interact_text()?
-            };
-
-            let new_value = new_value.trim().to_string();
-            if new_value.is_empty() {
-                self.vars.remove(ev.key);
-            } else {
-                self.vars.insert(ev.key.to_string(), new_value);
-            }
-
-            self.print();
-        }
-    }
-
-    fn save_to_file(&self) -> Result<()> {
-        let path = dev_env_path();
-        let mut content = String::from("# ~/.nasiko/.env — nasiko configuration\n");
-        content.push_str("# Shell env vars take precedence over this file.\n\n");
-
-        for ev in DEV_ENV_VARS {
-            content.push_str(&format!("# {}\n", ev.description));
-            match self.vars.get(ev.key) {
-                Some(v) => content.push_str(&format!("{}={}\n\n", ev.key, v)),
-                None => content.push_str(&format!("# {}=\n\n", ev.key)),
-            }
-        }
-
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(&path, &content)?;
-        Ok(())
-    }
-}
+/// Where `nasiko up` serves, as the repo's `docker-compose.yml` publishes it.
+const LOCAL_URL: &str = "http://localhost:8080";
+/// How long `nasiko up` waits for `/health` once Compose has started the stack: the server
+/// runs its migrations before it answers.
+const HEALTH_WAIT: Duration = Duration::from_secs(120);
 
 // ─── Commands ──────────────────────────────────────────────────────────────
 
-pub fn start(infra_only: bool) -> Result<()> {
-    ensure_dev_env_file()?;
-    let mut env = DevEnv::load();
-    env.print();
-    env.interactive_edit()?;
-    env.save_to_file()?;
-
-    let compose_path = compose_file_path()?;
-    std::fs::write(&compose_path, COMPOSE_YAML)?;
-
-    println!("Starting infrastructure...");
-    let status = Command::new(container_bin())
-        .args(["compose", "-f", &compose_path.to_string_lossy(), "up", "-d"])
-        .status()?;
-    if !status.success() {
-        bail!("container compose up failed");
+/// `nasiko up`: the README's quick start, run for you. Builds and starts the repo's Compose
+/// stack (server, Postgres, Redis, object storage, telemetry) from the checkout this is run in,
+/// creating `.env` from `.env.example` the first time, then registers it as the `local` cluster.
+pub fn start() -> Result<()> {
+    let root = find_checkout()?;
+    let env = root.join(".env");
+    if !env.exists() {
+        std::fs::copy(root.join(".env.example"), &env)
+            .with_context(|| format!("could not create {}", env.display()))?;
+        println!(
+            "Created {} from .env.example. Its defaults work on this machine; change them before \
+             anyone else can reach the server.",
+            env.display()
+        );
     }
 
-    println!("  Postgres  localhost:5432");
-    println!("  Redis     localhost:6379");
-    println!("  RustFS    http://localhost:9000");
+    println!(
+        "Starting Nasiko from {} (the first build takes a few minutes)...",
+        root.display()
+    );
+    compose(&root, &["up", "-d", "--build"])?;
 
-    if infra_only {
-        println!("\nInfrastructure ready (infra-only mode).");
-        println!("Run the CP yourself:");
-        println!("  cargo run -p nasiko-cp");
-        return Ok(());
-    }
-
-    // Extract and run CP binary
-    let cp_bin = ensure_cp_binary(&env)?;
-
-    println!("\nStarting CP...");
-    let pid_file = pid_file_path()?;
-
-    let mut cmd = Command::new(&cp_bin);
-    cmd.env("CP_BIND", "0.0.0.0:8080")
-        .env(
-            "DATABASE_URL",
-            "postgresql://nasiko:nasiko@localhost:5432/nasiko_dev",
-        )
-        .env("REDIS_URL", "redis://localhost:6379")
-        .env("AGENT_RUNTIME", "local")
-        .env("S3_ENDPOINT", "http://localhost:9000")
-        .env("S3_BUCKET", "nasiko")
-        .env("S3_ACCESS_KEY", "nasiko")
-        .env("S3_SECRET_KEY", "nasiko123")
-        .env("S3_REGION", "us-east-1")
-        // Valid base64-encoded 32 bytes (32x 'D') — SecretsCrypto::from_key requires
-        // exactly 32 decoded bytes, unlike a raw 32-character string.
-        .env(
-            "SECRETS_ENCRYPTION_KEY",
-            "REREREREREREREREREREREREREREREREREREREREREQ=",
-        )
-        .env("RUST_LOG", "info,nasiko_cp_lib=debug");
-
-    // Pass optional env vars from DevEnv
-    for key in &[
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL",
-        "ROUTER_MODEL",
-        "GITHUB_CLIENT_ID",
-        "GITHUB_CLIENT_SECRET",
-        "SEED_AGENTS",
-    ] {
-        if let Some(val) = env.get(key) {
-            cmd.env(key, val);
-        }
-    }
-
-    let child = cmd.spawn()?;
-    std::fs::write(&pid_file, child.id().to_string())?;
-
-    // Wait for CP to be healthy
-    print!("  Waiting for CP...");
+    print!("  Waiting for the server...");
     let http = ureq::Agent::new_with_defaults();
-    let mut healthy = false;
-    for _ in 0..30 {
-        thread::sleep(Duration::from_secs(1));
-        if let Ok(resp) = http.get("http://localhost:8080/health").call()
+    let mut waited = Duration::ZERO;
+    let healthy = loop {
+        if let Ok(resp) = http.get(&format!("{LOCAL_URL}/health")).call()
             && resp.status().as_u16() == 200
         {
-            println!(" ok");
-            healthy = true;
-            break;
+            break true;
         }
+        if waited >= HEALTH_WAIT {
+            break false;
+        }
+        thread::sleep(Duration::from_secs(2));
+        waited += Duration::from_secs(2);
         print!(".");
-    }
-    if !healthy {
+    };
+    if healthy {
+        println!(" ok");
+    } else {
         println!(" timeout");
-        term::print_warning("CP did not become healthy in 30s");
+        term::print_warning(&format!(
+            "the server did not answer within {}s; see `docker compose logs -f server` in {}",
+            HEALTH_WAIT.as_secs(),
+            root.display()
+        ));
     }
 
-    println!("  CP        http://localhost:8080");
-
-    // Auto-connect
-    let _ = config::connect("local", "http://localhost:8080");
-    println!("\nLocal platform running. Connected as 'local'.");
-    println!("  nasiko auth login    # admin / admin (default)");
+    config::connect("local", LOCAL_URL)?;
+    println!("\nNasiko is running at {LOCAL_URL}, registered as cluster 'local'.");
+    println!("  nasiko auth login    # admin / changeme, or the ADMIN_PASSWORD in .env");
     Ok(())
 }
 
-fn ensure_dev_env_file() -> Result<bool> {
-    let path = dev_env_path();
-    if path.exists() {
-        return Ok(false);
-    }
-
-    let mut content = String::from("# ~/.nasiko/.env — nasiko configuration\n");
-    content.push_str("# Shell env vars take precedence over this file.\n\n");
-
-    for ev in DEV_ENV_VARS {
-        content.push_str(&format!("# {}\n", ev.description));
-        match ev.default {
-            Some(d) => content.push_str(&format!("{}={}\n\n", ev.key, d)),
-            None => content.push_str(&format!("# {}=\n\n", ev.key)),
-        }
-    }
-
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, &content)?;
-    Ok(true)
-}
-
+/// `nasiko down`: stops the Compose stack `nasiko up` started. Data stays in its volumes.
 pub fn stop() -> Result<()> {
-    // Stop CP process
-    let pid_file = pid_file_path()?;
-    if pid_file.exists() {
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
-            && let Ok(pid) = pid_str.trim().parse::<u32>()
-        {
-            println!("Stopping CP (pid {pid})...");
-            let _ = Command::new("kill").arg(pid.to_string()).status();
-        }
-        let _ = std::fs::remove_file(&pid_file);
-    }
-
-    // Stop compose
-    let compose_path = compose_file_path()?;
-    if !compose_path.exists() {
-        std::fs::write(&compose_path, COMPOSE_YAML)?;
-    }
-
-    println!("Stopping infrastructure...");
-    let status = Command::new(container_bin())
-        .args(["compose", "-f", &compose_path.to_string_lossy(), "down"])
-        .status()?;
-    if !status.success() {
-        bail!("container compose down failed");
-    }
-    println!("Done.");
+    let root = find_checkout()?;
+    println!("Stopping Nasiko in {}...", root.display());
+    compose(&root, &["down"])?;
+    println!("Done. Data is kept; `docker compose down -v` in that directory deletes it.");
     Ok(())
+}
+
+/// Runs `docker compose <args>` (or Podman's) in `root`, so the project name and `.env` are the
+/// ones a user running Compose there by hand would get.
+fn compose(root: &Path, args: &[&str]) -> Result<()> {
+    let bin = container_bin();
+    let status = Command::new(&bin)
+        .arg("compose")
+        .args(args)
+        .current_dir(root)
+        .status()
+        .with_context(|| format!("could not run `{bin} compose`; is Docker installed?"))?;
+    if !status.success() {
+        bail!("`{bin} compose {}` failed", args.join(" "));
+    }
+    Ok(())
+}
+
+/// The Nasiko checkout holding the current directory: the nearest directory, this one or above,
+/// with the server's `docker-compose.yml` and `server/Dockerfile`, or that pair under `oss/`.
+fn find_checkout() -> Result<PathBuf> {
+    checkout_above(&std::env::current_dir()?).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no Nasiko checkout here. `nasiko up` runs the server from a clone of the \
+                 repository:\n  git clone https://github.com/Nasiko-Labs/nasiko.git && cd nasiko \
+                 && nasiko up"
+        )
+    })
+}
+
+fn checkout_above(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .flat_map(|dir| [dir.to_path_buf(), dir.join("oss")])
+        .find(|dir| is_checkout(dir))
+}
+
+fn is_checkout(dir: &Path) -> bool {
+    dir.join("docker-compose.yml").is_file() && dir.join("server/Dockerfile").is_file()
 }
 
 pub fn run(path: &str, port: u16) -> Result<()> {
@@ -595,65 +336,6 @@ fn fetch_cp_fallback_env() -> HashMap<String, String> {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-fn ensure_cp_binary(env: &DevEnv) -> Result<std::path::PathBuf> {
-    let bin_dir = nasiko_bin_dir()?;
-    let bin_path = bin_dir.join(CP_BINARY_NAME);
-
-    if bin_path.exists() {
-        return Ok(bin_path);
-    }
-
-    let image = env
-        .get("DOCKERHUB_USER")
-        .map(|user| format!("{user}/cp:latest"))
-        .unwrap_or_else(|| CP_IMAGE_DEFAULT.to_string());
-
-    let bin = container_bin();
-
-    println!("  Pulling CP image ({image})...");
-    let status = Command::new(&bin).args(["pull", &image]).status()?;
-    if !status.success() {
-        bail!("failed to pull {image}");
-    }
-
-    println!("  Extracting CP binary...");
-    let output = Command::new(&bin).args(["create", &image]).output()?;
-    if !output.status.success() {
-        bail!("{bin} create failed");
-    }
-    let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    let cp_status = Command::new(&bin)
-        .args([
-            "cp",
-            &format!("{container_id}:{CP_BINARY_PATH_IN_IMAGE}"),
-            &bin_path.to_string_lossy(),
-        ])
-        .status()?;
-
-    let _ = Command::new(&bin).args(["rm", &container_id]).output();
-
-    if !cp_status.success() {
-        bail!("failed to extract CP binary from image");
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))?;
-    }
-
-    println!("  Cached at {}", bin_path.display());
-    Ok(bin_path)
-}
-
-fn dev_env_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".nasiko")
-        .join(".env")
-}
-
 fn load_env_file(path: &std::path::Path) -> HashMap<String, String> {
     let mut map = HashMap::new();
     let content = match std::fs::read_to_string(path) {
@@ -672,27 +354,39 @@ fn load_env_file(path: &std::path::Path) -> HashMap<String, String> {
     map
 }
 
-fn nasiko_bin_dir() -> Result<std::path::PathBuf> {
-    let dir = dirs::home_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join(".nasiko")
-        .join("bin");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir)
-}
+#[cfg(test)]
+mod tests {
+    use super::checkout_above;
 
-fn compose_file_path() -> Result<std::path::PathBuf> {
-    let dir = dirs::data_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
-        .join("nasiko");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("docker-compose.dev.yml"))
-}
+    fn checkout_in(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir.join("server")).unwrap();
+        std::fs::write(dir.join("docker-compose.yml"), "").unwrap();
+        std::fs::write(dir.join("server/Dockerfile"), "").unwrap();
+    }
 
-fn pid_file_path() -> Result<std::path::PathBuf> {
-    let dir = dirs::data_dir()
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".local/share"))
-        .join("nasiko");
-    std::fs::create_dir_all(&dir)?;
-    Ok(dir.join("cp.pid"))
+    #[test]
+    fn finds_the_checkout_from_a_subdirectory() {
+        let root = tempfile::tempdir().unwrap();
+        checkout_in(root.path());
+        let nested = root.path().join("agents/my-agent");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(checkout_above(&nested).as_deref(), Some(root.path()));
+    }
+
+    #[test]
+    fn finds_a_checkout_kept_under_oss() {
+        let root = tempfile::tempdir().unwrap();
+        checkout_in(&root.path().join("oss"));
+
+        assert_eq!(checkout_above(root.path()), Some(root.path().join("oss")));
+    }
+
+    #[test]
+    fn a_compose_file_alone_is_not_a_checkout() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("docker-compose.yml"), "").unwrap();
+
+        assert_eq!(checkout_above(root.path()), None);
+    }
 }

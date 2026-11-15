@@ -5,7 +5,7 @@ services:
     environment:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     ports:
-      - "10006:10006"
+      - "10006:8000"
     networks:
       - agents-net
 

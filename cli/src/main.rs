@@ -21,8 +21,8 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  up         Start local Nasiko cluster (agent devs)
-  down       Stop local Nasiko cluster
+  up         Start Nasiko locally from a clone (Docker Compose)
+  down       Stop the local Nasiko stack
   connect    Register a CP by URL, or connect local coding agents
   disconnect Disconnect local coding agents
   use        Switch active cluster
@@ -142,10 +142,10 @@ enum IntegrationCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start local Nasiko cluster (pulls CP image from DockerHub)
-    #[command(after_help = "Config: ~/.nasiko/.env")]
+    /// Start Nasiko locally: builds and runs this checkout's Docker Compose stack
+    #[command(after_help = "Run from a clone of the repository. Config: .env in the checkout")]
     Up,
-    /// Stop local Nasiko cluster
+    /// Stop the local Nasiko stack (data is kept)
     Down,
     /// Register a CP by URL, or connect local coding agents
     #[command(after_help = CONNECT_HELP)]
@@ -300,7 +300,7 @@ fn main() -> Result<()> {
         Commands::Agent(cmd) => nasiko::dispatch_agent_dev(cmd),
         Commands::Ops(cmd) => nasiko::dispatch_agent_ops(cmd),
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Up => commands::dev::start(false),
+            CpCommands::Up => commands::dev::start(),
             CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect {
                 target,

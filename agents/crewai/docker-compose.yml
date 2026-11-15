@@ -6,7 +6,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     ports:
-      - "10001:10001"
+      - "10001:8000"
     networks:
       - agents-net
 

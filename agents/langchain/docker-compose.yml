@@ -5,7 +5,7 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     ports:
-      - "10007:10007"
+      - "10007:8000"
     networks:
       - agents-net
 

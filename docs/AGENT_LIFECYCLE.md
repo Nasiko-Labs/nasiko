@@ -123,15 +123,17 @@ Remote cluster:
     nasiko connect https://nasiko.example.com --name prod
     nasiko auth login
 
-Or start a local cluster (auto-registers as "local"):
+Or start a local cluster from a clone of the repository (auto-registers as "local"):
 
+    git clone https://github.com/Nasiko-Labs/nasiko.git && cd nasiko
     nasiko up
+    nasiko auth login     # admin / changeme, or the ADMIN_PASSWORD in .env
 
-`nasiko up` starts Postgres, Redis, and the Nasiko control plane locally. It registers itself as a cluster named "local" — visible in `nasiko clusters` alongside any remote ones.
+`nasiko up` runs the README's Docker Compose quick start for you: in the checkout it creates `.env` from `.env.example` if there is none, runs `docker compose up -d --build` (Podman works too), waits up to two minutes for the server's `/health`, and registers `http://localhost:8080` as a cluster named "local" — visible in `nasiko clusters` alongside any remote ones. It must be run inside the clone (any directory within it works); the first build takes a few minutes.
 
     nasiko clusters       # see all configured clusters
     nasiko use prod       # switch active cluster
-    nasiko down           # stop local cluster
+    nasiko down           # stop the local stack (run in the clone; data is kept)
 
 ### Deploy
 
@@ -549,11 +551,17 @@ in new code.
 
 Test the full deploy flow locally before pushing to production:
 
-    nasiko up                       # start local cluster
+    # in your clone of https://github.com/Nasiko-Labs/nasiko
+    nasiko up                       # build and start the Compose stack, register it as "local"
+    nasiko auth login               # admin / changeme, or the ADMIN_PASSWORD in .env
+
+    # in your agent's directory
     nasiko deploy .                 # deploys to local
     nasiko ps                       # verify it's running
-    nasiko chat http://localhost:8080/api/agents/my-agent "test"
-    nasiko down                     # tear down when done
+    nasiko chat my-agent "test"     # name resolves to the agent's UUID
+
+    # back in the clone
+    nasiko down                     # stop the stack; data stays in its volumes
 
 ---
 
