@@ -5,15 +5,24 @@ use uuid::Uuid;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Generate a valid base64-encoded 32-byte key and install it in the env.
+/// Held while a test changes `SECRETS_ENCRYPTION_KEY` and reads it back: tests run on parallel
+/// threads, and one removing the key while another builds from it fails the other.
+static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Generate a valid base64-encoded 32-byte key and install it in the env. Callers hold `env_lock`.
 fn install_valid_key() {
     use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
     let key = BASE64.encode([0x42u8; 32]);
-    // SAFETY: single-threaded test; no other threads reading this var concurrently.
+    // SAFETY: the caller holds `env_lock`, so no other test touches this var meanwhile.
     unsafe { std::env::set_var("SECRETS_ENCRYPTION_KEY", &key) };
 }
 
 fn make_crypto() -> SecretsCrypto {
+    let _env = env_lock();
     install_valid_key();
     SecretsCrypto::for_system()
 }
@@ -22,7 +31,8 @@ fn make_crypto() -> SecretsCrypto {
 
 #[test]
 fn from_env_without_env_var_returns_missing_key() {
-    // SAFETY: single-threaded test; no other threads reading this var concurrently.
+    let _env = env_lock();
+    // SAFETY: `env_lock` is held, so no other test touches this var meanwhile.
     unsafe { std::env::remove_var("SECRETS_ENCRYPTION_KEY") };
     let result = SecretsCrypto::try_for_system();
     assert!(
@@ -33,6 +43,7 @@ fn from_env_without_env_var_returns_missing_key() {
 
 #[test]
 fn from_env_with_valid_key_in_env_succeeds() {
+    let _env = env_lock();
     install_valid_key();
     let result = SecretsCrypto::try_for_system();
     assert!(result.is_ok(), "valid key in env var must succeed");
@@ -112,12 +123,17 @@ fn both_ciphertexts_still_decrypt_correctly() {
 
 #[test]
 fn decrypt_with_different_scope_fails() {
-    install_valid_key();
-    let encryptor = SecretsCrypto::for_user(Uuid::new_v4());
+    let (encryptor, decryptor) = {
+        let _env = env_lock();
+        install_valid_key();
+        // Different scope → different derived key
+        (
+            SecretsCrypto::for_user(Uuid::new_v4()),
+            SecretsCrypto::for_user(Uuid::new_v4()),
+        )
+    };
     let ciphertext = encryptor.encrypt("sensitive data");
 
-    // Different scope → different derived key
-    let decryptor = SecretsCrypto::for_user(Uuid::new_v4());
     let result = decryptor.decrypt(&ciphertext);
     assert!(
         matches!(result, Err(SecretsError::DecryptionFailed(_))),
