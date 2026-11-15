@@ -1075,6 +1075,78 @@ pub(crate) async fn register_toolkits(
     failed
 }
 
+/// What a seed agent may never do through a toolkit, whoever calls it: delete, and send mail (a
+/// reply is saved as a draft). Lowercase, as the gateway compares (`permissions::get_stance`).
+const SEED_AGENT_TOOL_RULES: &[&str] = &[
+    "*delete*",
+    "*remove*",
+    "*trash*",
+    "gmail_send*",
+    "gmail_reply*",
+    "gmail_forward*",
+];
+
+/// Turn the platform's Composio toolkits on for the seed agents, so they can read and write the
+/// apps a user names. Each call still runs on the CALLER's own connection: the gateway resolves
+/// tools per user, and a user who has not connected the app gets a connect card instead.
+///
+/// A connector without an access row is off for an agent (`PermissionContext::decide`), and only
+/// the agent's owner can add one, so without this no user could reach a toolkit through a seed
+/// agent. Existing rows are left alone, so a toolkit an admin switched off for a seed agent stays
+/// off.
+/// Runs at boot after the toolkits are registered; a toolkit added later is turned on at the next
+/// start.
+pub async fn grant_toolkits_to_seed_agents(state: &AppState) {
+    let names: Vec<String> = std::env::var("SEED_AGENTS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(extract_name)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let rules: Vec<serde_json::Value> = SEED_AGENT_TOOL_RULES
+        .iter()
+        .map(|pattern| serde_json::json!({ "pattern": pattern, "stance": "block" }))
+        .collect();
+    // The seed's own rows only (as in `seed_agents_if_configured`): another user's agent may
+    // share a seed agent's name.
+    let granted = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled, tool_rules)
+           SELECT a.id, c.id, true, $2
+           FROM agents a
+           CROSS JOIN mcp_connectors c
+           WHERE a.name = ANY($1)
+             AND a.deleted_at IS NULL
+             AND a.owner_id = (SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL
+                               ORDER BY created_at LIMIT 1)
+             AND c.provider_type = 'composio'
+             AND COALESCE(c.is_active, true)
+           ON CONFLICT (agent_id, connector_id) DO NOTHING
+           RETURNING agent_id"#,
+    )
+    .bind(&names)
+    .bind(serde_json::Value::Array(rules))
+    .fetch_all(&state.db)
+    .await;
+    match granted {
+        Ok(rows) => {
+            let agents: HashSet<Uuid> = rows.into_iter().collect();
+            for agent_id in &agents {
+                nasiko_mcp_gateway::permissions::invalidate_permission_cache(&state.mcp, *agent_id)
+                    .await;
+            }
+            if !agents.is_empty() {
+                info!(
+                    agents = agents.len(),
+                    "seed agents: Composio toolkits turned on"
+                );
+            }
+        }
+        Err(e) => warn!(%e, "seed agents: turning on Composio toolkits failed"),
+    }
+}
+
 #[cfg(test)]
 mod registry_address_pending_tests {
     use super::registry_address_pending;

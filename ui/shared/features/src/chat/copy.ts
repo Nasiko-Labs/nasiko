@@ -535,6 +535,14 @@ export const copy = {
   lockedForbidden: "You can't use this agent. Ask its owner for access.",
   theAgent: 'the agent',
   examples: 'Examples',
+  // The apps an agent can use (components/AgentApps.tsx): each runs on the viewer's own account.
+  worksWith: 'Works with',
+  worksWithHint:
+    'Try it now, or connect your apps so it can work with your own content, on your own account.',
+  worksWithHintConnected: 'Your apps are connected. Ask it to use them, or just send your text.',
+  appConnected: (app: string) => `${app}: connected`,
+  moreApps: (n: number) => `+${n} more`,
+  replyConnect: 'Connect it so the agent can use it here:',
   loading: 'Loading…',
   usageLoaded: 'Usage for loaded messages',
   turnsWithoutUsage: (n: number) => (n === 1 ? '1 turn without usage' : `${n} turns without usage`),

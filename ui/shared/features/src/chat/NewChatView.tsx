@@ -10,7 +10,9 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { Button } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import type { Skill } from '@nasiko/features/agents/types'
 import { chatKeys, removeSessionRow, sessionRows, upsertSessionRow, useChatSessions } from './api'
+import { AgentApps } from './components/AgentApps'
 import { Composer, type ComposerHandle, type ComposerMode } from './components/Composer'
 import {
   AgentChooser,
@@ -432,6 +434,9 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         ) : (
           <NewChatHero target={identity} description={agent?.description} />
         )}
+        {agent && takesMessages ? (
+          <AgentApps agentId={agent.id} skills={(agent.skills ?? []) as Skill[]} />
+        ) : null}
         {agent && !takesMessages ? (
           <NotRunningBanner
             agentId={agent.id}

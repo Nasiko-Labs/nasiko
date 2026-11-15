@@ -720,6 +720,8 @@ impl AppState {
             crate::seed_workflows::seed_workflows_if_configured(&state).await;
             crate::seed::seed_harness_agents_if_enabled(&state).await;
             crate::seed::seed_toolkits_if_configured(&state).await;
+            // After both: it pairs the seed agents' rows with the registered toolkits.
+            crate::seed::grant_toolkits_to_seed_agents(&state).await;
         });
 
         // Lakehouse tiering (docs/LAKEHOUSE_TRD.md §8). Every replica spawns the
