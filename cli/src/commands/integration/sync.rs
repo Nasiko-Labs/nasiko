@@ -1360,7 +1360,7 @@ mod tests {
                 assert_eq!(kept.attempts, 0, "pacing is no failure of the turn's");
                 assert_eq!(kept.next_attempt_at, None);
             }
-            let backlog = super::super::backlog::backlog_at(dir.path()).unwrap();
+            let backlog = super::super::backlog::backlog_at(dir.path(), None).unwrap();
             assert_eq!((backlog.pending(), backlog.due), (3, 0));
             assert_eq!(backlog.next_attempt_at, Some(until));
         }

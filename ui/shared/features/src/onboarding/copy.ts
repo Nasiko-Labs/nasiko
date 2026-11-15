@@ -183,11 +183,11 @@ export const copy = {
     steps: {
       install: 'Install the CLI',
       connect: 'Connect it to this server',
-      signIn: 'Sign in',
-      signInSso: 'Sign in with your company account',
     },
     copy: (what: string) => `Copy: ${what}`,
-    after: 'Your next session in any of them shows up in Coding harnesses, next to your agents.',
+    // `nasiko connect` signs in and asks about the coding agents itself (user request 2026-11-15): no sign-in step.
+    after:
+      'Connecting signs you in, then asks which coding agents to connect; one connected to another server is offered to move here. Your next session in any of them shows up in Coding harnesses, next to your agents.',
     // Ways on from the guide's end (user request 2026-11-05): more than the harnesses.
     next: 'Or jump straight in',
     choices: {

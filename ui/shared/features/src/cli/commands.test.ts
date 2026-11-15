@@ -1,6 +1,6 @@
 import { markApiBaseUnresolved, setApiBase } from '@nasiko/data-access/client'
 import { afterEach, describe, expect, it } from 'vitest'
-import { connectWithoutLogin, controlPlaneUrl, serverUrl } from './commands'
+import { connectCommand, controlPlaneUrl, serverUrl } from './commands'
 
 afterEach(() => setApiBase(''))
 
@@ -10,8 +10,8 @@ describe('CLI commands that name this server (NAS-1464)', () => {
     expect(serverUrl()).not.toMatch(/nasiko\.dev/)
   })
 
-  it('registers this server without signing in, so the sign-in step asks once', () => {
-    expect(connectWithoutLogin()).toBe(`nasiko connect ${window.location.origin} --login=false`)
+  it('registers this server and signs in to it in one command', () => {
+    expect(connectCommand()).toBe(`nasiko connect ${window.location.origin}`)
   })
 })
 
@@ -19,7 +19,7 @@ describe('CLI commands where the page is not the control plane (NAS-1597)', () =
   it('names the workspace the page calls, not the page', () => {
     setApiBase('https://acme.nasiko.example')
     expect(serverUrl()).toBe('https://acme.nasiko.example')
-    expect(connectWithoutLogin()).toBe('nasiko connect https://acme.nasiko.example --login=false')
+    expect(connectCommand()).toBe('nasiko connect https://acme.nasiko.example')
   })
 
   it('names only the origin when the API base carries a path', () => {
@@ -32,7 +32,7 @@ describe('CLI commands when the API base could not be looked up', () => {
   it('names no host rather than guess, until a base is set', () => {
     markApiBaseUnresolved()
     expect(serverUrl()).toBe('https://<your-cluster>')
-    expect(connectWithoutLogin()).toBe('nasiko connect https://<your-cluster> --login=false')
+    expect(connectCommand()).toBe('nasiko connect https://<your-cluster>')
     setApiBase('https://acme.app.nasiko.com')
     expect(serverUrl()).toBe('https://acme.app.nasiko.com')
   })

@@ -199,13 +199,12 @@ describe('first-run guide', () => {
     // The seed user's model config counts as their key, so Continue comes on once it loads.
     await advance(user)
     await screen.findByRole('heading', { name: 'Bring in your coding harnesses' })
-    // Install, connect, then sign in (no SSO in this edition); nothing else.
+    // Install, then connect, which signs in itself; nothing else.
     const commands = screen.getAllByText(/^(curl|nasiko) /).map((c) => c.textContent)
     expect(commands).toEqual([
       'curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash',
       // This server, not the control plane built into the CLI's release (NAS-1464).
-      `nasiko connect ${window.location.origin} --login=false`,
-      'nasiko auth login',
+      `nasiko connect ${window.location.origin}`,
     ])
     expect(screen.queryByRole('button', { name: 'Skip guide' })).toBeNull()
     // More ways on than the harnesses.

@@ -777,7 +777,7 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     const bar = screen.getByRole('region', { name: p.bar })
     expect(bar).toHaveFocus()
     expect(screen.getByRole('heading', { level: 1, name: copy.title })).toBeInTheDocument()
-    expect(card('quiet-harnesses')).toHaveTextContent('nasiko auth login')
+    expect(card('quiet-harnesses')).toHaveTextContent(`nasiko connect ${window.location.origin}`)
     await userEvent.click(within(bar).getByRole('button', { name: p.jump('Month 1') }))
     expect(within(bar).getByRole('button', { name: p.jump('Month 1') })).toHaveAttribute(
       'aria-current',
@@ -853,9 +853,7 @@ describe('the coding harness preview, in place (2026-11-06)', () => {
     const bar = screen.getByRole('region', { name: p.bar })
     await user.click(within(bar).getByRole('button', { name: p.copyCommands }))
     expect(writeText).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `nasiko connect ${window.location.origin} --login=false\nnasiko auth login`,
-      ),
+      expect.stringContaining(`| bash\nnasiko connect ${window.location.origin}`),
     )
     act(() => {
       vi.advanceTimersByTime(2 * PREVIEW_HOLD_MS)

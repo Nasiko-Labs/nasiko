@@ -256,7 +256,7 @@ fn read_status(dir: &Path) -> Option<ImportStatus> {
 pub fn status_report(dir: &Path, fit: impl Fn(&str) -> String) -> Result<Vec<String>> {
     let running = import_running(dir)?;
     let status = read_status(dir);
-    let backlog = backlog::backlog_at(dir)?;
+    let backlog = backlog::backlog_at(dir, None)?;
     let rejected = rejected(&backlog);
     let mut lines = vec![import_line(running, status.as_ref())];
     match status.filter(|s| running && !s.finished) {

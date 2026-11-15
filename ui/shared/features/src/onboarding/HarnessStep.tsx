@@ -1,15 +1,15 @@
 /**
  * The guide's last step (user request 2026-11-05, in place of Spend less and Ready): the CLI commands that bring a
- * developer's coding harnesses into Coding harnesses: install, connect to this server and sign in (user review
- * 2026-11-05: the rest dropped). The installer is the CLI guide's own. The connect names this page's own origin, since a
- * fresh CLI otherwise signs in to the control plane built into its release (NAS-1464). The sign-in asks for SSO only
- * where this edition signs in through another method (the `loginMethods` slot).
+ * developer's coding harnesses into Coding harnesses: install, then connect to this server (user review 2026-11-05: the
+ * rest dropped). The installer is the CLI guide's own. The connect names this page's own origin, since a fresh CLI
+ * otherwise signs in to the control plane built into its release (NAS-1464). It is the last command (user request
+ * 2026-11-15): `nasiko connect` signs in itself, through SSO where the server has it, and then asks which coding agents
+ * to connect, offering to move any connected to another server.
  */
 import { Bot, MessageSquare, SquareTerminal } from 'lucide-react'
-import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { Button } from '@nasiko/ui/primitives/button'
-import { connectWithoutLogin } from '@nasiko/features/cli/commands'
+import { connectCommand } from '@nasiko/features/cli/commands'
 import { copy as cliCopy } from '@nasiko/features/cli/copy'
 import { copy as guideCopy } from './copy'
 import { StepHeading } from './parts'
@@ -29,13 +29,9 @@ export function HarnessStep({
   /** Out of the guide to one of these pages. */
   onOpen: (to: '/harnesses' | '/agents' | '/chat') => void
 }) {
-  const sso = !!useSlots().loginMethods
   const steps = [
     { label: copy.steps.install, command: cliCopy.install.unixCommand },
-    { label: copy.steps.connect, command: connectWithoutLogin() },
-    sso
-      ? { label: copy.steps.signInSso, command: 'nasiko auth login --sso' }
-      : { label: copy.steps.signIn, command: 'nasiko auth login' },
+    { label: copy.steps.connect, command: connectCommand() },
   ]
   return (
     <div className="flex flex-col gap-6">

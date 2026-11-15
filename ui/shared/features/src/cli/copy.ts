@@ -21,9 +21,7 @@ export const copy = {
   start: {
     title: 'Get started',
     install: 'Install the CLI',
-    connect: 'Connect to this cluster',
-    signIn: 'Sign in with your Nasiko account',
-    signInSso: 'Sign in with your company account',
+    connect: 'Connect to this cluster and sign in',
   },
   copyCommand: (what: string) => `Copy: ${what}`,
 }

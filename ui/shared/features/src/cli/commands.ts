@@ -26,7 +26,8 @@ export const serverUrl = (): string =>
     : 'https://<your-cluster>'
 
 /**
- * Registers this server with the CLI and makes it the active one, without signing in: `nasiko connect` signs in on its
- * own otherwise, and the guide's own sign-in step would then ask a second time.
+ * Registers this server with the CLI, makes it the active one and signs in to it (in the browser where the server has
+ * SSO, else with a password). Signed in, the CLI asks which of this computer's coding agents to connect, and offers to
+ * move any that report to another server. One command: no guide needs a sign-in step of its own.
  */
-export const connectWithoutLogin = (): string => `nasiko connect ${serverUrl()} --login=false`
+export const connectCommand = (): string => `nasiko connect ${serverUrl()}`
