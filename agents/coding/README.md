@@ -61,7 +61,7 @@ OPENAI_BASE_URL=https://...      # optional, OpenAI-compatible
 OPENAI_MODEL=gpt-4o-mini         # optional
 WORKSPACE_DIR=/path/to/project   # workspace root (default: current dir)
 SANDBOX_MODE=local               # default; 'remote' is Phase 2
-PORT=8000                        # default 8080
+PORT=8000                        # the default
 
 cargo run
 ```
@@ -86,4 +86,4 @@ curl -s localhost:8000/jsonrpc -d '{"jsonrpc":"2.0","id":"1","method":"message/s
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model id |
 | `WORKSPACE_DIR` | `.` | Workspace root the tools are confined to |
 | `SANDBOX_MODE` | `local` | `local` (host workspace) or `remote` (Phase 2) |
-| `PORT` | `8080` | HTTP listen port |
+| `PORT` | `8000` | HTTP listen port |

@@ -1,16 +1,22 @@
 # Routing Engine
 
-How the orchestrator picks the right agent for a user query.
+How the platform picks an agent for a task: the 3-stage routing engine, and how it relates to the
+chat orchestrator.
 
 ## Overview
 
-When a user sends a message to `POST /api/orchestrator/a2a` without specifying an `agent_id` (or
-with `agent_id = "orchestrator"`), the server runs a **3-stage semantic routing pipeline** to select
-the best agent. The pipeline progressively narrows a large agent catalog down to a single agent
-using embeddings, conversation context, and an LLM final decision.
+The **routing engine** (`RoutingEngine` / `OssRoutingEngine`, `orchestrator/src/engine.rs`) is a
+**3-stage semantic routing pipeline** that selects one agent for a piece of text. It progressively
+narrows a large agent catalog down to a single agent using embeddings, conversation context, and
+an LLM final decision.
+
+Today its caller is **MAF**: when a workflow is created or updated with a step that names no
+agent, the step's task description is routed through `RoutingEngine::route` to auto-assign one
+(`route_with_access_check` in `server/src/maf.rs`). The chat entry point does **not** use it --
+see [Chat path: the ReAct orchestrator](#chat-path-the-react-orchestrator) below.
 
 ```
-  User query
+  Task description (MAF step)
       |
       v
   Fetch accessible agents from DB
@@ -25,31 +31,41 @@ using embeddings, conversation context, and an LLM final decision.
   Stage 3: LLM Final Selection     (structured output, deterministic)
       |
       v
-  Selected agent --> proxy request --> stream response
+  Selected agent --> assigned to the step
 ```
 
-Every stage is **fail-safe**: if embeddings are unavailable, if history is empty, or if the LLM
-call errors, the pipeline degrades gracefully instead of failing the request.
+Infrastructure faults degrade gracefully: if embeddings are unavailable, if history is empty, or
+if the LLM call errors, the pipeline still returns an agent instead of failing. The one exception
+is an explicit refusal by the operator's `RoutingPolicy` (see
+[Routing policy](#routing-policy)), which is returned as an error with no fallback pick.
 
-## Request Entry Point
+## Chat path: the ReAct orchestrator
 
 **File:** `server/src/router/a2a_dispatch.rs`
 
-The dispatch handler inspects `metadata.agent_id` in the incoming JSON-RPC request:
+`POST /api/orchestrator/a2a` inspects `metadata.agent_id` in the incoming JSON-RPC request:
 
 | `agent_id` value | Behavior |
 |---|---|
-| absent or `"orchestrator"` | **Orchestrator path** -- runs the 3-stage pipeline |
-| any other value (name or UUID) | **Direct path** -- resolves the agent, checks ACL, proxies directly |
+| absent or `"orchestrator"` | **Orchestrator path** -- the ReAct orchestrator (`orchestrator_stream`) |
+| any other value (name or UUID) | **Direct path** -- resolves the agent, checks ACL, forwards directly |
 
-For the orchestrator path the handler:
+For the orchestrator path, `orchestrator_stream`:
 
-1. Fetches conversation history from the DB (last N messages, configurable via
-   `max_router_history_messages`, default 20).
-2. Enriches the current query with that history.
-3. Collects all running agents accessible to the caller.
-4. Passes candidates through the routing engine.
-5. Proxies the request to the selected agent and streams SSE events back.
+1. Fetches conversation history with `context_selection::fetch_for_user`, using the caller's
+   stored context strategy and budget level (`ContextTiers`; deployment values `PACMS_*` and
+   `CONTEXT_K_*` in `config/src/lib.rs`), and enriches the current query with it.
+2. Loads the routable agents (`AgentSelector::fetch_active_agents`: status `running` or `parked`,
+   not deleted, not internal) and keeps those the caller may access.
+3. Drops harness agents (a routed turn cannot drive their sessions) and any agents that share a
+   display name (a call could not tell them apart).
+4. Hands the remaining agents, each as an A2A tool, to a ReAct loop (`react-agent` crate, up to
+   10 turns, model `OPENAI_MODEL` or the LLM router's default). The model may call **several**
+   agents, call one repeatedly, or **answer directly** without calling any.
+5. Each agent call the model makes is resolved, woken if parked, and checked (ACL, flow guard)
+   by `CpCallGuard` before it is forwarded; the turn is streamed back as SSE.
+
+The 3-stage pipeline below is not involved on this path.
 
 ## Access Control (Pre-filter)
 
@@ -85,7 +101,8 @@ using embedding similarity.
    "{name} {description} {tags joined by space}"
    ```
 
-2. **Embed agents** via the configured embedding provider (default: OpenAI
+2. **Embed agents** via the platform LLM backend (the LLM router, so any configured provider
+   serves them), or directly against OpenAI when the user has saved their own key (default model
    `text-embedding-3-small`). Results are cached per agent in an in-memory `DashMap` with a
    content-hash check and a 15-minute TTL. Cache hits skip the API call entirely.
 
@@ -102,7 +119,7 @@ using embedding similarity.
 
 | Condition | Behavior |
 |---|---|
-| No `OPENAI_API_KEY` | Skip Stage 1; all agents advance |
+| No backend can embed with the configured model | Skip Stage 1; all agents advance |
 | Embedding API error | Skip Stage 1; all agents advance; warning logged |
 | Top score < 0.2 | All agents advance (weak signal) |
 
@@ -114,15 +131,17 @@ using embedding similarity.
 biases routing toward the agent that has been handling it.
 
 **When it runs:** Only when conversation history is non-empty. If there is no prior context the
-shortlist passes through unchanged.
+shortlist keeps its order but is still truncated to the top k (`ROUTER_SHORTLIST_SIZE`). MAF
+routes each step under a fresh session id, so on that path history is empty.
 
 ### How it works
 
 1. **Build context text:**
    ```
-   "{history summary}\n{current query}"
+   "{history summary} {current query}"
    ```
-   where `history summary` concatenates prior messages as `"{role}: {content}\n"`.
+   where `history summary` is the prior messages as `"{role}: {content}"` lines, joined to the
+   query by a space.
 
 2. **Embed** the context text using the same vector store (reuses Stage 1's cached agent
    embeddings).
@@ -135,8 +154,8 @@ shortlist passes through unchanged.
 
 | Condition | Behavior |
 |---|---|
-| Empty history | Stage skipped entirely |
-| Embedding error | Shortlist returned unchanged; warning logged |
+| Empty history | No embedding call; shortlist truncated to the top k in its existing order |
+| Embedding error | Shortlist truncated to the top k unchanged; warning logged |
 
 ## Stage 3: LLM Final Selection
 
@@ -154,10 +173,11 @@ Available agents:
   Skills: skill1: desc1; skill2: desc2
   Tags: tag1, tag2
 
-Select the most specialized agent. If no perfect match, choose closest option.
+Select the most specialized agent. If no perfect match, choose the closest option.
 ```
 
-Each candidate is presented with its name, UUID, description, skills, and tags.
+Each candidate is presented with its name, UUID, description, skills, and tags. A `RoutingPolicy`
+may add a prefix to the first line and replace the closing instruction.
 
 ### User prompt
 
@@ -180,9 +200,9 @@ Current query: <the query>
 ### LLM call
 
 ```
-model:              ROUTER_MODEL (default "gpt-4o")
+model:              ROUTER_MODEL (else DEFAULT_MODEL, else the LLM router's provider default)
 temperature:        0.0       (deterministic)
-max_tokens:         500
+max_tokens:         2048
 response_format:    json_schema (strict)
 ```
 
@@ -198,8 +218,11 @@ The structured output schema:
 
 ### Validation
 
+- If a `RoutingPolicy` is in force, it judges the raw selection **first**; a selection it refuses
+  is returned as `RouterError::PolicyRefused` with no fallback pick (see
+  [Routing policy](#routing-policy)).
 - If the returned `agent_id` is not in the candidate list (hallucination), the first candidate is
-  used and the reasoning is updated to explain the fallback.
+  used, the reasoning is updated to explain the fallback, and `fallback_used` is set to `true`.
 - If the LLM call itself fails, the first candidate is used and `fallback_used` is set to `true`.
 
 ### Fallbacks
@@ -207,8 +230,19 @@ The structured output schema:
 | Condition | Behavior |
 |---|---|
 | LLM call error | First candidate selected; `fallback_used = true` |
-| Hallucinated agent_id | First candidate selected; reasoning updated |
+| Hallucinated agent_id | First candidate selected; reasoning updated; `fallback_used = true` |
+| Refused by the `RoutingPolicy` | `RouterError::PolicyRefused`; no agent selected |
 | No candidates at all | `RouterError::NoAgentsAvailable` |
+
+### Routing policy
+
+`RoutingEngine::route` takes an optional `RoutingPolicy` (`orchestrator/src/policy.rs`). With
+none (the open-source default) the selector behaves as above. A policy can add fields to the
+structured-output schema, reword the prompt, and reject a selection; a rejection is a decision,
+not a fault, so it propagates as `RouterError::PolicyRefused { reason }` instead of falling back
+to the first candidate. It is still logged to `router_request_log` (`success = false`) and its
+token usage is still recorded. MAF surfaces the refusal to the caller rather than assigning the
+step from its catalog fallback.
 
 ## Agent Card Summary
 
@@ -219,7 +253,7 @@ AgentCardSummary {
     id:          Uuid,
     name:        String,
     description: String,
-    skills:      Vec<{ name, description }>,
+    skills:      Vec<{ name, description, examples }>,
     tags:        Vec<String>,
 }
 ```
@@ -255,8 +289,9 @@ Every routing decision is logged asynchronously (never blocks the response path)
 | `selection_llm_ms` | Time for Stage 3 LLM call |
 | `total_latency_ms` | End-to-end routing latency |
 
-Stage 3 token usage is also written to the `token_usage` table (operation type
-`router_selection`).
+Stage 3 token usage is recorded in the `trace_usage` table (operation type
+`router_selection`): by the LLM router when the call goes through the platform backend, or by
+the engine itself when it calls a provider directly with the user's saved key.
 
 ## Observability
 
@@ -272,15 +307,18 @@ All values are set via environment variables and read through the `Config` struc
 
 | Env Var | Default | Description |
 |---|---|---|
-| `ROUTER_MODEL` | `gpt-4o` | LLM model for Stage 3 selection |
+| `ROUTER_MODEL` | `DEFAULT_MODEL`, else empty | LLM model for Stage 3 selection; empty lets the LLM router use its provider's default model |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | Embedding model for Stages 1-2 |
 | `ROUTER_SHORTLIST_THRESHOLD` | `15` | Skip Stage 1 if fewer agents than this |
 | `ROUTER_SHORTLIST_SIZE` | `10` | Top-k returned from Stage 1 |
 | `AGENT_CALL_TIMEOUT_SECS` | `600` | Budget for one agent hop — the A2A proxy, the orchestrator's streaming and non-streaming agent calls, and the MAF executor's. Accepts the former name `ROUTER_AGENT_TIMEOUT_SECS` as a fallback |
-| `OPENAI_API_KEY` | -- | Required for embeddings and LLM selection |
-| `OPENAI_BASE_URL` | OpenAI default | Base URL for embedding/LLM calls |
+| `OPENAI_API_KEY` | -- | Optional. Embeddings and selection go through the platform LLM backend (the LLM router, any configured provider); this is one provider credential it can use |
+| `OPENAI_BASE_URL` | OpenAI default | Base URL for direct calls made with a user's saved OpenAI key |
 
-Session history depth is controlled by `max_router_history_messages` in the config (default 20).
+How much conversation history is read is not a fixed message count: `context_selection::fetch_for_user`
+selects it per the caller's stored context strategy and budget level (`ContextTiers`), whose
+deployment values are `PACMS_BUDGET_LOW/MEDIUM/HIGH`, `CONTEXT_K_LOW/MEDIUM/HIGH`,
+`PACMS_HISTORY_POOL_SIZE` and `PACMS_HISTORY_MANDATORY_RECENT`.
 
 ## EE Additions
 
@@ -289,18 +327,25 @@ The enterprise edition can supply its own `RoutingEngine` implementation that wr
 
 ## Direct Agent Path (Bypass Routing)
 
-When `agent_id` is specified in request metadata, routing is skipped entirely:
+When `agent_id` is specified in request metadata, the orchestrator is skipped entirely:
 
 1. **Resolve** the agent by UUID or name from the DB.
 2. **ACL check** -- returns 404 (not 403) if the caller cannot access the agent, to prevent
    enumeration.
-3. **Proxy** the A2A JSON-RPC request directly to the agent's container endpoint.
-4. **Stream** the SSE response back to the client.
+3. **Session ownership** -- a `contextId` (or `metadata.session_id`) that belongs to another
+   user is refused (403); superusers keep access.
+4. **Code-driving agents** -- a harness agent is diverted to a harness session turn, and an ACP
+   coding agent to a coding turn; neither has an HTTP endpoint to forward to.
+5. **Wake** -- a parked agent is woken first (`AgentWake`); if it cannot be woken the request
+   gets 503.
+6. **Forward** the A2A JSON-RPC request to the agent's endpoint and **stream** the SSE response
+   back to the client.
 
 ## Multi-Agent Flow (MAF) -- Alternative Orchestration
 
 MAF is a separate orchestration mode (`orchestrator/src/maf/`) for pre-planned multi-step
-workflows. Unlike the routing engine which selects **one** agent per query, MAF executes a
+workflows, and the routing engine's caller (to auto-assign a step that names no agent). Unlike
+the routing engine, which selects **one** agent per query, MAF executes a
 **sequence** of steps, each assigned to a specific agent:
 
 1. **Plan** -- LLM generates a step-by-step plan with agent assignments.

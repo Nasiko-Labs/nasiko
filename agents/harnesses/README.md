@@ -2,7 +2,7 @@
 
 Coding-agent harnesses (OpenCode, Claude Code, Codex) speak ACP: newline-delimited JSON-RPC over
 stdio. Sandboxes are reached only over the network, so each image runs `harness-shim`
-(`oss/harness-shim`), which starts the harness's ACP command and exposes its stdio as a WebSocket.
+(`harness-shim/`), which starts the harness's ACP command and exposes its stdio as a WebSocket.
 
 ## Contract
 
@@ -78,7 +78,7 @@ On SIGTERM or SIGINT it stops every session the same way before exiting.
 
 No model, provider, endpoint or permission setting is baked in. The server renders those per
 session from the user's default LLM config and the HITL toggle (the *harness profile*,
-`oss/server/src/sessions/profile.rs`): `OPENCODE_CONFIG_CONTENT` for OpenCode, `CODEX_HOME` plus
+`server/src/sessions/profile.rs`): `OPENCODE_CONFIG_CONTENT` for OpenCode, `CODEX_HOME` plus
 a written `config.toml` for Codex, `ANTHROPIC_MODEL` for Claude Code. The images only pin the
 harness and turn off what an immutable, egress-restricted sandbox cannot do (self-update, catalog
 fetches).

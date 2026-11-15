@@ -567,6 +567,10 @@ Test the full deploy flow locally before pushing to production:
     # Deploy (CD job or manual gate)
     nasiko deploy my-agent:latest
 
+`nasiko auth login` has no non-interactive form yet: it reads the password from a terminal
+(`--password` only skips SSO, it does not take a value). In CI, sign in once on a machine with a
+terminal and make that session available to the job, or run the job with a TTY.
+
 ---
 
 ## Command Reference

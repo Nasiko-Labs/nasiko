@@ -140,11 +140,23 @@ Every arrow is A2A. No proprietary SDKs. No volume mounts.
 
 ```
 PORT=8000                                   # port the agent must bind to
-A2A_DISCOVERY_URL=http://10.0.0.1:8000/a2a/v1  # agent discovery registry endpoint
-OPENAI_API_KEY=...                          # OPENAI_* LLM credentials/config
+NASIKO_STATE_URL=.../api/agent-state        # agent state API (task snapshots, key-value)
+NASIKO_AGENT_TOKEN=...                      # the agent's state-scoped credential for that API
+MCP_GATEWAY_URL=...                         # MCP gateway (when MCP_GATEWAY_PUBLIC_URL is set)
+MCP_GATEWAY_TOKEN=ngt_...                   # the agent's gateway credential
+MCP_GATEWAY_CONNECT_URL=.../api/mcp/s/...   # the same credential as a URL, for URL-only clients
+OPENAI_BASE_URL / ANTHROPIC_BASE_URL / GOOGLE_GEMINI_BASE_URL   # LLM router, when configured
+OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY / GOOGLE_API_KEY  # agent identity JWT for the router
+OPENAI_MODEL=...                            # default model
 OTEL_EXPORTER_OTLP_ENDPOINT=...             # observability export target
 ```
 
-Platform services (like a future Storage Agent) would be reached through the agent
-proxy at `/api/agents/{id}` after discovery via `A2A_DISCOVERY_URL` — no dedicated
-storage env var is injected.
+The deploy-time set is assembled in `server/src/agents/deploy_env.rs` (state API),
+`mcp-gateway/src/injector.rs` (gateway) and `llm-router/src/inject.rs` (LLM router). Without
+the LLM router configured, the platform's own `OPENAI_API_KEY` is passed through instead
+unless `AGENT_PLATFORM_KEY_FALLBACK=false`. Seeded platform agents also get
+`A2A_DISCOVERY_URL` (`server/src/seed.rs`).
+
+Durable agent state goes through the state API (`NASIKO_STATE_URL`), not a volume. Other
+platform services (like a future Storage Agent) would be reached through the agent proxy at
+`/api/agents/{id}`.

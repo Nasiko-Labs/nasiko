@@ -73,7 +73,7 @@ is meaningful.
 
 The router **discards** any LLM call it cannot attribute, rather than serving it with
 degraded billing. Rationale: unattributed usage is not just a FinOps gap — flow token
-budgets (`FLOW_MAX_TOKENS`) and per-user accounting key off the flow, so an agent that
+budgets (`NASIKO_FLOW_MAX_TOKENS`) and per-user accounting key off the flow, so an agent that
 drops its traceparent would burn tokens outside every cascade limit. The MCP gateway
 applies the same rule to `tools/call` for the same reason: user identity resolved from
 the flow record is what permissions and budgets are computed from.

@@ -2,7 +2,7 @@
 #
 # BuildKit reads `<dockerfile>.dockerignore` in preference to the root
 # `.dockerignore`, which is what this file is for. The root one has to
-# re-include specific paths under `target/` for the enterprise images, which
+# re-include specific paths under `target/` for other images, which
 # copy prebuilt binaries from there — and those negations make Docker walk the
 # whole of `target/`. On a developer machine that is a ~100 GB directory, and
 # the context transfer alone runs for minutes before anything compiles.

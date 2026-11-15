@@ -96,8 +96,9 @@ A variable the session's profile sets keeps the profile's value. An `env`-mode s
 the scratch area existed keeps the env it was created with, and so its caches in `HOME`, until it is
 created again.
 
-How long the scratch area lasts depends on the provider. On Docker it is a volume of the sandbox's
-own: a suspend keeps it, a release removes it, and Docker does not cap its size. A provider that
+How long the scratch area lasts depends on the provider (Docker is the only one this edition ships; the
+pod, shared-runtime and harness-agent providers below come with other distributions). On Docker it
+is a volume of the sandbox's own: a suspend keeps it, a release removes it, and Docker does not cap its size. A provider that
 deletes the sandbox's pod on suspend loses it on every suspend. On a shared runtime pod it lasts while
 the pod runs: a suspend keeps it, and a release removes the session's directory. On a user's own
 harness agent it lasts while the agent's pod runs, which is until the agent is parked. Providers that run
@@ -193,14 +194,16 @@ failure.
 | Route | Purpose | Success | Errors |
 |-------|---------|---------|--------|
 | `GET /api/harnesses` | Enabled harnesses | `200` | |
-| `POST /api/sessions` | Create a session `{harness, repo?}` | `201` | `400` `invalid_repo`, `400` `unknown_harness`, `503` `harness_not_ready`, `500` |
+| `POST /api/sessions` | Create a session `{harness, repo?}` | `201` | `401` `unauthorized`, `400` `invalid_repo`, `400` `unknown_harness`, `403` `harness_sessions_disabled`, `503` `harness_not_ready`, `500` |
 | `GET /api/sessions` | List your sessions, newest activity first. Query: `harness`, `state`, `limit` (1-200, default 50), `cursor`; a superuser may add `user_id` | `200`, a cursor-paged list of the object below | `400` `invalid_parameter`, `403` `forbidden` (`user_id` of someone else), `500` |
 | `GET /api/sessions/{id}` | Read your session | `200` | `404` `session_not_found` |
 | `DELETE /api/sessions/{id}` | Release the sandbox, revoke its token, remove the session (owner or superuser) | `204` | `404` `session_not_found`, `409` `session_busy`, `500` |
 | `POST /api/sessions/{id}/suspend` | Suspend its sandbox | `204`, or `202` while another suspend is finishing | `404`, `409` `session_busy`, `502` `sandbox_error`, `500` |
 
 Creating a session, and starting each turn on one, first asks the server's session admission
-(`SessionAdmission`, `oss/server/src/sessions/admission.rs`), before anything is written for either.
+(`SessionAdmission`, `server/src/sessions/admission.rs`), before anything is written for either.
+`POST /api/sessions` checks the `repo` first, then the harness, and only then refuses with `403`
+`harness_sessions_disabled` while `HARNESS_SESSIONS_ENABLED` is off, whatever the admission says.
 The open-source build admits every session; a distribution whose sessions can add an agent (one per
 user and harness) installs its own. Its refusal (for instance a `402` at an agent limit) answers
 `POST /api/sessions` as it stands, and a turn as a JSON-RPC error under the request's `id`: code
@@ -339,7 +342,7 @@ open, since the process that asked them is gone.
 | `CODING_AGENT_TURN_LEASE_SECS` | `60` | How long a turn's lock on a session lasts without renewal. Bounds how long a crashed turn blocks the next one. |
 | `CODING_AGENT_LEASE_HEARTBEAT_SECS` | `20` | How often a running turn renews its lease. |
 | `AGENT_CALL_TIMEOUT_SECS` | `600` | Per-turn deadline. Also caps how long a turn waits for a human approval. |
-| `SANDBOX_PROVIDER` | `docker` | Where sandboxes run. Docker is the only provider in this edition; other providers are selected by the deployment. An unknown value fails startup. |
+| `SANDBOX_PROVIDER` | `docker` | Where sandboxes run. Docker is the only provider in this edition: `pod`, `shared-pod` and `harness-agent` are accepted but leave this edition with an unavailable provider that refuses every sandbox operation, so no turn can run; those providers come with other distributions. An unknown value fails startup. |
 | `HARNESS_SHIM_MODE` | `env` | Read by the shim inside the sandbox, not by the server: `env` or `handshake` (section 8). Set by the provider on the sandbox, not by an operator. |
 | `HARNESS_SHIM_LISTEN` | `0.0.0.0:7000` | Read by the shim: the address it serves on. The `--listen` flag wins. |
 | `HARNESS_WORKSPACE` | `/workspace` | Read by the shim: the session's working directory and clone target. Must be absolute. The `--workspace` flag wins. |
@@ -430,7 +433,8 @@ In handshake mode the configuration is held in memory only, so a resumed shim, a
 configured again. If the harness process exits, a handshake shim keeps serving
 (`child` reads `exited`) and starts it again on the next configure or restart.
 
-On a shared-runtime provider many shims share one pod under a pod-level supervisor
+The shared-runtime and per-user harness-agent providers described here are not part of this
+edition; they come with other distributions. On a shared-runtime provider many shims share one pod under a pod-level supervisor
 (`harness-supervisor`). Each session gets its own directory, which its shim serves as its workspace
 (`--workspace` / `HARNESS_WORKSPACE`), and the server runs the ACP session there. When the pod has a
 scratch area (`HARNESS_SCRATCH_ROOT`), each session also gets its own scratch directory in it,

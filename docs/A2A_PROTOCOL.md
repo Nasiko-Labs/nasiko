@@ -43,7 +43,7 @@ A2A is a protocol for communication between opaque agentic applications. Unlike 
 | Communication | Messages + Tasks | Function calls + Results |
 | Discovery | Agent Cards | Tool manifests |
 
-In Nasiko, agents expose A2A endpoints. The orchestrator calls agents via A2A `SendMessage`/`SendStreamingMessage`. The server — the sole ingress — hosts the agent proxy and enforces flow safety (cycle detection, depth limits, token budgets); there is no separate gateway.
+In Nasiko, agents expose A2A endpoints. The orchestrator calls agents via A2A `message/send`/`message/stream`, falling back to `SendMessage`/`SendStreamingMessage` (see [Nasiko Usage](#nasiko-usage)). The server — the sole ingress — hosts the agent proxy and enforces flow safety (cycle detection, depth limits, token budgets); there is no separate gateway.
 
 ---
 
@@ -140,6 +140,17 @@ Nasiko primarily uses:
 - **`SendStreamingMessage`** — orchestrator → agent (via `A2aClient.send_message_streaming()`)
 - **`SendMessage`** — CLI direct chat, non-streaming fallback
 - **Agent card discovery** — on deploy/seed, fetched from `/.well-known/agent-card.json`
+
+**Method names on the wire.** `A2aClient` (`react-agent/src/a2a.rs`) first sends the 0.3 JSON-RPC
+names, `message/stream` / `message/send` (role `user`, typed `{"kind":"text"}` parts). If the
+agent answers `-32601` (method not found), it retries once with the 1.0 names,
+`SendStreamingMessage` / `SendMessage` (role `ROLE_USER`, untyped parts). An agent may implement
+either set.
+
+**Harness agents.** A harness agent (a coding-harness session behind `/api/agents/{id}`) has no A2A
+server of its own, so the platform answers `tasks/get`, `tasks/cancel` and `tasks/resubscribe` for
+it from the session row (`server/src/sessions/tasks.rs`). A task is a turn; only the live turn and
+the session's most recent finished turn are known, and any other id is `TaskNotFound` (`-32001`).
 
 `GetTask`, `ListTasks`, `CancelTask` are supported by the `a2a-server` framework (via `InMemoryTaskStore`) but not actively called by the orchestrator — it always streams.
 
@@ -410,7 +421,7 @@ Every A2A agent publishes an **Agent Card** at a well-known URL. This is how cli
   "version": "1.0.0",
   "provider": {
     "organization": "Nasiko",
-    "url": "https://app.nasiko.com"
+    "url": "https://nasiko.dev"
   },
   "supportedInterfaces": [
     {
@@ -667,11 +678,22 @@ Nasiko does NOT use A2A-level security schemes. Instead:
 4. **Flow safety** — Redis-backed `FlowGuard` prevents:
    - Cycle detection (agent A → B → A)
    - Max depth (default 5 levels)
-   - Max fan-out (default 20 concurrent calls)
+   - Max fan-out (default 20, the total number of agent invocations in one flow, not concurrent calls)
    - Token budget exhaustion
    - Flow timeout
 
+   A request the agent proxy (`/api/agents/{id}`) refuses on a flow-guard check is answered with
+   HTTP `508 Loop Detected`.
+
 5. **Trace propagation** — W3C `traceparent` header on every agent-to-agent call
+6. **Agent callers** — `/api/agents/{id}` also accepts an agent's own per-agent gateway credential
+   (an `ngt_`-prefixed bearer, the agent's `MCP_GATEWAY_TOKEN`) in place of a user session
+   (`server/src/auth/agent_caller.rs`). The credential says *which agent* is calling; *which user*
+   it acts for is never taken from the request: it is the user of the live flow the `traceparent`
+   names, and that flow must list the agent as a participant (no `traceparent`, or a flow the
+   agent is not part of, is a 403). Calls to peers are rate-limited per
+   calling agent: `AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE` (default 300), `429` with `Retry-After`
+   above it. The `agent_acl` allowlist then applies to the caller/target pair.
 
 ---
 
@@ -713,9 +735,13 @@ User (CLI/UI)
     │  POST /api/agents/{id}         (or ANY /api/agents/{id}/{*rest})
     ▼
 Server
-    │  • Auth + flow guard
-    │  • Resolves agent endpoint (runtime.endpoint)
-    │  • Proxies request with trust headers to the agent's root path `/`
+    │  • Auth (user session or agent credential) + ACL + flow guard
+    │  • Harness / ACP coding agent → diverted to a session (coding) turn, no HTTP forward
+    │  • Parked agent → woken first (503 if it cannot be; 503 + Retry-After if it
+    │    parks again mid-request)
+    │  • Resolves the endpoint by agent kind (server/src/agent_resolver.rs)
+    │  • Proxies with trust headers; a bare /api/agents/{id} goes to the card's
+    │    transport_path (e.g. /a2a), root when none; sub-paths are forwarded as is
     ▼
 Agent Container
     │  • Same A2A handling as above
@@ -731,8 +757,11 @@ Response (SSE or JSON piped back through the server)
 | `react-agent/src/a2a.rs` | `A2aClient` — sends A2A requests to agents |
 | `react-agent/src/tool.rs` | `A2aTool` — wraps A2A call as LLM tool |
 | `react-agent/src/registry.rs` | `AgentRegistry` — discovers agents via cards |
-| `server/src/router/a2a_dispatch.rs` | Dispatches `/api/orchestrator/a2a` by `agent_id` (routing engine or direct proxy) |
+| `server/src/router/a2a_dispatch.rs` | Dispatches `/api/orchestrator/a2a` by `agent_id`: the ReAct orchestrator (no `agent_id`, or `"orchestrator"`) or the direct path to one agent |
 | `server/src/agent_proxy.rs` | Proxies A2A to individual agents |
+| `server/src/agent_resolver.rs` | Resolves an agent to where a call goes, by its kind (own workload or harness session) |
+| `server/src/auth/agent_caller.rs` | Agent-to-peer authentication and rate limit on `/api/agents/{id}` |
+| `server/src/sessions/tasks.rs` | `tasks/get`, `tasks/cancel`, `tasks/resubscribe` for harness agents |
 | `flow/src/guard.rs` | Flow safety (cycles, depth, budget) |
 | `agents/` | Example agent implementations (a mix of Rust and Python) |
 

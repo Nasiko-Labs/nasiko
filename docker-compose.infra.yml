@@ -5,15 +5,13 @@
 # Logs:   just logs -f
 #
 # Not managed here: `nasiko-mcp-servers-net`, the isolated Docker network
-# uploaded MCP server containers deploy onto (docs/MCP_UPLOAD_PLAN_OSS.md
-# §4.3). It has no service to attach to in this file — the control-plane
-# server always runs natively (`cargo run`, not `docker compose up server`)
-# in every setup this repo supports today, so there is no "server" service to
-# join it to. The server creates the network itself, idempotently, at
-# startup (`DockerRuntime::ensure_network`, oss/server/src/runtime.rs) using
-# the Docker API directly. A dead top-level `networks:` entry here (unattached
-# to any service) would be silently dropped by `docker compose config` and
-# give no real visibility, so it's intentionally not declared in this file.
+# uploaded MCP server containers deploy onto. This file runs only the backing
+# services for a natively run server (`just dev`), so no service here joins it.
+# The server creates the network itself, idempotently, at startup
+# (`DockerRuntime::ensure_network`, server/src/runtime.rs) using the Docker API
+# directly. A dead top-level `networks:` entry here (unattached to any service)
+# would be silently dropped by `docker compose config` and give no real
+# visibility, so it's intentionally not declared in this file.
 
 services:
   postgres:

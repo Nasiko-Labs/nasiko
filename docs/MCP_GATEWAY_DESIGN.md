@@ -88,13 +88,13 @@ A single naming rule governs every table, field, and conversation about this sys
 | **MCP server** | A self-hosted or third-party server speaking MCP directly | A Composio integration |
 | **Connector** | The neutral umbrella term used only where a table or concept must represent *either* kind | A synonym for "toolkit" |
 
-Every table or API response that uses "connector" always carries an explicit `provider_type` discriminator (`composio` or `mcp_server`) — the ambiguity lives in one column value, never in a name.
+Every table or API response that uses "connector" always carries an explicit `provider_type` discriminator (`composio`, `mcp_server`, or `system` — a platform-owned backend the control plane serves itself on loopback, never registered by a user) — the ambiguity lives in one column value, never in a name.
 
 **Other core concepts:**
 
 - **Connector** — one row in the registry representing either a Composio integration or a custom MCP server.
 - **Ownership** — Composio connectors have no owner (always globally available; every user connects their own account to it). Custom MCP server connectors always have an owner — even one registered by a platform admin — and are private until explicitly shared.
-- **Grant** — a record that an owner has shared their connector with a specific user (by username) or with everyone on the platform.
+- **Grant** — a record that an owner has shared their connector with a specific user (by username), a specific agent, or everyone on the platform.
 - **Connection** — one person's own credential/session state for a connector. Never shared, even when the connector itself is.
 - **Permission** — for a given (caller, agent, connector) triple: whether the connector is enabled for that agent at all, and whether any individual tool within it is allowed, blocked, or requires approval.
 - **Agent gateway token** — the per-agent credential minted at deploy time and injected into the container env (`MCP_GATEWAY_TOKEN`); the agent presents it as a `Bearer` header on every gateway call to prove *which agent* is calling. It never names a user. MCP clients that can only be handed a URL (no header hook) can instead use the pre-composed `MCP_GATEWAY_CONNECT_URL`, which carries the same credential in the path at `POST /api/mcp/s/{token}` and is subject to identical checks — the header form is preferred where the client supports it.
@@ -220,8 +220,11 @@ server/                              ← the single control-plane binary — eve
         │                           values into the mcp-gateway crate
         └── handlers/
             ├── mod.rs              shared ApiError, identity helpers
-            ├── gateway.rs          POST /api/mcp — bearer-token + flow-participant auth,
-            │                       JSON-RPC entry point (the only route not behind require_auth)
+            ├── gateway.rs          POST /api/mcp and POST /api/mcp/s/{token} — bearer-token +
+            │                       flow-participant auth, JSON-RPC entry point (not behind
+            │                       require_auth; nor are the signed-state/HMAC public routes:
+            │                       /api/mcp/oauth/callback, /api/mcp/webhooks/composio,
+            │                       and the root /oauth/callback)
             ├── catalog.rs          catalog + auth-config management routes
             ├── connectors.rs       MCP connector management routes
             ├── sharing.rs          connector share/list/revoke routes
@@ -275,7 +278,7 @@ sequenceDiagram
     M-->>A: Result, filtered by user grants ∩ agent connector access
 ```
 
-**Why this is safe:** both designs' trust root is the server asserting the (user, agent) pair at dispatch time — this one carries the assertion in server-side state only the control plane can write, instead of a bearer JWT. A leaked traceparent is useless without the agent credential; a leaked agent credential only opens `tools/list` on the agent's own grants plus `tools/call` for flows actively routed through that agent — and it is instantly revocable (tombstone the token row, or complete the flow).
+**Why this is safe:** both designs' trust root is the server asserting the (user, agent) pair at dispatch time — this one carries the assertion in server-side state only the control plane can write, instead of a bearer JWT. A leaked traceparent is useless without the agent credential; a leaked agent credential only opens `tools/list` on the agent's own grants plus `tools/call` for flows actively routed through that agent — and it is instantly revocable (`DELETE /api/agents/{id}/mcp-token`, or complete the flow). A redeploy also rotates it, but the superseded credential keeps working for a 15-minute grace window (`ROTATION_GRACE_SECS`) so a rollout does not 401 the still-serving old container — use the revoke endpoint when containment matters.
 
 ### 7.3 Encryption at rest
 
@@ -287,6 +290,8 @@ A user can register a custom MCP server at an arbitrary URL. Two protections app
 
 1. **Registration-time validation** — the URL is resolved and checked against private, loopback, link-local, and metadata-endpoint address ranges before the server is ever saved.
 2. **Connect-time pinning** — the actual outbound HTTP client used for custom-server traffic resolves DNS itself and rejects any address that fails the same check *at the moment of connection*, not just at registration. This closes the DNS-rebinding gap where a hostname could legitimately resolve to a public address at registration time and a private one later.
+
+Two kinds of connector are exempt and use an unguarded client, because their addresses never come from a user and are necessarily internal: an **uploaded MCP server** the platform built and deployed itself (its address comes from the container runtime), and a **`system` connector** the control plane serves on loopback. The exemption (`trusted`) is computed in one place from the connector's `source_kind`/`provider_type` columns and is never accepted as input (`mcp-gateway/src/net.rs`).
 
 ### 7.5 Least-privilege default
 
@@ -328,7 +333,7 @@ One row per Composio integration or custom MCP server. `provider_type` says whic
 ```sql
 CREATE TABLE mcp_connectors (
     id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    provider_type               TEXT NOT NULL CHECK (provider_type IN ('composio', 'mcp_server')),
+    provider_type               TEXT NOT NULL CHECK (provider_type IN ('composio', 'mcp_server', 'system')),
     owner_id                    UUID REFERENCES users(id) ON DELETE RESTRICT,
     name                        TEXT NOT NULL,           -- display label only, NOT the tool-routing key
     display_name                TEXT,
@@ -361,6 +366,8 @@ CREATE TABLE mcp_connectors (
     CONSTRAINT chk_provider_fields CHECK (
         (provider_type = 'composio'  AND auth_config_id IS NOT NULL AND url IS NULL) OR
         (provider_type = 'mcp_server' AND url IS NOT NULL AND auth_config_id IS NULL)
+        -- later migrations add arms for uploaded builds (url set once running) and
+        -- provider_type = 'system' (url set, no per-user auth)
     )
 );
 
@@ -381,8 +388,8 @@ Mirrors the platform's existing agent-sharing pattern (`agent_grants`) rather th
 CREATE TABLE mcp_connector_grants (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     connector_id  UUID NOT NULL REFERENCES mcp_connectors(id) ON DELETE CASCADE,
-    grant_type    TEXT NOT NULL CHECK (grant_type IN ('user', 'public')),
-    grantee_id    TEXT NOT NULL,             -- a user id as text, or '*' meaning everyone
+    grant_type    TEXT NOT NULL CHECK (grant_type IN ('user', 'public', 'agent')),
+    grantee_id    TEXT NOT NULL,             -- a user or agent id as text, or '*' meaning everyone
     granted_by    UUID NOT NULL REFERENCES users(id),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
 
@@ -784,16 +791,25 @@ No new authentication scheme is introduced for management routes — they reuse 
 
 ## 16. Configuration Reference
 
-| Setting | Purpose | Default behavior when unset |
+All settings are environment variables read by the single `Config` struct (`config/src/lib.rs`).
+
+| Env var | Purpose | Default when unset |
 |---|---|---|
-| Composio API key | Enables Composio integration | Composio features cleanly disabled, custom MCP servers unaffected |
-| Composio base URL | Composio API endpoint | Sensible default pointing at Composio's production API |
-| Composio webhook secret | HMAC verification for the expiry webhook | Webhook processing disabled if unset |
-| Gateway public URL | Injected into every agent as `MCP_GATEWAY_URL` | Agents deployed without it cannot reach the gateway until redeployed |
-| Agent gateway token | Minted per agent at deploy, injected as `MCP_GATEWAY_TOKEN` (rotates on every redeploy) | Always minted — no configuration; a restart re-mints it |
-| Session cache TTL | How long a resolved connector/session set is cached | Short, tuned for responsiveness over cache-hit rate |
-| Permission cache TTL | How long a permission context is cached before re-checking | Short — any write-path event invalidates it immediately regardless |
-| Manifest cache TTL | How long a merged tool list is cached | Moderate — bounded by the permission/connector hash changing anyway |
+| `COMPOSIO_API_KEY` | Enables Composio integration. A key saved by a superuser through `PUT /api/settings/composio` overrides it (clearing that key falls back to this one) | Composio features cleanly disabled, custom MCP servers unaffected |
+| `COMPOSIO_BASE_URL` | Composio API endpoint | `https://backend.composio.dev` |
+| `COMPOSIO_WEBHOOK_SECRET` | HMAC verification for the expiry webhook | Webhook processing disabled |
+| `MCP_GATEWAY_PUBLIC_URL` | Injected into every agent as `MCP_GATEWAY_URL` | No MCP env is injected at deploy; agents deployed without it cannot reach the gateway until redeployed |
+| `MCP_SESSION_TTL_SECONDS` | How long a resolved connector/session set is cached | `300` |
+| `MCP_PERM_CACHE_TTL_SECONDS` | How long a permission context is cached before re-checking (any write-path event invalidates it immediately regardless) | `30` |
+| `MCP_MANIFEST_TTL_SECONDS` | How long a merged tool list is cached | `300` |
+| `MCP_UPLOAD_MAX_BYTES` | Largest zip accepted by `POST /api/mcp/connectors/upload` | `52428800` (50 MiB) |
+| `MCP_GATEWAY_MAX_BODY_BYTES` | Body limit on `POST /api/mcp` and `POST /api/mcp/s/{token}` | `8388608` (8 MiB) |
+| `MCP_TOOL_SEARCH_MODE` | Query-aware `tools/list`: `semantic`, `keyword` (BM25), or `none` (no search) | `semantic` |
+| `MCP_TOOL_SEARCH_TOOL_LIMIT` | Max tools a query-aware `tools/list` returns | `15` |
+| `MCP_TOOL_SEARCH_META_LIMIT` | Max tools the `nasiko_search_tools` meta-tool returns | `10` |
+| `MCP_IDENTITY_SIGNING_KEY` | HMAC key for the identity header the gateway forwards to `system` backends | Derived from `JWT_SECRET` (domain-separated) |
+
+The agent gateway token is not configured: it is minted per agent at deploy and injected as `MCP_GATEWAY_TOKEN` (rotating on every redeploy, with a 15-minute grace for the superseded one).
 
 A CLI-bound coding-agent row, which is never deployed, gets the agent gateway token above minted
 on demand instead — minted by its owner via `POST /api/agents/{id}/mcp-token`, revoked by the
@@ -803,11 +819,12 @@ owner or a superuser via `DELETE`.
 
 ## 17. API Surface
 
-**Agent-facing (bearer gateway token + flow-bound user identity, one endpoint):**
+**Agent-facing (gateway token + flow-bound user identity):**
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| POST | `/api/mcp` | The single MCP JSON-RPC entry point — `initialize`, `ping`, `tools/list`, `tools/call` |
+| POST | `/api/mcp` | The MCP JSON-RPC entry point — `initialize`, `ping`, `tools/list`, `tools/call`; credential as a `Bearer` header |
+| POST | `/api/mcp/s/{token}` | Same entry point with the credential in the path (`MCP_GATEWAY_CONNECT_URL`), for clients that accept only a URL; identical checks |
 
 **Management surface (session-JWT identity, access-controlled):**
 
@@ -819,10 +836,26 @@ owner or a superuser via `DELETE`.
 | POST | `/api/mcp/connect` | Unified connect — handles every auth type transparently |
 | GET | `/api/mcp/connections` | List the caller's own connections |
 | DELETE | `/api/mcp/connections/{connector_id}` | Disconnect / revoke |
+| GET | `/api/mcp/composio/toolkits` | The platform's registered Composio toolkits |
 | GET / POST | `/api/mcp/connectors` | List connectors visible to the caller / register a custom MCP server |
 | POST | `/api/mcp/connectors/probe` | Detect a candidate server's required auth type before registering; for OAuth also `supports_dcr` and `public_client` (the authorization server accepts clients without a secret) |
-| PATCH / DELETE | `/api/mcp/connectors/{id}` | Update / delete an owned connector |
-| GET / POST / DELETE | `/api/mcp/connectors/{id}/share` | List, grant, or revoke a username's (or everyone's) access to an owned connector |
+| POST | `/api/mcp/connectors/upload` | Upload your own MCP server's source as a zip; the platform builds and deploys it (deployer+) |
+| POST | `/api/mcp/connectors/upload-github` | Same, from a GitHub repository (deployer+) |
+| GET | `/api/mcp/connectors/{id}/build-status` | Build status of an uploaded server |
+| GET | `/api/mcp/connectors/{id}/build-logs` | Build logs of an uploaded server (`?tail=`, default 200 lines) |
+| GET | `/api/mcp/connectors/my-uploads` | The caller's uploaded MCP servers |
+| GET | `/api/mcp/connectors/uploads/{upload_id}` | One upload's durable status (survives the connector's deletion on a failed build) |
+| GET / PATCH / DELETE | `/api/mcp/connectors/{id}` | Read / update / delete an owned connector |
+| GET | `/api/mcp/connectors/{id}/grants` | List an owned connector's grants |
+| POST / DELETE | `/api/mcp/connectors/{id}/grants/public` | Share with / unshare from everyone |
+| POST / DELETE | `/api/mcp/connectors/{id}/grants/users/{user_id}` | Share with / unshare from one user |
+| POST / DELETE | `/api/mcp/connectors/{id}/grants/agents/{agent_id}` | Share with / unshare from one agent |
+| GET | `/api/mcp/share-targets` | Search users to share a connector with (`?q=`) |
+| GET | `/api/mcp/share-targets/resolve` | Resolve an exact username to a user id (`?username=`) |
+| GET | `/api/mcp/connectors/{id}/consumers` | Agents that have this connector configured (owner only) |
+| POST / DELETE | `/api/mcp/connectors/{id}/pin` | Pin / unpin a connector for quick access |
+| GET | `/api/mcp/connectors/pinned` | The caller's pinned connectors |
+| GET | `/api/mcp/connectors/recent` | The caller's recently used connectors |
 | POST / DELETE | `/api/mcp/connectors/{id}/credential` | Store / remove a credential (write-only) |
 | GET | `/api/mcp/connectors/{id}/credential/status` | Check whether a credential is stored (never returns its value) |
 | POST | `/api/mcp/connectors/{id}/oauth/authorize` | Begin an OAuth 2.1 flow for a custom server |
@@ -836,8 +869,10 @@ owner or a superuser via `DELETE`.
 | GET / PUT | `/api/mcp/agents/{agent_id}/tools` | View / bulk-update per-tool allow/ask/block rules |
 | DELETE | `/api/mcp/agents/{agent_id}/permissions` | Reset an agent's overrides back to full default-allow |
 | POST | `/api/mcp/webhooks/composio` | Public, HMAC-verified — Composio token-expiry events |
+| GET | `/oauth/callback` | Public browser redirect target for Composio OAuth completion (root path, not under `/api`) |
+| GET / PUT | `/api/settings/composio` | The Composio API key (write-only; overrides `COMPOSIO_API_KEY`) and which toolkits are offered (superuser) |
 
-Public paths (the OAuth callback and the Composio webhook) authenticate via signed state or HMAC rather than a session JWT.
+Public paths (both OAuth callbacks and the Composio webhook) authenticate via signed state or HMAC rather than a session JWT.
 
 ---
 

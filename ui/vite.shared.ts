@@ -315,7 +315,7 @@ function defaultRelease(): string {
 
 /**
  * Whether Weave (the EE assistant, its generated views and the GenUI frame) is in this build. Weave is not part of
- * the current release (Satya, 13 Nov 2026): production builds, web and desktop, leave it out unless
+ * the current release (decided 13 Nov 2026): production builds, web and desktop, leave it out unless
  * `NASIKO_WEAVE=on`; dev servers and tests keep it unless `NASIKO_WEAVE=off`. When Weave ships, flip
  * `WEAVE_IN_RELEASES`. Read in the code as `import.meta.env.NASIKO_WEAVE_COMPILED_IN`, a boolean literal, so a build
  * without it drops the code instead of hiding it.
