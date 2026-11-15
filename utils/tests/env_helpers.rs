@@ -83,12 +83,11 @@ fn required_env_error_message_contains_key_name() {
 
 #[test]
 #[serial]
-fn required_env_returns_empty_string_when_var_is_empty() {
-    // An empty env var IS set — required_env should return Ok("")
-    set("TEST_REQUIRED_EMPTY", "");
-    let result = required_env("TEST_REQUIRED_EMPTY");
-    assert!(result.is_ok());
-    assert_eq!(result.unwrap(), "");
+fn required_env_counts_an_empty_var_as_missing() {
+    // Set but empty is missing: an empty DATABASE_URL would otherwise fail later, unnamed.
+    set("TEST_REQUIRED_EMPTY", "  ");
+    let msg = required_env("TEST_REQUIRED_EMPTY").unwrap_err().to_string();
+    assert!(msg.contains("TEST_REQUIRED_EMPTY"), "got: {msg}");
     unset("TEST_REQUIRED_EMPTY");
 }
 
@@ -144,7 +143,7 @@ fn env_bool_missing_returns_default_false() {
 #[serial]
 fn env_bool_garbage_value_returns_default_false() {
     set("TEST_BOOL_GARBAGE", "yes");
-    // "yes" is not "true" or "1" → returns false (not matching either branch)
+    // Not a boolean: the default stands (with a warning).
     assert!(!env_bool("TEST_BOOL_GARBAGE", false));
     unset("TEST_BOOL_GARBAGE");
 }
@@ -153,20 +152,18 @@ fn env_bool_garbage_value_returns_default_false() {
 #[serial]
 fn env_bool_garbage_value_returns_default_true() {
     set("TEST_BOOL_GARBAGE_T", "enabled");
-    // garbage: the var IS set but is not "true" or "1", so map returns false, unwrap_or(true) is irrelevant
-    // env_bool maps |v| v == "true" || v == "1" → false, then unwrap_or(default)
-    // WAIT: `.map()` on Ok("enabled") returns Ok(false), then `.unwrap_or(default)` returns false
-    // So even with default=true, a set-but-garbage var returns false.
-    assert!(!env_bool("TEST_BOOL_GARBAGE_T", true));
+    // Not a boolean: the default stands rather than silently reading as false.
+    assert!(env_bool("TEST_BOOL_GARBAGE_T", true));
     unset("TEST_BOOL_GARBAGE_T");
 }
 
 #[test]
 #[serial]
-fn env_bool_uppercase_true_returns_false() {
-    // The impl uses strict equality — "TRUE" is not "true"
+fn env_bool_ignores_case() {
     set("TEST_BOOL_UPPER", "TRUE");
-    assert!(!env_bool("TEST_BOOL_UPPER", false));
+    assert!(env_bool("TEST_BOOL_UPPER", false));
+    set("TEST_BOOL_UPPER", "False");
+    assert!(!env_bool("TEST_BOOL_UPPER", true));
     unset("TEST_BOOL_UPPER");
 }
 
