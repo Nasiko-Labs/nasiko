@@ -35,7 +35,7 @@ use std::path::Path;
 use agents::Agent;
 use catalog::Support;
 use onboarding::AgentReport;
-use state::{AgentState, InstallationBinding, IntegrationState};
+use state::{AgentState, InstallationBinding, IntegrationState, decline_key};
 
 pub use locality::{
     USAGE, chat_history_question, chat_history_warning, content_refused, content_unconfirmed,
@@ -131,6 +131,8 @@ impl From<&InstallationBinding> for ReportingDestination {
 /// Every catalogued coding agent with its detection and reporting state.
 pub fn local_agents() -> Result<Vec<LocalAgent>> {
     let settings = IntegrationState::load()?;
+    // Declines count on the cluster and account signed in now; elsewhere the agent is offered.
+    let here = current_decline_key();
     Ok(Agent::ALL
         .iter()
         .copied()
@@ -143,7 +145,7 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 display_name: spec.display_name,
                 detected: detect(agent).is_present(),
                 reporting_supported: spec.support == Support::Instrumented,
-                reporting_declined: settings.declined.contains(spec.id),
+                reporting_declined: settings.is_declined(spec.id, here.as_deref()),
                 reporting_agent_name: state.map(|state| state.agent_name.clone()),
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
@@ -252,12 +254,18 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
     let mut settings = IntegrationState::load()?;
     // The agent reporting was installed under — the routing agent or an account-scoped name —
     // not the catalog default.
-    let agent_name = settings
-        .agents
-        .remove(spec.id)
-        .map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
-    // Removing reporting is a no: it isn't offered again after the next login.
-    settings.declined.insert(spec.id.to_string());
+    let removed = settings.agents.remove(spec.id);
+    // Removing reporting is a no on the cluster it reported to: it isn't offered again there
+    // after the next login, and still is on any other.
+    let key = removed
+        .as_ref()
+        .and_then(|state| state.binding.as_ref())
+        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
+        .or_else(current_decline_key);
+    if let Some(key) = key {
+        settings.decline(spec.id, &key);
+    }
+    let agent_name = removed.map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
     settings.save()?;
 
     term::print_success(&format!("Removed the {} hook.", spec.display_name));
@@ -451,13 +459,24 @@ fn agent_rows() -> Vec<AgentReport> {
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
-/// in, so it isn't offered again.
+/// in, so it isn't offered again on this cluster and account. Without a login to record it
+/// against, nothing is recorded (the offer is only made to a signed-in user).
 pub fn record_declined(agent_ids: &[&str]) -> Result<()> {
+    let Some(key) = current_decline_key() else {
+        return Ok(());
+    };
     let mut settings = IntegrationState::load()?;
-    settings
-        .declined
-        .extend(agent_ids.iter().map(|id| id.to_string()));
+    for id in agent_ids {
+        settings.decline(id, &key);
+    }
     settings.save()
+}
+
+/// The cluster and account a decline made now is kept under, if anyone is signed in.
+fn current_decline_key() -> Option<String> {
+    control_plane::installation_binding()
+        .ok()
+        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
 }
 
 /// Rewrites every detected agent's outdated reporting hook in place, so a hook fix reaches
@@ -722,7 +741,7 @@ fn save_agent_state(
 ) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
-    settings.declined.remove(spec.id);
+    settings.clear_declines(spec.id);
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {

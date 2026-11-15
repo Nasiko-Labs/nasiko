@@ -594,7 +594,11 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
             }
             vec![view.clone()]
         }
-        None if prompter.interactive() => pick_agents(&views, prompter.as_ref())?,
+        None if prompter.interactive() => pick_agents(
+            &views,
+            ReportingDestination::current().ok().as_ref(),
+            prompter.as_ref(),
+        )?,
         None => bail!(
             "name the coding agent to connect ({}), or run `{} connect` on a terminal to pick one",
             integration::known_agent_ids(),
@@ -1082,7 +1086,40 @@ fn check_llm_config(reference: &str) -> Result<()> {
         })
 }
 
-fn pick_agents(views: &[AgentView], prompter: &dyn Prompter) -> Result<Vec<AgentView>> {
+/// Whether `view` is connected to the cluster and account signed in now: routing that belongs to
+/// it, or reporting that delivers there. Without a known destination, any connection counts.
+fn connected_here(view: &AgentView, destination: Option<&ReportingDestination>) -> bool {
+    view.routing_error.is_some()
+        || view
+            .routing
+            .as_ref()
+            .is_some_and(|routing| destination.is_none() || owned_by(routing, destination))
+        || (view.local.reporting_installed
+            && reporting_elsewhere(&view.local, destination).is_none())
+}
+
+/// Where `view` is connected when that isn't here: the cluster its reporting delivers to, or
+/// else the one its routing belongs to.
+fn connected_elsewhere(
+    view: &AgentView,
+    destination: Option<&ReportingDestination>,
+) -> Option<String> {
+    if view.local.reporting_installed
+        && let Some((from, _)) = reporting_elsewhere(&view.local, destination)
+    {
+        return Some(from);
+    }
+    view.routing
+        .as_ref()
+        .filter(|routing| destination.is_some() && !owned_by(routing, destination))
+        .map(|routing| routing.cluster.clone())
+}
+
+fn pick_agents(
+    views: &[AgentView],
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<Vec<AgentView>> {
     println!("Local coding agents:");
     print_agent_table(views);
     println!();
@@ -1097,8 +1134,12 @@ fn pick_agents(views: &[AgentView], prompter: &dyn Prompter) -> Result<Vec<Agent
         .iter()
         .map(|view| {
             let mut label = format!("{} ({})", view.local.display_name, view.local.id);
-            if view.is_connected() {
+            if connected_here(view, destination) {
                 label.push_str(" — already connected; select to change its setup");
+            } else if let Some(other) = connected_elsewhere(view, destination) {
+                // Connected to another cluster: offered like a new one, so a new cluster can take
+                // every agent, not only the ones never connected anywhere.
+                label.push_str(&format!(" — connected to {other}; select to move it here"));
             } else if view.router.is_none() {
                 label
                     .push_str(" — can report sessions only; its LLM calls can't go through Nasiko");
@@ -1106,7 +1147,10 @@ fn pick_agents(views: &[AgentView], prompter: &dyn Prompter) -> Result<Vec<Agent
             label
         })
         .collect();
-    let defaults: Vec<bool> = detected.iter().map(|view| !view.is_connected()).collect();
+    let defaults: Vec<bool> = detected
+        .iter()
+        .map(|view| !connected_here(view, destination))
+        .collect();
     term::print_note(
         "You'll be asked about each part of the setup next, and shown every change before anything is applied.",
     );
@@ -4086,6 +4130,33 @@ mod tests {
         .unwrap();
         assert!(matches!(offer, Offer::NotAsked));
         assert!(declined.is_empty());
+    }
+
+    #[test]
+    fn the_picker_tells_an_agent_connected_elsewhere_from_one_connected_here() {
+        // Reporting to another cluster: not connected here, so offered (and pre-ticked) as a
+        // move, named by where it reports now.
+        let staging = reporting_to("claude", Some(elsewhere()));
+        assert!(!connected_here(&staging, Some(&here())));
+        assert_eq!(
+            connected_elsewhere(&staging, Some(&here())).as_deref(),
+            Some("staging")
+        );
+        // Reporting here: connected, nothing elsewhere.
+        let local = reporting_to("codex", Some(here()));
+        assert!(connected_here(&local, Some(&here())));
+        assert_eq!(connected_elsewhere(&local, Some(&here())), None);
+        // Never connected: neither.
+        let fresh = view("opencode", false, false);
+        assert!(!connected_here(&fresh, Some(&here())));
+        assert_eq!(connected_elsewhere(&fresh, Some(&here())), None);
+    }
+
+    #[test]
+    fn without_a_known_destination_any_connection_counts_as_here() {
+        let staging = reporting_to("claude", Some(elsewhere()));
+        assert!(connected_here(&staging, None));
+        assert_eq!(connected_elsewhere(&staging, None), None);
     }
 
     #[test]
