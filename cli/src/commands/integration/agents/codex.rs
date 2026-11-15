@@ -491,7 +491,11 @@ fn apply_event(
                 uuid: call_id,
                 provider: provider_for(&model).to_string(),
                 model,
-                input_tokens: usage.input,
+                // Codex's `input_tokens` already includes `cached_input_tokens` (OpenAI
+                // convention). The coding-agent contract is cache-*exclusive* input — the
+                // server prices every turn with `PromptConvention::Exclusive` — so the
+                // adapter must subtract, or cached tokens are billed twice.
+                input_tokens: usage.input.saturating_sub(usage.cache_read),
                 output_tokens: usage.output,
                 cache_read_tokens: usage.cache_read,
                 cache_creation_tokens: 0,
@@ -816,7 +820,8 @@ pub(super) mod tests {
         assert_eq!(turn.prompt, "Build it");
         assert_eq!(turn.response.as_deref(), Some("Built"));
         assert_eq!(turn.calls.len(), 1);
-        assert_eq!(turn.calls[0].input_tokens, 7);
+        // 17 - 10 = 7 input this turn, 5 - 2 = 3 of them cached: 4 fresh.
+        assert_eq!(turn.calls[0].input_tokens, 4);
         assert_eq!(turn.calls[0].output_tokens, 5);
         assert_eq!(turn.calls[0].cache_read_tokens, 3);
     }
@@ -874,6 +879,40 @@ pub(super) mod tests {
         let review = json!({"id": "t", "source": {"subagent": "review"}});
         assert!(spawned_by("t", &review).is_none());
         assert!(rollout_session_meta(Path::new("/nonexistent/rollout.jsonl")).is_none());
+    }
+
+    #[test]
+    fn cached_tokens_are_not_counted_inside_input() {
+        // Real numbers from a Codex session (turn 2). Codex's own log for this turn says
+        // input_tokens 14636 including cached_input_tokens 14080: only 556 are fresh.
+        let mut pending = PendingTurn::default();
+        let now = Utc::now();
+        apply_event(
+            &mut pending,
+            &payload("UserPromptSubmit"),
+            now,
+            Some(TokenUsage {
+                input: 14607,
+                output: 17,
+                cache_read: 9984,
+            }),
+        );
+        let snapshot = apply_event(
+            &mut pending,
+            &payload("Stop"),
+            now,
+            Some(TokenUsage {
+                input: 29243,
+                output: 34,
+                cache_read: 24064,
+            }),
+        )
+        .unwrap();
+
+        let call = &snapshot.turns[0].calls[0];
+        assert_eq!(call.cache_read_tokens, 14080);
+        assert_eq!(call.input_tokens, 556);
+        assert_eq!(call.output_tokens, 17);
     }
 
     #[test]
