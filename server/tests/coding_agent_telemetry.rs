@@ -2483,3 +2483,31 @@ async fn tool_calls_ignore_a_span_claim_the_server_records_contradict() {
     assert_eq!(traces, vec!["own-trace", "unrecorded"], "{body}");
     server.cleanup().await;
 }
+
+/// A turn may cost $100 or more: one costing $200 is stored with its cost, alongside the other turn in
+/// its batch. `chat_messages.cost_usd` held under $100, and the overflow failed the whole batch.
+#[tokio::test]
+#[serial]
+async fn a_turn_costing_over_a_hundred_dollars_is_stored_with_its_batch() {
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    let mut costly = event("costly-session", "turn-1", CapturePolicy::Content);
+    let call = &mut costly.turn.llm_calls[0];
+    call.provider = "openai".into();
+    call.model = "gpt-4o".into();
+    // $10 per million output tokens.
+    call.output_tokens = 20_000_000;
+    let cheap = event("costly-session", "turn-2", CapturePolicy::Content);
+
+    let body = post(&server, user_id, &[costly, cheap]).await;
+
+    assert_eq!(body["data"]["results"][0]["status"], "accepted", "{body}");
+    assert_eq!(body["data"]["results"][1]["status"], "accepted", "{body}");
+    let cost: f64 = sqlx::query_scalar(
+        "SELECT MAX(cost_usd)::float8 FROM chat_messages WHERE external_turn_id = 'turn-1'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(cost >= 200.0, "stored cost {cost}");
+}

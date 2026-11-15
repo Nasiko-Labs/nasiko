@@ -153,7 +153,18 @@ enum ProcessError {
 }
 
 impl From<sqlx::Error> for ProcessError {
+    /// A value the database refuses to store (SQLSTATE class 22, "data exception": a number out of
+    /// range, say) fails the same way however often the turn is sent, so that turn alone is
+    /// rejected and the rest of its batch is stored. Any other error fails the batch, to be retried.
     fn from(error: sqlx::Error) -> Self {
+        let data_exception = error
+            .as_database_error()
+            .and_then(|db| db.code())
+            .is_some_and(|code| code.starts_with("22"));
+        if data_exception {
+            tracing::warn!(%error, "coding-agent event refused by the database");
+            return Self::Rejected(format!("the server could not store this turn: {error}"));
+        }
         Self::Internal(error.into())
     }
 }
@@ -382,7 +393,7 @@ async fn process_event(
             PersistExternalTurnError::Incomplete | PersistExternalTurnError::Conflict => {
                 ProcessError::Rejected(error.to_string())
             }
-            PersistExternalTurnError::Database(error) => ProcessError::Internal(error.into()),
+            PersistExternalTurnError::Database(error) => ProcessError::from(error),
         })?;
     }
     sqlx::query(
