@@ -1184,7 +1184,7 @@ mod unmatched_settings_tests {
             .into_iter()
             .map(|name| (name.to_owned(), SeedAgentSettings::default()))
             .collect();
-        let images = "registry.nasiko.dev/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
+        let images = "registry.nasiko.com/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
         assert_eq!(unmatched_settings(&settings, images), ["summariser"]);
     }
 }

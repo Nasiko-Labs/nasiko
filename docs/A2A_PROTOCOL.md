@@ -421,7 +421,7 @@ Every A2A agent publishes an **Agent Card** at a well-known URL. This is how cli
   "version": "1.0.0",
   "provider": {
     "organization": "Nasiko",
-    "url": "https://nasiko.dev"
+    "url": "https://app.nasiko.com"
   },
   "supportedInterfaces": [
     {

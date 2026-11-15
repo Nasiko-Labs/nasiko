@@ -517,7 +517,7 @@ async fn github_callback_login(
     }
 
     // Multi-tenant: the dashboard authenticates to this control plane by its
-    // host-only session cookie — `nasiko.dev` and `<sub>.nasiko.dev` are
+    // host-only session cookie — `app.nasiko.com` and `<sub>.app.nasiko.com` are
     // same-site, so the `SameSite=Strict` host-only cookie rides the dashboard's
     // credentialed cross-origin fetch — NOT a URL token. Set the cookie on this
     // CP-origin response (the browser is on `<sub>` here, having been 302'd by
