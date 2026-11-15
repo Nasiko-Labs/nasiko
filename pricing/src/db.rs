@@ -45,6 +45,7 @@ impl CachedRow {
 pub struct DbPriceBook {
     db: PgPool,
     cache: RwLock<HashMap<String, Option<CachedRow>>>,
+    backdated: bool,
 }
 
 impl DbPriceBook {
@@ -52,6 +53,23 @@ impl DbPriceBook {
         Self {
             db,
             cache: RwLock::new(HashMap::new()),
+            backdated: false,
+        }
+    }
+
+    /// Answers only for a call older than the model's whole price history, with
+    /// the model's newest rate.
+    ///
+    /// History starts when a model's first row is written, on most installs at
+    /// first boot, so imported transcripts predate every row and would otherwise
+    /// fall through to the compiled-in list, which lags the synced book. The
+    /// newest row is used rather than the earliest because a first row is often
+    /// a seed placeholder corrected moments later: 0046 closed Opus 5's, priced
+    /// at 3x its list rate. Answers are attributed as [`BookTier::Backdated`].
+    pub fn backdated(db: PgPool) -> Self {
+        Self {
+            backdated: true,
+            ..Self::new(db)
         }
     }
 
@@ -88,18 +106,34 @@ impl DbPriceBook {
             cache_read_price_per_1m: Option<rust_decimal::Decimal>,
             effective_from: DateTime<Utc>,
             effective_until: Option<DateTime<Utc>>,
+            history_start: Option<DateTime<Utc>>,
         }
 
-        let sql = r#"SELECT input_price_per_1m, output_price_per_1m,
+        let sql = if self.backdated {
+            r#"SELECT * FROM (
+                   SELECT input_price_per_1m, output_price_per_1m,
+                          cache_creation_price_per_1m, cache_read_price_per_1m, cache_creation_1h_price_per_1m,
+                          effective_from, NULL::TIMESTAMPTZ AS effective_until,
+                          min(effective_from) OVER () AS history_start
+                   FROM model_pricing
+                   WHERE lower(model) = $1
+                     AND ($2::TEXT IS NULL OR lower(provider) = $2)
+               ) rows
+               WHERE history_start > $3
+               ORDER BY effective_from DESC
+               LIMIT 1"#
+        } else {
+            r#"SELECT input_price_per_1m, output_price_per_1m,
                             cache_creation_price_per_1m, cache_read_price_per_1m, cache_creation_1h_price_per_1m,
-                            effective_from, effective_until
+                            effective_from, effective_until, NULL::TIMESTAMPTZ AS history_start
                      FROM model_pricing
                      WHERE lower(model) = $1
                        AND ($2::TEXT IS NULL OR lower(provider) = $2)
                        AND effective_from <= $3
                        AND (effective_until IS NULL OR effective_until > $3)
                      ORDER BY effective_from DESC
-                     LIMIT 1"#;
+                     LIMIT 1"#
+        };
 
         let row = sqlx::query_as::<_, Row>(sql)
             .bind(model.to_lowercase())
@@ -111,6 +145,11 @@ impl DbPriceBook {
             .ok()
             .flatten()?;
 
+        // A backdated answer holds for every call before the history starts.
+        let (effective_from, effective_until) = match row.history_start {
+            Some(start) => (DateTime::<Utc>::MIN_UTC, Some(start)),
+            None => (row.effective_from, row.effective_until),
+        };
         Some(CachedRow {
             row: PriceRow {
                 input_per_1m: row.input_price_per_1m.to_f64()?,
@@ -121,8 +160,8 @@ impl DbPriceBook {
                     .cache_creation_1h_price_per_1m
                     .and_then(|v| v.to_f64()),
             },
-            effective_from: row.effective_from,
-            effective_until: row.effective_until,
+            effective_from,
+            effective_until,
             fetched_at: Instant::now(),
         })
     }
@@ -145,7 +184,11 @@ impl PriceBook for DbPriceBook {
     }
 
     fn tier(&self) -> BookTier {
-        BookTier::Synced
+        if self.backdated {
+            BookTier::Backdated
+        } else {
+            BookTier::Synced
+        }
     }
 }
 
