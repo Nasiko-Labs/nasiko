@@ -66,7 +66,8 @@ or timing matters. Attach them to the pull request; do not commit them to the re
 
 ## Getting started
 
-You need Rust 1.85 or newer (the workspace uses edition 2024), Docker or Podman, and
+You need Rust 1.88 or newer (the workspace uses edition 2024 and let-chains), `protoc` (the
+event store's columnar format compiles protobufs at build time), Docker or Podman, and
 [`just`](https://github.com/casey/just). UI work also needs Node.js 22.18 or newer and pnpm.
 
 ```sh
@@ -99,12 +100,13 @@ xcode-select --install                                           # C toolchain a
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # Rust
 source "$HOME/.cargo/env"
 cargo install just cargo-watch
+brew install protobuf                                            # protoc
 ```
 
 **Linux (Debian/Ubuntu)**
 
 ```sh
-sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev
+sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev protobuf-compiler
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 cargo install just cargo-watch
@@ -115,6 +117,7 @@ cargo install just cargo-watch
 
 ```powershell
 winget install --id Rustlang.Rustup -e
+winget install --id Google.Protobuf -e
 # reopen the terminal, then:
 cargo install just cargo-watch
 ```
@@ -132,7 +135,7 @@ A `dlltool ... Invalid bfd target` error means a 32-bit MinGW (`C:\MinGW`) is on
 Check everything is in place:
 
 ```sh
-rustc --version && cargo --version && just --version
+rustc --version && cargo --version && just --version && protoc --version
 docker --version && docker compose version
 ```
 
@@ -151,12 +154,26 @@ auth/           AuthService trait + OSS implementation (JWT login, RBAC hooks)
 flow/           FlowGuard: anti-DoS cascade limits + live flow events
 secrets/        AES-256-GCM encryption for agent secrets at rest
 oci/            Embedded OCI Distribution v2 registry (S3-backed, layer dedup)
-observability/  OTel init, Tempo/Loki clients, DB-backed model pricing
+observability/  OTel init, Tempo/Loki clients
+pricing/        Token normalization and cost computation (one engine for reads and the LLM router)
+savings/        Token-savings ledger: what each optimization removed and what it was worth
+compress/       Structural compression of LLM payloads
+tool-compact/   Compact tool-schema encoding for LLM prompts
+event-store/    Columnar cold tier for append-only event tables
+react-agent/    ReAct orchestrator behind dashboard chat
+hitl/           Human-in-the-loop requests: dispatch, authorization, notification
+acp-client/     ACP (Agent Client Protocol) client for coding harnesses
+harness-shim/   In-sandbox shim: a harness's ACP stdio over WebSocket
+session-token/  Session-bound tokens for ACP coding agents
+coding-policy/  Shared decision policy for coding-style agents
 agent-proxy/    Agent ID -> running-container endpoint resolution
 github/         GitHub OAuth + repo import for source-based deploys
 types/          A2A protocol + registry types
 config/         Single env-driven Config struct
+redis/          One Redis connection shared across the process
+spa/            Serves the embedded UI bundle
 utils/          Shared helpers
+bench/          Control-plane load generator (bench-support/: its shared harness)
 cli/            nasiko binary (agent developer CLI, sync HTTP via ureq)
 agents/         Example and seed agents (each a standalone A2A container)
 migrations/     Postgres migrations (sqlx, run automatically at startup)

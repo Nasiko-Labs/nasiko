@@ -165,13 +165,13 @@ is enough to discover coding agents. On Linux, add yourself to the `docker` grou
 
 ```sh
 # macOS and Linux
-curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash
+curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash
 
 # Windows (PowerShell)
-irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
+irm https://registry.nasiko.com/r/nasiko/install-ps1 | iex
 ```
 
-Or build it from source with Rust 1.85+: `cargo install --path cli/ --force`.
+Or build it from source with Rust 1.88+: `cargo install --path cli/ --force`.
 
 **2. Start the server**
 
@@ -206,8 +206,7 @@ docker compose up -d --build    # rebuild after pulling new changes
 **3. Connect the CLI**
 
 ```sh
-nasiko connect http://localhost:8080
-nasiko auth login                 # admin / changeme, or your ADMIN_PASSWORD
+nasiko connect http://localhost:8080   # registers the server and logs you in: admin / changeme, or your ADMIN_PASSWORD
 ```
 
 Now [measure and route your coding agents](#coding-agents) or
@@ -215,8 +214,9 @@ Now [measure and route your coding agents](#coding-agents) or
 
 ### Run from source
 
-Working on Nasiko itself? Run the server natively with hot-reload. This needs Rust 1.85+,
-[`just`](https://github.com/casey/just) and Docker for the backing services:
+Working on Nasiko itself? Run the server natively with hot-reload. This needs Rust 1.88+,
+[`just`](https://github.com/casey/just), `protoc` (`brew install protobuf` or
+`apt install protobuf-compiler`) and Docker for the backing services:
 
 ```sh
 just infra    # Postgres, Redis, RustFS and the OTel stack in Docker
@@ -245,16 +245,11 @@ Want another harness? [Open an issue](https://github.com/Nasiko-Labs/nasiko/issu
 Works before you have a server or an account:
 
 ```sh
-nasiko agents discover
+nasiko status
 ```
 
-```text
-AGENT      DETECTED   CONNECTED   VERSION   CONFIG
-claude     yes        no          v4        ~/.claude
-codex      yes        no          v2        ~/.codex
-opencode   -          no          -         ~/.config/opencode
-cursor     yes        no          v2        ~/.cursor
-```
+Under **Coding agents** it lists each harness with whether it is installed and whether LLM
+routing, MCP and reporting are connected. `nasiko status claude` shows one in detail.
 
 ### Report sessions
 
@@ -272,7 +267,7 @@ nasiko sessions                  # recorded sessions
 nasiko agents status             # import progress
 ```
 
-Add `nasiko agents install claude --no-content` first to keep prompt and response text out.
+Run `nasiko connect claude --reporting --no-content` first to keep prompt and response text out.
 Codex asks you to trust the new hooks on its next start, and OpenCode needs a restart.
 [How reporting works](https://docs.nasiko.com/coding-agents/session-reporting).
 
@@ -314,7 +309,7 @@ You can also deploy from the dashboard: upload source, import from GitHub, or pu
 | `nasiko ps`                                  | List running agents                       |
 | `nasiko logs <agent> -f`                     | Follow an agent's logs                    |
 | `nasiko stop` / `start` / `restart` / `scale` | Agent lifecycle                          |
-| `nasiko rm --name <agent>`                   | Remove an agent                           |
+| `nasiko rm <agent>`                          | Remove an agent                           |
 | `nasiko secrets set`                         | Store encrypted per-agent secrets         |
 | `nasiko mcp`                                 | Manage tools and tool permissions         |
 | `nasiko observe`                             | Sessions, traces, stats and spend         |
@@ -323,7 +318,9 @@ Run `nasiko <command> --help` for every option.
 
 ### Give your agent tools
 
-Each deployed agent reaches its tools through the MCP Gateway and only sees what it was granted:
+Each deployed agent reaches its tools through the MCP Gateway and only sees what it was granted.
+Toolkits such as GitHub come from Composio: set `COMPOSIO_API_KEY` in `.env`, or save a key under
+Settings → MCP toolkits, first.
 
 ```sh
 nasiko mcp connect --toolkit github                                         # connect your account
@@ -352,6 +349,7 @@ with the answer. It's plain A2A, shown in dashboard **Chat** and `nasiko chat`.
 | `.env` changes have no effect                    | Run `docker compose up -d`, not `restart`                                               |
 | `address already in use` (9000, 4317, 4318)      | Find the process with `lsof -i :9000`; on Windows keep one Docker engine and `wsl --shutdown` |
 | Agent can't reach the MCP gateway (Linux)        | Add `--add-host host.docker.internal:host-gateway`, or set `MCP_GATEWAY_PUBLIC_URL` to the bridge IP |
+| After upgrading, the server exits with `migration 60 was previously applied but has been modified` | This release renumbered some database migrations. Start from a new database: `docker compose down -v`, then `docker compose up -d --build` (this deletes existing data) |
 
 More: [server](https://docs.nasiko.com/self-hosting/troubleshooting) and
 [coding agents](https://docs.nasiko.com/coding-agents/troubleshooting).
