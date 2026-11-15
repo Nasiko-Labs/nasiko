@@ -406,6 +406,8 @@ export const copy = {
   heroChooseTitle: 'Start a chat',
   heroChooseSubline: 'Pick an agent, or let the Orchestrator choose.',
   heroAgentSubline: 'Ask me anything',
+  heroDescriptionMore: 'More',
+  heroDescriptionLess: 'Less',
   chooseAnother: 'Choose another agent',
   heroOrchestratorTitle: 'Orchestrate a task',
   heroOrchestratorSubline: 'Describe a task and the Orchestrator picks the agents to run it.',

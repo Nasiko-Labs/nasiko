@@ -48,6 +48,7 @@ function AppConnect({ app, openPopup }: { app: AgentApp; openPopup: (url?: strin
   return (
     <ConnectControl
       size="xs"
+      iconOnly
       openPopup={openPopup}
       target={{
         id: app.id,
