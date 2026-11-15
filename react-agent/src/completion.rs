@@ -163,7 +163,12 @@ impl UsageModel {
         // which the Free plane leaves empty.
         let api_key: String = gateway.service_key_for(&provider).to_string();
         if api_key.is_empty() {
-            return Err(NO_KEY_MESSAGE.to_string());
+            if provider == "openai" {
+                return Err(NO_KEY_MESSAGE.to_string());
+            }
+            return Err(format!(
+                "no LLM credentials: set OPENAI_API_KEY or credentials for provider '{provider}'"
+            ));
         }
         let model: String = if config.model.trim().is_empty() {
             gateway.default_model.clone()
