@@ -63,7 +63,7 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
         steps: &[
             TemplateStep {
                 agent: "meeting-notes-processor",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Read this sample meeting transcript and pull out the decisions, \
                        the action items with owner and due date, and the open \
                        questions. Transcript: \"Weekly launch sync, 12 Nov. Attendees: \
@@ -76,14 +76,14 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
             },
             TemplateStep {
                 agent: "task-breakdown",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Turn the action items into an ordered task list for the launch, \
                        keeping each owner and due date, and flag anything due before \
                        18 Nov as urgent.",
             },
             TemplateStep {
                 agent: "reply-drafter",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Draft the follow-up email the meeting organiser sends to Priya, \
                        Rahul and Anil: thank them, confirm the decisions, list each task \
                        with owner and due date, and note that the mobile app moved to \
@@ -91,7 +91,7 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
             },
             TemplateStep {
                 agent: "humanizer",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Rewrite the email so it reads warm and natural, without changing \
                        any decision, owner or date.",
             },
@@ -107,7 +107,7 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
         steps: &[
             TemplateStep {
                 agent: "summarizer",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Group this sample customer feedback into themes, ranked by how \
                        many customers raised each, with one short quote per theme. \
                        Feedback: \"1. Acme (500 users): Monthly reports download as \
@@ -120,26 +120,26 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
             },
             TemplateStep {
                 agent: "task-breakdown",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Turn the top themes into prioritised roadmap tasks, highest \
                        customer impact first, each with a one-line reason.",
             },
             TemplateStep {
                 agent: "reply-drafter",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Draft a reply to Lumen, the Spanish customer whose PDF reports \
                        come out blank: apologise, say the fix is planned, and promise \
                        an update by 20 Nov. It goes out by email.",
             },
             TemplateStep {
                 agent: "humanizer",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Make the reply sound natural and caring, keeping the commitment \
                        and the date.",
             },
             TemplateStep {
                 agent: "translator",
-                agent_version: "1.0.0",
+                agent_version: "1.1.1",
                 task: "Translate the reply into Spanish for Lumen, keeping its tone.",
             },
         ],
