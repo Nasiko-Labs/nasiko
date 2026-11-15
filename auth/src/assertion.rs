@@ -238,10 +238,42 @@ pub fn verify_assertion(
 mod tests {
     use super::*;
 
-    // A throwaway Ed25519 keypair generated for these tests only (PKCS#8 PEM
-    // and the raw public key). Not used anywhere else.
-    const TEST_PRIVATE_PEM: &str = include_str!("testdata/delegation-test-ed25519.pem");
-    const TEST_PUBLIC_X: &str = include_str!("testdata/delegation-test-ed25519.pub.x");
+    /// A throwaway Ed25519 keypair, generated once per test run so no private key
+    /// is ever committed: the PKCS#8 private PEM, the SPKI public PEM and the raw
+    /// public key as a JWK `x`.
+    struct TestKey {
+        private_pem: String,
+        public_pem: String,
+        x: String,
+    }
+
+    /// The fixed SPKI DER header for an Ed25519 public key; the raw 32 bytes follow.
+    const ED25519_SPKI_PREFIX: [u8; 12] = [
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+
+    fn pem(label: &str, der: &[u8]) -> String {
+        format!(
+            "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
+            STANDARD.encode(der)
+        )
+    }
+
+    fn test_key() -> &'static TestKey {
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        static KEY: std::sync::OnceLock<TestKey> = std::sync::OnceLock::new();
+        KEY.get_or_init(|| {
+            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+            let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
+            let raw = pair.public_key().as_ref();
+            let spki = [ED25519_SPKI_PREFIX.as_slice(), raw].concat();
+            TestKey {
+                private_pem: pem("PRIVATE KEY", pkcs8.as_ref()),
+                public_pem: pem("PUBLIC KEY", &spki),
+                x: URL_SAFE_NO_PAD.encode(raw),
+            }
+        })
+    }
 
     fn jwks(kid: &str) -> Jwks {
         Jwks {
@@ -249,7 +281,7 @@ mod tests {
                 kty: "OKP".into(),
                 crv: "Ed25519".into(),
                 kid: kid.into(),
-                x: TEST_PUBLIC_X.trim().into(),
+                x: test_key().x.clone(),
                 alg: Some("EdDSA".into()),
             }],
         }
@@ -261,7 +293,7 @@ mod tests {
         encode(
             &h,
             &claims,
-            &EncodingKey::from_ed_pem(TEST_PRIVATE_PEM.as_bytes()).unwrap(),
+            &EncodingKey::from_ed_pem(test_key().private_pem.as_bytes()).unwrap(),
         )
         .unwrap()
     }
@@ -378,12 +410,11 @@ mod tests {
         );
     }
 
-    const TEST_PUBLIC_PEM: &str = include_str!("testdata/delegation-test-ed25519.pub.pem");
-
     #[test]
     fn signer_round_trips_through_verify_with_a_derived_kid() {
-        let signer = AssertionSigner::from_pem(TEST_PRIVATE_PEM, TEST_PUBLIC_PEM).unwrap();
-        assert_eq!(signer.jwk().x, TEST_PUBLIC_X.trim());
+        let key = test_key();
+        let signer = AssertionSigner::from_pem(&key.private_pem, &key.public_pem).unwrap();
+        assert_eq!(signer.jwk().x, key.x);
         assert_eq!(signer.kid().len(), 16);
         let now = now_secs();
         let claims = AssertionClaims {
@@ -416,7 +447,7 @@ mod tests {
     #[test]
     fn a_mismatched_key_pair_fails_at_construction() {
         let other_pub = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n-----END PUBLIC KEY-----\n";
-        assert!(AssertionSigner::from_pem(TEST_PRIVATE_PEM, other_pub).is_err());
+        assert!(AssertionSigner::from_pem(&test_key().private_pem, other_pub).is_err());
         assert!(
             raw_public_key_from_spki_pem(
                 "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----"

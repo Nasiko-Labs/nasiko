@@ -117,7 +117,7 @@ MCP server; supply-chain attacker via PR or dependency.
 | T12 | In-progress OCI chunked uploads held in memory (sticky pushes) | Accepted; restart loses an in-flight push, client retries |
 | T13 | Agent background work (no flow) rejected by MCP/LLM router | Deliberate — becomes an explicit owner-billed feature if ever wanted, never a silent fallback |
 | T14 | Trace ids visible in traces | By design; useless without the agent credential (participant check) |
-| T15 | Bootstrap admin default password `changeme` | Not enforced by the server; the README quick start and the operator baseline in `SECURITY.md` say to change `ADMIN_PASSWORD` on first boot |
+| T15 | Bootstrap admin default password `changeme` | Not enforced by the server; the README quick start says to change `ADMIN_PASSWORD` before anyone else can reach it |
 
 ## 4. Verification loop
 
