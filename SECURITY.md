@@ -35,13 +35,13 @@ Please include as much of the following as you can:
 | Status updates while we work on a fix | at least every 2 weeks |
 
 We will keep you informed while we investigate, tell you whether we accept the report, and agree a
-disclosure date with you. Once a fix is released, we publish a security advisory and credit you
+disclosure date with you. Once a fix is released, we publish a security advisory that names you
 unless you ask to remain anonymous.
 
 ## Supported versions
 
 Security fixes are made on the `main` branch and included in the next release. We do not backport
-fixes to older releases; upgrade to the latest release to receive them.
+fixes to older releases; move to the latest release to receive them.
 
 ## Scope
 

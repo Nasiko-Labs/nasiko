@@ -57,7 +57,7 @@ Your cost history, policy and model choice stay with you, not with any one vendo
 | Feature                   | What it does                                                                                               |
 | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | **LLM Router**            | Agents get a short-lived token, never a real API key. Provider, model and key are resolved on the server. |
-| **Cost attribution**      | Usage and cost per agent and per model, instead of one provider invoice you have to reverse-engineer.     |
+| **Cost attribution**      | Usage and cost per agent and per model, instead of one provider total you have to reverse-engineer.       |
 | **Token optimization**    | Compresses large payloads, compacts tool schemas and picks which chat history a request carries. Every saving is recorded. |
 | **One trace per request** | Every hop emits an OTel span, so a request is one end-to-end trace with its cost attached.               |
 
