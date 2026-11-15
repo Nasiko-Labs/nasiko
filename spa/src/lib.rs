@@ -112,7 +112,7 @@ pub struct CspExtras {
     pub script_src: &'static [&'static str],
     pub connect_src: &'static [&'static str],
     pub img_src: &'static [&'static str],
-    /// Pages the app may embed in an iframe (nasiko.dev's Contact sales embeds Calendly).
+    /// Pages the app may embed in an iframe (app.nasiko.com's Contact sales embeds Calendly).
     pub frame_src: &'static [&'static str],
 }
 
