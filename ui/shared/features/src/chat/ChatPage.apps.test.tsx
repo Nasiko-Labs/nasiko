@@ -2,7 +2,7 @@
  * The apps an agent works with, where its chat starts (components/AgentApps.tsx): each app the viewer can reach,
  * connected or with Connect, which connects in place and refreshes the row.
  */
-import { screen, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -84,6 +84,42 @@ describe('new chat: the apps the agent works with', () => {
     expect(
       await within(apps).findByLabelText(copy.appConnected('Gmail'), {}, T),
     ).toBeInTheDocument()
+  })
+
+  it('leads with the connected apps, and "+N more" opens every toolkit on MCP servers', async () => {
+    const names = ['Airtable', 'Asana', 'Discord', 'Dropbox', 'Gmail', 'Jira', 'Notion', 'Slack']
+    server.use(
+      http.get('/api/mcp/agents/:id/my-connections', () =>
+        HttpResponse.json({
+          data: {
+            connectors: names.map((n) =>
+              row(
+                `c-${n}`,
+                n.toLowerCase(),
+                n,
+                n === 'Slack' || n === 'Notion' ? 'connected' : 'needs_connection',
+              ),
+            ),
+          },
+          status_code: 200,
+          message: 'ok',
+        }),
+      ),
+    )
+    const agent = await runningAgent()
+    const { router } = renderApp(`/chat?agent=${agent.id}`)
+    const apps = await screen.findByTestId('agent-apps', {}, T)
+    const chips = within(apps)
+      .getAllByRole('listitem')
+      .map((li) => li.textContent ?? '')
+    // The two connected apps lead, ahead of the alphabetically earlier ones still to connect.
+    expect(chips[1]).toContain('Notion')
+    expect(chips[2]).toContain('Slack')
+    const more = within(apps).getByRole('link', { name: copy.moreAppsLabel(names.length - 5) })
+    expect(more).toHaveTextContent(copy.moreApps(names.length - 5))
+    await userEvent.click(more)
+    await waitFor(() => expect(router.state.location.pathname).toBe('/mcp'))
+    expect(router.state.location.search).toMatchObject({ view: 'toolkits' })
   })
 
   it('shows nothing for an agent with no apps', async () => {

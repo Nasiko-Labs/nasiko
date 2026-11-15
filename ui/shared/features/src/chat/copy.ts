@@ -544,6 +544,7 @@ export const copy = {
   worksWithHintConnected: 'Your apps are connected. Ask it to use them, or just send your text.',
   appConnected: (app: string) => `${app}: connected`,
   moreApps: (n: number) => `+${n} more`,
+  moreAppsLabel: (n: number) => `${n} more apps: see all toolkits on MCP servers`,
   replyConnect: 'Connect it so the agent can use it here:',
   loading: 'Loading…',
   usageLoaded: 'Usage for loaded messages',
