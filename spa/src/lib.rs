@@ -53,7 +53,7 @@ const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 #[derive(Clone, Copy, Debug)]
 pub struct Precompressed;
 
-/// A 404 must never be cacheable — demo.nasiko.dev sits behind Cloudflare,
+/// A 404 must never be cacheable — demo.app.nasiko.com sits behind Cloudflare,
 /// which edge-cached an uncached 404 for an observed 20 minutes, outliving its
 /// own fix.
 const NO_STORE: &str = "no-store";
