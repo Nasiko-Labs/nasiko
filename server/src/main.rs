@@ -174,6 +174,7 @@ const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
     script_src: &[],
     connect_src: &[],
     img_src: &[],
+    frame_src: &[],
 };
 
 /// Release caches the parsed manifest here; debug re-reads it per request so a
